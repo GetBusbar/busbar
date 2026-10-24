@@ -4320,6 +4320,17 @@ Requirements: RED plants for the key-position and identifier cases, a GREEN plan
 This resolves the busbar × plane +1 from c8400fb00 (linked.rs:586 "which streams.") without rewording.
 It follows the owner law: the kernel speaks kinds, and the gate measures instances.
 
+### 2026-10-21 — ARCHITECT RULING (amended): frozen 1.5.5 customer-observable bytes are exempt from law0 only in place
+The basis is customer-observable bytes only. Part 0 (l.79, l.1790) holds what a customer sees to the bytes of the published 1.5.5, and DoD item 6 (l.2022) holds the config and the admin API to it; a plugin name that 1.5.5 wrote into such bytes cannot be drained without changing them.
+- The artifacts are exactly five: `crates/busbar-core-admin/src/v1/json/openapi.json`, `crates/busbar-kernel/src/config/config-schema.snapshot.json`, `crates/busbar-kernel/src/config/migrate.rs`, `crates/busbar-kernel/src/config/migrate_export.rs` and `crates/busbar-contract/src/secret_ref.rs`. Test code is not customer-observable: `migrate_tests.rs` is no artifact, and every hit in it counts.
+- openapi.json and config-schema.snapshot.json: a line is exempt when it is byte-equal to the same artifact's line at v1.5.5 and stands where the release had it (positional, by a minimal line diff against the release; an equal string written elsewhere is not exempt).
+- migrate.rs, migrate_export.rs and secret_ref.rs: only a hit inside a STRING LITERAL on such a byte-equal v1.5.5 line is exempt. Identifiers, comments, doc comments and locals on the same line count.
+- Any edited, moved or new line counts.
+- For a byte-equal customer-observable v1.5.5 line, this exemption overrides the l.4318 rule that non-English instance ids "still count everywhere, including prose". That covers "LLM" in the OpenAPI prose and the plugins.yaml aliases (otlp, prometheus, webhook, admin-tokens, github, env, file) in those bytes. The ground is Part 0's rule that customer-visible behaviour stays identical to 1.5.5 (l.79, l.1790). Everywhere else l.4318 and the 2026-09-27 English-word ruling (l.4316-4321) stand unchanged.
+- The release is read only through `refs/tags/v1.5.5`, which must resolve to the pinned tag object `d3c50432995b8f4b4582380b6c4415308ed44cfc` and peel to the pinned commit `a71b21e9fa0e8a35bd0c86f53f8a79eac2974d05`. A missing or moved tag, or a branch named v1.5.5, freezes nothing.
+- Gate-scope rulings Q1, Q2 and Q4 of 2026-10-20 are withdrawn.
+Requirements: RED plants for an edited, moved or copied frozen line, an identifier and a comment on a frozen Rust line, a line of migrate_tests.rs, and a branch named v1.5.5 (and a moved tag); GREEN plants for an unchanged JSON line and a string literal on an unchanged Rust line; each `[[law0]]` ceiling set to the measure in the same commit.
+
 ### 2026-09-27 — OWNER RULED Q2: the plane is "decisions"
 The owner said "decisions feels right".
 - Plane id is `decisions`, crate `busbar-plane-decisions`, feature `plane-decisions`, repo `busbar-plane-decisions`. The config section `decisions:` is unchanged (#47).

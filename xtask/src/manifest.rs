@@ -472,6 +472,52 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
         let Some((key, value)) = split_kv(t) else {
             continue;
         };
+        // A DOTTED KEY inside a dependency table (`foo.workspace = true`, `wire.package = "x"`) is
+        // one dependency `foo` / `wire` with that field set, not a dependency named `foo.workspace`.
+        // Each dotted line adds one field, so the fields of a dependency merge into one declaration.
+        let raw_key = t.split_once('=').map_or("", |(k, _)| k);
+        let segs = header_segments(raw_key);
+        if segs.len() >= 2 {
+            let (name, field) = (segs[0].clone(), segs[1..].join("."));
+            let at = match out
+                .iter()
+                .position(|d| d.section == section_name && d.key == name)
+            {
+                Some(at) => at,
+                None => {
+                    out.push(DepDecl {
+                        pkg: name.clone(),
+                        key: name,
+                        table,
+                        section: section_name.clone(),
+                        renamed_here: false,
+                        inherits: false,
+                        optional: false,
+                        path: None,
+                        features: Vec::new(),
+                    });
+                    out.len() - 1
+                }
+            };
+            let line = format!("{field} = {}", value.trim());
+            if let Some(p) = scalar_string(&line, "package") {
+                out[at].pkg = p;
+                out[at].renamed_here = true;
+            }
+            if scalar_true(&line, "workspace") {
+                out[at].inherits = true;
+            }
+            if scalar_true(&line, "optional") {
+                out[at].optional = true;
+            }
+            if let Some(p) = scalar_string(&line, "path") {
+                out[at].path = Some(p);
+            }
+            if field == "features" {
+                out[at].features = inline_features(&line);
+            }
+            continue;
+        }
         let renamed = inline_package(value);
         out.push(DepDecl {
             pkg: renamed.clone().unwrap_or_else(|| key.clone()),
@@ -712,6 +758,25 @@ busbar-testkit = { workspace = true }
 [features]
 llm-serve = []
 "#;
+
+    /// XA2#6 RED: dotted keys inside a dependency table are fields of ONE dependency.
+    #[test]
+    fn dotted_dependency_keys_are_fields_of_one_dependency() {
+        let d = dep_decls(
+            "[dependencies]\nfoo.workspace = true\nwire.package = \"busbar-plane-llm\"\nwire.path = \"../p\"\n",
+        );
+        assert_eq!(d.len(), 2, "{d:?}");
+        assert_eq!(
+            (d[0].key.as_str(), d[0].pkg.as_str(), d[0].inherits),
+            ("foo", "foo", true)
+        );
+        assert_eq!(
+            (d[1].key.as_str(), d[1].pkg.as_str()),
+            ("wire", "busbar-plane-llm")
+        );
+        assert!(d[1].renamed_here);
+        assert_eq!(d[1].path.as_deref(), Some("../p"));
+    }
 
     #[test]
     fn every_table_and_every_rename_is_read() {

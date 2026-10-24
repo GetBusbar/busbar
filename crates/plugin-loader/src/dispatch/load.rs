@@ -23,7 +23,9 @@ use busbar_contract::abi::mechanism::door::{
     Door, DoorFn, KindTailHead, MetricFamily, Statement, FAMILY_HISTOGRAM,
 };
 use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
-use busbar_contract::abi::mechanism::rendering::{render, RENDERING_MAGIC};
+use busbar_contract::abi::mechanism::rendering::{
+    render, RENDERING_MAGIC, RENDERING_MAGIC_TAIL_SIZE_ONLY,
+};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
 use busbar_contract::abi::transport::check::check_claim_rows;
@@ -52,9 +54,17 @@ impl ManifestFacts {
     ///
     /// # Errors
     ///
-    /// [`LoadError::Rendering`] for a rendering too short or without the magic, or naming no kind.
+    /// [`LoadError::Rendering`] for a rendering too short or without the magic, or naming no kind;
+    /// a rendering an older pack tool made (its tail stated by size alone) names the repack.
     pub fn read(rendering: &[u8]) -> Result<Self, LoadError> {
         let magic = RENDERING_MAGIC.len();
+        if rendering.starts_with(RENDERING_MAGIC_TAIL_SIZE_ONLY) {
+            return Err(LoadError::Rendering(
+                "it is a Statement rendering whose kind tail is stated by size alone, from an \
+                 older pack tool — repack the plugin"
+                    .into(),
+            ));
+        }
         if rendering.len() < magic + 12 || &rendering[..magic] != RENDERING_MAGIC {
             return Err(LoadError::Rendering(
                 "it does not start with a Statement rendering's head".into(),
@@ -206,7 +216,7 @@ pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
     let st = statement(&door)?;
     // SAFETY: `statement` ran `check_statement`: every list is its stated count of `'static`
     // entries.
-    unsafe { render(&st) }.map_err(|e| LoadError::Rendering(format!("{} is too long", e.0)))
+    unsafe { render(&st) }.map_err(|e| LoadError::Rendering(e.to_string()))
 }
 
 /// THE ENTRY: `door_fn` called on a permanent FFI worker ([`crate::ffi_thread`]), for every kind and
@@ -746,8 +756,7 @@ pub fn load_linked<K: Kind>(row: &LinkedRow, bind: Bind) -> Result<Plugin<K>, Lo
 fn admitted<K: Kind>(door: DoorFn, stated: &[u8]) -> Result<Validated, LoadError> {
     let v = validate::<K>(door)?;
     // SAFETY: `validate` ran `check_statement` on this Statement.
-    let own = unsafe { render(&v.statement) }
-        .map_err(|e| LoadError::Rendering(format!("{} is too long", e.0)))?;
+    let own = unsafe { render(&v.statement) }.map_err(|e| LoadError::Rendering(e.to_string()))?;
     if own != stated {
         return Err(LoadError::StatementMismatch);
     }

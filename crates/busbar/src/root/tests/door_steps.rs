@@ -523,6 +523,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 records: Some(std::sync::Arc::clone(&records)),
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };
@@ -657,6 +658,7 @@ fn charge_once_at(
             records: None,
             depth: 0,
             credential: None,
+            ticket: None,
         },
     );
     steps.lock().routed = pools.resolve(ROUTE_POOL, Some(pool.as_bytes()));
@@ -8317,6 +8319,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 records: None,
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };
@@ -8792,4 +8795,85 @@ fn serving_a_style_binds_only_the_linked_row_that_states_it() {
         1,
         "only the row serving the style is bound, once: {bound:?}"
     );
+}
+
+/// RED BEFORE THE TAIL WAS RENDERED WHOLE (ARCHITECT ruling 2026-10-20 on root#7 / loader#9: the
+/// canonical rendering carries the whole kind tail, and the signed manifest is the no-dlopen
+/// source): a dropped-in auth row's outbound styles are read from its SIGNED MANIFEST's rendering,
+/// with no `dlopen` and no bind. Here its library is not a library at all. Before, the rendering
+/// stated the tail's size alone, so the row was loaded to learn which style it states, and a row
+/// that would not load stated none.
+#[test]
+fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load() {
+    use crate::root::loader::dispatch::kinds::auth::stated_facts;
+    use crate::root::loader::sign::{
+        sign, Manifest, SigningKey, TrustPolicy, FIRST_PARTY_PUBLISHER,
+    };
+    // A linked auth row's door stating an outbound style: its rendering is what its pack signs.
+    let (style, door) = crate::LINKED
+        .auths
+        .iter()
+        .find_map(|&(_, _, door)| {
+            let facts = stated_facts(door).ok()?;
+            facts.styles.first().map(|s| (s.name.clone(), door))
+        })
+        .expect("the default build links an auth row stating an outbound style");
+    let stated = crate::root::loader::dispatch::rendering_of(door).expect("the door states itself");
+    let key = SigningKey::from_bytes(&[0x4d; 32]);
+    let lib: &[u8] = b"not a library: a style read never opens it";
+    let m = sign(
+        &key,
+        Manifest {
+            name: "busbar-auth-dropped-styles".into(),
+            alias: "dropped-styles".into(),
+            kind: "auth".into(),
+            version: "1.0.0".into(),
+            publisher: FIRST_PARTY_PUBLISHER.into(),
+            abi_version: crate::root::loader::supported_abi("auth")[0],
+            statement: Some(hex::encode(stated)),
+            ..Default::default()
+        },
+        lib,
+    );
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-root-dropped-styles-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    std::fs::create_dir_all(&dir).expect("a scratch plugins directory");
+    std::fs::write(
+        dir.join("dropped-styles.tar.gz"),
+        crate::root::loader::tarball::package(&m, "lib.so", lib).expect("it packs"),
+    )
+    .expect("the tarball is written");
+    let policy = TrustPolicy {
+        first_party_key: Some(key.verifying_key()),
+        ..Default::default()
+    };
+    let registry = crate::root::loader::scan_and_validate(&dir, &policy).expect("the row scans");
+    let _ = std::fs::remove_dir_all(&dir);
+    let registry: &'static crate::root::loader::PluginRegistry = Box::leak(Box::new(registry));
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    let auths = super::OutboundAuths::new(
+        dispatcher,
+        &[],
+        Some(registry),
+        crate::root::loader::dispatch::ConnTable::NoNeeds,
+    );
+    let stating: Vec<String> = auths.stating(&style).map(|r| r.name.clone()).collect();
+    assert_eq!(
+        stating,
+        vec!["busbar-auth-dropped-styles".to_string()],
+        "the dropped-in row states `{style}` by its signed manifest"
+    );
+    let bound = auths
+        .bound
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(bound, Vec::<String>::new(), "a style read binds no row");
 }

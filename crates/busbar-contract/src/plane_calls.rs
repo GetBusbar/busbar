@@ -328,6 +328,9 @@ pub struct InstanceDecl {
     /// [`InstanceDecl::record_kinds`]): every purge of a listed kind runs under its rule, every
     /// other kind's by age.
     pub record_retentions: Vec<crate::abi::plane::RecordRetention>,
+    /// The issued-id prefix its Statement declares (`MARK_WORD_ISSUED_ID_PREFIX`), which leads every
+    /// ticket the host mints for it; `None` = it mints none.
+    pub ticket_prefix: Option<&'static str>,
 }
 
 /// The trust facts a READY `arrive` stated, owned (a counterparty, and optionally an item and

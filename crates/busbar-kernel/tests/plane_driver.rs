@@ -1746,6 +1746,7 @@ fn declaring() -> Double {
             }],
             record_chains: Vec::new(),
             record_retentions: Vec::new(),
+            ticket_prefix: None,
         },
         ..Double::default()
     }

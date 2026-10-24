@@ -401,6 +401,13 @@ pub const CLAIM_SIGNED_INGRESS: u32 = 1 << 4;
 /// route and takes no arrival (ARCHITECT ruling 2026-10-17). Never with [`CLAIM_OPEN`],
 /// [`CLAIM_EXACT`] or [`CLAIM_PATTERN`]. Bits 3 and 4 are taken by flags in flight.
 pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
+/// [`Claim::flags`]: the route's inbound credential may be a TICKET the host minted for the plane
+/// ([`op::TICKET_MINT`](crate::abi::host::service::op::TICKET_MINT)). The gate verifies a credential
+/// carrying the plane's declared issued-id prefix as a ticket on this route only, consumes it when
+/// it admits the unit (a ticket admits one unit, once), and holds its record for
+/// [`op::TICKET_TAKE`](crate::abi::host::service::op::TICKET_TAKE). A key admits as on any keyed
+/// route. Never with [`CLAIM_OPEN`].
+pub const CLAIM_TICKET: u32 = 1 << 6;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
@@ -1893,7 +1900,8 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
-    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`]; any other bit refuses the snapshot.
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`] | [`CLAIM_TICKET`]; any other bit
+    /// refuses the snapshot.
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
     /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route

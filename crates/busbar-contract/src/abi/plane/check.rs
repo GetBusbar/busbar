@@ -28,9 +28,9 @@ use super::{
     RecordRetention, RecordWrite, RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey,
     UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED,
     CHAIN_PIPE_SEPARATED, CLAIM_CATALOG, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX,
-    CLAIM_SIGNED_INGRESS, DIALECT_PROVIDER, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
-    EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    CLAIM_SIGNED_INGRESS, CLAIM_TICKET, DIALECT_PROVIDER, EMIT_DONE, EMIT_FINAL_STATUS,
+    EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE,
+    INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
     PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
     REFUSAL_ANY_DIALECT, REFUSED_AFTER_ADMISSION, REFUSED_UNSUPPORTED_ACTION,
@@ -1108,7 +1108,8 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
                     | CLAIM_PATTERN
                     | CLAIM_CATALOG
                     | CLAIM_SIGNED_INGRESS
-                    | CLAIM_RAW_AFFIX,
+                    | CLAIM_RAW_AFFIX
+                    | CLAIM_TICKET,
             ),
             "claim.flags",
         )?;
@@ -1120,6 +1121,9 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
             )?;
         }
         if c.flags & CLAIM_EXACT != 0 && c.flags & CLAIM_PATTERN != 0 {
+            return Err(fault(Rule::Contradiction, "claim.flags"));
+        }
+        if c.flags & CLAIM_OPEN != 0 && c.flags & CLAIM_TICKET != 0 {
             return Err(fault(Rule::Contradiction, "claim.flags"));
         }
     }

@@ -2529,7 +2529,40 @@ pub(crate) async fn auth_middleware(
             }
         }
     };
+    // THE TICKET ARM (row 132, the ARCHITECT ticket ruling): on a door route that takes tickets,
+    // a credential carrying its plane's declared issued-id prefix is a ticket, which `keys` admits
+    // ONCE as the key it was minted for. The gate spends it here and hands its record on with the
+    // request; any ticket that is not a standing, unspent one of this deployment is the door's
+    // `401`, the same as a bad key. Only where the chain names `keys`: a ticket is a busbar token.
+    let ticketed = match (
+        signed.is_none(),
+        core_routes.door_ticket(&path, req.method()),
+        client_token.as_deref(),
+    ) {
+        (true, Some(prefix), Some(token))
+            if app.auth.keys_in_chain && token.starts_with(prefix) =>
+        {
+            let admitted = app
+                .governance
+                .as_deref()
+                .and_then(|gov| gov.admit_ticket(prefix, token, busbar_kernel::store::now()));
+            match admitted {
+                Some((key, record)) => {
+                    consumed.ticket = Some(record);
+                    Some(ChainVerdict::Identified {
+                        module: crate::config::KEYS_MODULE.to_string(),
+                        principal: principal_from_vkey(&key),
+                        resolved: Some(key),
+                    })
+                }
+                None => return Err(unauthorized_response(&app, &path, door.as_ref())),
+            }
+        }
+        _ => None,
+    };
     let verdict = if let Some(verdict) = signed {
+        verdict
+    } else if let Some(verdict) = ticketed {
         verdict
     } else {
         // Not `run_chain_with` directly: that blocks its caller's thread on a door that must wait. The

@@ -633,6 +633,9 @@ pub struct DoorSteps<'s> {
     depth: u32,
     /// The caller's verified credential, lent on the unit's record at authenticate.
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket that admitted the caller, held on the unit's record at
+    /// authenticate for `ticket.take`; `None` when a key admitted it.
+    ticket: Option<Vec<u8>>,
     /// A nested unit's parent's hold cell: its door accrues against the parent's admission.
     parent: Option<&'s busbar_contract::caps::HoldCell>,
     unit: Mutex<DoorUnit>,
@@ -665,6 +668,9 @@ pub struct DoorCaller {
     /// The caller's verified credential, lent on the unit's record while it runs: a passthrough
     /// member's auth call made inside the unit (the plane's own fetches included) is lent it.
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket the auth gate spent admitting the caller (row 132); `None` when a
+    /// key admitted it.
+    pub ticket: Option<Vec<u8>>,
 }
 
 impl<'s> DoorSteps<'s> {
@@ -693,6 +699,7 @@ impl<'s> DoorSteps<'s> {
             records: caller.records,
             depth: caller.depth,
             credential: caller.credential,
+            ticket: caller.ticket,
             parent: None,
             unit: Mutex::new(DoorUnit::default()),
         }
@@ -1059,6 +1066,8 @@ impl Units for DoorSteps<'_> {
                     if let Some(credential) = &self.credential {
                         records.lend(ctx.key.get(), credential.clone());
                     }
+                    // What admitted the unit, for `ticket.take`: a ticket's record, or a key.
+                    records.ticketed(ctx.key.get(), self.ticket.clone());
                     self.lock().recorded = Some(ctx.key.get());
                 }
                 SeatVerdict::proceed(token, Authenticated::Principal(self.principal.clone()))
@@ -2085,9 +2094,10 @@ pub struct OutboundAuths {
     /// serving: no row is bound to read them (Law 7; ARCHITECT ruling 2026-10-20: reading a row's
     /// static declaration, its kind tail included, is reading, not loading).
     linked_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
-    /// Each dropped-in row's outbound facts, read only when no linked row states a style asked
-    /// for. A dropped row's auth tail is in its library alone (its signed rendering states the
-    /// tail's size, never its styles), so each is bound once to read them.
+    /// Each dropped-in row's outbound facts, READ off its SIGNED MANIFEST's Statement rendering at
+    /// the first serving no linked row answers: no row is bound or opened to read them (ARCHITECT
+    /// ruling 2026-10-20, audit root#7 / loader#9: the rendering carries the whole kind tail, and
+    /// admitting the row compares its door's Statement with it).
     dropped_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
     /// The opened instances, by key: opened OUTSIDE the map's lock (THE DESIGN §11.13 M1: the
     /// plugin's validate and open crossings never run under a host lock).
@@ -2277,10 +2287,12 @@ impl OutboundAuths {
         })
     }
 
-    /// Every dropped-in row's outbound facts, read once: each row is bound once to read them (its
-    /// tail is in its library alone), then let go. A row that will not load is passed over.
+    /// Every dropped-in row's outbound facts, read once off its signed manifest's Statement
+    /// rendering: the styles its auth tail states, and whether a need of its takes its target from
+    /// its settings. No row is bound or opened. A row whose rendering a bind refuses states nothing
+    /// here.
     fn dropped_facts(&self) -> &[AuthRowFacts] {
-        use crate::root::loader::dispatch::auth_outbound::outbound_styles;
+        use crate::root::loader::dispatch::kinds::auth::rendered_facts;
         self.dropped_facts.get_or_init(|| {
             self.dropped
                 .map_or(&[][..], |r| r.loadable())
@@ -2288,14 +2300,15 @@ impl OutboundAuths {
                 .enumerate()
                 .filter(|(_, r)| r.manifest.kind == "auth")
                 .filter_map(|(i, r)| {
-                    let name = r.manifest.name.clone();
-                    let door = AuthRowDoor::Dropped(i);
-                    let plugin = self.load(&name, door)?;
+                    let stated = r.manifest.stated_rendering().ok().flatten()?;
+                    let styles = rendered_facts(&stated).ok()?.styles;
+                    let per_binding = busbar_contract::abi::mechanism::rendering::read(&stated)
+                        .is_ok_and(|r| r.needs.iter().any(|n| !n.target_from.is_empty()));
                     Some(AuthRowFacts {
-                        styles: outbound_styles(&plugin),
-                        per_binding: plugin.targets_from_settings(),
-                        name,
-                        door,
+                        name: r.manifest.name.clone(),
+                        door: AuthRowDoor::Dropped(i),
+                        styles,
+                        per_binding,
                     })
                 })
                 .collect()

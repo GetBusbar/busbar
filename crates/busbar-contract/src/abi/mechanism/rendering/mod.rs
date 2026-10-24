@@ -11,7 +11,8 @@
 //! THE FORMAT. Deterministic, little-endian, no padding, and never a pointer:
 //!
 //! ```text
-//! magic            8 bytes  "BBSTMT01"
+//! magic            8 bytes  "BBSTMT02" (the rendering's own version; "BBSTMT01" stated the tail's
+//!                           size alone)
 //! mechanism        u32      MECHANISM_VERSION the rendering was made under
 //! kind             u32
 //! kind_abi         u32
@@ -20,7 +21,9 @@
 //! version          str
 //! families         list of { name str, help str, unit str, label_keys list of str, kind u8 }
 //! diag_ids         list of str
-//! kind_tail        u32      the tail's stated size; 0 = no tail (its contents are the kind's)
+//! kind_tail        u32      the tail's stated size; 0 = no tail
+//! kind_tail_facts  bytes    u32 length, then THE KIND TAIL'S FACTS: every field of the kind's tail
+//!                           (`rendering/tail.rs`), so the signed manifest carries the tail itself
 //! extensions       blob
 //! secret_refs      list of str
 //! settings_schema  blob
@@ -40,21 +43,56 @@
 //! blob  = u32 fmt, u32 flags, u32 length, then the bytes
 //! ```
 //!
+//! THE KIND TAIL IS RENDERED WHOLE (ARCHITECT ruling 2026-10-20, audit root#7 and loader#9): a
+//! reader that must not open the plugin reads a dropped-in row's tail facts (an auth row's outbound
+//! styles, `FACT_*` flags, operator principal and credential kinds; every other kind's tail alike)
+//! from the signed manifest, and the admit comparison covers them, so a manifest that states another
+//! tail than the door's refuses the load. A tail is read by THE KIND TAIL GROWTH RULE (the plugin's
+//! first `min(size, host)` bytes, the rest zero) and rendered field by field in declaration order,
+//! every pointer followed: padding is never rendered, and no address is. A tail list or string is
+//! bounded before it is read ([`RenderError::Tail`]).
+//!
 //! The fields follow [`Statement`]'s declaration order (`size` is not rendered: it is the layout's,
 //! not the plugin's). A field appended to the Statement is appended here in the same commit, and the
 //! golden (`abi/tests/rendering_tests.rs`) is regenerated with it.
 
 use super::call::{AbiStr, Blob};
+use super::check::Fault;
 use super::door::{MarkWord, MetricFamily, Rewrite, Section, Statement};
 use super::MECHANISM_VERSION;
 use crate::abi::host::conn::connector::Need;
 
-/// The rendering's first eight bytes.
-pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT01";
+mod tail;
+pub use tail::{read_auth_tail, read_plane_cli_help, ReadAuthTail, ReadStyle};
 
-/// One of the rendering's lengths or counts was above `u32::MAX`.
+/// The rendering's first eight bytes.
+pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT02";
+
+/// The first eight bytes of the rendering before the kind tail was rendered whole: a manifest that
+/// carries one was packed by an older pack tool, and is repacked.
+pub const RENDERING_MAGIC_TAIL_SIZE_ONLY: &[u8; 8] = b"BBSTMT01";
+
+/// Why a Statement does not render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TooLong(pub &'static str);
+pub enum RenderError {
+    /// One of the rendering's lengths or counts was above `u32::MAX`; the field.
+    TooLong(&'static str),
+    /// A kind tail list or string that is not read: NULL with a count, above
+    /// [`STATEMENT_LIST_MAX`](super::check::STATEMENT_LIST_MAX) entries or
+    /// [`HARD_MAX_BYTES`](super::check::HARD_MAX_BYTES) bytes, or misaligned.
+    Tail(Fault),
+}
+
+impl core::fmt::Display for RenderError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::TooLong(field) => write!(f, "{field} is too long"),
+            Self::Tail(fault) => {
+                write!(f, "the kind tail's {} breaks {:?}", fault.field, fault.rule)
+            }
+        }
+    }
+}
 
 struct Out(Vec<u8>);
 
@@ -68,8 +106,8 @@ impl Out {
     fn u64(&mut self, v: u64) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn len(&mut self, n: usize, field: &'static str) -> Result<(), TooLong> {
-        self.u32(u32::try_from(n).map_err(|_| TooLong(field))?);
+    fn len(&mut self, n: usize, field: &'static str) -> Result<(), RenderError> {
+        self.u32(u32::try_from(n).map_err(|_| RenderError::TooLong(field))?);
         Ok(())
     }
     /// # Safety
@@ -79,7 +117,7 @@ impl Out {
         ptr: *const u8,
         len: usize,
         field: &'static str,
-    ) -> Result<(), TooLong> {
+    ) -> Result<(), RenderError> {
         self.len(len, field)?;
         if len > 0 && !ptr.is_null() {
             // SAFETY: the caller's contract.
@@ -90,13 +128,13 @@ impl Out {
     }
     /// # Safety
     /// As [`Out::bytes`].
-    unsafe fn str(&mut self, s: AbiStr, field: &'static str) -> Result<(), TooLong> {
+    unsafe fn str(&mut self, s: AbiStr, field: &'static str) -> Result<(), RenderError> {
         // SAFETY: the caller's contract.
         unsafe { self.bytes(s.ptr, s.len, field) }
     }
     /// # Safety
     /// As [`Out::bytes`].
-    unsafe fn blob(&mut self, b: Blob, field: &'static str) -> Result<(), TooLong> {
+    unsafe fn blob(&mut self, b: Blob, field: &'static str) -> Result<(), RenderError> {
         self.u32(b.fmt);
         self.u32(b.flags);
         // SAFETY: the caller's contract.
@@ -120,14 +158,17 @@ unsafe fn items<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
 ///
 /// # Errors
 ///
-/// [`TooLong`], naming the field whose length or count does not fit a `u32`.
+/// [`RenderError::TooLong`], naming the field whose length or count does not fit a `u32`;
+/// [`RenderError::Tail`], naming the kind tail's list or string that is not read.
 ///
 /// # Safety
 ///
 /// `st` passed [`super::check::check_statement`]: every non-NULL list and string points at its
 /// stated count of live entries (a door's `'static` Statement does). A NULL list with a count is
-/// rendered as empty, never read.
-pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
+/// rendered as empty, never read. A non-NULL `kind_tail` is `'static` plugin data of at least its
+/// stated size whose lists and strings point at their stated counts of live entries (each is
+/// bounded before it is read).
+pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, RenderError> {
     let mut o = Out(Vec::with_capacity(256));
     o.0.extend_from_slice(RENDERING_MAGIC);
     o.u32(MECHANISM_VERSION);
@@ -159,8 +200,9 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, TooLong> {
         o.u32(if st.kind_tail.is_null() {
             0
         } else {
-            (*st.kind_tail).size
+            core::ptr::addr_of!((*st.kind_tail).size).read_unaligned()
         });
+        tail::render(&mut o, st.kind, st.kind_tail)?;
         o.blob(st.extensions, "extensions")?;
         let refs = items(st.secret_refs, st.secret_refs_len);
         o.len(refs.len(), "secret_refs")?;
@@ -286,6 +328,9 @@ pub struct Read {
     pub diag_ids: Vec<String>,
     /// Its kind tail's stated size; `0` = none.
     pub kind_tail_size: u32,
+    /// Its kind tail's facts, as rendered (`rendering/tail.rs`; [`read_auth_tail`] reads an auth
+    /// row's).
+    pub kind_tail: Vec<u8>,
     /// Its extensions.
     pub extensions: ReadBlob,
     /// Its secret-reference settings keys.
@@ -411,6 +456,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     }
     let diag_ids = i.strs("diag_ids")?;
     let kind_tail_size = i.u32("kind_tail")?;
+    let kind_tail = i.bytes("kind_tail_facts")?;
     let extensions = i.blob("extensions")?;
     let secret_refs = i.strs("secret_refs")?;
     let settings_schema = i.blob("settings_schema")?;
@@ -468,6 +514,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
         families,
         diag_ids,
         kind_tail_size,
+        kind_tail,
         extensions,
         secret_refs,
         settings_schema,
@@ -484,5 +531,5 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
 }
 
 #[cfg(test)]
-#[path = "../tests/rendering_tests.rs"]
+#[path = "../../tests/rendering_tests.rs"]
 mod tests;

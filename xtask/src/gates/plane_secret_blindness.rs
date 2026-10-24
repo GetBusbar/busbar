@@ -89,7 +89,18 @@ pub fn undefined_names(cx: &Ctx, names: &[&str]) -> Result<Vec<String>, String> 
                 .min_files(1),
         )
         .map_err(|e| format!("crates: {e:?}"))?;
-    let mut missing: Vec<&str> = names.to_vec();
+    // Each name with the spellings that define it, written once rather than once per line.
+    let mut missing: Vec<(&str, Vec<String>)> = names
+        .iter()
+        .map(|n| {
+            let mut defs: Vec<String> = ["fn", "struct", "trait", "enum", "type"]
+                .iter()
+                .map(|kw| format!("{kw} {n}"))
+                .collect();
+            defs.push(format!("pub {n}:"));
+            (*n, defs)
+        })
+        .collect();
     for f in &files {
         if missing.is_empty() {
             break;
@@ -97,16 +108,16 @@ pub fn undefined_names(cx: &Ctx, names: &[&str]) -> Result<Vec<String>, String> 
         if !f.rel_str().contains("/src/") {
             continue;
         }
+        // A file whose text holds none of the names still missing defines none of them: every
+        // definition spelling carries the name verbatim, so the file is not lexed at all.
+        if !missing.iter().any(|(n, _)| f.text.contains(n)) {
+            continue;
+        }
         for sl in one_abi::production(&f.text) {
-            missing.retain(|n| {
-                !["fn", "struct", "trait", "enum", "type"]
-                    .iter()
-                    .any(|kw| one_abi::has_word(&sl.counted, &format!("{kw} {n}")))
-                    && !one_abi::has_word(&sl.counted, &format!("pub {n}:"))
-            });
+            missing.retain(|(_, defs)| !defs.iter().any(|d| one_abi::has_word(&sl.counted, d)));
         }
     }
-    Ok(missing.into_iter().map(str::to_string).collect())
+    Ok(missing.into_iter().map(|(n, _)| n.to_string()).collect())
 }
 
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {

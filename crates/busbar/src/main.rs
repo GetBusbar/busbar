@@ -105,8 +105,10 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
-/// Whether a flag a linked plane declares was passed (its `Flags:` rows, `root::cli::help_rows`):
-/// boot everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
+/// Whether a flag a plane declares was passed (its `Flags:` rows, `root::cli::help_rows`), the plane
+/// compiled in or dropped into `plugins.dir` alike (BUSBAR-1.6.0.md l.2179, Part 2 #2: the dropped-in
+/// planes are discovered by `register_planes`, before anything reads the command line): boot
+/// everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
 /// stdin/stdout (see `root::serve::lines`). The root names no flag of its own here: the plane states
 /// its spelling, and the root reads it off the plane's declared rows. A scanner like
 /// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
@@ -1077,6 +1079,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    // THE TICKET PRESS (row 132): `ticket.mint` mints through the live generation's governance,
+    // under its mint ceiling, once the swap handle exists.
+    if let Some(kernel) = late_services.kernel() {
+        kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
+            std::sync::Arc::clone(&app_handle),
+        )));
+    }
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)

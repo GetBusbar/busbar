@@ -27,6 +27,7 @@ usage:
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
   cargo xtask selftest [<name>] [--jobs N]
+  cargo xtask selftest --shard=K/N [--jobs N]   (every K-th of N slices of the registry, one process per gate)
   cargo xtask denylist [--selftest] [--format=tsv]
   cargo xtask loc [--ref <rev>] [--format json|table] [--per-file] [--ceiling CRATES=N]
   cargo xtask loc --selftest
@@ -284,7 +285,7 @@ const GATE_FLAGS: &[&str] = &[
 const GATE_VALUED: &[&str] = &["--jobs=", "--require-version=", "--root-flag="];
 /// The flags `cargo xtask selftest` knows (`--jobs N` is handled as a pair).
 const SELFTEST_FLAGS: &[&str] = &[];
-const SELFTEST_VALUED: &[&str] = &["--jobs="];
+const SELFTEST_VALUED: &[&str] = &["--jobs=", "--shard="];
 /// The flags the pre-registry `cargo xtask denylist` spelling knows.
 const DENYLIST_FLAGS: &[&str] = &["--selftest", "--format=tsv"];
 
@@ -1016,6 +1017,19 @@ fn selftest_cmd(args: &[String]) -> i32 {
             ),
         );
     }
+    let shard = match shard_arg(args) {
+        Ok(s) => s,
+        Err(why) => return refuse_args("selftest", &why),
+    };
+    if let Some((k, n)) = shard {
+        if !words.is_empty() {
+            return refuse_args(
+                "selftest",
+                "`--shard` takes no gate name: a shard is a slice of the whole registry",
+            );
+        }
+        return selftest_shard(k, n, jobs_arg(args));
+    }
     if let Some(n) = jobs_arg(args) {
         gates::set_selftest_jobs(n);
     }
@@ -1050,6 +1064,135 @@ fn selftest_cmd(args: &[String]) -> i32 {
         eprintln!(
             "\ncargo xtask selftest: unproven gate(s): {}",
             failed.join(", ")
+        );
+        1
+    }
+}
+
+/// `--shard=K/N`: the K-th (1-based) of N slices of the registry. `None` when the flag is absent.
+fn shard_arg(args: &[String]) -> Result<Option<(usize, usize)>, String> {
+    let Some(raw) = args.iter().find_map(|a| a.strip_prefix("--shard=")) else {
+        return Ok(None);
+    };
+    if args.iter().filter(|a| a.starts_with("--shard=")).count() > 1 {
+        return Err("`--shard` given more than once".to_string());
+    }
+    let bad = || format!("`--shard={raw}` is not K/N with 1 <= K <= N");
+    let (k, n) = raw.split_once('/').ok_or_else(bad)?;
+    let k: usize = k.trim().parse().map_err(|_| bad())?;
+    let n: usize = n.trim().parse().map_err(|_| bad())?;
+    if n == 0 || k == 0 || k > n {
+        return Err(bad());
+    }
+    Ok(Some((k, n)))
+}
+
+/// THE K-TH OF N SLICES OF THE REGISTRY: every gate whose registry position `i` has `i % n == k-1`.
+///
+/// Dealt round-robin rather than cut into runs, so the batteries registered next to each other
+/// (and often of a size) land on different shards. Over `k = 1..=n` the slices are disjoint and
+/// their union is the whole registry, for every `n` — `shard_partition_gaps` is what proves it,
+/// and a gate added to the registry is in exactly one shard with no list to edit.
+pub fn shard_of<'a>(names: &[&'a str], k: usize, n: usize) -> Vec<&'a str> {
+    names
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| n > 0 && k > 0 && i % n == k - 1)
+        .map(|(_, name)| *name)
+        .collect()
+}
+
+/// Every way `slices` fails to be a partition of `names`: a name in no slice, a name in more than
+/// one, or a slice naming a gate that is not registered. Empty is a partition.
+pub fn shard_partition_gaps(names: &[&str], slices: &[Vec<&str>]) -> Vec<String> {
+    let mut gaps = Vec::new();
+    for name in names {
+        let held = slices.iter().filter(|s| s.contains(name)).count();
+        if held != 1 {
+            gaps.push(format!("`{name}` is in {held} shard(s), not exactly one"));
+        }
+    }
+    for (i, slice) in slices.iter().enumerate() {
+        for name in slice {
+            if !names.contains(name) {
+                gaps.push(format!(
+                    "shard {} names `{name}`, which is not registered",
+                    i + 1
+                ));
+            }
+        }
+    }
+    gaps
+}
+
+/// `cargo xtask selftest --shard=K/N`: every gate in the K-th slice, ONE PROCESS PER GATE (the
+/// budget's CPU window is the whole process's; see `gates::take_battery`), each `xtask selftest
+/// <gate>` with this process's environment. Every gate is taken even after a red; the reds are
+/// named together at the end. 0 every proof went RED as declared, 1 one did not, 3 a child could
+/// not be started.
+fn selftest_shard(k: usize, n: usize, jobs: Option<usize>) -> i32 {
+    let names = gates::names();
+    let gaps = shard_partition_gaps(
+        &names,
+        &(1..=n).map(|i| shard_of(&names, i, n)).collect::<Vec<_>>(),
+    );
+    if !gaps.is_empty() {
+        eprintln!(
+            "xtask selftest --shard={k}/{n}: the shards are not a partition of the registry:"
+        );
+        for g in &gaps {
+            eprintln!("  - {g}");
+        }
+        return 1;
+    }
+    let mine = shard_of(&names, k, n);
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("xtask selftest --shard={k}/{n}: cannot name this executable: {e}");
+            return 3;
+        }
+    };
+    println!(
+        "xtask selftest --shard={k}/{n}: {} of {} registered gate(s): {}",
+        mine.len(),
+        names.len(),
+        mine.join(", ")
+    );
+    let mut red = Vec::new();
+    for name in &mine {
+        let t0 = std::time::Instant::now();
+        let mut cmd = std::process::Command::new(&exe);
+        cmd.arg("selftest").arg(name);
+        if let Some(j) = jobs {
+            cmd.arg(format!("--jobs={j}"));
+        }
+        let ok = match cmd.status() {
+            Ok(status) => status.success(),
+            Err(e) => {
+                eprintln!("xtask selftest --shard={k}/{n}: `{name}` could not start: {e}");
+                return 3;
+            }
+        };
+        println!(
+            "xtask selftest --shard={k}/{n}: {name} {} in {:.0}s",
+            if ok { "proven" } else { "NOT PROVEN" },
+            t0.elapsed().as_secs_f64()
+        );
+        if !ok {
+            red.push(*name);
+        }
+    }
+    if red.is_empty() {
+        println!(
+            "\nxtask selftest --shard={k}/{n}: {} gate(s), every one proven able to go RED",
+            mine.len()
+        );
+        0
+    } else {
+        eprintln!(
+            "\nxtask selftest --shard={k}/{n}: unproven gate(s): {}",
+            red.join(", ")
         );
         1
     }
@@ -1110,6 +1253,60 @@ mod tests {
         assert_eq!(run(&["denylist", "extra"]), 2);
         // `--execute` is a KNOWN flag, but only the hot-path gates have the arm it selects.
         assert_eq!(run(&["gate", "segregation", "--execute"]), 2);
+    }
+
+    /// RED: `--shard` that is not K/N with 1 <= K <= N, or one beside a gate name, is refused (2)
+    /// before any battery runs; a refused spelling never falls into the whole-registry arm.
+    #[test]
+    fn a_malformed_shard_or_a_shard_with_a_gate_name_is_an_argument_error() {
+        for bad in [
+            "--shard=0/4",
+            "--shard=5/4",
+            "--shard=1/0",
+            "--shard=x/4",
+            "--shard=4",
+            "--shard=",
+        ] {
+            assert_eq!(run(&["selftest", bad]), 2, "{bad}");
+        }
+        assert_eq!(run(&["selftest", "--shard=1/4", "--shard=2/4"]), 2);
+        assert_eq!(run(&["selftest", "segregation", "--shard=1/4"]), 2);
+    }
+
+    /// GREEN: over every N the shards are a partition of the registry (each gate in exactly one).
+    /// RED twin: a dealing that drops a gate, or deals one twice, is named by the same check.
+    #[test]
+    fn the_shards_partition_the_registry_and_a_dropped_or_doubled_gate_is_named() {
+        use super::{shard_of, shard_partition_gaps};
+        let names = gates::names();
+        assert!(!names.is_empty());
+        for n in 1..=names.len() + 1 {
+            let slices: Vec<Vec<&str>> = (1..=n).map(|k| shard_of(&names, k, n)).collect();
+            assert_eq!(
+                shard_partition_gaps(&names, &slices),
+                Vec::<String>::new(),
+                "n = {n}"
+            );
+        }
+        let mut dropped: Vec<Vec<&str>> = (1..=4).map(|k| shard_of(&names, k, 4)).collect();
+        let lost = dropped[0].remove(0);
+        let gaps = shard_partition_gaps(&names, &dropped);
+        assert!(
+            gaps.iter()
+                .any(|g| g.contains(lost) && g.contains("in 0 shard")),
+            "{gaps:?}"
+        );
+        let mut doubled: Vec<Vec<&str>> = (1..=4).map(|k| shard_of(&names, k, 4)).collect();
+        let twice = doubled[1][0];
+        doubled[2].push(twice);
+        let gaps = shard_partition_gaps(&names, &doubled);
+        assert!(
+            gaps.iter()
+                .any(|g| g.contains(twice) && g.contains("in 2 shard")),
+            "{gaps:?}"
+        );
+        let gaps = shard_partition_gaps(&names, &[vec!["no-such-gate"]]);
+        assert!(gaps.iter().any(|g| g.contains("no-such-gate")), "{gaps:?}");
     }
 
     /// The known spellings still parse: the value after `--jobs` is not a gate name, and the

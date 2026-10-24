@@ -96,6 +96,9 @@ pub struct PlaneRefusalSpec {
     pub route: DoorRouteId,
     /// Its plane's rendering.
     pub refuse: PlaneRefuseFn,
+    /// The issued-id prefix of the tickets the route takes: `Some` for a `CLAIM_TICKET` claim whose
+    /// plane declares one; `None` = the route takes keys alone.
+    pub ticket_prefix: Option<String>,
     /// THE SIGNED PATHS of its plane (ARCHITECT ruling 2026-10-16, 3b A): the raw-affix target
     /// (`<prefix>*<suffix>`, `abi::plane::CLAIM_RAW_AFFIX`, ARCHITECT ruling 2026-10-17) of every
     /// claim the plane flags `abi::plane::CLAIM_SIGNED_INGRESS`, whatever this route's own path and
@@ -235,6 +238,9 @@ pub struct PlaneReqCtx {
     /// alone (a passthrough member's outbound auth call); `None` when the caller presented none or
     /// the route bypassed the gate. A plane handler never reads it.
     pub caller_credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the TICKET the gate spent admitting the caller (row 132), for the unit's
+    /// `ticket.take`; `None` when a key (or nothing) admitted it. A plane handler never reads it.
+    pub ticket: Option<Vec<u8>>,
     /// The live engine handle, type-erased. The core adapter erases the router's `Arc<AppHandle>`
     /// state here; a plane still coupled to the engine downcasts it (a transitional reach that the
     /// per-subsystem App-sever removes), but the SEAM names no core type.

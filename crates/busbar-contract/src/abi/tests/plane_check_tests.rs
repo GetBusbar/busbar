@@ -1128,10 +1128,24 @@ fn a_claim_states_only_known_flags() {
     let signed = claim("V", "/t", CLAIM_EXACT | CLAIM_SIGNED_INGRESS);
     assert_eq!(check_claims(&[signed], 1), Ok(()));
     // RED: a bit none of the known claim bits.
-    let unknown = claim("V", "/t", CLAIM_RAW_AFFIX << 1);
+    let unknown = claim("V", "/t", crate::abi::plane::CLAIM_TICKET << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
+    );
+}
+
+/// A keyed route may take a ticket; an open route takes no credential, so it never takes one.
+#[test]
+fn a_ticket_claim_is_a_keyed_claim() {
+    use crate::abi::plane::CLAIM_TICKET;
+    let keyed = claim("POST", "/v1/x", CLAIM_EXACT | CLAIM_TICKET);
+    assert_eq!(check_claims(&[keyed], 1), Ok(()));
+    // RED: CLAIM_OPEN with CLAIM_TICKET.
+    let open = claim("POST", "/v1/x", CLAIM_OPEN | CLAIM_EXACT | CLAIM_TICKET);
+    assert_eq!(
+        check_claims(&[open], 1),
+        f(Rule::Contradiction, "claim.flags")
     );
 }
 
@@ -3678,12 +3692,13 @@ fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
             "{pair}"
         );
     }
-    // The bit is a known claim bit; the next one up is not.
+    // The bit is a known claim bit; the first one past every claim bit (`CLAIM_TICKET`, the next
+    // one up, is a claim of its own) is not.
     assert_eq!(
         check_claims(&[claim("V", "/model/*/converse", CLAIM_RAW_AFFIX)], 0),
         Ok(())
     );
-    assert!(check_claims(&[claim("V", "/t", CLAIM_RAW_AFFIX << 1)], 0).is_err());
+    assert!(check_claims(&[claim("V", "/t", crate::abi::plane::CLAIM_TICKET << 1)], 0).is_err());
 }
 
 /// A RAW AFFIX MATCHES THE RAW PATH AS BYTES, so the previous release's rule (`starts_with` the

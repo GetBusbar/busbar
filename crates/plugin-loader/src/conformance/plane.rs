@@ -28,6 +28,12 @@
 //!     "host": { "entitled": [...], "trusted": [...] },     // optional: the kernel services served
 //!     // (top level, beside "plane") "far_ends": [...]       // optional: what the plane's own
 //!     //                                                    // needs reach, as the auth script's
+//!     "request_unit": false,                               // optional: the plane serves NO
+//!                                                          // one-request unit that reaches a far
+//!                                                          // end (each claim opens a session or
+//!                                                          // is answered locally): `request`,
+//!                                                          // `request_out`, `far_end`, `narrow`,
+//!                                                          // `short` and `empty` are not read
 //!     "attempt": { "to_far_end": false },                  // optional: the ATTEMPT is taken, the
 //!                                                          // request rides the caller's body
 //!     "arrive_each": true,                                 // optional: every unit arrives first
@@ -1204,6 +1210,9 @@ struct Inputs {
     carried: Carried,
     claimed: Arrival,
     unclaimed: Arrival,
+    /// The plane serves a one-request unit that reaches a far end (`plane.request_unit`, default
+    /// `true`): the one, narrow, short and empty units are driven and judged only when it does.
+    request_unit: bool,
     request: Vec<u8>,
     status: u32,
     head: Vec<(String, String)>,
@@ -1276,7 +1285,26 @@ impl Inputs {
             !bad.is_empty(),
             "conformance.json: plane.bad_settings is empty"
         );
+        let request_unit = k["request_unit"].as_bool() != Some(false);
+        if !request_unit {
+            for absent in [
+                "request",
+                "request_out",
+                "far_end",
+                "narrow",
+                "short",
+                "empty",
+            ] {
+                assert!(
+                    k[absent].is_null(),
+                    "conformance.json: plane.request_unit is false, so plane.{absent} is never \
+                     driven: remove it"
+                );
+            }
+        }
         let f = &k["far_end"];
+        // A plane with no request unit states none of its fixtures: each reads as empty.
+        let need = |v: &Value| request_unit || !v.is_null();
         Self {
             bad,
             refresh: text(&k["refresh_settings"], "refresh_settings"),
@@ -1289,19 +1317,44 @@ impl Inputs {
             },
             claimed: Arrival::of(&k["claimed"], "claimed"),
             unclaimed: Arrival::of(&k["unclaimed"], "unclaimed"),
-            request: text(&k["request"], "request"),
-            status: small(num(&f["status"], "far_end.status"), "far_end.status"),
-            head: pairs(&f["fields"], "far_end.fields"),
-            answer: text(&f["answer"], "far_end.answer"),
-            narrow: (
-                num(&k["narrow"]["unit"], "narrow.unit"),
-                num(&k["narrow"]["reply_cap"], "narrow.reply_cap") as usize,
-                num(&k["narrow"]["more"], "narrow.more"),
-            ),
-            short: (
-                num(&k["short"]["unit"], "short.unit"),
-                Buffer::of(&k["short"]["buffer"], "short.buffer").unwrap_or(Buffer::Units),
-            ),
+            request_unit,
+            request: if need(&k["request"]) {
+                text(&k["request"], "request")
+            } else {
+                Vec::new()
+            },
+            status: if need(f) {
+                small(num(&f["status"], "far_end.status"), "far_end.status")
+            } else {
+                0
+            },
+            head: if need(f) {
+                pairs(&f["fields"], "far_end.fields")
+            } else {
+                Vec::new()
+            },
+            answer: if need(f) {
+                text(&f["answer"], "far_end.answer")
+            } else {
+                Vec::new()
+            },
+            narrow: if need(&k["narrow"]) {
+                (
+                    num(&k["narrow"]["unit"], "narrow.unit"),
+                    num(&k["narrow"]["reply_cap"], "narrow.reply_cap") as usize,
+                    num(&k["narrow"]["more"], "narrow.more"),
+                )
+            } else {
+                (0, 0, 0)
+            },
+            short: if need(&k["short"]) {
+                (
+                    num(&k["short"]["unit"], "short.unit"),
+                    Buffer::of(&k["short"]["buffer"], "short.buffer").unwrap_or(Buffer::Units),
+                )
+            } else {
+                (0, Buffer::Units)
+            },
             empty: k["empty"]
                 .is_object()
                 .then(|| num(&k["empty"]["unit"], "empty.unit")),
@@ -1454,103 +1507,106 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         arrive(&p, &k.unclaimed, &k.request)
     });
 
-    let unit = k.claimed.unit;
-    let whole = PIECE_HAS_STATUS | PIECE_LAST;
-    let room = (CAP, CAP);
-    // One unit: the ATTEMPT, the caller's body, the far end's whole answer.
-    let one = Unit::mint(&d, 1024);
-    for (label, g) in [
-        ("attempt", attempt(unit, claim)),
-        (
-            "body",
-            Given {
-                from: FROM_CALLER,
-                flags: PIECE_LAST,
-                bytes: &k.request,
-                attempt_no: 0,
-                ..attempt(unit, claim)
-            },
-        ),
-        ("far_end", far_end(unit, claim, whole, &k.answer, answer)),
-    ] {
-        r.line(label, 1, || {
-            on_piece(&p, &d, &one, g, room, c).line(Piece::line)
-        });
-    }
-    one.end(&d);
-
-    // Another, whose answer is written `reply_cap` bytes at a time, then paid out by `more`.
-    let (narrow_unit, cap, more) = k.narrow;
-    let narrow = Unit::mint(&d, cap);
-    // With `arrive_each`, a unit arrives first and its caller's body follows its ATTEMPT (through
-    // the whole unit's buffers).
-    let arrives = |r: &mut Recorder<'_>, what: &str, unit: u64| {
-        if k.arrive_each {
-            r.line(&format!("{what} arrive"), 1, || {
-                arrive(&p, &k.claimed.for_unit(unit), &k.request)
-            });
-        }
-    };
-    let sends = |r: &mut Recorder<'_>, what: &str, unit: u64, on: &Unit| {
-        if k.arrive_each {
-            r.line(&format!("{what} body"), 1, || {
-                let g = Given {
+    // THE ONE-REQUEST UNITS (a plane that serves one: `plane.request_unit`, default true).
+    if k.request_unit {
+        let unit = k.claimed.unit;
+        let whole = PIECE_HAS_STATUS | PIECE_LAST;
+        let room = (CAP, CAP);
+        // One unit: the ATTEMPT, the caller's body, the far end's whole answer.
+        let one = Unit::mint(&d, 1024);
+        for (label, g) in [
+            ("attempt", attempt(unit, claim)),
+            (
+                "body",
+                Given {
                     from: FROM_CALLER,
                     flags: PIECE_LAST,
                     bytes: &k.request,
                     attempt_no: 0,
                     ..attempt(unit, claim)
-                };
-                on_piece(&p, &d, on, g, room, c).line(Piece::line)
+                },
+            ),
+            ("far_end", far_end(unit, claim, whole, &k.answer, answer)),
+        ] {
+            r.line(label, 1, || {
+                on_piece(&p, &d, &one, g, room, c).line(Piece::line)
             });
         }
-    };
-    arrives(&mut r, "narrow", narrow_unit);
-    r.line("narrow attempt", 1, || {
-        on_piece(&p, &d, &narrow, attempt(narrow_unit, claim), room, c).line(Piece::line)
-    });
-    sends(&mut r, "narrow", narrow_unit, &narrow);
-    r.line("narrow far_end", 1, || {
-        let g = far_end(narrow_unit, claim, whole, &k.answer, answer);
-        on_piece(&p, &d, &narrow, g, room, c).line(Piece::line)
-    });
-    for i in 0..more {
-        r.line(&format!("narrow more #{i}"), 1, || {
-            let g = far_end(narrow_unit, claim, 0, b"", answer);
+        one.end(&d);
+
+        // Another, whose answer is written `reply_cap` bytes at a time, then paid out by `more`.
+        let (narrow_unit, cap, more) = k.narrow;
+        let narrow = Unit::mint(&d, cap);
+        // With `arrive_each`, a unit arrives first and its caller's body follows its ATTEMPT (through
+        // the whole unit's buffers).
+        let arrives = |r: &mut Recorder<'_>, what: &str, unit: u64| {
+            if k.arrive_each {
+                r.line(&format!("{what} arrive"), 1, || {
+                    arrive(&p, &k.claimed.for_unit(unit), &k.request)
+                });
+            }
+        };
+        let sends = |r: &mut Recorder<'_>, what: &str, unit: u64, on: &Unit| {
+            if k.arrive_each {
+                r.line(&format!("{what} body"), 1, || {
+                    let g = Given {
+                        from: FROM_CALLER,
+                        flags: PIECE_LAST,
+                        bytes: &k.request,
+                        attempt_no: 0,
+                        ..attempt(unit, claim)
+                    };
+                    on_piece(&p, &d, on, g, room, c).line(Piece::line)
+                });
+            }
+        };
+        arrives(&mut r, "narrow", narrow_unit);
+        r.line("narrow attempt", 1, || {
+            on_piece(&p, &d, &narrow, attempt(narrow_unit, claim), room, c).line(Piece::line)
+        });
+        sends(&mut r, "narrow", narrow_unit, &narrow);
+        r.line("narrow far_end", 1, || {
+            let g = far_end(narrow_unit, claim, whole, &k.answer, answer);
             on_piece(&p, &d, &narrow, g, room, c).line(Piece::line)
         });
-    }
-    narrow.end(&d);
+        for i in 0..more {
+            r.line(&format!("narrow more #{i}"), 1, || {
+                let g = far_end(narrow_unit, claim, 0, b"", answer);
+                on_piece(&p, &d, &narrow, g, room, c).line(Piece::line)
+            });
+        }
+        narrow.end(&d);
 
-    // Another, whose answer meets a units (or fields) buffer of capacity 0: SHORT, then its one
-    // re-call.
-    let (short_unit, buffer) = k.short;
-    let short = Unit::mint(&d, 1024);
-    arrives(&mut r, "short", short_unit);
-    r.line("short attempt", 1, || {
-        on_piece(&p, &d, &short, attempt(short_unit, claim), room, c).line(Piece::line)
-    });
-    sends(&mut r, "short", short_unit, &short);
-    r.line("far_end short", 2, || {
-        let g = far_end(short_unit, claim, whole, &k.answer, answer);
-        short_then(&p, &d, &short, g, buffer, c, Piece::line)
-    });
-    short.end(&d);
-
-    // A caller body that ended empty.
-    if let Some(empty) = k.empty {
-        let unit = Unit::mint(&d, 1024);
-        arrives(&mut r, "empty", empty);
-        r.line("empty", 1, || {
-            let g = Given {
-                from: FROM_CALLER,
-                flags: PIECE_LAST,
-                attempt_no: 0,
-                ..attempt(empty, claim)
-            };
-            on_piece(&p, &d, &unit, g, room, c).line(Piece::line)
+        // Another, whose answer meets a units (or fields) buffer of capacity 0: SHORT, then its one
+        // re-call.
+        let (short_unit, buffer) = k.short;
+        let short = Unit::mint(&d, 1024);
+        arrives(&mut r, "short", short_unit);
+        r.line("short attempt", 1, || {
+            on_piece(&p, &d, &short, attempt(short_unit, claim), room, c).line(Piece::line)
         });
-        unit.end(&d);
+        sends(&mut r, "short", short_unit, &short);
+        r.line("far_end short", 2, || {
+            let g = far_end(short_unit, claim, whole, &k.answer, answer);
+            short_then(&p, &d, &short, g, buffer, c, Piece::line)
+        });
+        short.end(&d);
+
+        // A caller body that ended empty.
+        if let Some(empty) = k.empty {
+            let unit = Unit::mint(&d, 1024);
+            arrives(&mut r, "empty", empty);
+            r.line("empty", 1, || {
+                let g = Given {
+                    from: FROM_CALLER,
+                    flags: PIECE_LAST,
+                    attempt_no: 0,
+                    ..attempt(empty, claim)
+                };
+                on_piece(&p, &d, &unit, g, room, c).line(Piece::line)
+            });
+            unit.end(&d);
+        }
     }
 
     sessions(&mut r, (&p, &d, driver), &k.sessions, c);
@@ -1796,18 +1852,28 @@ fn contract(fold: &Fold, k: &Value) {
             assert!(!s.answer.starts_with("Fault "), "{}: {}", s.label, s.answer);
         }
     }
+    let request_unit = k["request_unit"].as_bool() != Some(false);
+    let units: &[&str] = if request_unit {
+        &[
+            "attempt",
+            "body",
+            "far_end",
+            "narrow attempt",
+            "narrow far_end",
+            "short attempt",
+        ]
+    } else {
+        &[]
+    };
+    for label in units {
+        assert!(at(label).starts_with("Ready "), "{label}: {}", at(label));
+    }
     for label in [
         "validate",
         "open",
         "hydrate",
         "start",
         "arrive claimed",
-        "attempt",
-        "body",
-        "far_end",
-        "narrow attempt",
-        "narrow far_end",
-        "short attempt",
         "refusal",
         "drive",
         "release none",
@@ -1888,74 +1954,77 @@ fn contract(fold: &Fold, k: &Value) {
         !unclaimed.starts_with("Ready ") && unclaimed.ends_with(&format!(" status={status}")),
         "an unclaimed request is refused at {status}: {unclaimed}"
     );
-    attempts_and_bodies(fold, k);
+    // The one-request units, for a plane that serves one (`plane.request_unit`).
+    if request_unit {
+        attempts_and_bodies(fold, k);
 
-    let f = &k["far_end"];
-    let answer_out = str_of(&f["answer_out"], "far_end.answer_out");
-    let units = reported(&f["units"], "far_end.units");
-    let fs = num(&f["status"], "far_end.status");
-    let whole = at("far_end");
-    assert!(
-        whole.contains(&format!(
-            " emitted={answer_out} more=0 to_far_end=false done=true status={fs} "
-        )) && whole.ends_with(&units),
-        "the far end's whole answer, relayed with its count ({units}): {whole}"
-    );
-
-    // The narrow answer: its pieces, in order, are the whole answer; only the last is done.
-    let more = num(&k["narrow"]["more"], "narrow.more");
-    let mut pieces = vec![at("narrow far_end").to_string()];
-    pieces.extend((0..more).map(|i| at(&format!("narrow more #{i}")).to_string()));
-    let mut relayed = String::new();
-    for (i, line) in pieces.iter().enumerate() {
-        let last = i + 1 == pieces.len();
-        let emitted = line
-            .split_once(" emitted=")
-            .and_then(|(_, rest)| rest.split_once(" more="))
-            .map(|(e, _)| e)
-            .unwrap_or_else(|| panic!("narrow piece #{i}: {line}"));
-        relayed.push_str(emitted);
-        let tail = if last {
-            " more=0 to_far_end=false done=true "
-        } else {
-            " more=1 to_far_end=false done=false "
-        };
+        let f = &k["far_end"];
+        let answer_out = str_of(&f["answer_out"], "far_end.answer_out");
+        let units = reported(&f["units"], "far_end.units");
+        let fs = num(&f["status"], "far_end.status");
+        let whole = at("far_end");
         assert!(
-            line.starts_with("Ready ") && line.contains(tail),
-            "narrow piece #{i}: {line}"
+            whole.contains(&format!(
+                " emitted={answer_out} more=0 to_far_end=false done=true status={fs} "
+            )) && whole.ends_with(&units),
+            "the far end's whole answer, relayed with its count ({units}): {whole}"
         );
-    }
-    assert_eq!(
-        relayed, answer_out,
-        "the narrow pieces relay the whole answer"
-    );
-    assert!(
-        pieces[0].ends_with(&units),
-        "the count rides the first narrow write: {}",
-        pieces[0]
-    );
 
-    // The short answer: FAILED with the room it needs and a re-call token, then the whole answer.
-    let short = at("far_end short");
-    let buffer = Buffer::of(&k["short"]["buffer"], "short.buffer").unwrap_or(Buffer::Units);
-    assert!(
-        short.starts_with("Failed ")
-            && !short.contains(&format!(" {}_needed=0 ", buffer.name()))
-            && short.contains(" recall=true then=Ready ")
-            && short.contains(&format!(
-                " emitted={answer_out} more=0 to_far_end=false done=true "
-            ))
-            && short.ends_with(&units),
-        "a short answer, re-called once with room: {short}"
-    );
-
-    if k["empty"].is_object() {
-        let want = str_of(&k["empty"]["outcome"], "empty.outcome");
+        // The narrow answer: its pieces, in order, are the whole answer; only the last is done.
+        let more = num(&k["narrow"]["more"], "narrow.more");
+        let mut pieces = vec![at("narrow far_end").to_string()];
+        pieces.extend((0..more).map(|i| at(&format!("narrow more #{i}")).to_string()));
+        let mut relayed = String::new();
+        for (i, line) in pieces.iter().enumerate() {
+            let last = i + 1 == pieces.len();
+            let emitted = line
+                .split_once(" emitted=")
+                .and_then(|(_, rest)| rest.split_once(" more="))
+                .map(|(e, _)| e)
+                .unwrap_or_else(|| panic!("narrow piece #{i}: {line}"));
+            relayed.push_str(emitted);
+            let tail = if last {
+                " more=0 to_far_end=false done=true "
+            } else {
+                " more=1 to_far_end=false done=false "
+            };
+            assert!(
+                line.starts_with("Ready ") && line.contains(tail),
+                "narrow piece #{i}: {line}"
+            );
+        }
+        assert_eq!(
+            relayed, answer_out,
+            "the narrow pieces relay the whole answer"
+        );
         assert!(
-            at("empty").starts_with(&format!("{want} ")),
-            "empty: {}",
-            at("empty")
+            pieces[0].ends_with(&units),
+            "the count rides the first narrow write: {}",
+            pieces[0]
         );
+
+        // The short answer: FAILED with the room it needs and a re-call token, then the whole answer.
+        let short = at("far_end short");
+        let buffer = Buffer::of(&k["short"]["buffer"], "short.buffer").unwrap_or(Buffer::Units);
+        assert!(
+            short.starts_with("Failed ")
+                && !short.contains(&format!(" {}_needed=0 ", buffer.name()))
+                && short.contains(" recall=true then=Ready ")
+                && short.contains(&format!(
+                    " emitted={answer_out} more=0 to_far_end=false done=true "
+                ))
+                && short.ends_with(&units),
+            "a short answer, re-called once with room: {short}"
+        );
+
+        if k["empty"].is_object() {
+            let want = str_of(&k["empty"]["outcome"], "empty.outcome");
+            assert!(
+                at("empty").starts_with(&format!("{want} ")),
+                "empty: {}",
+                at("empty")
+            );
+        }
     }
     sessions_contract(fold, &k["sessions"]);
     if let Some(reply) = k["refusal"]["reply"].as_str() {

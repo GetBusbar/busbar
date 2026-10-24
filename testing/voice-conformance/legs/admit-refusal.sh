@@ -20,8 +20,8 @@
 # refusal as a server error, or a policy refusal collapsed into a 503 `server_error`, fails.
 #
 # THE KERNEL'S HALF (not the door's, so not judged here): reading the caller's budget chain dry and
-# refusing before any hold or ledger posting — the admit step, proven on the served leg by
-# crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_over_budget_caller_before_it_dials.
+# refusing before any hold or ledger posting — the admit step, proven on the streaming door's served
+# leg by crates/busbar/src/root/tests/serve_tests.rs::a_spent_key_is_refused_at_the_session_door_before_any_dial.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

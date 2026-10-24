@@ -1594,11 +1594,15 @@ fn compute_layout() -> String {
             session_emit,
             auth_call,
             unit_hand_in,
-            unit_refuse
+            unit_refuse,
+            ticket_mint,
+            ticket_take
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
     record!(s, hsvc::SessionEmitIn, [head, session, bytes]);
+    record!(s, hsvc::TicketMintIn, [head, ttl_secs, record, into]);
+    record!(s, hsvc::TicketTakeIn, [head, into]);
     record!(
         s,
         hsvc::TrustVerifyIn,

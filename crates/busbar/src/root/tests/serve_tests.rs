@@ -4928,6 +4928,74 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
 }
 
+/// AUDIT-CHAIN, ON ONE TAMPER-EVIDENT CHAIN (Law 10, status row 178): every unit the pools door
+/// answers, served (a dispatched completion) or refused inside the loop (a key whose budget the
+/// first unit spent), seals ONE record on the node's audit chain, the second the first's
+/// successor; the chain walks clean, and a record altered after its seal (the served unit re-told
+/// as the refused one) breaks the walk. This is the claim the node-axis cell made, on the door
+/// path CI's test build runs.
+/// RED: a door whose audit pass never reaches the node seals nothing; a refusal sealed off the
+/// chain leaves one record, or two that are not linked.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident_chain() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-pools-audit-chain";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            budget_cents: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200, "the first unit is served");
+    let _ = rig.ledger_after(1).await;
+    assert_eq!(
+        rig.chat().await.0,
+        429,
+        "the second is refused: its budget is spent"
+    );
+    assert_eq!(far.served(), 1, "the refused unit dialled nothing");
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while rig.audit_records() < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let records = rig.records();
+    assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+    let (served, refused) = (&records[0], &records[1]);
+    assert_eq!(
+        served.outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed,
+        "the served unit: {served:?}"
+    );
+    assert!(
+        matches!(
+            refused.outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(..)
+        ),
+        "the refusal is chained as one: {:?}",
+        refused.outcome
+    );
+    assert_eq!(refused.seq, served.seq + 1, "contiguous");
+    assert_eq!(
+        refused.prev_hash, served.hash,
+        "linked to the record before"
+    );
+    assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
+
+    let mut forged = records.clone();
+    forged[0].outcome.unit_end = refused.outcome.unit_end;
+    assert!(
+        busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
+        "a record altered after its seal breaks the chain"
+    );
+}
+
 /// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
 /// ruling): the node's journal is kept by a configured store that refuses, and the lane to it is
 /// full, so a new unit through the door is answered 503 with the reason, in the caller's dialect

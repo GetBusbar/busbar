@@ -28,6 +28,9 @@ pub struct ConsumedCredentials {
     names: Vec<HeaderName>,
     /// The caller's credential the gate extracted, as a ref (`None`: the caller presented none).
     pub caller: Option<CallerCredential>,
+    /// The record of the TICKET the gate spent admitting the caller (row 132); `None` when a key
+    /// (or nothing) admitted it. Handed to the unit once, for `ticket.take`.
+    pub ticket: Option<Vec<u8>>,
 }
 
 impl ConsumedCredentials {

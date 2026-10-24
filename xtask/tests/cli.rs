@@ -43,10 +43,11 @@ fn selftest_proves_a_named_gates_red_proof() {
     // are pinned by a single gate: the named `selftest <gate>` arm and the `gate <name> --selftest`
     // spelling both reach that gate's red proof and exit 0. The all-gates `selftest` arm is the
     // same loop over the registry, and every gate's proof is judged by itself, gate by gate, in
-    // the `test:xtask-selftest` check, which runs `xtask selftest <gate>` for each registered
-    // gate. Running the whole registry from here as well cost about five minutes of runner time
-    // per hop for verdicts that check already holds, and it is the only reason this case ever
-    // went red on a branch that reds some OTHER gate. An unknown gate name is refused with 2 in
+    // the `selftest-1` .. `selftest-4` checks (.ci/dev.yaml), which run `xtask selftest
+    // --shard=K/4`: one `xtask selftest <gate>` process for each registered gate. Running the whole registry from here as well cost about
+    // five minutes of runner time per hop for verdicts those checks already hold, and it is the
+    // only reason this case ever went red on a branch that reds some OTHER gate. An unknown gate
+    // name is refused with 2 in
     // `an_unknown_gate_is_an_argument_error_and_never_falls_through_into_running_something`.
     assert_eq!(run(&["selftest", "segregation"]), 0);
     assert_eq!(run(&["gate", "segregation", "--selftest"]), 0);

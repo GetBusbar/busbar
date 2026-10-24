@@ -391,7 +391,23 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // home for voice could not be reported: the row "every plane resolves to exactly one home" was
     // true of the two planes it had been given. A second declaration of voice, in a directory named
     // for it, is two homes for one plane.
+    //
+    // Since the busbar-llm engine's deletion (7edacddc51) llm is door-only: no grammar declaration
+    // claims it, and a single declaration elsewhere would simply be its one home (a declaration is
+    // consulted before the door row). So the plant declares llm twice — once in the plane's own home,
+    // as its engine did, and once in a second directory named for it.
+    let addresses = {
+        let mut throwaway = crate::gates::structure_lint::Findings::default();
+        roots::resolve(cx, &mut throwaway)
+    };
     let mut ov = Overlay::new();
+    ov.set(
+        format!("{}/planted_plane_decl.rs", addresses.plane("llm")),
+        format!(
+            "{} : busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n",
+            crate::planes::PLANE_GRAMMAR
+        ),
+    );
     ov.set(
         "crates/busbar-planted/src/llm/mod.rs",
         format!(
@@ -693,10 +709,6 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     }
 
     // ── invariant 6 ──────────────────────────────────────────────────────────────────────────────
-    let addresses = {
-        let mut throwaway = crate::gates::structure_lint::Findings::default();
-        roots::resolve(cx, &mut throwaway)
-    };
     //
     // THREE PLANTS, ONE RUN, EVERY ONE NAMED (items 184, 223, 224). Each is a duplicate the old
     // two-plane scan could not see:
@@ -737,7 +749,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         .plane_ledger
         .iter()
         .find(|r| r.planes.iter().all(|p| p != "llm") && !r.name.ends_with(".rs"))
-        .map(|r| r.name.clone());
+        .map(|r| (r.name.clone(), r.planes.clone()));
     let mut naming: Vec<String> = vec![
         "PLANE-DUPLICATE (symbol): `planted_shared_concern`".to_string(),
         format!("llm:{voice}/planted_shared_concern.rs"),
@@ -753,7 +765,17 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         .iter()
         .find(|r| r.planes.iter().all(|p| p != "voice") && r.name.ends_with(".rs"))
         .map(|r| r.name.clone());
-    if let Some(name) = &signed {
+    if let Some((name, planes)) = &signed {
+        // The signed copies are planted in the planes the row signs for, so the pair the claim was
+        // argued for stands whatever the debt-free base takes out of view: the files that declare
+        // a ledgered name in a pinned plane may carry an unledgered duplicate too, and hiding them
+        // would leave the third copy with nothing to be a copy of.
+        for plane in planes {
+            ov.set(
+                format!("{}/planted_signed_copy.rs", addresses.plane(plane)),
+                format!("pub fn {name}() {{}}\n"),
+            );
+        }
         ov.set(
             format!("{voice}/planted_third_copy.rs"),
             format!("pub fn {name}() {{}}\n"),

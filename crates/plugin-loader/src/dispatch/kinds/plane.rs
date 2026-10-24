@@ -304,10 +304,12 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         tail.dialects_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    let mut decl = declared(&tail);
+    decl.ticket_prefix = ticket_prefix(st)?;
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
-        declared: declared(&tail),
+        declared: decl,
         served: ServedFacts {
             section: sections
                 .iter()
@@ -503,6 +505,31 @@ fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
     list.to_vec()
 }
 
+/// The issued-id prefix `st` declares (its one
+/// [`MARK_WORD_ISSUED_ID_PREFIX`](busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX)
+/// word mark): what leads every ticket the host mints for the plane (row 132). `None` = none
+/// declared; two are refused, as is an empty one.
+fn ticket_prefix(st: &Statement) -> Result<Option<&'static str>, String> {
+    use busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX;
+    let mut found = None;
+    for i in 0..st.mark_words_len {
+        // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
+        // `mark_words_len` `'static` word marks.
+        let w = unsafe { st.mark_words.add(i).read_unaligned() };
+        if w.class != MARK_WORD_ISSUED_ID_PREFIX {
+            continue;
+        }
+        let word = kept(w.word);
+        if word.is_empty() {
+            return Err("the plane declares an empty issued-id prefix".to_string());
+        }
+        if found.replace(word).is_some() {
+            return Err("the plane declares two issued-id prefixes".to_string());
+        }
+    }
+    Ok(found)
+}
+
 /// What the tail declares for the instance's admission: record kinds, signing, scope kinds and the
 /// trust keys (each judged at bind by `check_tail_trust_keys`).
 fn declared(t: &PlaneTail) -> InstanceDecl {
@@ -542,6 +569,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         trust_keys,
         record_chains: listed(t.record_chains, t.record_chains_len),
         record_retentions: listed(t.record_retentions, t.record_retentions_len),
+        ticket_prefix: None,
     }
 }
 
@@ -644,6 +672,41 @@ pub fn linked_cli_help(
         unsafe { crate::dispatch::plugin::kind_tail(&st, "a plane", PLANE_TAIL_FROZEN) }?;
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     let help = kept(tail.cli_help);
+    Ok((!help.is_empty()).then_some(help))
+}
+
+/// THE COMMAND-LINE HELP A DROPPED-IN PLANE STATES: its tail's `cli_help`, read off its SIGNED
+/// MANIFEST's Statement rendering with no dlopen, as [`linked_cli_help`] reads a linked door's off
+/// its tail (BUSBAR-1.6.0.md l.2179, Part 2 #2: compiled in or dropped in, one loading path; the
+/// rendering carries the whole kind tail, and admitting the plane compares its door's Statement
+/// with it). `None` when the tail states none.
+///
+/// # Errors
+///
+/// The rendering does not read back, is not a plane Statement's, or states no tail.
+pub fn rendered_cli_help(rendering: &[u8]) -> Result<Option<String>, String> {
+    use busbar_contract::abi::mechanism::rendering::{read, read_plane_cli_help};
+    let r = read(rendering).map_err(|e| {
+        format!(
+            "the plane Statement rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })?;
+    if r.kind != KindCode::Plane as u32 {
+        return Err(format!(
+            "the Statement rendering states kind {}, not plane",
+            r.kind
+        ));
+    }
+    if r.kind_tail_size == 0 {
+        return Err("a plane states no kind tail".to_string());
+    }
+    let help = read_plane_cli_help(&r.kind_tail).map_err(|e| {
+        format!(
+            "the plane tail's rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })?;
     Ok((!help.is_empty()).then_some(help))
 }
 

@@ -33,17 +33,19 @@ use crate::abi::host::service::{
     check_hook_call, check_hook_call_in, check_random_fill, check_random_fill_in,
     check_records_claim, check_records_claim_in, check_records_get, check_records_list,
     check_records_secret, check_session_emit, check_session_emit_in, check_sign,
-    check_snapshot_read, check_trust_decide, check_trust_due, check_trust_serves,
-    check_trust_sight, check_trust_sight_item, check_trust_state, check_trust_verify,
-    check_unit_nest, check_verify_lookup, check_verify_store, check_work_find, check_work_open,
-    check_work_resume, check_work_settle, op, ClockNowIn, ClockReading, ContentScanIn, DestJudgeIn,
+    check_snapshot_read, check_ticket_mint, check_ticket_mint_in, check_ticket_take,
+    check_trust_decide, check_trust_due, check_trust_serves, check_trust_sight,
+    check_trust_sight_item, check_trust_state, check_trust_verify, check_unit_nest,
+    check_verify_lookup, check_verify_store, check_work_find, check_work_open, check_work_resume,
+    check_work_settle, op, ClockNowIn, ClockReading, ContentScanIn, DestJudgeIn,
     EntitlementCheckIn, HookCallIn, HostSlots, ItemSpan, RandomFillIn, RecordsClaimIn,
     RecordsGetIn, RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceFn, ServiceHead, ServiceOut,
-    SessionEmitIn, SignIn, SnapshotReadIn, TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn,
-    TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn,
-    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT, CLAIM_WON, CONTENT_BLOCK,
-    DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN, SECRET_LIVE, TRUST_DECIDE_APPROVE,
-    TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
+    SessionEmitIn, SignIn, SnapshotReadIn, TicketMintIn, TicketTakeIn, TrustDecideIn, TrustDueIn,
+    TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn,
+    VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, ABSENT,
+    CLAIM_WON, CONTENT_BLOCK, DEST_ALLOWED, DEST_RESOLVE, ENTITLED, FOUND, HOOK_STOP_MIN,
+    SECRET_LIVE, TICKET_TAKEN, TRUST_DECIDE_APPROVE, TRUST_DECIDE_REVOKE, TRUST_REACHED,
+    TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
 };
 use crate::abi::mechanism::call::{
     AbiStr, Blob, Field, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
@@ -564,6 +566,74 @@ impl Services {
             Outcome::Ready => Ok(()),
             other => Err(ServiceError::Declined(other)),
         }
+    }
+
+    /// `ticket.mint`: a ticket for the principal of the unit this crossing serves, living
+    /// `ttl_secs` (the host clamps it to its mint ceiling), with `record` stored beside it. Ready:
+    /// the ticket credential (UTF-8) in the caller's preallocated `buf`, and its expiry. Never
+    /// pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when `buf` is short (re-call once, same handle); otherwise as every
+    /// service: unserved, declined (no unit, no principal, no declared issued-id prefix, a lifetime
+    /// of zero or a record over the cap), or broken (a ticket not UTF-8 is broken).
+    pub fn ticket_mint<'b>(
+        &self,
+        handle: CompletionHandle,
+        ttl_secs: u64,
+        record: &[u8],
+        buf: &'b mut [u8],
+    ) -> Result<Minted<'b>, ServiceError> {
+        let input = TicketMintIn {
+            head: head::<TicketMintIn>(op::TICKET_MINT, handle),
+            ttl_secs,
+            record: blob(record, BLOB_OCTETS),
+            into: bufs(buf, &mut []),
+        };
+        if check_ticket_mint_in(&input).is_err() {
+            return Err(ServiceError::Declined(Outcome::Refused));
+        }
+        let out = ready(self.cross(
+            op::TICKET_MINT,
+            |t| t.ticket_mint,
+            &input,
+            check_ticket_mint,
+        )?)?;
+        let buf: &'b [u8] = buf;
+        let ticket =
+            std::str::from_utf8(&buf[..out.len as usize]).map_err(|_| ServiceError::Broken)?;
+        Ok(Minted {
+            ticket,
+            expires_at_unix: out.value,
+        })
+    }
+
+    /// `ticket.take`: the record of the ticket that admitted the unit this crossing serves, once.
+    /// Ready: `Some` the record, written into the caller's preallocated `buf`, or `None` when a key
+    /// admitted the unit. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Short`] when `buf` is short (re-call once, same handle); otherwise as every
+    /// service: unserved, declined (no unit, or a second take), or broken.
+    pub fn ticket_take<'b>(
+        &self,
+        handle: CompletionHandle,
+        buf: &'b mut [u8],
+    ) -> Result<Option<&'b [u8]>, ServiceError> {
+        let input = TicketTakeIn {
+            head: head::<TicketTakeIn>(op::TICKET_TAKE, handle),
+            into: bufs(buf, &mut []),
+        };
+        let out = ready(self.cross(
+            op::TICKET_TAKE,
+            |t| t.ticket_take,
+            &input,
+            check_ticket_take,
+        )?)?;
+        let buf: &'b [u8] = buf;
+        Ok((out.value == TICKET_TAKEN).then(|| &buf[..out.len as usize]))
     }
 
     /// `dest.judge`: the host's ONE destination judge over `dest` (a URL or `host:port` named
@@ -1919,6 +1989,15 @@ pub struct Signed<'b> {
     pub verdict: u64,
     /// The refused algorithm or critical member.
     pub named: &'b str,
+}
+
+/// What `ticket.mint` answered: the ticket and its expiry, a view into the caller's buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Minted<'b> {
+    /// The ticket credential, shown to its holder once.
+    pub ticket: &'b str,
+    /// When it expires, in Unix seconds.
+    pub expires_at_unix: u64,
 }
 
 /// What `sign` answered: the key id the signature verifies under and the signature, views into

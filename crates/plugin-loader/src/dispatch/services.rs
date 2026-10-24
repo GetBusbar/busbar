@@ -59,9 +59,9 @@ use busbar_contract::abi::host::service::{
     ClockReading, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten, EntitlementCheckIn,
     HookCallIn, HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn,
     RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn,
-    TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn, TrustSightItemIn, TrustStateIn,
-    TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn,
-    WorkSettleIn, SERVICES,
+    TicketMintIn, TicketTakeIn, TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn,
+    TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn,
+    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
@@ -534,6 +534,8 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     auth_call: Some(auth_call),
     unit_hand_in: Some(unit_hand_in),
     unit_refuse: Some(unit_refuse),
+    ticket_mint: Some(ticket_mint),
+    ticket_take: Some(ticket_take),
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
@@ -1526,6 +1528,72 @@ extern "C" fn unit_refuse(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
 
 /// `session.emit`'s refusal of a write that names no session or no bytes.
 const EMIT_NOTHING: &str = "session.emit names an open session and something to write";
+
+extern "C" fn ticket_mint(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TICKET_MINT,
+        size_of::<TicketMintIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TicketMintIn`.
+            let i = unsafe { input.cast::<TicketMintIn>().read_unaligned() };
+            let Some(record) = blob_of(i.record, "ticket_mint.record") else {
+                return Answered::fault();
+            };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            if svc::check_ticket_mint_in(&i).is_err() {
+                return Answered::bare(Outcome::Refused, MINT_OUT_OF_RANGE);
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                let req = Fp::of(&[&i.ttl_secs.to_le_bytes(), &record]);
+                serve(&served.store, &route, &head, req, Some(&i.into), |_| {
+                    Ran::Now(provider.ticket_mint(&caller, unit, i.ttl_secs, &record))
+                })
+            }
+        },
+    )
+}
+
+/// `ticket.mint`'s refusal of an `in` with no lifetime or a record over the cap.
+const MINT_OUT_OF_RANGE: &str =
+    "ticket.mint asks a lifetime of at least one second and a record within the cap";
+
+extern "C" fn ticket_take(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    scoped(
+        ctx,
+        input,
+        out,
+        op::TICKET_TAKE,
+        size_of::<TicketTakeIn>(),
+        |served, route, head, caller| {
+            // SAFETY: the head covered a `TicketTakeIn`.
+            let i = unsafe { input.cast::<TicketTakeIn>().read_unaligned() };
+            if check_bufs(&i.into).is_err() {
+                return Answered::fault();
+            }
+            let unit = serving_unit();
+            let provider = Arc::clone(&served.provider);
+            // SAFETY: `into` checked above; the caller's buffers.
+            unsafe {
+                serve(
+                    &served.store,
+                    &route,
+                    &head,
+                    Fp::of(&[]),
+                    Some(&i.into),
+                    |_| Ran::Now(provider.ticket_take(&caller, unit)),
+                )
+            }
+        },
+    )
+}
 
 extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
     slot(

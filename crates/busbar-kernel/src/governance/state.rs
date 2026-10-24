@@ -218,6 +218,18 @@ impl GovState {
                 return None;
             }
         };
+        self.standing_key(&claims, now)
+    }
+
+    /// THE STATE HALF OF A SIGNED-TOKEN VERIFY, over claims whose signature, expiry and audience
+    /// already held: the subject not revoked, its binding enabled, and the token naming the
+    /// binding's current generation. Shared by [`Self::verify_token`] and the ticket gate, so a
+    /// ticket stands exactly when a key minted for its subject would.
+    pub(super) fn standing_key(
+        &self,
+        claims: &super::signing::TokenClaims,
+        now: u64,
+    ) -> Option<Arc<VirtualKey>> {
         // Revocation: the ONE state read on the otherwise-stateless path. The set is a bounded-TTL
         // CACHE of the store's denylist, re-read here when stale so a peer's (or an out-of-band)
         // revoke is honoured within `REVOCATION_SYNC_TTL_SECS` instead of never.
@@ -1033,7 +1045,7 @@ impl GovState {
 
     /// The current signing material, as a cheap `Arc` clone (the lock is held only for the clone,
     /// never across the crypto).
-    fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
+    pub(super) fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
         self.signing
             .read()
             .unwrap_or_else(|e| e.into_inner())

@@ -210,7 +210,7 @@
    "paths": [
     "crates/busbar/src"
    ],
-   "tree_hash": "c438b4d9e19878806a1b3630f7ca62479591826ff40ba7c25396c2ee9c80e01e",
+   "tree_hash": "dc4c95620420c36c3e2726e61b3512cb60d1cdbb031a65222deb31caffedc8ad",
    "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
    "round": 4,
    "result": "findings",
@@ -222,7 +222,7 @@
    },
    "report": "The pools plane's config-apply refresh and health probes compile only when that plane is linked, so a dropped-in copy keeps its boot providers and pools and is never probed. A dropped-in plane's line-serve flag is never honoured, because the command line is read before any plugin is, and on the shutdown signal the line serve is dropped with its units in flight. Any plane flag counts as the line-serve flag, the table generator keeps axes and a swaps path no row fills, one connector axis selects nothing, the build stamp takes the first substring match of a flag, and several comments are false. Read fully.",
    "auditor": "opus-r159e-busbar-src",
-   "fixed_at": null,
+   "fixed_at": "460d8c0ca81f59e5d6af5f25f7c42be8ae37e59a",
    "exclude": [
     "crates/busbar/src/root",
     "crates/busbar/src/tests"
@@ -2284,7 +2284,7 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "da9b4eb22b57a74b728b4a63692ecb416de9578add58cf367c4fdfa598ee07cc",
+   "tree_hash": "869792afb644fe034595b4ce52f303cdead3342e17feeb5b73253ddf831db2dd",
    "audited_at": "a88c8109b44c896e4300410e33e7efaf776f1265",
    "round": 3,
    "result": "findings",
@@ -2294,7 +2294,7 @@
    },
    "report": "The plane serves the session revisions and the legacy event stream inbound and relays tool results unchanged. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller. The task path drops the caller's down-scope, lets an answer rewrite admitted arguments and fails on stdio servers. The operator connect verb blocks calls to session servers, streamed answers are re-encoded, and without a signing key all callers share one owner. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "e673ca134cb51784f5d3d01c99dccf5372dfa1d2",
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
    ],
@@ -3565,18 +3565,18 @@
    "paths": [
     "crates/busbar-contract/include"
    ],
-   "tree_hash": "3806ae0704e477473c1b0094e6d4fd97308c543e32c040365207bb89c4ef41cf",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 1,
+   "tree_hash": "476d2b74fc648cadbeaae25971b15df7ed43e719106344a0cac0319c57210e3a",
+   "audited_at": "0d93e06755fb10ecb7be4563923290e3844fa206",
+   "round": 2,
    "result": "findings",
    "counts": {
     "HIGH": 0,
-    "MEDIUM": 1,
-    "LOW": 2,
+    "MEDIUM": 0,
+    "LOW": 3,
     "NIT": 0
    },
-   "report": "The generated C header carries a do-not-edit banner and uses only fixed-width integer types, explicit reserved padding, extern \"C\" guards and enum typedefs over fixed ints. Per-kind ABI versions match the design (mechanism 2, store 3, secret 2, auth 3, hook 2, export 3, plane 1, transport 1). No retired constants, poll slot or cold-lane symbols appear, and identifiers name only kinds. Ten structs matched their Rust definitions. Three structures carry no size or alignment assertion, and many comments are truncated or carry internal review prose. Read fully except the bulk body, which was sampled.",
-   "auditor": "sonnet-ledger-contract-include",
+   "report": "The generated C header still carries its do-not-edit banner, extern \"C\" guards, fixed-width integer and size_t fields, explicit reserved padding and enum typedefs over fixed ints; the per-kind ABI versions match the design. Every one of the 296 emitted structures now has a size and an alignment assertion, so the earlier gap is closed. Three fields added after their structures were first pinned (the connector establish call's member name, a datagram lane's path list and its length) have no offset assertion of their own; each is the struct's trailing field, so the pinned size and the preceding offsets still fix it. Constant comments are still cut at the first source line, mid-sentence, and some still carry internal review prose (spec-input labels, an architect-ruling note, an OLD-name pointer, a source line reference). No HIGH or MEDIUM. Read the banner, constants and layout block fully; struct bodies checked mechanically against their layout pins; type prose sampled.",
+   "auditor": "opus-r159-contract-include-confirm",
    "fixed_at": null,
    "rounds": [
     {
@@ -3592,6 +3592,20 @@
       "NIT": 0
      },
      "report": "The generated C header carries a do-not-edit banner and uses only fixed-width integer types, explicit reserved padding, extern \"C\" guards and enum typedefs over fixed ints. Per-kind ABI versions match the design (mechanism 2, store 3, secret 2, auth 3, hook 2, export 3, plane 1, transport 1). No retired constants, poll slot or cold-lane symbols appear, and identifiers name only kinds. Ten structs matched their Rust definitions. Three structures carry no size or alignment assertion, and many comments are truncated or carry internal review prose. Read fully except the bulk body, which was sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-r159-contract-include-confirm",
+     "audited_at": "0d93e06755fb10ecb7be4563923290e3844fa206",
+     "tree_hash": "476d2b74fc648cadbeaae25971b15df7ed43e719106344a0cac0319c57210e3a",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The generated C header still carries its do-not-edit banner, extern \"C\" guards, fixed-width integer and size_t fields, explicit reserved padding and enum typedefs over fixed ints; the per-kind ABI versions match the design. Every one of the 296 emitted structures now has a size and an alignment assertion, so the earlier gap is closed. Three fields added after their structures were first pinned (the connector establish call's member name, a datagram lane's path list and its length) have no offset assertion of their own; each is the struct's trailing field, so the pinned size and the preceding offsets still fix it. Constant comments are still cut at the first source line, mid-sentence, and some still carry internal review prose (spec-input labels, an architect-ruling note, an OLD-name pointer, a source line reference). No HIGH or MEDIUM. Read the banner, constants and layout block fully; struct bodies checked mechanically against their layout pins; type prose sampled."
     }
    ]
   },

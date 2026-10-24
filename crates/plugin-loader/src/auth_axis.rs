@@ -169,18 +169,21 @@ impl AuthRows {
         Ok(Door::Memory(plugin, sink))
     }
 
-    /// The facts `row` states, READ, never bound where its declaration is static (Law 7; ARCHITECT
-    /// ruling 2026-10-20: reading a row's static declaration, its kind tail included, is reading,
-    /// not loading): a linked door's `'static` Statement. A dropped-in row's auth tail is in its
-    /// library alone (its signed rendering states the tail's size, never its facts), so that row is
-    /// loaded with no table to read them. `None` when the row's Statement is one a bind refuses.
+    /// The facts `row` states, READ, never bound (Law 7; ARCHITECT rulings 2026-10-20: reading a
+    /// row's static declaration, its kind tail included, is reading, not loading; and the canonical
+    /// rendering carries the whole kind tail, audit root#7 / loader#9): a linked door's `'static`
+    /// Statement, a dropped-in row's SIGNED MANIFEST rendering, with no `dlopen` (admitting that row
+    /// compares its door's Statement with the same rendering, tail included). `None` when the row's
+    /// Statement is one a bind refuses.
     fn stated(&self, row: &LoadablePlugin) -> Option<AuthFacts> {
         match row.door() {
             Some(door) => crate::dispatch::kinds::auth::stated_facts(door).ok(),
-            None => match self.load(row, &row.manifest.alias, false) {
-                Ok(Door::Memory(plugin, _)) => plugin.context::<AuthFacts>().cloned(),
-                Err(_) => None,
-            },
+            None => row
+                .manifest
+                .stated_rendering()
+                .ok()
+                .flatten()
+                .and_then(|r| crate::dispatch::kinds::auth::rendered_facts(&r).ok()),
         }
     }
 

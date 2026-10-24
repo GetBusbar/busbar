@@ -9,8 +9,9 @@
 //! gate and not another paragraph:
 //!
 //! > *"breakers, hooks, auditing -- list all the core functionality. outside should ONLY BE Auth,
-//! > Store, Protocols, i.e. Plugins. Any plugin gets all functionality. LLM == MCP == A2A -- just
-//! > different protocols not different pathway through engine at all."*
+//! > Store, Protocols, i.e. Plugins. Any plugin gets all functionality."* -- every plane is just a
+//! > different protocol, never a different pathway through the engine (the ruling verbatim heads
+//! > `qa/capability-equality.json` and BUSBAR-1.6.0.md Part 1).
 //!
 //! And, on being told this was already recorded: *"its been recorded before hence my concern.
 //! i keep repeating."* Prose here has a measured half-life of days; the mechanisms that have held
@@ -34,7 +35,7 @@
 //! ## Why it is allowed to be red-in-the-ledger and green-in-CI
 //!
 //! Same honest-ledger pattern as `qa/method-coverage.missing`: the missing set IS the work queue
-//! for wiring the non-LLM planes into the core capabilities (the breaker/failover audit,
+//! for wiring every plane into the core capabilities (the breaker/failover audit,
 //! `design/breaker-all-planes-audit.md`, is the evidence base). Green means "the pin matches
 //! reality"; it never means "no gap". The gap is printed, by name, on every full-gate run.
 //!
@@ -42,12 +43,12 @@
 //!
 //! ## The ROOT LEG column — the same matrix, judged a second time over the loop
 //!
-//! Every plane now also runs through the composition root — `root-llm` (the node, behind
-//! `plane-llm`) / `root-admin` behind their features, `root-mcp` through the MCP plane's memory-ABI
-//! door on the kernel's plane driver (`root/serve.rs`, its cells in the `#[path]` test file
-//! `root/tests/serve_tests.rs`, gated by `plane-mcp`), `root-a2a` / `root-voice` through those planes'
-//! own doors on the same driver (gated by `plane-a2a` / `plane-streaming`, the features that link
-//! them). A capability proven where the plane crate serves it and
+//! Every plane now also runs through the composition root — each plane's leg is the door the root
+//! binds through the loader's one load and serves on the kernel's plane driver (`root/serve.rs`, its
+//! cells in the `#[path]` test file `root/tests/serve_tests.rs`, or the door plane's own root cells
+//! compiled into the serve module), gated by the feature that links the plane; `root-admin` is gated
+//! by its own feature. Each leg's feature is its ledger row's `feature`. A capability proven where the
+//! plane crate serves it and
 //! unwitnessed where the root drives it is the same silent half-answer this file exists to refuse,
 //! so the ledger carries a SECOND verdict per cell (`root`) and this gate runs the matrix ONCE PER
 //! LEG: for each declared leg, every cell in that leg's ledger columns is checked against the leg's
@@ -64,7 +65,7 @@
 //!   cell.
 //! * The evidence for a leg lives in the binary crate's own `#[cfg(test)] mod tests` inside
 //!   `src/root/` leg file, compiled only when that leg's feature is on. Cargo features reach an
-//!   integration test target too, so a `#[cfg(all(feature = "plane-llm", …))]` test here runs in
+//!   integration test target too, so a test gated on a leg's feature here runs in
 //!   EXACTLY the build where the legs exist — and is absent, rather than lying, in a build where
 //!   they do not.
 //!
@@ -89,61 +90,50 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// The doctrine's plane list, verbatim: three protocols, and the two bidirectional ones counted in
-/// both directions. A matrix missing a plane is not a smaller matrix, it is a different claim.
+/// The ledger's plane columns (`qa/capability-equality.json` `planes`): the one-direction planes
+/// once, and the bidirectional ones counted in both directions. A matrix missing a plane is not a
+/// smaller matrix, it is a different claim, so the columns are held to the workspace plane crates
+/// ([`every_workspace_plane_crate_maps_to_at_least_one_ledger_column`]: every crate answers to a
+/// column and every column to exactly one crate) and to the pinned shape
+/// ([`the_gates_own_constants_are_the_doctrines`]).
 fn planes() -> &'static [&'static str] {
     static PLANES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     PLANES.get_or_init(|| {
-        common::doctrine_rows("plane")
-            .into_iter()
-            .map(|r| r[0])
+        common::capability_ledger()["planes"]
+            .as_object()
+            .expect("`planes` is an object")
+            .keys()
+            .map(String::as_str)
             .collect()
     })
 }
 
 /// M0 TOTALITY CROSS-CHECK — a SEPARATE axis from the pinned directional `PLANES` above.
 ///
-/// `PLANES` is the owner's doctrine, pinned verbatim in
-/// [`the_gates_own_constants_are_the_doctrines`]; it is deliberately NOT derived from the workspace
-/// (the two bidirectional protocols are counted in both directions, so the axis is 5 wide over 3
-/// protocols). This map runs the OTHER direction: it names, per workspace PLANE CRATE, the ledger
-/// columns that crate answers to. The cross-check below fails loudly if any plane crate the tree
-/// carries maps to ZERO columns — a plane that reaches the workspace and then answers to nothing is
-/// tracked by no cell, the silent hole the whole file exists to refuse.
+/// [`planes`] is the ledger's columns, held to the pinned shape in
+/// [`the_gates_own_constants_are_the_doctrines`]. This map runs the OTHER direction: per workspace
+/// PLANE CRATE, the ledger columns that crate answers to. The cross-check below fails loudly if any
+/// plane crate the tree carries maps to ZERO columns — a plane that reaches the workspace and then
+/// answers to nothing is tracked by no cell, the silent hole the whole file exists to refuse — and if
+/// any column is answered by no crate, or by two.
 ///
-/// `voice` (busbar-voice, Plane 4) is armed: it answers to two REAL directional ledger columns —
-/// `voice-client` (the dialed provider WSS + telephony media egress) and `voice-server` (the inbound
-/// session-open front door: browser sideband WS + telephony media webhook) — exactly as the two
-/// bidirectional protocols do. Every mapped column must be a real declared ledger plane.
-///
-/// The map is keyed by the crate's directory suffix (`crates/busbar-<suffix>`), and it covers BOTH
-/// halves of every plane: the plane crate `scripts/plane-keys.sh` names (the retired engine crate, …) and the
-/// pure `busbar-plane-*` crate the workspace carries beside it. The pure crates were invisible to
-/// this check until item 257 — it enumerated the four-entry shell variable and nothing else, so two
-/// workspace plane crates answered to no column and nothing said so. `plane-streaming` is the
-/// streaming plane voice is a dialect of (DECISIONS #18), so it answers to the two voice columns.
-fn plane_crate_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> {
-    common::doctrine_rows("crate")
-        .into_iter()
-        .map(|r| {
-            let cols: &'static [&'static str] = Box::leak(r[1..].to_vec().into_boxed_slice());
-            (r[0], cols)
+/// The map is keyed by the crate's directory suffix (`crates/busbar-<suffix>`, the kind's
+/// `plane-<key>`), and a crate's columns follow the ledger's own naming rule
+/// (`common::plane_columns`): `<key>` for a plane with needs in one direction alone, `<key>-client`
+/// and `<key>-server` for one counted in both. A dialect rides its plane's column and is never one
+/// ([`no_dialect_is_a_ledger_column`]).
+fn plane_crate_ledger_columns(
+    crates: &BTreeSet<String>,
+) -> Vec<(&'static str, &'static [&'static str])> {
+    crates
+        .iter()
+        .map(|suffix| {
+            let key = suffix.strip_prefix("plane-").unwrap_or(suffix);
+            let cols: &'static [&'static str] =
+                Box::leak(common::plane_columns(key, planes()).into_boxed_slice());
+            let suffix: &'static str = Box::leak(suffix.clone().into_boxed_str());
+            (suffix, cols)
         })
-        .collect()
-}
-
-/// THE WORKSPACE PLANE CRATES THAT ANSWER TO NO LEDGER COLUMN YET — pinned EXACTLY, at today's
-/// measurement, so the gap is named rather than invisible and cannot grow or quietly close.
-///
-/// `busbar-plane-decisions` is the fifth plane (#48) and `qa/capability-equality.json` declares no
-/// column for it; mapping it to a column the ledger does not have would fail the column check, and
-/// leaving it out of the enumeration is the hole item 257 found. So it is listed here, and the
-/// cross-check below is RED if a crate joins the workspace unmapped and unlisted, AND if a listed
-/// crate gains a mapping without leaving this list. The column is the ledger owner's to add.
-fn plane_crates_owed_a_column() -> Vec<&'static str> {
-    common::doctrine_rows("owed")
-        .into_iter()
-        .map(|r| r[0])
         .collect()
 }
 
@@ -164,15 +154,16 @@ const MIN_PROVEN: usize = 20;
 /// An n/a "argument" shorter than this is a label, not an argument.
 const MIN_NA_REASON: usize = 60;
 
-/// THE SIX ROOT LEGS, verbatim — one per `root-*` feature the composition root carries. Pinned
-/// here for the same reason [`PLANES`] is: a leg that quietly left the list would take its whole
-/// column of root verdicts with it.
+/// THE ROOT LEGS — the ledger's `root_legs`, one per leg the composition root carries, each with the
+/// cargo feature that compiles it. Held to the pinned count in
+/// [`the_gates_own_constants_are_the_doctrines`] for the same reason the plane columns are: a leg that
+/// quietly left the list would take its whole column of root verdicts with it.
 fn root_legs() -> &'static [&'static str] {
     static LEGS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     LEGS.get_or_init(|| {
-        common::doctrine_rows("root-leg")
+        common::root_leg_features()
             .into_iter()
-            .map(|r| r[0])
+            .map(|(leg, _)| leg)
             .collect()
     })
 }
@@ -891,11 +882,14 @@ fn refuse_dialect_columns(doc: &serde_json::Value, dialects: &[&str]) -> Result<
     Ok(())
 }
 
-/// The doctrine's dialects (`dialect <name>` rows).
+/// The ledger's dialects (`qa/capability-equality.json` `dialects`): names a plane speaks inside
+/// itself, never a column.
 fn dialects() -> Vec<&'static str> {
-    common::doctrine_rows("dialect")
-        .into_iter()
-        .map(|r| r[0])
+    common::capability_ledger()["dialects"]
+        .as_object()
+        .expect("`dialects` is an object of name -> the plane it is a dialect of")
+        .keys()
+        .map(String::as_str)
         .collect()
 }
 
@@ -1102,9 +1096,9 @@ fn the_root_leg_matrix_runs_once_per_leg() {
 /// able to quietly narrow what the real gate demands.
 #[test]
 fn the_gates_own_constants_are_the_doctrines() {
-    // The five planes (U14): two single-direction (llm, decisions: needs in one direction alone)
-    // and the three bidirectional ones counted in both directions (`<p>-client` / `<p>-server`):
-    // eight columns, and nothing else. A dialect is never a column.
+    // The five planes (U14): two single-direction (needs in one direction alone) and the three
+    // bidirectional ones counted in both directions (`<p>-client` / `<p>-server`): eight columns, and
+    // nothing else. A dialect is never a column.
     let planes = planes();
     assert_eq!(
         planes.len(),
@@ -1128,15 +1122,22 @@ fn the_gates_own_constants_are_the_doctrines() {
             "bidirectional `{p}` without `{server}`: {planes:?}"
         );
     }
-    // The pinned list and the ledger's declared planes are two artifacts that must agree.
-    let declared: BTreeSet<String> = real_doc()["planes"]
-        .as_object()
-        .expect("`planes` is an object")
-        .keys()
-        .cloned()
-        .collect();
-    let pinned: BTreeSet<String> = planes.iter().map(|p| p.to_string()).collect();
-    assert_eq!(pinned, declared, "the pinned plane list is the ledger's");
+    // The columns and the workspace plane crates are two artifacts that must agree: every column is
+    // answered by exactly one plane crate (the reverse half is the totality test below).
+    let crates = workspace_plane_crates(&repo_root());
+    let map = plane_crate_ledger_columns(&crates);
+    for p in planes {
+        let answering: Vec<&str> = map
+            .iter()
+            .filter(|(_, cols)| cols.contains(p))
+            .map(|(krate, _)| *krate)
+            .collect();
+        assert_eq!(
+            answering.len(),
+            1,
+            "column `{p}` must be answered by exactly one workspace plane crate, got {answering:?}"
+        );
+    }
     const {
         assert!(MIN_CAPABILITIES >= 13 && MIN_PROVEN >= 20 && MIN_NA_REASON >= 60);
     }
@@ -1151,24 +1152,14 @@ fn the_gates_own_constants_are_the_doctrines() {
         legs.contains(&"root-admin"),
         "the admin leg is a root leg: {legs:?}"
     );
-    let declared_legs: BTreeSet<String> = real_doc()["root_legs"]
-        .as_object()
-        .expect("`root_legs` is an object")
-        .keys()
-        .cloned()
-        .collect();
-    let pinned_legs: BTreeSet<String> = legs.iter().map(|l| l.to_string()).collect();
-    assert_eq!(
-        pinned_legs, declared_legs,
-        "the pinned root legs are the ledger's"
-    );
     // Every leg names the feature that compiles it, and that feature is one this crate declares.
     let manifest = std::fs::read_to_string(repo_root().join("crates/busbar/Cargo.toml"))
         .expect("read crates/busbar/Cargo.toml");
-    for row in common::doctrine_rows("root-leg") {
+    for (leg, feature) in common::root_leg_features() {
         assert!(
-            row.len() == 2 && manifest.contains(&format!("\n{} = [", row[1])),
-            "root leg row {row:?} must name a cargo feature crates/busbar/Cargo.toml declares"
+            manifest.contains(&format!("\n{feature} = [")),
+            "root leg `{leg}` names feature `{feature}`, which crates/busbar/Cargo.toml does not \
+             declare"
         );
     }
     const {
@@ -1220,7 +1211,7 @@ fn plane_ondisk_suffix(root: &Path, key: &str) -> String {
         .unwrap_or_else(|| key.to_string())
 }
 
-/// The workspace's `crates/busbar-plane-*` members, by directory suffix (`plane-decisions`), read off
+/// The workspace's `crates/busbar-plane-*` members, by directory suffix (`plane-<key>`), read off
 /// the root `Cargo.toml`'s `members` list — the list cargo builds, not a list somebody keeps — and
 /// the planes it PINS: a plane that left for its own repo is still a plane this workspace links
 /// (`common::pinned_planes`, ARCHITECT row 106 (A)), read from its checkout.
@@ -1284,11 +1275,10 @@ fn unmapped_plane_crates(
 }
 
 /// M0 TOTALITY CROSS-CHECK. Enumerate the workspace PLANE CRATES — the single source's plane keys
-/// AND the workspace's `busbar-plane-*` members — and assert each maps to >= 1 ledger column, except
-/// the ones pinned in [`PLANE_CRATES_OWED_A_COLUMN`], which must be EXACTLY the unmapped set. This is
-/// the reverse of the pinned matrix: the matrix proves no declared cell is a lie; this proves no
-/// plane crate the tree carries is tracked by NOTHING without saying so. RED the moment a plane crate
-/// joins the workspace with no row in `PLANE_CRATE_LEDGER_COLUMNS` and no owed entry.
+/// AND the workspace's `busbar-plane-*` members — and assert each maps to >= 1 ledger column. This is
+/// the reverse of the pinned matrix: the matrix proves no declared cell is a lie; this proves no plane
+/// crate the tree carries is tracked by NOTHING. RED the moment a plane crate joins the workspace with
+/// no column in the ledger.
 #[test]
 fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
     let root = repo_root();
@@ -1298,9 +1288,8 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
         .keys()
         .cloned()
         .collect();
-    let map: BTreeMap<&str, &[&str]> = plane_crate_ledger_columns().into_iter().collect();
-
     let crates = workspace_plane_crates(&root);
+    let map: BTreeMap<&str, &[&str]> = plane_crate_ledger_columns(&crates).into_iter().collect();
     for key in &crates {
         // Every enumerated plane must be a crate on disk, or a source and the tree disagree.
         let crate_dir = common::pinned_planes::resolve(&root, &format!("crates/busbar-{key}"));
@@ -1317,16 +1306,12 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
     );
     let unmapped =
         unmapped_plane_crates(&crates, &map, &ledger_columns).unwrap_or_else(|e| panic!("{e}"));
-    let owed: BTreeSet<String> = plane_crates_owed_a_column()
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    assert_eq!(
-        unmapped, owed,
-        "the workspace plane crates that map to ZERO ledger columns are not exactly the pinned owed \
-         set. A plane crate that reaches the workspace and answers to no column is tracked by \
-         nothing — add its columns to PLANE_CRATE_LEDGER_COLUMNS; a crate that gained its columns \
-         leaves PLANE_CRATES_OWED_A_COLUMN in the same commit."
+    assert!(
+        unmapped.is_empty(),
+        "workspace plane crate(s) {unmapped:?} map to ZERO ledger columns. A plane crate that \
+         reaches the workspace and answers to no column is tracked by nothing — declare its \
+         columns in qa/capability-equality.json (`<key>`, or `<key>-client` and `<key>-server`) and \
+         fill them."
     );
 
     println!(

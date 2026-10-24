@@ -12,8 +12,8 @@
 # the dialect's permission_error. RED arm: a door that admits anonymously fails.
 #
 # THE KERNEL'S HALF: matching the presenting key's grants (wildcard, an explicit session grant, one aimed
-# at another pool, an empty list) — the approve step (served leg:
-# crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_grant_short_of_the_operation).
+# at another pool, an empty list) — the approve step (the streaming door's served leg:
+# crates/busbar/src/root/tests/serve_tests.rs::a_key_short_of_the_doors_grant_is_refused_before_any_dial).
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

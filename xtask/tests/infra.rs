@@ -846,6 +846,13 @@ fn every_gate_the_modernci_branch_files_call_is_registered() {
         vec!["plane-purity".to_string()]
     );
     assert_eq!(
+        yaml_lite::xtask_gate_invocations(
+            "    run: |\n      for g in $gates; do\n        cargo xtask selftest \"$g\" || red=1\n        cargo xtask gate plane-purity\n      done\n"
+        ),
+        vec!["plane-purity".to_string()],
+        "a shell-expanded gate name is read at run time from `gate --list`, not a literal call site"
+    );
+    assert_eq!(
         yaml_lite::xtask_gate_invocations("        run: cargo xtask denylist --selftest\n"),
         vec!["denylist".to_string()],
         "the pre-registry `cargo xtask <name>` form is a call site too"

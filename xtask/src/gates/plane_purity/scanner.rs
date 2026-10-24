@@ -318,7 +318,14 @@ fn forward_rules(
             .dialects
             .iter()
             .filter(|d| !SEGMENT_COLLISIONS.contains(&d.as_str()))
-            .any(|d| segment_ci(&lc, &d.replace('-', "_")));
+            .any(|d| {
+                // `-` is spelled `_` in an identifier; only a dashed dialect needs the copy.
+                if d.contains('-') {
+                    segment_ci(&lc, &d.replace('-', "_"))
+                } else {
+                    segment_ci(&lc, d)
+                }
+            });
     if word || segment {
         emit("DIALECT", segment);
     }

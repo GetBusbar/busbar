@@ -176,6 +176,7 @@ fn rig() -> Rig {
             scope_kinds: vec!["group".into(), "item".into()],
             record_chains: Vec::new(),
             record_retentions: Vec::new(),
+            ticket_prefix: None,
         },
     )
     .unwrap();
@@ -731,6 +732,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             scope_kinds: Vec::new(),
             record_chains: Vec::new(),
             record_retentions: Vec::new(),
+            ticket_prefix: None,
         },
     )
     .unwrap();
@@ -2454,5 +2456,152 @@ fn a_trust_decision_the_store_refused_never_takes_effect() {
         k.trust_judge("inst", &whole),
         Ok(()),
         "kept, it is in force"
+    );
+}
+
+/// What one mint was handed: the key id, the prefix, the lifetime and the record.
+type Minted = (String, String, u64, Vec<u8>);
+
+/// A press that mints `<prefix><key>:<ttl>` and expires at `now + ttl`, keeping what it was handed.
+#[derive(Default)]
+struct Press(Mutex<Vec<Minted>>);
+
+impl TicketPress for Press {
+    fn mint(
+        &self,
+        key_id: &str,
+        prefix: &str,
+        ttl_secs: u64,
+        record: &[u8],
+        now: u64,
+    ) -> Result<(String, u64), &'static str> {
+        self.0.lock().unwrap().push((
+            key_id.to_string(),
+            prefix.to_string(),
+            ttl_secs,
+            record.to_vec(),
+        ));
+        Ok((format!("{prefix}{key_id}:{ttl_secs}"), now + ttl_secs))
+    }
+}
+
+/// THE TICKET SERVICES (row 132): a mint is for the unit's principal, under the instance's declared
+/// prefix, through the attached press; a take hands back what admitted the unit, once.
+#[test]
+fn a_ticket_is_minted_for_the_units_principal_under_the_declared_prefix() {
+    let r = rig();
+    r.s.admit(
+        "minter",
+        InstanceFacts {
+            ticket_prefix: Some("tk_".into()),
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    let principal = Arc::new(VirtualKey {
+        id: "vk_caller".into(),
+        ..VirtualKey::default()
+    });
+    r.s.units().admitted(
+        7,
+        UnitRecord {
+            principal: Some(Arc::clone(&principal)),
+            depth: 0,
+        },
+    );
+    // RED: no press attached.
+    let no_press = r.s.ticket_mint(&caller("minter"), Some(7), 600, b"{}");
+    assert_eq!(
+        (no_press.outcome, no_press.error),
+        (Outcome::Refused, TICKET_NO_PRESS)
+    );
+    let press = Arc::new(Press::default());
+    assert!(r
+        .s
+        .attach_tickets(Arc::clone(&press) as Arc<dyn TicketPress>));
+    let minted =
+        r.s.ticket_mint(&caller("minter"), Some(7), 600, b"{\"m\":1}");
+    assert_eq!(minted.outcome, Outcome::Ready);
+    assert_eq!(minted.bytes, b"tk_vk_caller:600");
+    assert_eq!(
+        minted.value,
+        1_000 + 600,
+        "the wall clock's seconds plus the lifetime"
+    );
+    assert_eq!(
+        press.0.lock().unwrap().as_slice(),
+        &[(
+            "vk_caller".to_string(),
+            "tk_".to_string(),
+            600,
+            b"{\"m\":1}".to_vec()
+        )]
+    );
+    // RED: no unit, a unit with no principal, an instance that declares no prefix.
+    let none = r.s.ticket_mint(&caller("minter"), None, 600, b"{}");
+    assert_eq!(none.error, TICKET_NO_PRINCIPAL);
+    r.s.units().admitted(
+        8,
+        UnitRecord {
+            principal: None,
+            depth: 0,
+        },
+    );
+    let anonymous = r.s.ticket_mint(&caller("minter"), Some(8), 600, b"{}");
+    assert_eq!(anonymous.error, TICKET_NO_PRINCIPAL);
+    let unprefixed = r.s.ticket_mint(&caller("inst"), Some(7), 600, b"{}");
+    assert_eq!(unprefixed.error, TICKET_NO_PREFIX);
+    assert_eq!(
+        press.0.lock().unwrap().len(),
+        1,
+        "a refused mint never reaches the press"
+    );
+    assert_eq!(r.s.ticket_prefix_of("minter").as_deref(), Some("tk_"));
+    assert_eq!(r.s.ticket_prefix_of("inst"), None);
+}
+
+#[test]
+fn a_take_hands_back_what_admitted_the_unit_once() {
+    let r = rig();
+    let admit = |unit: u64| {
+        r.s.units().admitted(
+            unit,
+            UnitRecord {
+                principal: None,
+                depth: 0,
+            },
+        );
+    };
+    admit(7);
+    assert!(r.s.units().ticketed(7, Some(b"record".to_vec())));
+    admit(8);
+    assert!(r.s.units().ticketed(8, None));
+    let taken = r.s.ticket_take(&caller("inst"), Some(7));
+    assert_eq!(
+        (taken.outcome, taken.value, taken.bytes.as_slice()),
+        (Outcome::Ready, svc::TICKET_TAKEN, &b"record"[..])
+    );
+    let keyed = r.s.ticket_take(&caller("inst"), Some(8));
+    assert_eq!(
+        (keyed.outcome, keyed.value, keyed.bytes.len()),
+        (Outcome::Ready, svc::TICKET_NONE, 0)
+    );
+    // RED: a second take, a unit not in flight, and no unit.
+    for unit in [Some(7), Some(8), Some(9), None] {
+        let again = r.s.ticket_take(&caller("inst"), unit);
+        assert_eq!(
+            (again.outcome, again.error),
+            (Outcome::Refused, TICKET_NOT_HELD),
+            "unit {unit:?}"
+        );
+    }
+    // RED: a unit not in flight holds no ticket; its end drops what it held.
+    assert!(!r.s.units().ticketed(9, Some(b"x".to_vec())));
+    admit(10);
+    assert!(r.s.units().ticketed(10, Some(b"x".to_vec())));
+    r.s.units().ended(10);
+    assert_eq!(
+        r.s.ticket_take(&caller("inst"), Some(10)).error,
+        TICKET_NOT_HELD
     );
 }

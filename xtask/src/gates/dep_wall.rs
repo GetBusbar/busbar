@@ -1120,6 +1120,61 @@ fn crate_plant(
     }
 }
 
+/// THE GATE AS ITS SELF-TEST RUNS IT: [`DepWallGate`] with the base pinned to the commit `HEAD`
+/// named when the battery started, on every run whose overlay does not already pin a base of its
+/// own. A plant's overlay replaces the battery's, so the pin is laid onto each run's overlay here
+/// rather than once onto the battery's `cx`.
+struct HeadPinned {
+    head: Option<String>,
+}
+
+impl HeadPinned {
+    fn at(cx: &Ctx) -> HeadPinned {
+        HeadPinned {
+            head: cx
+                .git(&["rev-parse", "HEAD"])
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+        }
+    }
+}
+
+impl Gate for HeadPinned {
+    fn name(&self) -> &'static str {
+        DepWallGate.name()
+    }
+
+    fn baseline_key(&self) -> Option<String> {
+        DepWallGate.baseline_key().map(|k| {
+            format!(
+                "{k}\u{3}head-pinned\u{3}{}",
+                self.head.as_deref().unwrap_or("")
+            )
+        })
+    }
+
+    fn owed(&self) -> Vec<String> {
+        DepWallGate.owed()
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        let base_pin = crate::gates::construction::ceilings::BASE_PIN_KEY;
+        match &self.head {
+            Some(head) if cx.overlay_command(base_pin).is_none() => {
+                let mut ov = cx.overlay().cloned().unwrap_or_default();
+                ov.set_command(base_pin, head.clone());
+                DepWallGate.run(&cx.with_overlay(ov))
+            }
+            _ => DepWallGate.run(cx),
+        }
+    }
+
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+        Report::new()
+    }
+}
+
 pub struct DepWallGate;
 
 impl Gate for DepWallGate {
@@ -1285,10 +1340,16 @@ impl Gate for DepWallGate {
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        // THE BATTERY MEASURES AGAINST `HEAD`. The ledger rows compare the ledger with the base, and
+        // a battery runs on a detached checkout (CI checks out the judged commit alone), where
+        // [`base_ledger`] is rightly RED. The question here is the rule, not that checkout's history,
+        // so every run the battery makes, the unplanted baseline and each plant, reads the base at
+        // the commit `HEAD` names. A case that is ABOUT the base still plants a synthetic one.
+        let gate: &'a HeadPinned = Box::leak(Box::new(HeadPinned::at(cx)));
         let mut report = Report::new();
         report.push(prove_green(
             cx,
-            self,
+            gate,
             "the wall is measured and matches its ledger",
             &[ROW_SCOPE, ROW_NEW, ROW_DRAINED],
         ));
@@ -1300,7 +1361,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
@@ -1315,7 +1376,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a pinned secret plugin that names a socket path is a new offender",
             &[ROW_NEW],
             ov,
@@ -1330,7 +1391,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a framer that names a socket path is a new offender, not a carrier",
             &[ROW_NEW],
             ov,
@@ -1357,7 +1418,7 @@ impl Gate for DepWallGate {
         ] {
             report.push(prove_red(
                 cx,
-                self,
+                gate,
                 format!("`{name}`, named like a transport, is a new offender reaching `{offence}`"),
                 &[ROW_NEW],
                 crate_plant(cx, &real, name, deps, lib, false),
@@ -1365,7 +1426,7 @@ impl Gate for DepWallGate {
             ));
             report.push(prove_red(
                 cx,
-                self,
+                gate,
                 format!(
                     "a base-carried `carrier` line does not exempt `{name}`, which is no carrier"
                 ),
@@ -1389,7 +1450,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a framer's carrier line, carried by the base, is refused and exempts nothing",
             &[ROW_SCOPE, ROW_NEW],
             ov,
@@ -1409,7 +1470,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a plugin that reaches a socket through a grouped import is a new offender",
             &[ROW_NEW],
             ov,
@@ -1430,7 +1491,7 @@ impl Gate for DepWallGate {
             ov.set("crates/busbar-plane-decisions/src/planted_generic_socket.rs", src);
             report.push(prove_red(
                 cx,
-                self,
+                gate,
                 match what {
                     "last" => "a test mark on the last generic parameter does not hide the body",
                     _ => "a test mark on a middle generic parameter does not hide the body",
@@ -1490,7 +1551,7 @@ impl Gate for DepWallGate {
             ov.set("crates/busbar-plane-decisions/src/planted_angle_socket.rs", src);
             report.push(prove_red(
                 cx,
-                self,
+                gate,
                 what,
                 &[ROW_NEW],
                 ov,
@@ -1532,7 +1593,7 @@ impl Gate for DepWallGate {
             ov.set(format!("crates/busbar-plane-decisions/src/{file}"), text);
             report.push(prove_red(
                 cx,
-                self,
+                gate,
                 format!("a socket path in {what} is production source and a new offender"),
                 &[ROW_NEW],
                 ov,
@@ -1547,7 +1608,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "an in-tree plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
@@ -1561,7 +1622,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a pinned auth plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
@@ -1586,7 +1647,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a pin written in the change that introduced its offence is refused",
             &[ROW_NEW],
             ov,
@@ -1601,7 +1662,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a carrier exemption the base ledger does not carry is refused",
             &[ROW_SCOPE],
             ov,
@@ -1618,7 +1679,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a pin the tree no longer measures is struck, never kept as slack",
             &[ROW_DRAINED],
             ov,
@@ -1635,7 +1696,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "only a carrier the spec names may be exempted as one",
             &[ROW_SCOPE],
             ov,
