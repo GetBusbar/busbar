@@ -103,7 +103,9 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// census-neutral root(s)`). Raised 1226 -> 1234 merging #1276 and dev d7990ee031 into
 /// GetBusbar/busbar#1418: the gate's measure on e359d09b6c (`1234 file(s) across 14 census-neutral
 /// root(s)`).
-pub const MIN_FILES: usize = 1234;
+/// Raised 1234 -> 1235 merging dev fcdca4e550 into GetBusbar/busbar#1418: the gate's measure on
+/// 8d984258a9 (`1235 file(s) across 14 census-neutral root(s)`).
+pub const MIN_FILES: usize = 1235;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";

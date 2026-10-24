@@ -157,7 +157,11 @@ pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 /// RE-PINNED 1107 -> 1116 merging dev d7990ee031 into GetBusbar/busbar#1418: the gate's measure on
 /// the merged tree (524b4a4f59 with dev d7990ee031, read by the approval desk) is
 /// `neutral_files=1116`, the files dev landed since (Law 9: the floor pins at today's measure).
-pub const NEUTRAL_FLOOR: usize = 1116;
+///
+/// RE-PINNED 1116 -> 1117 merging dev fcdca4e550 into GetBusbar/busbar#1418: the gate's measure on
+/// 8d984258a9 is `neutral_files=1117`, the files dev landed since (Law 9: the floor pins at today's
+/// measure).
+pub const NEUTRAL_FLOOR: usize = 1117;
 
 /// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
 /// dev, measured (606 on f49c8bf98c, the RED branch's `plane_files`). Same rule as
