@@ -132,18 +132,18 @@
    "paths": [
     "crates/busbar/src/root"
    ],
-   "tree_hash": "6a762ce7e43c05bbc83e8bda6b99151d939b06be2d2e1b6d334fdba40488c2fc",
-   "audited_at": "4bfe019df140fc206de8dfead4a4299ee73d9859",
-   "round": 3,
+   "tree_hash": "e8d00b8e751e6ee19cbafcd0eea37d572238717870b024e9340ae0827ea4b582",
+   "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 6,
-    "MEDIUM": 19,
-    "LOW": 17,
-    "NIT": 1
+    "HIGH": 5,
+    "MEDIUM": 12,
+    "LOW": 16,
+    "NIT": 8
    },
-   "report": "Duplex and swept sessions now seal their record and the serve path no longer names a vendor stream type or special-cases pool sections, but boot still binds every plane and transport whatever the configuration uses, one outbound auth style loads every auth plugin, unit records omit hooks applied and slice, admin units seal no record on the fixed chain, and a failed store-kept chain read at boot is taken as an empty chain, dropping signed corrections and restarting checkpoint numbering. Read in two parts, fully.",
-   "auditor": "opus-r159c-root-parts",
+   "report": "Boot opens every linked transport and binds a probe of every discovered plane door whatever the configuration uses. A chain that reads back but fails verification is served over an empty rebuild, a long store outage can wedge the store lane until a restart, and unit records still omit the slice, lease and policy generation they ran under. A style no linked row states loads every dropped-in auth plugin, a dry-run registry build replaces the live secret rows, an apply leaves the plane's member fetches on boot bindings and swallows a plane's refusal, early datagram writes queue without bound, inbound needs are refused only when dropped in, admin chain reads hold the book lock across store calls, shutdown drains only the lane queue, a correction refused for its journal write can still land, and adjust answers before the store keeps it. The stored-chain walk misses a stripped signature. Read in two parts, fully.",
+   "auditor": "opus-r159e-root-parts",
    "fixed_at": null,
    "rounds": [
     {
@@ -187,6 +187,20 @@
       "NIT": 1
      },
      "report": "Duplex and swept sessions now seal their record and the serve path no longer names a vendor stream type or special-cases pool sections, but boot still binds every plane and transport whatever the configuration uses, one outbound auth style loads every auth plugin, unit records omit hooks applied and slice, admin units seal no record on the fixed chain, and a failed store-kept chain read at boot is taken as an empty chain, dropping signed corrections and restarting checkpoint numbering. Read in two parts, fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159e-root-parts",
+     "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+     "tree_hash": "e8d00b8e751e6ee19cbafcd0eea37d572238717870b024e9340ae0827ea4b582",
+     "counts": {
+      "HIGH": 5,
+      "MEDIUM": 12,
+      "LOW": 16,
+      "NIT": 8
+     },
+     "report": "Boot opens every linked transport and binds a probe of every discovered plane door whatever the configuration uses. A chain that reads back but fails verification is served over an empty rebuild, a long store outage can wedge the store lane until a restart, and unit records still omit the slice, lease and policy generation they ran under. A style no linked row states loads every dropped-in auth plugin, a dry-run registry build replaces the live secret rows, an apply leaves the plane's member fetches on boot bindings and swallows a plane's refusal, early datagram writes queue without bound, inbound needs are refused only when dropped in, admin chain reads hold the book lock across store calls, shutdown drains only the lane queue, a correction refused for its journal write can still land, and adjust answers before the store keeps it. The stored-chain walk misses a stripped signature. Read in two parts, fully."
     }
    ]
   },
@@ -196,18 +210,18 @@
    "paths": [
     "crates/busbar/src"
    ],
-   "tree_hash": "c9620f2d6c082d92a366bf8086ee9300706d23b4cfd69f138c57c206839812f5",
-   "audited_at": "4a5705e8becfb2173c67871cda88f1cfdadd62ed",
-   "round": 3,
+   "tree_hash": "c438b4d9e19878806a1b3630f7ca62479591826ff40ba7c25396c2ee9c80e01e",
+   "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 0,
-    "MEDIUM": 3,
-    "LOW": 4,
-    "NIT": 1
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 5,
+    "NIT": 8
    },
-   "report": "Stdio serve mode now drains the money journal and plane records before exit. In that mode a shutdown signal is still caught and ignored, so a supervisor's stop does nothing until stdin closes, and asking for stdio serving with no plane claiming it still opens the network listeners. Two planes' pool tables are still passed by name. Any plane flag counts as the stdio flag, the table generator keeps five axes no row fills, the door apply refresh hangs on a legacy row's axis, and several comments are false. Read fully.",
-   "auditor": "opus-q128-l159",
+   "report": "The pools plane's config-apply refresh and health probes compile only when that plane is linked, so a dropped-in copy keeps its boot providers and pools and is never probed. A dropped-in plane's line-serve flag is never honoured, because the command line is read before any plugin is, and on the shutdown signal the line serve is dropped with its units in flight. Any plane flag counts as the line-serve flag, the table generator keeps axes and a swaps path no row fills, one connector axis selects nothing, the build stamp takes the first substring match of a flag, and several comments are false. Read fully.",
+   "auditor": "opus-r159e-busbar-src",
    "fixed_at": null,
    "exclude": [
     "crates/busbar/src/root",
@@ -255,6 +269,20 @@
       "NIT": 1
      },
      "report": "Stdio serve mode now drains the money journal and plane records before exit. In that mode a shutdown signal is still caught and ignored, so a supervisor's stop does nothing until stdin closes, and asking for stdio serving with no plane claiming it still opens the network listeners. Two planes' pool tables are still passed by name. Any plane flag counts as the stdio flag, the table generator keeps five axes no row fills, the door apply refresh hangs on a legacy row's axis, and several comments are false. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-r159e-busbar-src",
+     "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+     "tree_hash": "c438b4d9e19878806a1b3630f7ca62479591826ff40ba7c25396c2ee9c80e01e",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 1,
+      "LOW": 5,
+      "NIT": 8
+     },
+     "report": "The pools plane's config-apply refresh and health probes compile only when that plane is linked, so a dropped-in copy keeps its boot providers and pools and is never probed. A dropped-in plane's line-serve flag is never honoured, because the command line is read before any plugin is, and on the shutdown signal the line serve is dropped with its units in flight. Any plane flag counts as the line-serve flag, the table generator keeps axes and a swaps path no row fills, one connector axis selects nothing, the build stamp takes the first substring match of a flag, and several comments are false. Read fully."
     }
    ]
   },
@@ -713,7 +741,7 @@
    "paths": [
     "crates/busbar-core-admin/src"
    ],
-   "tree_hash": "90f2b67a445df20ccc2083aea274fc97f1213f53e9495be02286027ce54674b0",
+   "tree_hash": "d9624046a78132782237edc337e363c12c29c2487b27f7ec1e93536518f01caa",
    "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
    "round": 2,
    "result": "findings",
@@ -725,7 +753,7 @@
    },
    "report": "The operator surface still reaches the process's rate history through a static seam of its own, still presents itself to the registry as a plane-kind plugin, and still sums money figures itself. Key rotation ignores the configured lifetime ceiling, and an empty admin chain is refused where the published release applied it. Several reads and one write still block async workers, the error envelope splices caller text into JSON unescaped, and the unit tests link a real plane and auth plugin. Read fully except the generated verb table, sampled.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "85e59fc5fcc5a859aa4554354dbf6c1fbd14ac6f",
    "exclude": [
     "crates/busbar-core-admin/src/tests"
    ],
@@ -833,18 +861,18 @@
    "paths": [
     "crates/busbar-core-oauth2/src"
    ],
-   "tree_hash": "92255a77ce823bb94fac34921eee1e51160e752f934beafd6a496f82093eea60",
-   "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
-   "round": 6,
+   "tree_hash": "30420c5a4e293d8f85650defa98829bea38b4acc96fe683850c4aa19c02176d3",
+   "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+   "round": 7,
    "result": "findings",
    "counts": {
     "HIGH": 0,
-    "MEDIUM": 4,
-    "LOW": 4,
+    "MEDIUM": 3,
+    "LOW": 2,
     "NIT": 0
    },
-   "report": "The authorization server keeps its records in the deployment's store under fenced version claims, sweeps them on the kernel's clock, and fetches metadata documents through the root connector under per-site and global bounds. A cell the sweep retires leaves its own claim on the next version standing, so a client whose records are recreated within two minutes cannot write once it climbs back to that version. The per-site fetch bound counts each IPv6 literal as its own site, so a handful of slow addresses holds every fetch. Open registration installs no limiter and a registered client's records are never reclaimed, and the minted signing key sits in the store in clear. Read in 11 parts, fully.",
-   "auditor": "opus-r159d-core-oauth2",
+   "report": "The authorization server keeps its records in the deployment's store under fenced version claims. Each cell now carries its own epoch, so a client whose records the sweep retires can write again as soon as they are recreated. The sweep now deletes a self-registered client that has held nothing for a day, both in the store and in process. Registration now has a rate limit, but its budget is one global counter per process: six refused registrations a minute shut registration for every client on that node. The per-site fetch bound now groups IPv6 addresses by /64, but each IPv4 literal and each registrable domain still counts as its own site. Any caller can therefore hold every metadata-document fetch with eight slow public addresses, and it does not need to own them. When a request names no scope, the consent screen says no scopes are requested, yet the token carries the client's default: the whole default_grant for a provisioned client or for a metadata-document client whose document names no scope. The minted signing key still sits in the store in clear. Every node's sweep lists every client's records each minute and then reads each one again. Read fully.",
+   "auditor": "opus-r159g-oauth2-confirm",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-oauth2/src/tests"
@@ -931,6 +959,20 @@
       "NIT": 0
      },
      "report": "The authorization server keeps its records in the deployment's store under fenced version claims, sweeps them on the kernel's clock, and fetches metadata documents through the root connector under per-site and global bounds. A cell the sweep retires leaves its own claim on the next version standing, so a client whose records are recreated within two minutes cannot write once it climbs back to that version. The per-site fetch bound counts each IPv6 literal as its own site, so a handful of slow addresses holds every fetch. Open registration installs no limiter and a registered client's records are never reclaimed, and the minted signing key sits in the store in clear. Read in 11 parts, fully."
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-r159g-oauth2-confirm",
+     "audited_at": "0f3c9caa44c08a845e11c1701997683f29e1980d",
+     "tree_hash": "30420c5a4e293d8f85650defa98829bea38b4acc96fe683850c4aa19c02176d3",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 3,
+      "LOW": 2,
+      "NIT": 0
+     },
+     "report": "The authorization server keeps its records in the deployment's store under fenced version claims. Each cell now carries its own epoch, so a client whose records the sweep retires can write again as soon as they are recreated. The sweep now deletes a self-registered client that has held nothing for a day, both in the store and in process. Registration now has a rate limit, but its budget is one global counter per process: six refused registrations a minute shut registration for every client on that node. The per-site fetch bound now groups IPv6 addresses by /64, but each IPv4 literal and each registrable domain still counts as its own site. Any caller can therefore hold every metadata-document fetch with eight slow public addresses, and it does not need to own them. When a request names no scope, the consent screen says no scopes are requested, yet the token carries the client's default: the whole default_grant for a provisioned client or for a metadata-document client whose document names no scope. The minted signing key still sits in the store in clear. Every node's sweep lists every client's records each minute and then reads each one again. Read fully."
     }
    ]
   },
@@ -1606,7 +1648,7 @@
    "paths": [
     "crates/busbar-kernel-ledger/src"
    ],
-   "tree_hash": "941e13b804160d04bc41b08135eb462970ed5339fae8258e3645354bb553cca9",
+   "tree_hash": "c1187c1757bd310e64655f7a46b5e6b3f4af767c3818fb95a9bbaede71deea08",
    "audited_at": "14c56e628333e3f082fa130bb8184784b224cbb2",
    "round": 4,
    "result": "findings",
@@ -1618,7 +1660,7 @@
    },
    "report": "Money arithmetic is exact and checked: counts times integer rates accumulate at scale fifteen, the tier divides once with half-to-even rounding, a hole in the history or an unpriced lane or class refuses, and the statement read lists every line it cannot price. Two defects stand. The in-memory book and the dual-write sums keep one balance per principal, bucket and window for the life of the process, because the book's retirement verb has no production caller and the summed rows have none at all, so memory and the size of every sealed checkpoint grow with uptime. The sequence check between two checkpoints passes a node whose chain head vanished and a head rewritten at the same sequence. The rest is a statement sum that saturates where the money rule refuses, an identity that closes only if the caller's overdraft figure is exactly the excess, unreachable or unread fields, and doc comments that describe a rounding rule, a float-free intake and a cache the code does not have. Read in 20 parts, fully.",
    "auditor": "opus-r159d-kernel-ledger",
-   "fixed_at": null,
+   "fixed_at": "1dfad0de31c27506ef211f415165af4324040565",
    "exclude": [
     "crates/busbar-kernel-ledger/src/tests"
    ],
@@ -2242,7 +2284,7 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "da9b4eb22b57a74b728b4a63692ecb416de9578add58cf367c4fdfa598ee07cc",
+   "tree_hash": "869792afb644fe034595b4ce52f303cdead3342e17feeb5b73253ddf831db2dd",
    "audited_at": "a88c8109b44c896e4300410e33e7efaf776f1265",
    "round": 3,
    "result": "findings",
@@ -2252,7 +2294,7 @@
    },
    "report": "The plane serves the session revisions and the legacy event stream inbound and relays tool results unchanged. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller. The task path drops the caller's down-scope, lets an answer rewrite admitted arguments and fails on stdio servers. The operator connect verb blocks calls to session servers, streamed answers are re-encoded, and without a signing key all callers share one owner. Read fully.",
    "auditor": "opus-q128-l159",
-   "fixed_at": null,
+   "fixed_at": "e673ca134cb51784f5d3d01c99dccf5372dfa1d2",
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
    ],
@@ -2483,7 +2525,7 @@
    "paths": [
     "crates/busbar-plane-streaming-plugin/src"
    ],
-   "tree_hash": "64510ac1c986344ecf5c0b4205a7299d12cb02c4ccc1690d7734dbaceea124c8",
+   "tree_hash": "94ac41ebaddd0de836d45d670c5312cf7b118ebb4cc7fe0bfa67f5fb2a904068",
    "audited_at": "496507680f23874daa5582904399f91223f26fa9",
    "round": 1,
    "result": "findings",
@@ -2495,7 +2537,7 @@
    },
    "report": "The plugin crate is a thin image that re-exports the plane's logic and exports its door as the one door symbol, with unsafe confined to that export and no dependency on any other plugin. But the image is built against an older contract than the busbar that links the same door, so the dropped-in plane takes a shared lock and heap-allocates a route name on every routed arrival, which the linked build no longer does; dropped-in and compiled-in are not the same plugin. Read fully.",
    "auditor": "opus-r159c-plane-twins",
-   "fixed_at": null,
+   "fixed_at": "f1d4d737016117f5491915df4b8c0650fc6a0c7e",
    "exclude": [
     "crates/busbar-plane-streaming-plugin/src/tests"
    ],
@@ -3523,18 +3565,18 @@
    "paths": [
     "crates/busbar-contract/include"
    ],
-   "tree_hash": "3806ae0704e477473c1b0094e6d4fd97308c543e32c040365207bb89c4ef41cf",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 1,
+   "tree_hash": "476d2b74fc648cadbeaae25971b15df7ed43e719106344a0cac0319c57210e3a",
+   "audited_at": "0d93e06755fb10ecb7be4563923290e3844fa206",
+   "round": 2,
    "result": "findings",
    "counts": {
     "HIGH": 0,
-    "MEDIUM": 1,
-    "LOW": 2,
+    "MEDIUM": 0,
+    "LOW": 3,
     "NIT": 0
    },
-   "report": "The generated C header carries a do-not-edit banner and uses only fixed-width integer types, explicit reserved padding, extern \"C\" guards and enum typedefs over fixed ints. Per-kind ABI versions match the design (mechanism 2, store 3, secret 2, auth 3, hook 2, export 3, plane 1, transport 1). No retired constants, poll slot or cold-lane symbols appear, and identifiers name only kinds. Ten structs matched their Rust definitions. Three structures carry no size or alignment assertion, and many comments are truncated or carry internal review prose. Read fully except the bulk body, which was sampled.",
-   "auditor": "sonnet-ledger-contract-include",
+   "report": "The generated C header still carries its do-not-edit banner, extern \"C\" guards, fixed-width integer and size_t fields, explicit reserved padding and enum typedefs over fixed ints; the per-kind ABI versions match the design. Every one of the 296 emitted structures now has a size and an alignment assertion, so the earlier gap is closed. Three fields added after their structures were first pinned (the connector establish call's member name, a datagram lane's path list and its length) have no offset assertion of their own; each is the struct's trailing field, so the pinned size and the preceding offsets still fix it. Constant comments are still cut at the first source line, mid-sentence, and some still carry internal review prose (spec-input labels, an architect-ruling note, an OLD-name pointer, a source line reference). No HIGH or MEDIUM. Read the banner, constants and layout block fully; struct bodies checked mechanically against their layout pins; type prose sampled.",
+   "auditor": "opus-r159-contract-include-confirm",
    "fixed_at": null,
    "rounds": [
     {
@@ -3550,6 +3592,20 @@
       "NIT": 0
      },
      "report": "The generated C header carries a do-not-edit banner and uses only fixed-width integer types, explicit reserved padding, extern \"C\" guards and enum typedefs over fixed ints. Per-kind ABI versions match the design (mechanism 2, store 3, secret 2, auth 3, hook 2, export 3, plane 1, transport 1). No retired constants, poll slot or cold-lane symbols appear, and identifiers name only kinds. Ten structs matched their Rust definitions. Three structures carry no size or alignment assertion, and many comments are truncated or carry internal review prose. Read fully except the bulk body, which was sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-r159-contract-include-confirm",
+     "audited_at": "0d93e06755fb10ecb7be4563923290e3844fa206",
+     "tree_hash": "476d2b74fc648cadbeaae25971b15df7ed43e719106344a0cac0319c57210e3a",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The generated C header still carries its do-not-edit banner, extern \"C\" guards, fixed-width integer and size_t fields, explicit reserved padding and enum typedefs over fixed ints; the per-kind ABI versions match the design. Every one of the 296 emitted structures now has a size and an alignment assertion, so the earlier gap is closed. Three fields added after their structures were first pinned (the connector establish call's member name, a datagram lane's path list and its length) have no offset assertion of their own; each is the struct's trailing field, so the pinned size and the preceding offsets still fix it. Constant comments are still cut at the first source line, mid-sentence, and some still carry internal review prose (spec-input labels, an architect-ruling note, an OLD-name pointer, a source line reference). No HIGH or MEDIUM. Read the banner, constants and layout block fully; struct bodies checked mechanically against their layout pins; type prose sampled."
     }
    ]
   },

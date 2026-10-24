@@ -2491,3 +2491,4 @@ llm|gemini|gemini|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests
 llm|openai|openai|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|responses|responses|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
 neutrality|no-pools|surface	PASS	capture	
+auth.lifecycle|aws-credential-chain-without-keys	PASS	script aws-credential-chain-without-keys.sh: status 0	
