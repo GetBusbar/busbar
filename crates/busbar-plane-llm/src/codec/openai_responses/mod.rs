@@ -204,17 +204,46 @@ fn logprob_bytes(lp: &crate::codec::ir::IrTokenLogprob) -> usize {
 
 /// The carried TEXT weight of one buffered citation — the owned strings it holds, which is the part
 /// an upstream controls and can therefore grow without bound. The fixed-width numeric fields are not
-/// counted; they cannot be inflated.
+/// counted; they cannot be inflated. The verbatim `raw` entry weighs its compact serialised length,
+/// counted as it is written rather than built as a string.
 fn citation_bytes(c: &crate::codec::ir::IrCitation) -> usize {
     fn len(s: &Option<String>) -> usize {
         s.as_ref().map_or(0, String::len)
     }
+    /// A sink that keeps only the number of bytes written to it.
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let raw = c.raw.as_ref().map_or(0, |v| {
+        let mut n = Count(0);
+        // Writing a `Value` to a sink that never fails cannot fail.
+        let _ = serde_json::to_writer(&mut n, v);
+        n.0
+    });
     len(&c.kind)
-        + len(&c.cited_text)
-        + len(&c.title)
-        + len(&c.url)
-        + len(&c.encrypted_index)
-        + c.raw.as_ref().map_or(0, |v| v.to_string().len())
+        .saturating_add(len(&c.cited_text))
+        .saturating_add(len(&c.title))
+        .saturating_add(len(&c.url))
+        .saturating_add(len(&c.encrypted_index))
+        .saturating_add(raw)
+}
+
+/// One message item's buffered citations with their carried text weight ([`citation_bytes`]),
+/// kept as each batch is appended, so an append weighs only its own batch and never the held list
+/// again: the accumulation stays linear in what the stream delivers.
+#[derive(Clone, Default)]
+struct CitationAccum {
+    /// The citations, in arrival order.
+    items: Vec<crate::codec::ir::IrCitation>,
+    /// The sum of [`citation_bytes`] over `items`.
+    bytes: usize,
 }
 
 /// Key offset under which the streaming reader tracks OPEN TEXT output indices inside the shared
@@ -2426,8 +2455,7 @@ pub struct ResponsesWriter {
     /// standalone delta frame, so a streamed `CitationsDelta` has nowhere to go at arrival time and
     /// is accumulated here until `BlockStop` builds that part. Dropping it, as the writer used to,
     /// lost every grounding source on any cross-protocol stream into Responses.
-    citation_accum:
-        std::sync::Mutex<std::collections::BTreeMap<usize, Vec<crate::codec::ir::IrCitation>>>,
+    citation_accum: std::sync::Mutex<std::collections::BTreeMap<usize, CitationAccum>>,
     /// Per-stream buffer of the token logprobs delivered for the message item at each
     /// `output_index`. The IR streams them as a standalone `LogprobsDelta` (separate from the text
     /// fragment they score), while a native Responses stream carries them on the `output_text.done`
@@ -3000,20 +3028,30 @@ impl ResponsesWriter {
         if cits.is_empty() {
             return;
         }
-        let added: usize = cits.iter().map(citation_bytes).sum();
+        let added = cits
+            .iter()
+            .map(citation_bytes)
+            .fold(0usize, usize::saturating_add);
         if let Ok(mut map) = self.citation_accum.lock() {
             match map.get_mut(&index) {
                 Some(entry) => {
-                    let held: usize = entry.iter().map(citation_bytes).sum();
-                    if held.saturating_add(added) <= self.accum_byte_cap() {
-                        entry.extend_from_slice(cits);
+                    let held = entry.bytes.saturating_add(added);
+                    if held <= self.accum_byte_cap() {
+                        entry.items.extend_from_slice(cits);
+                        entry.bytes = held;
                     }
                 }
                 None => {
                     if map.len() >= MAX_OPEN_TOOLS || added > self.accum_byte_cap() {
                         return;
                     }
-                    map.entry(index).or_default().extend_from_slice(cits);
+                    map.insert(
+                        index,
+                        CitationAccum {
+                            items: cits.to_vec(),
+                            bytes: added,
+                        },
+                    );
                 }
             }
         }
@@ -3025,6 +3063,7 @@ impl ResponsesWriter {
             .lock()
             .ok()
             .and_then(|mut map| map.remove(&index))
+            .map(|accum| accum.items)
             .unwrap_or_default()
     }
 

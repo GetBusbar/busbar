@@ -327,8 +327,10 @@ fn readable_blocks_are_not_opaque() {
 /// `to_token_usage` must ledger the BILLED input/output, NOT the raw `tokens` totals — the reserved
 /// tiers (via `engine::usage::tier_tokens`) follow. This is the deliberate per-dialect ledgered-count
 /// change; every dialect that leaves `billed_*` as `None` still projects the raw totals unchanged.
+/// COHERE BILLS ITS RAW `tokens` COUNTS, as 1.5.5 billed them (row 159, plane-llm HIGH): a
+/// `billed_units` bucket that differs is attribution, never the ledgered figure.
 #[test]
-fn cohere_billed_units_win_over_raw_in_to_token_usage() {
+fn cohere_bills_its_raw_tokens_whatever_billed_units_says() {
     let raw_wins_when_absent = IrUsage {
         input_tokens: 100,
         output_tokens: 40,
@@ -357,10 +359,10 @@ fn cohere_billed_units_win_over_raw_in_to_token_usage() {
     let tu = billed.to_token_usage();
     assert_eq!(
         (tu.input, tu.output),
-        (90, 35),
-        "billed_units present → the ledger bills the BILLED counts, not the raw tokens bucket"
+        (100, 40),
+        "billed_units present → the ledger still bills the RAW tokens bucket, as 1.5.5 did"
     );
-    // The reserved-tier projection the ledger actually accrues follows the billed counts.
+    // The reserved-tier projection the ledger actually accrues follows the raw counts.
     let tier = crate::codec::wire_shim::tier_usage(&tu);
     let u = |k: &str| tier.usage_units.get(k).copied().unwrap_or(0);
     assert_eq!(
@@ -368,7 +370,7 @@ fn cohere_billed_units_win_over_raw_in_to_token_usage() {
             u(busbar_contract::records::UNIT_INPUT),
             u(busbar_contract::records::UNIT_OUTPUT)
         ),
-        (90, 35)
+        (100, 40)
     );
 }
 

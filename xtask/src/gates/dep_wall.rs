@@ -6,7 +6,12 @@
 //! `tokio-rustls` and `socket2` by name, `tokio` asked for its `net` feature, `redis` asked for its
 //! async connection (`aio`), and `std::net` / `tokio::net` written in a plugin's own source. The
 //! exceptions are the connector (a cleanliness crate, never in scope) and the transport CARRIERS,
-//! whose whole job is the socket.
+//! whose whole job is the socket. The carriers are NAMED, never inferred: [`CARRIERS`] is the spec's
+//! list (`busbar-transport-tcp`, `busbar-transport-stdio`; docs/design/BUSBAR-1.6.0.md: "carriers
+//! (`tcp`, `stdio`) dial, accept, read and write; framers (`http`, `ws`) are sans-IO state
+//! machines"), and a carrier is exempt only while the MERGE-BASE's ledger carries its
+//! `carrier<TAB>crate` line (Law 9: a change never exempts itself). No kind, glob or name prefix
+//! exempts anything: a framer (http, ws, grpc, the webrtc framer) stays on the wall.
 //!
 //! The tree does not meet the wall yet, and pretending otherwise is not an option (Law 9: a ratchet
 //! armed at today's number). `qa/dep-wall.ledger` pins every offender measured when this gate was
@@ -30,6 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::str::FromStr;
+use std::sync::{Arc, OnceLock};
 
 use proc_macro2::{Delimiter, Group, Spacing, TokenStream, TokenTree};
 
@@ -103,6 +109,14 @@ const VALUE_PATHS: &[&str] = &[
 /// llm plane is its door crate `busbar-plane-llm`, a `gate.plugin_kinds.plane` row. No legacy engine
 /// crate is left for this list to name.
 const LEGACY: &[&str] = &[];
+
+/// THE CARRIERS, the only transports the wall may exempt (ARCHITECT ruling on #1254/#1261;
+/// docs/design/BUSBAR-1.6.0.md: "Transport plugins have two roles: carriers (`tcp`, `stdio`) dial,
+/// accept, read and write; framers (`http`, `ws`) are sans-IO state machines", and the connector
+/// builds "carrier → [TLS] → framer"). Listing a crate here exempts nothing by itself: the
+/// exemption is the base ledger's `carrier<TAB>crate` line, and this list is what such a line may
+/// name. A `carrier` line on any other crate is refused, whatever the crate is called.
+pub const CARRIERS: &[&str] = &["busbar-transport-tcp", "busbar-transport-stdio"];
 
 /// The external source a plugin repository resolves from.
 const EXTERNAL_SOURCE: &str = "git+https://github.com/GetBusbar/";
@@ -188,19 +202,6 @@ fn base_ledger(cx: &Ctx) -> Result<(String, Ledger), String> {
         ));
     }
     Ok((base.short().to_string(), held))
-}
-
-/// The `[gate.plugin_kinds] transport` directory globs: a carrier is a crate of the transport kind,
-/// by the kind table, never by a substring of its name. Empty when the table does not read, which
-/// admits no carrier.
-fn transport_globs(cx: &Ctx) -> Vec<String> {
-    cx.read(CONFIG)
-        .map(|t| {
-            crate::toml_lite::parse_text(&t)
-                .table("gate.plugin_kinds")
-                .get_list("transport")
-        })
-        .unwrap_or_default()
 }
 
 /// A single-`*` glob, the shape `[gate.plugin_kinds]` uses.
@@ -314,9 +315,43 @@ fn forwards(pkg: &Pkg) -> Vec<String> {
 /// every pinned plugin whose own source read no file (a scan that read nothing proved nothing).
 pub type Measured = (Offenders, usize, BTreeSet<String>, Vec<String>);
 
-/// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall.
-pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String> {
-    let json: Value = serde_json::from_str(&cx.cargo_metadata("Cargo.toml")?)
+/// The workspace as `cargo metadata` resolves it: every package by id, and every resolve node.
+struct Workspace {
+    pkgs: BTreeMap<String, Pkg>,
+    nodes: BTreeMap<String, Node>,
+}
+
+/// THE WORKSPACE [`measure`] walks, READ ONCE PER CHECKOUT AND PROCESS.
+///
+/// Cargo reads the manifests ON DISK, never the overlay, so its answer cannot change while one gate
+/// process runs; only a planted answer (the overlay's `cargo-metadata:Cargo.toml` command) can, and
+/// that one is read as planted every time. Every self-test case used to pay a whole `cargo metadata`
+/// and its parse of its own (the cost the `one-memory-abi` battery shed the same way). The cell is
+/// handed out under the lock and filled outside it, so concurrent cases share one `cargo metadata`.
+fn workspace(cx: &Ctx) -> Result<std::sync::Arc<Workspace>, String> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    if let Some(planted) = cx.overlay_command("cargo-metadata:Cargo.toml") {
+        return read_workspace(&planted).map(Arc::new);
+    }
+    type Cell = Arc<OnceLock<Result<Arc<Workspace>, String>>>;
+    static MEMO: OnceLock<Mutex<BTreeMap<std::path::PathBuf, Cell>>> = OnceLock::new();
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(cx.root().to_path_buf())
+        .or_default()
+        .clone();
+    cell.get_or_init(|| {
+        cx.cargo_metadata("Cargo.toml")
+            .and_then(|out| read_workspace(&out).map(Arc::new))
+    })
+    .clone()
+}
+
+/// [`workspace`]'s reading of one `cargo metadata` answer, taken fresh.
+fn read_workspace(metadata: &str) -> Result<Workspace, String> {
+    let json: Value = serde_json::from_str(metadata)
         .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
     let mut pkgs: BTreeMap<String, Pkg> = BTreeMap::new();
     for p in json["packages"].as_array().cloned().unwrap_or_default() {
@@ -422,12 +457,19 @@ pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String
             (deps, features),
         );
     }
+    Ok(Workspace { pkgs, nodes })
+}
+
+/// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall.
+pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String> {
+    let ws = workspace(cx)?;
+    let (pkgs, nodes) = (&ws.pkgs, &ws.nodes);
 
     // THE ROOTS: in-tree plugin-kind and legacy crates, and every external plugin.
     let globs = kind_globs(cx)?;
     let root = cx.root().to_string_lossy().to_string();
     let mut roots: Vec<(String, Option<String>)> = Vec::new(); // (id, in-tree dir)
-    for (id, p) in &pkgs {
+    for (id, p) in pkgs {
         if carriers.contains(&p.name) {
             continue;
         }
@@ -479,7 +521,12 @@ pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String
                 if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
                     continue;
                 }
-                hits.extend(banned_paths(&f.text).into_iter().map(str::to_string));
+                hits.extend(
+                    banned_paths_memo(&f.text)
+                        .iter()
+                        .copied()
+                        .map(str::to_string),
+                );
             }
         }
         if !hits.is_empty() {
@@ -511,8 +558,44 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
         .parent()
         .map(|d| d.join("src"))
         .unwrap_or_default();
+    let mut files = checkout_source_memo(&checkout, &src).as_ref().clone();
+    for f in walked {
+        files.insert(f.rel_str(), f);
+    }
+    files.into_values().collect()
+}
+
+/// A pinned plugin's cargo checkout's `src/**/*.rs`, keyed `{src}/<sub>`, READ ONCE PER CHECKOUT
+/// AND PROCESS. Cargo checks a pinned rev out into a directory named for that rev and never writes
+/// it again, so the reading is a pure function of the two inputs it is keyed on; every self-test
+/// case used to walk and read every such checkout afresh. A plant is laid over this by
+/// [`own_source`] on every run.
+fn checkout_source_memo(
+    checkout: &std::path::Path,
+    src: &str,
+) -> std::sync::Arc<BTreeMap<String, crate::ctx::SourceFile>> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    type Files = Arc<BTreeMap<String, crate::ctx::SourceFile>>;
+    type Memo = Mutex<BTreeMap<(std::path::PathBuf, String), Arc<OnceLock<Files>>>>;
+    static MEMO: OnceLock<Memo> = OnceLock::new();
+    let cell = MEMO
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry((checkout.to_path_buf(), src.to_string()))
+        .or_default()
+        .clone();
+    cell.get_or_init(|| Arc::new(checkout_source(checkout, src)))
+        .clone()
+}
+
+/// [`checkout_source_memo`]'s reading, taken fresh.
+fn checkout_source(
+    checkout: &std::path::Path,
+    src: &str,
+) -> BTreeMap<String, crate::ctx::SourceFile> {
     let mut files: BTreeMap<String, crate::ctx::SourceFile> = BTreeMap::new();
-    let mut stack = vec![checkout.clone()];
+    let mut stack = vec![checkout.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else {
             continue;
@@ -526,7 +609,7 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
             if abs.extension().is_none_or(|x| x != "rs") {
                 continue;
             }
-            let (Ok(sub), Ok(text)) = (abs.strip_prefix(&checkout), std::fs::read_to_string(&abs))
+            let (Ok(sub), Ok(text)) = (abs.strip_prefix(checkout), std::fs::read_to_string(&abs))
             else {
                 continue;
             };
@@ -541,10 +624,7 @@ fn own_source(cx: &Ctx, dir: &str, pkg: &Pkg) -> Vec<crate::ctx::SourceFile> {
             );
         }
     }
-    for f in walked {
-        files.insert(f.rel_str(), f);
-    }
-    files.into_values().collect()
+    files
 }
 
 /// THE BANNED PATHS ONE SOURCE FILE NAMES, read as PATHS, not as text.
@@ -577,6 +657,30 @@ pub fn banned_paths(text: &str) -> BTreeSet<&'static str> {
     };
     second.walk(&tokens, None);
     second.hits
+}
+
+/// [`banned_paths`] of one file's text, LEXED ONCE PER DISTINCT TEXT AND PROCESS.
+///
+/// The reading is a pure function of the text, and the memo is keyed on the WHOLE text, compared
+/// byte for byte (no hash stands in for it). Every self-test case sees the tree one planted file
+/// away from the last, and each used to lex and strip every in-scope crate's every file again; now
+/// every case after the first lexes only what it planted. The cell is handed out under the lock and
+/// filled outside it, so concurrent cases that need the same file take one lex between them.
+fn banned_paths_memo(text: &str) -> std::sync::Arc<BTreeSet<&'static str>> {
+    use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+    type Cell = Arc<OnceLock<Arc<BTreeSet<&'static str>>>>;
+    static MEMO: OnceLock<Mutex<BTreeMap<String, Cell>>> = OnceLock::new();
+    let cell = {
+        let mut memo = MEMO
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        match memo.get(text) {
+            Some(cell) => cell.clone(),
+            None => memo.entry(text.to_string()).or_default().clone(),
+        }
+    };
+    cell.get_or_init(|| Arc::new(banned_paths(text))).clone()
 }
 
 fn segments(path: &str) -> Vec<&str> {
@@ -933,6 +1037,144 @@ impl PathScan {
     }
 }
 
+/// THE WORKSPACE WITH ONE MORE PINNED PLUGIN, as `cargo metadata` would answer for it: the real
+/// answer `real`, plus a package `name` resolved from its own `GetBusbar` repository whose normal
+/// edges are `deps` (each a package the real answer resolves). Cargo reads the manifests on disk,
+/// so a crate a self-test invents reaches the gate only as a planted answer. An answer that does
+/// not read plants an empty one, and the case fails naming the parse, never green.
+fn with_crate(real: &str, root: &str, name: &str, deps: &[&str]) -> String {
+    let Ok(mut json) = serde_json::from_str::<Value>(real) else {
+        return String::new();
+    };
+    let source = format!("{EXTERNAL_SOURCE}{name}?rev=0000000000#0000000000");
+    let id = format!("{source}@0.0.0");
+    let edges: Vec<Value> = deps
+        .iter()
+        .filter_map(|d| {
+            let pkg = json["packages"]
+                .as_array()?
+                .iter()
+                .find(|p| p["name"].as_str() == Some(*d))?;
+            Some(serde_json::json!({
+                "name": d.replace('-', "_"),
+                "pkg": pkg["id"].clone(),
+                "dep_kinds": [{ "kind": null, "target": null }],
+            }))
+        })
+        .collect();
+    let declared: Vec<Value> = deps
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "name": d, "rename": null, "features": [], "optional": false, "kind": null,
+            })
+        })
+        .collect();
+    if let Some(pkgs) = json["packages"].as_array_mut() {
+        pkgs.push(serde_json::json!({
+            "name": name,
+            "id": id,
+            "source": source,
+            "manifest_path": format!("{root}/target/zz-dep-wall-plant/{name}/Cargo.toml"),
+            "dependencies": declared,
+            "features": {},
+        }));
+    }
+    if let Some(nodes) = json["resolve"]["nodes"].as_array_mut() {
+        nodes.push(serde_json::json!({ "id": id, "deps": edges, "features": [] }));
+    }
+    json.to_string()
+}
+
+/// A PLANT OF ONE INVENTED PINNED PLUGIN, built on the worker: [`with_crate`] over the real
+/// `cargo metadata` answer (taken once for every such case), the plugin's `src/lib.rs`, and, when
+/// `carried`, a `carrier<TAB>name` line in the ledger AND in the base's ledger, so the case asks
+/// what the explicit list admits rather than what Law 9 refuses.
+fn crate_plant(
+    cx: &Ctx,
+    real: &Arc<OnceLock<String>>,
+    name: &'static str,
+    deps: &'static [&'static str],
+    lib: &'static str,
+    carried: bool,
+) -> impl FnOnce() -> Overlay + Send + 'static {
+    let (cx, real) = (cx.clone(), real.clone());
+    move || {
+        let text = real.get_or_init(|| cx.cargo_metadata("Cargo.toml").unwrap_or_default());
+        let mut ov = Overlay::new();
+        ov.set_command(
+            "cargo-metadata:Cargo.toml",
+            with_crate(text, &cx.root().to_string_lossy(), name, deps),
+        );
+        ov.set(format!("crates/{name}/src/lib.rs"), lib);
+        if carried {
+            let ledger = format!(
+                "{}\ncarrier\t{name}\n",
+                cx.read(LEDGER).unwrap_or_default().trim_end()
+            );
+            ov.set_command(crate::gates::construction::ceilings::BASE_PIN_KEY, SYN_BASE);
+            ov.set_command(format!("git-show:{SYN_BASE}:{LEDGER}"), ledger.clone());
+            ov.set(LEDGER, ledger);
+        }
+        ov
+    }
+}
+
+/// THE GATE AS ITS SELF-TEST RUNS IT: [`DepWallGate`] with the base pinned to the commit `HEAD`
+/// named when the battery started, on every run whose overlay does not already pin a base of its
+/// own. A plant's overlay replaces the battery's, so the pin is laid onto each run's overlay here
+/// rather than once onto the battery's `cx`.
+struct HeadPinned {
+    head: Option<String>,
+}
+
+impl HeadPinned {
+    fn at(cx: &Ctx) -> HeadPinned {
+        HeadPinned {
+            head: cx
+                .git(&["rev-parse", "HEAD"])
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+        }
+    }
+}
+
+impl Gate for HeadPinned {
+    fn name(&self) -> &'static str {
+        DepWallGate.name()
+    }
+
+    fn baseline_key(&self) -> Option<String> {
+        DepWallGate.baseline_key().map(|k| {
+            format!(
+                "{k}\u{3}head-pinned\u{3}{}",
+                self.head.as_deref().unwrap_or("")
+            )
+        })
+    }
+
+    fn owed(&self) -> Vec<String> {
+        DepWallGate.owed()
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        let base_pin = crate::gates::construction::ceilings::BASE_PIN_KEY;
+        match &self.head {
+            Some(head) if cx.overlay_command(base_pin).is_none() => {
+                let mut ov = cx.overlay().cloned().unwrap_or_default();
+                ov.set_command(base_pin, head.clone());
+                DepWallGate.run(&cx.with_overlay(ov))
+            }
+            _ => DepWallGate.run(cx),
+        }
+    }
+
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+        Report::new()
+    }
+}
+
 pub struct DepWallGate;
 
 impl Gate for DepWallGate {
@@ -946,7 +1188,20 @@ impl Gate for DepWallGate {
 
     fn run(&self, cx: &Ctx) -> Verdict {
         let ledger = read_ledger(&cx.read(LEDGER).unwrap_or_default());
-        let (measured, roots, names, unread) = match measure(cx, &ledger.carriers) {
+        let base = base_ledger(cx);
+        // THE EXEMPTION IS READ FROM THE BASE (Law 9): a carrier line this ledger keeps, the
+        // merge-base's ledger already carried, and [`CARRIERS`] names. A line only the head writes,
+        // or one on a framer, exempts nothing, and the crate is measured like any plugin.
+        let exempt: BTreeSet<String> = match &base {
+            Ok((_, held)) => ledger
+                .carriers
+                .intersection(&held.carriers)
+                .filter(|c| CARRIERS.contains(&c.as_str()))
+                .cloned()
+                .collect(),
+            Err(_) => BTreeSet::new(),
+        };
+        let (measured, roots, names, unread) = match measure(cx, &exempt) {
             Ok(m) => m,
             Err(e) => {
                 let why = format!("the wall could not be measured: {e}");
@@ -975,8 +1230,6 @@ impl Gate for DepWallGate {
                  own source proves nothing about it"
             ));
         }
-        let transports = transport_globs(cx);
-        let base = base_ledger(cx);
         let mut new: Vec<String> = Vec::new();
         match &base {
             Ok((sha, held)) => {
@@ -1005,10 +1258,13 @@ impl Gate for DepWallGate {
             }
         }
         for c in &ledger.carriers {
-            if !transports.iter().any(|g| glob(g, &format!("crates/{c}"))) {
+            if !CARRIERS.contains(&c.as_str()) {
                 scope.push(format!(
-                    "`{c}` is exempted as a carrier and is not a transport crate: no \
-                     `[gate.plugin_kinds] transport` glob of {CONFIG} names `crates/{c}`"
+                    "`{c}` is exempted as a carrier and is no carrier: only {} dial, accept, read \
+                     and write (docs/design/BUSBAR-1.6.0.md); a framer (http, ws, grpc, webrtc) is \
+                     a sans-IO state machine and stays on the wall, and no name or kind exempts a \
+                     crate",
+                    CARRIERS.join(" and ")
                 ));
             } else if !names.contains(c) {
                 scope.push(format!(
@@ -1023,7 +1279,7 @@ impl Gate for DepWallGate {
                 "the dependency wall is measured",
                 format!(
                     "{roots} crate(s) in scope, {} carrier(s) exempt",
-                    ledger.carriers.len()
+                    exempt.len()
                 ),
             )
         } else {
@@ -1084,10 +1340,16 @@ impl Gate for DepWallGate {
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
+        // THE BATTERY MEASURES AGAINST `HEAD`. The ledger rows compare the ledger with the base, and
+        // a battery runs on a detached checkout (CI checks out the judged commit alone), where
+        // [`base_ledger`] is rightly RED. The question here is the rule, not that checkout's history,
+        // so every run the battery makes, the unplanted baseline and each plant, reads the base at
+        // the commit `HEAD` names. A case that is ABOUT the base still plants a synthetic one.
+        let gate: &'a HeadPinned = Box::leak(Box::new(HeadPinned::at(cx)));
         let mut report = Report::new();
         report.push(prove_green(
             cx,
-            self,
+            gate,
             "the wall is measured and matches its ledger",
             &[ROW_SCOPE, ROW_NEW, ROW_DRAINED],
         ));
@@ -1099,11 +1361,105 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
             &["new-offender", "busbar-plane-decisions", "std::net"],
+        ));
+        // A PINNED PLUGIN THE BASE DOES NOT LAY IS READ FROM ITS CHECKOUT (ARCHITECT ruling on
+        // #1244): a secret plugin, with the plant's overlay on top, names the crate and the path.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-secret-env/src/planted_socket.rs",
+            "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        );
+        report.push(prove_red(
+            cx,
+            gate,
+            "a pinned secret plugin that names a socket path is a new offender",
+            &[ROW_NEW],
+            ov,
+            &["new-offender", "busbar-secret-env", "std::net"],
+        ));
+        // A FRAMER IS ON THE WALL (ARCHITECT ruling on #1254/#1261): ws is a sans-IO state
+        // machine, so a socket path in its source is a new offender like any plugin's.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-ws/src/planted_socket.rs",
+            "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        );
+        report.push(prove_red(
+            cx,
+            gate,
+            "a framer that names a socket path is a new offender, not a carrier",
+            &[ROW_NEW],
+            ov,
+            &["new-offender", "busbar-transport-ws", "std::net"],
+        ));
+        // NO NAME EXEMPTS A CRATE. Two invented pinned plugins whose names say `busbar-transport-`
+        // and that are no carrier: one names a socket in its source, one depends on socket2. Each is
+        // RED with no ledger line, and RED again with a `carrier` line the base ledger already
+        // carries (the explicit list admits the spec's carriers only).
+        let real: Arc<OnceLock<String>> = Arc::default();
+        for (name, deps, lib, offence) in [
+            (
+                "busbar-transport-evilsrc",
+                &[] as &[&str],
+                "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+                "std::net",
+            ),
+            (
+                "busbar-transport-evildep",
+                &["socket2"] as &[&str],
+                "pub fn frame() {}\n",
+                "socket2",
+            ),
+        ] {
+            report.push(prove_red(
+                cx,
+                gate,
+                format!("`{name}`, named like a transport, is a new offender reaching `{offence}`"),
+                &[ROW_NEW],
+                crate_plant(cx, &real, name, deps, lib, false),
+                &["new-offender", name, offence],
+            ));
+            report.push(prove_red(
+                cx,
+                gate,
+                format!(
+                    "a base-carried `carrier` line does not exempt `{name}`, which is no carrier"
+                ),
+                &[ROW_SCOPE, ROW_NEW],
+                crate_plant(cx, &real, name, deps, lib, true),
+                &["new-offender", name, offence, "is no carrier"],
+            ));
+        }
+        // NOR DOES A BASE-CARRIED LINE EXEMPT A REAL FRAMER: ws stays on the wall.
+        let carried_ws = format!(
+            "{}\ncarrier\tbusbar-transport-ws\n",
+            cx.read(LEDGER).unwrap_or_default().trim_end()
+        );
+        let mut ov = Overlay::new();
+        ov.set_command(crate::gates::construction::ceilings::BASE_PIN_KEY, SYN_BASE);
+        ov.set_command(format!("git-show:{SYN_BASE}:{LEDGER}"), carried_ws.clone());
+        ov.set(LEDGER, carried_ws);
+        ov.set(
+            "crates/busbar-transport-ws/src/planted_socket.rs",
+            "pub fn dial() { let _ = std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        );
+        report.push(prove_red(
+            cx,
+            gate,
+            "a framer's carrier line, carried by the base, is refused and exempts nothing",
+            &[ROW_SCOPE, ROW_NEW],
+            ov,
+            &[
+                "busbar-transport-ws",
+                "is no carrier",
+                "new-offender",
+                "std::net",
+            ],
         ));
         // A GROUPED IMPORT: `std::{io, net::TcpStream}` names `std::net` as a path, not as text.
         let mut ov = Overlay::new();
@@ -1114,7 +1470,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a plugin that reaches a socket through a grouped import is a new offender",
             &[ROW_NEW],
             ov,
@@ -1135,7 +1491,7 @@ impl Gate for DepWallGate {
             ov.set("crates/busbar-plane-decisions/src/planted_generic_socket.rs", src);
             report.push(prove_red(
                 cx,
-                self,
+                gate,
                 match what {
                     "last" => "a test mark on the last generic parameter does not hide the body",
                     _ => "a test mark on a middle generic parameter does not hide the body",
@@ -1195,7 +1551,7 @@ impl Gate for DepWallGate {
             ov.set("crates/busbar-plane-decisions/src/planted_angle_socket.rs", src);
             report.push(prove_red(
                 cx,
-                self,
+                gate,
                 what,
                 &[ROW_NEW],
                 ov,
@@ -1237,7 +1593,7 @@ impl Gate for DepWallGate {
             ov.set(format!("crates/busbar-plane-decisions/src/{file}"), text);
             report.push(prove_red(
                 cx,
-                self,
+                gate,
                 format!("a socket path in {what} is production source and a new offender"),
                 &[ROW_NEW],
                 ov,
@@ -1252,7 +1608,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "an in-tree plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
@@ -1266,7 +1622,7 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a pinned auth plugin that names a socket path it was never pinned for is a new offender",
             &[ROW_NEW],
             ov,
@@ -1291,25 +1647,26 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a pin written in the change that introduced its offence is refused",
             &[ROW_NEW],
             ov,
             &["minted", "busbar-plane-llm", "std::net"],
         ));
-        // A CARRIER MINTED IN THIS CHANGE, on a real transport crate the workspace resolves.
+        // A CARRIER MINTED IN THIS CHANGE, on a spec carrier the workspace resolves: Law 9 alone
+        // refuses it.
         let mut ov = based();
         ov.set(
             LEDGER,
-            format!("{}\ncarrier\tbusbar-transport-ws\n", held.trim_end()),
+            format!("{}\ncarrier\tbusbar-transport-tcp\n", held.trim_end()),
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a carrier exemption the base ledger does not carry is refused",
             &[ROW_SCOPE],
             ov,
-            &["busbar-transport-ws", "carries no such line"],
+            &["busbar-transport-tcp", "carries no such line"],
         ));
         // A DRAINED PIN: a pin for an offence the tree does not have must be struck.
         let mut ov = Overlay::new();
@@ -1322,13 +1679,13 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
+            gate,
             "a pin the tree no longer measures is struck, never kept as slack",
             &[ROW_DRAINED],
             ov,
             &["drained", "busbar-plane-decisions", "reqwest"],
         ));
-        // A CARRIER EXEMPTION ON A CRATE THAT IS NOT A TRANSPORT is refused.
+        // A CARRIER EXEMPTION ON A CRATE THAT IS NO CARRIER is refused.
         let mut ov = Overlay::new();
         ov.set(
             LEDGER,
@@ -1339,11 +1696,11 @@ impl Gate for DepWallGate {
         );
         report.push(prove_red(
             cx,
-            self,
-            "only a transport crate may be exempted as a carrier",
+            gate,
+            "only a carrier the spec names may be exempted as one",
             &[ROW_SCOPE],
             ov,
-            &["busbar-plane-decisions", "not a transport crate"],
+            &["busbar-plane-decisions", "is no carrier"],
         ));
         report
     }

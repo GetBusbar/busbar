@@ -374,7 +374,7 @@ fn a_char_literal_holding_a_brace_is_text_and_does_not_open_a_region() {
     // `#[cfg(any(test, …))]` item. The line has no `"`, so the whole of it was counted, both `{`
     // included — depth went up by two where the compiler goes up by one, and the region opened at
     // the attribute never closed, reporting the rest of the file gated to EOF.
-    let src = "#[cfg(any(test, feature = \"openapi-schema\"))]\n\
+    let src = "#[cfg(any(test, feature = \"test-support\"))]\n\
                fn declared_errors(rel: &str) -> u8 {\n\
                \x20   if rel.contains('{') {\n\
                \x20       1\n\
@@ -844,6 +844,13 @@ fn every_gate_the_modernci_branch_files_call_is_registered() {
     assert_eq!(
         yaml_lite::xtask_gate_invocations("    run: |\n      cargo xtask gate plane-purity --selftest\n      cargo xtask gate plane-purity\n"),
         vec!["plane-purity".to_string()]
+    );
+    assert_eq!(
+        yaml_lite::xtask_gate_invocations(
+            "    run: |\n      for g in $gates; do\n        cargo xtask selftest \"$g\" || red=1\n        cargo xtask gate plane-purity\n      done\n"
+        ),
+        vec!["plane-purity".to_string()],
+        "a shell-expanded gate name is read at run time from `gate --list`, not a literal call site"
     );
     assert_eq!(
         yaml_lite::xtask_gate_invocations("        run: cargo xtask denylist --selftest\n"),
@@ -1742,4 +1749,62 @@ fn no_deferral_refuses_a_tracked_file_hidden_from_discovery_by_name() {
 fn keys_sh_text() -> String {
     std::fs::read_to_string(repo_root().join("scripts/plane-keys.sh"))
         .expect("scripts/plane-keys.sh is readable")
+}
+
+// ── THE THREE CLASSIFIERS READ THE ONE RULE ──────────────────────────────────────────────────────
+//
+// Each case plants `any(test, feature = "root-admin")` (a default feature, so shipped) beside
+// `any(test, feature = "test-support")` (test-only) and asserts the classifier answers differently.
+
+#[test]
+fn cfg_any_the_scanner_scans_a_shipping_any_gate_and_skips_a_test_only_one() {
+    let src = "#[cfg(any(test, feature = \"root-admin\"))]\npub use a::b;\n\
+               #[cfg(any(test, feature = \"test-support\"))]\npub use c::d;\n\
+               pub fn production() {}\n";
+    let gated: Vec<usize> = scan::test_scope(src)
+        .into_iter()
+        .filter(|l| l.gated)
+        .map(|l| l.no)
+        .collect();
+    assert_eq!(gated, vec![3, 4]);
+}
+
+#[test]
+fn cfg_any_the_scanner_does_not_mark_a_module_declared_under_a_shipping_any_gate() {
+    let files = vec![
+        (
+            "c/src/lib.rs".to_string(),
+            "#[cfg(any(test, feature = \"root-admin\"))]\nmod shipped;\n\
+             #[cfg(any(test, feature = \"test-support\"))]\nmod fixture;\n",
+            None,
+        ),
+        ("c/src/shipped.rs".to_string(), "pub fn a() {}\n", None),
+        ("c/src/fixture.rs".to_string(), "pub fn b() {}\n", None),
+    ];
+    let got = scan::cfg_test_module_files(files);
+    assert!(!got.contains("c/src/shipped.rs"), "{got:?}");
+    assert!(got.contains("c/src/fixture.rs"), "{got:?}");
+}
+
+#[test]
+fn cfg_any_the_structure_lint_corpus_keeps_a_shipping_any_module_in_production() {
+    use std::path::PathBuf;
+    use xtask::ctx::SourceFile;
+    let file = |rel: &str, text: &str| SourceFile {
+        rel: PathBuf::from(rel),
+        abs: PathBuf::from(rel),
+        text: text.to_string(),
+    };
+    let files = vec![
+        file(
+            "c/src/lib.rs",
+            "#[cfg(any(test, feature = \"root-admin\"))]\nmod shipped;\n\
+             #[cfg(any(test, feature = \"test-support\"))]\nmod fixture;\n",
+        ),
+        file("c/src/shipped.rs", "pub fn a() {}\n"),
+        file("c/src/fixture.rs", "pub fn b() {}\n"),
+    ];
+    let got = xtask::gates::structure_lint::corpus::test_scoped(&files);
+    assert!(!got.contains("c/src/shipped.rs"), "{got:?}");
+    assert!(got.contains("c/src/fixture.rs"), "{got:?}");
 }

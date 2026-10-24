@@ -908,6 +908,44 @@ pub struct Tail {
     pub routes_len: usize,
 }
 
+/// HOW THE HOOK KIND TAIL IS MADE (status row 194): from [`Tail::EMPTY`], its plain fields set
+/// directly and each list by its setter, to items that live for the program.
+impl Tail {
+    /// Nothing stated: every string absent, every list empty, every number zero; the head
+    /// sized to the whole tail.
+    pub const EMPTY: Tail = Tail {
+        head: KindTailHead {
+            size: core::mem::size_of::<Tail>() as u32,
+            _reserved: 0,
+        },
+        kind_class: 0,
+        prompt_access: 0,
+        user_access: 0,
+        infallible: 0,
+        _reserved: [0; 3],
+        requested_signals: std::ptr::null(),
+        requested_signals_len: 0,
+        routes: std::ptr::null(),
+        routes_len: 0,
+    };
+
+    /// This tail with its class and its two grants set: the one constructor a hook plugin's
+    /// `const` goes through, so the plugin SDK names no field of the grants.
+    #[must_use]
+    pub const fn with_access(mut self, kind_class: u32, content: u32, user: u32) -> Tail {
+        self.kind_class = kind_class;
+        self.prompt_access = content;
+        self.user_access = user;
+        self
+    }
+
+    abi_lists! {
+        requested_signals, requested_signals_len: u32
+            => requested_signals_ptr, with_requested_signals, with_raw_requested_signals;
+        routes, routes_len: Route => routes_ptr, with_routes, with_raw_routes;
+    }
+}
+
 /// The hook kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
 ///
 /// ASSUMPTION (M3-SHAPES): B.4 does not enumerate a cancel disposition vocabulary; a hook reply is
