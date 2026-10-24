@@ -1127,7 +1127,6 @@ where
     M: FnOnce() -> F,
     F: std::future::Future,
 {
-    use std::future::Future as _;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::task::Poll;
     // `AssertUnwindSafe`: nothing observed across the boundary is reused after an unwind — the
