@@ -16,7 +16,8 @@
 # token more than the far end sent fails.
 #
 # THE KERNEL'S HALF: the session account — reserving against the caller's budget chain, capping at its
-# tightest remaining bucket, ledgering the counts (served leg:
+# tightest remaining bucket, ledgering the counts (the streaming door's served leg, one request on the
+# presenting key's governance ledger:
 # crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential).
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
