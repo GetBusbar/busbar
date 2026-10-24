@@ -148,6 +148,10 @@ jsonschema = { workspace = true }
 # expansion names `::hyper`, and the test names hyper's own buffer type. Dev-only: the shipped graph
 # does not name it.
 hyper = { workspace = true }
+# The C header generator (tests/abi_header) and the source rules (tests/source_rules) parse Rust.
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
 
 [features]
 # The TEST-ONLY seal (#65). `plugin::TestKernelSeal` is the one implementor of the now-SEALED

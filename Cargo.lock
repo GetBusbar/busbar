@@ -387,7 +387,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=722a2fcecd61082efa19378052598f109ed11d19#722a2fcecd61082efa19378052598f109ed11d19"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=37d1c93ab7155569caa54a887f75c1a2da3e3768#37d1c93ab7155569caa54a887f75c1a2da3e3768"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -465,11 +465,14 @@ dependencies = [
  "jsonschema",
  "libc",
  "memchr",
+ "proc-macro2",
+ "quote",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "sha2",
  "smallvec",
+ "syn 2.0.117",
  "tracing",
  "tracing-core",
  "tracing-log",
@@ -580,9 +583,12 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=1ce8ebd578c88b5fae02477078f7ab20892bb18b#1ce8ebd578c88b5fae02477078f7ab20892bb18b"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=70f9efc205abaced72ba2e2d3f5002cf91c03c27#70f9efc205abaced72ba2e2d3f5002cf91c03c27"
 dependencies = [
+ "base64 0.22.1",
  "busbar-contract",
+ "percent-encoding",
+ "prost",
  "serde",
  "serde_json",
  "tracing",
@@ -592,7 +598,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=1ce8ebd578c88b5fae02477078f7ab20892bb18b#1ce8ebd578c88b5fae02477078f7ab20892bb18b"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=70f9efc205abaced72ba2e2d3f5002cf91c03c27#70f9efc205abaced72ba2e2d3f5002cf91c03c27"
 dependencies = [
  "busbar-contract",
  "busbar-export-otlp",
@@ -772,7 +778,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=2345681a614939ac51371c14db05ded1a00190ad#2345681a614939ac51371c14db05ded1a00190ad"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=0565fcf1fa040ed986e0abcc8528e1b336e2e83c#0565fcf1fa040ed986e0abcc8528e1b336e2e83c"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -910,7 +916,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=3d0ac5eed987d171d3b004c77caa23b21c1f4c0b#3d0ac5eed987d171d3b004c77caa23b21c1f4c0b"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=1367f8c318f2fb58e2f57ef4ab7aa5e4407c4220#1367f8c318f2fb58e2f57ef4ab7aa5e4407c4220"
 dependencies = [
  "busbar-contract",
  "sha2",
@@ -4333,23 +4339,6 @@ dependencies = [
  "rusticata-macros",
  "thiserror",
  "time",
-]
-
-[[package]]
-name = "xtask"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "libc",
- "proc-macro2",
- "rcgen",
- "ring",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "syn 2.0.117",
 ]
 
 [[package]]
