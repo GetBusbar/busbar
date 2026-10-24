@@ -83,6 +83,19 @@ pub trait Checkpointer: Send + Sync {
     fn checkpoint(&self, key: UnitKey, accrued: &Accrued);
 }
 
+/// HOW A UNIT'S ANSWER ENDED, as the composition root hands it to [`PlaneMoney::settle_end_as`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitEnd {
+    /// The status the unit's caller was answered with (its head's, once a head went out).
+    pub caller_status: u32,
+    /// The far end CUT the unit's streamed answer after its head: its connection failed, or its
+    /// send's deadline passed, before it completed (the driver's `cut` fact,
+    /// `DriverSteps::answered`, on a unit whose caller asked for a stream). It never changes the
+    /// bill: what the plane ledgered for the unit is final, cut or not (owner ruling 2026-10-20:
+    /// "spend is what it is. if spend occurred it occurred").
+    pub cut: bool,
+}
+
 /// One unit's money facts, as the composition root knows them when it admits the unit.
 #[derive(Clone)]
 pub struct UnitMoney {
@@ -273,6 +286,23 @@ impl PlaneMoney {
     /// never here, and is refunded nothing, as 1.5.5's dropped request never reached that arm. The
     /// unit's facts are closed either way.
     pub fn settle_end(&self, key: UnitKey, caller_status: u32) {
+        self.settle_end_as(
+            key,
+            UnitEnd {
+                caller_status,
+                cut: false,
+            },
+        );
+    }
+
+    /// [`PlaneMoney::settle_end`], told HOW the unit's answer ended ([`UnitEnd`]). The plane's
+    /// ledger is final: a stream its far end CUT bills and meters what the plane reported for it,
+    /// exactly as an uncut one does, because only the plane knows what it did (owner ruling
+    /// 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."). A
+    /// plane that reported nothing bills nothing. The flat fee stays as the unit's [`FeeRefund`]
+    /// rule decides it.
+    pub fn settle_end_as(&self, key: UnitKey, end: UnitEnd) {
+        let UnitEnd { caller_status, .. } = end;
         let Some(open) = self.lock().remove(&key) else {
             return;
         };
@@ -281,7 +311,8 @@ impl PlaneMoney {
             let counts = reported(&open.last);
             self.ledger(m, &counts);
             // A DELIVERED end meters one request against the serving member, tokens or none
-            // (v1.5.5 proxy/usage.rs:31-40 and :99-106).
+            // (v1.5.5 proxy/usage.rs:31-40 and :99-106). A stream its far end cut is metered too:
+            // the plane's ledger, not the cut, says what it spent.
             if (200..=299).contains(&caller_status) {
                 self.meter(m, open.provider.as_deref(), &counts);
             }

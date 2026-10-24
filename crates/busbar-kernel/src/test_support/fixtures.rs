@@ -57,13 +57,11 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         crate::config::ResolvedProvider::from(provider),
     );
     crate::config::RootCfg {
-        tool_defs: crate::plane::config::ToolsSection::default().0,
+        plane_defs: Default::default(),
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
         oauth_as: None,
-        agent_defs: crate::plane::config::AgentsSection::default().0,
-        tool_pools: Default::default(),
-        agent_pools: Default::default(),
+        plane_pools: Default::default(),
         plane_sections: Default::default(),
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
@@ -96,13 +94,13 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
 }
 
 // ── THE NEUTRAL FALLBACK-PLANE FIXTURE ────────────────────────────────────────────────────────────
-// `plane::config::split_section_for_plane` REFUSES (not panics — see that fn's doc) when it resolves
+// `config::plane_sections::split_section_for_plane` REFUSES (not panics — see that fn's doc) when it resolves
 // `plane::fallback_key()` and finds no plane registered to own it: since the A6/HostCtx
 // dev-dependency-cycle cleanup moved every test that asserts REAL llm/mcp/a2a behaviour out to
 // `tests/*_cross_plane.rs` (the only place with ONE `busbar_kernel` in the graph — see that target's
 // docs), this crate's OWN `#[cfg(test)]` unit tests can no longer reach a real plane's `PLANE_DECL` at
-// all: calling `busbar_llm::testkit::install_test_seams()` from here would register the REAL `llm`
-// PlaneDecl into busbar_llm's OWN dependency-copy of this crate's process statics, not this compiled
+// all: calling the retired engine crate's `testkit::install_test_seams()` from here would register the REAL `llm`
+// PlaneDecl into the retired engine crate's OWN dependency-copy of this crate's process statics, not this compiled
 // unit's — completely inert. A unit test that merely needs "some plane exists" so `pools:`/config
 // resolution has an owner (not one that asserts what that plane DOES) calls this instead.
 //
@@ -139,6 +137,9 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
         caller_credential_refusal: None,
     },
     wire_format_names: || &[],
+    // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
+    // lane names one the boot accepts.
+    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
@@ -169,7 +170,7 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
 /// registered to own this config section". Call at the top of a test that builds/parses a
 /// `RootCfg`/`DeployCfg` (directly or via `resolve`) but asserts nothing about real llm/mcp/a2a
 /// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
-/// instead, where the real `busbar_llm`/`busbar_mcp` and agent-engine crates are reachable.
+/// instead, where the real the retired engine crate/`busbar_mcp` and agent-engine crates are reachable.
 pub fn register_neutral_test_plane() {
     crate::plane::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
 }
@@ -346,14 +347,14 @@ impl busbar_kernel::test_support::TestAppSeam for TestApp {
 impl busbar_kernel::test_support::BuiltAppSeam for crate::state::App {
     fn engine_host_of(
         app: &std::sync::Arc<Self>,
-    ) -> std::sync::Arc<dyn busbar_kernel::plane_host::EngineHost> {
-        crate::plane_host::engine_host(app)
+    ) -> std::sync::Arc<dyn busbar_kernel::plane_driver::EngineHost> {
+        crate::plane_driver::engine_host(app)
     }
 
     fn engine_host_value_of(
         app: std::sync::Arc<Self>,
-    ) -> impl busbar_kernel::plane_host::EngineHost + 'static {
-        crate::plane_host::engine_host_value(&app)
+    ) -> impl busbar_kernel::plane_driver::EngineHost + 'static {
+        crate::plane_driver::engine_host_value(&app)
     }
 
     fn router_of(app: std::sync::Arc<Self>) -> axum::Router {

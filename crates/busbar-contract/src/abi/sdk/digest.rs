@@ -20,10 +20,20 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
+/// The tag a SHA-256 digest is shown under: `sha256/`.
+pub const SHA256_TAG: &str = "sha256/";
+
 /// The SHA-256 digest of `data`, tagged: `sha256/<standard base64>`.
 #[must_use]
 pub fn sha256_tagged(data: &[u8]) -> String {
-    format!("sha256/{}", STANDARD.encode(sha256(data)))
+    tagged(&sha256(data))
+}
+
+/// A SHA-256 `digest`, tagged: `sha256/<standard base64, padded>`. The ONE place a tagged digest is
+/// spelled: a document fingerprint and a key pin (`transport::trust::key_pin`) alike.
+#[must_use]
+pub fn tagged(digest: &[u8; 32]) -> String {
+    format!("{SHA256_TAG}{}", STANDARD.encode(digest))
 }
 
 /// `bytes` as lower-case hex, two digits a byte: the one spelling a plugin renders a digest or a

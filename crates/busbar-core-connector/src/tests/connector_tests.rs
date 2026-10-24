@@ -706,6 +706,65 @@ fn a_plugin_named_need_to_the_metadata_address_is_refused() {
     });
 }
 
+/// RED (Q128 arch u22 HIGH 2; THE DESIGN §5 egress table, `provider`: "allow-list +
+/// `allow_metadata_hosts`", and the DESTINATION GUARD, checked in ONE place): a provider need whose
+/// 1.5.5 carve-out (`allow_metadata_hosts: ["169.254.169.254"]`, as 1.5.5 documented it for IMDS)
+/// names a metadata address is DIALLED there: the guard admits it and the connector dials the
+/// address the judgement pinned (here the loopback far end standing in for the metadata service).
+/// The same open from a need in another class, and to a metadata address no carve-out names, is
+/// refused by the same guard. RED on the endpoint check that refused every metadata host ahead of
+/// the guard, so its carve-outs reached no dial.
+#[test]
+fn a_provider_carve_out_reaches_its_metadata_address_on_the_dial() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let stand_in: std::net::SocketAddr = far.parse().unwrap();
+        let guard = crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
+            block_private_addresses: true,
+            legacy_allow: vec!["169.254.169.254".to_owned()],
+            ..busbar_kernel::config::Destinations::default()
+        })
+        .expect("the carve-out");
+        let judge = move |dest: &str, class: u32, _: crate::Judged| {
+            let at = crate::socket::address_of(dest)?;
+            Some(
+                guard
+                    .judge_answer(&at.ip().to_string(), &[at.ip()], class)
+                    .map(|()| stand_in)
+                    .map_err(|r| r.verdict),
+            )
+        };
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_, _| {}));
+        c.declare_need(
+            OWNER,
+            NeedId(0),
+            "bytes",
+            busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+        )
+        .expect("a provider need declares");
+        c.declare_need(OWNER, NeedId(1), "bytes", crate::DEFAULT_CLASS)
+            .expect("a default-class need declares");
+        let id = open_in(&c, 0, "169.254.169.254:80")
+            .expect("the provider's carve-out reaches its metadata address");
+        c.close(OWNER, id).unwrap();
+        assert_eq!(
+            open_in(&c, 1, "169.254.169.254:80"),
+            Err(ConnError::Refused),
+            "no carve-out speaks for another class"
+        );
+        assert_eq!(
+            open_in(&c, 0, "100.100.100.200:80"),
+            Err(ConnError::Refused),
+            "a carve-out admits only what it names"
+        );
+    });
+}
+
 /// RED (ARCHITECT rule 15.3: ports `execute_hop_does_not_follow_redirect`, deleted with the
 /// core-run login hop): THE CONNECTOR NEVER FOLLOWS AN ANSWER. A far end answering a `302` whose
 /// `Location` names another listener hands that answer to the need's owner through the table, byte
@@ -2143,6 +2202,368 @@ mod transport_pin {
             );
         });
     }
+
+    /// A TLS far end on loopback serving `leaf`, answering every five bytes it reads with one
+    /// one-byte message and the exchange's end (`xe`, the scripted entry's) and keeping each
+    /// connection open: its address.
+    async fn keeping_tls_far_end(leaf: &Leaf) -> String {
+        crate::tls::install_crypto_provider();
+        let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
+        let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let (l, far) = far_end().await;
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((s, _)) = l.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(s).await else {
+                        return;
+                    };
+                    let mut buf = [0_u8; 5];
+                    while tls.read_exact(&mut buf).await.is_ok() {
+                        if tls.write_all(b"xe").await.is_err() || tls.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        far
+    }
+
+    /// [`trusting`]'s connector, its secure entry answering the scripted messages, keeping every
+    /// line an exchange finished on: need 0 is declared over it.
+    fn pooled_trusting(pki: &Pki) -> Connector {
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::identity("plain")),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "sec",
+                    &["sec"],
+                    &[],
+                    crate::support::Knobs {
+                        secure_name: Some("localhost"),
+                        messages: Some(crate::compose::EXCHANGE_STREAM),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let tls = crate::tls::client::build_client_config(&EgressTrust {
+            extra_anchors: vec![pki.ca_der.clone()],
+            ..EgressTrust::default()
+        })
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            loopback_literals(),
+            Some(Arc::new(tls)),
+            Arc::new(|_, _| {}),
+        )
+        .pooling(crate::pool::PoolPosture {
+            max_idle_per_host: 8,
+            idle_timeout: std::time::Duration::from_secs(60),
+        });
+        c.declare_over(OWNER, NeedId(0), "sec").unwrap();
+        c
+    }
+
+    /// RED (THE DESIGN §8, the connector holds every destination's trust; the transport pin): a
+    /// line secured under one seal of a destination's anchors is never lent to an open held to
+    /// another. Sealed again with a key the far end does not serve, the next open dials afresh and
+    /// is refused at its handshake; keyed without the anchors, it rode the line verified under the
+    /// old seal and the new pin was never checked.
+    #[test]
+    fn a_pooled_line_is_never_lent_once_its_destination_is_sealed_again() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let served = pki.leaf("localhost");
+            let other = pki.leaf("localhost");
+            let far = keeping_tls_far_end(&served).await;
+            let c = pooled_trusting(&pki);
+            let pinned = |pin: &str| Anchors {
+                key_pin: Some(pin.to_owned()),
+                client_identity: None,
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), "", &far, &pinned(&served.pin))
+                .expect("sealed");
+            assert_eq!(
+                pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
+                (b"x".to_vec(), true, None),
+                "held to the key it serves, the exchange finishes whole and its line is kept"
+            );
+            c.anchor(OWNER, NeedId(0), "", &far, &pinned(&other.pin))
+                .expect("sealed again");
+            let (got, _, failed) = pooled_exchange(&c, (OWNER, 0), &far, b"first", false).await;
+            assert_eq!(
+                (got, failed),
+                (Vec::new(), Some(ConnError::Refused)),
+                "the open is held to the new pin, never lent the line the old seal verified"
+            );
+        });
+    }
+
+    /// RED (`PollConns::anchor`: "an open naming it, to its own target's authority, is held to its
+    /// anchors alone (none, where they are empty)"): a registration holding NO anchors, sealed
+    /// BEFORE another registration at the same authority that holds a client identity, still
+    /// presents nothing. Read through to the destination's seal, its open presented the other
+    /// registration's identity.
+    #[test]
+    fn a_registration_holding_no_anchors_never_borrows_one_sealed_after_it() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let server = pki.leaf("localhost");
+            let client = pki.leaf("busbar.client");
+            let (far, _seen) = tls_far_end(&pki, &server, true).await;
+            let c = trusting(&pki);
+            c.anchor(OWNER, NeedId(0), "bare", &far, &Anchors::default())
+                .expect("sealed");
+            let own = Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![client.der.clone()],
+                    private_key: client.key.clone().into(),
+                }),
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), "planner", &far, &own)
+                .expect("sealed");
+            assert_eq!(
+                exchange_as(&c, &far, "planner").await.as_deref(),
+                Ok(&b"answer"[..]),
+                "the registration presents its own identity"
+            );
+            assert!(
+                exchange_as(&c, &far, "bare").await.is_err(),
+                "a registration holding no identity presents none, never one sealed after it"
+            );
+        });
+    }
+
+    /// RED (`PollConns::anchor`; "a pin nobody enforces is refused, never dropped"): an open naming
+    /// no registration is held to the destination's anchors. Where every registration sealed at
+    /// its authority agrees, that is theirs; where they disagree there is no one answer, and the
+    /// open is refused. Kept as whichever registration was sealed last, a registration holding
+    /// nothing erased another's pin and identity for every such open.
+    #[test]
+    fn an_open_naming_no_registration_is_refused_where_the_registrations_at_its_authority_disagree()
+    {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let server = pki.leaf("localhost");
+            let client = pki.leaf("busbar.client");
+            let (far, _seen) = tls_far_end(&pki, &server, true).await;
+            let c = trusting(&pki);
+            let own = Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![client.der.clone()],
+                    private_key: client.key.clone().into(),
+                }),
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), "planner", &far, &own)
+                .expect("sealed");
+            let (_, got) = exchange(&c, &far).await;
+            assert_eq!(
+                got.as_deref(),
+                Ok(&b"answer"[..]),
+                "control: one registration at the authority is the destination's anchors"
+            );
+            c.anchor(OWNER, NeedId(0), "bare", &far, &Anchors::default())
+                .expect("sealed");
+            let open = c.open(
+                OWNER,
+                NeedId(0),
+                &OpenDesc {
+                    target: &far,
+                    body: b"first",
+                    ..OpenDesc::default()
+                },
+            );
+            assert_eq!(
+                open.err(),
+                Some(ConnError::Refused),
+                "two registrations disagree: an open naming neither is refused"
+            );
+        });
+    }
+
+    /// A TLS far end on loopback serving `leaf`, answering `answer` once it read five bytes: its
+    /// address, and, per connection once it is done, every byte it read (empty: the dialler left, or
+    /// failed its handshake, before writing any).
+    async fn reporting_tls_far_end(
+        leaf: &Leaf,
+    ) -> (String, tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) {
+        crate::tls::install_crypto_provider();
+        let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
+        let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let (l, far) = far_end().await;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((s, _)) = l.accept().await {
+                let (acceptor, tx) = (acceptor.clone(), tx.clone());
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(s).await else {
+                        let _ = tx.send(Vec::new());
+                        return;
+                    };
+                    let mut got = Vec::new();
+                    let mut buf = [0_u8; 64];
+                    while got.len() < 5 {
+                        match tls.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => got.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    if got.len() >= 5 {
+                        let _ = tls.write_all(b"answer").await;
+                        let _ = tls.shutdown().await;
+                    }
+                    let _ = tx.send(got);
+                });
+            }
+        });
+        (far, rx)
+    }
+
+    /// Open need 0 at `far` with a five-byte opening body and read to its first answer, waking on
+    /// the connection's own readiness: the connection, and the read's answer.
+    async fn exchange_awaited(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
+        let desc = OpenDesc {
+            target: far,
+            body: b"first",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+        )
+        .await
+        .expect("the connector answers");
+        (id, read.map(|p| buf[..p.len].to_vec()))
+    }
+
+    /// What the far end read on the connection it finished next.
+    async fn far_read(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<u8> {
+        tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("the far end reports the connection")
+            .expect("the far end runs")
+    }
+
+    /// RED (the operator docs: a pin is written `sha256/<base64>`): a pin written in
+    /// the DOCUMENTED spelling is the served key's and reaches it, and so does its plain base64
+    /// alias; a pin of another key is refused in either spelling, after the handshake and before
+    /// any request byte reaches the far end. Compared as written, the documented spelling never
+    /// matched the observed key (plain base64), so every documented pin refused its own far end.
+    /// The facts report the observed key in the canonical spelling either way.
+    #[test]
+    fn a_pin_in_either_spelling_reaches_its_key_and_refuses_another_before_any_request_byte() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let served = pki.leaf("localhost");
+            let other = pki.leaf("localhost");
+            let (far, mut rx) = reporting_tls_far_end(&served).await;
+            let c = trusting(&pki);
+            let plain = |pin: &str| {
+                pin.strip_prefix(busbar_contract::transport::trust::KEY_PIN_TAG)
+                    .expect("the canonical spelling is tagged")
+                    .to_owned()
+            };
+            assert!(served.pin.starts_with("sha256/"), "{}", served.pin);
+            for written in [served.pin.clone(), plain(&served.pin)] {
+                let anchors = Anchors {
+                    key_pin: Some(written.clone()),
+                    client_identity: None,
+                    private_reach: false,
+                };
+                c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                    .expect("sealed");
+                let (id, got) = exchange_awaited(&c, &far).await;
+                assert_eq!(got.as_deref(), Ok(&b"answer"[..]), "{written}");
+                let facts = c.facts(OWNER, id).expect("facts");
+                assert_eq!(
+                    facts.peer_key_pin.as_deref(),
+                    Some(served.pin.as_str()),
+                    "the facts report the observed key canonically, whatever the pin's spelling"
+                );
+                c.close(OWNER, id).expect("closed");
+                assert_eq!(far_read(&mut rx).await, b"first", "{written}");
+            }
+            for written in [other.pin.clone(), plain(&other.pin)] {
+                let anchors = Anchors {
+                    key_pin: Some(written.clone()),
+                    client_identity: None,
+                    private_reach: false,
+                };
+                c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                    .expect("sealed");
+                let (id, got) = exchange_awaited(&c, &far).await;
+                assert_eq!(got, Err(ConnError::Refused), "{written}");
+                let facts = c.facts(OWNER, id).expect("facts after the refusal");
+                assert_eq!(
+                    facts.peer_key_pin.as_deref(),
+                    Some(served.pin.as_str()),
+                    "the refusal names the key served, canonically"
+                );
+                c.close(OWNER, id).expect("closed");
+                assert!(
+                    far_read(&mut rx).await.is_empty(),
+                    "no request byte reached the far end ({written})"
+                );
+            }
+        });
+    }
+
+    /// A pin that names no SHA-256 digest (a stand-in such as `sha256/BASE=`, another tag, a digest
+    /// of another length) refuses the seal: it is never held as a string no key can match.
+    #[test]
+    fn a_pin_that_names_no_digest_refuses_the_seal() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let leaf = pki.leaf("localhost");
+            let (_listening, far) = far_end().await;
+            let c = trusting(&pki);
+            for bad in ["sha256/BASE=", "sha1/AAAA", "not a pin", "sha256/"] {
+                let anchors = Anchors {
+                    key_pin: Some(bad.to_owned()),
+                    client_identity: None,
+                    private_reach: false,
+                };
+                assert_eq!(
+                    c.anchor(OWNER, NeedId(0), "", &far, &anchors),
+                    Err(ConnError::Refused),
+                    "{bad}"
+                );
+            }
+            let good = Anchors {
+                key_pin: Some(leaf.pin.clone()),
+                client_identity: None,
+                private_reach: false,
+            };
+            assert_eq!(c.anchor(OWNER, NeedId(0), "", &far, &good), Ok(()));
+        });
+    }
 }
 
 /// RED (SEAM-4f/4k, a registration's private reach, `abi::plane::TRUST_PRIVATE_REACH`, sealed per
@@ -2333,6 +2754,25 @@ fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
     assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(2)), Some(Ok(())));
 }
 
+/// RED (THE DESIGN §5: `open-web` is "public https only"; v1.5.5 refused a private open-web target
+/// and disabled the instance, `crates/busbar/src/observability.rs:214-240`): an open-web need whose
+/// config pins it to a private literal the allowlist does not name is REFUSED at declare, over a
+/// secure connection too. Its configured target does not make it operator infrastructure (the
+/// class rule itself is `guard_tests::a_configured_open_web_target_keeps_its_class_and_is_refused_a_private_address`).
+#[test]
+fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
+    let c = plain_and_secure_connector();
+    let need = pinned_need("sec", EGRESS_OPEN_WEB);
+    assert_eq!(
+        DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some("10.0.0.5:443"), None),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(
+        DeclaredConns::declared(&c, OWNER, NeedId(0)),
+        Some(Err(ConnError::Refused))
+    );
+}
+
 /// RED: a pinned literal the guard refuses (a cloud metadata address, which no class and no
 /// configured target lifts) is refused at declare, over connection security too.
 #[test]
@@ -2465,4 +2905,205 @@ fn a_request_naming_no_member_gets_no_binding_even_from_the_one_member_at_its_or
         None,
         "nor at the bare origin"
     );
+}
+
+/// THE POOL IS KEYED BY WHO DIALLED AND WHAT THE DIAL TRUSTED (THE DESIGN §5, §8: the connector is
+/// the only holder of trust roots and mTLS identity; a `ConnId` belongs to the instance that opened
+/// it). A far end on loopback that answers every three bytes it reads with one one-byte message and
+/// the exchange's end (`xe`, the `messages` entry's script) and keeps each connection open: its
+/// address, how many connections it accepted, and how many of them the dialler has closed.
+async fn keeping_far_end() -> (
+    String,
+    Arc<std::sync::atomic::AtomicUsize>,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
+    let (l, far) = far_end().await;
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let ended = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (count, gone) = (Arc::clone(&accepted), Arc::clone(&ended));
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            count.fetch_add(1, Ordering::SeqCst);
+            let gone = Arc::clone(&gone);
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0_u8; 3];
+                while s.read_exact(&mut buf).await.is_ok() {
+                    if s.write_all(b"xe").await.is_err() {
+                        break;
+                    }
+                }
+                gone.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+    });
+    (far, accepted, ended)
+}
+
+/// A connector serving the scripted `messages` framer over a `carrier`, keeping finished lines idle
+/// for `idle`.
+fn pooled_messages(idle: std::time::Duration) -> Connector {
+    let view = Transports::new(vec![
+        Entry {
+            door: Arc::new(TestDoor::new(
+                "messages",
+                &["messages"],
+                &[],
+                crate::support::Knobs {
+                    messages: Some(crate::compose::EXCHANGE_STREAM),
+                    ..crate::support::Knobs::default()
+                },
+            )),
+            alpn: Vec::new(),
+        },
+        Entry {
+            door: Arc::new(TestDoor::identity("carrier")),
+            alpn: Vec::new(),
+        },
+    ])
+    .unwrap();
+    Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {})).pooling(
+        crate::pool::PoolPosture {
+            max_idle_per_host: 8,
+            idle_timeout: idle,
+        },
+    )
+}
+
+/// What one pooled exchange read: its bytes, whether it completed (its line goes back to the pool
+/// once closed), and the error that ended it, if one did.
+type Exchanged = (Vec<u8>, bool, Option<ConnError>);
+
+/// Open `owner`'s `need` at `far` with `body`, read its answer (to the exchange's end where
+/// `to_end`, else its first byte), and close it.
+async fn pooled_exchange(
+    c: &Connector,
+    (owner, need): (InstanceId, u32),
+    far: &str,
+    body: &[u8],
+    to_end: bool,
+) -> Exchanged {
+    let id = c
+        .open(
+            owner,
+            NeedId(need),
+            &OpenDesc {
+                target: far,
+                body,
+                ..OpenDesc::default()
+            },
+        )
+        .expect("opens");
+    let mut buf = [0_u8; 64];
+    let mut got = Vec::new();
+    let mut whole = false;
+    let mut failed = None;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match c.read(owner, id, 7, &mut buf) {
+            Ok(p) if p.kind == PieceKind::Completion => {
+                whole = true;
+                break;
+            }
+            Ok(p) => {
+                got.extend_from_slice(&buf[..p.len]);
+                if !to_end && !got.is_empty() {
+                    break;
+                }
+            }
+            Err(ConnError::Pending) => {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
+        }
+    }
+    let _ = c.close(owner, id);
+    (got, whole, failed)
+}
+
+/// RED (THE DESIGN §5 "a `ConnId` belongs to the plugin instance that opened it"; §8 the connector
+/// holds each need's trust): a line an exchange finished on is lent again only to an open of the
+/// SAME instance's SAME need. Another need of the instance, and another instance, each dial their
+/// own; the need's own next open rides the kept line. Keyed by the destination alone, the second
+/// need's open rode the first need's line (secured, where it was, under the first need's trust).
+#[test]
+fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
+    worker().block_on(async {
+        let (far, accepted, _) = keeping_far_end().await;
+        let c = pooled_messages(std::time::Duration::from_secs(60));
+        for (owner, need) in [(OWNER, 0), (OWNER, 1), (OTHER, 0)] {
+            c.declare_over(owner, NeedId(need), "messages")
+                .expect("a served scheme declares");
+        }
+        assert_eq!(
+            pooled_exchange(&c, (OWNER, 0), &far, b"ask", true).await,
+            (b"x".to_vec(), true, None),
+            "the first exchange finishes whole, and its line is kept"
+        );
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+        let other_need = pooled_exchange(&c, (OWNER, 1), &far, b"ask", true).await;
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            2,
+            "another need of the same instance dials its own line"
+        );
+        assert_eq!(other_need, (b"x".to_vec(), true, None));
+        let other_instance = pooled_exchange(&c, (OTHER, 0), &far, b"ask", true).await;
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            3,
+            "another instance dials its own line"
+        );
+        assert_eq!(other_instance, (b"x".to_vec(), true, None));
+        let again = pooled_exchange(&c, (OWNER, 0), &far, b"ask", false).await;
+        assert_eq!(
+            again.0,
+            b"x".to_vec(),
+            "the need's own next open is answered"
+        );
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            3,
+            "control: the need's own next open rides its kept line"
+        );
+    });
+}
+
+/// RED (`limits.pool_idle_timeout_secs`, the pool's own contract: "an idle connection reaped once
+/// it has sat" that long): an idle line whose time ran out is closed when the pool is next used,
+/// whatever place that use opens to. Expired lines were reaped only when an open or a release
+/// touched their own place again, so a place dialled once kept its socket open for the life of
+/// the process.
+#[test]
+fn an_idle_pooled_line_is_closed_once_its_idle_time_passes_whatever_is_opened_next() {
+    worker().block_on(async {
+        let (first_far, _, first_closed) = keeping_far_end().await;
+        let (second_far, _, _) = keeping_far_end().await;
+        let c = pooled_messages(std::time::Duration::from_millis(50));
+        c.declare_over(OWNER, NeedId(0), "messages")
+            .expect("a served scheme declares");
+        assert_eq!(
+            pooled_exchange(&c, (OWNER, 0), &first_far, b"ask", true).await,
+            (b"x".to_vec(), true, None),
+            "the first place's exchange finishes whole, and its line is kept idle"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(
+            pooled_exchange(&c, (OWNER, 0), &second_far, b"ask", true).await,
+            (b"x".to_vec(), true, None),
+            "an open to another place"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while first_closed.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            first_closed.load(Ordering::SeqCst),
+            1,
+            "the first place's line, idle past its time, is closed"
+        );
+    });
 }

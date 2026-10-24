@@ -9,9 +9,9 @@ use axum::Router;
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
-    oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, state, store,
-    telemetry, tls, transport, trust,
+    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, state, store, telemetry,
+    tls, transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -66,6 +66,45 @@ pub fn fallback_error_response(
     crate::ingress::native::native_error(planes.ingress_of(path), status, kind, message)
 }
 
+/// A KERNEL-SHAPED REFUSAL'S ANSWER (ARCHITECT ruling 2026-10-16, 3b B): the kernel decides
+/// `reason` and `status` and words `message`; the door plane that owns `path` (the guest list's own
+/// reading, whatever the verb) renders the body through its refusal hook, in its dialect for
+/// `target`. The native-API root keeps the kernel's frozen envelope (it is the kernel's own
+/// surface), and a path no door owns, or a render that failed, gets the kernel's own answer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn kernel_refusal_response(
+    handle: &state::AppHandle,
+    planes: &crate::plane::PlaneDispatch,
+    reason: busbar_contract::caps::ReasonCode,
+    path: &str,
+    target: &str,
+    status: axum::http::StatusCode,
+    kind: &str,
+    message: &str,
+) -> axum::response::Response {
+    use crate::admin::gate::API_ROOT;
+    let native_api = path == API_ROOT || path.starts_with(&format!("{API_ROOT}/"));
+    if !native_api {
+        let refusal = busbar_kernel::plane_routes::KernelRefusal {
+            reason,
+            status: status.as_u16(),
+            text: message,
+            path,
+            target,
+        };
+        if let Some(rendered) = handle.door_refusal(&refusal) {
+            return rendered;
+        }
+    }
+    fallback_error_response(planes, path, status, kind, message)
+}
+
+/// The request target of `uri` (path and query), as the plane reads its path rule off it.
+fn target_of(uri: &axum::http::Uri) -> &str {
+    uri.path_and_query()
+        .map_or(uri.path(), axum::http::uri::PathAndQuery::as_str)
+}
+
 // NOTE: the 404 fallback handler is superseded by `ingress::protocol_dispatch`, which owns the
 // catch-all and reproduces the same native-envelope 404 shaping for non-protocol paths.
 
@@ -73,12 +112,15 @@ pub fn fallback_error_response(
 /// axum's built-in 405 is an `Allow`-header-only empty body; reshape to the protocol-native envelope
 /// so an SDK sees a vendor-shaped error instead of a bare proxy tell.
 pub(crate) async fn method_not_allowed_handler(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
+    axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
-    fallback_error_response(
-        &app.planes,
+    kernel_refusal_response(
+        &handle,
+        &handle.snapshot().planes,
+        busbar_contract::caps::ReasonCode::MethodNotAllowed,
         uri.path(),
+        target_of(&uri),
         axum::http::StatusCode::METHOD_NOT_ALLOWED,
         crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
         "method not allowed for this resource",
@@ -133,6 +175,7 @@ pub(crate) async fn reshape_body_limit_413(
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     let path = req.uri().path().to_owned();
+    let target = target_of(req.uri()).to_owned();
     let resp = next.run(req).await;
     // FAST PATH: only a 413 is ever reshaped ([`reshape_oversized_413`]'s own first check), so a
     // non-413 — every ordinary request — must not pay even the snapshot the reshape needs.
@@ -142,8 +185,23 @@ pub(crate) async fn reshape_body_limit_413(
     }
     // The snapshot is taken AFTER the inner stack runs, so a config apply mid-request shapes the
     // answer with the mount table that is live when the answer is written.
-    reshape_oversized_413(&handle.snapshot().planes, &path, resp).await
+    let render = || {
+        kernel_refusal_response(
+            &handle,
+            &handle.snapshot().planes,
+            busbar_contract::caps::ReasonCode::BodyTooLarge,
+            &path,
+            &target,
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            OVERSIZED_MESSAGE,
+        )
+    };
+    reshape_oversized_413_with(render, resp).await
 }
+
+/// The words of an oversized-body refusal, the previous release's.
+const OVERSIZED_MESSAGE: &str = "request body exceeds the maximum allowed size";
 
 /// Per-process count of requests that entered the middleware stack — the idleness signal for the
 /// jemalloc idle-purge fallback (bumped once per request in `server_timing`, read every sweep tick
@@ -212,6 +270,7 @@ pub(crate) async fn server_timing(
     resp
 }
 
+#[cfg(test)]
 /// Pure reshaping step of [`reshape_body_limit_413`], split out so it is unit-testable without
 /// constructing a `Next`. Returns `resp` unchanged unless it is axum's OWN body-limit 413 —
 /// identified by status 413 with a non-JSON content-type AND a body that CONTAINS
@@ -223,6 +282,25 @@ pub(crate) async fn server_timing(
 pub(crate) async fn reshape_oversized_413(
     planes: &crate::plane::PlaneDispatch,
     path: &str,
+    resp: axum::response::Response,
+) -> axum::response::Response {
+    let render = || {
+        fallback_error_response(
+            planes,
+            path,
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            // CANONICAL kind for an oversized payload across the protocol writers.
+            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            OVERSIZED_MESSAGE,
+        )
+    };
+    reshape_oversized_413_with(render, resp).await
+}
+
+/// [`reshape_oversized_413`] with the refusal's rendering handed in: the live layer's renders
+/// through the owning door plane ([`kernel_refusal_response`]).
+async fn reshape_oversized_413_with(
+    render: impl FnOnce() -> axum::response::Response,
     resp: axum::response::Response,
 ) -> axum::response::Response {
     if resp.status() != axum::http::StatusCode::PAYLOAD_TOO_LARGE {
@@ -258,14 +336,7 @@ pub(crate) async fn reshape_oversized_413(
         // A relayed upstream 413 (or any non-axum 413): pass through untouched, body re-attached.
         return axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
     }
-    fallback_error_response(
-        planes,
-        path,
-        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-        // CANONICAL kind for an oversized payload across the protocol writers.
-        crate::proxy::KIND_REQUEST_TOO_LARGE,
-        "request body exceeds the maximum allowed size",
-    )
+    render()
 }
 
 /// Build the busbar HTTP router for a given `App` state with default limits. Factored out so the
@@ -377,9 +448,6 @@ pub(crate) fn base_data_router(
     let router = router
         // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
         // health/metrics/stats above, and the named/adhoc conveniences below.
-        // A model-listing convenience route: client SDKs commonly probe it first for discovery;
-        // UIs build pickers from it.
-        // Governance-scoped like /stats (restricted keys see only their reachable names).
         // Token exchange (1.5.2): a verified IdP identity mints its own self-serve key. DATA plane
         // only, and declared `RouteAuth::None` because the handler runs the auth chain ITSELF (it
         // needs the identified principal to self-scope the minted key). The declaration is what
@@ -389,26 +457,17 @@ pub(crate) fn base_data_router(
             crate::auth::exchange::AUTH_TOKEN_PATH,
             RouteMethod::Get,
             RouteAuth::None,
-            crate::auth::token::browser,
+            crate::auth::login::seam::browser,
         )
         .route(
             crate::auth::exchange::AUTH_TOKEN_PATH,
             RouteMethod::Post,
             RouteAuth::None,
             crate::auth::exchange::exchange,
-        )
-        .route(
-            "/v1/models",
-            RouteMethod::Get,
-            RouteAuth::Key,
-            endpoints::list_models,
-        )
-        .route(
-            "/v1beta/models",
-            RouteMethod::Get,
-            RouteAuth::Key,
-            endpoints::list_models_v1beta,
         );
+    // The list-models discovery surface (`GET /v1/models`, `GET /v1beta/models`) is no kernel
+    // route: the plane that claims it as a CATALOG route renders it, unit-less, over the names
+    // `endpoints::catalog_names` computes (ARCHITECT ruling 2026-10-16, 3b C).
     // THE CONVENIENCE SURFACES hand their unit to a body-model arrival, so they are mounted only
     // where a plane registered one and no door plane claims the whole tree (a plane served through
     // its door parses these paths itself).
@@ -637,7 +696,7 @@ fn mount_plane_route(
                 // D1: mint the NEUTRAL host seam over the request's live engine snapshot BEFORE
                 // erasing the handle, so the plane reaches host capabilities by calling typed methods
                 // on `ctx.host` rather than naming `busbar_kernel::plane_host::*_over`.
-                let host = crate::plane_host::engine_host_from_handle(&handle);
+                let host = crate::plane_driver::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
@@ -713,7 +772,7 @@ fn mount_plane_session(
                 let caller_principal = gov
                     .as_ref()
                     .and_then(|g| g.key.as_ref().map(|k| k.id.clone()));
-                let host = crate::plane_host::engine_host_from_handle(&handle);
+                let host = crate::plane_driver::engine_host_from_handle(&handle);
                 let engine: std::sync::Arc<dyn std::any::Any + Send + Sync> = handle;
                 let ctx = busbar_kernel::plane_routes::PlaneReqCtx {
                     path: ctx_path,
@@ -989,9 +1048,12 @@ fn request_panicked(
         backtrace = %backtrace,
         "a request handler panicked; that request was answered 500 and the connection kept serving"
     );
-    fallback_error_response(
+    kernel_refusal_response(
+        handle,
         &handle.load().planes,
+        busbar_contract::caps::ReasonCode::Internal,
         uri.path(),
+        target_of(uri),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
         crate::proxy::KIND_API_ERROR,
         "internal error",

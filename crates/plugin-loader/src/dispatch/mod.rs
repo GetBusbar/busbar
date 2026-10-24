@@ -48,6 +48,7 @@ pub mod auth_outbound;
 pub mod auth_ticks;
 pub mod conn_services;
 pub mod handle;
+pub(crate) mod held;
 pub mod inline;
 pub mod io_slots;
 pub mod kinds;
@@ -83,8 +84,8 @@ pub use answer::{Answer, Context};
 pub use inline::{InlineTicket, InlineTickets};
 pub use kinds::plane::PlaneCancel;
 pub use load::{
-    load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, LinkedRow,
-    LoadError, ManifestFacts,
+    load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library,
+    rendering_of_loaded, rendering_of_macro, LinkedRow, LoadError, LoadedDoor, ManifestFacts,
 };
 pub use log_file::{LogLevel, PluginLogConfig, PluginLogSink};
 pub use plugin::{
@@ -111,6 +112,15 @@ pub trait Kind: Send + Sync + 'static {
     /// The op's name, for the log line a broken rule writes.
     fn op_name(slot: u32) -> &'static str {
         lifecycle_name(slot)
+    }
+
+    /// Whether `slot` is a kind op this kind states OPTIONAL: a door may leave it NULL (absent),
+    /// and the host reads an absent one as a pass (the plane's `catalog`, ARCHITECT ruling
+    /// 2026-10-16, 3b C, a door that states no catalog claim is never asked it; the secret `check`;
+    /// the auth `target`). Every other slot NULL refuses the load.
+    fn optional_slot(slot: u32) -> bool {
+        let _ = slot;
+        false
     }
 
     /// The instance's CONTEXT for its checks, built once from the Statement at bind (the plane's
@@ -192,6 +202,12 @@ pub trait CancelFrame: Send {
 
     /// The disposition its answer carried.
     fn disposition(&self) -> u32;
+
+    /// The unit the cancelled op serves (`0`: none), for a kind whose `cancel` names it (a plane's
+    /// `PlaneCancelIn::unit`); a kind whose `cancel` names none ignores it.
+    fn name_unit(&mut self, unit: u64) {
+        let _ = unit;
+    }
 
     /// The record writes its READY answer carried (a plane's, SEAM-L(r)); none for a kind whose
     /// `cancel` writes none.

@@ -41,7 +41,8 @@ so that "we did not use it" is a recorded decision rather than an omission someb
 
 `v2.4.0`, Apache-2.0 (unambiguous). Installed by `go install` at run time by both this directory and
 `../a2a-harness/scripts/install-control.sh`; not vendored. The two must stay on the same version, or
-the two instruments are describing different peers.
+the two instruments are describing different peers: `run-tck.sh` refuses to run when its pin and the
+harness's disagree, and when the installed binary's module version is not the pin.
 
 ## `a2aproject/a2a-python` — used as a second control, at a pinned version
 
@@ -52,8 +53,9 @@ not vendored in either case.
 The second use is a LIBRARY use rather than a control: `scenario-agent/scenario_agent.py` is our own
 file, under our own copyright, and it imports this SDK for the A2A protocol machinery so that the
 only thing the file itself contributes is scenario routing. Apache-2.0 permits that without
-condition. The pin is read out of `install-control.sh` at run time rather than spelled twice, so the
-tree cannot end up holding two opinions about which a2a-python it is talking about.
+condition. `serve.sh` reads the pin out of `install-control.sh` at run time rather than spelling it
+twice, and refuses to serve when that file or its pin line is missing, so the tree cannot end up
+holding two opinions about which a2a-python it is talking about.
 
 **Nothing from `a2a-tck`'s own `sut/` directory is copied or adapted.** That SUT is generated from
 the Gherkin scenario files, is written against an unreleased checkout of a2a-python (a path

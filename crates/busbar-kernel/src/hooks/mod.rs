@@ -42,6 +42,7 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 /// only as an [`busbar_contract::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
 /// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
 pub mod gate;
+pub mod taps;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
 // (`RoutingRequest`, `Candidate`, `RoutingContext`, `RoutingDecision`, …) — lives in the
@@ -494,8 +495,8 @@ pub fn resolve_pool_rewrites(
 /// `reject` refuses the unit, anything else proceeds with the ORIGINAL body.
 ///
 /// A DECORATOR rather than a branch at each firing site: the rewrite chain fires from four places
-/// (the model plane's global + per-pool passes and the kernel's `admission_transform` the MCP, A2A
-/// and voice planes share), and a per-site branch would have to be written — and kept correct —
+/// (the model plane's global + per-pool passes and the plane driver's per-entry rewrite chain every
+/// door plane shares), and a per-site branch would have to be written — and kept correct —
 /// four times. Wrapping at RESOLUTION means every firing site, present and future, gets the
 /// operator's disposition for free, and the sites keep their fail-safe shape.
 ///
@@ -507,7 +508,9 @@ pub fn resolve_pool_rewrites(
 /// `decide` is NOT intercepted: the read-only seat resolves `on_error` itself, and richer — it
 /// walks the configured FALLBACK CHAIN before it reaches a terminal. Both seats bottom out on the
 /// SAME rule (`busbar_kernel::hooks::failed_call_refuses`), which is what keeps them from
-/// drifting. Every other trait method is a transparent delegate.
+/// drifting. `refuses_failed_rewrite` answers the same rule for a rewrite the plane then refuses to
+/// apply, which every firing site that hands a rewrite back to a plane consults. Every other trait
+/// method is a transparent delegate.
 struct RewriteOnError {
     inner: Arc<dyn RoutingPolicy>,
     on_error: crate::config::PolicyOnError,
@@ -560,6 +563,12 @@ impl RoutingPolicy for RewriteOnError {
             }
             other => other,
         }
+    }
+
+    /// A rewrite the plane refuses to apply is this hook's failure: the same disposition, by the
+    /// same rule, as a failed call.
+    fn refuses_failed_rewrite(&self) -> bool {
+        busbar_kernel::hooks::failed_call_refuses(&self.on_error)
     }
 
     async fn configure(
@@ -1648,8 +1657,8 @@ pub fn resolve_gate_hooks(
     ranked
 }
 
-/// THE ADDITIVE-LIST COMBINE RULE — relocated to the neutral seam (`busbar_kernel::plane::config`)
-/// beside the [`ContainerGateInputs`](busbar_kernel::plane::config::ContainerGateInputs) it folds,
+/// THE ADDITIVE-LIST COMBINE RULE — relocated to the neutral seam (`busbar_kernel::config::plane_sections`)
+/// beside the [`ContainerGateInputs`](busbar_kernel::config::plane_sections::ContainerGateInputs) it folds,
 /// so an extracted plane crate reaches it without naming `busbar_kernel::hooks`. Re-exported here so
 /// `crate::hooks::attach_list` (this module's [`resolve_container_gates`], and the A2A twin) is
 /// unchanged.
@@ -1657,11 +1666,20 @@ pub fn resolve_gate_hooks(
 // [`resolve_container_gates`] has no caller, so the re-export reads unused. Unconditional allow —
 // the neutral seam names no plane feature; it is a public re-export whichever planes are compiled in.
 #[allow(unused_imports)]
-pub use busbar_kernel::plane::config::attach_list;
+pub use busbar_kernel::config::plane_sections::attach_list;
+
+/// THE SECTION'S OWN SCOPE in a plane's per-container hook maps: the section-level attach
+/// (`<section>.hooks:`) resolved alone, keyed by the reserved word itself, which no registration
+/// can be named (`busbar_contract::section::RESERVED_SECTION_KEYS`). A ROUTED-order plane binds it to
+/// every unit beside the deployment's global hooks (`plane_driver::HostHooks`), so a
+/// section's own attach fires on a plane whose units name no container; a GATE-FIRST plane reads
+/// its entries, each of which already carries the section's list ([`attach_list`]).
+pub const SECTION_SCOPE: &str = busbar_contract::section::RESERVED_SECTION_KEYS[0];
 
 /// Resolve the per-CONTAINER gate chains for one plane's registry: for each `(container name, that
 /// container's own hook list)`, the effective attach ([`attach_list`]) resolved through
-/// [`resolve_gate_hooks`], keyed by container.
+/// [`resolve_gate_hooks`], keyed by container; and the section's own attach alone, under
+/// [`SECTION_SCOPE`].
 ///
 /// A container whose effective chain is EMPTY gets NO ENTRY, deliberately: the firing site's lookup
 /// then answers `None` on every deployment that attached nothing, which is the zero-cost default,
@@ -1670,10 +1688,6 @@ pub use busbar_kernel::plane::config::attach_list;
 ///
 /// Called ONCE per config generation, from the App build. Resolution `dlopen`s the plugin; doing it
 /// per request would put a library load on a dispatch path.
-// Resolves the per-container gate chains for each installed protocol plane's registry; with none
-// installed no such registry is built, so it reads dead. Unconditional allow — the neutral seam
-// names no plane feature.
-#[allow(dead_code)]
 pub fn resolve_container_gates<'a>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
     section: &[String],
@@ -1682,7 +1696,7 @@ pub fn resolve_container_gates<'a>(
     settings_version: u64,
 ) -> std::collections::HashMap<String, Vec<(u16, ResolvedPolicy)>> {
     let mut out = std::collections::HashMap::new();
-    for (name, own) in containers {
+    for (name, own) in containers.chain(std::iter::once((SECTION_SCOPE, &[][..]))) {
         let attached = attach_list(section, own);
         if attached.is_empty() {
             continue;
@@ -1698,7 +1712,8 @@ pub fn resolve_container_gates<'a>(
 /// Resolve the per-CONTAINER REWRITE (`prompt: rw`) chains for one plane's registry — the
 /// tap/transform twin of [`resolve_container_gates`]. For each `(container name, own hook list)`, the
 /// effective attach ([`attach_list`]) resolved through [`resolve_rewrite_hooks`] (which enforces the
-/// EFFECTIVE `rw` grant), keyed by container.
+/// EFFECTIVE `rw` grant), keyed by container; and the section's own attach alone, under
+/// [`SECTION_SCOPE`].
 ///
 /// A container whose effective chain is EMPTY gets NO ENTRY, exactly like the gate twin: the tap
 /// firing site's presence lookup then answers `None` on every deployment that attached no rewrite
@@ -1706,10 +1721,6 @@ pub fn resolve_container_gates<'a>(
 ///
 /// Called ONCE per config generation. Resolution `dlopen`s the plugin; doing it per request would put
 /// a library load on the dispatch path.
-// Resolves the per-container rewrite chains for each installed protocol plane's registry; with none
-// installed no such registry is built, so it reads dead. Unconditional allow — the neutral seam names
-// no plane feature.
-#[allow(dead_code)]
 #[allow(clippy::type_complexity)]
 pub fn resolve_container_rewrites<'a>(
     containers: impl Iterator<Item = (&'a str, &'a [String])>,
@@ -1719,7 +1730,7 @@ pub fn resolve_container_rewrites<'a>(
     settings_version: u64,
 ) -> std::collections::HashMap<String, Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)>> {
     let mut out = std::collections::HashMap::new();
-    for (name, own) in containers {
+    for (name, own) in containers.chain(std::iter::once((SECTION_SCOPE, &[][..]))) {
         let attached = attach_list(section, own);
         if attached.is_empty() {
             continue;

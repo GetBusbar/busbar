@@ -26,16 +26,23 @@ use oauth_as::store::Storage as _;
 
 use crate::config::OauthAsCfg;
 use crate::plane::{seam_build, AsPlane};
-use crate::shared::{Shared, SharedStorage, LABEL, MINT_CLAIM_SECS};
+use crate::shared::{Shared, SharedStorage, LABEL, MINT_CLAIM_SECS, VERSION_CLAIM_SECS};
 
 /// `(kind, parent or else id, seq)` to `(parent, body)`, as the linked in-tree store keys them.
 type Records = BTreeMap<(String, String, u64), (Option<String>, Vec<u8>)>;
+
+/// One answer the double holds back: the slot (`get` or `redeem`), the record kind it is for, and
+/// how long the answer takes after the store has decided it.
+type Stall = (&'static str, String, std::time::Duration);
 
 /// The double. Cheap to clone; every clone is the same store.
 #[derive(Clone, Default)]
 struct OneStore {
     records: Arc<Mutex<Records>>,
-    claims: Arc<Mutex<BTreeMap<(String, String), u64>>>,
+    /// Each claim lapses on the runtime's clock, `expires_at - now` after it was redeemed, so a test
+    /// on a paused clock moves every claim's lapse with it.
+    claims: Arc<Mutex<BTreeMap<(String, String), tokio::time::Instant>>>,
+    stalls: Arc<Mutex<Vec<Stall>>>,
 }
 
 impl OneStore {
@@ -45,11 +52,59 @@ impl OneStore {
 
     /// Redeem `(kind, token)` as another node would.
     fn redeem(&self, kind: &str, token: &str, expires_at: u64, now: u64) -> bool {
+        let at = tokio::time::Instant::now();
+        let lapses = at + std::time::Duration::from_secs(expires_at.saturating_sub(now));
         let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
-        claims.retain(|_, lapses| *lapses > now);
+        claims.retain(|_, l| *l > at);
         claims
-            .insert((kind.to_string(), token.to_string()), expires_at)
+            .insert((kind.to_string(), token.to_string()), lapses)
             .is_none()
+    }
+
+    /// Hold back the next answer of `slot` for the kind `name` of the server's records by `by`: the
+    /// store decides the call at once and answers it `by` later, as a stalled node or a slow store
+    /// would.
+    fn stall(&self, slot: &'static str, name: &str, by: std::time::Duration) {
+        self.stalls.lock().unwrap_or_else(|p| p.into_inner()).push((
+            slot,
+            format!("{LABEL}{name}"),
+            by,
+        ));
+    }
+
+    fn stalled(&self, slot: &str, kind: &str) -> Option<std::time::Duration> {
+        let mut stalls = self.stalls.lock().unwrap_or_else(|p| p.into_inner());
+        let i = stalls
+            .iter()
+            .position(|(s, k, _)| *s == slot && k == kind)?;
+        Some(stalls.remove(i).2)
+    }
+
+    /// Every record of the server's kinds the store still holds.
+    fn rows(&self) -> Vec<(String, String, u64)> {
+        self.records
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .keys()
+            .filter(|(k, _, _)| k.starts_with(LABEL))
+            .cloned()
+            .collect()
+    }
+
+    /// Age every record that says when it was written (an `at` member) by `secs`, as if it had
+    /// been written that much earlier.
+    fn age(&self, secs: u64) {
+        let mut records = self.records.lock().unwrap_or_else(|p| p.into_inner());
+        for (_, body) in records.values_mut() {
+            let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
+                continue;
+            };
+            let Some(at) = v.get("at").and_then(serde_json::Value::as_u64) else {
+                continue;
+            };
+            v["at"] = serde_json::json!(at.saturating_sub(secs));
+            *body = serde_json::to_vec(&v).expect("a JSON body serializes");
+        }
     }
 
     fn put(&self, kind: &str, id: &str, body: &[u8]) {
@@ -154,7 +209,13 @@ impl StoreCalls for OneStore {
             .unwrap_or_else(|p| p.into_inner())
             .get(&(kind.to_string(), id.to_string(), 0))
             .map(|(_, body)| body.clone());
-        Box::pin(async move { Ok(got) })
+        let stall = self.stalled("get", kind);
+        Box::pin(async move {
+            if let Some(by) = stall {
+                tokio::time::sleep(by).await;
+            }
+            Ok(got)
+        })
     }
     fn append_plane_record<'a>(&'a self, _: OpId, _: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
         not_this()
@@ -195,7 +256,13 @@ impl StoreCalls for OneStore {
         now: u64,
     ) -> StoreCall<'a, bool> {
         let first = self.redeem(kind, token, expires_at, now);
-        Box::pin(async move { Ok(first) })
+        let stall = self.stalled("redeem", kind);
+        Box::pin(async move {
+            if let Some(by) = stall {
+                tokio::time::sleep(by).await;
+            }
+            Ok(first)
+        })
     }
     fn plane_token_live<'a>(
         &'a self,
@@ -482,4 +549,351 @@ async fn without_a_store_the_records_stay_in_process() {
         .await
         .expect("reads")
         .is_none());
+}
+
+/// RED (audit core-oauth2 r4#1): a writer whose version claim lapsed before it wrote must not write.
+/// Node A takes a code and stalls inside its version claim past the claim's lapse; node B then wins
+/// the lapsed version and takes the same code. Before the fix A wrote anyway and both nodes held
+/// the code: one authorization code redeemed twice.
+#[tokio::test(start_paused = true)]
+async fn a_take_whose_version_claim_lapsed_never_lands() {
+    let store = OneStore::default();
+    let node_b = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    node_b
+        .put_client(client("agent-1"))
+        .await
+        .expect("registers");
+    node_b
+        .put_authorization_code(oauth_as::authorization::AuthorizationCodeRecord::new(
+            "code-1",
+            oauth_as::client::ClientId::new("agent-1"),
+            "https://app.example.com/cb",
+            oauth_as::scope::ScopeSet::default(),
+            "busbar-operator",
+            "challenge",
+            std::time::SystemTime::now() + std::time::Duration::from_secs(600),
+        ))
+        .await
+        .expect("issues");
+
+    let stall = std::time::Duration::from_secs(VERSION_CLAIM_SECS + 10);
+    store.stall("redeem", "bucket.v", stall);
+    let node_a = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    let a = tokio::spawn(async move { node_a.take_authorization_code("code-1").await });
+    tokio::time::sleep(std::time::Duration::from_secs(VERSION_CLAIM_SECS + 1)).await;
+    let b = node_b.take_authorization_code("code-1").await;
+    let a = a.await.expect("node A ran");
+    let taken = [&a, &b].iter().filter(|t| matches!(t, Ok(Some(_)))).count();
+    assert_eq!(
+        taken, 1,
+        "one authorization code was taken {taken} times (node A: {a:?}, node B: {b:?})"
+    );
+}
+
+/// RED (audit core-oauth2 r4#1, the key): a minting winner whose claim lapsed before it wrote must
+/// not keep a key. Node A wins the minting claim and stalls reading the store past the claim's
+/// lapse; node C wins the lapsed claim and keeps its key. Before the fix A then minted and kept a
+/// second key over C's, so the two nodes signed with different keys.
+#[tokio::test(start_paused = true)]
+async fn a_minting_winner_whose_claim_lapsed_keeps_no_second_key() {
+    let store = OneStore::default();
+    // A's first read is answered at once (nothing kept); its read after the won claim stalls.
+    let a_store = store.clone();
+    let a = tokio::spawn(async move {
+        let shared = Shared::new(a_store.calls());
+        a_store.stall("get", "key", std::time::Duration::ZERO);
+        a_store.stall(
+            "get",
+            "key",
+            std::time::Duration::from_secs(MINT_CLAIM_SECS + 10),
+        );
+        shared.signing_key(|| Ok(vec![1, 1, 1])).await
+    });
+    tokio::time::sleep(std::time::Duration::from_secs(MINT_CLAIM_SECS + 1)).await;
+    let c = Shared::new(store.calls())
+        .signing_key(|| Ok(vec![3, 3, 3]))
+        .await;
+    let a = a.await.expect("node A ran");
+    let kept = Shared::new(store.calls())
+        .signing_key(|| Ok(vec![9, 9, 9]))
+        .await;
+    for (node, key) in [("A", &a), ("C", &c)] {
+        if let Ok(key) = key {
+            assert_eq!(
+                Ok(key),
+                kept.as_ref(),
+                "node {node} signs with a key the store does not keep (A: {a:?}, C: {c:?}, kept: \
+                 {kept:?})"
+            );
+        }
+    }
+}
+
+/// RED (audit core-oauth2 r4#2): the sweep reclaims what has lapsed. A client registers, takes a
+/// code, holds a token family that is revoked, opens a consent session and stakes an answer on it,
+/// claims a replay id, and is deleted; once every record, barrier and session has lapsed, a sweep
+/// leaves none of the server's rows behind. Before the fix index rows, sessions, stakes, the
+/// family barrier and the client's bucket were kept forever.
+#[tokio::test]
+async fn a_sweep_past_every_expiry_leaves_no_record_behind() {
+    use oauth_as::store::RevocationWindow;
+    let store = OneStore::default();
+    let shared = Arc::new(Shared::new(store.calls()));
+    let s = SharedStorage::new(Arc::clone(&shared));
+    let now = std::time::SystemTime::now();
+    let hour = std::time::Duration::from_secs(3600);
+    let id = oauth_as::client::ClientId::new("agent-1");
+    let subject = Some("busbar-operator".to_string());
+
+    s.put_client(client("agent-1")).await.expect("registers");
+    s.put_authorization_code(oauth_as::authorization::AuthorizationCodeRecord::new(
+        "code-1",
+        id.clone(),
+        "https://app.example.com/cb",
+        oauth_as::scope::ScopeSet::default(),
+        "busbar-operator",
+        "challenge",
+        now + std::time::Duration::from_secs(60),
+    ))
+    .await
+    .expect("issues a code");
+    assert!(s
+        .take_authorization_code("code-1")
+        .await
+        .expect("takes")
+        .is_some());
+    let mut access = oauth_as::token::IssuedToken::new(
+        "at-1",
+        id.clone(),
+        subject.clone(),
+        oauth_as::scope::ScopeSet::default(),
+        now,
+        now + hour,
+    );
+    access.family_id = Some("fam-1".to_string());
+    let _ = s.put_token(access).await.expect("issues a token");
+    let mut refresh = oauth_as::token::RefreshTokenRecord::new(
+        "rt-1",
+        id.clone(),
+        subject.clone(),
+        oauth_as::scope::ScopeSet::default(),
+        "fam-1",
+    );
+    refresh.expires_at = Some(now + 2 * hour);
+    let _ = s
+        .put_refresh_token(refresh)
+        .await
+        .expect("issues a refresh token");
+    s.revoke_token_family(
+        "fam-1",
+        RevocationWindow {
+            recorded_at: now,
+            until: now + 2 * hour,
+        },
+    )
+    .await
+    .expect("revokes the family");
+    shared
+        .open_session(
+            "session-1",
+            "busbar-operator",
+            std::time::Duration::from_secs(600),
+        )
+        .await
+        .expect("opens a session");
+    shared
+        .stake(
+            "session-1",
+            "key-1",
+            true,
+            std::time::Duration::from_secs(600),
+        )
+        .await
+        .expect("stakes");
+    assert!(s
+        .claim_replay_id("jti-1", now + std::time::Duration::from_secs(60))
+        .await
+        .expect("claims"));
+    assert!(s
+        .delete_client(
+            &id,
+            RevocationWindow {
+                recorded_at: now,
+                until: now + 2 * hour,
+            },
+        )
+        .await
+        .expect("deletes"));
+
+    // Three hours on: every record, barrier, session and answer above has lapsed.
+    store.age(3 * 3600);
+    let later = now + 3 * hour;
+    s.sweep_expired(later).await.expect("sweeps");
+    s.sweep_expired(later).await.expect("sweeps again");
+    let left = store.rows();
+    assert!(left.is_empty(), "rows the sweep never reclaims: {left:#?}");
+}
+
+fn code(code: &str, client_id: &str) -> oauth_as::authorization::AuthorizationCodeRecord {
+    oauth_as::authorization::AuthorizationCodeRecord::new(
+        code,
+        oauth_as::client::ClientId::new(client_id),
+        "https://app.example.com/cb",
+        oauth_as::scope::ScopeSet::default(),
+        "busbar-operator",
+        "challenge",
+        std::time::SystemTime::now() + std::time::Duration::from_secs(600),
+    )
+}
+
+/// RED (row 159): a cell the sweep retired never blocks the cell made again under its id. The sweep
+/// retires an emptied bucket at version 2 under the claim on version 3, which stands for two
+/// minutes; a client whose records come back inside them climbs to version 3 again. Before the fix
+/// that write lost the retirement's claim on every attempt and answered a storage error (a login
+/// failing at the token endpoint); now the made-again cell's claims name an epoch of their own.
+#[tokio::test(start_paused = true)]
+async fn a_retired_cell_never_blocks_its_own_recreation() {
+    let store = OneStore::default();
+    let s = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    s.put_authorization_code(code("code-1", "agent-1"))
+        .await
+        .expect("version 1");
+    assert!(s
+        .take_authorization_code("code-1")
+        .await
+        .expect("version 2")
+        .is_some());
+    // Long enough ago that every claim on versions 1 and 2 has lapsed, and the sweep retires the
+    // emptied bucket, under the claim on version 3.
+    tokio::time::advance(std::time::Duration::from_secs(VERSION_CLAIM_SECS + 60)).await;
+    store.age(3600);
+    s.sweep_expired(std::time::SystemTime::now())
+        .await
+        .expect("sweeps");
+    let bucket = format!("{LABEL}bucket");
+    assert!(
+        store.rows().iter().all(|(k, _, _)| *k != bucket),
+        "the emptied bucket was retired"
+    );
+
+    s.put_authorization_code(code("code-2", "agent-1"))
+        .await
+        .expect("version 1 again");
+    assert!(s
+        .take_authorization_code("code-2")
+        .await
+        .expect("version 2 again")
+        .is_some());
+    s.put_authorization_code(code("code-3", "agent-1"))
+        .await
+        .expect(
+            "version 3 of the made-again bucket is written while the retirement's claim stands",
+        );
+    assert!(
+        s.take_authorization_code("code-3")
+            .await
+            .expect("version 4")
+            .is_some(),
+        "the code written at version 3 is held"
+    );
+}
+
+/// RED (row 159): with the store, a second answer to one request on one session is spent, once, as
+/// the in-process table spends it. Before the fix the spend claim named only the session and the
+/// request, so it stood from the first answer's spend and a second answer could never be spent:
+/// `/authorize` sent the operator back to the consent screen for the session's life.
+#[tokio::test]
+async fn a_second_answer_on_one_session_is_spent_once() {
+    let store = OneStore::default();
+    let shared = Shared::new(store.calls());
+    let ttl = std::time::Duration::from_secs(600);
+    shared
+        .open_session("session-1", "busbar-operator", ttl)
+        .await
+        .expect("opens");
+    shared
+        .stake("session-1", "key-1", true, ttl)
+        .await
+        .expect("stakes");
+    assert_eq!(
+        shared.spend("session-1", "key-1").await.expect("spends"),
+        Some(true)
+    );
+    shared
+        .stake("session-1", "key-1", false, ttl)
+        .await
+        .expect("stakes again");
+    assert_eq!(
+        shared.spend("session-1", "key-1").await.expect("spends"),
+        Some(false),
+        "the second answer was never spent"
+    );
+    assert_eq!(
+        shared.spend("session-1", "key-1").await.expect("spends"),
+        None,
+        "one answer was spent twice"
+    );
+}
+
+/// RED (row 159): in the deployment's store, a self-registered client whose bucket has held nothing
+/// for the idle period is reclaimed by the sweep, bucket and all. Before the fix a bucket holding a
+/// client never held nothing, so it was kept for good.
+#[tokio::test]
+async fn an_idle_self_registered_client_leaves_the_store() {
+    use oauth_as::client::ClientId;
+    let store = OneStore::default();
+    let p = plane(&node(Some(&store), None, Vec::new()));
+    let info = p
+        .server()
+        .register_dynamic_client(
+            &oauth_as::registration::ClientMetadata {
+                redirect_uris: vec!["http://127.0.0.1:3000/callback".to_string()],
+                token_endpoint_auth_method: Some("none".to_string()),
+                grant_types: None,
+                response_types: Some(vec!["code".to_string()]),
+                client_name: Some("an agent".to_string()),
+                scope: None,
+                software_statement: None,
+            },
+            None,
+        )
+        .await
+        .expect("registers");
+    let id = ClientId::new(info.client_id);
+    // A client stored with no registration (none of the server's own paths store one) is kept.
+    p.server()
+        .store()
+        .put_client(client("agent-1"))
+        .await
+        .expect("stores");
+    store.age(crate::policy::REGISTERED_CLIENT_IDLE.as_secs() + 60);
+    p.server()
+        .store()
+        .sweep_expired(std::time::SystemTime::now())
+        .await
+        .expect("sweeps");
+    assert!(
+        p.server()
+            .store()
+            .get_client(&id)
+            .await
+            .expect("reads")
+            .is_none(),
+        "an idle self-registered client was kept"
+    );
+    assert!(
+        p.server()
+            .store()
+            .get_client(&ClientId::new("agent-1"))
+            .await
+            .expect("reads")
+            .is_some(),
+        "a client nobody registered was reclaimed"
+    );
+    let bucket = format!("{LABEL}bucket");
+    assert_eq!(
+        store.rows().iter().filter(|(k, _, _)| *k == bucket).count(),
+        1,
+        "the reclaimed client's bucket is still kept"
+    );
 }

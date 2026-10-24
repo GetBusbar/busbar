@@ -81,35 +81,35 @@ fn a_read_above_its_buffer_is_fault() {
 #[test]
 fn locate_flags_and_the_name_arms_are_checked() {
     let mut o: LocateOut = z();
-    assert_eq!(check_locate(Ready, &o, 8, 8, 16, &[]), Ok(()));
+    assert_eq!(check_locate(Ready, &o, 8, 8, 16, &[], 32), Ok(()));
     o.secure = 2;
     assert_eq!(
-        check_locate(Ready, &o, 8, 8, 16, &[]),
+        check_locate(Ready, &o, 8, 8, 16, &[], 32),
         f(Rule::UnknownCode, "locate.secure")
     );
     let mut o: LocateOut = z();
     o.has_name = 2;
     assert_eq!(
-        check_locate(Ready, &o, 8, 8, 16, &[]),
+        check_locate(Ready, &o, 8, 8, 16, &[], 32),
         f(Rule::UnknownCode, "locate.has_name")
     );
     let mut o: LocateOut = z();
     o.name_written = 1;
     assert_eq!(
-        check_locate(Ready, &o, 8, 8, 16, &[]),
+        check_locate(Ready, &o, 8, 8, 16, &[], 32),
         f(Rule::Contradiction, "locate.name_without_has_name")
     );
     let mut o: LocateOut = z();
     o.authority_needed = 9;
     assert_eq!(
-        check_locate(Ready, &o, 8, 8, 16, &[]),
+        check_locate(Ready, &o, 8, 8, 16, &[], 32),
         f(Rule::NeededNotFailed, "locate.authority")
     );
     let mut o: LocateOut = z();
     o.has_name = 1;
     o.name_needed = 8;
     assert_eq!(
-        check_locate(Failed, &o, 8, 8, 16, &[]),
+        check_locate(Failed, &o, 8, 8, 16, &[], 32),
         f(Rule::WastedRecall, "locate")
     );
 }
@@ -121,13 +121,13 @@ fn locate_is_one_multi_dimension_short_answer() {
     o.authority_needed = 9;
     o.name_needed = 3;
     assert_eq!(
-        check_locate(Failed, &o, 8, 8, 16, &[]),
+        check_locate(Failed, &o, 8, 8, 16, &[], 32),
         Ok(()),
         "one short, the other reports its size"
     );
     o.authority_needed = 8;
     assert_eq!(
-        check_locate(Failed, &o, 8, 8, 16, &[]),
+        check_locate(Failed, &o, 8, 8, 16, &[], 32),
         f(Rule::WastedRecall, "locate")
     );
 }
@@ -139,26 +139,41 @@ fn locate_answers_an_alpn_offer_the_connector_can_trust() {
     let offer = b"\x02h2\x08http/1.1";
     let mut o: LocateOut = z();
     o.alpn_written = offer.len() as u64;
-    assert_eq!(check_locate(Ready, &o, 8, 8, 16, offer), Ok(()));
+    assert_eq!(check_locate(Ready, &o, 8, 8, 16, offer, 32), Ok(()));
     assert_eq!(
-        check_locate(Ready, &o, 8, 8, 16, b"\x02h2\x00"),
+        check_locate(Ready, &o, 8, 8, 16, b"\x02h2\x00", 32),
         f(Rule::Missing, "locate.alpn.id")
     );
     assert_eq!(
-        check_locate(Ready, &o, 8, 8, 16, b"\x09http/1.1"),
+        check_locate(Ready, &o, 8, 8, 16, b"\x09http/1.1", 32),
         f(Rule::SpanOutOfBounds, "locate.alpn.id")
     );
     o.alpn_written = 17;
     assert_eq!(
-        check_locate(Ready, &o, 8, 8, 16, offer),
+        check_locate(Ready, &o, 8, 8, 16, offer, 32),
         f(Rule::OverCap, "locate.alpn")
     );
     let mut o: LocateOut = z();
     o.alpn_needed = 20;
     assert_eq!(
-        check_locate(Failed, &o, 8, 8, 16, &[]),
+        check_locate(Failed, &o, 8, 8, 16, &[], 32),
         Ok(()),
         "short: re-call with 20"
+    );
+    // THE FRAMER'S OWN HEAD LINES (`LocateIn::defaults_buf`): within the host's buffer, a short
+    // answer stated for a re-call.
+    let mut o: LocateOut = z();
+    o.defaults_written = 33;
+    assert_eq!(
+        check_locate(Ready, &o, 8, 8, 16, &[], 32),
+        f(Rule::OverCap, "locate.defaults")
+    );
+    let mut o: LocateOut = z();
+    o.defaults_needed = 64;
+    assert_eq!(
+        check_locate(Failed, &o, 8, 8, 16, &[], 32),
+        Ok(()),
+        "short: re-call with 64"
     );
     assert_eq!(check_agreed(offer, b"h2"), Ok(()));
     assert_eq!(check_agreed(offer, b"http/1.1"), Ok(()));
@@ -907,6 +922,38 @@ fn a_route_content_is_checked() {
             vec![(FIELD_VALUE_PREFIX, "authorization", b"")]
         )),
         f(Rule::Contradiction, "route.field.value")
+    );
+}
+
+/// RED (audit contract-src #11): a read route no request can match by its method set or its path
+/// form is refused by the content check the kernel runs on every line it seals: no method, a bit
+/// outside the vocabulary, or a path form outside the five.
+#[test]
+fn a_route_view_with_no_method_or_no_known_form_is_refused() {
+    use route::*;
+    let v = |methods, path_form| RouteView {
+        methods,
+        path_form,
+        path: "/v1/messages",
+        fields: vec![],
+        rung: 0,
+    };
+    assert_eq!(check_route_view(&v(METHOD_ANY, PATH_CONTAINS)), Ok(()));
+    assert_eq!(
+        check_route_view(&v(0, PATH_EXACT)),
+        f(Rule::Missing, "route.methods")
+    );
+    assert_eq!(
+        check_route_view(&v(METHOD_ANY + 1, PATH_EXACT)),
+        f(Rule::UnknownCode, "route.methods")
+    );
+    assert_eq!(
+        check_route_view(&v(METHOD_POST, 0)),
+        f(Rule::UnknownCode, "route.path_form")
+    );
+    assert_eq!(
+        check_route_view(&v(METHOD_POST, PATH_CONTAINS + 1)),
+        f(Rule::UnknownCode, "route.path_form")
     );
 }
 

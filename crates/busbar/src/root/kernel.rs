@@ -118,6 +118,18 @@ impl PinnedHistory {
         self.history.snapshot(self.at)
     }
 
+    /// The history as it stood at `at`, never past this pin: a sealed checkpoint's totals are
+    /// re-derived against the snapshot they were sealed at ([`Checkpoint::history_seq`]).
+    ///
+    /// [`Checkpoint::history_seq`]: busbar_kernel_ledger::checkpoint::Checkpoint::history_seq
+    #[must_use]
+    pub fn view_at(
+        &self,
+        at: busbar_kernel_ledger::cost::HistorySeq,
+    ) -> busbar_kernel_ledger::cost::HistoryView<'_> {
+        self.history.snapshot(at.min(self.at))
+    }
+
     /// The snapshot's own number — the figure a posting records so a reader can reproduce it.
     #[must_use]
     pub fn seq(&self) -> busbar_kernel_ledger::cost::HistorySeq {
@@ -1512,7 +1524,6 @@ pub(crate) fn journalled_cards(
 fn journalled_amendment(body: &[u8]) -> Option<JournalledCard> {
     let amendment = crate::root::units_admin::amendment_from_body(body)?;
     let author = busbar_kernel_ledger::cost::Author::Amend {
-        operator_fingerprint: amendment.operator_fingerprint,
         reason_hash: amendment.reason_hash,
     };
     // An UNPRICED cell (`None`) is left off, so a hit on it refuses (#42) exactly as it did on the
@@ -1590,7 +1601,7 @@ impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
     }
 }
 
-/// Install the root as the process's rate holder. Boot only, once.
+/// Ready the root's card repricer for the boot resolution. Boot only, once.
 ///
 /// THREE HALVES OF ONE FACT — the deployment's rates live here, and all three readings of that
 /// fact go up together or none does. The APPLY half hears the engine resolve a configuration and
@@ -1598,16 +1609,16 @@ impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
 /// serving under started, which is what gives a UTC-day cell an instant finer than the day. The
 /// READ half hands the history to the ledger reads that price against it — the budget book's and
 /// `GET /api/v1/admin/usage`'s alike, both through the kernel's
-/// `rate_apply::dated_history` — and rides the DATE half's install (`RateEpoch::history`), so
-/// the admin crate holds no seam of its own (R6). Any two without the third is a node that dates
-/// its prices and then reports them off the newest card anyway — exactly the defect this seam
-/// exists to rule out.
+/// `rate_apply::dated_history` — and rides the DATE half (`RateEpoch::history`), so the admin
+/// crate holds no seam of its own (R6). Any two without the third is a node that dates its prices
+/// and then reports them off the newest card anyway — exactly the defect this seam exists to rule
+/// out. The kernel reaches the APPLY and DATE halves on the root's ONE install record
+/// (`RootInstall::rate_apply` and `RootInstall::rate_epoch`, both [`CardRepricer`], set by
+/// `crate::root::linked::register_stores`), never through a static of its own.
 pub fn install_card_repricer() {
     // Armed BEFORE the boot resolution, so the opening entry is held for the book to journal: the
     // boot's book rebuilds the dated history from its chain (#79) before it prices a posting.
     ROOT_CARD.arm_journal();
-    busbar_kernel::rate_apply::install_rate_apply(&CardRepricer);
-    busbar_kernel::rate_apply::install_rate_epoch(&CardRepricer);
 }
 
 /// The admission unit, standing at the in-flight table's arrival door.
@@ -2066,6 +2077,17 @@ pub trait RegisteredUnits: Send + Sync {
         refusal: &Refusal,
     ) -> SeatVerdict<Audit>;
 
+    /// The plane's audit door handed back its facts and pass. See [`Units::audited`]: the unit's
+    /// one record is sealed from them. The default drops both, as the kernel's does.
+    fn audited(
+        &self,
+        _root: &ProductionUnits,
+        _ctx: &UnitCtx,
+        _facts: busbar_contract::caps::AuditFacts,
+        _pass: Pass<Audit>,
+    ) {
+    }
+
     /// The plane's Encode step. See [`Units::encode`].
     fn encode(
         &self,
@@ -2275,6 +2297,14 @@ impl Units for ProductionUnits {
                 refusal.reason(),
             )),
         )
+    }
+
+    /// The audit door's facts and pass go to the plane that claims the unit, which seals its one
+    /// record (THE DESIGN §1, U14). A unit no plane claims keeps the kernel's default: dropped.
+    fn audited(&self, ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
+        if let Some(plane) = self.registry.resolve(self, ctx) {
+            plane.audited(self, ctx, facts, pass);
+        }
     }
 
     fn encode(

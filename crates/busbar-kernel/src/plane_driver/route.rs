@@ -26,9 +26,9 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE,
-    EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
-    FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST,
+    reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, RefusalCode, UnitCount,
+    CLAIM_PROBE, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER,
+    FROM_FAR_END, FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST,
     PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
@@ -38,6 +38,7 @@ use busbar_contract::plane_calls::{Answered, Lent, PieceInFlight};
 use tokio::sync::watch;
 
 use super::cancel::{Buried, CancelBill, Checkpoint};
+use super::close::Close;
 use super::{blob, BufferCaps, HeadFields, PlaneDriver, UnitState, NO_FIELD, NO_SPAN, ZERO_UNIT};
 use crate::host_records::Acked;
 use crate::slice::takes_lease;
@@ -271,6 +272,16 @@ pub trait FarEnd: Sync {
     /// `member` is no member of that pool, or the far end keeps no walk (the default).
     fn member_wait(&self, token: &Pass<Route>, member: &str) -> Option<u32> {
         let _ = (token, member);
+        None
+    }
+
+    /// WHY NOTHING LEFT, when no attempt of the walk sent its request: the `Unsent*` code
+    /// ([`RefusalCode::unsent`]) of the last attempt's failure before any byte (no route, an
+    /// unbound need, a refused target or field name, an unrecordable dispatch, a failed auth call,
+    /// a refused open). The walk's exhausted refused piece names it in place of `BreakerOpen`.
+    /// `None` once any attempt was sent, or when the far end does not say (the default).
+    fn unsent(&self, token: &Pass<Route>) -> Option<RefusalCode> {
+        let _ = token;
         None
     }
 
@@ -640,6 +651,18 @@ impl Answer {
         }
     }
 
+    /// This answer, to `piece`, is the unit's closing call ([`closes_unit`]); `final_answer` = the
+    /// answer's first piece carried `PIECE_FINAL`.
+    fn says_done(&self, piece: &Piece, final_answer: bool) -> bool {
+        closes_unit(
+            self.flags,
+            self.more,
+            self.verdict,
+            piece.flags,
+            final_answer,
+        )
+    }
+
     /// The usage-tap fault this answer carries, as the reason the kernel counts it under; `None`
     /// only for an answer that carries none. A byte outside the vocabulary is `unknown`, counted.
     fn usage_tap_fault(&self) -> Option<&'static str> {
@@ -687,6 +710,13 @@ pub(crate) struct Pumping<'u> {
     /// The member whose wait the plane stated its refusal answers (`OnPieceOut::wait_member`), on
     /// its answer to the walk's exhausted refused piece.
     wait_member: Option<String>,
+    /// The flags of the piece last pushed: the one whose op may still be in flight when the unit
+    /// is cut or its caller goes away, so its answer is read against them (a refused piece's done
+    /// answer is not the unit's close).
+    piece_flags: u32,
+    /// The answer being pumped was marked `PIECE_FINAL` on its first piece (the kernel will not
+    /// fail it over): a retry verdict on it does not keep the unit ([`closes_unit`]).
+    final_answer: bool,
 }
 
 impl<'u> Pumping<'u> {
@@ -714,6 +744,8 @@ impl<'u> Pumping<'u> {
             ended: false,
             cancel_writes: Vec::new(),
             wait_member: None,
+            piece_flags: 0,
+            final_answer: false,
         }
     }
 
@@ -736,6 +768,16 @@ impl<'u> Pumping<'u> {
     /// disposition, is awaited before the pump moves on. The driver keeps the deadline itself;
     /// the dispatcher is handed none, so no second cancel races the driver's.
     async fn cross(&mut self, p: &Piece) -> (Answered, Option<Answer>, Option<ReasonCode>) {
+        self.piece_flags = p.flags;
+        // THE ANSWER'S FINAL MARK, as the plane is told it: on the answer's head piece alone (a
+        // trailer's status is no head, and its `PIECE_FINAL` would be read off a piece the far end
+        // never relays), and none yet on a new attempt.
+        if p.from == FROM_KERNEL && p.attempt_no > 0 {
+            self.final_answer = false;
+        }
+        if p.head {
+            self.final_answer = p.flags & PIECE_FINAL != 0;
+        }
         let calls = &self.driver.calls;
         let (input, out) = frame(&mut self.bufs, p, self.ctx.key.get());
         let left = self.left();
@@ -754,6 +796,16 @@ impl<'u> Pumping<'u> {
         // The record writes of a `cancel` that ended it (its client-drop path), for the unit's end.
         if cause.is_some() {
             self.cancel_writes = flight.cancel_writes();
+            // THE CANCEL CROSSED ON THE OP'S WORKER (its answer carries the disposition, or the
+            // cancel's FAULT): the unit's closing call. So is the op's own answer, when it ended on
+            // its own before the cancel reached it saying the unit's reply is complete.
+            let done = answered.outcome == AbiOutcome::Ready
+                && out
+                    .as_ref()
+                    .is_some_and(|o| o.says_done(p, self.final_answer));
+            if answered.disposition.is_some() || answered.outcome == AbiOutcome::Fault || done {
+                self.lock().close.closed();
+            }
         }
         self.flight = None;
         (answered, out, cause)
@@ -766,7 +818,11 @@ impl<'u> Pumping<'u> {
         let cancelled = match done.map(|d| (d.disposition, d.outcome)) {
             Some((Some(d), _)) => Some((d, std::mem::take(&mut self.cancel_writes))),
             Some((None, AbiOutcome::Fault)) => None,
-            _ => (self.driver.cancel_now(self.ticket)).map(|c| (c.disposition, c.writes)),
+            // ALREADY CLOSED: the op's own done answer beat the cancel to it (`cross` marked it),
+            // or the plane said the unit's reply was complete before the cut: a `cancel` now would
+            // be its second closing call. It bills as a cancel the plane did not answer.
+            _ if self.lock().close == Close::Closed => None,
+            _ => self.cancel_now().map(|c| (c.disposition, c.writes)),
         };
         // THE CANCELLED UNIT'S ROW (SEAM-L(r)): what its `cancel` wrote, under its principal.
         if let Some((_, writes)) = &cancelled {
@@ -778,6 +834,14 @@ impl<'u> Pumping<'u> {
         let bill = CancelBill::new(cause, disposition, &facts);
         self.driver.money.cancelled(self.ctx, &bill);
         bill
+    }
+
+    /// The driver's own ticketless `cancel` of the unit, on its ticket and naming it: the unit's
+    /// closing call ([`super::close`]).
+    pub(crate) fn cancel_now(&self) -> Option<busbar_contract::plane_calls::Cancelled> {
+        let cancelled = self.driver.cancel_now(self.ticket, self.ctx.key.get());
+        self.lock().close.closed();
+        cancelled
     }
 
     /// THE PIECE'S RECORD WRITES, in the plane's order, through the kernel's one record write path
@@ -889,19 +953,27 @@ impl Drop for Pumping<'_> {
         // THE CALLER WENT AWAY. No crossing here: an op still in flight is handed to the
         // dispatcher's client-drop path by message and buried until it settles; a unit between
         // ops is buried for the sweep's ticketless `cancel`.
-        let flight = match self.flight.take() {
+        let (flight, done) = match self.flight.take() {
             Some(mut flight) => match flight.settled() {
-                Some(_settled) => None,
+                // The op ended on its own: its answer may have closed the unit.
+                Some(settled) => (
+                    None,
+                    answered_done(&settled, &*flight, self.piece_flags, self.final_answer),
+                ),
                 None => {
                     self.driver.calls.drop_client(self.ticket);
-                    Some(flight)
+                    (Some(flight), false)
                 }
             },
-            None => None,
+            None => (None, false),
         };
-        let (facts, principal) = {
-            let st = self.lock();
-            (st.facts.clone(), st.principal.clone())
+        // The buried unit's `cancel` (the client-drop path's, or the sweep's) is its closing call,
+        // unless it is closed already: a done answer, or a cancel that crossed before the drop.
+        let (facts, principal, closed) = {
+            let mut st = self.lock();
+            let closed = done || st.close == Close::Closed;
+            st.close.closed();
+            (st.facts.clone(), st.principal.clone(), closed)
         };
         self.driver.bury(Buried {
             ctx: self.ctx.clone(),
@@ -909,8 +981,46 @@ impl Drop for Pumping<'_> {
             facts,
             flight,
             principal,
+            closed,
+            piece_flags: self.piece_flags,
+            final_answer: self.final_answer,
         });
     }
+}
+
+/// WHETHER AN `on_piece` ANSWER IS THE UNIT'S CLOSING CALL, by the contract's own words: it says
+/// "the unit's reply is complete" (`EMIT_DONE`) on its last window (`more == 0`), to a piece that
+/// is not the refused piece (`PIECE_REFUSED`: the unit's `refusal` follows it), and it is the
+/// unit's last answer: a `VERDICT_RETRY` answer is the unit's last only when its first piece
+/// carried `PIECE_FINAL` ("the kernel will not fail this answer over, whatever verdict the plane
+/// answers it with, so an answer whose verdict is `VERDICT_RETRY` is the unit's last"). Without
+/// it, a plane keeps the unit for the attempt the retry asks for.
+pub(crate) fn closes_unit(
+    flags: u32,
+    more: u32,
+    verdict: u32,
+    piece_flags: u32,
+    final_answer: bool,
+) -> bool {
+    flags & EMIT_DONE != 0
+        && more == 0
+        && piece_flags & PIECE_REFUSED == 0
+        && (verdict != VERDICT_RETRY || final_answer)
+}
+
+/// Whether an op that ended on its own (`settled`, its `flight`) closed its unit
+/// ([`closes_unit`]), read against the piece it was pushed (`piece_flags`) and its answer's
+/// final mark.
+pub(crate) fn answered_done(
+    settled: &Answered,
+    flight: &dyn PieceInFlight,
+    piece_flags: u32,
+    final_answer: bool,
+) -> bool {
+    settled.outcome == AbiOutcome::Ready
+        && flight
+            .out()
+            .is_some_and(|o| closes_unit(o.flags, o.more, o.verdict, piece_flags, final_answer))
 }
 
 /// Await `fut`, unless the plane's generation is reloaded or the deadline passes first.
@@ -1073,9 +1183,15 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     detail,
                 }) => {
                     // The walk's exhaustion terminal is refused as `BreakerOpen` (the route
-                    // step's `End::Exhausted`): the refused piece names that reason, whether or
-                    // not a request went out (R-REJECTED).
-                    if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
+                    // step's `End::Exhausted`): the refused piece names that reason when a request
+                    // went out (R-REJECTED), and when none did, why the last attempt left nothing
+                    // on the wire (an `Unsent*` code), so the plane charges no hop that never
+                    // left. The unit's end, and the caller's answer, are the same either way.
+                    let reason = self
+                        .far
+                        .unsent(run.token)
+                        .map_or(reason_code(ReasonCode::BreakerOpen), RefusalCode::code);
+                    if let Err(end) = self.refused_piece_coded(run, reason).await {
                         return end;
                     }
                     return match self.stated_wait(run) {
@@ -1261,6 +1377,12 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// for every other plane; a plane without the bit is sent nothing. `Err` = the unit ended on
     /// the crossing.
     async fn refused_piece(&self, run: &mut Pumping<'_>, reason: ReasonCode) -> Result<(), End> {
+        self.refused_piece_coded(run, reason_code(reason)).await
+    }
+
+    /// [`Self::refused_piece`] for the wire code `reason` (`OnPieceIn::reason`): a reason's own,
+    /// or an `Unsent*` code the walk's exhaustion names when nothing left.
+    async fn refused_piece_coded(&self, run: &mut Pumping<'_>, reason: u32) -> Result<(), End> {
         run.wait_member = None;
         if self.driver.refused_piece {
             let piece = Piece {
@@ -1270,7 +1392,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 attempt_no: 0,
                 src: Src::None,
                 head: false,
-                reason: reason_code(reason),
+                reason,
             };
             if let Step::End(end) = self.push(run, piece, &mut Toward::Nowhere).await {
                 return Err(end);
@@ -1297,13 +1419,24 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     /// Push one piece: the crossing, the one short re-call, the backpressure loop, the units, and
     /// the delivery of what the plane emitted.
     async fn push(&self, run: &mut Pumping<'_>, mut piece: Piece, toward: &mut Toward<'_>) -> Step {
+        // A far-end piece that carries none of the far end's bytes (a cut or a trailer): what the
+        // plane writes for it is its own framing, not the answer's content.
+        let framing =
+            piece.from == FROM_FAR_END && (piece.src != Src::Input || run.bufs.input.is_empty());
         loop {
             let (done, out, cause) = run.cross(&piece).await;
             if let Some(cause) = cause {
                 return Step::End(End::Cancel(cause, Some(done)));
             }
             let out = match (done.outcome, out) {
-                (AbiOutcome::Ready, Some(out)) => out,
+                (AbiOutcome::Ready, Some(out)) => {
+                    // THE PLANE SAID THE UNIT'S REPLY IS COMPLETE, and this is its last answer: its
+                    // closing call ([`closes_unit`]).
+                    if out.says_done(&piece, run.final_answer) {
+                        run.lock().close.closed();
+                    }
+                    out
+                }
                 (AbiOutcome::Failed, Some(o)) if done.short => {
                     // THE ONE RE-CALL, on the same ticket, with what the answer said it needs; the
                     // dispatcher answers a second short answer FAULT.
@@ -1342,7 +1475,8 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             if !wait.is_empty() {
                 let exhausted = piece.from == FROM_KERNEL
                     && piece.flags & PIECE_REFUSED != 0
-                    && piece.reason == reason_code(ReasonCode::BreakerOpen);
+                    && (piece.reason == reason_code(ReasonCode::BreakerOpen)
+                        || RefusalCode::of(piece.reason).is_some_and(RefusalCode::unsent));
                 match std::str::from_utf8(wait) {
                     Ok(member) if exhausted => run.wait_member = Some(member.to_string()),
                     _ => return Step::End(End::Failed(ReasonCode::PlanePanic)),
@@ -1493,7 +1627,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     let message_end = out.flags & EMIT_MESSAGE_END != 0;
                     if n != 0 || message_end {
                         if n != 0 {
-                            run.lock().facts.streamed = true;
+                            let mut st = run.lock();
+                            st.facts.streamed = true;
+                            if !framing {
+                                st.facts.content = true;
+                            }
                         }
                         let left = run.left();
                         let Pumping { stop, bufs, .. } = &mut *run;

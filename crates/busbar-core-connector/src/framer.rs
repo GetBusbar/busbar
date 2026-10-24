@@ -25,8 +25,8 @@ use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
     PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT,
-    SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
+    SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -215,6 +215,13 @@ pub struct Yielded {
     pub ended: bool,
     /// The monotonic instant (host clock, ns) the framer asked to be called at.
     pub deadline_ns: Option<u64>,
+    /// On an `emit`: the bytes were taken and the stream's queue is at the framer's high-water
+    /// mark (`YIELD_STREAM_FULL`): the host emits nothing more on that stream until it is
+    /// writable again ([`Yielded::writable`]) or its last piece arrives.
+    pub full: bool,
+    /// The streams the framer says are writable again (`PIECE_WRITABLE` pieces), in order. Such a
+    /// piece is a signal to the host and never a frame: it is not among [`Yielded::pieces`].
+    pub writable: Vec<u64>,
 }
 
 /// The host's buffers a framer op writes into.
@@ -439,6 +446,15 @@ impl Buffers {
             .ok_or_else(|| bad("pieces"))?;
         let first_piece = into.pieces.len();
         for p in pieces {
+            if p.flags & PIECE_WRITABLE != 0 {
+                // A STREAM WRITABLE AGAIN: always an empty piece with no other flag, ending no
+                // frame and no stream. The host's signal, never a frame handed up.
+                if p.len != 0 || p.flags != PIECE_WRITABLE {
+                    return Err(bad("a writable piece with bytes or another flag"));
+                }
+                into.writable.push(p.stream);
+                continue;
+            }
             let at = usize::try_from(p.offset).map_err(|_| bad("piece"))?;
             let len = usize::try_from(p.len).map_err(|_| bad("piece"))?;
             let bytes = frame
@@ -521,6 +537,7 @@ impl Buffers {
             into.heads.push(head);
         }
         into.ended |= y.flags & YIELD_ENDED != 0;
+        into.full |= y.flags & YIELD_STREAM_FULL != 0;
         into.deadline_ns = (y.flags & YIELD_HAS_DEADLINE != 0).then_some(y.next_deadline_ns);
         Ok(y.flags & YIELD_MORE == 0)
     }
@@ -637,6 +654,9 @@ pub struct Located {
     /// The entry's protocol offer for the handshake (ALPN), most preferred first; empty = it makes
     /// none (THE DESIGN, connections: "the ALPN offer is the framer's").
     pub offer: Vec<Vec<u8>>,
+    /// The framer's own head lines on a request to the target (`LocateIn::defaults_buf`), in order:
+    /// each one a request that does not state it carries, added before the auth signs the head.
+    pub defaults: Vec<crate::compose::HeadWords>,
 }
 
 /// A protocol offer in the handshake's ProtocolNameList encoding (each name led by its one-byte
@@ -678,10 +698,12 @@ pub fn accept_offer(door: &dyn FramerDoor) -> Result<Vec<Vec<u8>>, Refused> {
 
 fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Located, Refused> {
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
+    let mut defaults_cap = 256_usize;
     for _ in 0..2 {
         let mut authority = vec![0_u8; auth_cap];
         let mut name = vec![0_u8; name_cap];
         let mut alpn = vec![0_u8; alpn_cap];
+        let mut defaults = vec![0_u8; defaults_cap];
         let mut i: LocateIn = blank_in();
         i.target = abi(target.as_bytes());
         i.authority_buf = authority.as_mut_ptr();
@@ -691,16 +713,20 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
         i.alpn_buf = alpn.as_mut_ptr();
         i.alpn_cap = alpn.len();
         i.accept = u32::from(accept);
+        i.defaults_buf = defaults.as_mut_ptr();
+        i.defaults_cap = defaults.len();
         let mut o: LocateOut = blank_out();
         let c = door.cross(Call::Locate(&mut i, &mut o));
         let short = o.authority_needed > auth_cap as u64
             || o.name_needed > name_cap as u64
-            || o.alpn_needed > alpn_cap as u64;
+            || o.alpn_needed > alpn_cap as u64
+            || o.defaults_needed > defaults_cap as u64;
         if c.outcome == Outcome::Failed && short {
             let grow = |needed: u64, cap: usize| usize::try_from(needed).unwrap_or(0).max(cap);
             auth_cap = grow(o.authority_needed, auth_cap);
             name_cap = grow(o.name_needed, name_cap);
             alpn_cap = grow(o.alpn_needed, alpn_cap);
+            defaults_cap = grow(o.defaults_needed, defaults_cap);
             continue;
         }
         ready(c)?;
@@ -715,11 +741,18 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
                 outcome: Outcome::Fault,
                 error: "the framer's protocol offer is not a protocol list".into(),
             })?;
+        let lines = defaults
+            .get(..usize::try_from(o.defaults_written).unwrap_or(usize::MAX))
+            .ok_or_else(|| Refused {
+                outcome: Outcome::Fault,
+                error: "the framer's head lines overrun its buffer".into(),
+            })?;
         return Ok(Located {
             authority: text(&authority, o.authority_written),
             name: (o.has_name != 0).then(|| text(&name, o.name_written)),
             secure: o.secure != 0,
             offer: offered,
+            defaults: crate::framed_stream::field_lines(lines)?,
         });
     }
     Err(Refused {
@@ -746,7 +779,7 @@ pub fn encode(
 ///
 /// # Errors
 ///
-/// The entry refused to render it.
+/// The entry refused to render it; a FAULT when it answered `YIELD_MORE` (an encode answers whole).
 pub fn encode_head(
     door: &dyn FramerDoor,
     method: &[u8],
@@ -779,7 +812,18 @@ pub fn encode_head(
     let mut o: FramerOut = blank_out();
     ready(door.cross(Call::Encode(&mut i, &mut o)))?;
     let mut y = Yielded::default();
-    bufs.take(&o, &mut y)?;
+    // `encode` has no framing to continue: a re-call would render the message again from its
+    // start. So it answers whole into the buffer sized for it, and a framer that answers it
+    // `YIELD_MORE` owes bytes no re-call can ask for: a FAULT, never a truncated message sent as
+    // the whole one.
+    if !bufs.take(&o, &mut y)? {
+        return Err(Refused {
+            outcome: Outcome::Fault,
+            error: "the framer answered `encode` with YIELD_MORE: an encode renders the whole \
+                    message into one buffer sized for it"
+                .to_owned(),
+        });
+    }
     Ok(y.wire)
 }
 
@@ -838,7 +882,7 @@ enum Again {
     Ingest,
     Emit(u64),
     Timer,
-    Refuse(Option<u64>, u32),
+    Refuse(Option<u64>, u32, bool),
 }
 
 impl Framing {
@@ -963,12 +1007,13 @@ impl Framing {
                     i.sink = sink;
                     self.door.cross(Call::Emit(&mut i, &mut o))
                 }
-                Again::Refuse(stream, status) => {
+                Again::Refuse(stream, status, head_sent) => {
                     let mut i: RefuseIn = blank_in();
                     i.framing = self.token;
                     i.stream = stream.unwrap_or(0);
                     i.has_stream = u32::from(stream.is_some());
                     i.status = status;
+                    i.head_sent = u32::from(head_sent);
                     i.sink = sink;
                     self.door.cross(Call::Refuse(&mut i, &mut o))
                 }
@@ -1038,7 +1083,9 @@ impl Framing {
     }
 
     /// `refuse`: a refusal's bytes for `stream` (`None` = the whole connection), with its neutral
-    /// `status` for the framer to map to its wire (`0` = none stated).
+    /// `status` for the framer to map to its wire (`0` = none stated). `head_sent` = the host already
+    /// sent the stream's response head, so the refusal is its closing lines only (never on a
+    /// refusal for the whole connection).
     ///
     /// # Errors
     ///
@@ -1048,12 +1095,15 @@ impl Framing {
         stream: Option<u64>,
         bytes: &[u8],
         status: u32,
+        head_sent: bool,
     ) -> Result<Yielded, Refused> {
+        let head_sent = head_sent && stream.is_some();
         let mut i: RefuseIn = blank_in();
         i.framing = self.token;
         i.stream = stream.unwrap_or(0);
         i.has_stream = u32::from(stream.is_some());
         i.status = status;
+        i.head_sent = u32::from(head_sent);
         i.bytes = bytes.as_ptr();
         i.len = bytes.len();
         i.sink = self.bufs.sink();
@@ -1061,7 +1111,7 @@ impl Framing {
         ready(self.door.cross(Call::Refuse(&mut i, &mut o)))?;
         let mut y = Yielded::default();
         if !self.bufs.take(&o, &mut y)? {
-            self.more(Again::Refuse(stream, status), &mut y)?;
+            self.more(Again::Refuse(stream, status, head_sent), &mut y)?;
         }
         Ok(y)
     }

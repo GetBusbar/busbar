@@ -488,6 +488,53 @@ impl AuthSink {
     pub fn bind(&self) -> Arc<dyn EnvelopeSink> {
         self.0.clone()
     }
+
+    /// The sink an instance OPENED TO SERVE binds with (THE DESIGN §11.2: "all plugins should log
+    /// to their plugin's log file ... The HOST writes it to that plugin instance's own log file"):
+    /// its log records and its declared diagnostics go to the instance `label`'s own file under
+    /// `logs`; a declared diagnostic also keeps its host-log line, as an outbound auth instance's
+    /// does; its metrics go on to this sink's cache-flush counter.
+    ///
+    /// # Errors
+    /// The plugin log file cannot be opened (`plugins.logs.dir <dir>: <error>`).
+    pub fn to_file(
+        &self,
+        logs: &crate::dispatch::PluginLogConfig,
+        label: &str,
+    ) -> Result<Arc<dyn EnvelopeSink>, String> {
+        let file = logs.sink(
+            label,
+            busbar_contract::abi::mechanism::KindCode::Auth,
+            self.bind(),
+        )?;
+        Ok(Arc::new(InstanceSink {
+            file,
+            host: Arc::clone(&self.0),
+        }))
+    }
+}
+
+/// An opened auth instance's envelope: its file first, the host's log for a declared diagnostic.
+struct InstanceSink {
+    file: crate::dispatch::PluginLogSink,
+    host: Arc<FlushSink>,
+}
+
+impl EnvelopeSink for InstanceSink {
+    fn metric(&self, m: Metric<'_>) {
+        self.file.metric(m);
+    }
+
+    fn diag(&self, d: Diagnostic<'_>) {
+        if d.id != busbar_contract::abi::mechanism::call::DIAG_LOG {
+            self.host.diag(d);
+        }
+        self.file.diag(d);
+    }
+
+    fn dropped(&self, why: Dropped) {
+        self.file.dropped(why);
+    }
 }
 
 impl std::fmt::Debug for AuthSink {
@@ -697,6 +744,13 @@ impl AuthInstance {
         self.schedule
             .as_ref()
             .is_none_or(tokio::task::JoinHandle::is_finished)
+    }
+
+    /// The dispatcher instance this auth instance serves on, held weakly: a test reads whether
+    /// anything still keeps it once this instance is dropped.
+    #[cfg(test)]
+    pub(crate) fn instance(&self) -> std::sync::Weak<crate::dispatch::plugin::Instance> {
+        Arc::downgrade(&self.shared.plugin.inner)
     }
 }
 

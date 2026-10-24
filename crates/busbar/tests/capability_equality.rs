@@ -45,9 +45,9 @@
 //! Every plane now also runs through the composition root — `root-llm` (the node, behind
 //! `plane-llm`) / `root-admin` behind their features, `root-mcp` through the MCP plane's memory-ABI
 //! door on the kernel's plane driver (`root/serve.rs`, its cells in the `#[path]` test file
-//! `root/tests/serve_tests.rs`, gated by `plane-mcp`), `root-a2a` / `root-voice` on the kernel-loop
-//! rider those planes are served through (`root/gauntlet_kernel.rs`, the voice leg on its session
-//! rider, gated by `plane-a2a` / `plane-streaming`, the features that link them). A capability proven where the plane crate serves it and
+//! `root/tests/serve_tests.rs`, gated by `plane-mcp`), `root-a2a` / `root-voice` through those planes'
+//! own doors on the same driver (gated by `plane-a2a` / `plane-streaming`, the features that link
+//! them). A capability proven where the plane crate serves it and
 //! unwitnessed where the root drives it is the same silent half-answer this file exists to refuse,
 //! so the ledger carries a SECOND verdict per cell (`root`) and this gate runs the matrix ONCE PER
 //! LEG: for each declared leg, every cell in that leg's ledger columns is checked against the leg's
@@ -117,7 +117,7 @@ fn planes() -> &'static [&'static str] {
 /// bidirectional protocols do. Every mapped column must be a real declared ledger plane.
 ///
 /// The map is keyed by the crate's directory suffix (`crates/busbar-<suffix>`), and it covers BOTH
-/// halves of every plane: the plane crate `scripts/plane-keys.sh` names (`busbar-llm`, …) and the
+/// halves of every plane: the plane crate `scripts/plane-keys.sh` names (the retired engine crate, …) and the
 /// pure `busbar-plane-*` crate the workspace carries beside it. The pure crates were invisible to
 /// this check until item 257 — it enumerated the four-entry shell variable and nothing else, so two
 /// workspace plane crates answered to no column and nothing said so. `plane-streaming` is the
@@ -1200,6 +1200,26 @@ fn plane_keys_from_single_source(root: &Path) -> Vec<String> {
     panic!("scripts/plane-keys.sh declares no `PLANE_KEYS=...` line");
 }
 
+/// A plane key's ON-DISK suffix, read off the same single source's `plane_ondisk_key` (a key whose
+/// engine crate is deleted lives in its `plane-` door crate, DEV-GREEN row 83). A key the function
+/// does not map is its own suffix, as `crates/busbar-<key>`.
+fn plane_ondisk_suffix(root: &Path, key: &str) -> String {
+    let src = std::fs::read_to_string(root.join("scripts/plane-keys.sh"))
+        .expect("the single source of plane keys");
+    let body = src
+        .split_once("plane_ondisk_key() {")
+        .map(|(_, rest)| rest.split_once("\n}").map_or(rest, |(b, _)| b))
+        .expect("scripts/plane-keys.sh defines `plane_ondisk_key`");
+    body.lines()
+        .map(str::trim)
+        .find_map(|l| {
+            let (arm, rest) = l.split_once(") printf '")?;
+            (arm == key).then(|| rest.split('\'').next().unwrap_or_default().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| key.to_string())
+}
+
 /// The workspace's `crates/busbar-plane-*` members, by directory suffix (`plane-decisions`), read off
 /// the root `Cargo.toml`'s `members` list — the list cargo builds, not a list somebody keeps — and
 /// the planes it PINS: a plane that left for its own repo is still a plane this workspace links
@@ -1227,7 +1247,10 @@ fn workspace_pure_plane_crates(root: &Path) -> BTreeSet<String> {
 /// Every workspace plane crate, by directory suffix: the plane keys the single source names, and the
 /// pure `busbar-plane-*` members of the workspace.
 fn workspace_plane_crates(root: &Path) -> BTreeSet<String> {
-    let mut all: BTreeSet<String> = plane_keys_from_single_source(root).into_iter().collect();
+    let mut all: BTreeSet<String> = plane_keys_from_single_source(root)
+        .iter()
+        .map(|key| plane_ondisk_suffix(root, key))
+        .collect();
     all.extend(workspace_pure_plane_crates(root));
     all
 }

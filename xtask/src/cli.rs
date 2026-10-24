@@ -34,6 +34,7 @@ usage:
   cargo xtask ledger {sync|status|next|record|fixed|move} | --check
   cargo xtask ledger-merge <base> <ours> <theirs> [<path> [<marker-size>]]   (git merge driver `ledger-count` for qa/kind-isolation.toml: a count both sides moved is theirs + ours - base; ours is rewritten in place; exit 1 leaves the conflict, reasons on stderr)
   cargo xtask q128 audit [--record <path>] [--out <path>]   (the Q128 architecture audit on this tree; writes target/q128-audit.json; exit 1 on an open BLOCK)
+  cargo xtask q128 record --candidate <rev> --auditor <name> --findings <file.json>   (writes qa/q128-audit.json from the auditor's reading; refused unless the candidate's tree is this tree but for the record)
   cargo xtask proof-manifest --version <v> --out <file> [--sha S] [--run-id ID] [--run-url U] [--staged-json F] [--reports-dir D] [--hits-dir D] [--repo-root D] [--run-cargo|--run-parity|--run-composability] [--mark ID=STATUS]... [--index] [--print]
   cargo xtask proof-manifest --selftest
   cargo xtask proof-manifest --check [<manifest.json>...]   (the public-safety guard; no args = docs/proof/*.json)
@@ -488,13 +489,15 @@ fn gate(args: &[String]) -> i32 {
                 | "conformance-sync"
                 | "config-schema"
                 | "instance-noun-neutrality"
-                // The six one-memory-abi gates (M0 ABI-SPEC) regenerate their drain-only ledgers
-                // (`gates::one_abi`) in the run and answer through it.
+                // The six one-memory-abi gates (M0 ABI-SPEC), and the gates built on their ledger
+                // (`gates::one_abi`), regenerate their drain-only ledgers in the run and answer
+                // through it.
                 | "one-memory-abi"
                 | "contract-stateless"
                 | "plugin-closure-deps"
                 | "c1-literals"
                 | "door-only"
+                | "door-cells-rig"
                 | "plane-secret-blindness"
                 | "linked-dropped-features"
         ) {

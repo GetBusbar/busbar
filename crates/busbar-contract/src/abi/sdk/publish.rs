@@ -115,13 +115,7 @@ impl Backing {
 
     /// `s` copied, or absent (NULL) for `None`.
     fn opt_str(&mut self, s: Option<&str>) -> AbiStr {
-        s.map_or(
-            AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            },
-            |s| self.str(s),
-        )
+        s.map_or(AbiStr::ZERO, |s| self.str(s))
     }
 
     /// `b` copied as a JSON blob, or absent for `None`.
@@ -131,13 +125,11 @@ impl Backing {
                 ptr: self.copy(b),
                 len: b.len(),
                 fmt: BLOB_JSON,
-                flags: 0,
+                ..Blob::ZERO
             },
             None => Blob {
-                ptr: std::ptr::null(),
-                len: 0,
                 fmt: BLOB_ABSENT,
-                flags: 0,
+                ..Blob::ZERO
             },
         }
     }
@@ -197,6 +189,8 @@ pub struct ClaimSpec {
     /// The dialect a refusal on this route wears before `arrive` has read the arrival (see
     /// [`Claim::refusal_dialect`]); `0` for a plane with no dialects.
     pub refusal_dialect: u16,
+    /// The span an arrival on it opens ([`PlaneSnapshot::arrival_spans`]); empty = none.
+    pub arrival_span: String,
 }
 
 impl ClaimSpec {
@@ -209,7 +203,15 @@ impl ClaimSpec {
             carrier: carrier.to_string(),
             flags,
             refusal_dialect: 0,
+            arrival_span: String::new(),
         }
+    }
+
+    /// The claim, its arrivals opening the span `name` ([`PlaneSnapshot::arrival_spans`]).
+    #[must_use]
+    pub fn with_arrival_span(mut self, name: &str) -> Self {
+        self.arrival_span = name.to_string();
+        self
     }
 }
 
@@ -299,6 +301,13 @@ impl Publish for PlaneSnapshot {
         let (claims, claims_len) = backing.list::<Claim>(&spec.claims);
         let (admin_routes, admin_routes_len) = backing.list::<AdminRoute>(&spec.admin_routes);
         let (listed, listed_len) = backing.strs(&spec.listed);
+        // One per claim where any claim names one; none at all otherwise.
+        let spans: Vec<String> = if spec.claims.iter().any(|c| !c.arrival_span.is_empty()) {
+            spec.claims.iter().map(|c| c.arrival_span.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        let (arrival_spans, arrival_spans_len) = backing.strs(&spans);
         Self {
             size: std::mem::size_of::<Self>() as u32,
             _reserved: 0,
@@ -313,6 +322,8 @@ impl Publish for PlaneSnapshot {
             resource_facts: backing.json(spec.resource_facts.as_deref()),
             listed,
             listed_len,
+            arrival_spans,
+            arrival_spans_len,
         }
     }
 }

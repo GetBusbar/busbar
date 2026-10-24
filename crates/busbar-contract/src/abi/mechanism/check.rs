@@ -12,8 +12,8 @@
 use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
 use super::door::{
     MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_HOOK,
-    MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_KEY, SECTION_CONSUMED,
-    SECTION_DECLARING, SECTION_REQUIRED,
+    MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_ROLE,
+    SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
 };
 use crate::abi::host::conn::connector::{
     Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED,
@@ -447,8 +447,9 @@ pub fn check_marks(marks: u64, words: &[MarkWord]) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The rewrites: a known class and a named `from`; `to` is named for a key move and absent
-/// otherwise.
+/// The rewrites: a known class and a named `from`; `to` is absent for an alias, optional for a
+/// sugar (the settings key its value lands under), and named for a key move and for each later
+/// sugar class (its shown placeholder, what its value names, its core role).
 ///
 /// # Errors
 ///
@@ -458,14 +459,14 @@ pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
         code(
             u64::from(r.class),
             u64::from(REWRITE_ALIAS),
-            u64::from(REWRITE_KEY),
+            u64::from(REWRITE_SUGAR_ROLE),
             "rewrite.class",
         )?;
         named(r.from, "rewrite.from")?;
-        if r.class == REWRITE_KEY {
-            named(r.to, "rewrite.to")?;
-        } else {
-            absent(r.to, "rewrite.to")?;
+        match r.class {
+            REWRITE_ALIAS => absent(r.to, "rewrite.to")?,
+            REWRITE_SUGAR => {}
+            _ => named(r.to, "rewrite.to")?,
         }
     }
     Ok(())
@@ -478,10 +479,15 @@ pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
 ///
 /// The rule the sections break.
 pub fn check_statement_sections(sections: &[Section]) -> Result<(), Fault> {
-    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED;
+    let known = SECTION_DECLARING | SECTION_REQUIRED | SECTION_CONSUMED | SECTION_SELECTS;
     for s in sections {
         named(s.name, "section.name")?;
         bits(u64::from(s.flags), u64::from(known), "section.flags")?;
+        // The declaring section selects its plane already: the selecting bit beside it is
+        // redundant, and refused.
+        if s.flags & SECTION_DECLARING != 0 && s.flags & SECTION_SELECTS != 0 {
+            return Err(fault(Rule::Contradiction, "section.flags"));
+        }
     }
     if sections
         .iter()
@@ -646,7 +652,15 @@ pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     let words = unsafe { list(st.mark_words, st.mark_words_len, "statement.mark_words") }?;
     check_marks(st.marks, words)?;
     check_rewrites(unsafe { list(st.rewrites, st.rewrites_len, "statement.rewrites") }?)?;
-    check_statement_sections(unsafe { list(st.sections, st.sections_len, "statement.sections") }?)?;
+    let sections = unsafe { list(st.sections, st.sections_len, "statement.sections") }?;
+    check_statement_sections(sections)?;
+    // A SELECTING SECTION IS A PLANE'S FACT (what config carries to use it): any other kind
+    // stating it is refused, never silently ignored.
+    if sections.iter().any(|s| s.flags & SECTION_SELECTS != 0)
+        && st.kind != super::KindCode::Plane as u32
+    {
+        return Err(fault(Rule::Contradiction, "statement.sections"));
+    }
     check_needs(unsafe { list(st.needs, st.needs_len, "statement.needs") }?)?;
     text(st.target_from, "statement.target_from")?;
     text(st.trust_from, "statement.trust_from")?;

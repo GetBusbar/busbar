@@ -43,41 +43,15 @@ code.
 
 ---
 
-## 1. `crates/busbar/src/root/gauntlet_kernel.rs` — THE LIVE UNIT PATH of llm, mcp, a2a, streaming
+## 1. The kernel-loop rider — deleted (status row 82, D2)
 
-**The unit:** `GauntletKernelUnit` (`impl Units for GauntletKernelUnit<'_>`, :92). Built at two
-sites, neither of them a constructor's own body:
-
-| Site | In | Returns |
-|---|---|---|
-| `root/gauntlet_kernel.rs:313` | `run_gauntlet_via_kernel` (:298) | `Response` |
-| `root/gauntlet_kernel.rs:415` | `open_gauntlet_via_kernel` (:399) | `Result<Admitted, Response>` |
-
-**The registration** — `crates/busbar/src/root/gauntlet_install.rs`:
-
-| Line | Call | Runner |
-|---|---|---|
-| :48 | `register_gauntlet_runner(capability_key, kernel_one_shot)` in `flip_one_shot_to_kernel` | `kernel_one_shot` (:37) → `run_gauntlet_via_kernel` (imported from `gauntlet_kernel`) |
-| :55 | `register_session_runner(capability_key, open_gauntlet_via_kernel)` in `flip_session_to_kernel` | `open_gauntlet_via_kernel` |
-
-**The flips** — `install()` (:73), called from `main.rs:268` (`root::gauntlet_install::install()`):
-
-| Plane | Line | Flip | Unit built at |
-|---|---|---|---|
-| mcp | :75 | `flip_one_shot_to_kernel(busbar_mcp::PLANE_KEY)` | :313 |
-| a2a | :77 | `flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY)` | :313 |
-| llm | :83 | `flip_one_shot_to_kernel(busbar_llm::PLANE_DECLARATION.key)` | :313 |
-| streaming | :85 | `flip_session_to_kernel(busbar_voice::PLANE_KEY)` | :415 |
-
-Each flip sits behind its plane's shipping feature (`plane-mcp`, `plane-a2a`, `plane-llm`,
-`plane-voice`), all in `default`. The rider opens a zero hold and settles nothing: each plane's money
-is metered inside its own `drive` / the kernel session account (#28 ruling (1), OWNER Q21b). So
-`unit-path:{llm,mcp,a2a,streaming}` and `root-reach:{…}` PASS.
-
-**When K2d replaces the four flips with a fold over the linked table,** the gate credits a flip in a
-function that folds `LINKED` for every plane whose `linked-axes` row carries `gauntlet-one-shot`
-(`register_gauntlet_runner`) or `gauntlet-session` (`register_session_runner`); the self-test proves
-the fold both ways.
+The #28 rider (`GauntletKernelUnit`, built by the root's two gauntlet runners and registered under
+each plane's capability key by a boot-time install) carried a plane onto the unified loop through the
+kernel's `plane_host` gauntlet seam. No linked row carries a gauntlet axis any more: every plane is a
+DOOR plane, and its unit path is its served door (§2). The rider, its install, the kernel's runner
+registry and the gauntlet seam are deleted with the kernel's plane hosting (BUSBAR-1.6.0.md Part 1
+Law 1; Part 3, the plane-extraction seam). The gate still credits a runner registration should one
+appear; none does.
 
 ## 2. `crates/busbar/src/root/serve.rs` — decision: THE SERVED DOOR (FLIP-DECISIONS)
 
@@ -104,7 +78,7 @@ here.
 
 ## 4. Superseded pre-unification unit modules — not the unit path
 
-`root/units_voice.rs` predates the unification. The rider in §1 serves its plane; the module is no
+`root/units_voice.rs` predates the unification. Its plane is served through its door; the module is no
 longer what the unit-path rows ask about, and a green row names it beside the live path while it is
 on disk:
 
@@ -124,12 +98,12 @@ served path):
   `UnitKey::new(0)`); `A2aUnits` was built only at its own constructor and in its tests, and its
   `seal` checked a table nothing read.
 
-Their coverage was re-pointed, not retired: the mcp and a2a root legs of
-`qa/capability-equality.json` and `qa/teller-steps.json` are the served rider, proven by
-`root/tests/gauntlet_kernel.rs`'s `served_rider_*` tests, which run each plane's own served-leg
-witnesses (`testkit::SERVED`) through the kernel-loop runner `gauntlet_install::install()` registers
-and require the plane's `drive` to have run inside the loop; the money witness
-(`crates/busbar/tests/plane_meter_seam_reachability.rs`) asks the same served leg.
+Their coverage was re-pointed, not retired: the mcp root leg of `qa/capability-equality.json` and
+`qa/teller-steps.json` is the MCP plane's served door, proven by the door cells in
+`root/tests/serve_tests.rs` (module `tools_door`), and the a2a leg is the A2A plane's own door
+cells. (The source-scanning money witness over
+linked planes' billing legs is retired with the last linked plane, DEV-GREEN row 83: every plane
+is a door plane, billed through the kernel plane driver's one money seam.)
 
 ---
 

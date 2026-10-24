@@ -70,6 +70,9 @@ impl PlaneDriver {
             fields: Vec::new(),
             body: Arc::from(&[][..]),
         };
+        // What the units before it left owing ([`super::close`]): a plane only probed, with no
+        // caller's unit arriving to pay it, still has its probes' units closed.
+        self.sweep();
         let units = self.unit(&(), far, &NoCaller, arrival, deadline_ns);
         let Some(decoded) = units.arrive(key.get()) else {
             return;
@@ -83,7 +86,7 @@ impl PlaneDriver {
         run.lend_unit(CLAIM_PROBE, decoded.dialect, &[], 0);
         if let route::End::Cancel(_, None) = units.attempts(&mut run, None).await {
             // The deadline or a reload between crossings: the driver's own ticketless cancel.
-            let _ = self.cancel_now(ticket);
+            let _ = run.cancel_now();
         }
         run.finish();
     }

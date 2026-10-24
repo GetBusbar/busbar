@@ -454,7 +454,7 @@ pub struct HookView {
 
 /// The shared named-DEFINITION read VIEW — relocated to the neutral substrate
 /// (`busbar_kernel::api`) as pure serde data (no `Scope`, no core reach) so a plane crate names
-/// it directly; re-exported here so every in-core (and a2a) caller is unchanged.
+/// it directly; re-exported here so every in-core (and agent-style plane) caller is unchanged.
 pub use busbar_kernel::api::NamedDefView;
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,
@@ -917,6 +917,11 @@ pub struct EffectiveConfigView {
     /// longer parses), plus any hook this API declares with `global: true`. The response FIELD name
     /// stays `global_hooks`; only the config-file spelling changed.
     pub global_hooks: Vec<String>,
+    /// The plane sections the running configuration writes whose plane the process did not open at
+    /// boot: a plane is opened once, at process start, when its section is configured, so each is
+    /// stored and validated but serves nothing until the next RESTART. Omitted when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reload_to_apply: Vec<String>,
 }
 
 /// Fleet METERING read (`GET /api/v1/admin/usage`) — the FinOps surface. Design principle:
