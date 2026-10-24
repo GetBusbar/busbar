@@ -42,6 +42,7 @@ use busbar_contract::hooks::{
     RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_contract::signal::{Signal, SignalBag, SignalValue};
+use busbar_kernel_audit::record::{HookApplied, HookHead};
 
 use super::{blob, FarEnd, PlaneUnits};
 use crate::config::PolicyOnError;
@@ -101,6 +102,65 @@ pub trait HookBinder: Send + Sync {
     fn dialect(&self, dialect: u32) -> String {
         let _ = dialect;
         String::new()
+    }
+}
+
+// ── the hook report ─────────────────────────────────────────────────────────────────────────────
+
+/// ONE UNIT'S HOOK FACTS, as its hook stage reports them: every hook that ran for it, in the order
+/// it ran, by the key the deployment configured it under (never the instance serving it), with its
+/// decision head and whether it failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HooksRan {
+    /// The unit the hooks ran for: the record is sealed under that unit's facts.
+    pub unit: busbar_contract::UnitKey,
+    /// The hooks, in the order they ran.
+    pub hooks: Vec<HookApplied>,
+}
+
+/// `// contract:` where the hook stage reports what ran (THE DESIGN §1: the audit record's
+/// "controls (... hooks applied)"), shaped as the egress walk's dispatch report is.
+///
+/// A report never stops a unit: the hooks have already decided by the time it is made, and a
+/// unit's record is sealed with whatever reached it.
+pub trait HookJournal: Send + Sync {
+    /// Record the hooks one unit's stage ran.
+    fn hooks_ran(&self, record: &HooksRan);
+}
+
+/// What one hook's answer did, as its head: a reject stops the unit, a rewrite, an order or a
+/// restrict changes it, anything else passes it.
+fn head_of(decided: &Decided) -> HookHead {
+    match decided {
+        Decided::Reject | Decided::RejectRequest { .. } => HookHead::Veto,
+        Decided::Order { .. } | Decided::Restrict { .. } => HookHead::Modify,
+        Decided::Weighted => HookHead::Pass,
+    }
+}
+
+/// One hook that ran, keyed `hook`.
+fn applied(hook: &str, head: HookHead, failed: bool) -> HookApplied {
+    HookApplied {
+        hook: hook.to_string(),
+        head,
+        failed,
+    }
+}
+
+/// A rewrite's answer as the hook that gave it ran: a REJECT the engine minted for a load-bearing
+/// rewrite that could not answer ([`gated::rewrite_refusal`] keeps it unclamped; a hook's own
+/// status is clamped to 4xx, so it cannot spell it) is that hook's failure.
+fn rewrite_applied(hook: &str, outcome: &TransformOutcome) -> HookApplied {
+    match outcome {
+        TransformOutcome::Rewrite(_) => applied(hook, HookHead::Modify, false),
+        TransformOutcome::Reject { status, message } => applied(
+            hook,
+            HookHead::Veto,
+            *status == REQUIRED_HOOK_UNAVAILABLE_STATUS
+                && message.as_str() == REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+        ),
+        TransformOutcome::Abstain => applied(hook, HookHead::Pass, false),
+        TransformOutcome::Failed { .. } => applied(hook, HookHead::Pass, true),
     }
 }
 
@@ -881,8 +941,9 @@ impl Asked<'_> {
         (self.hooks.reads)(hook, whose, &self.view.dialect, identity);
     }
 
-    /// One decision of `resolved`, under its deadline, its failure walked down its on-error chain.
-    async fn decide(&self, resolved: &ResolvedPolicy) -> Decided {
+    /// One decision of `resolved`, under its deadline, its failure walked down its on-error chain;
+    /// beside it, the hook as it ran ([`applied`], under its key): `None` when it was not asked.
+    async fn decide(&self, resolved: &ResolvedPolicy) -> (Decided, Option<HookApplied>) {
         let ResolvedPolicy::Policy {
             policy,
             on_error,
@@ -893,8 +954,8 @@ impl Asked<'_> {
             on_empty,
         } = resolved;
         if self.named && self.candidates.is_empty() {
-            // Nothing to rank: the walk's own exhaustion answers.
-            return Decided::Weighted;
+            // Nothing to rank: the walk's own exhaustion answers, and the hook is not asked.
+            return (Decided::Weighted, None);
         }
         let req = self.view.request(
             self.hooks.request_id,
@@ -911,7 +972,7 @@ impl Asked<'_> {
             self.read(policy.name(), req.identity.is_some());
         }
         let key = format!("{}@{}", policy.name(), self.pool);
-        match tokio::time::timeout(
+        let decided = match tokio::time::timeout(
             *timeout,
             policy.decide(&req, self.candidates, &ctx, *timeout),
         )
@@ -919,7 +980,9 @@ impl Asked<'_> {
         {
             Ok(Ok(decision)) => {
                 fault_clear(&key);
-                map_decision(decision, policy.name(), self.candidates, on_empty)
+                let decided = map_decision(decision, policy.name(), self.candidates, on_empty);
+                let ran = applied(policy.name(), head_of(&decided), false);
+                return (decided, Some(ran));
             }
             Ok(Err(e)) => {
                 if fault_enter(&key) {
@@ -963,7 +1026,10 @@ impl Asked<'_> {
                 self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name())
                     .await
             }
-        }
+        };
+        // THE HOOK FAILED: what its on-error chain made of it is its head, and the failure is kept.
+        let ran = applied(policy.name(), head_of(&decided), true);
+        (decided, Some(ran))
     }
 
     /// A failed hook's fallback chain: each link projected per its own grants, the first that
@@ -1385,8 +1451,37 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let _held = d.services.units().staged(unit, Arc::new(stage));
     }
 
-    /// THE REQUEST STAGE, at the head of the route leg (module doc, steps 1-5).
+    /// THE REQUEST STAGE, at the head of the route leg (module doc, steps 1-5), the hooks it ran
+    /// reported to the driver's hook journal however it ended ([`Self::report_hooks`]).
     pub(crate) async fn request_stage(&self, token: &Pass<Route>) -> Result<(), Stopped>
+    where
+        S: super::DriverSteps,
+    {
+        let mut ran = Vec::new();
+        let stage = self.run_request_stage(token, &mut ran).await;
+        self.report_hooks(ran);
+        stage
+    }
+
+    /// THE HOOKS ONE UNIT RAN, in the order they ran, reported to the driver's hook journal under
+    /// the unit's key. A unit that ran none reports nothing: its record names none.
+    pub(crate) fn report_hooks(&self, hooks: Vec<HookApplied>) {
+        let Some(journal) = self.driver.hook_journal.as_ref() else {
+            return;
+        };
+        if hooks.is_empty() {
+            return;
+        }
+        let unit = busbar_contract::UnitKey::new(self.lock().unit);
+        journal.hooks_ran(&HooksRan { unit, hooks });
+    }
+
+    /// [`Self::request_stage`], each hook that ran pushed onto `ran` as it answered.
+    async fn run_request_stage(
+        &self,
+        token: &Pass<Route>,
+        ran: &mut Vec<HookApplied>,
+    ) -> Result<(), Stopped>
     where
         S: super::DriverSteps,
     {
@@ -1491,6 +1586,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             let outcome = hook.transform(&req, *timeout).await;
             drop(req);
+            ran.push(rewrite_applied(hook.name(), &outcome));
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
@@ -1549,8 +1645,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 &view,
                 (&pool, named),
                 &all,
-                &mut keep,
-                &mut constraint,
+                (&mut keep, &mut constraint),
+                ran,
             )
             .await;
         if let Err(stopped) = decided {
@@ -1588,8 +1684,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         view: &Projection,
         (pool, named): (&str, bool),
         all: &[CandidateFacts],
-        keep: &mut HashSet<usize>,
-        constraint: &mut Constraint,
+        (keep, constraint): (&mut HashSet<usize>, &mut Constraint),
+        ran: &mut Vec<HookApplied>,
     ) -> Result<(), Stopped> {
         let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
         if !hooks.gates.is_empty() {
@@ -1601,9 +1697,17 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 candidates: &shown,
                 named,
             };
-            let outcomes: Vec<Decided> =
+            let judged =
                 futures::future::join_all(hooks.gates.iter().map(|(_, gate)| asked.decide(gate)))
                     .await;
+            // Every gate asked ran, in chain order, whichever of them wins below.
+            let outcomes: Vec<Decided> = judged
+                .into_iter()
+                .map(|(decided, hook)| {
+                    ran.extend(hook);
+                    decided
+                })
+                .collect();
             // A REJECT WINS: the first in chain order surfaces.
             for outcome in &outcomes {
                 match outcome {
@@ -1723,7 +1827,9 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             candidates: &shown,
             named,
         };
-        match Box::pin(asked.decide(policy)).await {
+        let (decided, hook) = Box::pin(asked.decide(policy)).await;
+        ran.extend(hook);
+        match decided {
             Decided::Order { order, name } => {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,

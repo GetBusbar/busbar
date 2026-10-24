@@ -1052,6 +1052,7 @@ pub fn compose_served(
     let stage = host.map(|host| HookStage {
         host,
         gov: Arc::clone(&gov),
+        journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
     });
     let site = Arc::clone(&post);
     // THE ONE FLUSH EPOCH every plane's checkpoints are paced by, bumped by the served planes'
@@ -1176,6 +1177,9 @@ pub struct HookStage {
     pub host: busbar_kernel::plane_driver::GenerationHost,
     /// The governance state.
     pub gov: Arc<busbar_kernel::governance::GovState>,
+    /// Where each unit's hook stage reports the hooks it ran: the node its record is sealed on
+    /// (THE DESIGN §1: "controls (... hooks applied)"); `None` = no record names them.
+    pub journal: Option<Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
 }
 
 /// What the hooks may know of a verified caller (the principal is its key's id), over the
@@ -1287,7 +1291,11 @@ impl HookStage {
         host: busbar_kernel::plane_driver::GenerationHost,
         gov: Arc<busbar_kernel::governance::GovState>,
     ) -> Self {
-        Self { host, gov }
+        Self {
+            host,
+            gov,
+            journal: None,
+        }
     }
 
     /// The ROUTED-ORDER binder of the plane registered under `plane_key` whose dialects are
@@ -1713,6 +1721,11 @@ pub(crate) fn compose_planes_over(
             // hooks, bound per unit off the live generation, reach its request stage and its
             // in-session stage (`hook.call`, `content.scan`).
             Some(stage) => driver.with_hooks(stage.routed(plugin.name(), &served_facts.dialects)),
+            None => driver,
+        };
+        // THE HOOKS EACH UNIT RAN, reported to the node its one record is sealed on.
+        let driver = match hooks.and_then(|stage| stage.journal.as_ref()) {
+            Some(journal) => driver.with_hook_journal(Arc::clone(journal)),
             None => driver,
         };
         // A plane whose tail takes a refusal as a piece first is handed it on the unit's own

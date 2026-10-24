@@ -480,7 +480,11 @@ impl<'a> DoorCompose<'a> {
     /// verified principal's key read from `gov`.
     #[must_use]
     pub(crate) fn hooks(mut self, host: GenerationHost, gov: Arc<GovState>) -> Self {
-        self.hooks = Some(HookStage { host, gov });
+        self.hooks = Some(HookStage {
+            host,
+            gov,
+            journal: None,
+        });
         self
     }
 

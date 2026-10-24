@@ -2702,6 +2702,7 @@ pub(crate) mod tool_door {
                     })
                 },
                 gov: Arc::clone(&gov),
+                journal: None,
             };
             let mut served = compose_planes(
                 &doors,

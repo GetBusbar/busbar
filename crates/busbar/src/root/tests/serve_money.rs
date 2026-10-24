@@ -274,6 +274,7 @@ fn governed_full(
             busbar_kernel::plane_driver::engine_host(&reads.lock().expect("unpoisoned"))
         }),
         gov: Arc::clone(&gov),
+        journal: None,
     };
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
