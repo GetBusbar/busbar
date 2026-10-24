@@ -3692,12 +3692,13 @@ fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
             "{pair}"
         );
     }
-    // The bit is a known claim bit; the next one up is not.
+    // The bit is a known claim bit; the first one past every claim bit (`CLAIM_TICKET`, the next
+    // one up, is a claim of its own) is not.
     assert_eq!(
         check_claims(&[claim("V", "/model/*/converse", CLAIM_RAW_AFFIX)], 0),
         Ok(())
     );
-    assert!(check_claims(&[claim("V", "/t", CLAIM_RAW_AFFIX << 1)], 0).is_err());
+    assert!(check_claims(&[claim("V", "/t", crate::abi::plane::CLAIM_TICKET << 1)], 0).is_err());
 }
 
 /// A RAW AFFIX MATCHES THE RAW PATH AS BYTES, so the previous release's rule (`starts_with` the
