@@ -1554,3 +1554,25 @@ fn visit(
     state[i] = 2;
     out.push(i);
     Ok(())
+}
+
+/// The first line where `committed` and `rendered` differ, or `None`.
+pub fn first_difference(committed: &str, rendered: &str) -> Option<String> {
+    let mut a = committed.lines();
+    let mut b = rendered.lines();
+    let mut n = 0usize;
+    loop {
+        n += 1;
+        match (a.next(), b.next()) {
+            (None, None) => return None,
+            (Some(x), Some(y)) if x == y => {}
+            (x, y) => {
+                return Some(format!(
+                    "line {n}: committed `{}` but the sources render `{}`",
+                    x.unwrap_or("<end of file>"),
+                    y.unwrap_or("<end of file>")
+                ))
+            }
+        }
+    }
+}
