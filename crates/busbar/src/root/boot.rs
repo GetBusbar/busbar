@@ -53,10 +53,25 @@ pub fn registry(
         },
         note,
     )?;
-    // The dropped-in secret plugins that state a door join the secret axis (the root's, over the
-    // one dispatcher); a 1.5.x one with no door stays on the cold lane (M6).
-    super::linked::secret_rows().admit_dropped(discovered(&registry, |kind| kind == "secret")?)?;
+    // The dropped-in secret plugins that state a door are JUDGED here, as every build judges them,
+    // and join the secret axis only through [`admit_secrets`]: this build is stage 1, which
+    // `--validate` and every dry run share, and a dry run keeps the running node's secret plugins
+    // (BUSBAR-1.6.0.md l.456-457).
+    super::linked::secret_rows().judge_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
+}
+
+/// STAGE 3's SECRET ADMISSION (BUSBAR-1.6.0.md §3, 3a/3e; the kernel's `RootInstall::secret_admit`):
+/// the dropped-in secret plugins that state a door join the secret axis (the root's, over the one
+/// dispatcher), replacing the last set; a 1.5.x one with no door stays on the cold lane (M6). Boot's
+/// scan and the app build call it; the registry build ([`registry`]) never does.
+///
+/// # Errors
+///
+/// A stated rendering that does not read back, or a dropped-in secret plugin that claims a word
+/// another plugin answers to, naming both.
+pub fn admit_secrets(registry: &PluginRegistry) -> Result<(), String> {
+    super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
 }
 
 /// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
@@ -156,6 +171,13 @@ pub fn plugins_fetch(
             super::loader::FetchOutcome::Warned { url, error } => Fetched::Warned { url, error },
         })
         .collect())
+}
+
+/// The configuration file this process boots from (`--config`, or its default).
+fn config_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(crate::root::cli::resolve_config_path(
+        crate::root::cli::config_path_flag().as_deref(),
+    ))
 }
 
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
@@ -569,7 +591,9 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
         plugins: Some(&plugins),
         data_dir: data_dir.as_deref(),
     };
-    crate::root::boot::registry(build, &mut |_| {}).ok()
+    let registry = crate::root::boot::registry(build, &mut |_| {}).ok()?;
+    admit_secrets(&registry).ok()?;
+    Some(registry)
 }
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
@@ -586,6 +610,59 @@ pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::Pl
         std::process::exit(2);
     });
     let _ = DOOR_CANDIDATES.set(set.doors);
+}
+
+/// The declaring sections of the discovered door planes the boot never bound (Law 7: the boot
+/// configuration writes none of their sections). Like a bound plane left unopened, each is
+/// restart-to-apply (`door_steps::Rules::hold_unopened`); the fallback plane is never one.
+#[must_use]
+pub fn unbound_sections() -> Vec<&'static str> {
+    let bound = door_planes();
+    DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
+        .filter_map(|c| c.verbs.first())
+        .filter_map(|section| {
+            busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        })
+        .filter(|decl| !decl.fallback)
+        .map(|decl| decl.config_section)
+        .collect()
+}
+
+/// The `base_url` of every resolved provider (its catalog definition merged with the document's
+/// deployment), noted by `main` once the configuration resolves and before the seal opens the
+/// dropped-in transports ([`transport_uses`]).
+static PROVIDER_URLS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Note the resolved providers' `base_url`s (`main`, once, before the seal).
+pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
+    let _ = PROVIDER_URLS.set(urls.into_iter().collect());
+}
+
+/// WHAT SELECTS A DROPPED-IN TRANSPORT (Law 7; `BUSBAR-1.6.0.md` §4, "a transport loads iff a
+/// configured URL uses a scheme it claims"): the URL schemes the configuration file uses, and those
+/// of the resolved providers' `base_url`s, which a catalog definition carries when the document
+/// does not. And every scheme a linked transport claims: a dropped-in transport claiming one is a
+/// second owner of it, opened so the seal refuses the boot as it refuses a second linked row with
+/// that key (two transports claiming one scheme refuse boot).
+fn transport_uses() -> Uses {
+    let mut uses = plan(&config_path()).reaching(
+        PROVIDER_URLS
+            .get()
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(String::as_str),
+    );
+    uses.schemes.extend(
+        crate::LINKED_TRANSPORT_DOORS
+            .iter()
+            .filter_map(|(_, door)| Candidate::linked(*door).ok())
+            .flat_map(|c| c.schemes),
+    );
+    uses
 }
 
 /// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
@@ -606,13 +683,23 @@ pub type DoorPlane = std::sync::Arc<
 /// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
 /// under the configured `plugins.logs`, each declaring its needs on the process's one connection
 /// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
-pub fn load_door_planes() {
+///
+/// LAW 7: only a plane the configuration uses is bound — one that owns a section among `sections`,
+/// the keys the boot composes its door planes over (the document's plane sections and the
+/// kernel-owned sections it hands them, `pools` whenever `models` is), so a plane is bound exactly
+/// when the composition can open it.
+pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
     let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
+    let uses = Uses {
+        roots: sections.into_iter().map(str::to_string).collect(),
+        ..Uses::default()
+    };
+    let used = crate::root::loader::boot::used_planes(&uses, doors);
     // The process's ONE connection table: a plane that declares a need is declared on it.
     let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
         crate::root::connector::the().clone();
     let bound = crate::root::loader::boot::load_planes(
-        doors,
+        &used,
         plugin_logs(),
         std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
         crate::root::dispatch::dispatcher().adopter(),
@@ -705,7 +792,7 @@ pub fn dropped_transports(
             return Vec::new();
         };
         let opened = registry
-            .open_transport_entries(&crate::root::doors::bind())
+            .open_transport_entries(&crate::root::doors::bind(), &transport_uses())
             .and_then(|entries| {
                 entries
                     .doors
@@ -720,11 +807,7 @@ pub fn dropped_transports(
                         let composes_over = facts.composes_over;
                         let offered = facts.offered;
                         let upgrades = facts.upgrades;
-                        let (door, wire) = crate::root::doors::served(
-                            plugin,
-                            settings,
-                            Some(crate::root::connector::address_carrier()),
-                        )?;
+                        let (door, wire) = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             claims,
@@ -812,8 +895,9 @@ pub fn compose_book(
     .map_err(|e| format!("the boot ledger's log could not be opened: {e}"))?;
     // The node amendment journal is rebuilt from the chain before anything can seal onto it, so a
     // corrected count and every recorded content access survive the restart — off the disk, or off
-    // the chain the store kept.
-    durability.restore_amendments();
+    // the chain the store kept. A chain that will not read back refuses the boot here as it would
+    // have at the book's build: taken for an empty one, every signed correction would revert.
+    durability.restore_amendments()?;
     // A corrupt journal segment was already logged and counted when the book was built; this puts
     // the durable record of it on the chain. A failed append is logged, never a refusal to boot.
     if let Err(lost) =
@@ -914,8 +998,10 @@ pub fn book(
         None => super::durability::take_node(calls.as_ref(), &host),
     }
     .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    // The lease is held on the lane to the store it is held in, the lane this book keeps: its
+    // checkpoint flush tick refreshes it and the clean shutdown releases it.
     if let Some(lease) = taken.lease {
-        super::durability::hold_lease(std::sync::Arc::clone(&calls), lease);
+        lane.hold_lease(lease);
     }
     let node = taken.id;
     let mig = super::migration::MigrationConfig {
@@ -924,14 +1010,26 @@ pub fn book(
     };
     let token = super::kernel::new_kernel().durability_token();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
+    // WHAT THE DISASTER-RECOVERY VERBS LEFT (row 187): the store's epoch floor, read back through
+    // `record_get`, fences a node below it out; the chain's operator breaks are read as deliberate.
+    super::durability::boot_recovery(&durability, calls.as_ref(), store, adapter.recovery_epoch())?;
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent
-    // an empty reference and two principals never share one.
+    // an empty reference and two principals never share one. A node with neither keeps this
+    // boot's random key, so its references differ from every other node's and from its own after
+    // a restart: a deployment that meant to bind a keyset reads that here. DEBUG, not INFO: the
+    // INFO+ boot lines are pinned by `tests/boot_lines_neutrality.rs`.
     if let Some(material) = durability
         .record
         .derived_secret(super::keyset::CALLER_REF_MATERIAL)
     {
         gov.bind_deployment_caller_ref(material);
+    } else {
+        tracing::debug!(
+            node = mig.node,
+            "no deployment keyset is bound: caller references are keyed by this boot's random key \
+             unless the node keeps signing material, so they differ per node and per restart"
+        );
     }
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
     // boot log's INFO+ line set is part of what "one plane alone ≡ 1.5.5" means — it is pinned
@@ -962,12 +1060,19 @@ pub fn book(
     let durability = Arc::new(std::sync::Mutex::new(durability));
     // Every amendment sealed from here on goes on the book it was rebuilt from.
     super::durability::bind_amendments(&durability);
+    // The disaster-recovery verbs reach this book's journal and the store it is shipped to: one
+    // store behind the node, not one per seam (row 113, ruling (B); row 187).
+    let verb_store = super::durability::node_verb_store(
+        Arc::clone(&durability),
+        super::kernel::new_kernel().durability_token(),
+        calls,
+        store,
+        &adapter,
+    );
     Ok(super::durability::NodeBook {
         durability,
         rows,
-        // The disaster-recovery verbs reach the store this book is shipped to, through the same
-        // adapter: one store behind the node, not one per seam (row 113, ruling (B)).
-        verb_store: Some(adapter.verb_store()),
+        verb_store,
     })
 }
 

@@ -10,14 +10,16 @@
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::plane::{
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
-    PRINCIPAL_REQUIRED, ROUTE_DIRECT, ROUTE_POOL,
+    class_of, reason_code, reason_of, RefusalClass, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, ROUTE_DIRECT, ROUTE_POOL,
 };
+use busbar_contract::caps::ReasonCode;
 use busbar_contract::media::base64_encode;
+use busbar_kernel::plane_driver::refusal_status;
 use busbar_plane_streaming::claims::{HTTP_TRANSPORT, WS_TRANSPORT};
 use busbar_plane_streaming::door::{
-    refusal_body, AUDIT_KIND, LIVE_STYLE, REALTIME_STYLE, REFUSAL_NO_DOOR, RIDES_LIVE_SOCKET,
-    RIDES_REALTIME_PASS, RIDES_REALTIME_SOCKET,
+    refusal_body, refusal_render, AUDIT_KIND, LIVE_STYLE, REALTIME_STYLE, REFUSAL_NO_DOOR,
+    RIDES_LIVE_SOCKET, RIDES_REALTIME_PASS, RIDES_REALTIME_SOCKET,
 };
 use busbar_plane_streaming::driven::{
     mint_reply, GEMINI_SOCKET_PATH, MINT_FAILED_STATUS, REALTIME_SOCKET_PATH, SESSION_OPEN_ACTION,
@@ -27,10 +29,11 @@ use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::Plugin;
 use serde_json::{json, Value};
 
-use crate::codec_legs::{caller_norms, far_norms, fingerprint, frame, usage_tokens, Dialect, Norm};
+use crate::codec_legs::{caller_norms, far_norms, frame, usage_tokens, Dialect, Norm};
 use crate::door::{
-    arrive, attempt, drive, judge, open, piece, refusal, request, result, session, Answer, Arrived,
-    Emission, Log, Opened, Piece, Rendered, Rig, Session, CALLER_REF, MODEL, PUBLIC, SESSION,
+    arrive, attempt, drive, judge, judge_planted, open, piece, refusal, refusal_for, request,
+    result, session, Answer, Arrived, Emission, Log, Opened, Piece, Rendered, Rig, Session,
+    CALLER_REF, MODEL, PUBLIC, SESSION,
 };
 
 // ── the frames the legs push ────────────────────────────────────────────────────────────────────
@@ -348,14 +351,16 @@ fn meter_script(p: &Plugin<Plane>) -> MeterObs {
 
 fn meter_expected() -> Vec<String> {
     vec![
-        "caller audio Ready units=[]".to_string(),
-        "turn attempt Ready units=[]".to_string(),
+        // Every answer reports the open turn's running seconds (Q128 u64: a cancel or a cut
+        // reports nothing of its own, so the last answer before it is what bills).
+        "caller audio Ready units=[4:1=2]".to_string(),
+        "turn attempt Ready units=[4:1=2]".to_string(),
         format!("far usage Ready units=[{}]", usage_units(2)),
         format!("collect Ready units=[{}]", usage_units(2)),
         "short Failed units=[needed 6]".to_string(),
-        format!("short re-call Ready units=[{}]", usage_units(2)),
+        format!("short re-call Ready units=[{}]", usage_units(4)),
         format!("caller end Ready units=[{}]", usage_units(4)),
-        "unanswered audio Ready units=[]".to_string(),
+        "unanswered audio Ready units=[4:1=2]".to_string(),
         "unanswered end Ready units=[4:1=2]".to_string(),
     ]
 }
@@ -389,8 +394,10 @@ fn meter_check(o: &MeterObs) -> Result<String, String> {
     Ok(
         "the door counts in its six declared classes plus the per-session fee, admits on no \
          estimate, and reports every turn's far-end tokens and audio seconds as cumulative \
-         REPORTED units: once per turn (a short answer's re-call does not count its audio \
-         twice), the open turn settled once at the end, and no fee unless the far end answered. \
+         REPORTED units: the open turn's seconds running in every answer (so the last answer \
+         before a cancel or a cut bills what streamed), each turn counted once (a short answer's \
+         re-call does not count its audio twice), the open turn settled once at the end, and no \
+         fee unless the far end answered. \
          Reserving against the caller's budget chain, capping at its remaining bucket and \
          ledgering are the kernel's session account"
             .to_string(),
@@ -729,10 +736,43 @@ fn provider_dial(rig: &Rig, slice: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AdmitObs {
     rendered: Vec<(u16, Rendered)>,
+    policy: Vec<PolicyRefusal>,
     after: Vec<String>,
     drive: (Outcome, Vec<u64>),
     control: Answer,
 }
+
+/// One policy refusal as the composition answers it: the class, the reason the kernel refused for,
+/// the status the kernel's plane driver chose for it (the plane states no row of its own), and what
+/// the door rendered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PolicyRefusal {
+    class: RefusalClass,
+    reason: ReasonCode,
+    status: u16,
+    rendered: Rendered,
+}
+
+/// The refusal classes that refuse the caller's request rather than name a state or fault of the
+/// node (ARCHITECT ruling: a policy refusal is a refusal, not a server fault; the class docs in
+/// `busbar_contract::abi::plane::RefusalClass`).
+const POLICY_CLASSES: [RefusalClass; 9] = [
+    RefusalClass::Unreadable,
+    RefusalClass::Rejected,
+    RefusalClass::Unauthenticated,
+    RefusalClass::Forbidden,
+    RefusalClass::TooLarge,
+    RefusalClass::Throttled,
+    RefusalClass::Busy,
+    RefusalClass::QuotaExhausted,
+    RefusalClass::NotFound,
+];
+
+/// The words a policy refusal is rendered with.
+const POLICY_WORDS: &str = "the request was refused";
+
+/// The unit a policy refusal ends: one that never opened a session.
+const POLICY_UNIT: u64 = 62;
 
 const REFUSALS: [(u16, &str, &str); 3] = [
     (429, "the caller's budget is exhausted", "rate_limit_error"),
@@ -745,6 +785,23 @@ fn admit_script(p: &Plugin<Plane>) -> AdmitObs {
     let rendered = REFUSALS
         .iter()
         .map(|(status, words, _)| (*status, refusal(p, 60, 0, u32::from(*status), words)))
+        .collect();
+    // Every reason a plane can be handed, in every policy class: the status the kernel's plane
+    // driver chooses for it where the plane states no row (the streaming plane states none), and
+    // the door's rendering of that refusal.
+    let policy = ReasonCode::ALL
+        .iter()
+        .filter(|r| POLICY_CLASSES.contains(&class_of(**r)))
+        .filter(|r| reason_of(reason_code(**r)).is_some())
+        .map(|r| {
+            let status = refusal_status(*r);
+            PolicyRefusal {
+                class: class_of(*r),
+                reason: *r,
+                status: u16::try_from(status).unwrap_or(0),
+                rendered: refusal_for(p, POLICY_UNIT, 0, reason_code(*r), status, POLICY_WORDS),
+            }
+        })
         .collect();
     let far = piece(p, &session(60, 2, FROM_FAR_END, 0, &downlink(96)));
     let collect = piece(p, &session(60, 2, FROM_KERNEL, 0, &[]));
@@ -761,6 +818,7 @@ fn admit_script(p: &Plugin<Plane>) -> AdmitObs {
     let control = s.push(FROM_CALLER, 0, &uplink(100));
     AdmitObs {
         rendered,
+        policy,
         after,
         drive,
         control,
@@ -783,6 +841,33 @@ fn admit_check(o: &AdmitObs) -> Result<String, String> {
             return Err(format!("the kernel's {status} refusal rendered as {r:?}"));
         }
     }
+    for class in POLICY_CLASSES {
+        if !o.policy.iter().any(|r| r.class == class) {
+            return Err(format!("no policy refusal of class {class:?} was rendered"));
+        }
+    }
+    for r in &o.policy {
+        let want: Value = serde_json::from_slice(&refusal_render(
+            r.status,
+            reason_code(r.reason),
+            POLICY_WORDS,
+        ))
+        .unwrap_or(Value::Null);
+        let (kind, _) = error_of(&r.rendered);
+        if !(400..500).contains(&r.status)
+            || kind == "server_error"
+            || r.rendered.outcome != Outcome::Ready
+            || serde_json::from_str::<Value>(&r.rendered.body).ok() != Some(want)
+            || r.rendered.fields != [("content-type".to_string(), "application/json".to_string())]
+            || r.rendered.status != 0
+            || r.rendered.records != 0
+        {
+            return Err(format!(
+                "the policy refusal {:?} ({:?}) answered {} as {:?}",
+                r.reason, r.class, r.status, r.rendered
+            ));
+        }
+    }
     if o.after != ["far Refused emitted=0", "collect Refused emitted=0"] {
         return Err(format!(
             "a refused unit's stream was answered as though a session were open: {:?}",
@@ -803,7 +888,10 @@ fn admit_check(o: &AdmitObs) -> Result<String, String> {
     }
     Ok(
         "the kernel's refusal (budget 429, grant 403, credential 401) is rendered in the \
-         dialect's error envelope with the kernel's status kept and no record written; a refused \
+         dialect's error envelope with the kernel's status kept and no record written; every \
+         policy refusal (each reason of the unreadable, rejected, unauthenticated, forbidden, too \
+         large, throttled, busy, quota-exhausted and not-found classes) wears the kernel's 4xx and \
+         its refusal envelope, never `server_error`; a refused \
          unit opens no session and dials nothing (its stream's far piece and collection are \
          refused, drive names nothing), while an admitted control dials. Reading the caller's \
          chain dry and refusing before the hold is the kernel's admit step"
@@ -821,6 +909,12 @@ fn admit_refusal(rig: &Rig, slice: &str) -> bool {
             let mut planted = o.clone();
             planted.rendered[0].1.body =
                 String::from_utf8_lossy(&refusal_body(500, "x")).into_owned();
+            // A policy refusal collapsed into the node's 503 `server_error`.
+            if let Some(r) = planted.policy.first_mut() {
+                r.status = 503;
+                r.rendered.body =
+                    String::from_utf8_lossy(&refusal_body(503, POLICY_WORDS)).into_owned();
+            }
             planted
         },
     )
@@ -1257,7 +1351,21 @@ fn phase(log: &Log, from: usize, to: usize) -> Log {
     }
 }
 
-fn tool_check(dialect: Dialect, o: &ToolObs) -> Result<String, String> {
+/// The frames of `log` bound for one side, as bytes.
+fn frames(log: &Log, to_far: bool) -> Vec<Vec<u8>> {
+    log.emissions
+        .iter()
+        .filter(|e| e.to_far == to_far)
+        .map(|e| e.frame.clone())
+        .collect()
+}
+
+/// The tool-reply leg, judged to Law 11 (`BUSBAR-1.6.0.md` l.2127-2136: a model's tool call "goes
+/// back to the caller unchanged except for dialect translation"; busbar "answers nothing on the
+/// caller's behalf") and Law 5 (l.1903: a relay "sends the client's bytes"). The far end's
+/// response, its usage report included, reaches the caller frame for frame and byte for byte, and
+/// its units are reported; the caller's own result reaches the far end unchanged and alone.
+fn tool_check(dialect: Dialect, o: &ToolObs, w: &ToolWire) -> Result<String, String> {
     let name = dialect.name();
     if !o.log.anomalies.is_empty() {
         return Err(format!(
@@ -1273,20 +1381,32 @@ fn tool_check(dialect: Dialect, o: &ToolObs) -> Result<String, String> {
             announce.emissions
         ));
     }
-    let call = vec![
-        Norm::ToolOpen("call_x".to_string(), "lookup".to_string()),
-        Norm::ToolArgs("call_x".to_string(), json!({"q": 1})),
-        Norm::ToolClose("call_x".to_string()),
-    ];
-    let relayed = caller_norms(dialect, &announce);
-    if fingerprint(&relayed) != fingerprint(&call) {
+    if frames(&announce, false) != w.announce {
         return Err(format!(
-            "{name}: the call reached the caller as {relayed:?}"
+            "{name}: the call reached the caller as {:?}, not as the far end made it",
+            caller_norms(dialect, &announce)
         ));
     }
-    if o.usage_at != o.announced {
+    let usage = phase(&o.log, o.announced, o.usage_at);
+    let relayed = matches!(frames(&usage, false).as_slice(), [only] if only.as_slice() == w.usage);
+    if usage.emissions.len() != 1 || !relayed {
         return Err(format!(
-            "{name}: the turn's usage was relayed instead of reported"
+            "{name}: the far end's usage report did not reach the caller as it was sent (a relay \
+             withholds no frame of the model's response): {} frame(s) {:?}",
+            usage.emissions.len(),
+            caller_norms(dialect, &usage)
+        ));
+    }
+    let tokens: Vec<(u32, u64)> = o
+        .units
+        .iter()
+        .filter(|u| u.0 < 4)
+        .map(|u| (u.0, u.2))
+        .collect();
+    if tokens != usage_tokens(dialect, w.usage) {
+        return Err(format!(
+            "{name}: the turn's usage was not reported as units: {:?}",
+            o.units
         ));
     }
     if !o.units.contains(&(5, 1, 1)) {
@@ -1296,48 +1416,80 @@ fn tool_check(dialect: Dialect, o: &ToolObs) -> Result<String, String> {
         ));
     }
     let reply = phase(&o.log, o.usage_at, o.log.emissions.len());
-    let carried = far_norms(dialect, &reply);
     let ok = reply.emissions.len() == 1
-        && reply.emissions[0].to_far
-        && matches!(carried.as_slice(), [Norm::ToolResult(id, out)] if id == "call_x" && *out == json!({"ok": true}));
+        && matches!(frames(&reply, true).as_slice(), [only] if *only == w.reply);
     if !ok {
         return Err(format!(
-            "{name}: the caller's own result reached the far end as {carried:?} ({} frame(s))",
+            "{name}: the caller's own result reached the far end as {:?} ({} frame(s))",
+            far_norms(dialect, &reply),
             reply.emissions.len()
         ));
     }
     Ok(format!(
-        "{name}: the far end's call reached the caller as it was made and the door sent the far \
-         end nothing for it; the call counted once; the caller's own result reached the far end \
-         alone (no door-authored response)"
+        "{name}: the far end's call reached the caller byte for byte and the door sent the far \
+         end nothing for it; the far end's usage report reached the caller byte for byte and was \
+         reported as units; the call counted once; the caller's own result reached the far end \
+         unchanged and alone (no door-authored response)"
     ))
+}
+
+/// THE PLANTED WRONG DOOR that answers the call upstream: the caller's result reaches the far end
+/// before the caller sent it (busbar authored it).
+fn plant_answered(o: &ToolObs, w: &ToolWire) -> ToolObs {
+    let mut planted = o.clone();
+    planted.log.emissions.insert(
+        0,
+        Emission {
+            to_far: true,
+            frame: w.reply.clone(),
+            need: w.dialect.ride(),
+            verb: "GET".to_string(),
+            target: w.dialect.socket().to_string(),
+        },
+    );
+    planted.announced += 1;
+    planted.usage_at += 1;
+    planted
+}
+
+/// THE PLANTED WRONG DOOR that withholds the far end's usage report from the caller (the model's
+/// response is the caller's, every frame of it: Law 5, `BUSBAR-1.6.0.md` l.1903; Law 11, l.2129).
+fn plant_withheld(o: &ToolObs) -> ToolObs {
+    let mut planted = o.clone();
+    if planted.usage_at > planted.announced {
+        planted.log.emissions.remove(planted.announced);
+        planted.usage_at -= 1;
+    } else {
+        planted.log.emissions.insert(
+            planted.announced,
+            Emission {
+                to_far: false,
+                frame: b"{}".to_vec(),
+                need: 0,
+                verb: String::new(),
+                target: String::new(),
+            },
+        );
+        planted.usage_at += 1;
+    }
+    planted
 }
 
 fn tool_reply(rig: &Rig, slice: &str) -> bool {
     let mut pass = true;
     for dialect in [Dialect::OpenAi, Dialect::Gemini] {
         let w = tool_wire(dialect);
-        pass &= judge(
+        let answered: &dyn Fn(&ToolObs) -> ToolObs = &|o: &ToolObs| plant_answered(o, &w);
+        let withheld: &dyn Fn(&ToolObs) -> ToolObs = &plant_withheld;
+        pass &= judge_planted(
             slice,
             &format!("{} tool call relayed, never answered", dialect.name()),
             &rig.both(|p| tool_script(p, &w)),
-            &|o: &ToolObs| tool_check(dialect, o),
-            &|o: &ToolObs| {
-                let mut planted = o.clone();
-                planted.log.emissions.insert(
-                    0,
-                    Emission {
-                        to_far: true,
-                        frame: w.reply.clone(),
-                        need: dialect.ride(),
-                        verb: "GET".to_string(),
-                        target: dialect.socket().to_string(),
-                    },
-                );
-                planted.announced += 1;
-                planted.usage_at += 1;
-                planted
-            },
+            &|o: &ToolObs| tool_check(dialect, o, &w),
+            &[
+                ("the call answered upstream", answered),
+                ("the usage report withheld from the caller", withheld),
+            ],
         );
     }
     pass

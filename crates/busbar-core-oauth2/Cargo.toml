@@ -36,6 +36,7 @@ axum = { workspace = true }
 base64 = { workspace = true }
 ring = { workspace = true }
 oauth-as = { workspace = true }
+psl = { workspace = true }
 serde_json = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
@@ -64,3 +65,7 @@ axum = { workspace = true, features = ["http1"] }
 oauth-as = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
+# The hosted login flow's tests (row 159, K3#2, moved from busbar-kernel with them): a sync body
+# read, and the diagnostic capture the faulting-plugin test reads.
+futures = { workspace = true }
+tracing-subscriber = { workspace = true }
