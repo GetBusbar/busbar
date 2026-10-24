@@ -807,9 +807,9 @@ pub(super) mod session_door {
     fn hook_env() -> busbar_kernel::hooks::HookEnv {
         busbar_kernel::test_support::test_hook_env(
             &["test-hook"],
-            busbar_plugin_loader::sign::HookNeeds {
-                prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-                user: busbar_plugin_loader::sign::NeedLevel::Ro,
+            busbar_kernel::test_support::HookNeeds {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
         )
     }
