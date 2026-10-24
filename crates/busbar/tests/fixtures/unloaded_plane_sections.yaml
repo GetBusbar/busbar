@@ -1,0 +1,2 @@
+tools:
+  t1: { url: "https://t.example/rpc", pin: { mechanism: unpinned } }

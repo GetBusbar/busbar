@@ -84,7 +84,12 @@ impl Span {
 ///
 /// A bound rather than a stack overflow: a hostile body that is ten thousand open brackets is a
 /// refusal, not a crash.
-pub const MAX_JSON_DEPTH: usize = 64;
+///
+/// 128 is exactly what v1.5.5 accepted: `crates/busbar/src/json.rs:25` caps its depth pre-scan at
+/// `MAX_JSON_DEPTH = 128`, so a body 128 deep reads and one 129 deep is refused. The scanner is not
+/// recursive per nesting level (`skip_container` is a loop over a stack of this many bytes);
+/// only `descend` recurses, once per pointer token, so 128 is safe on the stack.
+pub const MAX_JSON_DEPTH: usize = 128;
 
 /// What resolving a pointer found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

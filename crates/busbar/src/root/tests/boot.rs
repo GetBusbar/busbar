@@ -258,6 +258,7 @@ fn listening_plane(target_from: &str) -> Candidate {
         aliases: Vec::new(),
         sugar: Vec::new(),
         verbs: vec!["agents".into()],
+        selecting: Vec::new(),
         schemes: Vec::new(),
         needs: vec![ReadNeed {
             direction: DIRECTION_INBOUND,
@@ -784,6 +785,7 @@ fn dropped_secret(name: &str) -> Candidate {
         aliases: Vec::new(),
         sugar: Vec::new(),
         verbs: Vec::new(),
+        selecting: Vec::new(),
         schemes: Vec::new(),
         needs: Vec::new(),
         stated: Vec::new(),
