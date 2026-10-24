@@ -138,7 +138,6 @@ pub fn ledger() -> Vec<LedgerRow> {
         s("usage.rs", &["llm", "streaming"], "Unrelated: llm's engine file bills a non-streaming token response to a key's budget (record_resp_usage); streaming's codec file is the Realtime and Gemini duplex usage IR and its float-tolerant count reader."),
         s("Answer", &["mcp", "streaming"], "Unrelated: mcp's Answer is the reply to one MCP arrival (here with a status and body, or far); streaming's is a RequestUnit's per-piece answer (nothing, attempt, to the far end, to the caller, refused)."),
         s("Arrival", &["mcp", "streaming"], "Unrelated: mcp's Arrival is one carrier line read (a LineUnit and an optional dispatch body); streaming's is its arrive slot's answer (door, op class, dialect)."),
-        s("CredentialPlacement", &["a2a", "streaming"], "Unrelated: a2a's places a leased credential in an HTTP header (Authorization Bearer or a named header); streaming's places a provider key on a WebSocket dial per dialect (a query parameter or a prefixed header)."),
         s("Dialect", &["a2a", "streaming"], "Unrelated: a2a's Dialect is the push-config verb spelling (V03 or V10); streaming's is its voice dialect roster (OpenAI Realtime, Gemini Live, Twilio Media Streams, one-shot transcribe and tts)."),
         s("Held", &["mcp", "streaming"], "Unrelated: mcp's Held is one generation's catalogue, tools section and pools; streaming's is a one-request door unit's state (its RequestUnit, what it owes, a short answer)."),
         s("Reply", &["mcp", "streaming"], "Unrelated: mcp's Reply is a caller's answer to one of busbar's own asks (answered or failed); streaming's is the caller's HTTP answer (status, fields, body, the rtc call id)."),
@@ -150,10 +149,12 @@ pub fn ledger() -> Vec<LedgerRow> {
         s("read_settings", &["decisions", "streaming"], "Each plane judges its own settings blob by its own grammar and answers its own section for an empty one: DecisionsSection for decisions, StreamsCfg for streaming. The grammar is the plane's."),
         s("refusal_body", &["decisions", "streaming"], "Each plane renders the kernel's refusal in its own wire's error shape: jev's error code and message for decisions, the OpenAI REST error envelope for streaming. The status and text are the kernel's; the shape is the dialect's."),
         d("config.rs", "The parse ORDER these two files shared is gone: config::plane_sections::split_section owns the reserved-key refusals, the two typed lifts and the sequence they run in, and all THREE plane sections are read through it. What is left in each file is that plane's GRAMMAR and nothing else — they share no type, no field, no value rule, no sentence and no caller. What they share is a filename, which on every plane says the same true and un-actionable thing: this is where that section's grammar is written."),
-        // STRUCK at row 159 (busbar-plane-streaming#36): `Session`. The streaming door holds each
-        // live session as its `Live` and no longer builds the `sessions::Session` enum; that module
-        // is the crate's test driver alone (`#[cfg(test)]`), so `Session` is declared in one plane
-        // and `plane-dup:stale-ledger` names the row.
+        // STRUCK at row 159 (busbar-plane-streaming#36): `Session` and `CredentialPlacement`. The
+        // streaming door holds each live session as its `Live` and no longer builds the
+        // `sessions::Session` enum; that module is the crate's test driver alone (`#[cfg(test)]`).
+        // The door places a provider key through its dialect's `DialectAuth`, so
+        // `provider::CredentialPlacement` is test code too. Each name is declared in one plane, and
+        // `plane-dup:stale-ledger` names its row.
         // STRUCK at P3 DEL-MCP (ARCHITECT 2026-10-05: busbar-mcp deleted, the mcp plane is served
         // through its door crate alone): `transport.rs`, `judge`, `revalidate`, `observed_pin`,
         // `contains`, `get`, `list`, `openapi_schemas`, `reresolve_gates`, `metadata_route` and
@@ -461,7 +462,15 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 /// MANDATORY DRAIN (owner: lane a29e9b3, busbar-llm retirement): the busbar-plane-llm extraction
 /// (status row 106, the #1072 recipe) re-lowers UNLEDGERED_ARMED to the measure after extraction in
 /// the SAME PR, and the plugin repo's own plane-dup run carries these names from then on.
-pub const UNLEDGERED_ARMED: usize = 97;
+///
+/// LOWERED 97 -> 94 at row 159 (busbar-plane-streaming#36, pinned by this commit's PR), name by
+/// name. The plane's door no longer reaches three streaming declarations, and #36 makes each one
+/// `#[cfg(test)]`, so the llm copy is the only production one left: `Upstream`, `dialect_for` and
+/// `matches_selector` (each llm+streaming). `dealt_section` (a2a+streaming) left with plugin dev's
+/// keyed settings read, and `read_dealt` (decisions+streaming) took its place, so that pair is net 0.
+/// #36's sideband call table is named `PendingCalls`, not a2a's push-door `Calls`, so it adds no
+/// pair.
+pub const UNLEDGERED_ARMED: usize = 94;
 
 /// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
 fn unledgered_row(unledgered: &[String]) -> Row {
