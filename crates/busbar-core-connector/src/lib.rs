@@ -118,7 +118,7 @@ use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
-use crate::pool::{PoolKey, PoolPosture, Pools, SealRef};
+use crate::pool::{PoolKey, PoolPosture, Pools, Same};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
@@ -2213,6 +2213,9 @@ impl Connector {
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
         };
+        // The very client config the dial is secured with: a pooled line is lent only to an open
+        // secured with it.
+        let trust = dial.tls.clone().map(Same);
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
         // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
         // destination is held to them; one that pins the far end's key and is not secured has no
@@ -2248,7 +2251,7 @@ impl Connector {
             }
         };
         // The very seal the dial is held to: a pooled line is lent only to an open held to it.
-        let sealed = anchors.clone().map(SealRef);
+        let sealed = anchors.clone().map(Same);
         if anchors
             .as_ref()
             .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
@@ -2305,6 +2308,7 @@ impl Connector {
                     class: (judged_class, egress_class),
                     reach,
                     anchored_as,
+                    trust,
                     sealed,
                 },
             )
