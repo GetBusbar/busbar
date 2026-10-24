@@ -506,54 +506,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
-    // STATUS ROW 184: THE TERMINAL RECORD'S WRITERS ARE A LIST. A call of either terminal verb from
-    // a fn that is not on `[rules.terminal-sites].allowed` is a new site; a listed entry whose fn no
-    // longer calls either verb is stale; and the tree as it stands is green.
-    let mut ov = on(base);
-    ov.set(
-        "crates/busbar-kernel/src/zz_planted_terminal_site.rs",
-        "pub fn planted_terminal_writer() {\n    let _ = finish_rejected(app, gov, proto, pool, at, \
-         charged, resp);\n}\n",
-    );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a terminal verb called from a fn that is not on the allowed list",
-        &["terminal-sites"],
-        ov,
-        &["new site `finish_rejected(` at crates/busbar-kernel/src/zz_planted_terminal_site.rs:2"],
-    ));
-
-    let stale_entry = "crates/busbar-kernel/src/ingress/mod.rs::zz_planted_stale_writer";
-    if let Ok(text) = cx.read(CEILINGS) {
-        let anchor = "verbs = [\"finish_admitted\", \"finish_rejected\"]\nallowed = [\n";
-        let planted = text.replacen(anchor, &format!("{anchor}  \"{stale_entry}\",\n"), 1);
-        if planted != text {
-            let mut ov = on(base);
-            ov.set(CEILINGS, planted);
-            r.push(prove_red(
-                cx,
-                gate,
-                "a listed terminal-site entry that no longer calls either verb",
-                &["terminal-sites"],
-                ov,
-                &[format!("stale entry {stale_entry}").as_str()],
-            ));
-        } else {
-            r.note_infra_failure(
-                "[rules.terminal-sites] allowed anchor could not be found, so the stale-entry arm \
-                 is unproven",
-            );
-        }
-    }
-    r.push(prove_rows_green(
-        cx,
-        gate,
-        "the terminal verbs are called only from the listed sites on the clean tree",
-        &["terminal-sites"],
-        on(base),
-    ));
-
     // Q-GG1 (ARCHITECT ruling a): THE ONE WALK'S PICK IS THE KERNEL'S ONLY ONE. The far end's own
     // pull walk moved into busbar-kernel-egress as `walk::Walk`, whose `Walk::pick` is the one
     // production call of the verb in any kernel crate. A second one beside it — a far end that
@@ -705,13 +657,36 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     ] {
         ov.set(file, body);
     }
+    // STATUS ROW 184 RIDES THE SAME RUN: THE TERMINAL RECORD'S WRITERS ARE A LIST. A call of either
+    // terminal verb from a fn that is not on `[rules.terminal-sites].allowed` is a new site, and a
+    // listed entry whose fn no longer calls either verb is stale; each is named. No plant above
+    // calls a terminal verb or touches that list, and neither of these calls a money terminal, so
+    // each row is red for its own plants alone.
+    ov.set(
+        "crates/busbar-kernel/src/zz_planted_terminal_site.rs",
+        "pub fn planted_terminal_writer() {\n    let _ = finish_rejected(app, gov, proto, pool, at, \
+         charged, resp);\n}\n",
+    );
+    let stale_entry = "crates/busbar-kernel/src/ingress/mod.rs::zz_planted_stale_writer";
+    let stale_named = format!("stale entry {stale_entry}");
+    let anchor = "verbs = [\"finish_admitted\", \"finish_rejected\"]\nallowed = [\n";
+    match cx.read(CEILINGS) {
+        Ok(text) if text.contains(anchor) => ov.set(
+            CEILINGS,
+            text.replacen(anchor, &format!("{anchor}  \"{stale_entry}\",\n"), 1),
+        ),
+        _ => r.note_infra_failure(
+            "[rules.terminal-sites] allowed anchor could not be found, so the stale-entry arm is \
+             unproven",
+        ),
+    }
     r.push(prove_red(
         cx,
         gate,
         "a terminal called by a third door, through a typed argument, `Self::`, a type alias, an \
          untyped binding (named like a `Node` field elsewhere, or a `Node` in another fn), a second \
          binding of its receiver, or named without a call, is counted",
-        &["single-terminal"],
+        &["single-terminal", "terminal-sites"],
         ov,
         &[
             "DataRoutes::zz_planted_third_caller",
@@ -726,6 +701,8 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
             "zz_fn_item",
             "zz_macro_path",
             "zz_macro_splice",
+            "new site `finish_rejected(` at crates/busbar-kernel/src/zz_planted_terminal_site.rs:2",
+            stale_named.as_str(),
         ],
     ));
 
@@ -795,8 +772,8 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &cx.with_overlay(ov),
         gate,
         "the real `Node` (bound in its own fn, or named plainly) and a same-named method on another \
-         type are not the terminal",
-        &["single-terminal"],
+         type are not the terminal, and the terminal verbs are called only from the listed sites",
+        &["single-terminal", "terminal-sites"],
     ));
 
     // THE PLANES THE RULE READS: the legacy list (empty since DEV-GREEN row 83) and the door crates
