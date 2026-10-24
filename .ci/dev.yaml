@@ -9,8 +9,7 @@ approve: true
 deadline: 8h
 on:
   # oracle on demand only until ModernCI 0.9.1 is live (2026-10-24): see default.yaml.
-  move: [fmt, clippy, test, deny]
-  manual: [oracle]
+  move: [fmt, clippy, test, deny, oracle]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
