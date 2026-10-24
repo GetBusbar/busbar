@@ -780,10 +780,10 @@ required-features = ["auth-admin-tokens"]
 "former.ldap" = "busbar-auth-ldap-plugin"
 "former.webrequest" = "busbar-webrequest"
 
-# ── THE DISTRIBUTION WORKSPACE ─────────────────────────────────────────────────────────────────
-# The shipped binary is core (path crates beside this one) plus the plugins pinned below. This is the
-# only workspace that names a plugin; the oracle replays the 1.5.5 recording against its release build.
 [workspace]
+# THE DISTRIBUTION WORKSPACE. The shipped binary is core (path crates beside this one) plus the
+# plugins pinned below. This is the only workspace that names a plugin; the oracle replays the
+# 1.5.5 recording against its release build.
 resolver = "2"
 members = ["."]
 
