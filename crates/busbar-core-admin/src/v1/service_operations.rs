@@ -273,12 +273,7 @@ impl AdminService {
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
         // discoverable to an operator inspecting state rather than boot logs. A name that is live
         // wins — the registry only ever holds names the applier actually dropped.
-        for (name, entry) in busbar_kernel::config::overlay::unparseable_named_map_entries(
-            self.app.overlay_path.as_deref(),
-            section,
-            &self.app.root,
-            self.app.legacy,
-        ) {
+        for (name, entry) in self.unparseable_overlay_entries(section).await? {
             if !defs.iter().any(|d| d.name == name) {
                 defs.push(unparseable_def_view(&name, &entry));
             }
@@ -309,20 +304,58 @@ impl AdminService {
             // seam; `None` for a plane compiled out is the seam's own `None`.
             NamedMapSection::Plane(_) => plane_named_def_get(section, &self.app, name),
         };
-        view.or_else(|| {
-            // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a
-            // 404 for a name that is sitting in the operator's own overlay is precisely the silent
-            // drop this surfaces.
-            busbar_kernel::config::overlay::unparseable_named_map_entries(
-                self.app.overlay_path.as_deref(),
-                section,
-                &self.app.root,
-                self.app.legacy,
-            )
+        if let Some(view) = view {
+            return Ok(view);
+        }
+        // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a 404
+        // for a name that is sitting in the operator's own overlay is precisely the silent drop
+        // this surfaces.
+        self.unparseable_overlay_entries(section)
+            .await?
             .get(name)
             .map(|entry| unparseable_def_view(name, entry))
+            .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
+    }
+
+    /// The overlay entries of `section` this binary could not parse, read OFF THE ASYNC WORKER.
+    ///
+    /// Finding them reads the operator's overlay FILE and parses all of it — every section, the
+    /// group tree a self-service mint grows among them — on a read-scope endpoint the admin limiter
+    /// does not meter. Inline, that file read held the runtime worker the data plane shares for as
+    /// long as the disk took; on a blocking thread it holds nothing. A blocking task that fails to
+    /// join answers what a panic inside the handler always answered, the `500` `internal` envelope.
+    async fn unparseable_overlay_entries(
+        &self,
+        section: NamedMapSection,
+    ) -> Result<
+        std::collections::BTreeMap<String, busbar_kernel::config::overlay::UnparseableNamedDef>,
+        AdminError,
+    > {
+        let overlay = self.app.overlay_path.clone();
+        let (root, legacy) = (self.app.root, self.app.legacy);
+        // The caller's tracing dispatcher rides onto the blocking thread, so the corrupt-overlay
+        // warning the read raises still reaches it (the `GET /config/settings` read does the same).
+        let dispatch = tracing::dispatcher::get_default(|d| d.clone());
+        tokio::task::spawn_blocking(move || {
+            tracing::dispatcher::with_default(&dispatch, || {
+                busbar_kernel::config::overlay::unparseable_named_map_entries(
+                    overlay.as_deref(),
+                    section,
+                    &root,
+                    legacy,
+                )
+            })
         })
-        .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
+        .await
+        .map_err(|join_err| {
+            diag_error!(
+                ADMIN_STORE_TASK_JOIN_FAILED,
+                operation = "named_defs.overlay",
+                error = %join_err,
+                "admin blocking task failed"
+            );
+            AdminError::Internal
+        })
     }
 
     /// `GET /api/v1/admin/groups` — the `groups:` limit tree read. Read scope. Each entry is the

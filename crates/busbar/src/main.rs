@@ -105,8 +105,10 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
-/// Whether a flag a linked plane declares was passed (its `Flags:` rows, `root::cli::help_rows`):
-/// boot everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
+/// Whether a flag a plane declares was passed (its `Flags:` rows, `root::cli::help_rows`), the plane
+/// compiled in or dropped into `plugins.dir` alike (BUSBAR-1.6.0.md l.2179, Part 2 #2: the dropped-in
+/// planes are discovered by `register_planes`, before anything reads the command line): boot
+/// everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
 /// stdin/stdout (see `root::serve::lines`). The root names no flag of its own here: the plane states
 /// its spelling, and the root reads it off the plane's declared rows. A scanner like
 /// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
@@ -815,6 +817,9 @@ async fn run(
     // planes name once the planes are composed (below), so an apply carrying one the boot would
     // refuse is refused, its running generation untouched.
     let root_rules = Arc::new(root::door_steps::Rules::default());
+    // The plane doors the boot's configuration does not use, so the boot never loads them (Law 7):
+    // a running process refuses a first section of one (u67 BLOCK 2 item 2).
+    root_rules.hold_unloaded(root::door_steps::unloaded_doors());
 
     // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
     // kept in that store, and a store that cannot keep it is refused by name.

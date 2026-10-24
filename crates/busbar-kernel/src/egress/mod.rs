@@ -150,7 +150,7 @@ pub struct RefuseSecondLookup;
 pub fn refuse_second_lookup_message(name: &str) -> String {
     format!(
         "a governed egress resolves each name exactly once, before the guard judges the answer, \
-         and connects to the address that survived; the HTTP client asked to resolve `{name}` a \
+         and connects to the address that survived; the egress client asked to resolve `{name}` a \
          second time, which is the DNS-rebind window the pin exists to close and must not happen"
     )
 }

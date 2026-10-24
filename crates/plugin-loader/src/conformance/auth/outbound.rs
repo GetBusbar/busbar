@@ -113,14 +113,13 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
 
 use super::super::{
-    bind, called, close, crossings, dispatcher, input, json, open, output, ready_step, real_door,
-    validate, Counts, Fold, Leg, Recorder, Restated, Subject,
+    bind, called, close, crossings, dispatcher, input, json, load_dropped_staged, open, output,
+    ready_step, real_door, validate, Counts, Fold, Leg, Recorder, Restated, Subject,
 };
 use super::{secret, stated, undeclared, Stated};
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{
-    load_dropped, load_linked, now_ns, Bind, ConnTable, Dispatcher, Frame, Lent, LinkedRow, Plugin,
-    Reply,
+    load_linked, now_ns, Bind, ConnTable, Dispatcher, Frame, Lent, LinkedRow, Plugin, Reply,
 };
 
 /// The suite's tick clock at the first `tick` (any instant; the plugin's schedule is read back).
@@ -671,7 +670,7 @@ fn load_leg(
             &LinkedRow::of(door).unwrap_or_else(|e| panic!("the linked door is refused: {e}")),
             b,
         ),
-        Leg::Dropped => load_dropped::<Auth>(&s.cdylib(), &s.stated(), b),
+        Leg::Dropped => load_dropped_staged::<Auth>(&s.cdylib(), &s.stated(), b),
     }
     .unwrap_or_else(|e| panic!("the auth door loads ({leg:?}): {e}"))
 }
