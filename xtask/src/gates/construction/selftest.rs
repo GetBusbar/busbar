@@ -395,6 +395,86 @@ fn neutralise(line: &str, scans: &[crate::rx::Regex]) -> String {
     out
 }
 
+/// THE RENAME PLANTS of `single-terminal` (the approval desk's two plants on #1276), each its files
+/// and the caller it plants: `PlaneMoney` renamed to `Node` at module level (A), inside the calling
+/// fn (B), as a typed binding's type (C), beside the real `Node` (D), re-exported from another file
+/// and imported plainly (G) or by a glob (H), and as a raw identifier, `as r#Node` (I). A rename is
+/// followed, a name bound two ways is read as neither, a name any file binds to another type is
+/// read as neither in every file, and `r#Node` is `Node`: each caller is counted. One list for the
+/// battery's one run and the per-shape test over the rule alone.
+pub(crate) fn rename_plants() -> Vec<(Vec<(&'static str, &'static str)>, &'static str)> {
+    let reexport = (
+        "crates/busbar/src/root/zz_g_reexport.rs",
+        "pub use crate::plane_driver::PlaneMoney as Node;\n",
+    );
+    vec![
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_module.rs",
+                "use crate::plane_driver::PlaneMoney as Node;\n\npub fn zz_rename_module(m: &Node, \
+                 k: u64) {\n    Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_rename_module",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_in_fn.rs",
+                "pub fn zz_rename_in_fn(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    use \
+                 crate::plane_driver::PlaneMoney as Node;\n    Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_rename_in_fn",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_binding.rs",
+                "use busbar_kernel::plane_driver::{\n    PlaneMoney as Node,\n};\n\npub fn \
+                 zz_rename_binding(m: &busbar_kernel::plane_driver::PlaneMoney, k: u64) {\n    \
+                 let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
+            )],
+            "zz_rename_binding",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_both.rs",
+                "use crate::root::plane_node::Node;\n\nmod zz_inner {\n    pub use \
+                 busbar_kernel::plane_driver::PlaneMoney as Node;\n}\n\npub fn zz_rename_both(m: \
+                 &zz_inner::Node, k: u64) {\n    let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
+            )],
+            "zz_rename_both",
+        ),
+        (
+            vec![
+                reexport,
+                (
+                    "crates/busbar/src/root/zz_g_caller.rs",
+                    "use crate::root::zz_g_reexport::Node;\n\npub fn zz_g_caller(m: &Node, k: \
+                     u64) {\n    Node::settle_end(m, k, 200);\n}\n",
+                ),
+            ],
+            "zz_g_caller",
+        ),
+        (
+            vec![
+                reexport,
+                (
+                    "crates/busbar/src/root/zz_h_caller.rs",
+                    "use crate::root::zz_g_reexport::*;\n\npub fn zz_h_caller(m: &Node, k: u64) \
+                     {\n    Node::settle_end(m, k, 200);\n}\n",
+                ),
+            ],
+            "zz_h_caller",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_i_caller.rs",
+                "use crate::plane_driver::PlaneMoney as r#Node;\n\npub fn zz_i_caller(m: \
+                 &r#Node, k: u64) {\n    r#Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_i_caller",
+        ),
+    ]
+}
+
 /// The attempt seam, the request terminal, the plane's doors and the plane/kernel wall.
 fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
@@ -613,10 +693,24 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
-    // THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
-    // holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
-    // allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
-    // why this rule exists; each of the three spellings is on its own line and each is named.
+    // THE KERNEL HOLDS NO PROTOCOL REGISTRY, AND ITS STORE DEBT ONLY FALLS: one run, every plant
+    // named distinctly. Each plant is its own file (or its own ledger entry), none names another's
+    // static, alias or entry, and none touches a money terminal, so each row is red for its own
+    // plants alone.
+    // * THE KERNEL'S PROTOCOL REGISTRY GROWN BACK (a6's proof on #1401): a kernel `proto/` module
+    //   holding a `ProtocolDecl` behind a static, an `install_protocols` seam the root fills and an
+    //   allocating by-name `decl_for`. The root's call keeps `no-uninstalled-seam` green, which is
+    //   why this rule exists; each of the three spellings is on its own line and each is named.
+    // * THE REGISTRY BEHIND AN ALIAS (a6's first evasion of #1401's rule): the contract declares
+    //   `Dialect` as `ProtocolDecl`, and re-exports `decl_for` under another name, so the kernel
+    //   spells neither banned word. The aliases are read across the workspace and banned in the
+    //   kernel too.
+    // * THE REGISTRY BEHIND A TYPE-ERASED STORE (a6's second evasion): no banned name at all, a
+    //   `Box<dyn Any>` behind a `OnceLock` that a `pub fn` taking the value fills, and the root
+    //   calling it. Refused by its shape.
+    // * THE DEBT ONLY FALLS, planted through the ceilings file so it holds whatever the list holds
+    //   today (an empty list included): a store that is gone left on the list under a ceiling
+    //   raised to cover it (the row is stale), and the list grown past that ceiling.
     let mut ov = on(base);
     ov.set(
         "crates/busbar-kernel/src/proto/mod.rs",
@@ -630,23 +724,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "pub fn zz_planted_register_protocols() {\n    \
          busbar_kernel::proto::install_protocols(PLANTED);\n}\n",
     );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a protocol registry grown back in the kernel, installed by the root",
-        &["kernel-no-protocol-registry"],
-        ov,
-        &[
-            "crates/busbar-kernel/src/proto/mod.rs:3",
-            "crates/busbar-kernel/src/proto/mod.rs:5",
-            "crates/busbar-kernel/src/proto/mod.rs:9",
-        ],
-    ));
-
-    // THE REGISTRY BEHIND AN ALIAS (a6's first evasion of #1401's rule): the contract declares
-    // `Dialect` as `ProtocolDecl`, and re-exports `decl_for` under another name, so the kernel spells
-    // neither banned word. The aliases are read across the workspace and banned in the kernel too.
-    let mut ov = on(base);
     ov.set(
         "crates/busbar-contract/src/zz_planted_alias.rs",
         "pub type Dialect = crate::protocol::ProtocolDecl;\npub use crate::protocol::decl_for as \
@@ -658,25 +735,6 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
          Option<&'static str> {\n    busbar_contract::zz_planted_alias::find_dialect(name)\n}\n\n\
          pub fn zz_planted_kind(_: &Dialect) {}\n",
     );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a protocol registry the kernel reaches through workspace aliases of its banned names",
-        &["kernel-no-protocol-registry"],
-        ov,
-        &[
-            "Dialect",
-            "find_dialect",
-            "crates/busbar-kernel/src/zz_planted_alias_use.rs:1",
-            "crates/busbar-kernel/src/zz_planted_alias_use.rs:4",
-            "crates/busbar-kernel/src/zz_planted_alias_use.rs:7",
-        ],
-    ));
-
-    // THE REGISTRY BEHIND A TYPE-ERASED STORE (a6's second evasion): no banned name at all, a
-    // `Box<dyn Any>` behind a `OnceLock` that a `pub fn` taking the value fills, and the root
-    // calling it. Refused by its shape.
-    let mut ov = on(base);
     ov.set(
         "crates/busbar-kernel/src/zz_planted_erased.rs",
         "use std::any::Any;\nuse std::sync::OnceLock;\n\nstatic ZZ_TABLE: OnceLock<Box<dyn Any + \
@@ -687,173 +745,87 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "crates/busbar/src/root/zz_planted_wire.rs",
         "pub fn zz_planted_boot() {\n    busbar_kernel::zz_planted_erased::zz_planted_wire(PLANTED);\n}\n",
     );
-    r.push(prove_red(
-        cx,
-        gate,
-        "a registry behind a type-erased kernel static that the root fills",
-        &[rules2::ROW_INSTALLED_STORE],
-        ov,
-        &[
-            "static ZZ_TABLE at crates/busbar-kernel/src/zz_planted_erased.rs:4",
-            "zz_planted_wire",
-        ],
-    ));
-
-    // THE DEBT ONLY FALLS. Two plants on the counted list of plane- and protocol-keyed stores: a
-    // store drained without striking its row (the count falls under the ceiling, and the row is
-    // stale), and the list grown past its ceiling.
-    let rule_cfg = ConstructionGate::cfg(cx).ok();
-    let debt: Vec<String> = rule_cfg
-        .as_ref()
-        .and_then(|c| c.rule("kernel-no-protocol-registry").ok())
-        .map(|t| t.list_of("debt_stores"))
-        .unwrap_or_default();
-    match debt
-        .first()
-        .and_then(|d| d.split(" -- ").next()?.split_once("::"))
-    {
-        Some((file, name)) => {
-            let mut ov = on(base);
-            if let Ok(text) = cx.read(file) {
-                ov.set(file, text.replace(name, &format!("{name}_ZZ_DRAINED")));
-            }
-            r.push(prove_red(
-                cx,
-                gate,
-                "a debt store drained without its row struck and its ceiling lowered",
-                &[rules2::ROW_STORE_DEBT],
-                ov,
-                &["drained debt", name],
-            ));
-        }
-        None => r.push(Case {
-            name: "a debt store drained without its row struck and its ceiling lowered".to_string(),
-            covers: strings(&[rules2::ROW_STORE_DEBT]),
-            expected: Expect::Red { naming: vec![] },
-            got: Expect::Skipped,
-        }),
-    }
-    if let Ok(text) = cx.read(CEILINGS) {
-        let mut ov = on(base);
-        if let Some(grown) = ceilings::add_to_list(
+    let debt_planted = cx.read(CEILINGS).ok().and_then(|text| {
+        let max = ConstructionGate::cfg(cx)
+            .ok()
+            .and_then(|c| {
+                c.rule("kernel-no-protocol-registry")
+                    .ok()
+                    .and_then(|t| t.int_of("max_debt"))
+            })
+            .unwrap_or(0);
+        ceilings::add_to_list(
             &text,
             "rules.kernel-no-protocol-registry",
             "debt_stores",
-            &["crates/busbar-kernel/src/zz_planted.rs::ZZ_GROWN -- planted".to_string()],
-        ) {
-            ov.set(CEILINGS, grown);
-        }
-        r.push(prove_red(
-            cx,
-            gate,
-            "the debt list grown past its ceiling",
-            &[rules2::ROW_STORE_DEBT],
-            ov,
-            &["may not grow"],
-        ));
-    }
-
-    // A `use … as` RENAME IS FOLLOWED (the approval desk's plant on #1276): `PlaneMoney` renamed to
-    // `Node`, the name of the other type that defines `settle_end`, at module level (A), inside the
-    // calling fn (B), and as a typed binding's type (C); and (D) the real `Node` and the rename both
-    // bound in one file. Each is the terminal called by a caller the config does not name, and each
-    // is counted: a rename is followed, and a name bound two ways is read as neither.
-    for (file, body, caller) in [
-        (
-            "crates/busbar/src/root/zz_planted_rename_module.rs",
-            "use crate::plane_driver::PlaneMoney as Node;\n\npub fn zz_rename_module(m: &Node, k: \
-             u64) {\n    Node::settle_end(m, k, 200);\n}\n",
-            "zz_rename_module",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_rename_in_fn.rs",
-            "pub fn zz_rename_in_fn(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    use \
-             crate::plane_driver::PlaneMoney as Node;\n    Node::settle_end(m, k, 200);\n}\n",
-            "zz_rename_in_fn",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_rename_binding.rs",
-            "use busbar_kernel::plane_driver::{\n    PlaneMoney as Node,\n};\n\npub fn \
-             zz_rename_binding(m: &busbar_kernel::plane_driver::PlaneMoney, k: u64) {\n    let n: \
-             &Node = m;\n    n.settle_end(k, 200);\n}\n",
-            "zz_rename_binding",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_rename_both.rs",
-            "use crate::root::plane_node::Node;\n\nmod zz_inner {\n    pub use \
-             busbar_kernel::plane_driver::PlaneMoney as Node;\n}\n\npub fn zz_rename_both(m: \
-             &zz_inner::Node, k: u64) {\n    let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
-            "zz_rename_both",
-        ),
-    ] {
-        let mut ov = on(base);
-        ov.set(file, body);
-        r.push(prove_red(
-            cx,
-            gate,
-            format!("a terminal called through a `use … as` rename ({caller}) is counted"),
-            &["single-terminal"],
-            ov,
-            &[caller],
-        ));
-    }
-
-    // A RENAME THE CALLING FILE DOES NOT SHOW IS COUNTED TOO (the approval desk's second plant on
-    // #1276): `PlaneMoney` re-exported as `Node` from another file and imported plainly (G) or by a
-    // glob (H), and a raw identifier, `as r#Node` (I). A name any file binds to another type is read
-    // as neither in every file, and `r#Node` is `Node`.
-    // qa-names: crates/busbar/src/root/zz_g_reexport.rs -- xtask/src/gates/construction/selftest.rs -- an overlay-only plant path this selftest writes into a virtual tree, never a file on disk; the sibling zz_planted_*.rs literals beside it are not consts so qa-names never asked about them
-    const ZZ_REEXPORT: (&str, &str) = (
-        "crates/busbar/src/root/zz_g_reexport.rs",
-        "pub use crate::plane_driver::PlaneMoney as Node;\n",
-    );
-    for (files, caller) in [
-        (
-            vec![
-                ZZ_REEXPORT,
-                (
-                    "crates/busbar/src/root/zz_g_caller.rs",
-                    "use crate::root::zz_g_reexport::Node;\n\npub fn zz_g_caller(m: &Node, k: \
-                     u64) {\n    Node::settle_end(m, k, 200);\n}\n",
-                ),
+            &[
+                "crates/busbar-kernel/src/zz_drained.rs::ZZ_DRAINED -- planted".to_string(),
+                "crates/busbar-kernel/src/zz_planted.rs::ZZ_GROWN -- planted".to_string(),
             ],
-            "zz_g_caller",
+        )
+        .and_then(|t| {
+            ceilings::set_int(&t, "rules.kernel-no-protocol-registry", "max_debt", max + 1)
+        })
+    });
+    match debt_planted {
+        Some(text) => ov.set(CEILINGS, text),
+        None => r.note_infra_failure(
+            "[rules.kernel-no-protocol-registry] debt_stores/max_debt could not be planted, so the \
+             debt arms are unproven",
         ),
-        (
-            vec![
-                ZZ_REEXPORT,
-                (
-                    "crates/busbar/src/root/zz_h_caller.rs",
-                    "use crate::root::zz_g_reexport::*;\n\npub fn zz_h_caller(m: &Node, k: u64) \
-                     {\n    Node::settle_end(m, k, 200);\n}\n",
-                ),
-            ],
-            "zz_h_caller",
-        ),
-        (
-            vec![(
-                "crates/busbar/src/root/zz_i_caller.rs",
-                "use crate::plane_driver::PlaneMoney as r#Node;\n\npub fn zz_i_caller(m: \
-                 &r#Node, k: u64) {\n    r#Node::settle_end(m, k, 200);\n}\n",
-            )],
-            "zz_i_caller",
-        ),
-    ] {
-        let mut ov = on(base);
+    }
+    r.push(prove_red(
+        cx,
+        gate,
+        "a protocol registry grown back in the kernel, reached through workspace aliases of its \
+         banned names or behind a type-erased static the root fills, and a debt list drained \
+         without its row struck and grown past its ceiling",
+        &[
+            "kernel-no-protocol-registry",
+            rules2::ROW_INSTALLED_STORE,
+            rules2::ROW_STORE_DEBT,
+        ],
+        ov,
+        &[
+            "crates/busbar-kernel/src/proto/mod.rs:3",
+            "crates/busbar-kernel/src/proto/mod.rs:5",
+            "crates/busbar-kernel/src/proto/mod.rs:9",
+            "Dialect",
+            "find_dialect",
+            "crates/busbar-kernel/src/zz_planted_alias_use.rs:1",
+            "crates/busbar-kernel/src/zz_planted_alias_use.rs:4",
+            "crates/busbar-kernel/src/zz_planted_alias_use.rs:7",
+            "static ZZ_TABLE at crates/busbar-kernel/src/zz_planted_erased.rs:4",
+            "zz_planted_wire",
+            "drained debt crates/busbar-kernel/src/zz_drained.rs::ZZ_DRAINED",
+            "may not grow",
+        ],
+    ));
+
+    // THE RENAMES, ONE RUN ([`rename_plants`]): `PlaneMoney` renamed to `Node` (the name of the other
+    // type that defines `settle_end`) in the calling file, at module level (A), inside the calling
+    // fn (B), as a typed binding's type (C), beside the real `Node` (D) and as a raw identifier (I);
+    // and re-exported from another file, imported plainly (G) or by a glob (H). Each binds `Node`
+    // tree-wide, so they share one run and each caller is named in it. That each SHAPE is read on
+    // its own (a rename the rule did not read would still be counted here, for its neighbour's
+    // sake) is proven per shape, over the rule alone, by
+    // `construction::tests::single_terminal_counts_a_terminal_called_through_each_rename_shape`.
+    let mut ov = on(base);
+    let mut callers = Vec::new();
+    for (files, caller) in rename_plants() {
         for (file, body) in files {
             ov.set(file, body);
         }
-        r.push(prove_red(
-            cx,
-            gate,
-            format!(
-                "a terminal called through a rename its file does not show ({caller}) is counted"
-            ),
-            &["single-terminal"],
-            ov,
-            &[caller],
-        ));
+        callers.push(caller);
     }
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called through a `use … as` rename, in its own file or another's, is counted",
+        &["single-terminal"],
+        ov,
+        &callers,
+    ));
 
     // THE GREEN GROUP, one run: THE REAL TYPE STAYS ITS OWN. A binding declared in its own fn as the
     // real `Node`, whatever another fn of its file declares the name as (the twin of the untyped

@@ -1327,17 +1327,6 @@ pub const ROW_STORE_DEBT: &str = "kernel-no-protocol-registry:debt";
 /// point (an alias of an alias is an alias): `type X = …T…;`, `T as X` (a `use` or re-export), and a
 /// `const`/`static` bound to `T` (a fn pointer). Read over every file the tree holds, test or not.
 fn aliases_of(tree: &Tree, targets: &[String]) -> Result<Vec<String>, String> {
-    let texts: Vec<String> = tree
-        .files
-        .values()
-        .map(|lines| {
-            lines
-                .iter()
-                .map(|l| l.code.as_str())
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .collect();
     let mut known: Vec<String> = targets.to_vec();
     let mut i = 0;
     while i < known.len() {
@@ -1352,15 +1341,32 @@ fn aliases_of(tree: &Tree, targets: &[String]) -> Result<Vec<String>, String> {
             ))?,
         ];
         let needle = known[i].clone();
+        // ONE READ PER FILE AND NAME, SHARED BY EVERY RUN: a file's aliases of `needle` depend on
+        // its lines and the name alone, so they are memoised on the file's scan
+        // ([`memo_file_scan`]); a plant re-reads only the files it planted.
+        let tag = format!("kernel-no-protocol-registry:aliases-of:{needle}");
         let mut found = Vec::new();
-        for text in texts.iter().filter(|x| x.contains(needle.as_str())) {
-            for shape in &shapes {
-                for m in shape.find_iter(text.as_bytes()) {
-                    if let Some(alias) = m.str_of(text.as_bytes(), 1) {
-                        found.push(alias);
+        for lines in tree.files.values() {
+            let hits = memo_file_scan(tag.clone(), lines, |lines| {
+                let text = lines
+                    .iter()
+                    .map(|l| l.code.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let mut out = Vec::new();
+                if !text.contains(needle.as_str()) {
+                    return out;
+                }
+                for shape in &shapes {
+                    for m in shape.find_iter(text.as_bytes()) {
+                        if let Some(alias) = m.str_of(text.as_bytes(), 1) {
+                            out.push(alias);
+                        }
                     }
                 }
-            }
+                out
+            });
+            found.extend(hits.iter().cloned());
         }
         for alias in found {
             if !known.contains(&alias) {
@@ -1375,6 +1381,62 @@ fn aliases_of(tree: &Tree, targets: &[String]) -> Result<Vec<String>, String> {
 /// The installed stores of `rel`: each static whose type names a cell of `cells` and matches one of
 /// `holds`, with the `pub fn`s that take a value and name it. Returns `(line, static, installers)`.
 fn installed_stores_in(
+    tree: &Tree,
+    rel: &str,
+    cells: &Regex,
+    holds: &[Regex],
+) -> Result<Vec<(usize, String, Vec<String>)>, String> {
+    // ONE SCAN PER FILE, SHARED BY EVERY RUN: a file's installed stores depend on its own scan and
+    // the rule's cell and hold patterns alone, all of which are in the tag, so they are memoised on
+    // the file's scan ([`memo_file_scan`]); a plant re-reads only the files it planted.
+    let Some(lines) = tree.files.get(rel) else {
+        return Ok(Vec::new());
+    };
+    let tag = format!(
+        "kernel-no-protocol-registry:installed-stores:{rel}\u{1}{}\u{1}{}",
+        cells.as_str(),
+        holds
+            .iter()
+            .map(Regex::as_str)
+            .collect::<Vec<_>>()
+            .join("\u{1}")
+    );
+    let rows = memo_file_scan(tag, lines, |_| {
+        match installed_stores_scan(tree, rel, cells, holds) {
+            Ok(found) => found
+                .into_iter()
+                .map(|(no, name, installers)| {
+                    format!("{no}\u{1}{name}\u{1}{}", installers.join("\u{2}"))
+                })
+                .collect(),
+            Err(e) => vec![format!("\u{0}{e}")],
+        }
+    });
+    rows.iter()
+        .map(|row| {
+            if let Some(e) = row.strip_prefix('\u{0}') {
+                return Err(e.to_string());
+            }
+            let mut parts = row.splitn(3, '\u{1}');
+            let no = parts
+                .next()
+                .and_then(|n| n.parse::<usize>().ok())
+                .ok_or_else(|| format!("installed-store memo row unreadable: {row}"))?;
+            let name = parts.next().unwrap_or_default().to_string();
+            let installers = parts
+                .next()
+                .unwrap_or_default()
+                .split('\u{2}')
+                .filter(|i| !i.is_empty())
+                .map(str::to_string)
+                .collect();
+            Ok((no, name, installers))
+        })
+        .collect()
+}
+
+/// [`installed_stores_in`]'s scan of one file, unmemoised.
+fn installed_stores_scan(
     tree: &Tree,
     rel: &str,
     cells: &Regex,
