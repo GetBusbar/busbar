@@ -1491,10 +1491,12 @@ test_workspace() {
   _tw_plugin busbar-secret-env busbar-secret-env-plugin optional || return 1
   _tw_plugin busbar-plane-decisions busbar-plane-decisions-plugin optional || return 1
   cargo build --workspace --locked || return 1
-  # The `test` check's nextest limits: the two whole-battery selftests get twelve minutes and start first.
+  # The `test` check's nextest limits (.ci/default.yaml): the whole-registry gate run gets twelve
+  # minutes and starts first. Every registered gate's RED proof runs in the selftest-1..4 checks
+  # (`cargo xtask selftest --shard=K/4`), not here.
   local cfg rc=0
   cfg=$(mktemp)
-  printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(selftest_runs_every_registered_gates_red_proof) | test(list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
+  printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(list_and_a_named_gate_run_over_the_real_tree)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
   cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "verify-done:$cfg" || rc=1
   rm -f "$cfg"
   cargo test --workspace --doc --locked --no-fail-fast || rc=1
