@@ -877,6 +877,10 @@ pub(super) mod session_door {
         /// A provider the cell started itself (its port, and what it reports hearing), in place of
         /// the scripted one.
         far_end: Option<(u16, tokio::sync::mpsc::UnboundedReceiver<String>)>,
+        /// The provider's wire name for the catalog model the section's `session.model` names
+        /// (`upstream_model`, Part 2 #51), written in the deployment's `models:` as production
+        /// writes it; `None` = the catalog name is the wire name.
+        upstream_model: Option<&'static str>,
     }
 
     /// The linked plane door that meters audio (the session door), bound under `instance`; `None` in
@@ -1118,8 +1122,12 @@ pub(super) mod session_door {
             )]),
             &busbar_kernel::config_validate::MetadataPosture::default(),
         );
+        let models_yaml = match opts.upstream_model {
+            Some(wire) => format!("{{m-cap: {{provider: p, upstream_model: {wire}}}}}"),
+            None => "{m-cap: {provider: p}}".to_string(),
+        };
         let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
-            serde_yaml::from_str("{m-cap: {provider: p}}").expect("the models catalog");
+            serde_yaml::from_str(&models_yaml).expect("the models catalog");
         let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
             Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
         let auths = OutboundAuths::new(
@@ -1147,6 +1155,12 @@ pub(super) mod session_door {
         sections.insert(
             section_key,
             serde_yaml::from_str("session: {model: m-cap}").expect("a section"),
+        );
+        // The deployment's `models:` beside it, as the root hands the kernel-owned sections a door
+        // plane may read (`door_steps::kernel_sections`).
+        sections.insert(
+            busbar_contract::section::RESERVED_MODELS_KEY,
+            serde_yaml::from_str(&models_yaml).expect("the models section"),
         );
         // THE KERNEL'S HOOK STAGE over this cell's generation (the App built below), when the cell
         // defines hooks: the door's tail states its hook order, and the stage binds the deployment's
@@ -2392,6 +2406,56 @@ pub(super) mod session_door {
         assert!(
             carried.starts_with("TEXT ") && carried.contains("input_audio_buffer.append"),
             "{carried}"
+        );
+    }
+
+    /// THE PROVIDER IS TOLD THE UPSTREAM MODEL (`BUSBAR-1.6.0.md` Part 2 #51: a model entry's
+    /// `upstream_model` overrides its name on the wire; ARCHITECT rulings 2026-10-23, R-6: a plane
+    /// that reads sections beside its own is handed them keyed), at the session door's root leg: a
+    /// deployment whose catalog entry for the session model names an `upstream_model` has a plain
+    /// session dial the provider's realtime socket with that wire name, never the catalog alias.
+    /// RED ARM: the door was handed its section bare, never read the `models:` beside it, and
+    /// dialled `?model=m-cap`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_door_dials_the_session_models_upstream_name() {
+        let _one = PUBLISHING.lock().await;
+        let far_end = far_calls_and_socket().await;
+        let mut s = session_with(
+            "serve-door-session-upstream",
+            Opts {
+                far_end: Some(far_end),
+                upstream_model: Some("gpt-realtime-wire"),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (router, plain) = (s.router.clone(), s.plain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("its address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router.into_make_service()).await;
+        });
+        let (mut caller, head) = open_socket(addr, REALTIME, &plain).await;
+        assert!(
+            head.as_deref()
+                .is_some_and(|h| h.starts_with("HTTP/1.1 101")),
+            "the plain session opens: {head:?}"
+        );
+        caller
+            .write_all(&client_text(
+                r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#,
+            ))
+            .await
+            .expect("a readable event");
+        let dial = next_report(&mut s.heard)
+            .await
+            .expect("the session dials the provider");
+        assert!(
+            dial.starts_with("DIAL GET /v1/realtime?model=gpt-realtime-wire "),
+            "the dial names the upstream model, never the catalog alias: {dial}"
         );
     }
 }
