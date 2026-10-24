@@ -150,8 +150,18 @@ fn is_test_file(rel: &str, crate_dir: &str, test_only: &[String]) -> bool {
 
 /// THE BUILD SCRIPTS OF ONE CRATE (Q128), as cargo builds them: the script its manifest's
 /// `[package] build = "…"` names (`build.rs` when the key is absent, none when it is `false`), and
-/// every module that script declares with `mod NAME;`. A script at another path was never read as
-/// one, and a module it declares runs in the same build.
+/// every module that script compiles, however it declares it. A script at another path was never
+/// read as one, and a module it declares runs in the same build.
+///
+/// THE MODULES ARE THE SCRIPT'S COMPILED SET ([`read_compiled_at`]), followed module by module: a
+/// `mod NAME;`, a `#[path = "…"] mod NAME;` (on its line or above it, in any spelling
+/// [`path_attrs`] reads), a module inside an inline `mod x { … }`, and the modules those files
+/// declare in turn. A line reader saw only a bare `mod NAME;`, so `#[path = "tools/reach.rs"] mod
+/// reach;` in `build.rs` put `tools/reach.rs` into the build with nothing holding it to
+/// `build-script-reach`. The script is a crate ROOT whatever its file name, so its own modules
+/// resolve against its directory. Only modules inside the crate's own directory are followed: a
+/// `#[path]` into another crate is `path-include` on the script's own line, and that crate's files
+/// are its own.
 fn build_scripts_of(cx: &Ctx, krate: &CrateInfo) -> Vec<String> {
     let Ok(manifest) = cx.read(&krate.manifest) else {
         return Vec::new();
@@ -168,21 +178,23 @@ fn build_scripts_of(cx: &Ctx, krate: &CrateInfo) -> Vec<String> {
     };
     let script = resolve(&krate.dir, &script);
     let mut out = vec![script.clone()];
-    if let Ok(text) = cx.read(&script) {
-        let at = dir_of(&script);
-        for raw in text.lines() {
-            let t = raw.trim();
-            let Some(name) = t
-                .strip_prefix("mod ")
-                .or_else(|| t.strip_prefix("pub mod "))
-                .and_then(|r| r.strip_suffix(';'))
-                .map(str::trim)
-            else {
-                continue;
-            };
-            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                out.push(format!("{at}/{name}.rs"));
-                out.push(format!("{at}/{name}/mod.rs"));
+    let mut seen: BTreeSet<String> = out.iter().cloned().collect();
+    let mut queue = vec![script.clone()];
+    while let Some(file) = queue.pop() {
+        let Ok(text) = cx.read(&file) else {
+            continue;
+        };
+        // `build.rs` already roots its modules in its own directory ([`module_dir`]), so it reads
+        // through the memo; a script under another name is read as the root it is.
+        let compiled = if file == script && !file.ends_with("/build.rs") {
+            read_compiled_at(&file, &text, &path_attrs(&text), &dir_of(&file))
+        } else {
+            file_facts(&file, &text).compiled.clone()
+        };
+        for cand in compiled.into_iter().flat_map(|c| c.candidates) {
+            if inside(&krate.dir, &cand) && seen.insert(cand.clone()) {
+                out.push(cand.clone());
+                queue.push(cand);
             }
         }
     }
@@ -1294,13 +1306,20 @@ fn literal_at(raw: &[char], at: usize) -> Result<String, String> {
 }
 
 fn read_compiled(rel: &str, text: &str, attrs: &[PathAttr]) -> Vec<Compiled> {
+    read_compiled_at(rel, text, attrs, &module_dir(rel))
+}
+
+/// [`read_compiled`] with the directory a plain `mod NAME;` at the file's top level resolves
+/// against given, for a crate root [`module_dir`] cannot tell by its name: a build script the
+/// manifest names `tools/gen.rs` roots its modules in `tools/`, not `tools/gen/`.
+fn read_compiled_at(rel: &str, text: &str, attrs: &[PathAttr], root_dir: &str) -> Vec<Compiled> {
     let mut compiled: Vec<Compiled> = Vec::new();
     let attrs: BTreeMap<usize, Option<String>> = attrs
         .iter()
         .map(|a| (a.end_line, a.path.clone().ok()))
         .collect();
     {
-        let root_dir = module_dir(rel);
+        let root_dir = root_dir.to_string();
         let file_dir = dir_of(rel);
         // AN INLINE `mod x { … }` IS A DIRECTORY. `pub mod a2a { pub mod anomaly; }` in a `lib.rs`
         // compiles `src/a2a/anomaly.rs`, not `src/anomaly.rs`, and a `#[path]` written inside one
@@ -2076,7 +2095,7 @@ pub fn selftest<'a>(
     report: &mut crate::gates::Report<'a>,
 ) {
     use crate::ctx::Overlay;
-    use crate::gates::prove_rows_red;
+    use crate::gates::{prove_rows_green, prove_rows_red};
 
     // Plant sites, not scan sets: the pinned checkouts mount here for the battery, so these are
     // fixture paths handed to an overlay (qa-names reads constants only, and these are none).
@@ -2249,6 +2268,45 @@ pub fn selftest<'a>(
             &["path-include", "busbar-plane-llm", "busbar-transport-stdio"],
         ));
     }
+
+    // A BUILD SCRIPT'S `#[path]` MODULE IS BUILD SCRIPT TOO. The script's modules were read off
+    // bare `mod NAME;` lines, so `#[path = "tools/reach.rs"] mod reach;` compiled a file into the
+    // build that nothing held to `build-script-reach`: its `read_dir("..")` walked the crate's
+    // parent with this row green. The control is the same module reading its own crate's file.
+    let path_mod_script = (
+        format!("{wire}/build.rs"),
+        "#[path = \"tools/reach.rs\"]\nmod reach;\n\nfn main() {\n    reach::run();\n}\n",
+    );
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a module a build script declares with `#[path]` is held to build-script-reach",
+        &[ROW_INPUTS],
+        with(&[
+            (path_mod_script.0.as_str(), path_mod_script.1),
+            (
+                format!("{wire}/tools/reach.rs").as_str(),
+                "pub fn run() {\n    let _ = std::fs::read_dir(\"..\");\n}\n",
+            ),
+        ]),
+        &[
+            "build-script-reach",
+            "crates/busbar-transport-stdio/tools/reach.rs:2",
+        ],
+    ));
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a module a build script declares with `#[path]` that reads its own crate stays green",
+        &[ROW_INPUTS],
+        with(&[
+            (path_mod_script.0.as_str(), path_mod_script.1),
+            (
+                format!("{wire}/tools/reach.rs").as_str(),
+                "pub fn run() {\n    let _ = std::fs::read_to_string(\"Cargo.toml\");\n}\n",
+            ),
+        ]),
+    ));
 }
 
 #[cfg(test)]
