@@ -60,6 +60,11 @@ the same.
 
 ### Owner-signed changes from 1.5.5
 
+- **An identified principal with no grant is refused.** A caller that an auth module identifies
+  (for example an IdP-verified user) but that earns no governance key, because it has no roles or its
+  roles are unbound, now gets `401` (`NoGrant`). 1.5.5 admitted such a caller ungoverned: no pool
+  ACL, no budget, and its spend was booked to `anonymous`. Bind the principal's roles in
+  `role_bindings` to admit it.
 Everything else in this release is identical to 1.5.5, apart from the improvements and the breaking
 register entries listed below. These are the changes an operator must act on or will notice, each
 signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
