@@ -2308,8 +2308,8 @@ pub struct OnPieceIn {
     /// member may shape its request differently in each pool it serves); absent otherwise.
     pub pool: AbiStr,
     /// On every piece of a unit: the caller's opaque, stable, non-reversible per-principal
-    /// reference (lower-case hex), never the principal itself; absent when the node keeps no
-    /// signing material to derive it from.
+    /// reference (lower-case hex), never the principal itself; absent only when the host
+    /// lends no caller-reference key at all (the kernel's driver config `caller_refs: None`).
     pub caller_ref: AbiStr,
     /// On every piece of a unit: the snapshot claim the unit arrived on (`ArriveIn::claim`).
     pub claim: u32,
@@ -2743,13 +2743,44 @@ pub const PROJECT_FAULT_MESSAGE: &str = "request rewrite could not be applied";
 ///   [`PROJECT_FAULT_STATUS`] with [`PROJECT_FAULT_MESSAGE`], whatever the hook's `on_error` says,
 ///   and the body is never forwarded: the request fails closed, as 1.5.5's did.
 ///
-/// A FAULT answered to a `project` where no rewrite hook is configured and no rewrite was carried
-/// stops the unit as unreadable, as any refused `project` does.
+/// A FAULT the plane marked unparseable ([`project_fault_unparseable`]) on a `project` where no
+/// rewrite hook is configured and no rewrite was carried (`faultable` false) is no 500: the kernel's
+/// hooks judge the request as 1.5.5's judged a body it could not parse, a Null body, and the request
+/// proceeds (v1.5.5 `proxy/engine/mod.rs:957-961`). Every other FAULT there (a slot panic, a frame
+/// refused before the crossing, a quarantined instance, an answer that broke its kind's rule, or a
+/// FAULT without the mark) is a broken plane: the unit fails closed, unreadable.
 ///
 /// This is the one home of the mapping; the kernel holds no status or words of its own for it.
 #[must_use]
 pub const fn project_faults(outcome: super::mechanism::call::Outcome, faultable: bool) -> bool {
     faultable && matches!(outcome, super::mechanism::call::Outcome::Fault)
+}
+
+/// THE UNPARSEABLE-BODY MARK, in `ProjectOut::view.flags` of a FAULT `project`: the plane parsed
+/// the body itself and the body's document is unparseable. It means nothing on any other outcome.
+/// The mark is the plane's own word that it ran to its answer: a FAULT the host minted (a slot
+/// panic, whose door writes nothing but the outcome; a frame refused before the crossing; a
+/// quarantined instance; an answer that broke its kind's rule) leaves `view.flags` as the host
+/// zeroed it or as the plane wrote it for another outcome, never this mark.
+pub const PROJECT_FAULT_UNPARSEABLE: u32 = 1 << 31;
+
+/// WHETHER A `project` IS THE PLANE'S OWN FAULT OVER AN UNPARSEABLE BODY: [`Outcome::Fault`], the
+/// `out` head stating FAULT too (a door mirrors the outcome it answered; a READY answer the host's
+/// kind check refused states READY there), and [`PROJECT_FAULT_UNPARSEABLE`] in `view.flags`.
+/// Where [`project_faults`] does not make it the
+/// shared 500 (no rewrite configured or carried), the kernel's hooks judge the request as 1.5.5's
+/// judged a body it could not parse, a Null body. Every other FAULT fails closed.
+///
+/// [`Outcome::Fault`]: super::mechanism::call::Outcome::Fault
+#[must_use]
+pub const fn project_fault_unparseable(
+    outcome: super::mechanism::call::Outcome,
+    out: &ProjectOut,
+) -> bool {
+    use super::mechanism::call::{Outcome, RawOutcome};
+    matches!(outcome, Outcome::Fault)
+        && out.head.outcome.0 == RawOutcome::of(Outcome::Fault).0
+        && out.view.flags == PROJECT_FAULT_UNPARSEABLE
 }
 
 /// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.

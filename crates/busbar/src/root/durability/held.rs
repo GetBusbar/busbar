@@ -83,6 +83,47 @@ fn record_checkpoint_seq(record: &JournalRecord) -> Option<u64> {
 impl Durability {
     /// EVERY CHECKPOINT THIS NODE HOLDS, OLDEST FIRST, each handed to `each` with the balances the
     /// chain re-derives for it (the same set the ring holds; nothing is rebuilt at boot).
+    /// [`Durability::held_walk`] taken and walked in one go.
+    ///
+    /// # Errors
+    ///
+    /// As [`HeldWalk::each`].
+    pub fn each_held_checkpoint(
+        &self,
+        each: &mut dyn FnMut(&Checkpoint),
+    ) -> Result<(), CheckpointUnreadable> {
+        self.held_walk().each(each)
+    }
+
+    /// What re-deriving the held checkpoints needs, taken under the book's lock so the chain is read
+    /// without it ([`HeldWalk::each`]): the ring's heads, what each held seal kept past the horizon, the
+    /// pinned history and the chain as of this moment ([`Durability::chain_at`]). On a node resumed
+    /// from the store the chain is the store's, and reading it under the lock every unit's settle
+    /// takes would stall serving for the whole walk (THE DESIGN §11.2).
+    #[must_use]
+    pub fn held_walk(&self) -> HeldWalk {
+        HeldWalk {
+            // No checkpoint held, nothing to re-derive: the chain is not read.
+            chain: (!self.checkpoints.is_empty()).then(|| self.chain_at()),
+            checkpoints: self.checkpoints.clone(),
+            seal_horizons: self.seal_horizons.clone(),
+            pinned: (self.history)(),
+        }
+    }
+}
+
+/// THE HELD CHECKPOINTS AS OF ONE HOLD OF THE BOOK'S LOCK, to be re-derived without it
+/// ([`Durability::held_walk`]). Heads only: no balances are copied.
+pub struct HeldWalk {
+    checkpoints: Vec<CheckpointHead>,
+    seal_horizons: std::collections::BTreeMap<u64, SealHorizon>,
+    pinned: Option<PinnedHistory>,
+    /// The chain as of the hold; `None` when no checkpoint is held.
+    chain: Option<ChainAt>,
+}
+
+impl HeldWalk {
+    /// Hand each held checkpoint, oldest first, to `each` with the balances the chain re-derives.
     ///
     /// One ordered walk of the journal per distinct history the held checkpoints were sealed
     /// against (one, unless the card history moved between seals), folding into a single scratch
@@ -92,17 +133,20 @@ impl Durability {
     /// # Errors
     ///
     /// The first held checkpoint that cannot be served, by its sequence number.
-    pub fn each_held_checkpoint(
-        &self,
-        each: &mut dyn FnMut(&Checkpoint),
-    ) -> Result<(), CheckpointUnreadable> {
-        let Some(first) = self.checkpoints.first() else {
+    pub fn each(self, each: &mut dyn FnMut(&Checkpoint)) -> Result<(), CheckpointUnreadable> {
+        let HeldWalk {
+            checkpoints,
+            seal_horizons,
+            pinned,
+            chain,
+        } = self;
+        let (Some(first), Some(chain)) = (checkpoints.first(), chain) else {
             return Ok(());
         };
         // THE WHOLE CHAIN, as `/verify` reads it (`Durability::chain`): on a node resumed from the
         // store the journal's own replay is only its resident memory segment, a suffix once the
         // chain outgrows one, and a walk of a suffix re-derives nothing a held checkpoint sealed.
-        let records = match self.chain() {
+        let records = match chain.read() {
             Ok(Ok(records)) => records,
             Ok(Err(broken)) => {
                 return Err(CheckpointUnreadable::Journal {
@@ -117,9 +161,8 @@ impl Durability {
                 })
             }
         };
-        let pinned = (self.history)();
         let mut at = 0;
-        while let Some(head) = self.checkpoints.get(at) {
+        while let Some(head) = checkpoints.get(at) {
             let history_seq = head.history_seq;
             let view = match (pinned.as_ref(), history_seq) {
                 (Some(pinned), Some(seq)) => Some(pinned.view_at(seq)),
@@ -129,7 +172,7 @@ impl Durability {
             let mut replay = Replayer::new(view.as_ref(), false);
             let started = at;
             for record in &records {
-                let Some(head) = self.checkpoints.get(at) else {
+                let Some(head) = checkpoints.get(at) else {
                     break;
                 };
                 if head.history_seq != history_seq {
@@ -140,7 +183,8 @@ impl Durability {
                     // seal was taken from did not (row 159's retirement). They leave the scratch
                     // book here, at the seal that left them out, as they left the book; a posting
                     // on one after that rebuilds it from that posting alone, as it did the book's.
-                    let left_behind = self.left_behind_at(head.checkpoint_seq, scratch.book());
+                    let left_behind =
+                        left_behind_at(&seal_horizons, head.checkpoint_seq, scratch.book());
                     scratch.retire_windows(&left_behind);
                     let checkpoint = head.with_totals(scratch.book().snapshot());
                     if !checkpoint.body_hash_verifies() {
@@ -162,4 +206,20 @@ impl Durability {
         }
         Ok(())
     }
+}
+
+/// The windows the walk lets go of at the held seal `checkpoint_seq`: those in `book` past the
+/// seal's horizon that the seal did not carry. Empty for a seal the walk holds no horizon for.
+fn left_behind_at(
+    seal_horizons: &std::collections::BTreeMap<u64, SealHorizon>,
+    checkpoint_seq: u64,
+    book: &busbar_kernel_ledger::totals::Book,
+) -> std::collections::BTreeSet<WindowStart> {
+    let Some(horizon) = seal_horizons.get(&checkpoint_seq) else {
+        return std::collections::BTreeSet::new();
+    };
+    book.iter()
+        .map(|((_, window), _)| *window)
+        .filter(|window| past_retention(*window, horizon.at) && !horizon.kept.contains(window))
+        .collect()
 }

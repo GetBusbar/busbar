@@ -60,6 +60,8 @@ struct Script {
 static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
 /// One test at a time: the script is process-wide.
 static SERIAL: Mutex<()> = Mutex::new(());
+/// A scripted read the host FAILS (the stream reset under it), in place of a reply piece.
+const RESET: u32 = u32::MAX;
 /// The host's refusal text for a request on a stream that is not framed.
 const NOT_FRAMED: &str = "the stream is not framed: write its bytes";
 
@@ -165,6 +167,10 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
             let io = unsafe { *input.cast::<ReplyIn>() };
             let piece = s.reply[s.reads.min(s.reply.len() - 1)];
             s.reads += 1;
+            if piece.0 == RESET {
+                s.stored.insert(seq, (Outcome::Failed, 0, 0));
+                return answer(out, Outcome::Pending, 0, 0);
+            }
             (0, play(io, piece))
         }
         _ => (0, 0),
@@ -783,4 +789,102 @@ fn a_request_a_reply_and_an_ack_wipe_to_empty() {
     };
     ack.zeroize();
     assert_eq!(ack, Ack::default());
+}
+
+/// RED: a reply whose stream resets after its head fails, and the exchange says the head was
+/// received and what status it carried: a failure reading the body, not a failed send.
+#[test]
+fn a_reset_after_the_head_reports_the_head_and_its_status() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reply = vec![
+        piece(
+            REPLY_HEAD,
+            200,
+            b"OK",
+            b"content-type: application/json\r\n",
+            b"",
+        ),
+        piece(REPLY_BODY, 0, b"", b"", b"{\"keys\":"),
+        piece(RESET, 0, b"", b"", b""),
+    ];
+    let r = run(
+        reply,
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/jwks")),
+    );
+    assert!(
+        matches!(r.answered, Err(ConnFailure::Failed(_))),
+        "{:?}",
+        r.answered
+    );
+    assert!(r.state.head_seen());
+    assert_eq!(r.state.head_status(), Some(200));
+}
+
+/// RED: an exchange whose send fails received no head and reports no status.
+#[test]
+fn a_send_failure_reports_no_head() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        true,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(r.answered.is_err());
+    assert!(!r.state.head_seen());
+    assert_eq!(r.state.head_status(), None);
+    let fresh = Exchange::request(post()).expect("a request");
+    assert!(!fresh.head_seen(), "no head before any read");
+    assert_eq!(fresh.head_status(), None);
+}
+
+/// RED: a reply whose body passes the exchange's bound is refused, and its head's status is still
+/// answered, so a driver judges the status before the body.
+#[test]
+fn a_reply_over_the_bound_still_reports_its_status() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut reply = body_reply(60, 41);
+    reply[0] = piece(REPLY_HEAD, 503, b"Service Unavailable", b"", b"");
+    let r = run(
+        reply,
+        false,
+        Exchange::request(post())
+            .expect("a request")
+            .reply_limit(100),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(
+        r.answered.expect_err("the reply passes the limit"),
+        ConnFailure::Failed(REPLY_OVER_BOUND.to_string())
+    );
+    assert!(r.state.head_seen());
+    assert_eq!(r.state.head_status(), Some(503));
+}
+
+/// A completed exchange reports its head's status as its reply does.
+#[test]
+fn a_completed_exchange_reports_its_heads_status() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    let status = r.answered.expect("the exchange completes").status;
+    assert_eq!(r.state.head_status(), Some(status));
 }
