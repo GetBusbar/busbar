@@ -100,8 +100,10 @@ const TWIN_IDENTS: &[&str] = &["input_audio", "output_audio"];
 /// tests and the root tests gated on axes no linked row sets, the gate's measure on 5948c3ecf6.
 /// Raised 1210 -> 1211 to the true count on the merged tree (a6 measured it). Raised 1211 -> 1226 merging
 /// dev e4bd56e5ee into GetBusbar/busbar#1408: the gate's measure on 09883f2003 (`1226 file(s) across 14
-/// census-neutral root(s)`).
-pub const MIN_FILES: usize = 1226;
+/// census-neutral root(s)`). Raised 1226 -> 1234 merging #1276 and dev d7990ee031 into
+/// GetBusbar/busbar#1418: the gate's measure on e359d09b6c (`1234 file(s) across 14 census-neutral
+/// root(s)`).
+pub const MIN_FILES: usize = 1234;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
