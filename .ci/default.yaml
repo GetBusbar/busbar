@@ -13,7 +13,11 @@ guarded:
   - "testing/shadow-oracle/owed-baseline.txt"
   - "testing/shadow-oracle/scripts/**"
 on:
-  move: [fmt, clippy, test, deny, oracle]
+  # deny is on demand only until ModernCI 0.9.1 is live (2026-10-24): every PR's deny shares one
+  # result key, and on 0.8.16 the jobs waiting for that one run each hold a machine while its first
+  # cargo-vet build is killed at a stale 60 s limit (26 of 40 machines idle). Back on move after.
+  move: [fmt, clippy, test, oracle]
+  manual: [deny]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -219,8 +223,24 @@ checks:
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust deny; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny; fi || exit 1
       cargo deny check
-      V=0.10.1; VD="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-vet-$V"
-      [ -x "$VD/bin/cargo-vet" ] || cargo install --locked --root "$VD" cargo-vet --version "$V"
+      # cargo-vet 0.10.3: the release's prebuilt binary where one ships (sha256 pinned here), else a
+      # source build into the same cache (linux-aarch64 has no prebuilt), once per backend.
+      V=0.10.3; VD="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-vet-$V"
+      if [ ! -x "$VD/bin/cargo-vet" ]; then
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64) T=x86_64-unknown-linux-gnu; S=e83878b80913fbe43629c28768e14ab51f4e86a4ba8f9dd08cc25b8dbc503c19 ;;
+          Darwin-arm64) T=aarch64-apple-darwin; S=a83f7d6f48a069890743ba61f7637660c8577f263efd64fee47e673632f0e423 ;;
+          *) T= ;;
+        esac
+        if [ -n "$T" ]; then
+          mkdir -p "$VD/bin" && A="$VD/vet.tar.xz"
+          curl -fsSL --retry 3 -o "$A" "https://github.com/mozilla/cargo-vet/releases/download/v$V/cargo-vet-$T.tar.xz" || exit 1
+          if command -v sha256sum >/dev/null; then G=$(sha256sum "$A" | cut -d' ' -f1); else G=$(shasum -a 256 "$A" | cut -d' ' -f1); fi; [ "$G" = "$S" ] || { echo "cargo-vet sha256 mismatch: $G"; exit 1; }
+          tar -xJf "$A" -C "$VD" && mv "$VD/cargo-vet-$T/cargo-vet" "$VD/bin/cargo-vet" && rm -rf "$A" "$VD/cargo-vet-$T"
+        else
+          cargo install --locked --root "$VD" cargo-vet --version "$V"
+        fi
+      fi
       PATH="$VD/bin:$PATH" cargo vet
     baseline: target
     requires: [cc]
