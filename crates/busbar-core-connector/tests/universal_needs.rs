@@ -228,6 +228,8 @@ fn the_connector_drives_the_dropped_in_http_door_against_a_real_server() {
                 )),
                 head_words: Default::default(),
                 anchors: None,
+                binding: busbar_core_connector::framer::AuthBinding::NONE,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
             },
         )
         .expect("the connector dials through the http door");
@@ -297,6 +299,8 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
                 opening: Some((Vec::new(), b"opening;".to_vec())),
                 head_words: Default::default(),
                 anchors: None,
+                binding: busbar_core_connector::framer::AuthBinding::NONE,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
             },
         )
         .expect("the connector dials through the door");

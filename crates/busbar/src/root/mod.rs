@@ -86,6 +86,7 @@ pub(crate) mod loader;
 pub mod migration;
 pub mod model_egress;
 pub mod observe;
+pub mod outbound_auth;
 // The node a plane's units run through, compiled in every build: a door plane's units are driven
 // and posted on it whether the plane is compiled in or dropped in (ARCHITECT Q1).
 pub mod plane_node;

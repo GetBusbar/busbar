@@ -58,20 +58,18 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
-    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
-    CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
-    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
-    WITHIN_SEPARATOR,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, CAUSE_AUTH_FAILED,
+    CAUSE_AUTH_REFUSED, CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END,
+    REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
+    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
 };
-use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
+use busbar_contract::abi::host::service::{lent_out, write_out, ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 use busbar_contract::abi::transport::{fields, FrameSpan};
-use busbar_contract::auth_calls::{Fields, FieldsRequest};
 use busbar_contract::conn::{
     ConnError, ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind,
 };
-use std::future::Future as _;
 
 /// The table an instance with a declared need is handed.
 pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
@@ -140,19 +138,27 @@ impl Answer {
 
     /// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
     /// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can
-    /// tell it from the target's, the egress rules' or the far end's.
+    /// tell it from the target's, the egress rules' or the far end's; an auth's refusal and an auth
+    /// call's failure name theirs ([`CAUSE_AUTH_REFUSED`], [`CAUSE_AUTH_FAILED`]).
     const fn of(e: ConnError) -> Self {
         let outcome = match e {
             ConnError::Pending => Outcome::Pending,
-            ConnError::Timeout | ConnError::Closed | ConnError::Fault => Outcome::Failed,
+            ConnError::Timeout | ConnError::Closed | ConnError::Fault | ConnError::AuthFailed => {
+                Outcome::Failed
+            }
             ConnError::NotOwner
             | ConnError::UndeclaredNeed
             | ConnError::Refused
             | ConnError::Unarmed
-            | ConnError::CredentialUnavailable => Outcome::Refused,
+            | ConnError::CredentialUnavailable
+            | ConnError::AuthRefused => Outcome::Refused,
+            // A cause this host does not name is the host failing the call.
+            _ => Outcome::Fault,
         };
         let value = match e {
             ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
+            ConnError::AuthRefused => CAUSE_AUTH_REFUSED,
+            ConnError::AuthFailed => CAUSE_AUTH_FAILED,
             _ => CAUSE_NONE,
         };
         Self {
@@ -213,12 +219,6 @@ pub(crate) fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn Declar
     super::handle::resolve(ctx)?.conn.get()
 }
 
-/// The seal the host lent the dispatcher a context's instance is adopted by (Part 2 #54): what the
-/// member's auth fields are revealed under to join the request's head. `None` when none was lent.
-fn lent_seal(ctx: HostCtx) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
-    super::handle::resolve(ctx)?.route.get()?.upgrade()?.seal()
-}
-
 /// `run` under handle `h`, as the driver ticket's held exchanges see it (`super::held`): a tick
 /// that reuses a handle another exchange issued in a kept cycle is answered FAULT and nothing runs
 /// (a replay would hand it that exchange's kept answer); else `run`'s answer, PENDING or not,
@@ -239,8 +239,8 @@ fn held(ctx: HostCtx, h: CompletionHandle, run: impl FnOnce() -> Answer) -> Answ
 }
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
-/// `in`, then `body` with the caller's identity and table. A panic answers FAULT; the whole `out`
-/// is written.
+/// `in`, then `body` with the caller's identity and table. A panic answers FAULT; the `out` is
+/// written as far as the caller stated it, and one stated below the first is REFUSED.
 fn slot(
     ctx: HostCtx,
     input: *const c_void,
@@ -249,6 +249,18 @@ fn slot(
     in_size: usize,
     body: impl FnOnce(InstanceId, &Arc<dyn DeclaredConns>, ServiceHead) -> Answer,
 ) -> RawOutcome {
+    // THE CALLER'S `out`, as it states it: one below the first `ServiceOut` is REFUSED before the
+    // service runs, and nothing of it is written (an `out` grows by appending, so an older caller's
+    // smaller one is never overrun).
+    let lent = if out.is_null() {
+        0
+    } else {
+        // SAFETY: the caller's non-NULL `out`, its leading `size` readable.
+        match unsafe { lent_out(out) } {
+            Some(lent) => lent,
+            None => return RawOutcome::of(Outcome::Refused),
+        }
+    };
     let a = catch_unwind(AssertUnwindSafe(|| {
         if input.is_null() || out.is_null() {
             return Answer::with(Outcome::Fault, "");
@@ -277,7 +289,8 @@ fn slot(
         let o = ServiceOut {
             size: size_of::<ServiceOut>() as u32,
             outcome: RawOutcome::of(a.outcome),
-            _reserved: [0; 3],
+            exited: 0,
+            _reserved: [0; 2],
             value: a.value,
             len: a.len,
             items: 0,
@@ -292,8 +305,8 @@ fn slot(
                 len: a.error.len(),
             },
         };
-        // SAFETY: the caller's `out`, checked non-NULL.
-        unsafe { out.write_unaligned(o) };
+        // SAFETY: the caller's `out`, checked non-NULL, writable for the `lent` bytes it stated.
+        unsafe { write_out(out, o, lent) };
     }
     RawOutcome::of(a.outcome)
 }
@@ -486,12 +499,13 @@ extern "C" fn close(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
             // SAFETY: the head covered a `StreamIn`.
             let i = unsafe { input.cast::<StreamIn>().read_unaligned() };
             held_facts().remove(&(id, i.stream));
+            forget_own(id, i.stream);
             let held = held_conns().remove(&(id, i.stream));
             let conn = match held.map(|s| s.conn) {
                 // Never opened, or refused: nothing on the table to close.
                 // (A request waiting on its auth call drops the call: a client drop.)
                 // (A stream being opened outside the lock is closed by the call that opens it.)
-                Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Authing(_) | Conn::Opening) => {
+                Some(Conn::Held { .. } | Conn::Failed(_) | Conn::Opening) => {
                     return Answer::ready(0, 0)
                 }
                 Some(Conn::Open(c)) => c,
@@ -779,6 +793,16 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
 /// §11.13 M1).
 pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     held_facts().retain(|(i, _), _| *i != id);
+    let units: Vec<u64> = {
+        let mut own = own_units();
+        let keys: Vec<(InstanceId, u64)> = own.keys().filter(|(i, _)| *i == id).copied().collect();
+        keys.iter().filter_map(|k| own.remove(k)).collect()
+    };
+    if let Some(server) = super::auth_serve::server_for(id) {
+        for unit in units {
+            server.forget_request(unit);
+        }
+    }
     kept_answers().retain(|(i, _), _| *i != id);
     kept_reads().retain(|(i, _), _| *i != id);
     let gone: Vec<Stream> = {
@@ -829,34 +853,11 @@ enum Conn {
     Open(ConnId),
     /// Its open was refused or failed: the reply's failed ack.
     Failed(ConnError),
-    /// The request is whole and its member's auth call is in flight: it opens when the fields
-    /// answer (the open calls the member binding's fields).
-    Authing(Box<Authing>),
-    /// One call has taken the stream out to open it, or to make or poll its member's auth call,
-    /// OUTSIDE the connector's lock (THE DESIGN §11.13 M1: no plugin code runs under a host lock;
-    /// the auth call is the auth plugin's, and an open may cross into a transport door). That call
-    /// installs what it got ([`install`]); any other call on the stream meanwhile is refused.
+    /// One call has taken the stream out to open it, OUTSIDE the connector's lock (THE DESIGN
+    /// §11.13 M1: no plugin code runs under a host lock, and an open may cross into a transport
+    /// door). That call installs what it got ([`install`]); any other call on the stream meanwhile
+    /// is refused.
     Opening,
-}
-
-/// A whole request waiting on its member binding's auth fields.
-struct Authing {
-    fielding: Box<dyn busbar_contract::auth_calls::Fielding>,
-    need: NeedId,
-    target: String,
-    within: Vec<IpAddr>,
-    member: String,
-    head: Head,
-    body: Vec<u8>,
-}
-
-impl std::fmt::Debug for Authing {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Authing")
-            .field("need", &self.need)
-            .field("target", &self.target)
-            .finish_non_exhaustive()
-    }
 }
 
 /// What the host keeps for one stream an instance holds.
@@ -930,9 +931,7 @@ fn resolve(
         match &mut s.conn {
             Conn::Open(c) => return Ok(*c),
             Conn::Failed(e) => return Err(*e),
-            Conn::Held { head: Some(_), .. } | Conn::Authing(_) | Conn::Opening => {
-                return Err(ConnError::Refused)
-            }
+            Conn::Held { head: Some(_), .. } | Conn::Opening => return Err(ConnError::Refused),
             Conn::Held {
                 need,
                 target,
@@ -1105,14 +1104,14 @@ extern "C" fn write_request(
                         }
                     });
                     let at = (target.as_str(), within.as_slice(), member.as_str());
-                    // THE MEMBER'S BINDING: a request to a member the connector holds a binding
-                    // for carries that binding's auth fields, as the member's relayed calls do. The
-                    // connector keys a binding by (instance, need, member, target origin); a
-                    // request naming no member gets no binding. It is the binding of the member the
-                    // stream NAMES (`EstablishIn::member`), never of another registration at the
-                    // same origin. The request is handed over whole; what became of it is the
-                    // reply's to say.
-                    let bound = if waived {
+                    // THE MEMBER'S BINDING (THE DESIGN §6, "Auth points and guest lists", item 5):
+                    // the request goes to the transport with the plugin's own lines alone; the
+                    // framer, begun with the member's auth handle, calls that auth itself at its
+                    // points, and the host serves the call from what is recorded here under the
+                    // request's own unit (the handle now, the scope, a passthrough member's lent
+                    // credential, the waiver). It is the binding of the member the stream NAMES
+                    // (`EstablishIn::member`), never of another registration at the same origin.
+                    let bound = if waived || member.is_empty() {
                         None
                     } else {
                         table.auth_of(id, need, &member, &target)
@@ -1125,44 +1124,37 @@ extern "C" fn write_request(
                         Some(per) => per.handle_now(),
                         None => Some(b.handle),
                     });
-                    let conn = match bound {
-                        None => open_with(table, id, need, at, &h, &body, &[], None),
-                        Some(_) if handle.is_none() => {
-                            Conn::Failed(ConnError::CredentialUnavailable)
+                    let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
+                    let recorded = match (&bound, handle) {
+                        (Some(_), None) => Err(ConnError::CredentialUnavailable),
+                        (Some(binding), Some(handle)) => own_request(binding, &member, handle)
+                            .map(|r| super::auth_serve::OwnRequest { extensions, ..r })
+                            .ok_or(ConnError::Refused)
+                            .map(Some),
+                        // A waived request names its member too: the framer begun with the
+                        // member's handle is served no line for it.
+                        (None, _) if waived && !member.is_empty() => {
+                            Ok(Some(super::auth_serve::OwnRequest {
+                                member: member.clone(),
+                                handle: 0,
+                                extensions,
+                                caller_credential: None,
+                                waived: true,
+                            }))
                         }
-                        Some(binding) => match auth_request(&binding, &h, &target, &body, scope) {
-                            None => Conn::Failed(ConnError::Refused),
-                            Some(request) => {
-                                let handle = handle.unwrap_or(binding.handle);
-                                match binding.auth.fields_now(handle, &request) {
-                                    Some(Fields::Ready(auth)) => {
-                                        let seal = lent_seal(ctx);
-                                        open_with(
-                                            table,
-                                            id,
-                                            need,
-                                            at,
-                                            &h,
-                                            &body,
-                                            &auth,
-                                            seal.as_deref(),
-                                        )
-                                    }
-                                    Some(Fields::Refused | Fields::Failed) => {
-                                        Conn::Failed(ConnError::Refused)
-                                    }
-                                    None => Conn::Authing(Box::new(Authing {
-                                        fielding: binding.auth.fields(handle, request, 0),
-                                        need,
-                                        target,
-                                        within,
-                                        member,
-                                        head: h,
-                                        body,
-                                    })),
-                                }
+                        (None, _) => Ok(None),
+                    };
+                    let conn = match recorded {
+                        Err(e) => Conn::Failed(e),
+                        Ok(request) => {
+                            let unit = request
+                                .and_then(|r| super::auth_serve::server_for(id)?.record_request(r))
+                                .unwrap_or(0);
+                            if unit != 0 {
+                                own_units().insert((id, i.stream), unit);
                             }
-                        },
+                            open_with(table, id, need, at, &h, &body, unit)
+                        }
                     };
                     install(id, i.stream, table, conn);
                     Answer::ready(0, 0)
@@ -1180,11 +1172,8 @@ extern "C" fn write_request(
     )
 }
 
-/// Open a whole request on the table: the member's `auth` fields first, then the plugin's (a
-/// plugin field named like an auth field never doubles it: the binding's stands), 1.5.5's egress
-/// order, as the relayed calls are opened. The auth fields are revealed under `seal`, the one the
-/// host lent the dispatcher; with auth fields and no seal the open is refused (fail closed).
-#[allow(clippy::too_many_arguments)]
+/// Open a whole request on the table: the plugin's own lines, in order, under the request's own
+/// `unit` (`0` = none). No auth line is here: the transport adds the member's auth lines itself.
 fn open_with(
     table: &Arc<dyn DeclaredConns>,
     id: InstanceId,
@@ -1192,30 +1181,13 @@ fn open_with(
     (target, within, member): (&str, &[IpAddr], &str),
     h: &Head,
     body: &[u8],
-    auth: &[busbar_contract::auth_calls::AuthField],
-    seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+    unit: u64,
 ) -> Conn {
-    let seal = match (auth.is_empty(), seal) {
-        (true, _) => None,
-        (false, Some(seal)) => Some(seal),
-        (false, None) => return Conn::Failed(ConnError::Refused),
-    };
-    let mut fields: Vec<(&str, &[u8])> = Vec::with_capacity(auth.len() + h.fields.len());
-    let names: Vec<String> = auth
+    let fields: Vec<(&str, &[u8])> = h
+        .fields
         .iter()
-        .map(|f| String::from_utf8_lossy(&f.name).into_owned())
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
         .collect();
-    if let Some(seal) = seal {
-        for (name, f) in names.iter().zip(auth) {
-            fields.push((name.as_str(), f.value.expose(seal).as_slice()));
-        }
-    }
-    fields.extend(
-        h.fields
-            .iter()
-            .filter(|(n, _)| !names.iter().any(|a| a.eq_ignore_ascii_case(n)))
-            .map(|(n, v)| (n.as_str(), v.as_slice())),
-    );
     let desc = OpenDesc {
         target,
         fields: &fields,
@@ -1225,27 +1197,23 @@ fn open_with(
         head_target: &h.target,
         within,
         member,
-        unit: 0,
+        unit,
     };
     table
         .open(id, need, &desc)
         .map_or_else(Conn::Failed, Conn::Open)
 }
 
-/// The member binding's ONE auth call for a whole request to `target` (THE DESIGN, outbound auth: the facts at
-/// the style's point; the request's head when the style reads it; its stated `scope` in the
-/// extensions blob). A passthrough binding is lent the caller credential of the unit the crossing
-/// serves (none presented: an empty one, so nothing is presented, never the operator's); a request
-/// made inside no unit has no caller, and opens nothing (`None`): an operator's own fetch never
-/// spends a caller's credential.
-fn auth_request(
+/// What a member binding's call for a plugin's own request is recorded with: the member, its
+/// handle now, and a passthrough binding's lent credential, that of the unit the crossing serves
+/// (none presented: an empty one, so nothing is presented, never the operator's). A request made
+/// inside no unit has no caller, and opens nothing (`None`): an operator's own fetch never spends a
+/// caller's credential.
+fn own_request(
     binding: &busbar_contract::conn::ConnAuth,
-    h: &Head,
-    target: &str,
-    body: &[u8],
-    scope: Option<Vec<u8>>,
-) -> Option<FieldsRequest> {
-    use busbar_contract::abi::auth::{AuthPoint, STYLE_NEEDS_HEADERS};
+    member: &str,
+    handle: u64,
+) -> Option<super::auth_serve::OwnRequest> {
     let caller_credential = if binding.passthrough {
         let unit = super::services::serving_unit()?;
         Some(
@@ -1258,74 +1226,31 @@ fn auth_request(
     } else {
         None
     };
-    // The authority the socket dials, read by the one split; the fragment is never sent, and a
-    // web path's `\` is the `/` the dialling stack sends.
-    let parts = busbar_contract::net::url_authority(target);
-    let authority = parts.host_port;
-    let path_query = parts.tail.split('#').next().unwrap_or("");
-    let (path, query) = match path_query.split_once('?') {
-        Some((p, q)) => (p, Some(q.as_bytes().to_vec())),
-        None => (path_query, None),
-    };
-    let path = if path.is_empty() { "/" } else { path };
-    let path: Vec<u8> = if parts.web {
-        path.bytes()
-            .map(|b| if b == b'\\' { b'/' } else { b })
-            .collect()
-    } else {
-        path.as_bytes().to_vec()
-    };
-    let point = if binding.points.has(AuthPoint::HeadBody) {
-        AuthPoint::HeadBody
-    } else {
-        AuthPoint::Head
-    };
-    Some(FieldsRequest {
-        point,
-        unit: super::services::serving_unit().unwrap_or(0),
-        body: (point == AuthPoint::HeadBody).then(|| body.to_vec()),
-        method: h.method.clone(),
-        authority: authority.to_string(),
-        path,
-        query,
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs()),
-        headers: if binding.style_flags & STYLE_NEEDS_HEADERS != 0 {
-            h.fields
-                .iter()
-                .map(|(n, v)| (n.as_bytes().to_vec(), v.clone()))
-                .collect()
-        } else {
-            Vec::new()
-        },
+    Some(super::auth_serve::OwnRequest {
+        member: member.to_owned(),
+        handle,
+        extensions: Vec::new(),
         caller_credential,
-        extensions: busbar_contract::abi::auth::scope_extensions(scope.as_deref()),
-        ..FieldsRequest::default()
+        waived: false,
     })
 }
 
-/// A waker that wakes `ticket` on the instance `ctx` names: a request waiting on its auth call is
-/// read again when the call answers.
-fn ticket_waker(ctx: HostCtx, ticket: Ticket) -> Option<std::task::Waker> {
-    /// The route, and the instance `ctx` named as the ticket's supplier (#74).
-    struct TicketWaker {
-        waking: super::ticket::Waking,
-        ticket: Ticket,
+/// THE REQUEST UNITS the host recorded for each plugin-own request, by its stream: forgotten when
+/// the stream closes or its instance goes.
+fn own_units() -> MutexGuard<'static, HashMap<(InstanceId, u64), u64>> {
+    static OWN_UNITS: OnceLock<Mutex<HashMap<(InstanceId, u64), u64>>> = OnceLock::new();
+    OWN_UNITS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Forget the request unit of `stream`, if the host recorded one.
+fn forget_own(id: InstanceId, stream: u64) {
+    let unit = own_units().remove(&(id, stream));
+    if let (Some(unit), Some(server)) = (unit, super::auth_serve::server_for(id)) {
+        server.forget_request(unit);
     }
-    impl std::task::Wake for TicketWaker {
-        fn wake(self: Arc<Self>) {
-            self.waking.wake(self.ticket);
-        }
-    }
-    if ticket.is_none() {
-        return None;
-    }
-    let waking = super::ticket::Waking::of(super::handle::resolve(ctx)?)?;
-    Some(std::task::Waker::from(Arc::new(TicketWaker {
-        waking,
-        ticket,
-    })))
 }
 
 extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
@@ -1346,7 +1271,7 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             let Some(buf) = (unsafe { bytes(i.buf, i.len) }) else {
                 return Answer::with(Outcome::Fault, "");
             };
-            let (piece, answer) = reply(ctx, id, table, head, i.stream, buf);
+            let (piece, answer) = reply(id, table, head, i.stream, buf);
             if let Some(p) = piece {
                 // SAFETY: the caller's descriptor slot, checked non-NULL.
                 unsafe { i.piece.write_unaligned(p) };
@@ -1363,63 +1288,12 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 /// The next piece of the reply on `stream`, read into `buf`: its descriptor (none for an answer
 /// without one) and the answer.
 fn reply(
-    ctx: HostCtx,
     id: InstanceId,
     table: &Arc<dyn DeclaredConns>,
     head: ServiceHead,
     stream: u64,
     buf: &mut [u8],
 ) -> (Option<ReplyPiece>, Answer) {
-    // A REQUEST WAITING ON ITS AUTH CALL opens when the call answers (its fields lead the head),
-    // fails its ack when the call refuses or fails, and reads as nothing ready (on the caller's
-    // ticket, woken when the call answers) until then. The call is taken out of the map to be
-    // polled and opened with the connector's lock let go (THE DESIGN §11.13 M1).
-    let waker = ticket_waker(ctx, head.handle.ticket);
-    let authing = {
-        let mut all = held_conns();
-        match all.get_mut(&(id, stream)) {
-            Some(s) if matches!(s.conn, Conn::Authing(_)) => {
-                if waker.is_none() {
-                    return (
-                        None,
-                        Answer::with(
-                            Outcome::Refused,
-                            "a read that would pend is callable only inside a ticketed op",
-                        ),
-                    );
-                }
-                match std::mem::replace(&mut s.conn, Conn::Opening) {
-                    Conn::Authing(a) => Some(a),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    };
-    if let (Some(mut a), Some(waker)) = (authing, waker) {
-        let mut cx = std::task::Context::from_waker(&waker);
-        let answered = match std::pin::Pin::new(&mut a.fielding).poll(&mut cx) {
-            std::task::Poll::Pending => {
-                install(id, stream, table, Conn::Authing(a));
-                return (None, Answer::of(ConnError::Pending));
-            }
-            std::task::Poll::Ready(f) => f,
-        };
-        let opened = match answered {
-            Fields::Ready(auth) => open_with(
-                table,
-                id,
-                a.need,
-                (&a.target, &a.within, &a.member),
-                &a.head,
-                &a.body,
-                &auth,
-                lent_seal(ctx).as_deref(),
-            ),
-            Fields::Refused | Fields::Failed => Conn::Failed(ConnError::Refused),
-        };
-        install(id, stream, table, opened);
-    }
     {
         let mut all = held_conns();
         let s = all.entry((id, stream)).or_insert(Stream {
@@ -1444,7 +1318,6 @@ fn reply(
                 return (None, Answer::of(e));
             }
             Conn::Open(_) => {}
-            Conn::Authing(_) => return (None, Answer::of(ConnError::Pending)),
             Conn::Opening => {
                 return (
                     None,

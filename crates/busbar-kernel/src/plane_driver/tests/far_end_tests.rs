@@ -4,8 +4,8 @@
 //! THE PRODUCTION FAR END over kind-neutral doubles of its ports: a scripted connection table, a
 //! breaker that classifies by 1.5.5's status table and records what it is told, an auth binding
 //! that counts its calls. Proven: one attempt end to end (the joined target, the head the framer
-//! gets with the ONE auth call's fields after the plane's, the success recorded and its budget unit
-//! spent); the step-24 Disposition (529 fails over with its Retry-After, 401 takes the member down,
+//! gets with the plane's fields and NO auth line, the attempt's auth record the host serves the
+//! framer's `auth.call` from, NO kernel auth call, the success recorded and its budget unit spent); the step-24 Disposition (529 fails over with its Retry-After, 401 takes the member down,
 //! a caller fault is relayed); the exhaustion terminal's Retry-After floor; the attempt cap; the
 //! unit deadline stamped from the plane's stated stream ceiling.
 
@@ -54,14 +54,14 @@ enum Script {
     Ended(u32, WireStatusClass, Option<WireFault>, Vec<&'static [u8]>),
     Silent,
     Refused,
+    /// The open answers this error, after the dial was asked for.
+    OpenFails(ConnError),
 }
 
 /// One open: its target, head, body and timeout.
 type Opened = (String, Vec<(String, Vec<u8>)>, Vec<u8>, u64);
 /// One open's head words: its method and its head target.
 type Words = (Vec<u8>, Vec<u8>);
-/// The facts one auth call saw: method, authority, path.
-type Facts = (Vec<u8>, String, Vec<u8>);
 
 /// A connection table whose far ends answer from `scripts`, by the target's host.
 #[derive(Default)]
@@ -144,6 +144,7 @@ impl Conns for Table {
         let id = self.next.fetch_add(1, Ordering::SeqCst) + 1;
         let (pieces, bytes) = match script {
             Script::Refused => return Err(ConnError::Refused),
+            Script::OpenFails(err) => return Err(err),
             Script::Silent => (VecDeque::new(), VecDeque::new()),
             Script::Trailed(status, chunks, trailers) => {
                 let mut pieces = VecDeque::new();
@@ -421,36 +422,14 @@ impl Telemetry for Quiet {
     fn queued(&self, _: &str, _: i64) {}
 }
 
-/// An auth binding answering `authorization: Bearer <credential>`, counting its calls.
+/// A member's auth binding that counts every call the kernel makes on it for fields. The kernel
+/// makes none (THE DESIGN §6, "Auth points and guest lists", item 5): the framer calls the auth
+/// through the host auth handle, so every count here stays `0`.
 #[derive(Default)]
 struct Bearer {
     calls: AtomicU64,
-    /// The caller credential each call carried.
-    callers: Mutex<Vec<Option<Vec<u8>>>>,
-    /// Never answers on the spot, and its submitted call never answers at all.
-    stall: std::sync::atomic::AtomicBool,
-    /// Refuses to field the attempt.
-    refuse: std::sync::atomic::AtomicBool,
-    facts: Mutex<Vec<Facts>>,
-    /// The point each call was made at and the body it lent.
-    points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
-    /// The extensions blob each call lent.
-    extensions: Mutex<Vec<Vec<u8>>>,
 }
 struct Done(Fields);
-/// A submitted call that never answers.
-struct Never;
-impl std::future::Future for Never {
-    type Output = Fields;
-    fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Fields> {
-        Poll::Pending
-    }
-}
-impl Fielding for Never {
-    fn settled(&mut self) -> Option<Fields> {
-        None
-    }
-}
 impl std::future::Future for Done {
     type Output = Fields;
     fn poll(self: std::pin::Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Fields> {
@@ -466,25 +445,8 @@ impl OutboundAuth for Bearer {
     fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
         Ok(1)
     }
-    fn fields_now(&self, _: u64, r: &FieldsRequest) -> Option<Fields> {
+    fn fields_now(&self, _: u64, _: &FieldsRequest) -> Option<Fields> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        if self.stall.load(Ordering::SeqCst) {
-            return None;
-        }
-        if self.refuse.load(Ordering::SeqCst) {
-            return Some(Fields::Refused);
-        }
-        self.callers.lock().unwrap().push(
-            r.caller_credential
-                .as_ref()
-                .map(|c| c.expose(&crate::seal::lend()).clone()),
-        );
-        self.facts
-            .lock()
-            .unwrap()
-            .push((r.method.clone(), r.authority.clone(), r.path.clone()));
-        self.points.lock().unwrap().push((r.point, r.body.clone()));
-        self.extensions.lock().unwrap().push(r.extensions.clone());
         Some(Fields::Ready(vec![AuthField {
             name: b"authorization".to_vec(),
             value: b"Bearer sk-test".to_vec().into(),
@@ -492,9 +454,6 @@ impl OutboundAuth for Bearer {
         }]))
     }
     fn fields(&self, h: u64, r: FieldsRequest, _: u64) -> Box<dyn Fielding> {
-        if self.stall.load(Ordering::SeqCst) {
-            return Box::new(Never);
-        }
         Box::new(Done(self.fields_now(h, &r).unwrap_or(Fields::Failed)))
     }
 }
@@ -636,11 +595,27 @@ async fn drain(far: &EgressFarEnd<'_>, t: &Pass<Route>) -> Vec<FarPiece> {
     out
 }
 
+/// A route over the rig's pool for a unit of its own (the attempt's auth record is the unit's).
 fn route() -> UnitRoute {
+    static NEXT: AtomicU64 = AtomicU64::new(0x00fa_0000_0000);
     UnitRoute {
+        unit: busbar_contract::UnitKey::new(NEXT.fetch_add(1, Ordering::SeqCst) + 1),
         pool: POOL.into(),
         ..UnitRoute::default()
     }
+}
+
+/// The auth record the far end left for its unit's live attempt (what the host serves the
+/// framer's `auth.call` from), `None` when it left none.
+fn recorded(far: &EgressFarEnd<'_>) -> Option<crate::plane_driver::attempt_auth::AttemptAuth> {
+    crate::plane_driver::attempt_auth::of(far.route.unit.get())
+}
+
+/// A recorded credential's bytes.
+fn lent(a: &crate::plane_driver::attempt_auth::AttemptAuth) -> Option<Vec<u8>> {
+    a.caller_credential
+        .as_ref()
+        .map(|c| c.expose(&crate::seal::lend()).clone())
 }
 
 /// Hand the plane the rest of the answer, each piece read with no fault reading, through its last.
@@ -656,8 +631,11 @@ async fn read_out(far: &EgressFarEnd<'_>, t: &Pass<Route>) {
 
 // ── the cases ───────────────────────────────────────────────────────────────────────────────────
 
-/// One attempt, kernel to wire: the joined target, the plane's head then the ONE auth call's
-/// fields, the body; the success recorded and one budget unit spent; the pieces relayed.
+/// One attempt, kernel to wire: the joined target, the plane's head with NO auth line, the body;
+/// the attempt's auth record for the framer's `auth.call` and NO kernel auth call; the success
+/// recorded and one budget unit spent; the pieces relayed; the record gone with the far end. RED
+/// (no kernel-side outbound fields call remains): before, the kernel called the binding's `fields`
+/// once per attempt and led the head with `authorization`.
 #[tokio::test]
 async fn one_attempt_end_to_end() {
     let r = rig(
@@ -677,6 +655,13 @@ async fn one_attempt_end_to_end() {
         }
     );
     assert!(far.send(&t, request()).await);
+    let record = recorded(&far).expect("the attempt's auth record");
+    assert_eq!(
+        (record.member.as_str(), record.handle, record.waived),
+        ("p0", 1, false),
+        "the member's binding and its handle"
+    );
+    assert!(record.extensions.is_empty() && record.caller_credential.is_none());
     let pieces = drain(&far, &t).await;
     assert_eq!(pieces[0].status, Some((200, 1)));
     assert!(!pieces[0].fail_over);
@@ -693,10 +678,9 @@ async fn one_attempt_end_to_end() {
     let names: Vec<&str> = head.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        ["authorization", "content-type"],
-        "1.5.5's egress order: the auth fields before the plane's"
+        ["content-type"],
+        "the kernel adds no auth line: the framer adds the auth's, first"
     );
-    assert_eq!(head[0].1, b"Bearer sk-test");
     assert_eq!(
         r.table.words.lock().unwrap()[0],
         (b"POST".to_vec(), b"/v1/chat".to_vec()),
@@ -705,12 +689,8 @@ async fn one_attempt_end_to_end() {
     assert_eq!(body, b"{}");
     assert_eq!(
         r.auth.calls.load(Ordering::SeqCst),
-        1,
-        "ONE auth call per attempt"
-    );
-    assert_eq!(
-        r.auth.facts.lock().unwrap()[0],
-        (b"POST".to_vec(), "a.test".to_string(), b"/v1/chat".to_vec())
+        0,
+        "the kernel makes no outbound auth call"
     );
     assert_eq!(
         *r.book.observed.lock().unwrap(),
@@ -722,12 +702,17 @@ async fn one_attempt_end_to_end() {
         0,
         "a clean end keeps the charge"
     );
+    let unit = far.route.unit.get();
     drop(far);
     assert_eq!(r.table.closed.load(Ordering::SeqCst), 1);
+    assert!(
+        crate::plane_driver::attempt_auth::of(unit).is_none(),
+        "the record ends with the unit's far end"
+    );
 }
 
 /// STEP 24, CAP 529: an overloaded far end is a transient failure with its Retry-After recorded,
-/// and the attempt fails over to the next member; the next attempt re-calls auth once more.
+/// and the attempt fails over to the next member, whose binding the unit's record then names.
 #[tokio::test]
 async fn a_529_fails_over_with_its_retry_after() {
     let r = rig(
@@ -752,6 +737,11 @@ async fn a_529_fails_over_with_its_retry_after() {
     };
     assert_ne!(first, second, "a tried member is never offered again");
     assert!(far.send(&t, request()).await);
+    assert_eq!(
+        recorded(&far).expect("the second attempt's record").member,
+        if second == "m0" { "p0" } else { "p1" },
+        "a new attempt replaces the unit's record"
+    );
     let pieces = drain(&far, &t).await;
     assert_eq!(pieces[0].status, Some((200, 1)));
     let observed = r.book.observed.lock().unwrap().clone();
@@ -763,8 +753,8 @@ async fn a_529_fails_over_with_its_retry_after() {
     )));
     assert_eq!(
         r.auth.calls.load(Ordering::SeqCst),
-        2,
-        "one auth call per attempt"
+        0,
+        "no kernel auth call"
     );
 }
 
@@ -1111,8 +1101,9 @@ async fn the_method_and_path_arrive_as_the_upstream_requests_head_words() {
 
 /// BUSBAR IS INVISIBLE TO UPSTREAMS (OWNER HARD RULE 2026-10-02): every field the plane hands over
 /// goes out, except the per-connection mechanics the connection re-derives (hop-by-hop fields, one
-/// a `connection` field nominates, `host`, `content-length`) and a field naming an auth field, which
-/// the auth binding's own stands for.
+/// a `connection` field nominates, `host`, `content-length`). A plane field named like an auth
+/// field goes to the framer as the plane stated it: the framer replaces it with the auth's line of
+/// that name (THE DESIGN §6, "Auth points and guest lists", item 5); the kernel knows no auth line.
 #[tokio::test]
 async fn the_planes_fields_go_out_but_the_per_connection_mechanics() {
     let r = rig(
@@ -1149,9 +1140,9 @@ async fn the_planes_fields_go_out_but_the_per_connection_mechanics() {
     assert_eq!(
         head,
         [
-            ("authorization", b"Bearer sk-test".as_slice()),
             ("content-type", b"application/json".as_slice()),
             ("x-client-trace", b"abc".as_slice()),
+            ("Authorization", b"Bearer caller".as_slice()),
         ]
     );
 }
@@ -1160,7 +1151,7 @@ async fn the_planes_fields_go_out_but_the_per_connection_mechanics() {
 /// hop_by_hop_host_and_length_are_re_derived. MECHANICS: the caller's hop-by-hop fields (and a field
 /// its `connection` nominates), `host` and `content-length` never reach the upstream; the upstream
 /// connection derives its own. Every field of the legacy matrix is handed over and only the trace
-/// field crosses beside the auth and content-type fields; the connection dials the member's own host.
+/// field crosses beside the content-type field; the connection dials the member's own host.
 #[tokio::test]
 async fn hop_by_hop_host_and_length_are_re_derived() {
     let r = rig(
@@ -1227,7 +1218,6 @@ async fn hop_by_hop_host_and_length_are_re_derived() {
     assert_eq!(
         head,
         [
-            ("authorization", b"Bearer sk-test".as_slice()),
             ("content-type", b"application/json".as_slice()),
             ("x-client-trace", b"abc".as_slice()),
         ]
@@ -1326,8 +1316,8 @@ async fn test_metric_pool_label_resolves_model_for_default_cell() {
 }
 
 /// A target that is not a path never leaves: joined onto the base it could move the authority
-/// (`api.host@evil.test`) and carry the member's auth fields there. Nothing is opened, the auth
-/// binding is never called, nothing is recorded against the member.
+/// (`api.host@evil.test`) and carry the member's auth fields there. Nothing is opened, no auth
+/// record is left for a framer to be served from, nothing is recorded against the member.
 #[tokio::test]
 async fn a_target_that_is_not_a_path_is_refused_before_the_dial() {
     let r = rig(
@@ -1344,6 +1334,7 @@ async fn a_target_that_is_not_a_path_is_refused_before_the_dial() {
             ..request()
         };
         assert!(!far.send(&t, request).await, "{target:?}");
+        assert!(recorded(&far).is_none(), "{target:?}: no auth record");
     }
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
@@ -1352,8 +1343,8 @@ async fn a_target_that_is_not_a_path_is_refused_before_the_dial() {
 
 /// A plane field whose name is not an RFC 9110 token never leaves: `authorization:x` = `v` would be
 /// re-read as a second `authorization` (= `x: v`) when the framer renders and parses its own head,
-/// stepping around the same-name auth replacement. The hop is refused before the auth call and the
-/// dial, and nothing is recorded against the member.
+/// stepping around the framer's same-name auth replacement. The hop is refused before the auth record
+/// and the dial, and nothing is recorded against the member.
 #[tokio::test]
 async fn a_plane_field_name_that_is_not_a_token_is_refused_before_the_dial() {
     let r = rig(
@@ -1368,6 +1359,7 @@ async fn a_plane_field_name_that_is_not_a_token_is_refused_before_the_dial() {
         let mut req = request();
         req.fields.push((name.as_bytes().to_vec(), b"v".to_vec()));
         assert!(!far.send(&t, req).await, "{name:?}");
+        assert!(recorded(&far).is_none(), "{name:?}: no auth record");
     }
     assert!(
         r.table.opened.lock().unwrap().is_empty(),
@@ -1380,10 +1372,11 @@ async fn a_plane_field_name_that_is_not_a_token_is_refused_before_the_dial() {
 /// F25 row 75: rehomed from the retired engine crate's src/engine/tests/auth_style_tests.rs::
 /// test_host_from_base_backslash_authority_matches_wire_host (its signed-host half; the dialler's
 /// reading of each URL is pinned in busbar-kernel-egress's `net_tests`). A WHATWG reader ends a web
-/// URL's authority at the first `\` exactly as at `/`, so the host the auth call signs must be the
-/// host the connection dials, byte for byte, never the post-`@` host a backslash-blind split reads
-/// (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`, `host_from_base`); the port survives and the
-/// backslash path rides the head as a path.
+/// URL's authority at the first `\` exactly as at `/`, so the host the connection dials is never the
+/// post-`@` host a backslash-blind split reads (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`,
+/// `host_from_base`); the port survives and the backslash path rides the head as a path. The auth
+/// now signs the head the framer encodes for this dial (its authority and these head words): the
+/// connector's end-to-end auth cell holds the signed host to the dialled one.
 #[tokio::test]
 async fn test_host_from_base_backslash_authority_matches_wire_host() {
     for (base, script_host, authority, host, port, head_path) in [
@@ -1430,8 +1423,6 @@ async fn test_host_from_base_backslash_authority_matches_wire_host() {
         assert_eq!(pieces[0].status, Some((200, 1)), "{base}");
         drop(far);
 
-        let signed = r.auth.facts.lock().unwrap()[0].1.clone();
-        assert_eq!(signed, authority, "{base}: the signed host");
         let opened = r.table.opened.lock().unwrap().clone();
         assert_eq!(opened.len(), 1, "{base}");
         let dialled =
@@ -1446,96 +1437,68 @@ async fn test_host_from_base_backslash_authority_matches_wire_host() {
             None => dialled.host.clone(),
         };
         assert_eq!(
-            signed, dialled_authority,
-            "{base}: the signed host is the dialled host"
+            dialled_authority, authority,
+            "{base}: the dialled authority"
         );
         assert_eq!(
             r.table.words.lock().unwrap()[0],
             (b"POST".to_vec(), head_path.as_bytes().to_vec()),
             "{base}: the head's path"
         );
-        assert_eq!(
-            r.auth.facts.lock().unwrap()[0].2,
-            head_path.as_bytes().to_vec(),
-            "{base}: the signed path is the head's path"
-        );
     }
 }
 
-/// An auth binding that must wait (a refresh that never comes back) is awaited no longer than the
-/// attempt's cap: the attempt ends without a dial, nothing recorded against the member.
+/// RED (an auth outcome is never the destination failing): a dial whose auth REFUSED the request
+/// or whose auth call FAILED (`ConnError::AuthRefused`, `ConnError::AuthFailed`) records nothing
+/// against the destination and moves on, as an auth that answers no fields does. The control: a
+/// dial the far end refused does record against it.
 #[tokio::test]
-async fn a_stalled_auth_call_is_bounded_by_the_attempt_cap() {
+async fn a_dial_whose_auth_refuses_or_fails_records_nothing_against_the_destination() {
+    for err in [ConnError::AuthRefused, ConnError::AuthFailed] {
+        let r = rig(
+            &[("a.test", Script::OpenFails(err))],
+            OnExhausted::Status503,
+            None,
+        );
+        let t = token();
+        let far = r.egress.unit(route());
+        let _ = far.member(&t, 1).await;
+        assert!(!far.send(&t, request()).await, "{err:?}: nothing was sent");
+        assert_eq!(
+            r.table.opened.lock().unwrap().len(),
+            1,
+            "{err:?}: the dial was asked"
+        );
+        assert!(
+            r.book.observed.lock().unwrap().is_empty(),
+            "{err:?}: nothing recorded against the destination"
+        );
+    }
     let r = rig(
-        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
-        OnExhausted::Status503,
-        Some(50),
-    );
-    r.auth.stall.store(true, Ordering::SeqCst);
-    let t = token();
-    let far = r.egress.unit(route());
-    let _ = far.member(&t, 1).await;
-    let started = std::time::Instant::now();
-    let sent = tokio::time::timeout(std::time::Duration::from_secs(5), far.send(&t, request()))
-        .await
-        .expect("the auth wait is bounded");
-    assert!(!sent);
-    assert!(started.elapsed() < std::time::Duration::from_secs(2));
-    assert!(r.table.opened.lock().unwrap().is_empty());
-    assert!(r.book.observed.lock().unwrap().is_empty());
-}
-
-/// A request whose auth fields cannot be assembled is never sent and records nothing against the
-/// member: the binding's refusal is not the destination's fault (the push attempt's
-/// could-not-be-assembled case, on the far end's one assembly step).
-#[tokio::test]
-async fn an_attempt_whose_auth_refuses_records_nothing_against_the_member() {
-    let r = rig(
-        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        &[("a.test", Script::OpenFails(ConnError::Refused))],
         OnExhausted::Status503,
         None,
     );
-    r.auth.refuse.store(true, Ordering::SeqCst);
     let t = token();
     let far = r.egress.unit(route());
     let _ = far.member(&t, 1).await;
     assert!(!far.send(&t, request()).await);
-    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 1, "the one auth call");
-    assert!(r.table.opened.lock().unwrap().is_empty(), "nothing dialled");
     assert!(
-        r.book.observed.lock().unwrap().is_empty(),
-        "nothing recorded against the member"
+        !r.book.observed.lock().unwrap().is_empty(),
+        "the far end's refusal is recorded against it"
     );
 }
 
-/// The head the framer encodes carries the auth values: it wipes them when it drops.
+/// The head the framer encodes may carry a plane's own credential material: it wipes it when it
+/// drops.
 #[test]
-fn the_head_wipes_its_auth_values() {
+fn the_head_wipes_its_values() {
     let mut head = Head(vec![
-        ("authorization".into(), b"Bearer sk-test".to_vec()),
+        ("x-plane-key".into(), b"plane-secret".to_vec()),
         ("content-type".into(), b"application/json".to_vec()),
     ]);
     head.wipe();
     assert!(head.0.iter().all(|(_, v)| v.iter().all(|b| *b == 0)));
-}
-
-/// An auth field and a request print no credential.
-#[test]
-fn auth_material_never_prints() {
-    let field = AuthField {
-        name: b"authorization".to_vec(),
-        value: b"Bearer sk-test".to_vec().into(),
-        sensitive: true,
-    };
-    let request = FieldsRequest {
-        caller_credential: Some(b"caller-key".to_vec().into()),
-        ..FieldsRequest::default()
-    };
-    let printed = format!("{field:?} {request:?}");
-    assert!(
-        !printed.contains("sk-test") && !printed.contains("caller-key"),
-        "{printed}"
-    );
 }
 
 /// The far end's trailers are handed on, flagged as fields, never dropped: the plane decides.
@@ -1733,10 +1696,11 @@ async fn the_trailers_status_is_judged_plane_first_and_a_success_ends_as_it_ends
 
 /// THE PER-CALL SCOPE (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): a plane's attempt that states its
 /// scope in the host's own request field has that field taken out of the request before anything
-/// is encoded (the far end never hears it) and its value lent to the member's ONE auth call in the
-/// call's extensions blob; an attempt that states none lends none.
+/// is encoded (the far end never hears it) and its value recorded for the member's auth call (the
+/// host lends it in the call's extensions blob when the framer calls); an attempt that states none
+/// records none.
 #[tokio::test]
-async fn a_stated_scope_reaches_the_auth_call_and_never_the_wire() {
+async fn a_stated_scope_reaches_the_auth_record_and_never_the_wire() {
     use busbar_contract::abi::auth::{EXT_SCOPE, SCOPE_REQUEST_FIELD};
     use busbar_contract::abi::mechanism::extensions;
     let r = rig(
@@ -1745,6 +1709,7 @@ async fn a_stated_scope_reaches_the_auth_call_and_never_the_wire() {
         None,
     );
     let t = token();
+    let mut lent = Vec::new();
     for scope in [Some("fs_read_file fs_write_file"), None] {
         let far = r.egress.unit(route());
         let _ = far.member(&t, 1).await;
@@ -1756,9 +1721,9 @@ async fn a_stated_scope_reaches_the_auth_call_and_never_the_wire() {
             ));
         }
         assert!(far.send(&t, req).await);
+        lent.push(recorded(&far).expect("a record").extensions);
         let _ = drain(&far, &t).await;
     }
-    let lent = r.auth.extensions.lock().unwrap().clone();
     assert_eq!(lent.len(), 2);
     assert_eq!(
         extensions::get(&lent[0], EXT_SCOPE),
@@ -1773,8 +1738,9 @@ async fn a_stated_scope_reaches_the_auth_call_and_never_the_wire() {
     }
 }
 
-/// PASSTHROUGH: a member configured `upstream_credentials: passthrough` has its one auth call carry
-/// the caller's own credential; a member that is not is never handed it.
+/// PASSTHROUGH: a member configured `upstream_credentials: passthrough` has its attempt's record
+/// carry the caller's own credential (the host lends it to the auth call, never to the transport); a
+/// member that is not is never handed it.
 #[tokio::test]
 async fn passthrough_hands_the_callers_credential_only_to_its_member() {
     // m0 is an own-credential member, m1 a passthrough one (the rig's binding for member 1).
@@ -1792,24 +1758,29 @@ async fn passthrough_hands_the_callers_credential_only_to_its_member() {
         ..route()
     });
     let mut relays = Vec::new();
+    let mut callers = Vec::new();
     for n in 1..=2 {
         let Pick::Member { passthrough, .. } = far.member(&t, n).await else {
             panic!("a member");
         };
         relays.push(passthrough);
         assert!(far.send(&t, request()).await);
+        callers.push(lent(&recorded(&far).expect("a record")));
         let _ = drain(&far, &t).await;
     }
-    assert_eq!(
-        *r.auth.callers.lock().unwrap(),
-        vec![None, Some(b"caller-key".to_vec())]
-    );
+    assert_eq!(callers, vec![None, Some(b"caller-key".to_vec())]);
+    for (_, head, _, _) in r.table.opened.lock().unwrap().iter() {
+        assert!(
+            head.iter().all(|(_, v)| v.as_slice() != b"caller-key"),
+            "the caller's credential never rides the head handed to the transport: {head:?}"
+        );
+    }
     // The pick says so, and the plane is told: only the passthrough member relays.
     assert_eq!(relays, vec![false, true]);
 }
 
 /// PASSTHROUGH THROUGH A POOL: a member its pool reaches with the caller's own credential (the
-/// pool's `upstream_credentials: passthrough`) has its one auth call lent the caller's credential,
+/// pool's `upstream_credentials: passthrough`) has its attempt's record lend the caller's credential,
 /// though its binding is its provider's own; and a caller who presented none lends an empty one, so
 /// nothing is presented (never the operator's key), as 1.5.5's `present_caller` did.
 #[tokio::test]
@@ -1826,6 +1797,7 @@ async fn a_passthrough_pool_member_is_lent_the_callers_credential_or_an_empty_on
         member.passthrough = true;
     }
     let t = token();
+    let mut presented = Vec::new();
     for credential in [Some(b"caller-key".to_vec()), None] {
         let far = r.egress.unit(UnitRoute {
             caller_credential: credential.clone().map(Into::into),
@@ -1839,43 +1811,12 @@ async fn a_passthrough_pool_member_is_lent_the_callers_credential_or_an_empty_on
         };
         assert!(passthrough, "{name}: the plane is told the member relays");
         assert!(far.send(&t, request()).await);
+        presented.push(lent(&recorded(&far).expect("a record")));
         let _ = drain(&far, &t).await;
     }
-    let lent = r.auth.callers.lock().unwrap().clone();
-    let presented: Vec<Option<Vec<u8>>> = lent.into_iter().collect();
     assert_eq!(
         presented,
         vec![Some(b"caller-key".to_vec()), Some(Vec::new())]
-    );
-}
-
-/// AUTH POINTS: a member whose style signs the body (`HeadBody`) has its one auth call made at
-/// `HeadBody` with the whole body, the bytes the framer sends; a member whose style is over the
-/// head is called at `Head` and lent no body.
-#[tokio::test]
-async fn a_body_signing_style_is_called_at_head_body_with_the_whole_body() {
-    // m0's style is over the head, m1's signs the body (the rig's binding for member 1).
-    let r = rig(
-        &[
-            ("a.test", Script::Answer(503, None, vec![b"x"])),
-            ("b.test", Script::Answer(200, None, vec![b"ok"])),
-        ],
-        OnExhausted::Status503,
-        None,
-    );
-    let t = token();
-    let far = r.egress.unit(route());
-    for n in 1..=2 {
-        let _ = far.member(&t, n).await;
-        assert!(far.send(&t, request()).await);
-        let _ = drain(&far, &t).await;
-    }
-    assert_eq!(
-        *r.auth.points.lock().unwrap(),
-        vec![
-            (AuthPoint::Head, None),
-            (AuthPoint::HeadBody, Some(request().body)),
-        ]
     );
 }
 
@@ -2616,24 +2557,9 @@ fn resolving(r: &mut Rig, answers: &[Option<u64>]) -> (Arc<Resolving>, Arc<ByHan
     (per, auth)
 }
 
-/// The `authorization` each open carried, in order (`None`: none).
-fn authorizations(r: &Rig) -> Vec<Option<Vec<u8>>> {
-    r.table
-        .opened
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(_, head, _, _)| {
-            head.iter()
-                .find(|(n, _)| n == "authorization")
-                .map(|(_, v)| v.clone())
-        })
-        .collect()
-}
-
-/// ASKED ON EVERY REQUEST: each attempt asks the binding for its handle NOW and presents the
-/// credential that handle was opened with, never the one the generation was sealed with — a
-/// credential its binding refreshed between two units is presented by the second.
+/// ASKED ON EVERY REQUEST: each attempt asks the binding for its handle NOW and records it for the
+/// framer's auth call, never the one the generation was sealed with — a credential its binding
+/// refreshed between two units is presented by the second.
 #[tokio::test]
 async fn each_attempt_presents_the_handle_its_credential_resolves_to_now() {
     let mut r = rig(
@@ -2643,28 +2569,30 @@ async fn each_attempt_presents_the_handle_its_credential_resolves_to_now() {
     );
     let (per, auth) = resolving(&mut r, &[Some(7), Some(8)]);
     let t = token();
+    let mut handles = Vec::new();
     for _ in 0..2 {
         let far = r.egress.unit(route());
         let _ = far.member(&t, 1).await;
         assert!(far.send(&t, request()).await);
+        handles.push(recorded(&far).expect("a record").handle);
         let _ = drain(&far, &t).await;
     }
     assert_eq!(
-        authorizations(&r),
-        vec![Some(b"Bearer h7".to_vec()), Some(b"Bearer h8".to_vec())],
-        "each request carried the handle resolved for it, not the sealed one (h1)"
+        handles,
+        vec![7, 8],
+        "each request is served on the handle resolved for it, not the sealed one (1)"
     );
     assert_eq!(
         per.asked.load(Ordering::SeqCst),
         2,
         "asked once per request"
     );
-    assert_eq!(auth.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(auth.calls.load(Ordering::SeqCst), 0, "no kernel auth call");
 }
 
 /// A CREDENTIAL THAT NO LONGER RESOLVES REFUSES THE UNIT `credential_unavailable` before anything is
-/// dialled: no connection opened, no auth call made, nothing recorded against the member (it is not
-/// the destination's fault), and the walk's next pick is the refusal, never another member.
+/// dialled: no connection opened, no auth record left, nothing recorded against the member (it is
+/// not the destination's fault), and the walk's next pick is the refusal, never another member.
 #[tokio::test]
 async fn an_unavailable_credential_refuses_the_unit_before_the_dial() {
     let mut r = rig(
@@ -2680,6 +2608,7 @@ async fn an_unavailable_credential_refuses_the_unit_before_the_dial() {
     let far = r.egress.unit(route());
     assert!(matches!(far.member(&t, 1).await, Pick::Member { ref name, .. } if name == "m0"));
     assert!(!far.send(&t, request()).await, "nothing was sent");
+    assert!(recorded(&far).is_none(), "no auth record for a framer");
     assert_eq!(
         far.member(&t, 2).await,
         Pick::Refused(busbar_contract::caps::ReasonCode::CredentialUnavailable),
@@ -2694,10 +2623,10 @@ async fn an_unavailable_credential_refuses_the_unit_before_the_dial() {
     );
 }
 
-/// THE WAIVER (`abi::auth::NO_MEMBER_AUTH_FIELD`): a request carrying it is opened with NO member
-/// auth — the binding is not asked for a handle and makes no call, so it is dialled even while the
-/// credential is unavailable — and the field is the host's: it never reaches the wire. RED arm: the
-/// same request without it carries the member's credential.
+/// THE WAIVER (`abi::auth::NO_MEMBER_AUTH_FIELD`): a request carrying it is recorded WAIVED — the
+/// binding is not asked for a handle, and the host begins the framer with no auth, so it is dialled
+/// even while the credential is unavailable — and the field is the host's: it never reaches the
+/// wire. RED arm: the same request without it records the member's handle.
 #[tokio::test]
 async fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_wire() {
     use busbar_contract::abi::auth::NO_MEMBER_AUTH_FIELD;
@@ -2708,6 +2637,7 @@ async fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_th
     );
     let (per, auth) = resolving(&mut r, &[Some(5)]);
     let t = token();
+    let mut records = Vec::new();
     for waived in [true, false] {
         let far = r.egress.unit(route());
         let _ = far.member(&t, 1).await;
@@ -2717,19 +2647,21 @@ async fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_th
                 .push((NO_MEMBER_AUTH_FIELD.as_bytes().to_vec(), b"1".to_vec()));
         }
         assert!(far.send(&t, req).await);
+        let record = recorded(&far).expect("a record");
+        records.push((record.waived, record.handle));
         let _ = drain(&far, &t).await;
     }
     assert_eq!(
-        authorizations(&r),
-        vec![None, Some(b"Bearer h5".to_vec())],
-        "the waived request presented nothing; the other its member's credential"
+        records,
+        vec![(true, 0), (false, 5)],
+        "the waived request is served no auth; the other its member's handle"
     );
     assert_eq!(
         per.asked.load(Ordering::SeqCst),
         1,
         "only the unwaived asked"
     );
-    assert_eq!(auth.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(auth.calls.load(Ordering::SeqCst), 0, "no kernel auth call");
     for (_, head, _, _) in r.table.opened.lock().unwrap().iter() {
         assert!(
             head.iter()
@@ -3010,17 +2942,32 @@ async fn an_unrecordable_dispatch_says_nothing_left() {
     assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
 }
 
-/// A FAILED AUTH CALL: the member's binding answers no fields; nothing left (`UnsentAuthFailed`).
+/// A FAILED AUTH CALL: the framer's `auth.call` on the member's binding refused or failed, so the
+/// open answers the auth's error; nothing left (`UnsentAuthFailed`). The kernel made no auth call of
+/// its own and nothing is recorded against the member.
 #[tokio::test]
 async fn a_failed_auth_call_says_nothing_left() {
-    let r = one_member();
-    r.auth.refuse.store(true, Ordering::SeqCst);
-    assert_eq!(
-        unsent_after(&r, true, request()).await,
-        Some(RefusalCode::UnsentAuthFailed)
-    );
-    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 1, "the one auth call");
-    assert!(r.table.opened.lock().unwrap().is_empty());
+    for err in [ConnError::AuthRefused, ConnError::AuthFailed] {
+        let r = rig(
+            &[("a.test", Script::OpenFails(err))],
+            OnExhausted::Status503,
+            None,
+        );
+        assert_eq!(
+            unsent_after(&r, true, request()).await,
+            Some(RefusalCode::UnsentAuthFailed),
+            "{err:?}"
+        );
+        assert_eq!(
+            r.auth.calls.load(Ordering::SeqCst),
+            0,
+            "{err:?}: the kernel makes no auth call"
+        );
+        assert!(
+            r.book.observed.lock().unwrap().is_empty(),
+            "{err:?}: nothing recorded against the member"
+        );
+    }
 }
 
 /// A REFUSED OPEN: the connection table would not open the attempt; nothing left
@@ -3087,4 +3034,56 @@ async fn a_sent_attempt_that_fails_over_carries_no_pre_byte_reason() {
     let p = far.next(&t).await.expect("a piece");
     assert!(p.fail_over, "{p:?}");
     assert_eq!(far.unsent(&t), None, "the sent attempt clears it");
+}
+
+/// RED (THE DESIGN §6, "Auth points and guest lists", item 5): THE KERNEL ADDS NO HEAD LINE ON THE
+/// DIALLED SIDE. A bound member's request with a non-empty body is handed to the open with exactly
+/// the plane's fields, in the plane's order: no auth line, no `content-length`, no `host`, no
+/// framer default. Those are the transport's: the framer adds its own lines and the auth's as it
+/// begins the request. The kernel makes no outbound auth call; it records the attempt's binding
+/// for the framer's `auth.call`. Before, the kernel asked the framer for its stated lines
+/// (`PollConns::head_defaults`) and inserted them, and called the binding's `fields` itself.
+#[tokio::test]
+async fn the_kernel_adds_no_head_line_and_makes_no_auth_call_on_the_dialled_side() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let mut req = request();
+    req.fields.push((b"x-plane".to_vec(), b"1".to_vec()));
+    req.body = b"{\"model\":\"m\"}".to_vec();
+    assert!(far.send(&t, req).await);
+    assert!(
+        recorded(&far).is_some(),
+        "the binding is recorded for the framer's auth call"
+    );
+    let _ = drain(&far, &t).await;
+    let opened = r.table.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
+    let head: Vec<(&str, &[u8])> = opened[0]
+        .1
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        head,
+        [
+            ("content-type", b"application/json".as_slice()),
+            ("x-plane", b"1".as_slice()),
+        ],
+        "exactly the plane's fields reach the transport"
+    );
+    assert_eq!(
+        opened[0].2, b"{\"model\":\"m\"}",
+        "the body as the plane stated it"
+    );
+    assert_eq!(
+        r.auth.calls.load(Ordering::SeqCst),
+        0,
+        "the kernel makes no outbound auth call"
+    );
 }

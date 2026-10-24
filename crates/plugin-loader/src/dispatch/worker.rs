@@ -253,6 +253,10 @@ pub(crate) struct Env {
     /// reveal is refused.
     pub(crate) seal:
         std::sync::OnceLock<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>>,
+    /// THE OUTBOUND SERVER this dispatcher's instances' `auth.call` on an outbound binding's ref
+    /// is served by ([`Dispatcher::arm_outbound`]): the composition root's. None armed: such a
+    /// call is answered as any other (not served).
+    pub(crate) outbound: RwLock<Option<Arc<dyn super::auth_serve::OutboundServer>>>,
 }
 
 impl Env {
@@ -898,12 +902,16 @@ impl WakeRoute for Pool {
         Some(Arc::clone(&self.env.services))
     }
 
-    fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
-        self.env.io.get().cloned()
+    fn outbound(&self) -> Option<Arc<dyn super::auth_serve::OutboundServer>> {
+        self.env
+            .outbound
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
-    fn seal(&self) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
-        self.env.seal.get().cloned()
+    fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
+        self.env.io.get().cloned()
     }
 
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
@@ -2003,6 +2011,7 @@ impl Dispatcher {
             ticket_key,
             latch: std::sync::OnceLock::new(),
             seal: std::sync::OnceLock::new(),
+            outbound: RwLock::new(None),
         });
         let mut started = Vec::new();
         let slots = (0..n)
@@ -2076,6 +2085,18 @@ impl Dispatcher {
 
     /// Serve every instance of this dispatcher the HOST'S I/O (`io.*`) from `io`; the first install
     /// stands. `false` when one was installed already.
+    /// ARM THE OUTBOUND SERVER this dispatcher's instances' `auth.call` on an outbound binding's
+    /// ref is served by (the composition root's, at boot): held by this dispatcher alone, never a
+    /// process-wide seam. Re-arming replaces it.
+    pub fn arm_outbound(&self, server: Arc<dyn super::auth_serve::OutboundServer>) {
+        *self
+            .pool
+            .env
+            .outbound
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(server);
+    }
+
     pub fn install_io(&self, io: Arc<dyn busbar_contract::io_host::IoHost>) -> bool {
         self.pool.env.io.set(io).is_ok()
     }
@@ -2380,6 +2401,16 @@ impl Dispatcher {
             return Reply::settled(Outcome::Refused, frame);
         }
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
+            return Reply::settled(o, frame);
+        }
+        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance).
+        let owner = super::handle::instance_id(inst.ctx()).0;
+        if let Some(o) = K::admit(
+            s,
+            std::ptr::addr_of!(frame.input).cast(),
+            size_of::<I>(),
+            owner,
+        ) {
             return Reply::settled(o, frame);
         }
         let lifecycle = is_lifecycle(s);

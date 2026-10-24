@@ -48,22 +48,22 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
-    /// The store of this route's dispatcher: the services' kept results and the driver tickets'
-    /// held exchanges (`super::held`); `None` = none.
+    /// The store of this route's dispatcher, whether or not the route serves the kernel's
+    /// services: the services' kept results, the driver tickets' held exchanges (`super::held`),
+    /// and the host auth handle's `auth.call` answers on a route that serves no other (a
+    /// transport's). `None` = none.
     fn store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
+        None
+    }
+
+    /// The outbound server this route's instances' `auth.call` on an outbound binding's ref is
+    /// served by; `None` = none armed.
+    fn outbound(&self) -> Option<std::sync::Arc<dyn super::auth_serve::OutboundServer>> {
         None
     }
 
     /// The host's I/O this route's instances are served from; `None` = none.
     fn io(&self) -> Option<std::sync::Arc<dyn busbar_contract::io_host::IoHost>> {
-        None
-    }
-
-    /// The seal the host lent this route's dispatcher (Part 2 #54); `None` = none, and a reveal of
-    /// a `Secret` its instances' services would make is refused.
-    fn seal(
-        &self,
-    ) -> Option<std::sync::Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
         None
     }
 

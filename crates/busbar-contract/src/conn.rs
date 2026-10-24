@@ -129,7 +129,10 @@ pub struct Piece {
 
 /// Why a connection operation did not answer with what was asked. The refusals carry the text an
 /// operator reads.
+///
+/// Not exhaustive: a new cause is a new variant, and a plugin's match on it keeps a wildcard arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ConnError {
     /// Nothing is ready yet. Interest is registered for the caller's [`Ticket`]; the host wakes the
     /// ticket when something is, and the caller asks again then. Never a block.
@@ -153,6 +156,14 @@ pub enum ConnError {
     /// nothing was presented and nothing was sent. A cause of its own so the plugin can tell a
     /// vanished secret from a refusal by the target, the egress rules or the far end.
     CredentialUnavailable,
+    /// The request's auth REFUSED it: the bound auth answered stop, so nothing was sent. An auth
+    /// outcome, never the destination failing: nothing is recorded against the destination, and
+    /// the walk moves on as it does for an auth that answers nothing.
+    AuthRefused,
+    /// The request's auth FAILED: the auth call itself could not complete (the auth plugin
+    /// faulted, refused the call or ran out of time), so nothing was sent. An auth outcome, never
+    /// the destination failing, as [`ConnError::AuthRefused`].
+    AuthFailed,
 }
 
 impl ConnError {
@@ -171,7 +182,16 @@ impl ConnError {
             Self::CredentialUnavailable => {
                 "the request's credential is unavailable; nothing was sent"
             }
+            Self::AuthRefused => "the request's auth refused it; nothing was sent",
+            Self::AuthFailed => "the request's auth call failed; nothing was sent",
         }
+    }
+
+    /// Whether this is an AUTH outcome ([`ConnError::AuthRefused`], [`ConnError::AuthFailed`]):
+    /// the auth's answer, never the destination failing, so nothing is recorded against it.
+    #[must_use]
+    pub const fn is_auth(self) -> bool {
+        matches!(self, Self::AuthRefused | Self::AuthFailed)
     }
 }
 

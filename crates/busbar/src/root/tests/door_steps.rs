@@ -7902,6 +7902,8 @@ struct Sealing {
     anchored: std::sync::Mutex<Vec<(u32, String)>>,
     reached: std::sync::Mutex<Vec<(u32, String, String)>>,
     bound: std::sync::Mutex<Vec<(u32, String, String)>>,
+    /// The needs whose transport frames a head (`DeclaredConns::framed`).
+    framed: Vec<u32>,
 }
 
 impl busbar_contract::conn::Conns for Sealing {
@@ -8019,6 +8021,13 @@ impl busbar_contract::conn::DeclaredConns for Sealing {
     }
     fn serves_scheme(&self, _: &str) -> bool {
         true
+    }
+    fn framed(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+    ) -> bool {
+        self.framed.contains(&need.0)
     }
     fn bind_auth(
         &self,
@@ -8454,6 +8463,60 @@ fn an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule() {
         super::owned_anchor_refusal("agent_push.ca", &ca),
         Ok(()),
         "the rule itself takes the CA"
+    );
+}
+
+/// RED (coordinator ruling on pipe programs; THE DESIGN §6 item 5): a member whose binding is called at
+/// the HEAD and whose need (or a need it rides) is carried over a transport with no framer (a
+/// program's own pipes, a raw stream) has no point its auth could be called at: the boot REFUSES it,
+/// naming the member, rather than send its requests with no credential. A binding called at no
+/// head point, or one whose every need is framed, passes.
+#[test]
+fn a_head_called_binding_over_a_transport_with_no_framer_is_refused_at_boot() {
+    use busbar_kernel::plane_driver::{AuthBinding, MemberRoute, ResponseKeep};
+    let route = |points: u32| MemberRoute {
+        need: busbar_contract::conn::NeedId(1),
+        base_url: "pipe:/bin/server".to_string(),
+        auth: Some(AuthBinding {
+            auth: std::sync::Arc::new(Bound),
+            handle: 1,
+            style_flags: 0,
+            points: busbar_contract::abi::auth::AuthPoints(points),
+            passthrough: false,
+            per_request: None,
+        }),
+        provider: "srv".to_string(),
+        keep: ResponseKeep::default(),
+        rides: vec![(busbar_contract::conn::NeedId(2), ResponseKeep::default())],
+        anchors: busbar_contract::transport::trust::Anchors::default(),
+        spelled: Vec::new(),
+    };
+    let instance = busbar_contract::conn::InstanceId(7);
+    let routes = |points| std::collections::BTreeMap::from([("srv".to_string(), route(points))]);
+    let head = busbar_contract::abi::auth::POINT_HEAD;
+    // Need 2 rides a transport with no framer.
+    let one_framed = Sealing {
+        framed: vec![1],
+        ..Sealing::default()
+    };
+    let refused = super::refuse_unframed_bindings(&routes(head), instance, &one_framed)
+        .expect_err("a head-called binding over an unframed need is refused");
+    assert!(refused.contains("member 'srv'"), "{refused}");
+    let body = busbar_contract::abi::auth::POINT_HEAD_BODY;
+    assert!(super::refuse_unframed_bindings(&routes(body), instance, &one_framed).is_err());
+    // Every need framed: it passes.
+    let framed = Sealing {
+        framed: vec![1, 2],
+        ..Sealing::default()
+    };
+    assert_eq!(
+        super::refuse_unframed_bindings(&routes(head), instance, &framed),
+        Ok(())
+    );
+    // A binding called at no head point passes over any transport.
+    assert_eq!(
+        super::refuse_unframed_bindings(&routes(0), instance, &one_framed),
+        Ok(())
     );
 }
 

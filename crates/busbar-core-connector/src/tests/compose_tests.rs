@@ -55,6 +55,8 @@ fn dial(target: &str) -> Dial {
         opening: None,
         head_words: Default::default(),
         anchors: None,
+        binding: crate::framer::AuthBinding::NONE,
+        unit: busbar_contract::abi::host::service::UnitRef::NONE,
     }
 }
 
@@ -740,6 +742,56 @@ fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
         assert!(
             most <= 4 * WRITE_BUFFER_BYTES,
             "{most} bytes owed to a far end that never reads"
+        );
+    });
+}
+
+/// RED (A PENDING ANSWER PARKS ONLY ITS OWN STREAM, on one connection): two streams on one
+/// dialled connection. The first stream's head emit calls the auth, which pends; the second
+/// stream's request goes out and its answer comes back while the first waits; then the auth
+/// answers, the first stream's request goes out, and its answer comes back, with exactly one auth
+/// call. Each head emit states the length of the body it opens with.
+#[test]
+fn one_stream_pending_auth_holds_only_that_stream_on_the_connection() {
+    worker().block_on(async {
+        let far = echo().await;
+        let door = Arc::new(crate::support::PendingDoor::new(
+            TestDoor::identity("bytes"),
+            EXCHANGE_STREAM,
+        ));
+        let mut d = dial(&far);
+        d.opening = Some((Vec::new(), b"first ".to_vec()));
+        let mut c = Connection::dial(door.clone(), &crate::support::via(), d).expect("dials");
+        let waker = std::task::Waker::noop();
+        c.open_exchange(
+            3,
+            Some((Vec::new(), b"second".to_vec())),
+            HeadWords::default(),
+            busbar_contract::abi::host::service::UnitRef::NONE,
+            &mut std::task::Context::from_waker(waker),
+        )
+        .unwrap();
+        assert_eq!(
+            gather(&mut c, 6).await,
+            b"second",
+            "the second stream's request completes while the first waits on its auth"
+        );
+        assert_eq!(door.host.calls(), 1, "the first stream's auth is running");
+        door.host.complete(1);
+        assert_eq!(
+            gather(&mut c, 6).await,
+            b"first ",
+            "the first stream goes once its auth answered"
+        );
+        assert_eq!(
+            door.host.calls(),
+            1,
+            "exactly one auth call across the not-ready"
+        );
+        assert_eq!(
+            door.emitted.lock().unwrap().as_slice(),
+            &[(EXCHANGE_STREAM, 6, 1), (3, 6, 1)],
+            "each head emit states its opening body's length"
         );
     });
 }

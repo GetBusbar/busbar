@@ -2106,6 +2106,77 @@ fn a_record_kind_is_chained_at_most_once() {
     );
 }
 
+// ── record retentions ──
+
+fn retention(kind: u32, rule: u32) -> RecordRetention {
+    RecordRetention { kind, rule }
+}
+
+#[test]
+fn green_a_record_retention_list_of_known_rules_passes() {
+    use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    assert_eq!(
+        check_record_retentions(
+            &[
+                retention(1, RETENTION_TERMINAL_ONLY),
+                retention(0, RETENTION_AGE)
+            ],
+            2
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn green_no_record_retention_passes() {
+    assert_eq!(check_record_retentions(&[], 0), Ok(()));
+    assert_eq!(check_tail(&tail()), Ok(()));
+}
+
+#[test]
+fn red_a_record_retention_names_a_record_kind() {
+    use crate::abi::store::plane::RETENTION_TERMINAL_ONLY;
+    assert_eq!(
+        check_record_retentions(&[retention(2, RETENTION_TERMINAL_ONLY)], 2),
+        f(Rule::IndexOutOfRange, "record_retention.kind")
+    );
+}
+
+#[test]
+fn red_a_record_retention_rule_is_known() {
+    use crate::abi::store::plane::RETENTION_TERMINAL_ONLY;
+    assert_eq!(
+        check_record_retentions(&[retention(0, RETENTION_TERMINAL_ONLY + 1)], 1),
+        f(Rule::UnknownCode, "record_retention.rule")
+    );
+}
+
+#[test]
+fn red_a_record_kind_has_at_most_one_retention() {
+    use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    assert_eq!(
+        check_record_retentions(
+            &[
+                retention(1, RETENTION_TERMINAL_ONLY),
+                retention(0, RETENTION_AGE),
+                retention(1, RETENTION_AGE)
+            ],
+            2
+        ),
+        f(Rule::Contradiction, "record_retention.kind_twice")
+    );
+}
+
+#[test]
+fn red_a_tail_counting_record_retentions_over_a_null_pointer_is_fault() {
+    let mut t = tail();
+    t.record_retentions_len = 1;
+    assert_eq!(
+        check_tail(&t),
+        f(Rule::NullWithCount, "tail.record_retentions")
+    );
+}
+
 // ── trust keys ──
 
 const MECHANISMS: [PinMechanism; 2] = [
@@ -3378,6 +3449,76 @@ fn a_refused_arrival_may_name_the_entry_it_is_about() {
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.refusal_status"),
         "a refusal about no entry is the caller's: a 4xx"
+    );
+}
+
+/// A REFUSAL RENDERED AFTER ADMISSION (abi/plane "A refused arrival", rule 6, the
+/// [`REFUSED_AFTER_ADMISSION`] arm): accepted on a refused answer that names its entry directly or
+/// as a pool, alone or beside [`REFUSED_UNSUPPORTED_ACTION`]; a FAULT on a refused answer naming no
+/// entry, and on a ready answer. RED before the arm: the bit was an unknown code on every answer.
+#[test]
+fn a_refusal_after_admission_names_its_entry_and_only_refuses() {
+    let about = |route: u8, flags: u32| {
+        let mut o: ArriveOut = z();
+        o.refusal = 7;
+        o.refusal_status = 400;
+        o.refusal_flags = flags;
+        o.route = route;
+        o.pool = s("planner");
+        o
+    };
+    assert_eq!(
+        check_arrive(
+            Refused,
+            &about(ROUTE_DIRECT, REFUSED_AFTER_ADMISSION),
+            &[],
+            4,
+            &bounds()
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        check_arrive(
+            Refused,
+            &about(
+                ROUTE_POOL,
+                REFUSED_AFTER_ADMISSION | REFUSED_UNSUPPORTED_ACTION
+            ),
+            &[],
+            4,
+            &bounds()
+        ),
+        Ok(())
+    );
+    // Naming no entry: no pool, or a route that is neither a pool nor a direct entry.
+    let mut o: ArriveOut = z();
+    o.refusal = 7;
+    o.refusal_status = 400;
+    o.refusal_flags = REFUSED_AFTER_ADMISSION;
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.refusal_flags"),
+        "a refusal about no entry has no admission to wait for"
+    );
+    assert_eq!(
+        check_arrive(
+            Refused,
+            &about(ROUTE_SCOPE, REFUSED_AFTER_ADMISSION),
+            &[],
+            4,
+            &bounds()
+        ),
+        f(Rule::Contradiction, "arrive.refusal_flags")
+    );
+    // A ready answer states no refusal, and so no order for one.
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_POOL;
+    o.pool = s("planner");
+    o.refusal_flags = REFUSED_AFTER_ADMISSION;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        f(Rule::Contradiction, "arrive.refusal"),
+        "a ready answer carrying the bit is a fault"
     );
 }
 

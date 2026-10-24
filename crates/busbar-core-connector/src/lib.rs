@@ -631,6 +631,9 @@ pub struct Connector {
     /// ([`Connector::pair`]): what an open serving that unit (`OpenDesc::unit`) over a datagram
     /// framer's need bridges with.
     pairs: Mutex<HashMap<u64, Arc<datagram::Pairing>>>,
+    /// WHERE EACH DIAL'S BINDING COMES FROM ([`framer::BindingRefs`]): the composition root's;
+    /// `None` = every dial begins with no auth.
+    bindings: RwLock<Option<Arc<dyn framer::BindingRefs>>>,
     /// HOW A PROGRAM'S ENVIRONMENT REFERENCES RESOLVE ([`spawn_env`]): the resolver the composition
     /// root handed this connector ([`Connector::resolving_spawn_secrets`]), handed on to every
     /// environment a declaration loads. `None` = no reference resolves, and a program that states
@@ -665,6 +668,7 @@ impl Default for Connector {
             io: hostio::process(),
             proxy: None,
             pairs: Mutex::new(HashMap::new()),
+            bindings: RwLock::new(None),
             spawn_secrets: None,
         }
     }
@@ -2068,6 +2072,48 @@ impl DeclaredConns for Connector {
 }
 
 impl Connector {
+    /// Arm WHERE EACH DIAL'S BINDING COMES FROM (the composition root's
+    /// [`framer::BindingRefs`]): from now on an open naming a registration begins its framing with
+    /// that registration's auth handle. Re-arming replaces it.
+    pub fn arm_bindings(&self, bindings: Arc<dyn framer::BindingRefs>) {
+        *self.bindings.write().expect("bindings") = Some(bindings);
+    }
+
+    /// The binding a dial by `caller` on `need` to `member` begins with over `door`: none for an
+    /// open naming no registration, an entry the host mints no handle for, or no armed source.
+    fn binding_of(
+        &self,
+        door: &Arc<dyn FramerDoor>,
+        caller: InstanceId,
+        need: NeedId,
+        member: &str,
+    ) -> Option<framer::AuthBinding> {
+        let owner = door.owner();
+        if member.is_empty() || owner == 0 {
+            return None;
+        }
+        let refs = self.bindings.read().expect("bindings").clone()?;
+        refs.binding(owner, caller, need, member)
+            .filter(|b| !b.auth.is_none() && b.points != 0)
+    }
+
+    /// The ref of request unit `unit` for `door`'s entry: none for no unit, a dial with no binding
+    /// (the framer calls no auth), an entry the host mints nothing for, or no armed source.
+    fn unit_of(
+        &self,
+        door: &Arc<dyn FramerDoor>,
+        unit: u64,
+        bound: bool,
+    ) -> busbar_contract::abi::host::service::UnitRef {
+        let none = busbar_contract::abi::host::service::UnitRef::NONE;
+        let owner = door.owner();
+        if unit == 0 || owner == 0 || !bound {
+            return none;
+        }
+        let refs = self.bindings.read().expect("bindings").clone();
+        refs.and_then(|r| r.unit_ref(owner, unit)).unwrap_or(none)
+    }
+
     /// Register a held session's `pairing` under its kernel-minted `unit` key, before the session
     /// runs: the upstream leg its walk opens for that unit is bridged with its caller leg.
     ///
@@ -2198,6 +2244,13 @@ impl Connector {
         poolable: bool,
     ) -> Result<Held, ConnError> {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
+        // THE MEMBER'S BINDING (THE DESIGN §6, "Auth points and guest lists", item 5): an open
+        // naming a registration begins its framing with that registration's auth handle, minted
+        // for this entry; the framer calls the auth itself at the binding's points.
+        let binding = self.binding_of(&door, caller, need, desc.member);
+        // THE EXCHANGE'S REQUEST UNIT, minted for this entry: what the framer presents on its
+        // `auth.call` at the opening's emit (`EmitIn::unit`).
+        let unit = self.unit_of(&door, desc.unit, binding.is_some());
         let dial = Dial {
             target: target.to_owned(),
             tls: tls.or_else(|| self.tls.clone()),
@@ -2212,6 +2265,8 @@ impl Connector {
             )),
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
+            binding: binding.unwrap_or(framer::AuthBinding::NONE),
+            unit,
         };
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
         // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
@@ -2305,6 +2360,7 @@ impl Connector {
                     class: (judged_class, egress_class),
                     reach,
                     anchored_as,
+                    binding: binding.map(|b| (b.auth.id, b.auth.mac)),
                     sealed,
                 },
             )
@@ -2321,7 +2377,7 @@ impl Connector {
                     mark: line.flushed(),
                 };
                 let (opening, words) = planned.into_opening();
-                match line.attach(opening, words) {
+                match line.attach(opening, words, unit) {
                     Ok(stream) => {
                         let held =
                             Held::over(Some((line, stream)), None, pooled).bounded(desc.timeout_ms);
@@ -2415,6 +2471,8 @@ impl Conns for Connector {
             }
             let dial = Dial {
                 anchors: None,
+                binding: crate::framer::AuthBinding::NONE,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
                 target: program.command.clone(),
                 tls: None,
                 alpn,
@@ -2482,6 +2540,8 @@ impl Conns for Connector {
             }
             let dial = Dial {
                 anchors: None,
+                binding: crate::framer::AuthBinding::NONE,
+                unit: busbar_contract::abi::host::service::UnitRef::NONE,
                 target: target.to_owned(),
                 tls: None,
                 alpn,

@@ -14,9 +14,12 @@
 //! 1. [`FarEnd::member`]: the walk's next step (breaker admit + permit, probe owned by the
 //!    attempt), or the pool's terminal: the shed with its Retry-After floor, the spill into a
 //!    fallback pool, the one breaker bypass (least-bad), or the bounded wait for a permit (queue).
-//! 2. [`FarEnd::send`]: the durable dispatch record, then ONE `fields` call to the member's auth
-//!    binding (THE DESIGN, section 6: the kernel's one call, no kernel-side cache), whose fields lead the
-//!    head before the plane's (1.5.5's egress order), then the connector's open on the plane's declared need, at the target
+//! 2. [`FarEnd::send`]: the durable dispatch record, then the attempt's auth record
+//!    ([`super::attempt_auth`]: the binding's handle, the plane's scope, a passthrough member's lent
+//!    credential, the plane's waiver) and NO auth call: the framer finalises the head, calls the
+//!    binding's auth at its points through the host auth handle, adds the auth's lines first
+//!    (1.5.5's egress order) and adds nothing after (THE DESIGN §6, "Auth points and guest lists",
+//!    item 5), then the connector's open on the plane's declared need, at the target
 //!    the member's sealed `base_url` and the plane's path spell. The connector judges and pins the
 //!    address and dials exactly it (CONNECTOR-19), so a name's refusal keeps 1.5.5's timing.
 //! 3. [`FarEnd::next`]: the connector's pieces, read through the task's own waker
@@ -57,12 +60,12 @@ use crate::proxy::egress_unit::{
     walk::budget_secs,
     Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
 };
-use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
+use busbar_contract::abi::auth::AuthPoints;
 use busbar_contract::abi::plane::RefusalCode;
 use busbar_contract::abi::transport::{
     FAULT_NONE, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
-use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
+use busbar_contract::auth_calls::OutboundAuth;
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
@@ -185,7 +188,9 @@ impl ResponseKeep {
 }
 
 /// A member's auth binding: the auth instance, the handle its `open_outbound` answered, the
-/// style's `STYLE_*` flags and the auth points it needs (what `fields` reads).
+/// style's `STYLE_*` flags and the auth points it needs. The kernel reads its handle (a refreshed
+/// one's current handle) into the attempt's record and asks `ready` before a probe; it never calls
+/// the auth for fields.
 #[derive(Clone)]
 pub struct AuthBinding {
     /// The auth instance serving the member's style.
@@ -703,8 +708,9 @@ fn split(url: &str) -> (&str, &str) {
     }
 }
 
-/// A head the framer encodes. It carries auth values (credential material), so its bytes are
-/// zeroised when it drops, once the connector's open has taken its copy.
+/// A head the framer encodes: the plane's fields and the framer's own lines, never an auth line.
+/// A plane's field may still be credential material of its own, so its bytes are zeroised when it
+/// drops, once the connector's open has taken its copy.
 struct Head(Vec<(String, Vec<u8>)>);
 
 impl Head {
@@ -1118,81 +1124,21 @@ impl EgressFarEnd<'_> {
         }
     }
 
+    /// Whether the live attempt ended on its AUTH (the framer's `auth.call` was refused, could not
+    /// be answered, or is still waiting), as the host's server marked the unit's record: then the
+    /// attempt's failure is never the destination's.
+    fn auth_ended(&self) -> bool {
+        super::attempt_auth::of(self.route.unit.get()).is_some_and(|r| r.outcome.is_some())
+    }
+
     /// Whether the live attempt's member relays the caller's own credential.
     fn live_passthrough(&self) -> bool {
         self.lock().live.as_ref().is_some_and(|l| l.passthrough)
     }
 
-    /// ONE CALL to the member's auth binding for this attempt's fields (THE DESIGN, section 6).
-    async fn auth_fields(
-        &self,
-        binding: &AuthBinding,
-        handle: u64,
-        request: &OutboundRequest,
-        url: &str,
-        extensions: Vec<u8>,
-    ) -> Option<Vec<AuthField>> {
-        let (authority, path_query) = split(url);
-        let (path, query) = match path_query.split_once('?') {
-            Some((p, q)) => (p, Some(q.as_bytes().to_vec())),
-            None => (path_query, None),
-        };
-        // The one call is made at the style's request point: `HeadBody` lends the whole body (the
-        // style hashes it itself), `Head` lends none.
-        let point = if binding.points.has(AuthPoint::HeadBody) {
-            AuthPoint::HeadBody
-        } else {
-            AuthPoint::Head
-        };
-        let facts = FieldsRequest {
-            point,
-            body: (point == AuthPoint::HeadBody).then(|| request.body.clone()),
-            method: request.verb.clone(),
-            authority: authority.to_string(),
-            path: path.as_bytes().to_vec(),
-            query,
-            timestamp: self.egress.clock.now_secs(),
-            headers: if binding.style_flags & STYLE_NEEDS_HEADERS != 0 {
-                request.fields.clone()
-            } else {
-                Vec::new()
-            },
-            // A passthrough member's one auth call is lent the caller's verified credential; a
-            // caller who presented none lends an empty one, so nothing is presented (never the
-            // operator's own key), as 1.5.5's `present_caller` did.
-            caller_credential: if binding.passthrough || self.live_passthrough() {
-                Some(
-                    self.route
-                        .caller_credential
-                        .clone()
-                        .unwrap_or_else(|| Secret::new(Vec::new())),
-                )
-            } else {
-                None
-            },
-            // The per-call scope the plane stated for this attempt (ARCHITECT round 5
-            // Q-L3B-EXCHANGE (B): the caller's down-scope), in the call's extensions blob.
-            extensions,
-            ..FieldsRequest::default()
-        };
-        let answer = match binding.auth.fields_now(handle, &facts) {
-            Some(answer) => answer,
-            // A plugin that must wait (a token refreshing) is awaited no longer than the attempt
-            // may still take: its cap, never beyond what the walk has left (1.5.5's bound).
-            None => tokio::time::timeout(
-                Duration::from_millis(self.attempt_cap()),
-                binding.auth.fields(handle, facts, 0),
-            )
-            .await
-            .unwrap_or(Fields::Failed),
-        };
-        match answer {
-            Fields::Ready(fields) => Some(fields),
-            Fields::Refused | Fields::Failed => None,
-        }
-    }
-
-    /// Send the attempt: the dispatch record, the auth fields, the connector's open.
+    /// Send the attempt: the dispatch record, the attempt's auth record, the connector's open. The
+    /// kernel makes no auth call: the framer calls the binding's auth at its points through the
+    /// host auth handle, and the host reads this unit's record ([`super::attempt_auth`]).
     async fn send_attempt(&self, token: &Pass<Route>, mut request: OutboundRequest) -> bool {
         let e = self.egress;
         // Busbar is invisible to upstreams; the per-connection mechanics are the connection's own.
@@ -1284,15 +1230,21 @@ impl EgressFarEnd<'_> {
             return false;
         }
         let url = join(&base_url, &request.target);
-        // 2. The one auth call; its fields lead the head (1.5.5's order).
-        let mut auth = Vec::new();
-        if let Some(binding) = route.auth.as_ref().filter(|_| !waived) {
+        let opening: &[u8] = if request.text { &[] } else { &request.body };
+        // 2. THE ATTEMPT'S AUTH RECORD (THE DESIGN §6, "Auth points and guest lists", item 5): the
+        // kernel makes no auth call and adds no auth line. The framer finalises the head (its own
+        // lines, the body's length), calls the binding's auth at its points through the host auth
+        // handle, adds the lines the auth returns and encodes; the host serves that call from this
+        // unit's record. A waived binding records the waiver: the framer is begun with no auth.
+        if let Some(binding) = route.auth.as_ref() {
             // A refreshed binding answers this attempt's handle with a load (never a resolution
             // on this task); one whose credential its last refresh found unavailable refuses the
             // unit before anything is dialled.
-            let handle = match &binding.per_request {
-                Some(per) => per.handle_now(),
-                None => Some(binding.handle),
+            // A waived binding is called with no handle at all.
+            let handle = match (&binding.per_request, waived) {
+                (_, true) => Some(0),
+                (Some(per), false) => per.handle_now(),
+                (None, false) => Some(binding.handle),
             };
             let Some(handle) = handle else {
                 // Nothing was sent: the dispatch record is abandoned, nothing is recorded
@@ -1302,43 +1254,43 @@ impl EgressFarEnd<'_> {
                 w.refused = Some(ReasonCode::CredentialUnavailable);
                 return false;
             };
-            match self
-                .auth_fields(binding, handle, &request, &url, extensions)
-                .await
-            {
-                Some(fields) => auth = fields,
-                None => {
-                    // Not the destination's fault: nothing recorded against it; the next member.
-                    let mut w = self.lock();
-                    self.settle(&mut w);
-                    w.unsent = Some(RefusalCode::UnsentAuthFailed);
-                    return false;
-                }
-            }
+            // A passthrough member's one auth call is lent the caller's verified credential; a
+            // caller who presented none lends an empty one, so nothing is presented (never the
+            // operator's own key), as 1.5.5's `present_caller` did.
+            let passthrough = binding.passthrough || self.live_passthrough();
+            super::attempt_auth::record(
+                self.route.unit.get(),
+                super::attempt_auth::AttemptAuth {
+                    member: route.provider.clone(),
+                    handle,
+                    extensions,
+                    caller_credential: passthrough.then(|| {
+                        self.route
+                            .caller_credential
+                            .clone()
+                            .unwrap_or_else(|| Secret::new(Vec::new()))
+                    }),
+                    waived,
+                    secret: [0, 0],
+                    outcome: None,
+                },
+            );
         }
         // The method and the path (with its query) are the request's head words
         // (`OpenDesc::method`, `OpenDesc::head_target`), never fields: the framer writes its own
         // wire head from them.
         let (_, path) = split(&url);
-        // The head's fields the framer encodes: the auth fields, then the plane's. It holds the
-        // auth values, so it wipes itself when the open has taken it.
-        let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len()));
-        // The auth fields FIRST, then the plane's: 1.5.5's egress header order.
-        head.0.extend(auth.iter().map(|f| {
-            (
-                String::from_utf8_lossy(&f.name).into_owned(),
-                f.value.expose(&crate::seal::lend()).clone(),
-            )
-        }));
-        // A plane field named like an auth field never doubles it: the auth binding's stands.
+        // The head's fields as the plane stated them, and nothing else (THE DESIGN §6, "Auth points
+        // and guest lists", item 5): the kernel adds no line on the dialled side. The framer's own
+        // lines (its defaults, the body's length) and the auth's lines are the transport's, added
+        // by the framer as it begins the request, before its auth call signs the head.
+        let mut head = Head(Vec::with_capacity(request.fields.len()));
         head.0.extend(
             request
                 .fields
                 .iter()
-                .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
-        drop(auth);
         let borrowed: Vec<(&str, &[u8])> = head
             .0
             .iter()
@@ -1370,7 +1322,7 @@ impl EgressFarEnd<'_> {
                 fields: &borrowed,
                 // A TEXT message rides no opening: the connection opens bare and the message is
                 // written to it as text once open (the opening carries no text bit).
-                body: if request.text { &[] } else { &request.body },
+                body: opening,
                 timeout_ms: cap_ms,
                 method: &request.verb,
                 head_target: path.as_bytes(),
@@ -1401,6 +1353,15 @@ impl EgressFarEnd<'_> {
                     return self.write_to(conn, &request.body, true).await;
                 }
                 true
+            }
+            // An AUTH outcome (the auth refused the request, or its call failed): nothing was sent
+            // and the destination did not fail. Nothing is recorded against it; the next member,
+            // as for an auth that answers no fields.
+            Err(err) if err.is_auth() || self.auth_ended() => {
+                let mut w = self.lock();
+                self.settle(&mut w);
+                w.unsent = Some(RefusalCode::UnsentAuthFailed);
+                false
             }
             Err(err) => {
                 let _ = self.no_answer(token, NoAnswer::of(err));
@@ -1492,8 +1453,23 @@ impl EgressFarEnd<'_> {
         )
         .await;
         let piece = match read {
+            // The auth's own wait ran the attempt out (its call still pending), or its auth refused
+            // or failed before any answer: nothing recorded against the destination; the next
+            // member, as 1.5.5's bounded auth wait and its refusal did.
+            Err(_elapsed) if !answered && self.auth_ended() => {
+                let mut w = self.lock();
+                self.settle(&mut w);
+                return Some(fail_over());
+            }
             Err(_elapsed) if !answered => {
                 return Some(self.no_answer(token, NoAnswer::Timeout));
+            }
+            // An auth outcome before any answer: nothing recorded against the destination; the
+            // next member (as at the open).
+            Ok(Err(err)) if !answered && (err.is_auth() || self.auth_ended()) => {
+                let mut w = self.lock();
+                self.settle(&mut w);
+                return Some(fail_over());
             }
             Ok(Err(err)) if !answered => {
                 return Some(self.no_answer(token, NoAnswer::of(err)));
@@ -1911,6 +1887,9 @@ impl Drop for EgressFarEnd<'_> {
     fn drop(&mut self) {
         let mut w = self.lock();
         self.settle(&mut w);
+        drop(w);
+        // The unit's attempt record ends with its far end: no later call can read it.
+        super::attempt_auth::forget(self.route.unit.get());
     }
 }
 

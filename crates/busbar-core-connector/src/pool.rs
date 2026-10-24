@@ -88,6 +88,11 @@ pub(crate) struct PoolKey {
     /// The registration whose own sealed anchors the dial was held to (`None`: the destination's):
     /// a line that presented one registration's client identity is never lent to another's open.
     pub(crate) anchored_as: Option<String>,
+    /// The binding's auth handle the line's framing began with (`BeginIn::auth`, its id and mac):
+    /// the framer calls that auth on every exchange it carries, so a line begun with one binding's
+    /// handle is never lent to another binding's exchange, nor across a generation (the handle's
+    /// mac is the generation's). `None` = begun with no auth.
+    pub(crate) binding: Option<(u64, u64)>,
     /// The seal of trust anchors the dial was held to (`None`: none): a line verified under one
     /// seal is never lent to an open held to another, even of the same destination sealed again.
     pub(crate) sealed: Option<SealRef>,

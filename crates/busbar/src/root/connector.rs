@@ -71,7 +71,12 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
     let mut given = Some(connector);
     let one = ONE.get_or_init(|| given.take().expect("the connector is given once"));
     match given {
-        None => Ok(one),
+        None => {
+            // THE HOST AUTH HANDLE'S OUTBOUND HALF: every dial naming a registration begins with
+            // its binding, and every framer's `auth.call` on one is served by the root.
+            crate::root::outbound_auth::arm(one);
+            Ok(one)
+        }
         Some(refused) => Err(refused),
     }
 }

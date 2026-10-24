@@ -1541,3 +1541,183 @@ fn a_message_written_in_parts_past_its_bound_is_refused() {
         d.close();
     });
 }
+
+// ── the signalling dial's binding (THE DESIGN §6 item 5; coordinator ruling on the media framer) ─────────
+
+/// A stream framer that records the binding each begin carries and the unit each emit names, then
+/// frames as the identity door does.
+struct Recording {
+    inner: crate::support::TestDoor,
+    begins: Mutex<Vec<(busbar_contract::abi::host::service::AuthRef, u32)>>,
+    emits: Mutex<Vec<busbar_contract::abi::host::service::UnitRef>>,
+}
+
+impl FramerDoor for Recording {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        match call {
+            Call::Begin(i, o) => {
+                self.begins.lock().unwrap().push((i.auth, i.points));
+                self.inner.cross(Call::Begin(i, o))
+            }
+            Call::Emit(i, o) => {
+                self.emits.lock().unwrap().push(i.unit);
+                self.inner.cross(Call::Emit(i, o))
+            }
+            other => self.inner.cross(other),
+        }
+    }
+    fn owner(&self) -> u64 {
+        41
+    }
+    fn side(&self) -> Option<Box<dyn crate::carrier::Side>> {
+        self.inner.side()
+    }
+    fn carry(
+        &self,
+        side: &dyn crate::carrier::Side,
+        resume: bool,
+        call: crate::carrier::Carry<'_>,
+    ) -> Crossed {
+        self.inner.carry(side, resume, call)
+    }
+}
+
+/// The root's binding source, as a double: member `m` of instance 1 on need 0 holds a binding
+/// called at the head; every unit's ref is minted as `(unit, unit ^ owner)`.
+struct Refs;
+
+impl crate::framer::BindingRefs for Refs {
+    fn binding(
+        &self,
+        owner: u64,
+        caller: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+    ) -> Option<crate::framer::AuthBinding> {
+        (caller.0 == 1 && need.0 == 0 && member == "m").then_some(crate::framer::AuthBinding {
+            auth: busbar_contract::abi::host::service::AuthRef {
+                id: 1 << 63 | 9,
+                mac: owner,
+            },
+            points: busbar_contract::abi::auth::POINT_HEAD,
+            line_points: 0,
+        })
+    }
+    fn unit_ref(
+        &self,
+        owner: u64,
+        unit: u64,
+    ) -> Option<busbar_contract::abi::host::service::UnitRef> {
+        Some(busbar_contract::abi::host::service::UnitRef {
+            id: unit,
+            mac: unit ^ owner,
+        })
+    }
+}
+
+/// THE MEDIA SIGNALLING DIAL CARRIES ITS MEMBER'S BINDING (coordinator ruling; THE DESIGN §6
+/// item 5): a held session's upstream leg opens its signalling exchange over the stream framer its
+/// target names, and that framing BEGINS with the member's auth handle and its points and EMITS the
+/// offer naming the session's unit, so the framer signs the signalling request head with the
+/// member's credential (the session plane's API key). RED: before, the kernel's fields call put
+/// the credential in the head, and its deletion left the signalling request bare.
+#[test]
+fn the_signalling_dial_begins_with_its_members_binding_and_emits_its_unit() {
+    use busbar_contract::conn::Conns as _;
+    crate::support::worker().block_on(async {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 1024];
+            let _ = s.read(&mut buf).await;
+            // Hold the connection: the cell reads the crossings, not an answer.
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let exchange = Arc::new(Recording {
+            inner: crate::support::TestDoor::identity("bytes"),
+            begins: Mutex::new(Vec::new()),
+            emits: Mutex::new(Vec::new()),
+        });
+        let dg = Arc::new(Scripted {
+            facts: DoorFacts {
+                name: "dg".into(),
+                claims: vec!["dg"],
+                ..scripted(dialling()).facts.clone()
+            },
+            knobs: dialling(),
+            st: Mutex::new(St {
+                local: (HOST_UFRAG, HOST_PWD),
+                ..St::default()
+            }),
+        });
+        let view = crate::registry::Transports::new(vec![
+            crate::registry::Entry {
+                door: dg,
+                alpn: Vec::new(),
+            },
+            crate::registry::Entry {
+                door: Arc::clone(&exchange) as Arc<dyn FramerDoor>,
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let c = crate::Connector::serving(
+            view,
+            crate::tests::loopback_literals(),
+            None,
+            Arc::new(|_, _| {}),
+        );
+        c.declare_over(
+            busbar_contract::conn::InstanceId(1),
+            busbar_contract::conn::NeedId(0),
+            "dg",
+        )
+        .expect("a served scheme declares");
+        c.arm_bindings(Arc::new(Refs));
+        let pairing = super::Pairing::new(Arc::new(Sink::default()), p("127.0.0.1:3478"));
+        c.pair(7, Arc::clone(&pairing)).unwrap();
+        let target = format!("bytes://{far}");
+        let id = c
+            .open(
+                busbar_contract::conn::InstanceId(1),
+                busbar_contract::conn::NeedId(0),
+                &busbar_contract::conn::OpenDesc {
+                    target: &target,
+                    member: "m",
+                    unit: 7,
+                    ..busbar_contract::conn::OpenDesc::default()
+                },
+            )
+            .expect("the upstream leg opens");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut buf = [0_u8; 256];
+        while exchange.emits.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "the signalling offer is emitted");
+            let _ = c.read(busbar_contract::conn::InstanceId(1), id, 3, &mut buf);
+            tokio::task::yield_now().await;
+        }
+        let begins = exchange.begins.lock().unwrap().clone();
+        assert_eq!(
+            begins,
+            vec![(
+                busbar_contract::abi::host::service::AuthRef {
+                    id: 1 << 63 | 9,
+                    mac: 41,
+                },
+                busbar_contract::abi::auth::POINT_HEAD
+            )],
+            "the signalling framing begins with the member's handle, minted for its framer"
+        );
+        assert_eq!(
+            exchange.emits.lock().unwrap()[0],
+            busbar_contract::abi::host::service::UnitRef { id: 7, mac: 7 ^ 41 },
+            "the offer's emit names the session's unit"
+        );
+        c.unpair(7);
+    });
+}

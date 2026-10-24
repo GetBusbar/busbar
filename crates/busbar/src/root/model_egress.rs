@@ -681,6 +681,8 @@ pub fn compose(
                 .get(route.need.0 as usize)
                 .cloned()
                 .unwrap_or_default();
+            // THE REGISTRATION'S BINDING, held for the framer: its dials begin with its handle.
+            crate::root::outbound_auth::process().register_route(caller, &route);
             slot.insert(route);
             names.push((destination, model.to_string()));
             if let Some(n) = own.max_concurrent {

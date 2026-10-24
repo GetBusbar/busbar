@@ -324,6 +324,10 @@ pub struct InstanceDecl {
     /// [`InstanceDecl::record_kinds`]): the kernel frames and verifies their chain (Part 3, the plane driver, "Record
     /// writes ... A record kind the plane declares as chained keeps its declared framing").
     pub record_chains: Vec<crate::abi::plane::RecordChain>,
+    /// Its record kinds' retention rules, as its tail declares them (each `kind` an index into
+    /// [`InstanceDecl::record_kinds`]): every purge of a listed kind runs under its rule, every
+    /// other kind's by age.
+    pub record_retentions: Vec<crate::abi::plane::RecordRetention>,
 }
 
 /// The trust facts a READY `arrive` stated, owned (a counterparty, and optionally an item and

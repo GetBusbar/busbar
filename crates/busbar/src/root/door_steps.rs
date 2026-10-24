@@ -1492,6 +1492,10 @@ pub fn compose_egress(
                     format!("member '{entry}': its private reach could not be sealed: {e}")
                 })?;
         }
+        // THE REGISTRATION'S BINDING, held for the framer (THE DESIGN §6, "Auth points and guest
+        // lists", item 5): every dial naming the registration begins with its auth handle, and the
+        // framer's `auth.call` on it is served by the root.
+        crate::root::outbound_auth::process().register_route(caller, &route);
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
         // The member's attempt bound is its entry's `timeout:` (ARCHITECT timeout ruling): every
@@ -3357,6 +3361,46 @@ pub(crate) fn refresh_credentials() {
     refresher::refresh_all();
 }
 
+/// A HEAD-CALLED BINDING OVER A TRANSPORT WITH NO HEAD IS REFUSED AT BOOT (THE DESIGN §6, "Auth
+/// points and guest lists", item 5; coordinator ruling on pipe programs): a member whose binding's auth
+/// is called at the head (`POINT_HEAD`, `POINT_HEAD_BODY`) and whose need rides a transport that
+/// frames no head (a carrier carried as itself: a program's own pipes, a raw stream) has no point the
+/// framer could call its auth at. Rather than send its requests with no credential, the boot
+/// refuses it, naming the member; such a server's credentials stay where they live (its program's
+/// environment). A binding called at no head point, or a need on a framer, passes.
+///
+/// # Errors
+///
+/// The first member whose head-called binding rides an unframed need, named.
+pub fn refuse_unframed_bindings(
+    routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
+    instance: busbar_contract::conn::InstanceId,
+    table: &dyn busbar_contract::conn::DeclaredConns,
+) -> Result<(), String> {
+    use busbar_contract::abi::auth::{POINT_HEAD, POINT_HEAD_BODY};
+    for (member, route) in routes {
+        let Some(binding) = &route.auth else {
+            continue;
+        };
+        if binding.points.bits() & (POINT_HEAD | POINT_HEAD_BODY) == 0 {
+            continue;
+        }
+        let needs = std::iter::once(route.need).chain(route.rides.iter().map(|(n, _)| *n));
+        for need in needs {
+            if !table.framed(instance, need) {
+                return Err(format!(
+                    "member '{member}': its credential is presented at the request head, and the \
+                     transport its need {} rides frames no head; a server reached over such a \
+                     transport keeps its credential in its own configuration (its program's \
+                     environment)",
+                    need.0
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding (round 4 (d):
 /// "admin connect + verify-on-call fetches use the same binding"): every registration member's
 /// route with an auth binding (`routes`, on the plane's member-target need `served` states) is held
@@ -3383,6 +3427,9 @@ pub fn bind_member_fetches(
             if !targeted.iter().any(|(n, _)| *n == need) {
                 continue;
             }
+            // THE FRAMER'S BINDING for the plane's own requests: its dials naming the member begin
+            // with the member's auth handle, and the framer's call on it is served by the root.
+            crate::root::outbound_auth::process().register(instance, need, member, binding);
             table.bind_auth(
                 instance,
                 need,

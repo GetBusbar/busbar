@@ -11,7 +11,9 @@
 //! A service that MAY PEND answers a [`Pend`]: [`Poll::Pending`] means the host holds the call on
 //! the handle's ticket and wakes it; the op answers PENDING and, re-entered, re-issues the SAME
 //! handle to read the stored answer. Nothing here allocates but [`Judged::within`] (the address
-//! set an ESTABLISH takes) and [`Services::records_secret`] (a credential's secret, copied into the
+//! set an ESTABLISH takes), the auth handle's three wrappers ([`Services::auth_call`],
+//! [`Services::unit_hand_in`], [`Services::unit_refuse`]), which lend buffers of their own and
+//! answer copies, and [`Services::records_secret`] (a credential's secret, copied into the
 //! zeroizing [`CredentialSecret`] the plugin owns): every other result is a scalar or a view into
 //! the caller's own buffers.
 
@@ -19,8 +21,13 @@ use std::ffi::c_void;
 use std::mem::size_of;
 use std::task::Poll;
 
+use crate::abi::auth::{FieldSpan, FIELD_QUERY, FIELD_SENSITIVE};
 use crate::abi::hook::{MessageView, PromptView};
 use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
+use crate::abi::host::service::{
+    check_auth_call, check_unit_hand_in, check_unit_refuse, AuthAnswer, AuthCallIn, AuthRef,
+    HeadView, RefusalAnswer, UnitHandInIn, UnitRef, UnitRefuseIn,
+};
 use crate::abi::host::service::{
     check_clock_now, check_content_scan, check_dest_judge, check_entitlement_check,
     check_hook_call, check_hook_call_in, check_random_fill, check_random_fill_in,
@@ -39,10 +46,11 @@ use crate::abi::host::service::{
     TRUST_DECIDE_REVOKE, TRUST_REACHED, TRUST_UNREACHABLE, VERIFY_FOLLOW, VERIFY_HIT, VERIFY_LEAD,
 };
 use crate::abi::mechanism::call::{
-    AbiStr, Blob, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
+    AbiStr, Blob, Field, Outcome, RawOutcome, Span, BLOB_JSON, BLOB_OCTETS,
 };
 use crate::abi::mechanism::check::{Fault, Filled, SPAN_ABSENT};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket, WakeFn};
+use crate::redacted::{OwnerSeal, Secret};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Why a service call has no value.
@@ -215,6 +223,127 @@ impl<'b> TrustItems<'b> {
             })
         })
     }
+}
+
+/// THE REQUEST VIEW a transport hands the auth handle ([`Services::auth_call`],
+/// [`Services::unit_hand_in`]): borrowed for the call and laid out by the wrapper as the `in`'s
+/// [`HeadView`]. At the peer point there is no request: [`HeadViewArgs::default`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HeadViewArgs<'a> {
+    /// The method.
+    pub method: &'a str,
+    /// The target's path, as received.
+    pub target: &'a str,
+    /// The authority.
+    pub authority: &'a str,
+    /// The query without `?`; `None` = none.
+    pub query: Option<&'a str>,
+    /// The head's field lines, in order, as `(name, value)`.
+    pub fields: &'a [(&'a str, &'a [u8])],
+    /// The upstream's scheme as the host declared it for the stream (`SCHEME_*`); the default,
+    /// `SCHEME_UNDECLARED`, is refused off the peer point.
+    pub scheme: u8,
+}
+
+/// Where a name the auth handle answers for stripping sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Place {
+    /// A field line of the head (`FIELD_SENSITIVE`), matched ASCII case-insensitively.
+    Field,
+    /// A key of the query (`FIELD_QUERY`), matched case-sensitively.
+    Query,
+}
+
+/// One auth field an outbound binding's call answers, to join the head: its value is credential
+/// material, held as the calling plugin's own [`Secret`] (read with `expose_own` under its seal).
+#[derive(Debug)]
+pub struct AuthField<O: OwnerSeal> {
+    /// The field name.
+    pub name: String,
+    /// The value.
+    pub value: Secret<Vec<u8>, O>,
+    /// `FIELD_SENSITIVE` | `FIELD_QUERY` (a query parameter, never a field line).
+    pub flags: u32,
+}
+
+/// `auth.call`'s answer, copied out of the wrapper's buffers (which are zeroised): the flow, the
+/// request's unit, and what the call named. An inbound line's call fills `names` (what to strip)
+/// and never `fields`; an outbound binding's fills `fields` (what joins the head).
+#[derive(Debug)]
+pub struct AuthCalled<O: OwnerSeal> {
+    /// `FLOW_CONTINUE` | `FLOW_STOP`.
+    pub flow: u32,
+    /// The request's unit (minted on its first call); none at the peer point.
+    pub unit: UnitRef,
+    /// The credential field lines and query keys to strip, by name.
+    pub names: Vec<(String, Place)>,
+    /// The auth fields that join the head.
+    pub fields: Vec<AuthField<O>>,
+}
+
+/// `unit.refuse`'s answer, copied out of the kernel's memory before the wrapper returns: the
+/// refusal the transport frames verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusalCopy {
+    /// The status.
+    pub status: u16,
+    /// The head fields, in order, as `(name, value)`.
+    pub fields: Vec<(String, Vec<u8>)>,
+    /// The body.
+    pub body: Vec<u8>,
+}
+
+/// The first byte capacity [`Services::auth_call`] lends; a short answer earns one re-call at the
+/// size the host names.
+const AUTH_CALL_BYTES: usize = 1024;
+/// The first span capacity [`Services::auth_call`] lends.
+const AUTH_CALL_SPANS: usize = 16;
+
+/// `args`'s field lines as the ABI's [`Field`]s, borrowed from `args`.
+fn view_fields(args: &HeadViewArgs<'_>) -> Vec<Field> {
+    args.fields
+        .iter()
+        .map(|(n, v)| Field {
+            name: text(n),
+            value: raw(v),
+        })
+        .collect()
+}
+
+/// `args` as the `in`'s [`HeadView`], over `fields` (its laid-out field lines).
+fn view(args: &HeadViewArgs<'_>, fields: &[Field]) -> HeadView {
+    HeadView {
+        method: text(args.method),
+        target: text(args.target),
+        authority: text(args.authority),
+        query: args.query.map_or(NO_TEXT, text),
+        fields: fields.as_ptr(),
+        fields_len: fields.len(),
+        scheme: args.scheme,
+        _scheme_reserved: [0; 7],
+    }
+}
+
+/// An empty answer slot: the host writes it whole on READY.
+const fn answer_slot() -> AuthAnswer {
+    AuthAnswer {
+        size: 0,
+        flow: 0,
+        unit: UnitRef::NONE,
+    }
+}
+
+/// The bytes a kernel-owned [`AbiStr`] names, copied; `None` for NULL with a length.
+fn copied(s: AbiStr) -> Option<Vec<u8>> {
+    if s.len == 0 {
+        return Some(Vec::new());
+    }
+    if s.ptr.is_null() {
+        return None;
+    }
+    // SAFETY: the host's own bytes, `len` long, valid until the next call on the connection (the
+    // `unit.refuse` contract); copied before this returns.
+    Some(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
 }
 
 /// `Wake` as an instance holds it for its life (status row 194): the host's own tables, read at
@@ -1334,6 +1463,198 @@ impl Services {
             .ok_or(ServiceError::Broken)
     }
 
+    /// `auth.call`: call the auth `auth` names at `point` through the host (THE DESIGN, Auth points
+    /// and guest lists). `unit` is [`UnitRef::NONE`] on the request's first call and at the peer
+    /// point, and the answered unit on every later call; `body` only at the body point. The
+    /// wrapper lends its own buffers and owns the short-buffer rule: a short answer is re-called
+    /// ONCE on the same handle at the sizes the host names. May pend (an auth's call may be
+    /// not-ready with a wake), so callable only from a ticketed op: on [`Poll::Pending`] the op
+    /// answers PENDING and, woken, re-issues the SAME handle to read the stored answer. Every
+    /// buffer that held the answer is zeroised before this returns.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: unserved, declined (the host refused the handle, the unit or the `in`),
+    /// broken (the answer broke the rules, or a name-only span is neither a field nor a query key),
+    /// or short twice.
+    #[allow(clippy::too_many_arguments)]
+    pub fn auth_call<O: OwnerSeal>(
+        &self,
+        handle: CompletionHandle,
+        auth: AuthRef,
+        unit: UnitRef,
+        point: u32,
+        conn: u64,
+        stream: u64,
+        request: &HeadViewArgs<'_>,
+        body: Option<&[u8]>,
+    ) -> Pend<AuthCalled<O>> {
+        let fields = view_fields(request);
+        let (mut cap, mut spans_cap) = (AUTH_CALL_BYTES, AUTH_CALL_SPANS);
+        for _ in 0..2 {
+            let mut buf = Zeroizing::new(vec![0u8; cap]);
+            let mut spans = vec![
+                FieldSpan {
+                    name: Span { offset: 0, len: 0 },
+                    value: Span { offset: 0, len: 0 },
+                    flags: 0,
+                    _reserved: 0,
+                };
+                spans_cap
+            ];
+            let mut answer = answer_slot();
+            let input = AuthCallIn {
+                head: head::<AuthCallIn>(op::AUTH_CALL, handle),
+                auth,
+                unit,
+                point,
+                _reserved: 0,
+                conn,
+                stream,
+                request: view(request, &fields),
+                body: body.map_or(NO_BLOB, |b| blob(b, BLOB_OCTETS)),
+                buf: buf.as_mut_ptr(),
+                cap: buf.len(),
+                spans: spans.as_mut_ptr(),
+                spans_cap: spans.len(),
+                answer: std::ptr::from_mut(&mut answer),
+            };
+            let crossed = self.cross(op::AUTH_CALL, |t| t.auth_call, &input, check_auth_call);
+            if let Ok((Outcome::Pending, ..)) = crossed {
+                return Poll::Pending;
+            }
+            match crossed.and_then(ready) {
+                Ok(out) => {
+                    let written = &buf[..out.len as usize];
+                    return Poll::Ready(called(answer, written, &spans[..out.items as usize]));
+                }
+                Err(ServiceError::Short { bytes, items }) => {
+                    cap = cap.max(usize::try_from(bytes).unwrap_or(usize::MAX));
+                    spans_cap = spans_cap.max(usize::try_from(items).unwrap_or(usize::MAX));
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            }
+        }
+        // A second short answer on one handle breaks the rule.
+        Poll::Ready(Err(ServiceError::Broken))
+    }
+
+    /// `unit.hand_in`: hand the request in with the line the transport matched; the kernel's
+    /// checks answer the flow (`FLOW_STOP`: ask [`Services::unit_refuse`]) and the request's unit
+    /// (minted here for a `none` line, whose `unit` is [`UnitRef::NONE`]). Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: unserved, declined (the host refused the handle, the unit or the `in`), or
+    /// broken.
+    #[allow(clippy::too_many_arguments)]
+    pub fn unit_hand_in(
+        &self,
+        handle: CompletionHandle,
+        auth: AuthRef,
+        unit: UnitRef,
+        line: u32,
+        conn: u64,
+        stream: u64,
+        request: &HeadViewArgs<'_>,
+    ) -> Result<(u32, UnitRef), ServiceError> {
+        let fields = view_fields(request);
+        let mut answer = answer_slot();
+        let input = UnitHandInIn {
+            head: head::<UnitHandInIn>(op::UNIT_HAND_IN, handle),
+            auth,
+            unit,
+            line,
+            _reserved: 0,
+            conn,
+            stream,
+            request: view(request, &fields),
+            answer: std::ptr::from_mut(&mut answer),
+        };
+        let crossed = self.cross(
+            op::UNIT_HAND_IN,
+            |t| t.unit_hand_in,
+            &input,
+            check_unit_hand_in,
+        )?;
+        ready(crossed)?;
+        Ok((answer.flow, answer.unit))
+    }
+
+    /// `unit.refuse`: the refusal of a request, as the kernel owns and audits it (`cause` one of
+    /// the `REFUSE_*`; `line` = `LINE_NONE` exactly for `REFUSE_NO_ROUTE`; `unit` none when there
+    /// is none; `request` the request being refused, as decoded, whose method and target shape the
+    /// listener's 1.5.5 bytes for a refusal with no unit). The kernel's answer is copied out before
+    /// this returns, so nothing borrowed from the kernel outlives the call. Never pends.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError`]: unserved, declined, or broken (a field or the body a count behind NULL,
+    /// or a field name that is not UTF-8).
+    #[allow(clippy::too_many_arguments)] // one argument per `UnitRefuseIn` field, as `auth_call`
+    pub fn unit_refuse(
+        &self,
+        handle: CompletionHandle,
+        unit: UnitRef,
+        cause: u32,
+        line: u32,
+        conn: u64,
+        stream: u64,
+        request: &HeadViewArgs<'_>,
+    ) -> Result<RefusalCopy, ServiceError> {
+        let fields = view_fields(request);
+        let mut answer = RefusalAnswer {
+            size: 0,
+            status: 0,
+            _reserved: 0,
+            fields: std::ptr::null(),
+            fields_len: 0,
+            body: NO_BLOB,
+        };
+        let input = UnitRefuseIn {
+            head: head::<UnitRefuseIn>(op::UNIT_REFUSE, handle),
+            unit,
+            cause,
+            line,
+            conn,
+            stream,
+            answer: std::ptr::from_mut(&mut answer),
+            request: view(request, &fields),
+        };
+        let crossed = self.cross(
+            op::UNIT_REFUSE,
+            |t| t.unit_refuse,
+            &input,
+            check_unit_refuse,
+        )?;
+        ready(crossed)?;
+        let fields: &[Field] = if answer.fields_len == 0 {
+            &[]
+        } else {
+            // SAFETY: the kernel's own list, checked non-NULL and at most `MAX_SPANS` long by
+            // `check_unit_refuse`, valid until the next call on the connection; copied below.
+            unsafe { std::slice::from_raw_parts(answer.fields, answer.fields_len) }
+        };
+        let fields = fields
+            .iter()
+            .map(|f| {
+                let name = String::from_utf8(copied(f.name)?).ok()?;
+                Some((name, copied(f.value)?))
+            })
+            .collect::<Option<Vec<_>>>()
+            .ok_or(ServiceError::Broken)?;
+        let body = copied(AbiStr {
+            ptr: answer.body.ptr,
+            len: answer.body.len,
+        })
+        .ok_or(ServiceError::Broken)?;
+        Ok(RefusalCopy {
+            status: answer.status,
+            fields,
+            body,
+        })
+    }
+
     /// Call `service` through `pick`'s slot with `input`, and judge the answer by `check`: the
     /// outcome, the `out` and how it filled the caller's buffers.
     fn cross<I>(
@@ -1367,6 +1688,53 @@ impl Services {
         }
         pick(table).ok_or(ServiceError::Unserved)
     }
+}
+
+/// An absent blob.
+const NO_BLOB: Blob = Blob {
+    ptr: std::ptr::null(),
+    len: 0,
+    fmt: 0,
+    flags: 0,
+};
+
+/// `auth.call`'s READY answer, copied out of `written` and `spans`: a span with a value is an
+/// auth field to join the head; a span without one is a name to strip, exactly one of
+/// `FIELD_SENSITIVE` (a field line) or `FIELD_QUERY` (a query key).
+fn called<O: OwnerSeal>(
+    answer: AuthAnswer,
+    written: &[u8],
+    spans: &[FieldSpan],
+) -> Result<AuthCalled<O>, ServiceError> {
+    let mut names = Vec::new();
+    let mut fields = Vec::new();
+    for s in spans {
+        let name = present(written, s.name)
+            .and_then(|n| std::str::from_utf8(n).ok())
+            .ok_or(ServiceError::Broken)?
+            .to_string();
+        match present(written, s.value) {
+            Some(v) => fields.push(AuthField {
+                name,
+                value: Secret::held(v.to_vec()),
+                flags: s.flags,
+            }),
+            None => {
+                let place = match s.flags {
+                    FIELD_SENSITIVE => Place::Field,
+                    FIELD_QUERY => Place::Query,
+                    _ => return Err(ServiceError::Broken),
+                };
+                names.push((name, place));
+            }
+        }
+    }
+    Ok(AuthCalled {
+        flow: answer.flow,
+        unit: answer.unit,
+        names,
+        fields,
+    })
 }
 
 /// The caller's `buf` and `spans`, lent to the host for one call.
