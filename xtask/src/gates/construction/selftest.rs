@@ -395,6 +395,86 @@ fn neutralise(line: &str, scans: &[crate::rx::Regex]) -> String {
     out
 }
 
+/// THE RENAME PLANTS of `single-terminal` (the approval desk's two plants on #1276), each its files
+/// and the caller it plants: `PlaneMoney` renamed to `Node` at module level (A), inside the calling
+/// fn (B), as a typed binding's type (C), beside the real `Node` (D), re-exported from another file
+/// and imported plainly (G) or by a glob (H), and as a raw identifier, `as r#Node` (I). A rename is
+/// followed, a name bound two ways is read as neither, a name any file binds to another type is
+/// read as neither in every file, and `r#Node` is `Node`: each caller is counted. One list for the
+/// battery's one run and the per-shape test over the rule alone.
+pub(crate) fn rename_plants() -> Vec<(Vec<(&'static str, &'static str)>, &'static str)> {
+    let reexport = (
+        "crates/busbar/src/root/zz_g_reexport.rs",
+        "pub use crate::plane_driver::PlaneMoney as Node;\n",
+    );
+    vec![
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_module.rs",
+                "use crate::plane_driver::PlaneMoney as Node;\n\npub fn zz_rename_module(m: &Node, \
+                 k: u64) {\n    Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_rename_module",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_in_fn.rs",
+                "pub fn zz_rename_in_fn(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    use \
+                 crate::plane_driver::PlaneMoney as Node;\n    Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_rename_in_fn",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_binding.rs",
+                "use busbar_kernel::plane_driver::{\n    PlaneMoney as Node,\n};\n\npub fn \
+                 zz_rename_binding(m: &busbar_kernel::plane_driver::PlaneMoney, k: u64) {\n    \
+                 let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
+            )],
+            "zz_rename_binding",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_planted_rename_both.rs",
+                "use crate::root::plane_node::Node;\n\nmod zz_inner {\n    pub use \
+                 busbar_kernel::plane_driver::PlaneMoney as Node;\n}\n\npub fn zz_rename_both(m: \
+                 &zz_inner::Node, k: u64) {\n    let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
+            )],
+            "zz_rename_both",
+        ),
+        (
+            vec![
+                reexport,
+                (
+                    "crates/busbar/src/root/zz_g_caller.rs",
+                    "use crate::root::zz_g_reexport::Node;\n\npub fn zz_g_caller(m: &Node, k: \
+                     u64) {\n    Node::settle_end(m, k, 200);\n}\n",
+                ),
+            ],
+            "zz_g_caller",
+        ),
+        (
+            vec![
+                reexport,
+                (
+                    "crates/busbar/src/root/zz_h_caller.rs",
+                    "use crate::root::zz_g_reexport::*;\n\npub fn zz_h_caller(m: &Node, k: u64) \
+                     {\n    Node::settle_end(m, k, 200);\n}\n",
+                ),
+            ],
+            "zz_h_caller",
+        ),
+        (
+            vec![(
+                "crates/busbar/src/root/zz_i_caller.rs",
+                "use crate::plane_driver::PlaneMoney as r#Node;\n\npub fn zz_i_caller(m: \
+                 &r#Node, k: u64) {\n    r#Node::settle_end(m, k, 200);\n}\n",
+            )],
+            "zz_i_caller",
+        ),
+    ]
+}
+
 /// The attempt seam, the request terminal, the plane's doors and the plane/kernel wall.
 fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
@@ -649,108 +729,30 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         ],
     ));
 
-    // A `use … as` RENAME IS FOLLOWED (the approval desk's plant on #1276): `PlaneMoney` renamed to
-    // `Node`, the name of the other type that defines `settle_end`, at module level (A), inside the
-    // calling fn (B), and as a typed binding's type (C); and (D) the real `Node` and the rename both
-    // bound in one file. Each is the terminal called by a caller the config does not name, and each
-    // is counted: a rename is followed, and a name bound two ways is read as neither.
-    for (file, body, caller) in [
-        (
-            "crates/busbar/src/root/zz_planted_rename_module.rs",
-            "use crate::plane_driver::PlaneMoney as Node;\n\npub fn zz_rename_module(m: &Node, k: \
-             u64) {\n    Node::settle_end(m, k, 200);\n}\n",
-            "zz_rename_module",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_rename_in_fn.rs",
-            "pub fn zz_rename_in_fn(m: &crate::plane_driver::PlaneMoney, k: u64) {\n    use \
-             crate::plane_driver::PlaneMoney as Node;\n    Node::settle_end(m, k, 200);\n}\n",
-            "zz_rename_in_fn",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_rename_binding.rs",
-            "use busbar_kernel::plane_driver::{\n    PlaneMoney as Node,\n};\n\npub fn \
-             zz_rename_binding(m: &busbar_kernel::plane_driver::PlaneMoney, k: u64) {\n    let n: \
-             &Node = m;\n    n.settle_end(k, 200);\n}\n",
-            "zz_rename_binding",
-        ),
-        (
-            "crates/busbar/src/root/zz_planted_rename_both.rs",
-            "use crate::root::plane_node::Node;\n\nmod zz_inner {\n    pub use \
-             busbar_kernel::plane_driver::PlaneMoney as Node;\n}\n\npub fn zz_rename_both(m: \
-             &zz_inner::Node, k: u64) {\n    let n: &Node = m;\n    n.settle_end(k, 200);\n}\n",
-            "zz_rename_both",
-        ),
-    ] {
-        let mut ov = on(base);
-        ov.set(file, body);
-        r.push(prove_red(
-            cx,
-            gate,
-            format!("a terminal called through a `use … as` rename ({caller}) is counted"),
-            &["single-terminal"],
-            ov,
-            &[caller],
-        ));
-    }
-
-    // A RENAME THE CALLING FILE DOES NOT SHOW IS COUNTED TOO (the approval desk's second plant on
-    // #1276): `PlaneMoney` re-exported as `Node` from another file and imported plainly (G) or by a
-    // glob (H), and a raw identifier, `as r#Node` (I). A name any file binds to another type is read
-    // as neither in every file, and `r#Node` is `Node`.
-    for (files, caller) in [
-        (
-            vec![
-                (
-                    "crates/busbar/src/root/zz_g_reexport.rs",
-                    "pub use crate::plane_driver::PlaneMoney as Node;\n",
-                ),
-                (
-                    "crates/busbar/src/root/zz_g_caller.rs",
-                    "use crate::root::zz_g_reexport::Node;\n\npub fn zz_g_caller(m: &Node, k: \
-                     u64) {\n    Node::settle_end(m, k, 200);\n}\n",
-                ),
-            ],
-            "zz_g_caller",
-        ),
-        (
-            vec![
-                (
-                    "crates/busbar/src/root/zz_g_reexport.rs",
-                    "pub use crate::plane_driver::PlaneMoney as Node;\n",
-                ),
-                (
-                    "crates/busbar/src/root/zz_h_caller.rs",
-                    "use crate::root::zz_g_reexport::*;\n\npub fn zz_h_caller(m: &Node, k: u64) \
-                     {\n    Node::settle_end(m, k, 200);\n}\n",
-                ),
-            ],
-            "zz_h_caller",
-        ),
-        (
-            vec![(
-                "crates/busbar/src/root/zz_i_caller.rs",
-                "use crate::plane_driver::PlaneMoney as r#Node;\n\npub fn zz_i_caller(m: \
-                 &r#Node, k: u64) {\n    r#Node::settle_end(m, k, 200);\n}\n",
-            )],
-            "zz_i_caller",
-        ),
-    ] {
-        let mut ov = on(base);
+    // THE RENAMES, ONE RUN ([`rename_plants`]): `PlaneMoney` renamed to `Node` (the name of the other
+    // type that defines `settle_end`) in the calling file, at module level (A), inside the calling
+    // fn (B), as a typed binding's type (C), beside the real `Node` (D) and as a raw identifier (I);
+    // and re-exported from another file, imported plainly (G) or by a glob (H). Each binds `Node`
+    // tree-wide, so they share one run and each caller is named in it. That each SHAPE is read on
+    // its own (a rename the rule did not read would still be counted here, for its neighbour's
+    // sake) is proven per shape, over the rule alone, by
+    // `construction::tests::single_terminal_counts_a_terminal_called_through_each_rename_shape`.
+    let mut ov = on(base);
+    let mut callers = Vec::new();
+    for (files, caller) in rename_plants() {
         for (file, body) in files {
             ov.set(file, body);
         }
-        r.push(prove_red(
-            cx,
-            gate,
-            format!(
-                "a terminal called through a rename its file does not show ({caller}) is counted"
-            ),
-            &["single-terminal"],
-            ov,
-            &[caller],
-        ));
+        callers.push(caller);
     }
+    r.push(prove_red(
+        cx,
+        gate,
+        "a terminal called through a `use … as` rename, in its own file or another's, is counted",
+        &["single-terminal"],
+        ov,
+        &callers,
+    ));
 
     // THE GREEN GROUP, one run: THE REAL TYPE STAYS ITS OWN. A binding declared in its own fn as the
     // real `Node`, whatever another fn of its file declares the name as (the twin of the untyped

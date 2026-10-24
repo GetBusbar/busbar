@@ -754,6 +754,31 @@ mod tests {
         );
     }
 
+    /// EACH RENAME SHAPE IS READ ON ITS OWN (the approval desk's plants on #1276). The self-test
+    /// plants every rename in one run, where one rename read would count its neighbours too; here
+    /// each is planted alone, over the rule alone, and its own caller is counted.
+    #[test]
+    fn single_terminal_counts_a_terminal_called_through_each_rename_shape() {
+        let cx = Ctx::workspace().expect("workspace");
+        let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+        let roots = cfg.scan_roots().expect("scan roots");
+        let fragments = cfg.test_path_fragments().expect("fragments");
+        for (files, caller) in selftest::rename_plants() {
+            let mut ov = crate::ctx::Overlay::new();
+            for (file, body) in files {
+                ov.set(file, body);
+            }
+            let tree = Tree::load(&cx.with_overlay(ov), &roots, &fragments).expect("tree");
+            let rows = rules::single_terminal(&tree, &cfg).expect("the rule runs");
+            assert_eq!(rows[0].status, Status::Fail, "{caller}: {}", rows[0].detail);
+            assert!(
+                rows[0].offenders.iter().any(|o| o.contains(caller)),
+                "{caller} is not counted: {}",
+                rows[0].detail
+            );
+        }
+    }
+
     /// ITEM 190: A TERMINAL RENAMED AWAY IS NOT A CLEAN TERMINAL. Renaming `settle_end_as` in its
     /// one home leaves zero call sites of the configured name; the rule used to count that as zero
     /// extra sites and PASS while printing `allowed callers seen: []`.
