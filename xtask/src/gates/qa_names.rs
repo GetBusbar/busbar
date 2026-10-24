@@ -1556,7 +1556,9 @@ const PLANTED_GLOB_TAIL: &str = "busbar-selftest-no-such-family-*/src";
 /// it is used for the same reason [`PLANTED_UNDER`] is. And the file a covered TOML that does not
 /// parse is planted as (XH1#10): a bare file name, which carries no `/` and is no name.
 const PLANTED_VANISHED_TOP: &str = "busbar-selftest-vanished-top";
+// qa-names: qa/zzz-qa-names-unparseable-plant.toml -- xtask/src/gates/qa_names.rs -- an overlay-only plant this gate's selftest writes into a virtual tree (XH1#10), never a file on disk; a spelling that resolved would prove nothing
 const PLANTED_UNPARSEABLE_FILE: &str = "qa/zzz-qa-names-unparseable-plant.toml";
+// qa-names: qa/zzz-qa-names-vanished-plant.toml -- xtask/src/gates/qa_names.rs -- an overlay-only plant this gate's selftest removes from a virtual tree (XH1#10), never a file on disk; a spelling that resolved would prove nothing
 const PLANTED_VANISHED_FILE: &str = "qa/zzz-qa-names-vanished-plant.toml";
 
 /// A path no directory in this tree carries, assembled rather than spelled. See [`PLANTED_UNDER`].
