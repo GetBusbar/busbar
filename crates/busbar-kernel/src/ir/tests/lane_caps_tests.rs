@@ -102,7 +102,7 @@ fn item8_shipped_bedrock_catalog_declares_claude_lane_caps() {
 }
 
 // ── F25 rows 485-487: the lane-capability resolution of a provider entry, rehomed from
-// crates/busbar-llm/src/engine/tests/lane_caps_config_tests.rs. With the legacy engine gone the
+// the retired engine crate's src/engine/tests/lane_caps_config_tests.rs. With the legacy engine gone the
 // served merge is the kernel's `config::merge_provider_fallback` (no plane declares
 // `resolve_provider`), and `lane_caps_for` below hands its four keys to `resolve_lane_caps` EXACTLY
 // as `appbuild` does when it builds a lane. Bodies verbatim; only the item paths changed.
@@ -124,7 +124,7 @@ mod provider_entry {
 
     impl LaneCapsFor for ResolvedProvider {
         fn lane_caps_for(&self, wire_model: &str) -> LaneCaps {
-            crate::plane_host::LegacyLaneKeys::of(self).lane_caps(wire_model)
+            crate::plane_driver::route_input::LegacyLaneKeys::of(self).lane_caps(wire_model)
         }
     }
 
@@ -159,7 +159,7 @@ mod provider_entry {
 
     // ── lane capabilities (architect ruling on OAI-01, ANT-07/09/10) ────────────────────────────────
 
-    /// F25 row 485: rehomed from crates/busbar-llm/src/engine/tests/lane_caps_config_tests.rs::
+    /// F25 row 485: rehomed from the retired engine crate's src/engine/tests/lane_caps_config_tests.rs::
     /// lane_caps_default_to_the_pre_capability_forms_and_resolve_provider_then_model_rule.
     #[test]
     fn lane_caps_default_to_the_pre_capability_forms_and_resolve_provider_then_model_rule() {
@@ -197,7 +197,7 @@ mod provider_entry {
         );
     }
 
-    /// F25 row 486: rehomed from crates/busbar-llm/src/engine/tests/lane_caps_config_tests.rs::
+    /// F25 row 486: rehomed from the retired engine crate's src/engine/tests/lane_caps_config_tests.rs::
     /// shipped_catalog_declares_the_lane_capabilities.
     ///
     /// OAI-01 / ANT-07/09/10 at the CATALOG: the shipped providers.yaml resolves the `openai` provider
@@ -246,7 +246,7 @@ mod provider_entry {
         }
     }
 
-    /// F25 row 487: rehomed from crates/busbar-llm/src/engine/tests/lane_caps_config_tests.rs::
+    /// F25 row 487: rehomed from the retired engine crate's src/engine/tests/lane_caps_config_tests.rs::
     /// shipped_catalog_declares_reasoning_none_and_thinking_always_on.
     ///
     /// At the CATALOG: the shipped providers.yaml declares `thinking_always_on` for the

@@ -53,15 +53,19 @@
 //! stalled flush every second, and a reload never waits on a store write (the unit waiting on it is
 //! cancelled; the write itself runs on).
 
+mod answer;
 mod cancel;
+mod close;
 pub mod door;
 mod epoch;
 mod far_end;
 pub(crate) mod hooks;
+pub mod host;
 mod money;
 mod needs;
 mod probe;
 mod route;
+pub mod route_input;
 pub mod route_tables;
 pub mod serve;
 pub mod slots;
@@ -88,6 +92,7 @@ use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
 use tokio::sync::{watch, Notify};
 
+pub use answer::PlaneAnswer;
 pub use cancel::{CancelBill, Checkpoint, MoneySeam};
 pub use epoch::FlushEpoch;
 pub use far_end::{
@@ -97,9 +102,13 @@ pub use far_end::{
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
     HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, SessionStage, StageTaps,
-    UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS, STAGE_GONE,
+    UnitHooks, CONTENT_ROLE, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
+pub use host::{
+    engine_host, engine_host_from_handle, engine_host_value, live_host_factory, live_standing,
+    standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
+};
 pub use money::{Accrued, Checkpointer, EndPost, FeeRefund, PlaneMoney, UnitEnd, UnitMoney};
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
@@ -164,8 +173,8 @@ pub struct DriverConfig {
     /// The statuses the plane's tail states per dialect and reason (validated at load).
     pub refusal_statuses: Vec<RefusalStatus>,
     /// The key the caller's opaque reference is derived under, LIVE ([`CallerRefs`]: the book's
-    /// slot, which holds the key once the node binds signing material or its deployment keyset);
-    /// `None` = no book, and no reference is lent.
+    /// slot, which always holds a key: the node's signing material, else its deployment keyset,
+    /// else its per-boot key); `None` = no book, and only then is no reference lent.
     pub caller_refs: Option<CallerRefs>,
 }
 
@@ -207,21 +216,37 @@ pub fn refusal_status(reason: ReasonCode) -> u32 {
 }
 
 /// The kernel's default status for one refusal class.
+///
+/// A POLICY REFUSAL IS A REFUSAL, NOT A SERVER FAULT (ARCHITECT ruling): a class that refuses the
+/// caller's request (its bytes, its authority, its size, its rate, its money, what it named, or a
+/// limit its admission ran into) is a 4xx naming that refusal, so a caller never retries it as
+/// though the node broke; a class that is the node's own state or fault is a 5xx. Each 4xx is the
+/// status the other surfaces already answer for the class (the one classification):
+///
+/// * `Rejected` 400: readable, and not taken as asked (an unbillable name, an unpriced class, a
+///   replayed or superseded idempotency key). 1.5.5's recorded `no rate` refusal, 400
+///   `invalid_request_error`; a plane that restates the class renders it as its request error.
+/// * `Busy` 429: the in-flight table, or the idempotency key's unit, is busy: a limit the
+///   admission ran into, retryable once it frees. 1.5.5's in-flight limit, 429 `rate_limit_error`;
+///   the admin surface's 429 for the class.
+/// * `NotFound` 404: nowhere for the request to go. 1.5.5's model-not-found 404; the admin
+///   surface's 404 for the class.
+///
+/// 402 is no class's status: a spent money cap (`QuotaExhausted`) is 1.5.5's 429
+/// `insufficient_quota`. The node's own states and faults keep their 5xx: a shut way to the
+/// destination and a node that cannot take the unit now (503), a deadline (504), a plane's panic
+/// (502), and an internal fault (503).
 pub const fn class_status(class: RefusalClass) -> u32 {
     match class {
-        RefusalClass::Unreadable => 400,
+        RefusalClass::Unreadable | RefusalClass::Rejected => 400,
         RefusalClass::Unauthenticated => 401,
         RefusalClass::Forbidden => 403,
+        RefusalClass::NotFound => 404,
         RefusalClass::TooLarge => 413,
-        RefusalClass::Throttled | RefusalClass::QuotaExhausted => 429,
+        RefusalClass::Throttled | RefusalClass::Busy | RefusalClass::QuotaExhausted => 429,
         RefusalClass::PlaneFault => 502,
         RefusalClass::Timeout => 504,
-        RefusalClass::Rejected
-        | RefusalClass::Busy
-        | RefusalClass::NotFound
-        | RefusalClass::Unreachable
-        | RefusalClass::Unavailable
-        | RefusalClass::NodeFault => 503,
+        RefusalClass::Unreachable | RefusalClass::Unavailable | RefusalClass::NodeFault => 503,
     }
 }
 
@@ -233,6 +258,9 @@ pub struct PlaneDriver {
     config: DriverConfig,
     money: Arc<dyn MoneySeam>,
     buried: Mutex<Vec<cancel::Buried>>,
+    /// The units dropped while their plane still held them: the close each is owed
+    /// ([`close`]), paid by the sweep.
+    owed: Mutex<Vec<close::Owed>>,
     reload: watch::Sender<bool>,
     /// The kernel's record write path and the instance the plane's writes are keyed by.
     records: Option<(Arc<KernelServices>, Caller)>,
@@ -388,6 +416,7 @@ impl PlaneDriver {
             config,
             money,
             buried: Mutex::new(Vec::new()),
+            owed: Mutex::new(Vec::new()),
             reload: watch::channel(false).0,
             records: None,
             driver,
@@ -672,6 +701,15 @@ pub trait DriverSteps: Units {
         None
     }
 
+    /// Whether `member` is one of the members the generation's section states for the pool
+    /// `pool` (the pool a `ROUTE_POOL` unit's `arrive` named, as the kernel recorded it). A
+    /// gate-first unit routed over a pool binds the member its projection names only when this
+    /// holds (ARCHITECT 2026-10-07: the plane's later word never trades the gates attached to the
+    /// routed entry for another's). Fail-closed: steps that state no pools hold no member.
+    fn pool_holds(&self, _pool: &[u8], _member: &str) -> bool {
+        false
+    }
+
     /// The words of the refusal one of these steps raised, where it has its own: its Retry-After
     /// seconds (a rolling limit's wait, `RefusalIn::retry_after_s`, the previous release's
     /// `Retry-After` on a limit's 429) and its message (`RefusalIn::text`, the kernel's own message
@@ -720,6 +758,8 @@ pub struct Rendered {
 pub(crate) struct UnitState {
     /// The unit's kernel-minted key, once decode has run.
     unit: u64,
+    /// Where the unit stands with its plane's closing call, from `arrive` on ([`close`]).
+    close: close::Close,
     decoded: Option<Decoded>,
     /// A REFUSED `arrive`'s own code and 4xx status.
     declined: Option<(u32, u32)>,
@@ -875,6 +915,13 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             ..blank_in()
         };
         let mut o: ArriveOut = blank_out();
+        // FROM HERE THE PLANE HOLDS THE UNIT, whatever `arrive` answers: it is owed exactly one
+        // closing call ([`close`]).
+        {
+            let mut st = self.lock();
+            st.unit = unit;
+            st.close = close::Close::Open;
+        }
         let outcome = self
             .driver
             .calls
@@ -1009,7 +1056,10 @@ impl<S: DriverSteps, F, C> PlaneUnits<'_, S, F, C> {
             input.hook = AbiStr::over(hook.as_bytes());
         }
         let principal = self.lock().principal.clone();
-        self.driver.render_refusal(input, principal.as_ref())
+        let rendered = self.driver.render_refusal(input, principal.as_ref());
+        // The `refusal` that names the unit is its closing call.
+        self.lock().close.closed();
+        rendered
     }
 }
 
@@ -1136,6 +1186,84 @@ impl PlaneDriver {
         };
         self.render_refusal(input, None)
     }
+
+    /// A CATALOG ROUTE'S LISTING (ARCHITECT ruling 2026-10-16, 3b C; `abi::plane::CLAIM_CATALOG`):
+    /// the plane's pure `catalog` renders `names` (the kernel's, its visibility rule applied) for the
+    /// request `method`, `target` and head `fields`, with no unit: nothing is minted, audited or
+    /// metered. `None` when the plane renders none (it serves no catalog, or its answer failed).
+    #[must_use]
+    pub fn catalog_unitless(
+        &self,
+        method: &[u8],
+        target: &[u8],
+        head: &[(Vec<u8>, Vec<u8>)],
+        names: &[String],
+    ) -> Option<Rendered> {
+        use busbar_contract::abi::plane::{CatalogIn, CatalogOut};
+        let fields: Vec<Field> = head
+            .iter()
+            .map(|(n, v)| Field {
+                name: AbiStr::over(n),
+                value: AbiStr::over(v),
+            })
+            .collect();
+        let listed: Vec<AbiStr> = names.iter().map(|n| AbiStr::over(n.as_bytes())).collect();
+        let caps = self.config.caps;
+        let (mut reply, mut out_fields, mut arena) = (
+            vec![0u8; caps.reply],
+            vec![NO_FIELD; caps.fields],
+            vec![0u8; caps.arena],
+        );
+        let mut input = CatalogIn {
+            method: AbiStr::over(method),
+            target: AbiStr::over(target),
+            fields: fields.as_ptr(),
+            fields_len: fields.len(),
+            names: listed.as_ptr(),
+            names_len: listed.len(),
+            reply_buf: reply.as_mut_ptr(),
+            reply_cap: reply.len(),
+            fields_buf: out_fields.as_mut_ptr(),
+            fields_cap: out_fields.len(),
+            arena_buf: arena.as_mut_ptr(),
+            arena_cap: arena.len(),
+            ..blank_in()
+        };
+        let mut o: CatalogOut = blank_out();
+        let outcome = self.calls.catalog(&mut input, &mut o, &mut |short, i| {
+            reply.resize((short.reply_needed as usize).max(reply.len()), 0);
+            out_fields.resize(
+                (short.fields_needed as usize).max(out_fields.len()),
+                NO_FIELD,
+            );
+            arena.resize((short.arena_needed as usize).max(arena.len()), 0);
+            (i.reply_buf, i.reply_cap) = (reply.as_mut_ptr(), reply.len());
+            (i.fields_buf, i.fields_cap) = (out_fields.as_mut_ptr(), out_fields.len());
+            (i.arena_buf, i.arena_cap) = (arena.as_mut_ptr(), arena.len());
+        });
+        if outcome != AbiOutcome::Ready {
+            return None;
+        }
+        let span = |s: Span| {
+            let start = s.offset as usize;
+            arena
+                .get(start..start.saturating_add(s.len as usize))
+                .unwrap_or_default()
+                .to_vec()
+        };
+        Some(Rendered {
+            status: o.status,
+            fields: out_fields
+                .iter()
+                .take(o.fields_written as usize)
+                .map(|f| (span(f.name), span(f.value)))
+                .collect(),
+            body: reply
+                .get(..o.reply_written as usize)
+                .unwrap_or_default()
+                .to_vec(),
+        })
+    }
 }
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
@@ -1157,7 +1285,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 self.response_tap(true, veto.status);
                 ReasonCode::HookVeto
             }
-            hooks::Stopped::Unreadable => {
+            hooks::Stopped::Unreadable | hooks::Stopped::Unparseable { .. } => {
                 // 1.5.5 answered an unreadable request a rewrite hook had to see as a gate's
                 // refusal: the response tap reports it so.
                 let status = self.status_for(ReasonCode::DecodeFailed);
@@ -1341,7 +1469,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         let (streamed, cut) = {
             let st = self.lock();
             let success = st.facts.status == 0 || (200..300).contains(&st.facts.status);
-            (st.facts.streamed && success, st.facts.cut)
+            (st.facts.content && success, st.facts.cut)
         };
         self.steps.answered(ctx, streamed, cut);
         self.steps.audit(token, ctx, outcome)
@@ -1431,7 +1559,16 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key (none when the node keeps no key); the principal itself never enters a plane input.
+    /// key (its signing material, the deployment keyset, or its per-boot key); the principal
+    /// itself never enters a plane input.
+    ///
+    /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
+    /// unit, so a driver whose book lends references never lends an empty one to a governed
+    /// caller (any principal but the anonymous one). Such a caller is refused here, before the
+    /// plane is lent the unit, when it names no one or when the book holds no key to derive its
+    /// reference under; it is never lent the empty reference instead. The anonymous principal is
+    /// never refused here: with a key bound it is lent its reference like any principal (the one
+    /// reference every anonymous unit shares), and with none it is lent the empty one.
     fn verify(
         &self,
         token: &Pass<Verify>,
@@ -1439,14 +1576,16 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> StepAnswer<Verify> {
-        let key = self
-            .driver
-            .config
-            .caller_refs
-            .as_ref()
-            .and_then(|slot| slot.read().unwrap_or_else(|e| e.into_inner()).clone());
-        if let Some(key) = key {
-            self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+        if let Some(slot) = &self.driver.config.caller_refs {
+            let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
+            if *principal != PrincipalId::anonymous() {
+                let Some(key) = key.filter(|_| !principal.as_str().is_empty()) else {
+                    return StepAnswer::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
+                };
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            } else if let Some(key) = key {
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            }
         }
         // The verified principal: the hooks the unit binds read it, and the unit's audit row is
         // written under it (never a plane input).
@@ -1457,6 +1596,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
     /// it does not have, is refused.
     fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> StepAnswer<Decode> {
+        // Every arrival first pays what the units before it left owing ([`close`]), so a plane
+        // whose units are all refused before their route still has its dropped units closed.
+        self.driver.sweep();
         self.lock().unit = ctx.key.get();
         let decoded = self.arrive(ctx.key.get());
         let classes = &self.driver.config.op_classes;

@@ -585,7 +585,7 @@
           },
           "scheme": {
             "default": 1,
-            "description": "WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.\n\n`#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed\nsimply lacks the key, and an absent tag means exactly scheme 1, because that is what every\nsuch row actually is — no migration of stored data is required. `link` always writes\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] on a FRESH entry; nothing mints scheme 1 going forward. A\nverifier reads this straight off the record (`ChainedRecord::framing`), so a chain mixing\nboth eras checks each entry under the rules it actually used.",
+            "description": "WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.\n\n`#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed\nsimply lacks the key, and an absent tag means exactly scheme 1, because that is what every\nsuch row actually is — no migration of stored data is required. A FRESH admin record (the\nseam's `admin_suffix`) is sealed under [`AUDIT_SCHEME_PIPE`], so its `hash` is 1.5.5's own,\nwhenever its `action`, `resource` and `outcome` carry no `|`, and under\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] only when one of them does; the ring's own `link` writes\n[`AUDIT_SCHEME_LENGTH_PREFIXED`]. A verifier reads this straight off the record\n(`ChainedRecord::framing`), so a chain mixing both schemes checks each entry under the rules\nit actually used.",
             "format": "uint8",
             "maximum": 255,
             "minimum": 0,
@@ -12836,7 +12836,7 @@
     },
     "/api/v1/admin/store-restore": {
       "post": {
-        "description": "The body names the backup; there is no default. A body that names none is refused before it reaches the store. Otherwise admitted through the same gates as every other new verb, then handed to the store.",
+        "description": "Refused, always: the configured store has no restore operation, so this node restores nothing, records nothing and changes nothing. Restores happen off-node, with the store's own tooling. A body that names no `backup_ref` is refused 400 before anything else; an admitted call is refused 503 `unavailable`, and the node logs one error line naming the verb.",
         "operationId": "PostStoreRestore",
         "requestBody": {
           "content": {
@@ -12850,7 +12850,7 @@
         },
         "responses": {
           "204": {
-            "description": "Applied: the store is restored. No body"
+            "description": "Never answered: this build has no restore operation (an admitted call is refused 503)"
           },
           "400": {
             "content": {
@@ -12890,7 +12890,7 @@
                 }
               }
             },
-            "description": "`not_found`: the store holds no backup under `backup_ref`"
+            "description": "`not_found`: never answered: there is no restore operation to look `backup_ref` up in"
           },
           "503": {
             "content": {
@@ -12900,7 +12900,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the configured store has no restore operation, so nothing was restored (restores happen off-node), or the node could not take the unit. The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -12911,7 +12911,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Restore the store from a named backup (disaster recovery)",
+        "summary": "Refused: the configured store has no restore operation (disaster recovery)",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }

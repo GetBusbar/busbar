@@ -35,10 +35,6 @@ pub fn call_sites<'t>(
         .collect())
 }
 
-fn basename(rel: &str) -> &str {
-    rel.rsplit('/').next().unwrap_or(rel)
-}
-
 fn join_or_none(items: &[String]) -> String {
     if items.is_empty() {
         "none".to_string()
@@ -54,6 +50,10 @@ pub fn one_attempt_seam(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let allowed = need_str(c, "allowed_function", "one-attempt-seam")?;
     let ceiling = need_int(c, "max_extra_sites", "one-attempt-seam")?;
     let send = Regex::new(need_str(c, "send_verb", "one-attempt-seam")?)?;
+    // THE NAMED KNOWN SITES (`file::fn`): a send that is not a unit's attempt, each with its cite in
+    // the ceilings file. Measured, never assumed: a known site that sends nothing is RED.
+    let known = c.list_of("known_sites");
+    let mut known_seen: Vec<String> = Vec::new();
 
     let mut extra: Vec<String> = Vec::new();
     let mut inside = 0usize;
@@ -61,8 +61,11 @@ pub fn one_attempt_seam(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
         let fname = tree
             .enclosing_fn(rel, l.no)
             .map_or("<no enclosing fn>".to_string(), |f| f.name.clone());
+        let site = format!("{rel}::{fname}");
         if fname == allowed {
             inside += 1;
+        } else if known.contains(&site) {
+            known_seen.push(site);
         } else {
             extra.push(format!("{fname} at {rel}:{}", l.no));
         }
@@ -74,10 +77,22 @@ pub fn one_attempt_seam(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
              qa/construction.toml or restore it)"
         ));
     }
+    for site in &known {
+        if !known_seen.contains(site) {
+            offenders.push(format!(
+                "known site `{site}` opens nothing any more (strike it from known_sites)"
+            ));
+        }
+    }
+    known_seen.sort();
+    known_seen.dedup();
     let current = offenders.len() as i64;
     let detail = format!(
-        "{current} attempt site(s) outside `{allowed}` (ceiling {ceiling}): {}",
-        join_or_none(&offenders)
+        "{current} attempt site(s) outside `{allowed}` (ceiling {ceiling}): {}; known site(s) \
+         measured: {} ({})",
+        join_or_none(&offenders),
+        known_seen.len(),
+        join_or_none(&known_seen)
     );
     Ok(vec![plain(
         "one-attempt-seam",
@@ -210,6 +225,27 @@ pub fn request_path_fn_size(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String>
 
 // ── 3. ports-only / ports-only-tests ─────────────────────────────────────────────────────────────
 
+/// THE PLANES ON THIS TREE: the plane kind's crates, plus any legacy engine `gate.plane_crates`
+/// still lists. That list is empty since the last engine crate was deleted (DEV-GREEN row 83), and
+/// a per-plane rule over no plane passes by reading nothing (Law 10); every door crate the
+/// `[gate.plugin_kinds].plane` globs match on the tree is a plane the per-plane rules hold.
+fn planes_on_tree(tree: &Tree, cfg: &Cfg) -> Result<Vec<String>, String> {
+    let plane_globs = cfg.kind_globs("plane")?;
+    let mut planes = cfg.plane_crates()?;
+    for rel in tree.files.keys() {
+        let krate = tree.crate_of(rel);
+        let dir = format!("crates/{krate}");
+        if rel.starts_with("crates/")
+            && plane_globs.iter().any(|g| fnmatch(&dir, g))
+            && !planes.contains(&krate)
+        {
+            planes.push(krate);
+        }
+    }
+    planes.sort();
+    Ok(planes)
+}
+
 pub fn ports_only(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let prod = cfg.rule("ports-only")?;
     let test = cfg.rule("ports-only-tests")?;
@@ -227,7 +263,7 @@ pub fn ports_only(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let _ = (prod, test);
 
     let mut rows = Vec::new();
-    for crate_name in cfg.plane_crates()? {
+    for crate_name in planes_on_tree(tree, cfg)? {
         // A plane is BOTH halves: the crate under its own name and the pure `-codec` crate it shed.
         let mut prefixes = vec![format!("crates/{crate_name}/")];
         for extra in codecs.list_of(&crate_name) {
@@ -1191,7 +1227,7 @@ pub fn one_teller_loop(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let per_plane = need_int(c, "max_callers_per_plane_crate", "one-teller-loop")?;
     let legacy_verb = need_str(c, "legacy_verb", "one-teller-loop")?;
     let max_legacy = need_int(c, "max_legacy_sites", "one-teller-loop")?;
-    let planes = cfg.plane_crates()?;
+    let planes = planes_on_tree(tree, cfg)?;
 
     let mut per_crate: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (rel, l) in call_sites(tree, loop_verb, None)? {
@@ -1228,6 +1264,8 @@ pub fn one_teller_loop(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     );
     if !tree.files.keys().any(|rel| rel.starts_with(root.as_str())) {
         detail = format!("{VACUOUS}{loop_root} does not exist yet; no loop to call");
+    } else if planes.is_empty() {
+        detail = format!("{VACUOUS}no plane crate is on this tree; no plane to hold to one entry");
     }
     let mut rows = vec![plain(
         "one-teller-loop",
@@ -1262,124 +1300,16 @@ pub fn one_teller_loop(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 }
 
 // ── 11. no-response-escapes-audit ────────────────────────────────────────────────────────────────
-
-/// A function under the plane's step directory whose return type names a `Response` is an escape,
-/// wherever it is but the allowed files. THE ONE EXEMPTION IS IN THE SCOPE, NOT PER FUNCTION (#28):
-/// the plane answers with the two-variant `PlaneAnswer`, and its `Live` constructor — the
-/// `answer_carrier` key — is the one carrier a response crosses the plane's boundary in. A return
-/// type naming the carrier's type is not a `Response` return; a carrier configured AS a bare
-/// `Response` would exempt the very thing the rule refuses, so the rule refuses that configuration.
-pub fn no_response_escapes_audit(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
-    let c = cfg.rule("no-response-escapes-audit")?;
-    let root_raw = need_str(c, "root", "no-response-escapes-audit")?;
-    let root = format!("{}/", root_raw.trim_end_matches('/'));
-    let max_escapes = need_int(c, "max_escapes", "no-response-escapes-audit")?;
-    let allowed = c.list_of("allowed_files");
-    let carrier = need_str(c, "answer_carrier", "no-response-escapes-audit")?;
-    let returns = Regex::new(r"->[^{;]*(?<![A-Za-z0-9_])Response(?![A-Za-z0-9_])")?;
-    let carrier_type = carrier.split("::").next().unwrap_or(carrier);
-    if returns.is_match_str(&format!("-> {carrier_type}")) {
-        return Err(format!(
-            "[rules.no-response-escapes-audit] answer_carrier `{carrier}` is a bare Response: \
-             the #28 carrier exemption cannot exempt the type the rule refuses"
-        ));
-    }
-
-    let files: Vec<&String> = tree
-        .fns
-        .keys()
-        .filter(|rel| rel.starts_with(root.as_str()))
-        .collect();
-    let mut offenders = Vec::new();
-    for rel in &files {
-        if allowed.iter().any(|a| a == basename(rel)) {
-            continue;
-        }
-        for f in tree.fns[*rel].iter() {
-            if f.intest {
-                continue;
-            }
-            let sig: String = tree.files[*rel][f.start - 1..f.body_start]
-                .iter()
-                .map(|l| l.code.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if returns.is_match_str(&sig) {
-                offenders.push(format!(
-                    "{} returns a Response at {rel}:{}",
-                    f.name, f.start
-                ));
-            }
-        }
-    }
-    let current = offenders.len() as i64;
-    let mut sorted_allowed = allowed.clone();
-    sorted_allowed.sort();
-    let detail = if files.is_empty() {
-        format!("{VACUOUS}{root_raw} does not exist yet; no step file to check")
-    } else {
-        format!(
-            "{current} function(s) under {root_raw} returning a Response outside {} (ceiling \
-             {max_escapes}; answer carrier {carrier}, #28): {}",
-            py_list(&sorted_allowed),
-            join_or_none(&offenders)
-        )
-    };
-    Ok(vec![plain(
-        "no-response-escapes-audit",
-        current <= max_escapes,
-        "only the Audit step hands a Response back to the loop",
-        detail,
-        current,
-        max_escapes,
-        offenders,
-    )])
-}
+// STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): the rule's subject, the retired engine
+// crate's step directory (`crates/busbar-llm/src/unit`, whose Audit step was the one file allowed to
+// answer), left the tree with the crate. No plane has a step directory: a plane answers the kernel
+// through its door's ABI table, and a unit is sealed by the kernel loop's one Audit step, which
+// one-teller-loop and teller-step-order hold. Its table is struck from qa/construction.toml in the
+// same commit.
 
 // ── 12. terminal-doors-in-audit-step ─────────────────────────────────────────────────────────────
-
-pub fn terminal_doors_in_audit_step(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
-    let c = cfg.rule("terminal-doors-in-audit-step")?;
-    let crate_name = need_str(c, "crate", "terminal-doors-in-audit-step")?;
-    let allowed_file = need_str(c, "allowed_file", "terminal-doors-in-audit-step")?;
-    let ceiling = need_int(c, "max_extra_sites", "terminal-doors-in-audit-step")?;
-    let prefix = format!("crates/{crate_name}/");
-    let files: Vec<String> = tree
-        .files
-        .keys()
-        .filter(|r| r.starts_with(prefix.as_str()))
-        .cloned()
-        .collect();
-
-    let mut offenders = Vec::new();
-    for door in c.list_of("doors") {
-        for (rel, l) in call_sites(tree, &door, Some(&files))? {
-            if rel == allowed_file {
-                continue;
-            }
-            offenders.push(format!("`{door}(` at {rel}:{}", l.no));
-        }
-    }
-    let current = offenders.len() as i64;
-    let detail = if current == 0 && !tree.files.contains_key(allowed_file) {
-        format!("{VACUOUS}no door is called in {crate_name} and {allowed_file} does not exist yet")
-    } else {
-        format!(
-            "{current} terminal-door call(s) in {crate_name} outside {allowed_file} (ceiling \
-             {ceiling}): {}",
-            join_or_none(&offenders)
-        )
-    };
-    Ok(vec![plain(
-        "terminal-doors-in-audit-step",
-        current <= ceiling,
-        "the plane's terminal doors are called only from its Audit step",
-        detail,
-        current,
-        ceiling,
-        offenders,
-    )])
-}
+// STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): the rule's subject, the retired engine crate's terminal doors and Audit step,
+// left the tree with the crate; its table is struck from qa/construction.toml in the same commit.
 
 // ── 13. one-pick-site ────────────────────────────────────────────────────────────────────────────
 
@@ -1410,64 +1340,3 @@ pub fn one_pick_site(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
 /// The unused-parameter shim: several rules take a `Ctx` they only need for the tree walk, and
 /// keeping the signature uniform is what lets the rule table stay a table.
 pub fn unused(_cx: &Ctx) {}
-
-#[cfg(test)]
-mod no_response_escapes_audit_tests {
-    use super::*;
-    use crate::gates::construction::tree::{find_fns, scan_text, Lexer};
-
-    /// One step file, scanned the way the gate scans the tree, under the rule's configured root.
-    fn tree_of(src: &str) -> Tree {
-        let lexer = Lexer::new().expect("the lexer builds");
-        let rel = "crates/busbar-llm/src/unit/node.rs".to_string();
-        let lines = scan_text(&lexer, &rel, src, &[]);
-        let fns = find_fns(&lexer, &rel, &lines);
-        Tree {
-            root: std::path::PathBuf::from("."),
-            files: BTreeMap::from([(rel.clone(), std::sync::Arc::new(lines))]),
-            fns: BTreeMap::from([(rel, std::sync::Arc::new(fns))]),
-            lexer,
-        }
-    }
-
-    fn cfg_with(carrier: &str) -> Cfg {
-        let text = format!(
-            "[rules.no-response-escapes-audit]\nroot = \"crates/busbar-llm/src/unit\"\n\
-             allowed_files = [\"audit.rs\"]\nanswer_carrier = \"{carrier}\"\nmax_escapes = 0\n"
-        );
-        Cfg {
-            doc: crate::toml_doc::parse_str(&text).expect("the fixture config parses"),
-        }
-    }
-
-    const STEP_FILE: &str = "fn answers() -> PlaneAnswer {\n    PlaneAnswer::Live(render())\n}\n\n\
-                             fn escapes() -> Response {\n    render()\n}\n";
-
-    /// THE CARRIER IS THE SCOPE'S ONE EXEMPTION (#28), AND THE RED ARM STANDS: a step function
-    /// answering with a `PlaneAnswer` is not counted, and one returning a bare `Response` still is.
-    #[test]
-    fn a_plane_answer_passes_and_a_bare_response_is_still_refused() {
-        let rows = no_response_escapes_audit(&tree_of(STEP_FILE), &cfg_with("PlaneAnswer::Live"))
-            .expect("the rule runs");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].current, 1, "{}", rows[0].detail);
-        assert_eq!(
-            rows[0].offenders,
-            vec!["escapes returns a Response at crates/busbar-llm/src/unit/node.rs:5".to_string()]
-        );
-        assert!(matches!(rows[0].status, Status::Fail), "{}", rows[0].detail);
-    }
-
-    /// The exemption cannot be widened to the type the rule refuses: a bare-`Response` carrier is a
-    /// configuration the rule refuses, by name.
-    #[test]
-    fn a_bare_response_carrier_is_refused() {
-        let err = no_response_escapes_audit(&tree_of(STEP_FILE), &cfg_with("Response"))
-            .expect_err("a bare Response cannot be the carrier");
-        assert_eq!(
-            err,
-            "[rules.no-response-escapes-audit] answer_carrier `Response` is a bare Response: the #28 \
-             carrier exemption cannot exempt the type the rule refuses"
-        );
-    }
-}

@@ -187,6 +187,8 @@ fn test_provider_auth_style_is_a_closed_enum() {
 
 #[test]
 fn test_validate_rejects_bad_protocol() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // An unknown `protocol` must be COLLECTED by validate() (alongside any other config error),
     // not escape to a lone `die()` at lane construction in main.rs. Mirrors
     // test_validate_rejects_bad_auth_style.
@@ -395,6 +397,8 @@ fn test_validate_rejects_empty_upstream_model() {
 
 #[test]
 fn test_validate_rejects_pool_name_equals_provider_name() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
@@ -422,6 +426,8 @@ fn test_validate_rejects_pool_name_equals_provider_name() {
 
 #[test]
 fn test_validate_rejects_unknown_member_ref() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
@@ -448,6 +454,8 @@ fn test_validate_rejects_unknown_member_ref() {
 
 #[test]
 fn test_validate_token_url_ssrf_and_scheme() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // token_url carries the client secret in the POST body, so it must clear BOTH the https
     // requirement (case-INSENSITIVELY) and the SSRF/metadata denylist — same as base_url.
     let build = |token_url: &str| -> Vec<String> {
@@ -607,6 +615,8 @@ fn test_validate_conflicting_context_max_across_pools() {
 
 #[test]
 fn test_validate_collects_all_errors() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
         "conflict_provider".to_string(),
@@ -644,6 +654,8 @@ fn test_validate_collects_all_errors() {
 
 #[test]
 fn test_validate_heterogeneous_pool_is_ok() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     // Two different protocols.
     providers.insert(
@@ -685,6 +697,8 @@ fn test_validate_heterogeneous_pool_is_ok() {
 
 #[test]
 fn test_validate_valid_config_succeeds() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
@@ -851,6 +865,8 @@ fn test_validate_rejects_non_https_base_url() {
 /// `advanced.allow_destinations` names it); the configuration check does not move with it.
 #[test]
 fn test_validate_accepts_a_private_or_loopback_literal_base_url() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     for url in [
         "http://127.0.0.1:11434",
         "http://10.1.2.3/",
@@ -887,6 +903,8 @@ fn test_the_metadata_denylist_displays_eleven_and_enforces_twelve() {
 
 #[test]
 fn test_validate_accepts_https_base_url() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
         "p".to_string(),
@@ -999,6 +1017,8 @@ fn test_validate_rejects_oversized_inbound_and_webhook_concurrency_limits() {
 /// like `max_requests: -1`.
 #[test]
 fn test_validate_accepts_omitted_max_concurrent() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     providers.insert(
         "myprovider".to_string(),
@@ -1126,6 +1146,8 @@ fn test_validate_rejects_zero_attempt_timeout_ms() {
 
 #[test]
 fn test_validate_rejects_zero_max_requests() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // Twin of the max_concurrent:0 foot-gun on the lifetime-budget axis: max_requests:0 yields
     // limited=true, budget=0, which store::usable() rejects forever — must fail loud at boot.
     let mut providers = HashMap::new();
@@ -1166,6 +1188,8 @@ fn test_validate_rejects_zero_max_requests() {
 
 #[test]
 fn test_localhost_is_allowed_by_default() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // Under the metadata-denylist model, `localhost` is a legitimate LOCAL-MODEL upstream and is
     // ALLOWED with NO flag — it is not a metadata endpoint. Both the bare name and the
     // trailing-dot FQDN form, case-insensitively, are NOT flagged by the SSRF guard.
@@ -1324,6 +1348,8 @@ fn test_validate_rejects_model_named_admin_with_legacy_message() {
 
 #[test]
 fn test_validate_allows_api_prefixed_but_boundary_safe_names() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // The reserved check mirrors the auth middleware's PATH-BOUNDARY-SAFE `is_admin` test: only
     // the exact `api` segment collides. `apix` and friends are normal routes (proven by
     // test_admin_prefix_is_boundary_safe in auth.rs) and must NOT be rejected. `adminx` is a normal
@@ -1468,6 +1494,8 @@ fn test_validate_rejects_bad_breaker_params() {
 
 #[test]
 fn test_validate_accepts_good_breaker_params() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
@@ -1492,6 +1520,8 @@ fn test_validate_accepts_good_breaker_params() {
 
 #[test]
 fn test_validate_rejects_zero_cooldown_breaker() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // A breaker with base_cooldown_secs == 0 or max_cooldown_secs == 0
     // passes the inversion check (0 <= 0) yet is degenerate — when it trips open it re-admits the
     // failing backend immediately because the cooldown window is zero seconds, defeating the
@@ -1558,6 +1588,8 @@ fn test_validate_rejects_zero_failover_deadline() {
 
 #[test]
 fn test_validate_accepts_positive_failover_deadline_and_zero_cap() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // A positive deadline validates. cap == 0 is deliberately BENIGN (the `0..=cap` loop still
     // runs the primary once), so it must NOT be rejected.
     let (providers, models, _) = valid_maps();
@@ -1769,6 +1801,8 @@ fn validate_admin_auth_plugin_name_no_longer_rejected() {
 
 #[test]
 fn test_validate_accepts_known_failover_exclusion() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // An exclusion that names a real member of the pool is the supported case and must validate.
     let (mut providers, mut models, _) = valid_maps();
     providers
@@ -1901,6 +1935,8 @@ fn test_validate_chain_tokens_module_removed_message() {
 
 #[test]
 fn test_validate_chain_unknown_module_rejected_keys_accepted() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // `config_validate::validate` runs BEFORE the plugin registry exists (see this crate's
     // `preflight_plugins_and_secrets` doc comment), so it genuinely cannot tell a real `kind: auth`
     // plugin name from a typo -- that distinction is made by main.rs's later, registry-aware check
@@ -1993,6 +2029,8 @@ fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
 /// auto-generated a key at boot, so this config validated clean.
 #[test]
 fn test_keys_chain_without_signing_key_is_boot_error() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
 
@@ -2034,6 +2072,8 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
 /// spurious mint-path error even when `admin_auth` grants no mint capability.
 #[test]
 fn test_1_5_2_oidc_chain_needs_no_mint_path() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(make_auth_chain(
@@ -2059,6 +2099,8 @@ fn test_1_5_2_oidc_chain_needs_no_mint_path() {
 /// Feature-independent (the branch is purely structural), so it holds under `--no-default-features`.
 #[test]
 fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
 
@@ -2179,6 +2221,8 @@ use crate::test_support::warn_capture::WarnCapture;
 
 #[test]
 fn test_validate_passthrough_warns_on_nonempty_configured_key() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // In passthrough mode the proxy engine selects the upstream key as
     // `caller_token.unwrap_or("")` (NOT `lane.api_key` - that was hardened per LOW #15), so under
     // passthrough the configured `api_key` is NEVER forwarded: it is inert dead config. Its presence
@@ -2253,6 +2297,8 @@ fn test_validate_passthrough_warns_on_nonempty_configured_key() {
 
 #[test]
 fn test_validate_passthrough_no_warn_when_all_keys_empty() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // Counter-case: with auth.mode=passthrough and EVERY provider's api_key_env unset, no
     // credential-leak warning fires — the guard keys off the RESOLVED value, not merely the
     // presence of the passthrough mode. This pins the false-positive boundary.
@@ -2292,6 +2338,8 @@ fn test_validate_passthrough_no_warn_when_all_keys_empty() {
 
 #[test]
 fn test_validate_empty_chain_carries_no_requirement() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // The 1.4.x "mode: none" posture is an EMPTY chain now: no auth module, no requirement.
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
@@ -2539,6 +2587,8 @@ fn test_reject_cidr_metadata_entries() {
 
 #[test]
 fn test_global_allow_overrides_blocked_metadata_hosts() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // global security.allow_metadata_hosts must override an entry in blocked_metadata_hosts
     // (allow always wins) — both at the guard level and through full validate().
     let blocked = vec!["10.77.77.77".to_string()];
@@ -2569,6 +2619,8 @@ fn test_global_allow_overrides_blocked_metadata_hosts() {
 
 #[test]
 fn test_allow_all_metadata_beats_nonempty_blocked_list() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // allow_all_metadata: true wins even with a NON-EMPTY blocked_metadata_hosts — the nuclear
     // override disables the guard wholesale.
     let blocked = vec!["10.0.0.7".to_string(), "metadata.x.example".to_string()];
@@ -2755,6 +2807,8 @@ fn test_validate_rejects_path_override_host_fusion() {
 
 #[test]
 fn test_validate_accepts_well_formed_path_override() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // The shipped catalog form — a leading-slash path on a public host — must validate. Mirrors
     // the `zai-payg` provider (`base_url: .../api/paas/v4` + `path: /chat/completions`).
     let mut providers = HashMap::new();
@@ -2835,6 +2889,8 @@ fn test_validate_accepts_pool_with_at_least_one_member() {
 
 #[test]
 fn test_validate_accepts_positive_weight_member() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // The default weight (1) and any positive weight must validate.
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
@@ -2938,6 +2994,8 @@ fn test_on_exhausted_is_structured_and_rejects_malformed_at_parse() {
 
 #[test]
 fn test_validate_accepts_existing_fallback_pool() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
@@ -2975,6 +3033,8 @@ fn test_queue_config_parses_and_both_keys_conflict() {
 
 #[test]
 fn test_validate_accepts_queue_within_budget() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
@@ -3033,6 +3093,8 @@ fn test_validate_rejects_queue_max_ms_exceeding_resolved_budget() {
 /// off-by-one the sibling reject test cannot catch.
 #[test]
 fn test_validate_accepts_queue_max_ms_equal_to_resolved_budget() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
@@ -3167,6 +3229,8 @@ fn test_validate_rejects_three_pool_fallback_cycle() {
 
 #[test]
 fn test_validate_accepts_acyclic_fallback_chain() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // A -> B -> C (no loop back) is a legitimate degraded-routing chain and must NOT be flagged
     // as a cycle (guard against an over-broad cycle detector). C has no fallback.
     let (providers, models, _) = valid_maps();
@@ -3189,6 +3253,8 @@ fn test_validate_accepts_acyclic_fallback_chain() {
 
 #[test]
 fn test_validate_accepts_diamond_fallback_no_cycle() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // A->C and B->C (two pools share a downstream fallback) is NOT a cycle: C is visited from
     // two distinct walks but neither walk loops. Guards the min-member dedup logic against a
     // false positive on a converging (non-looping) graph.
@@ -3227,6 +3293,8 @@ fn test_affinity_mode_is_a_closed_enum() {
 
 #[test]
 fn test_validate_accepts_session_affinity_mode() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (providers, models, _) = valid_maps();
     let mut pools = HashMap::new();
     let mut pool = make_pool(vec![make_member("mymodel")]);
@@ -3246,6 +3314,8 @@ fn test_validate_accepts_session_affinity_mode() {
 /// rejected with a misleading "must use http or https". Mirrors the webhook guard's `scheme_is`.
 #[test]
 fn test_validate_accepts_uppercase_url_scheme() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (mut providers, models, _) = valid_maps();
     // Point an existing provider at an uppercase-scheme https URL.
     if let Some((_, p)) = providers.iter_mut().next() {
@@ -3271,6 +3341,8 @@ fn test_validate_accepts_uppercase_url_scheme() {
 /// echoed the base URL as written.
 #[test]
 fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     const PLANTED: &str = "svcuser:hunter2-P4ss@";
     let with_base = |base_url: String, path: Option<&str>, path_base: Option<&str>| {
         let (mut providers, models, _) = valid_maps();
@@ -3648,27 +3720,18 @@ fn test_hook_on_error_terminating_chain_ok() {
         );
     }
 
-    // A ranking-strategy fallback terminates the chain when the plugin is compiled in; when it
-    // is compiled out, naming one is a boot error (compliance-by-compilation).
+    // A ranking-strategy fallback terminates the chain when the build links a ranking row (a test
+    // build always links the kernel's ranking double). A build that links none refuses it at boot
+    // (compliance-by-compilation): the composition root's build without its `hooks-ranking`
+    // feature, proven where that build is made (`scripts/no-plugins-gate.sh`, RED-B).
     let mut cfg = hooks_test_cfg();
     let mut c = gate_hook("test-hook", 150);
     c.on_error = "cheapest".to_string();
     cfg.hooks.insert("c".to_string(), c);
-    let result = validate(&cfg);
-    #[cfg(feature = "hooks-ranking")]
-    if let Err(errs) = result {
+    if let Err(errs) = validate(&cfg) {
         assert!(
             !errs.iter().any(|e| e.contains("on_error")),
-            "a strategy fallback must be accepted when compiled in; got: {errs:?}"
-        );
-    }
-    #[cfg(not(feature = "hooks-ranking"))]
-    {
-        let errs = result.expect_err("a strategy fallback without the plugin must be rejected");
-        assert!(
-            errs.iter()
-                .any(|e| e.contains("WITHOUT the `hooks-ranking` feature")),
-            "{errs:?}"
+            "a strategy fallback must be accepted when a ranking row is linked; got: {errs:?}"
         );
     }
 }
@@ -3851,6 +3914,8 @@ fn make_provider_allow_hosts(base_url: &str, hosts: &[&str]) -> config::Provider
 
 #[test]
 fn test_local_upstreams_allowed_by_default_no_flag() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // The core use case: an operator fronts a local Ollama / vLLM / LM Studio. Under the
     // metadata-denylist model this validates with NO flag — plain http:// is allowed because the
     // host is private/loopback, and the SSRF guard allows everything that is not metadata.
@@ -3882,6 +3947,8 @@ fn test_local_upstreams_allowed_by_default_no_flag() {
 
 #[test]
 fn test_scheme_rule_public_http_rejected_https_allowed() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // PUBLIC http:// is rejected (cleartext would leak the API key on the wire); public https://
     // is allowed; local http:// is allowed (no off-box wiretap, local models are plaintext).
     // public http → rejected with the https-for-public-host diagnostic.
@@ -3956,6 +4023,8 @@ fn test_metadata_blocked_by_default_every_form() {
 
 #[test]
 fn test_per_provider_allow_metadata_hosts_is_surgical_and_scoped() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // Per-provider `allow_metadata_hosts: ["169.254.169.254"]` unblocks ONLY that host for ONLY
     // that provider: a DIFFERENT metadata IP stays blocked, and another provider still blocks the
     // same IP. (https so the scheme rule passes — the override governs the SSRF denylist only.)
@@ -4001,6 +4070,8 @@ fn test_per_provider_allow_metadata_hosts_is_surgical_and_scoped() {
 
 #[test]
 fn test_global_allow_metadata_hosts_unblocks_all_providers() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // security.allow_metadata_hosts unblocks the listed host for EVERY provider.
     let mut providers = HashMap::new();
     providers.insert(
@@ -4032,6 +4103,8 @@ fn test_global_allow_metadata_hosts_unblocks_all_providers() {
 
 #[test]
 fn test_allow_all_metadata_disables_guard_entirely() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // security.allow_all_metadata: true disables the metadata guard for everything.
     for base in [
         "https://169.254.169.254/",
@@ -4086,6 +4159,8 @@ fn test_allow_override_matches_obfuscated_spellings() {
 
 #[test]
 fn test_blocked_metadata_hosts_extends_denylist() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // security.blocked_metadata_hosts appends to the hardcoded denylist. An RFC-1918 address that
     // is normally ALLOWED becomes blocked once listed; a DNS hostname likewise; and an obfuscated
     // spelling of a listed IP is caught too. An UN-listed RFC-1918 host stays allowed.
@@ -4153,6 +4228,8 @@ fn test_blocked_metadata_hosts_extends_denylist() {
 
 #[test]
 fn test_public_targets_unaffected() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // A normal public https provider validates and the guard allows it regardless of the flag.
     for base in [
         "https://api.vendor-a.example.com",
@@ -4173,6 +4250,8 @@ fn test_public_targets_unaffected() {
 
 #[test]
 fn test_path_override_composition_under_metadata_rules() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // A leading-slash path on a local http base_url validates (composed url re-checked, allowed).
     let mut ok = make_provider(proto_b(), "http://localhost:11434", "API_KEY");
     ok.path = Some("/v1/chat/completions".to_string());
@@ -4274,6 +4353,8 @@ fn rate_card_of(entries: &[&str]) -> std::collections::BTreeMap<String, config::
 /// passes (token pricing 0), and a complete card passes.
 #[test]
 fn test_validate_rate_card_completeness_fails_closed_with_paste_stub() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-opus-4"]);
     cfg.rate_card = Some(rate_card_of(&["some-other-model"]));
     let errs =
@@ -4339,6 +4420,8 @@ fn test_validate_unpriced_class_with_billing_on_refuses_boot() {
 /// class is not a refusal because there is no card for it to be missing from, so boot succeeds.
 #[test]
 fn test_validate_absent_card_boots_free_no_refusal() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // Billing OFF: no rate_card at all. Every class is unpriced, and that is legal (serve free).
     let cfg = cost_cfg(&["claude-opus-4", "claude-sonnet-4"]);
     assert!(
@@ -4361,6 +4444,8 @@ fn test_validate_absent_card_boots_free_no_refusal() {
 /// these configs and billed them at a rounded rate (or at 0).
 #[test]
 fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     for (tier, v) in [
         ("input_utok", 0.0004),
         ("output_utok", 0.000_093_13),
@@ -4420,6 +4505,8 @@ fn test_validate_rate_card_stubs_every_missing_model() {
 /// (The 1.4.x behavior priced the resolved upstream name; that resolution is identity now.)
 #[test]
 fn test_validate_rate_card_keyed_by_config_name_not_upstream() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["smart"]);
     cfg.models.get_mut("smart").unwrap().upstream_model = Some("gpt-5".to_string());
 
@@ -4525,6 +4612,8 @@ fn test_rate_card_open_class_grammar_is_exact_and_refuses_a_reserved_class() {
 /// the model), NOT a hard error — validation still succeeds. A priced entry must NOT warn.
 #[test]
 fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -4605,6 +4694,8 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
 /// what serde does with a key the document does not carry, which a Rust literal cannot express.
 #[test]
 fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_class_at_zero() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     // The exact card from the M-07 worked example: the two token tiers priced, both cache tiers
     // simply not written.
@@ -4660,6 +4751,8 @@ fn test_validate_rate_card_entry_omitting_a_tier_is_accepted_and_bills_that_clas
 /// collapse exactly the distinction #77(5) exists to draw.
 #[test]
 fn test_validate_rate_card_entry_with_explicit_zero_tiers_is_free_not_unpriced() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     let card: std::collections::BTreeMap<String, config::RateEntryCfg> = serde_yaml::from_str(
         "claude-sonnet:\n  input_utok: 3.0\n  output_utok: 15.0\n  cache_read_utok: 0.0\n  \
@@ -4680,6 +4773,8 @@ fn test_validate_rate_card_entry_with_explicit_zero_tiers_is_free_not_unpriced()
 /// boundary between the two tests above, held at the extreme.
 #[test]
 fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["free-on-purpose"]);
     let card: std::collections::BTreeMap<String, config::RateEntryCfg> = serde_yaml::from_str(
         "free-on-purpose:\n  input_utok: 0.0\n  output_utok: 0.0\n  cache_read_utok: 0.0\n  \
@@ -4703,6 +4798,8 @@ fn test_validate_rate_card_entry_all_four_explicit_zeros_still_only_warns() {
 /// class", which the one function answers at run time on a hit.
 #[test]
 fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     cfg.rate_card = Some(std::collections::BTreeMap::from([(
         "claude-sonnet".to_string(),
@@ -4724,6 +4821,8 @@ fn test_validate_allows_a_flat_card_beside_a_plane_with_no_card_of_its_own() {
 /// completeness rule fire: the flat plane stays billing OFF.
 #[test]
 fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_off() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     let bad: config::RateEntryCfg =
         serde_yaml::from_str("input_utok: -1\n").expect("parses; validation refuses");
@@ -4753,6 +4852,8 @@ fn test_validate_holds_a_plane_card_to_the_card_shape_and_leaves_the_flat_plane_
 /// still boot. #42: *"rate_card ABSENT ⇒ NOT billed … no boot-refusal"*.
 #[test]
 fn test_validate_allows_a_non_fallback_plane_when_billing_is_off() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["claude-sonnet"]);
     assert!(cfg.rate_card.is_none(), "the fixture starts billing-off");
     cfg.plane_defs.insert(
@@ -4770,6 +4871,8 @@ fn test_validate_allows_a_non_fallback_plane_when_billing_is_off() {
 /// values pass.
 #[test]
 fn test_validate_rejects_negative_per_request_fee() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["m"]);
     cfg.per_request_fee = -1;
     let errs = validate(&cfg).expect_err("a negative per_request_fee must fail validation");
@@ -4789,6 +4892,8 @@ fn test_validate_rejects_negative_per_request_fee() {
 /// (An ABSENT store block is refused too: `store_required_tests.rs`, Q-STORE = (B).)
 #[test]
 fn test_validate_rejects_empty_store_module() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut cfg = cost_cfg(&["m"]);
     cfg.store = Some(config::StoreCfg {
         module: "   ".to_string(),
@@ -4836,6 +4941,8 @@ fn limit_requests_per_minute(amount: u64) -> crate::config::groups::LimitCfg {
 /// the walk). (Heir of the budget_groups validation family.)
 #[test]
 fn test_validate_groups_faults_are_named_with_fixes() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // Missing parent -> paste-ready stub of the missing group.
     let mut cfg = cost_cfg(&["m"]);
     cfg.groups.insert(
@@ -5002,6 +5109,8 @@ fn auth_with_binding(
 /// with the paste-ready chain stub; the same binding under an active module passes.
 #[test]
 fn test_validate_role_binding_module_must_be_in_a_chain() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.auth = Some(auth_with_binding(
@@ -5040,6 +5149,8 @@ fn test_validate_role_binding_module_must_be_in_a_chain() {
 /// paste-ready group stub; binding to an existing group passes.
 #[test]
 fn test_validate_role_binding_group_must_exist() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let binding = config::RoleBindingCfg {
         allowed_pools: None,
         group: Some("squad".to_string()),
@@ -5106,6 +5217,8 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
 /// their required setting fail too. Well-formed env/file refs pass (values are NOT resolved).
 #[test]
 fn test_validate_secret_module_resolvability() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     // A NON-built-in module (a `kind: secret` PLUGIN reference such
     // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
     // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
@@ -6239,6 +6352,8 @@ fn test_validate_refuses_every_duration_past_the_runtime_horizon() {
 /// accepted.
 #[test]
 fn test_validate_refuses_per_lane_durations_past_the_runtime_horizon() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let mut providers = HashMap::new();
     let mut provider = make_provider(proto_a(), "https://api.example.com", "API_KEY");
     provider.health = Some(crate::config::providers::HealthCfg {
@@ -6311,6 +6426,8 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
         caller_credential_refusal: None,
     },
     wire_format_names: || &[],
+    // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
+    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
@@ -6642,6 +6759,35 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     let want = "live.rate_card configures unit(s) per_session not declared by this plane \
                 (declared: calls); remove them or fix the name";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
+}
+
+/// An EMPTY `error_map` is valid: the HTTP status still classifies every answer. Rehomes
+/// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_empty_error_map_is_valid_but_bad_value_fails
+/// (its bad-value half is `test_error_map_invalid_class_message_lists_full_valid_set`). RED arm:
+/// the same deployment with one unknown class word is refused naming it.
+#[test]
+fn an_empty_error_map_is_valid_and_an_unknown_class_word_is_not() {
+    crate::test_support::register_neutral_test_plane();
+    let cfg_with = |error_map: HashMap<String, String>| {
+        let mut p = make_provider(proto_a(), "https://api.example.com", "API_KEY");
+        p.error_map = error_map;
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), p);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("p", 10));
+        let mut pools = HashMap::new();
+        pools.insert("mypool".to_string(), make_pool(vec![make_member("m")]));
+        make_root_cfg(providers, models, pools)
+    };
+    assert!(
+        validate(&cfg_with(HashMap::new())).is_ok(),
+        "an empty error_map relies on the HTTP status and is valid"
+    );
+    let errs = validate(&cfg_with(
+        [("1234".to_string(), "not_a_status_class".to_string())].into(),
+    ))
+    .expect_err("an unknown class word is refused");
+    assert!(errs.join(" | ").contains("invalid StatusClass"), "{errs:?}");
 }
 
 /// Q128 audit ruling (a), restating its M4: a `jwt-bearer` credential naming its key file is

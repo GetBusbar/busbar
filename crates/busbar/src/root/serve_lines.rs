@@ -19,7 +19,10 @@
 //!   snapshot binds, then the configured auth chain and the one verdict resolution. A configured
 //!   chain with no credential, or a refused one, refuses to serve: nonzero exit, the sentence on
 //!   stderr, not one frame first.
-//! - EOF on stdin ends the session: every unit still open ends, and the serve returns `0`.
+//! - EOF on stdin, or the shutdown signal, ends the session: no further line is read, the units
+//!   already in flight finish and answer within the drain grace (as the listener path lets its
+//!   in-flight requests drain on the same signal), any still running after it are ended, and the
+//!   serve returns `0`.
 //!
 //! Every meaning a line has is the plane's, and every name the carrier answers by is the
 //! transport's; this module names neither.
@@ -99,7 +102,10 @@ pub fn line_claim(served: &Served) -> Option<(usize, u32)> {
             .snapshot
             .claims
             .iter()
-            .position(|c| c.carrier == carrier)
+            // A raw affix (`CLAIM_RAW_AFFIX`) mounts no route on any carrier.
+            .position(|c| {
+                c.carrier == carrier && c.flags & busbar_contract::abi::plane::CLAIM_RAW_AFFIX == 0
+            })
             .and_then(|i| u32::try_from(i).ok())
             .map(|claim| (p, claim))
     })
@@ -226,26 +232,38 @@ impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
     }
 }
 
-/// SERVE the line claim over the process's own stdin/stdout until EOF: the exit code for `main`.
+/// SERVE the line claim over the process's own stdin/stdout until EOF or `stop` (the shutdown
+/// signal): the exit code for `main`.
 pub async fn serve_lines(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
+    stop: impl std::future::Future<Output = ()>,
 ) -> i32 {
-    serve_lines_over(served, app, pin, tokio::io::stdin(), tokio::io::stdout()).await
+    serve_lines_over(
+        served,
+        app,
+        pin,
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        stop,
+    )
+    .await
 }
 
-/// SERVE the line claim over any reader/writer pair.
-pub async fn serve_lines_over<R, W>(
+/// SERVE the line claim over any reader/writer pair, until the reader's EOF or `stop`.
+pub async fn serve_lines_over<R, W, S>(
     served: Served,
     app: Arc<busbar_kernel::state::AppHandle>,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
     reader: R,
     writer: W,
+    stop: S,
 ) -> i32
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
+    S: std::future::Future<Output = ()>,
 {
     let Some(carrier) = carrier() else {
         eprintln!("busbar: no linked transport carries lines: nothing to serve on stdin");
@@ -335,7 +353,8 @@ where
     );
     let session_field = axum::http::HeaderValue::from(number);
     let mut units = tokio::task::JoinSet::new();
-    while let Some(line) = caller.read().await {
+    let mut stop = std::pin::pin!(stop);
+    while let Some(line) = next_line(&*caller, stop.as_mut()).await {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(CARRIER_SESSION_FIELD, session_field.clone());
         let req = DoorRequest {
@@ -364,15 +383,51 @@ where
         // Units that ended are reaped as the session goes, so a long session holds only its open ones.
         while units.try_join_next().is_some() {}
     }
-    // EOF: the session closes (an emit on it is refused from now on), and every unit still open
-    // ends here.
+    // EOF or the shutdown signal: no further line is read. The units already in flight finish and
+    // answer within the drain grace, as the listener path lets its in-flight requests drain on the
+    // same signal; any still running after it are ended. Then the session closes (an emit on it is
+    // refused from now on).
+    let ended = drain_units(&mut units, busbar_kernel::detached::DETACHED_DRAIN_GRACE).await;
+    if ended > 0 {
+        tracing::warn!(
+            ended,
+            "{carrier} serve: units still running after the drain grace were ended"
+        );
+    }
     kernel.close_carrier_session(number);
-    units.abort_all();
-    while units.join_next().await.is_some() {}
     drop(caller);
     drop(out);
     let _ = written.await;
     0
+}
+
+/// The caller's next line, or `None` at EOF or once `stop` resolves: a stop that fires mid-line
+/// drops that partial line, which was never a unit. `stop` is not polled again after it resolves:
+/// the caller's loop ends on the `None`.
+async fn next_line<R, S>(caller: &LineCaller<R>, stop: std::pin::Pin<&mut S>) -> Option<Vec<u8>>
+where
+    R: AsyncRead + Unpin + Send,
+    S: std::future::Future<Output = ()>,
+{
+    tokio::select! {
+        biased;
+        () = stop => None,
+        line = caller.read() => line,
+    }
+}
+
+/// THE DRAIN: the units in `units` finish within `grace`; whatever is still running after it is
+/// ended. Returns how many were ended.
+async fn drain_units(units: &mut tokio::task::JoinSet<()>, grace: std::time::Duration) -> usize {
+    let finished =
+        tokio::time::timeout(grace, async { while units.join_next().await.is_some() {} }).await;
+    if finished.is_ok() {
+        return 0;
+    }
+    let ended = units.len();
+    units.abort_all();
+    while units.join_next().await.is_some() {}
+    ended
 }
 
 /// A unit's whole answer.
