@@ -7,7 +7,6 @@
 
 use busbar_contract::caps::{KernelSeal, Pass, Route};
 use busbar_kernel_breaker::cfg::{BreakerCfg, TripConfig, TripMode};
-use busbar_kernel_breaker::journal::JournalSink;
 use busbar_kernel_breaker::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
 
 /// A fresh `Pass<Route>` for one `observe`/`state` call — test-only, minted through the
@@ -233,180 +232,94 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
     assert!(!fresh_again);
 }
 
-// ── The probe journal is a function of what the cell actually did ───────────────────────────────
-
-/// A journal that keeps what it was handed, so a test can ask what the unit said happened.
-#[derive(Debug, Default)]
-struct RecordingJournal {
-    events: std::sync::Mutex<Vec<busbar_kernel_breaker::journal::ProbeEvent>>,
-}
-
-impl RecordingJournal {
-    fn events(&self) -> Vec<busbar_kernel_breaker::journal::ProbeEvent> {
-        self.events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-    }
-}
-
-/// The unit owns the sink it is handed; the test keeps a second handle on the same recording so it
-/// can read back what the unit said. A local newtype, because `JournalSink` and `Arc` are both
-/// foreign to this crate and the orphan rule refuses an impl for `Arc<RecordingJournal>` here.
-struct SharedJournal(std::sync::Arc<RecordingJournal>);
-
-impl JournalSink for SharedJournal {
-    fn record(&self, event: busbar_kernel_breaker::journal::ProbeEvent) {
-        self.0
-            .events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(event);
-    }
-}
-
-/// A failure that freshly tripped a cell is never journaled as a failed probe.
+/// A pool a walk has only read readiness in is parked by a bad key seen through another pool.
 ///
-/// `observe` used to decide this from a state it read BEFORE calling `record_failure`, so a
-/// concurrent success winning the recovery CAS in between turned a genuine Closed→Open trip into a
-/// journal line claiming a probe had failed — a combination the cell's own contract says cannot
-/// happen. Gating on what the call reports closes both directions of that race.
+/// The read creates no cell. The pool reads the hard-down through the destination's default cell,
+/// which every hard-down parks, as the cell its first touch would create.
 #[test]
-fn a_fresh_trip_is_never_journaled_as_a_failed_probe() {
-    let cfg = consecutive_cfg(1, 5);
-    let token = route_token();
-    let destination = DestinationId::new(1);
-
-    let mut disagreements = 0usize;
-    for _ in 0..500 {
-        let journal = std::sync::Arc::new(RecordingJournal::default());
-        let unit = BreakerUnit::with_journal(SharedJournal(journal.clone()));
-
-        // Trip it, then win the recovery probe: the cell is HalfOpen and both threads below can see
-        // it that way.
-        unit.observe(
-            "pool",
-            destination,
-            Outcome::Transient { retry_after: None },
-            &cfg,
-            1_000,
-            &token,
-        );
-        let admit = unit
-            .try_admit("pool", destination, 1_000_000)
-            .expect("the cooldown is long past, so the probe is winnable");
-        assert!(admit.probe_epoch.is_some(), "this call won the probe");
-
-        // A degraded fallback path recording a transient failure against the same cell the probe
-        // holder is recording a success against — a shape `record_success` documents as supported.
-        let tripped = std::thread::scope(|scope| {
-            let failing = scope.spawn(|| {
-                unit.observe(
-                    "pool",
-                    destination,
-                    Outcome::Transient { retry_after: None },
-                    &cfg,
-                    1_000_000,
-                    &token,
-                )
-            });
-            scope.spawn(|| {
-                unit.observe(
-                    "pool",
-                    destination,
-                    Outcome::Success,
-                    &cfg,
-                    1_000_000,
-                    &token,
-                )
-            });
-            failing.join().expect("the failing thread did not panic")
-        });
-
-        let journaled_a_failed_probe = journal
-            .events()
-            .iter()
-            .any(|e| matches!(e, busbar_kernel_breaker::journal::ProbeEvent::Failed { .. }));
-        if tripped && journaled_a_failed_probe {
-            disagreements += 1;
-        }
-    }
+fn a_pool_that_only_read_readiness_is_parked_by_a_hard_down_through_another() {
+    let unit = BreakerUnit::new();
+    let destination = DestinationId::new(9);
+    let now = 1_000;
 
     assert_eq!(
-        disagreements, 0,
-        "a call that reported a fresh Closed->Open trip also journaled a failed probe"
+        unit.state("considered", destination, now, &route_token()),
+        LaneState::Ready
+    );
+    let _ = unit.hard_down_all(destination, now);
+
+    assert!(
+        matches!(
+            unit.state("considered", destination, now, &route_token()),
+            LaneState::Suppressed { .. }
+        ),
+        "a hard-down left a pool serving that a walk had already read the destination in"
     );
 }
 
-/// A probe that closed the cell is always journaled as having succeeded.
+/// A readiness read leaves nothing behind (audit kernel-breaker: "the readiness read creates
+/// cells while documented as side-effect-free").
 ///
-/// The mirror of the failure race above, and it runs the other way. `observe` decided `was_probe`
-/// from a state it read BEFORE `record_success`, so a peer winning the recovery probe in between
-/// left this call closing a HalfOpen cell while believing it had been Closed all along — a won
-/// probe with no terminal event in the journal at all. The CAS's own answer is the proof: it can
-/// only succeed from HalfOpen.
+/// The read used to create the pool's cell Closed. A pool asked about before its destination's
+/// default cell tripped then kept that Closed cell: it read Ready, and admitted, through a trip
+/// any pool not yet asked about would carry. Read-only, the earlier read changes nothing, and the
+/// two pools read alike.
 #[test]
-fn a_probe_that_closed_the_cell_is_always_journaled_as_succeeded() {
-    let cfg = consecutive_cfg(1, 5);
-    let token = route_token();
-    let destination = DestinationId::new(2);
-
-    let mut orphans = 0usize;
-    for _ in 0..2_000 {
-        let journal = std::sync::Arc::new(RecordingJournal::default());
-        let unit = BreakerUnit::with_journal(SharedJournal(journal.clone()));
-
-        // Trip the cell and leave the cooldown long past, so the probe is there to be won.
-        unit.observe(
-            "pool",
-            destination,
-            Outcome::Transient { retry_after: None },
-            &cfg,
-            1_000,
-            &token,
-        );
-
-        // One thread records a success against a cell it did not probe — the degraded-fallback
-        // shape `record_success` documents. The other wins the recovery probe. If the win lands
-        // between the first thread's state read and its CAS, the first thread does the closing.
-        let barrier = std::sync::Barrier::new(2);
-        let barrier = &barrier;
-        let unit = &unit;
-        let cfg = &cfg;
-        let token = &token;
-        std::thread::scope(|scope| {
-            scope.spawn(move || {
-                barrier.wait();
-                unit.observe("pool", destination, Outcome::Success, cfg, 1_000_000, token);
-            });
-            scope.spawn(move || {
-                barrier.wait();
-                let _ = unit.try_admit("pool", destination, 1_000_000);
-            });
-        });
-
-        let events = journal.events();
-        let won = events
-            .iter()
-            .any(|e| matches!(e, busbar_kernel_breaker::journal::ProbeEvent::Won { .. }));
-        let succeeded = events.iter().any(|e| {
-            matches!(
-                e,
-                busbar_kernel_breaker::journal::ProbeEvent::Succeeded { .. }
-            )
-        });
-        let closed = matches!(
-            unit.cell("pool", destination).state(),
-            busbar_kernel_breaker::cell::BreakerState::Closed
-        );
-        if won && closed && !succeeded {
-            orphans += 1;
-        }
-    }
+fn a_readiness_read_creates_no_cell_that_a_subsequent_trip_would_miss() {
+    let unit = BreakerUnit::new();
+    let cfg = consecutive_cfg(100, 10_000);
+    let destination = DestinationId::new(11);
+    let now = 1_000;
 
     assert_eq!(
-        orphans, 0,
-        "a won probe whose cell then closed left no Succeeded record in the journal"
+        unit.state("asked", destination, now, &route_token()),
+        LaneState::Ready
+    );
+    // The default cell trips on its own, without a hard-down's fan-out.
+    assert!(unit.observe(
+        "",
+        destination,
+        Outcome::Transient { retry_after: None },
+        &cfg,
+        now,
+        &route_token(),
+    ));
+
+    for pool in ["asked", "never-asked"] {
+        assert!(
+            matches!(
+                unit.state(pool, destination, now, &route_token()),
+                LaneState::Suppressed { until } if until > now
+            ),
+            "pool {pool:?} must read the destination's trip"
+        );
+        assert!(
+            matches!(
+                unit.try_admit(pool, destination, now),
+                Err(LaneState::Suppressed { .. })
+            ),
+            "pool {pool:?} must not admit through the destination's trip"
+        );
+    }
+}
+
+/// A pool whose first touch comes after a hard-down is parked by it (1.5.5 parity: a new pool cell
+/// inherits the lane's known health, v1.5.5 `crates/busbar/src/store/in_memory/mod.rs` `cell`).
+#[test]
+fn a_pool_first_touched_after_a_hard_down_is_parked_by_it() {
+    let unit = BreakerUnit::new();
+    let destination = DestinationId::new(12);
+    let now = 1_000;
+
+    assert!(unit.hard_down_all(destination, now));
+
+    let LaneState::Suppressed { until } = unit.state("late", destination, now, &route_token())
+    else {
+        panic!("a pool first read after a hard-down must read it");
+    };
+    assert_eq!(
+        unit.try_admit("late", destination, now),
+        Err(LaneState::Suppressed { until })
     );
 }
 
@@ -461,7 +374,7 @@ fn a_refusal_never_reports_a_state_that_would_have_admitted() {
                     match unit.try_admit("pool", destination, 2_000_000) {
                         Ok(admit) => {
                             if let Some(epoch) = admit.probe_epoch {
-                                unit.release_probe("pool", destination, epoch, 2_000_000);
+                                unit.release_probe("pool", destination, epoch);
                             }
                         }
                         Err(LaneState::Ready) => {

@@ -1601,71 +1601,32 @@ impl Storage for SharedStorage {
             .list_plane_records(&k, &PlaneSelector::All)
             .await
             .map_err(|f| failed("bucket", f))?;
-        let clients: Vec<String> = rows
+        let cells: Vec<Cell<Bucket>> = rows
             .iter()
             .filter_map(|body| serde_json::from_slice::<Cell<Bucket>>(body).ok())
-            .map(|cell| cell.b.id)
-            .filter(|id| !id.is_empty())
+            .filter(|cell| !cell.b.id.is_empty())
             .collect();
-        for client in clients {
+        for mut cell in cells {
+            // Judged first on the body the listing already read: a client with nothing to reclaim
+            // is not read again. Every node sweeps every client each minute, so a second read of
+            // each would be a store read per client per node per minute, to change nothing.
+            let listed = sweep_bucket(&mut cell.b, cell.at, now, &mut Vec::new());
+            let acts = match listed {
+                Swap::Keep(_) => false,
+                Swap::Write(_) => true,
+                Swap::Retire(_, changed) => {
+                    changed || now_secs().saturating_sub(cell.at) > RETIRE_AFTER_SECS
+                }
+            };
+            if !acts {
+                continue;
+            }
+            let client = cell.b.id;
             let mut freed: Vec<(String, String)> = Vec::new();
             // One bucket that will not swap (a held version, a store fault) is skipped and said,
             // never the end of the sweep: the next tick tries it again.
             let swept = s
-                .update_at(&client, |b, at| {
-                    let mut n = 0u64;
-                    freed = Vec::new();
-                    b.devices.retain(|_, g| {
-                        let keep = now < g.expires_at;
-                        if !keep {
-                            freed.push((
-                                oauth_as::device::normalize_user_code(&g.user_code),
-                                g.device_code.clone(),
-                            ));
-                        }
-                        keep
-                    });
-                    n += freed.len() as u64;
-                    let before = b.codes.len();
-                    b.codes.retain(|_, c| now < c.expires_at);
-                    n += (before - b.codes.len()) as u64;
-                    let before = b.pushed.len();
-                    b.pushed.retain(|_, p| now < p.expires_at);
-                    n += (before - b.pushed.len()) as u64;
-                    let before = b.tokens.len();
-                    b.tokens.retain(|_, t| now < t.expires_at);
-                    n += (before - b.tokens.len()) as u64;
-                    let before = b.refresh.len();
-                    b.refresh
-                        .retain(|_, r| r.expires_at.is_none_or(|exp| now < exp));
-                    n += (before - b.refresh.len()) as u64;
-                    if b.client_barrier.is_some_and(|t| now >= t.until) {
-                        b.client_barrier = None;
-                        n += 1;
-                    }
-                    let before = b.consent_barriers.len();
-                    b.consent_barriers.retain(|_, t| now < t.until);
-                    n += (before - b.consent_barriers.len()) as u64;
-                    // A SELF-REGISTERED client that has held nothing for the idle period goes:
-                    // registration takes no credential, and nothing else would ever reclaim it.
-                    if b.client.as_ref().is_some_and(|c| c.registration.is_some())
-                        && b.records() == 0
-                        && b.pushed.is_empty()
-                        && b.consents.is_empty()
-                        && secs_of(now).saturating_sub(at)
-                            > crate::policy::REGISTERED_CLIENT_IDLE.as_secs()
-                    {
-                        b.client = None;
-                        n += 1;
-                    }
-                    Ok(if b.holds_nothing() {
-                        Swap::Retire(n, n > 0)
-                    } else if n == 0 {
-                        Swap::Keep(0)
-                    } else {
-                        Swap::Write(n)
-                    })
-                })
+                .update_at(&client, |b, at| Ok(sweep_bucket(b, at, now, &mut freed)))
                 .await;
             match swept {
                 Ok(n) => removed += n,
@@ -1707,6 +1668,68 @@ impl Storage for SharedStorage {
             }
         }
         Ok(removed)
+    }
+}
+
+/// Reclaim what has lapsed by `now` in one client's records, whose current version was written at
+/// `at`, noting each lapsed device grant's user code in `freed`: the sweep's one change to a
+/// bucket, judged on the listed body and then made under the version the swap reads.
+fn sweep_bucket(
+    b: &mut Bucket,
+    at: u64,
+    now: SystemTime,
+    freed: &mut Vec<(String, String)>,
+) -> Swap<u64> {
+    let mut n = 0u64;
+    freed.clear();
+    b.devices.retain(|_, g| {
+        let keep = now < g.expires_at;
+        if !keep {
+            freed.push((
+                oauth_as::device::normalize_user_code(&g.user_code),
+                g.device_code.clone(),
+            ));
+        }
+        keep
+    });
+    n += freed.len() as u64;
+    let before = b.codes.len();
+    b.codes.retain(|_, c| now < c.expires_at);
+    n += (before - b.codes.len()) as u64;
+    let before = b.pushed.len();
+    b.pushed.retain(|_, p| now < p.expires_at);
+    n += (before - b.pushed.len()) as u64;
+    let before = b.tokens.len();
+    b.tokens.retain(|_, t| now < t.expires_at);
+    n += (before - b.tokens.len()) as u64;
+    let before = b.refresh.len();
+    b.refresh
+        .retain(|_, r| r.expires_at.is_none_or(|exp| now < exp));
+    n += (before - b.refresh.len()) as u64;
+    if b.client_barrier.is_some_and(|t| now >= t.until) {
+        b.client_barrier = None;
+        n += 1;
+    }
+    let before = b.consent_barriers.len();
+    b.consent_barriers.retain(|_, t| now < t.until);
+    n += (before - b.consent_barriers.len()) as u64;
+    // A SELF-REGISTERED client that has held nothing for the idle period goes: registration takes
+    // no credential, and nothing else would ever reclaim it.
+    if b.client.as_ref().is_some_and(|c| c.registration.is_some())
+        && b.records() == 0
+        && b.pushed.is_empty()
+        && b.consents.is_empty()
+        && secs_of(now).saturating_sub(at) > crate::policy::REGISTERED_CLIENT_IDLE.as_secs()
+    {
+        b.client = None;
+        n += 1;
+    }
+    if b.holds_nothing() {
+        Swap::Retire(n, n > 0)
+    } else if n == 0 {
+        Swap::Keep(0)
+    } else {
+        Swap::Write(n)
     }
 }
 

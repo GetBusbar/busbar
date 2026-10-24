@@ -25,7 +25,7 @@ fn cfg() -> busbar_kernel::config::RootCfg {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "store": { "module": busbar_kernel::config::MIGRATED_STORE_MODULE },
+        "store": { "module": busbar_kernel::config::migrated_store_module() },
         "oauth_as": { "issuer": "https://as.example.com" },
     }))
     .expect("a deploy config carrying `oauth_as:` parses");

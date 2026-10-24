@@ -311,21 +311,17 @@ name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
  "arc-swap",
- "axum",
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
  "busbar-plugin-loader",
  "busbar-stub-transport-plugin",
- "bytes",
  "crc32fast",
  "dimpl",
  "futures",
- "http-body-util",
  "libc",
  "rcgen",
- "reqwest",
  "ring",
  "rustls",
  "rustls-pki-types",
@@ -448,7 +444,6 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-kernel-breaker",
  "bytes",
  "futures",
 ]

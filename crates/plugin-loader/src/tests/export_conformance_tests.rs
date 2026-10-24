@@ -72,7 +72,7 @@ use busbar_contract::abi::host::service::{
 use busbar_contract::abi::mechanism::call::{
     Diag, MetricEntry, OutHead, RawOutcome, DIAG_LOG, DIAG_LOG_DROPPED,
 };
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::DOOR_SYMBOL;
@@ -565,13 +565,18 @@ unsafe impl Sync for OlderDoor {}
 fn older(cell: &'static OnceLock<Box<OlderDoor>>, strip: fn(&mut Ops)) -> *const Door {
     &cell
         .get_or_init(|| {
-            // SAFETY: the linked door answers its `'static` Door; its table is the export kind's.
-            let door = unsafe { *FILE_DOOR() };
-            // SAFETY: as above.
-            let mut ops = unsafe { *door.ops.cast::<Ops>() };
+            let door = *FILE_DOOR();
+            // SAFETY: the linked door's table is the export kind's, `'static`.
+            let mut ops = unsafe { *door.ops().cast::<Ops>() };
             strip(&mut ops);
             let mut older = Box::new(OlderDoor(door, ops));
-            older.0.ops = std::ptr::from_ref(&older.1).cast::<OpsHead>();
+            let parts = DoorParts {
+                ops: std::ptr::from_ref(&older.1).cast::<OpsHead>(),
+                ..older.0.parts()
+            };
+            // SAFETY: the linked door's own `'static` Statement over the boxed table, built once
+            // and held for the process.
+            older.0 = unsafe { Door::__from_parts(parts) };
             older
         })
         .0
@@ -591,10 +596,12 @@ extern "C" fn door_without_check() -> *const Door {
 }
 
 /// Why the one load refuses `door`.
-fn refused_at_load(door: DoorFn) -> String {
+fn refused_at_load(door: busbar_contract::abi::sdk::door::RawDoorFn) -> String {
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
-    match LinkedRow::of(door).and_then(|row| load_linked::<Export>(&row, bind("older", tape, &d))) {
+    match LinkedRow::of_raw(door)
+        .and_then(|row| load_linked::<Export>(&row, bind("older", tape, &d)))
+    {
         Ok(_) => panic!("a door that predates an op was bound"),
         Err(e) => e.to_string(),
     }
@@ -1077,23 +1084,33 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     let bytes = cdylib_bytes(file_cdylib());
     let (lib, staged) = crate::stage::load_library_from_bytes(&bytes, "#11-pre-envelope")
         .expect("stage the file sink cdylib");
-    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the library is leaked below, so the
-    // pointer stays valid for the life of the process.
-    let real_door: DoorFn = unsafe { *lib.get::<DoorFn>(DOOR_SYMBOL).expect("the image's door") };
+    // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; the library is leaked below, so
+    // the pointer stays valid for the life of the process.
+    let real_door: busbar_contract::abi::sdk::door::RawDoorFn = unsafe {
+        *lib.get::<busbar_contract::abi::sdk::door::RawDoorFn>(DOOR_SYMBOL)
+            .expect("the image's door")
+    };
     std::mem::forget(lib);
     std::mem::forget(staged);
     // SAFETY: the image's door answers its `'static` Door; its ops table is the export kind's.
     let door = unsafe { *real_door() };
     // SAFETY: as above: the export kind's table, `'static` in the image.
-    let real_ops = unsafe { *door.ops.cast::<Ops>() };
+    let real_ops = unsafe { *door.ops().cast::<Ops>() };
     let _ = PRE_ENVELOPE_REAL.set(RealOps(real_ops));
     let shim = PRE_ENVELOPE_DOORS.get_or_init(|| {
         let mut shim = Box::new(ShimDoor(door, pre_envelope_ops(&real_ops)));
-        shim.0.ops = std::ptr::from_ref(&shim.1).cast::<OpsHead>();
+        let parts = DoorParts {
+            ops: std::ptr::from_ref(&shim.1).cast::<OpsHead>(),
+            ..shim.0.parts()
+        };
+        // SAFETY: the image's own `'static` Statement over the boxed shim table, built once and
+        // held for the process.
+        shim.0 = unsafe { Door::__from_parts(parts) };
         shim
     });
     assert_eq!(
-        shim.0.statement, door.statement,
+        shim.0.statement(),
+        door.statement(),
         "the image's own Statement"
     );
     PRE_ENVELOPE_PLUGIN_LOCAL
@@ -1102,7 +1119,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
         .clear();
     let tape = Arc::new(Tape::default());
     let d = dispatcher();
-    let row = LinkedRow::of(pre_envelope_door).expect("the image's Statement renders");
+    let row = LinkedRow::of_raw(pre_envelope_door).expect("the image's Statement renders");
     assert_eq!(
         row.statement,
         rendering_of(FILE_DOOR).expect("renders"),
@@ -1769,6 +1786,54 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
         "nothing is lost: the line past the bound is carried once a delivery answers"
     );
     assert_eq!(linked, dropped, "both doors are bounded the same");
+}
+
+/// **DROPPING AN INSTANCE NEVER WAITS ON A DELIVERY THAT NEVER WAKES** (`BUSBAR-1.6.0.md` §11.13
+/// M1: a host thread never waits on plugin code). The request-log WEBHOOK sink, LINKED, its one
+/// delivery pending on a far end that holds the request and never wakes it. Dropping the instance
+/// (a plugin removal, a config reload) gives the delivery a bounded grace, then abandons it on the
+/// dispatcher's client-drop path, the batch still lent to the op until it completes; the dropping
+/// thread returns. (RED: a write-behind delivery with no deadline is never cancelled or detached,
+/// the flusher's stop waited for it, and the drop joined the flusher, so the dropping thread hung
+/// forever.)
+#[test]
+fn dropping_an_instance_whose_delivery_never_wakes_returns() {
+    let name = "bn2-stuck";
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::door(
+            stating(manifest(name, webhook_declares()), WEBHOOK_DOOR),
+            WEBHOOK_DOOR,
+        )])
+        .expect("the linked door admits the sink");
+    // No connection waker is installed: the held request is never woken.
+    let far = Arc::new(Far::default());
+    let sink = ExportRows::new(&registry, dispatcher())
+        .with_conns(far.clone())
+        .open(
+            name,
+            "export.bn2",
+            &serde_json::json!({
+                "url": format!("https://{STALL_TARGET}/in"),
+                "delivery_timeout_secs": 600,
+            }),
+        )
+        .expect("opens");
+    deliver(sink.as_ref(), &serde_json::json!({ "n": 0 }));
+    until("the delivery in flight", || far.stalled() == 1);
+    let (dropped, returned) = std::sync::mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(sink);
+        let _ = dropped.send(());
+    });
+    let returned = returned.recv_timeout(Duration::from_secs(5));
+    if returned.is_err() {
+        // The dropping thread is stuck on the plugin: leave it, so the suite does not hang.
+        std::mem::forget(dropper);
+    }
+    assert!(
+        returned.is_ok(),
+        "dropping the instance returns within a bounded time while its delivery never wakes"
+    );
 }
 
 /// **K9e-2 — A FIRST-PARTY EGRESS CLASS IS GRANTED TO A FIRST-PARTY PLUGIN ONLY** (`BUSBAR-1.6.0.md`

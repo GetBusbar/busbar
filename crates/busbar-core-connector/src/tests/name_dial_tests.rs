@@ -166,6 +166,42 @@ fn a_need_dials_a_hostname_through_the_one_guard() {
     });
 }
 
+/// A NAME'S ADDRESSES ARE TRIED IN TURN (oracle wire.tls client-hello cells, store.boot postgres
+/// localhost): `localhost` answering `::1` first where the far end listens on `127.0.0.1` only. The
+/// pinned `::1` refuses the connect, and the dial moves on to the name's next admitted address, as
+/// 1.5.5's client did. RED before: the open failed on the first refusal.
+#[test]
+fn a_refused_connect_moves_on_to_the_names_next_address() {
+    worker().block_on(async {
+        let port = echo([127, 0, 0, 1].into()).await;
+        let c = connector(
+            Arc::new(Table(vec![
+                ("upstream.test", "::1".parse().unwrap()),
+                ("upstream.test", [127, 0, 0, 1].into()),
+            ])),
+            Arc::default(),
+        );
+        let host = host(&c);
+        let t = table(&host);
+        let target = format!("upstream.test:{port}");
+        let id = t
+            .open(
+                NEED,
+                &OpenDesc {
+                    target: &target,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("a name opens, its dial in flight");
+        assert_eq!(t.write(id, b"ping", false, false), Ok(4));
+        assert_eq!(
+            read(&t, id).await.expect("the second address answers"),
+            b"ping"
+        );
+        t.close(id).unwrap();
+    });
+}
+
 /// The system resolver, through the same path: `localhost` resolves, is judged, and is dialled at
 /// the address it answered first. The guard refuses the `localhost` name itself under
 /// `block_private_addresses` unless the allowlist names it (RFC 6761), so this deployment names it.

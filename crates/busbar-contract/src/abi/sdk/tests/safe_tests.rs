@@ -198,7 +198,7 @@ mod plugin {
 
 fn table() -> &'static LifecycleOnly {
     // SAFETY: the macro's `'static` door and table.
-    unsafe { &*(*plugin::door()).ops.cast::<LifecycleOnly>() }
+    unsafe { &*plugin::door().ops.cast::<LifecycleOnly>() }
 }
 
 fn in_head<T>(op: u32) -> InHead {

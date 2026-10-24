@@ -57,6 +57,9 @@ pub fn percent_decode(s: &str) -> String {
 // observability::HOTPATH_LEVEL` and every in-core reference stay unchanged and byte-identical.
 pub const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
 
+/// The arrival spans a plane's claims state (status row 173), one callsite per name.
+pub mod arrival;
+
 /// The stderr and OTLP level filters, which are deliberately NOT the same.
 ///
 /// stderr takes `RUST_LOG` (a bare level word, e.g. `debug`), default `info`. Full `EnvFilter`
@@ -132,5 +135,5 @@ pub fn init_logging(
 }
 
 #[cfg(test)]
-#[path = "tests/observability_tests.rs"]
+#[path = "../tests/observability_tests.rs"]
 mod tests;

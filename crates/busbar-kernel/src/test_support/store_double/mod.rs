@@ -10,7 +10,7 @@
 //! The kernel reaches a store only through the store kind's door, and it names no store crate: not
 //! in `[dependencies]`, not behind a feature, not under a second name. A test build has no
 //! composition root, so the kernel's own tests that boot an app need a linked `kind: store` row
-//! whose key is the store a migrated 1.5.x config names ([`MIGRATED_STORE_MODULE`]), and the tests
+//! whose key is the store a migrated 1.5.x config names ([`KEY`]), and the tests
 //! that build a `GovState` need a store that keeps what it is told. A behaviour double the kernel's
 //! own tests need lives HERE, as a test-support module of the crate under test, LINKED only — not a
 //! workspace crate, not an example plugin, and not the shipped plugin taken under another name.
@@ -25,8 +25,6 @@
 //!
 //! EPHEMERAL: every counter, key and credential is lost with the handle. Poison-recovering locks
 //! (the governance surface must never panic on a request).
-
-use crate::config::MIGRATED_STORE_MODULE;
 
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
@@ -919,9 +917,16 @@ pub const NAME: &str = "store-double";
 
 /// THE STAND-IN LINKED ENTRY: `(key, ephemeral, door, canonical)`, the shape of the root's linked
 /// store rows ([`crate::preflight::LinkedStore`]). Its key is the store a migrated 1.5.x config names
-/// ([`MIGRATED_STORE_MODULE`]), so a fixture config's `store:` block resolves to it; it claims no
-/// default (Q-STORE = (B)).
-pub const STORE: crate::preflight::LinkedStore = (MIGRATED_STORE_MODULE, true, door, NAME);
+/// ([`KEY`]), so a fixture config's `store:` block resolves to it; it claims no default (Q-STORE =
+/// (B)).
+pub const STORE: crate::preflight::LinkedStore = (KEY, true, door, NAME);
+
+/// The key the double answers to: the frozen-text fixture's `store_1_5_default` row
+/// (`tests/fixtures/frozen_customer_text.yaml`, the table a test build reads in place of the root's),
+/// which [`crate::config::migrated_store_module`] reads. A const because the stand-in store axis is a
+/// const table; `store_required_tests::the_store_double_answers_to_the_migrated_store_module` holds the two
+/// equal.
+pub const KEY: &str = "memory";
 
 /// THE STORE DOOR (store v3, `busbar_contract::abi::store`): every slot of the store v3 table over
 /// [`MemoryStore`], through the contract's store SDK (`abi::sdk::store`) — what [`STORE`] registers,

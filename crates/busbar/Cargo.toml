@@ -153,7 +153,7 @@ busbar-export-otlp = { workspace = true, optional = true }
 busbar-transport-tcp = { workspace = true }
 busbar-transport-http = { workspace = true }
 # gRPC: its own framer door over the carrier (OWNER 2026-09-29, "1 new transport"), linked on the
-# transport-door axis.
+# transport-door axis. Its row reads its crate root's `door` and everything else off its Statement.
 busbar-transport-grpc = { workspace = true }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
@@ -394,10 +394,12 @@ plane-a2a-door = "busbar-plane-a2a"
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `body-ingress`, `protocol-seams`, `diagnostics`,
 # `on-host`, `compose`, `exports` — each an item of the crate's entry
-# module — and the root-bound seams it drives: `egress`, `plane-sections`.
+# module — and the root-bound seam it drives: `egress`.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
-# `transport`: a wire's `KEY`, `COMPOSES_OVER` and `build(lower, &TransportSettings)`.
+# `transport`: a wire's memory-ABI `door`, and nothing else: its key (its own claim, which is its
+# Statement's name), the layers it composes over and whether it carries a session are read off the
+# door's Statement (`root::linked::linked_transport!`; BUSBAR-1.6.0.md l.3560-3561).
 # `stores` / `hooks`: an in-process store's `STORE` and a ranking row's `HOOK` (`root::linked`).
 # `auths`: a `kind: auth` plugin's memory-ABI door (`<entry>::door::door`, the one its dropped-in
 # build exports), under its `linked-name` key.
@@ -459,7 +461,28 @@ busbar-export-otlp = "busbar_export_otlp::door"
 # The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
+# A transport whose door is its crate root's one public item (transitional until its own door-root
+# round names it below): the row reads `door` and everything else off its Statement
+# (`linked_transport!`).
+busbar-transport-grpc = "busbar_transport_grpc"
 plane-streaming = "busbar_plane_streaming::door"
+
+# THE DOOR-ROOT CRATES (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic crate
+# has `fn door()` as its only public item): `<plugin crate> = "<crate>::door"`, the door its door
+# macro emits, a `DoorFn` answering a `&'static Door` (SEALED: a `Door`'s fields are private behind
+# the contract's one `unsafe` constructor; busbar-transport-grpc links transitionally until its own
+# repo's round names it here). A crate named here is linked by its door alone: the generated tables
+# read that door and nothing else, hand it to the loader's safe `admit_linked` (which admits it
+# through `open_linked`, the dlopen path's own checks), and read every fact its axis needs (a
+# transport's key, layers and session; an auth or store row's name; a store's `ephemeral`; an
+# export's name, alias and `declares`; a secret or plane door's `declares`) off the admitted door's
+# Statement (`root::door_root`). A crate not named here is TRANSITIONAL: it keeps its `linked-entry`
+# (else `<crate>::linked`) reads until its own door-root round names it here, and the transitional
+# arm is deleted once every crate is (#1495). A door-root row may name only axes that read its door,
+# and no `linked-entry` or `linked-declares` row. ARCHITECT ruling (row 195; l.272-274): this root
+# generates the linked table and alone depends on the plugin crates; the loader names none; this
+# root stays `forbid(unsafe_code)`.
+[package.metadata.busbar.door-root]
 
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
@@ -721,6 +744,16 @@ path = "tests/no_data_dir_neutrality.rs"
 required-features = ["auth-admin-tokens"]
 
 [[test]]
+name = "law7_direct_model_route"
+path = "tests/law7_direct_model_route.rs"
+required-features = ["auth-admin-tokens"]
+
+[[test]]
+name = "law7_unloaded_plane_apply"
+path = "tests/law7_unloaded_plane_apply.rs"
+required-features = ["auth-admin-tokens"]
+
+[[test]]
 name = "root_listeners_are_the_connectors"
 path = "tests/root_listeners_are_the_connectors.rs"
 required-features = ["auth-admin-tokens"]
@@ -765,6 +798,7 @@ required-features = ["auth-admin-tokens"]
 "renamed_display" = "Valkey"
 "retired_url_scheme" = "redis"
 "snapshot_recorder_failed" = "prometheus recorder install failed; /metrics will be empty"
+"store_1_5_default" = "memory"
 "former.mysql" = "busbar-store-mysql-plugin"
 "former.postgres" = "busbar-store-postgres-plugin"
 "former.sqlite" = "busbar-store-sqlite-plugin"
@@ -797,8 +831,8 @@ busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev 
 busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "cc59d737972c1b881a164b437d63c4f29f6a15c1" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "51e744af4a46222e7bb5ecb8d5c86b97a450f929" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "51e744af4a46222e7bb5ecb8d5c86b97a450f929" }
-busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "1ce8ebd578c88b5fae02477078f7ab20892bb18b" }
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "1ce8ebd578c88b5fae02477078f7ab20892bb18b" }
+busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "70f9efc205abaced72ba2e2d3f5002cf91c03c27" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "70f9efc205abaced72ba2e2d3f5002cf91c03c27" }
 busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "8535098ecf2723bf73dc6e4b1a3174c63b0d8500" }
 busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "8535098ecf2723bf73dc6e4b1a3174c63b0d8500" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
@@ -817,7 +851,7 @@ busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webh
 busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "12b078389496d4c1fd81b730f5d9d0887537c3b0" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
-busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "f1b5d4d75f5cdaa46eff23cfef44e0a675d2fbb4" }
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "2531ef131e492385788b6714687346e48d864d44" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
 busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "7fc1dd8065f7bb95f93530426217a71b63ab7727" }
@@ -835,7 +869,7 @@ busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", 
 # sealed-Secret port (#1021, Part 2 #54): the plugin holds its own credentials in a private `Held`.
 # The pin is oauth dev 722a2fcecd: its secret-named fields are the crate's own `Secret<String, Own>`
 # (secret-hygiene check1, #1192), compiled against busbar dev's contract (oauth f62e2adc58).
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "722a2fcecd61082efa19378052598f109ed11d19" }
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "37d1c93ab7155569caa54a887f75c1a2da3e3768" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
 # pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret and session token are a
@@ -866,7 +900,7 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
 # double (`busbar_kernel::test_support::store_double`), and the root's `linked_store_double` tests
 # prove the double states what this door states.
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "3d0ac5eed987d171d3b004c77caa23b21c1f4c0b" }
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "1367f8c318f2fb58e2f57ef4ab7aa5e4407c4220" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
@@ -879,7 +913,7 @@ busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-deci
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "2345681a614939ac51371c14db05ded1a00190ad" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "0565fcf1fa040ed986e0abcc8528e1b336e2e83c" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
