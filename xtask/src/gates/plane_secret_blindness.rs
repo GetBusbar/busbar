@@ -117,11 +117,88 @@ pub fn undefined_names(cx: &Ctx, names: &[&str]) -> Result<Vec<String>, String> 
         if !missing.iter().any(|(n, _)| f.text.contains(n)) {
             continue;
         }
-        for sl in one_abi::production(&f.text) {
-            missing.retain(|(_, defs)| !defs.iter().any(|d| one_abi::has_word(&sl.counted, d)));
-        }
+        let defined = defined_in(&f.text, &missing);
+        missing.retain(|(n, _)| !defined.contains(*n));
     }
     Ok(missing.into_iter().map(|(n, _)| n.to_string()).collect())
+}
+
+/// WHICH OF `missing` THIS TEXT DEFINES, remembered by the text's content. Lexing a file for its
+/// definitions is the dearest step of every run, and the battery's cases all run over the same
+/// tree with a plant or two beside it: a result keyed by what was read (length and two hashes of the
+/// text, and of the names asked) cannot go stale, so each unchanged file is lexed once per process
+/// and a planted file, being different text, is lexed on its own.
+fn defined_in(
+    text: &str,
+    missing: &[(&str, Vec<String>)],
+) -> std::sync::Arc<std::collections::BTreeSet<String>> {
+    use std::hash::{Hash, Hasher};
+    type Key = (usize, u64, u64, u64);
+    type Memo = std::collections::HashMap<Key, std::sync::Arc<std::collections::BTreeSet<String>>>;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h1);
+    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+    0xA5A5_u16.hash(&mut h2);
+    text.len().hash(&mut h2);
+    text.hash(&mut h2);
+    let mut h3 = std::collections::hash_map::DefaultHasher::new();
+    for (n, _) in missing {
+        n.hash(&mut h3);
+    }
+    let key = (text.len(), h1.finish(), h2.finish(), h3.finish());
+    if let Some(hit) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return std::sync::Arc::clone(hit);
+    }
+    let mut found = std::collections::BTreeSet::new();
+    for sl in one_abi::production(text) {
+        for (n, defs) in missing {
+            if !found.contains(*n) && defs.iter().any(|d| one_abi::has_word(&sl.counted, d)) {
+                found.insert((*n).to_string());
+            }
+        }
+    }
+    let found = std::sync::Arc::new(found);
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, std::sync::Arc::clone(&found));
+    found
+}
+
+/// Every forbidden name a text's production lines hold, as (row, name, line), remembered by the
+/// text's content for the same reason as [`defined_in`].
+fn hits_in(text: &str) -> std::sync::Arc<Vec<(&'static str, &'static str, usize)>> {
+    use std::hash::{Hash, Hasher};
+    type Hits = std::sync::Arc<Vec<(&'static str, &'static str, usize)>>;
+    type Memo = std::collections::HashMap<(usize, u64, u64), Hits>;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(Default::default);
+    let mut h1 = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h1);
+    let mut h2 = std::collections::hash_map::DefaultHasher::new();
+    0x5A5A_u16.hash(&mut h2);
+    text.len().hash(&mut h2);
+    text.hash(&mut h2);
+    let key = (text.len(), h1.finish(), h2.finish());
+    if let Some(hit) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return std::sync::Arc::clone(hit);
+    }
+    let mut out = Vec::new();
+    for sl in one_abi::production(text) {
+        for (rule, list) in [(ROW_NAMES, NEEDLES), (ROW_EXPOSES, EXPOSERS)] {
+            for n in list {
+                if one_abi::has_word(&sl.counted, n) {
+                    out.push((rule, *n, sl.no));
+                }
+            }
+        }
+    }
+    let out = std::sync::Arc::new(out);
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, std::sync::Arc::clone(&out));
+    out
 }
 
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
@@ -163,14 +240,8 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
             if rel.contains("/testkit/") || rel.contains("/bin/") {
                 continue;
             }
-            for sl in one_abi::production(&f.text) {
-                for (rule, list) in [(ROW_NAMES, NEEDLES), (ROW_EXPOSES, EXPOSERS)] {
-                    for n in list {
-                        if one_abi::has_word(&sl.counted, n) {
-                            findings.push(Finding::new(rule, &rel, *n, sl.no));
-                        }
-                    }
-                }
+            for (rule, n, no) in hits_in(&f.text).iter() {
+                findings.push(Finding::new(*rule, &rel, *n, *no));
             }
         }
     }
