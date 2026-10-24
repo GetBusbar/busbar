@@ -53,14 +53,15 @@ pub fn dispatcher() -> &'static Dispatcher {
     })
 }
 
-/// Where a linked row's plugin log file is opened: the composition root's `plugins.logs`, read at
-/// each bind ([`install_plugin_logs`]).
-static LOGS: OnceLock<fn() -> &'static PluginLogConfig> = OnceLock::new();
+/// Where a linked row's plugin log file is opened: the composition root's `plugins.logs`
+/// ([`install_plugin_logs`]). A value, not a reader: the root's config follows an apply in place
+/// (`root::boot::follow_plugin_logs`), so every sink opened from it takes the applied words.
+static LOGS: OnceLock<&'static PluginLogConfig> = OnceLock::new();
 
-/// Hand the doors the composition root's reader of the configured `plugins.logs` (`root::boot`),
-/// before any linked row binds; the first install stands. A mount of this file with no composition
-/// root (a test, the conformance subject) logs under the defaults.
-pub fn install_plugin_logs(logs: fn() -> &'static PluginLogConfig) {
+/// Hand the doors the composition root's configured `plugins.logs` (`root::boot`), once it is read
+/// and before any linked row binds; the first install stands. A mount of this file with no
+/// composition root (a test, the conformance subject) logs under the defaults.
+pub fn install_plugin_logs(logs: &'static PluginLogConfig) {
     let _ = LOGS.set(logs);
 }
 
@@ -68,7 +69,7 @@ pub fn install_plugin_logs(logs: fn() -> &'static PluginLogConfig) {
 fn plugin_logs() -> &'static PluginLogConfig {
     static DEFAULTS: OnceLock<PluginLogConfig> = OnceLock::new();
     match LOGS.get() {
-        Some(logs) => logs(),
+        Some(logs) => logs,
         None => DEFAULTS.get_or_init(|| {
             PluginLogConfig::from_words(None, None, &std::collections::BTreeMap::new(), None, None)
                 .expect("the plugins.logs defaults resolve")
