@@ -18,7 +18,7 @@ rest mean exactly what they meant before this collapse. Cite a row; never re-lit
 | Part | What it is | Who wrote it |
 |---|---|---|
 | 0 | Orientation — the whole release in one screen, and THE DESIGN (kernel and plugins) | new |
-| 1 | The Vision: Law 0 and Laws 1–~~7~~ 11 [STATUS 2026-10-14: Laws 8–11 sit at l.2038, l.2084, l.2110, l.2127] | verbatim |
+| 1 | The Vision: Law 0, Laws 1–7, 10 (oracle register only) and 11 [Laws 8 and 9 struck OWNER 2026-10-24] | verbatim |
 | 2 | The 85 Locked Decisions (LAW + enforcing gate) | verbatim + 79-85 new |
 | 3 | The plane-extraction seam, LOCKED v4 | verbatim |
 | 4 | The plane ABI neutral taxonomy, v5 | verbatim |
@@ -1715,75 +1715,29 @@ plugin asks and core provides (3); one crate = one plugin = one plane (4); diale
 billing is declared once and priced generically (6); every plugin is off until config uses
 it, no exceptions (7). Full text in Part 1; the kernel<>plugins design is THE DESIGN above.
 
-## What "done" means
+## What done means (OWNER 2026-10-24)
 
-> **OWNER RULING 2026-09-23.** *"So what done is, is THAT. Not some script, not anything else."*
-> *"How you personally prove THAT is on you. A `verify-1.6.0-done.sh`, sure — that's YOU, I don't care."*
->
-> **DONE IS THE BLOCKQUOTE AT THE TOP OF PART 0.** Nothing else is the definition. No script, gate,
-> ratchet, group count or checklist is the acceptance criterion — every one of them is an
-> INSTRUMENT the architect built to prove the statement, and an instrument that disagrees with the
-> statement is a broken instrument, not a new requirement.
->
-> This inverts what had drifted into place. The done-oracle script had become the thing being chased,
-> which is how a naming ratchet ended up costing more than the re-architecture it was supposed to
-> witness. The script serves the statement; it does not define it.
+1.6.0 is done when dev is green on one sha. Green is:
 
-**The statement decomposes into exactly four falsifiable claims.** These are what the architect must
-prove, and each one names the failure that would refute it:
+1. `cargo fmt --check`
+2. `cargo clippy` (workspace lints)
+3. `cargo test` — tests that assert behaviour a customer, an operator or a plugin author sees
+4. The oracle: 1.5.5 was recorded once (do x, get y); the assembled 1.6.0 product replays x and
+   must produce y. Every accepted difference is owner-signed with a premise the runner checks.
+5. Supply chain: `cargo deny` (advisories, licences, bans, sources) and `cargo vet`.
 
-| # | Claim (from the ratified statement) | Refuted by |
-|---|---|---|
-| **C1** | Core is a thin engine that knows nothing about any specific protocol. | Core naming any plane type; or adding a dialect to a plane requiring ANY change to a core file. |
-| **C2** | Every plugin can be compiled in OR dropped in over the same contract and same loading path, and talks to core only over the ABI. | Any of the 7 kinds lacking a both-ways proof (per kind: ONE conformance suite running the shipped compiled-in build and the dropped-in build through the same table, THE DESIGN §11.4); any lateral plugin-to-plugin edge; any kind whose two folds differ. |
-| **C3** | LLM-only 1.6.0 is byte-identical to published 1.5.5. | One unexplained cell in the oracle diff against the real 1.5.5 binary. |
-| **C4** | Money is a view: `money = f(ledger, ratecard)`, nothing stores a dollar. | Any stored price; any float; any money finding that cannot name ledger-or-ratecard as the wrong one. |
+Nothing else is a done criterion. Dev green is the stop: nothing goes to qa or main.
 
-### MEASURED STATUS OF THE FOUR CLAIMS — 2026-09-23 [SUPERSEDED 2026-10-14: `INSTANCE_VOCAB_KINDS` is gone and `kind_isolation/matrix.rs:176-187` measures all 7 kinds; `EXPORT_MODULES`, `open_export` and the `root-llm` feature are gone; `billing|key-usage|after-upstream-down` was retired by the owner 2026-10-02 (`testing/shadow-oracle/golden/1.5.5/retired.tsv:34`). The table below is the 2026-09-23 record]
-
-The claims are the release's definition of done. Three of the four have now been MEASURED rather
-than asserted, and two are **refuted**. This table is the honest state; the refutations are not
-reasons to weaken a claim, they are the work.
-
-| | status | the measurement |
-|---|---|---|
-| **C1** | **UNMEASURED over 5 of its 7 kinds** | `INSTANCE_VOCAB_KINDS = ["plane","transport"]` (`kind_isolation/matrix.rs:116`). Core carries no cell on the store, secret, auth, hook or export axis. A counter-example is live in core: `EXPORT_MODULES` (`config/sections.rs:435`) is a closed list of export instance names and `config/mod.rs:1983` refuses every name outside it. **Every C1 green on record is a statement about planes and transports only.** |
-| **C2** | **REFUTED for the `export` kind** | `config/mod.rs:1983` hard-errors at boot on any export module name outside the four built-ins, so a dropped-in export plugin cannot be NAMED in a config file; `open_export` has zero callers against four positive controls. The two folds are not the same contract. Same root cause as C1's hole. |
-| **C3** | **REFUTED — 16 diverging cells, 12 of them product** | LLM-only build recorded against the published 1.5.5 golden: `owed 916 · diverging 16 · --strict rc=1`. C3's own criterion is one unexplained cell. Both byte-neutrality claims in `crates/busbar/Cargo.toml` (`:263` for `root-llm`, `:309` for `root-admin`) are **false** — a 2×2 isolation shows each moves cells its own comment says it does not. |
-| **C4** | **the instruments cannot currently refute it** | The reconciliation compares an empty book to an empty book and passes; the rollback detector is declared and never constructed; the books-balance verifier wraps in release. Those are not a C4 verdict — they are the reason no C4 verdict is available yet. |
-
-**The honest reading:** C3 and C2 are refuted, C1 is unmeasured over most of its surface, and C4 is
-unmeasurable until its instruments are repaired. None of that changes what the claims should say.
-It changes what "done" costs, and it is why Phase 1 (arm the instruments) precedes Phase 2 (money)
-and Phase 3 (C3) in the execution order rather than running beside them.
-
-**One refutation is already ruled on.** Ruling 8 — *"the 1.5.5 under-billing is CORRECTED in 1.6.0,
-with no customer restatement; C4 wins over C3 on the 42 affected cells"* — is the precedent for a
-cell where 1.5.5's bytes are the wrong ones. At least one of the 16 is of that shape
-(`billing|key-usage|after-upstream-down`, whose own `why` says the new answer is correct), so it
-needs a signed exception rather than a fix. **The exception was never written**, which is the
-actual defect there.
-
-**C1's test is the sharp one and it is nearly free to run:** add a dialect, and `git diff --stat` must
-show zero files changed under core. That single command falsifies or confirms the entire premise of
-the release, which is more than the done-oracle script can say.
-
-The instruments below exist to serve those four claims. Where an instrument is red on something that
-bears on none of them, it is reporting a defect in itself.
-
-### The instruments (evidence, not definition)
-
-Dev-green on **one SHA**, with nothing outstanding or niggling:
-
-1. `scripts/verify-1.6.0-done.sh` exits 0 across all of its groups (`DONE_GROUPS_DECLARED`, 25 today) — full run, never `--fast`
-   (exit 3 is PROVISIONAL, not spendable), every bless/repoint env var empty.
-2. Construction standing-reds **empty** — `ship-ready` green, not merely `--posture`-tolerated.
-   Hard clause: every `Family::Neutral` crate names **ZERO** plane/control/transport/dialect instance
-   vocabulary in source, ceiling 0 and ARMED, with no ratchet row able to raise it.
-3. Every entry in `testing/shadow-oracle/accepted-differences.json` revisited and re-signed-off —
-   each one is a crack in "LLM-only ≡ 1.5.5".
-4. Laws 0–7 hold on the SHA; byte-identity green; config-gated loading verified.
-5. Nothing niggling: no dead scaffolding, docs and version bump landed, changelog complete.
+### Who tests what
+- Core tests itself: its ABIs and loader, against a neutral stub plugin. Core never tests plugins.
+- Every plugin repo carries the same QA template (the five checks above, minus the oracle). Its
+  tests load the plugin into the real core and prove it does its job; a plane also runs its
+  protocol conformance suite.
+- Test what changed. A plugin that did not change is not re-tested. Speaking a new ABI version is a
+  plugin change, so it is tested like any other.
+- The oracle runs on the assembled product (core + pinned plugin versions), in the distribution
+  step, on every dev change.
+- CI speed, test selection and timing trends are ModernCI's job, not code in this repo.
 
 ## The two things that are never negotiable
 
@@ -1918,28 +1872,11 @@ plugin — the design is wrong, not the invariant. Every law below is a corollar
    no exceptions: a plugin loads iff config USES it, env and file secrets and the memory store
    included, and `store:` is required (THE DESIGN §2, §4).
 
-## What this means for the gates
-The purity gates (`plane-purity`, `kind-isolation`) exist to **enforce Laws 1 and 2**: no plugin
-instance named in core/neutral crates, no lateral plugin naming. They are **servants of the vision,
-not the vision**. Consequences:
-- A plane naming its **own** dialects/vendors is correct (Law 5) — it is internal. A gate that reds
-  on that is **scoped wrong**, and the fix is the gate's scope, not the code.
-- `plane-noun-gate` is a **report-only debt meter**, explicitly **excluded**
-  from the done-oracle (`verify-1.6.0-done.sh`). It does **not** gate the
-  release and must never drive architecture (e.g. splitting a plane into per-dialect crates to make
-  a substring count hit zero — that violates Laws 4 and 5).
-- **When an instrument must choose, it false-fails.** Owner, 2026-09-09: *"I'd rather have it
-  false-fail than not."* Between a false RED and a false GREEN, a gate takes the false RED; where two
-  scanners disagree, the higher count wins.
-- **A capability that is never constructed does not ship.** *"Its tests prove the code works; they
-  prove nothing about whether it runs"* (architect law, 2026-09-22; `xtask/src/gates/unconstructed.rs`,
-  `qa/unconstructed.toml`). A built type or verb with no production construction site is either wired
-  or deleted before the cut.
-- **An unruled edge never ships.** In the kind-isolation ledger, `allowed` and `tcb` are readings of
-  the architecture, never opinions a row may grant itself; an edge the architecture does not rule on
-  carries its written question to the owner. The ship check admits only the classes the
-  architecture allows — `tcb`, `not-allowed` and every unruled edge are refused, because the
-  criterion for a tag is not "no worse than the last commit". The loader atop the contract (`plugin-tooling -> contract`) is a ruled edge, `allowed` (ARCHITECT 2026-10-12: Part 2 #33, :2957). A merge-base older than the plugin kinds is measured with today's vocabulary, never exempted (ARCHITECT 2026-10-12, `kind-isolation:law0-base`).
+## Checks
+A check exists only if it protects what customers get: 1.5.5 behaviour, money, secrets, config and
+admin compatibility, or the supply chain. A finding is fixed in product code with a test that
+reproduces the user-visible failure; it never becomes a new instrument, ledger or ratchet.
+- A plane naming its **own** dialects/vendors is correct (Law 5) — it is internal.
 
 ## Rejected (do not resurrect)
 - **D36 "dialect as a plugin kind" / per-dialect crates** (`busbar-plane-<plane>-<dialect>`). A
@@ -1988,126 +1925,16 @@ output, and neither may a gap and a success. `accepted-differences` stays cumula
 is read whole at each cut; a money value that moved in four consecutive releases is a finding even if
 every move was signed.
 
-## Definition of Done — the checklist (owner-set; do not lose to compaction)
-"Done" is **dev-green 1.6.0 with nothing outstanding, deferred, or niggling** — the point where the
-architect can honestly say *"there is nothing left to do; it is perfection until users test it."*
-Concretely, ALL of:
-1. `scripts/verify-1.6.0-done.sh` exits 0 on one SHA, and dev CI is green on it.
-2. **Construction standing-reds are EMPTY** — `ship-ready` green, not merely `--posture`-tolerated.
-   The LLM-engine rebuild is done (no 1117-line request-path fn; terminal doors only in the Audit
-   step; the price named only where the card lives; one pick site; ports-only tests; holds clean).
-   **The hard clause:** every `Family::Neutral` crate — the kernel and its ~~8~~ 7 workflow crates (OWNER 2026-10-07), `busbar-contract`,
-   `busbar-plugin-loader`, `busbar-core-admin`, `busbar-core-oauth2`, `busbar-core-connector`, **and the
-   composition root** (the ~~15-crate~~ 14-crate repo (OWNER 2026-10-07), §9) — names
-   **ZERO** ~~`plane`/`control`/`transport`/`dialect`~~ instance vocabulary of any of the 7 kinds (Part 2 #3) [AMENDED 2026-10-14 by ARCHITECT ruling M5] in source: ceiling 0,
-   ARMED (the `law0-neutral-instance` class in `xtask/src/gates/kind_isolation/matrix.rs`), and no
-   `[[cell]]` ratchet row in `qa/kind-isolation.toml` can raise it. Cargo.toml manifest names are
-   excepted (manifest edges are already governed by `kind-isolation:deps`). A plane/kind-home crate
-   naming its **own** kind's vocabulary is correct (Law 5) and is never measured by this class.
-   "Done" means source count == 0 for every neutral × ~~`{plane, control, transport, dialect}`~~ each-of-the-7-kinds cell (control and dialect are not kinds, #3) [AMENDED 2026-10-14 by ARCHITECT ruling M5; the gate measures all 7, `xtask/src/gates/kind_isolation/matrix.rs:176-187`] —
-   not "held flat" at whatever count it measures today.
-3. **Every accepted 1.5.5 deviation is revisited and re-signed-off.** Walk
-   `testing/shadow-oracle/accepted-differences.json` entry by entry: each is a crack in "LLM-only ≡
-   1.5.5". Eliminate the ones that can be eliminated (make the bytes match); for any that genuinely
-   must remain, re-confirm the justification consciously — no deviation is inherited unexamined.
-4. The laws (0–7) hold on the SHA: purity/kind-isolation/plane-delete green, byte-identity (parity)
-   green, config-gated loading verified, additive planes conform.
-5. Nothing niggling: no dead scaffolding worth removing left behind (e.g. finish or excise the inert
-   `Kind::Dialect` remnant), docs + version bump landed, changelog complete. The owner's LOC signal
-   holds: excluding the new planes, 1.6.0 production LOC is the same as 1.5.5 or less ("if the same app
-   takes 2x the code something is wrong"); growth sits in three named buckets (1.5.5 parity, planes,
-   the plugin seam) and any fourth owes a reason. One counter: `cargo xtask loc --ref v1.5.5`. A
-   duplicate that encodes a security or money property outranks a bigger one; a parity test is not a
-   fix; legacy is deleted, never built beside.
-6. Compatibility: zero config changes beyond the signed ones; the admin API a superset of 1.5.5's; a
-   zero-allocation hot path. Performance has no fixed numbers (OWNER 2026-09-30, §11.9): throughput as
-   high as possible with 2× 1.5.5 as the floor, measured in the PERF phase that follows the first
-   DEV-GREEN (order: CODE → DEV-GREEN → PERF → fixes → DEV-GREEN again).
-
-## How "done" is proven
-- Quality is proven by the **byte-identity oracle** (money path vs the 1.5.5 golden), the crate's own
-  **tests**, **clippy**, and ~~**`/codeaudit` looped to two consecutive zero-finding reports**~~ the Q128 architecture audit: one fresh, independent audit on the DEV-GREEN candidate sha, graded against the Laws and THE DESIGN, no open BLOCK (`cargo xtask q128 audit`, `.ci/predev.yaml:98-105`) [SUPERSEDED 2026-10-01 by Q128 option A, l.2912-2915; ARCHITECT ruling M6, 2026-10-14] — not by
-  a substring grep. A crate that owns vendor names (a plane) is proven clean by these, not by the
-  meter that (correctly) does not scan it.
-- The release is done when **`scripts/verify-1.6.0-done.sh` exits 0** (its groups are the real
-  oracle: build, plane-purity, byte-identity/parity, config-stability, no-deferral, conformance,
-  design-bindings, changelog, plane-delete) and dev CI is green.
+## Definition of Done
+Done is defined once, in Part 0, "What done means (OWNER 2026-10-24)": the five checks green on one
+dev sha. The earlier checklist, `scripts/verify-1.6.0-done.sh`, `ship-ready`, construction
+standing-reds, ratchets, ceilings and the LOC signal are struck (OWNER 2026-10-24); git keeps them.
 
 ---
 
-## LAW 8 — A MEASUREMENT MUST STATE ITS DENOMINATOR, AND PROVE IT PARTITIONS
-
-Law 0 says an instrument that cannot produce a NO is not a check. Law 8 is its other half, and it
-was learned the expensive way — twice in one day, once by the code and once by the audit of it.
-
-**A count is not a measurement until you can say what it is a count OF, and prove nothing fell
-outside.** Every false green this release has produced is one of three shapes:
-
-1. **The hand-written denominator.** An instrument checks a list somebody typed, and nothing forces
-   the list to keep up with the thing it enumerates. `money-invariants` names 8 record types where
-   `records.rs` defines 17. `instance-noun-neutrality` holds 25 nouns and not one of them is a
-   dialect, so it cannot see `DEFAULT_PROTOCOL`. The oracle's admin corpus is a fixture frozen at
-   the 1.5.5 op set, so eleven new served paths have no cell and no mechanism that could ever give
-   them one. Each gate is *correct about what it was told to look at*, and silent about the rest.
-
-2. **The absent floor.** `--strict` returns success on one owed cell of 2,318 because the only
-   check is `owed.is_empty()`. Lesser gates in the same tree declare `DENOMINATOR_FLOOR = 1_700`,
-   `SCAN_FLOOR = 200`, `BINDING_FLOOR = 40`. A denominator with no floor is a denominator that can
-   be reduced to one without anybody noticing.
-
-3. **The partition that was never checked.** A sweep assigned all 3,915 tracked files to ten
-   slices by path prefix and called that a coverage proof. Slice 2 took `a..busbar-k`, slice 3 took
-   `busbar-l..z`, and `busbar-k` < `busbar-kernel` < `busbar-l` — so the nine kernel crates, 574
-   files and 242,730 lines of CORE, fell in neither and were never examined. The file count was
-   right. The scope was not. **Proving every element has an owner is not the same statement as
-   proving the owners' scopes cover every element**, and the second is the one that matters.
-
-**The rule.** An instrument declares the set it measures over and a floor beneath which its own
-result is a refusal rather than a pass. A census reports the LIST it scanned, not the count, and
-coverage is computed as the union of those lists reconciled against the whole — AFTER the work,
-never before. Where a roster of instances must exist, it is derived from the instances' own
-declarations; a roster maintained by hand is a defect with a date on it.
-
-**A name is not a thing.** Six wrong conclusions in this release came from grepping a name: a
-`#[cfg]` one line above the `pub mod` it gated; a path that had been renamed since the tag, where
-`git show <ref>:<missing>` prints nothing and `grep -c` reports `0`; a type name where the rule
-barred a concept; `prove_red` where the tree's own helper is `prove_rows_red`; a field doc on one
-struct used to indict a writer on another. And `design_bindings/tables.rs` carries 409 prose
-strings naming functions, so any census keyed on names reads them as references and scores dead
-code live — which is precisely how an unwired money backstop stayed invisible. **Run a positive
-control before believing a zero: search for something you know is there, and show it.**
-
-**Every gate owes a positive control.** Keep one known violation out of the instrument's reach and
-check the instrument against it; a gate that cannot be shown failing is not evidence. Cite a defect,
-never an unenumerated count.
-
-### Law 9 — arm at today's number
-
-An instrument that blocks REGRESSION is worth having on the day it is written, even while the debt
-it measures still stands. Holding a gate switched off until its count reaches zero is how this
-release built a dependency cycle: Wave 0 ("make the instruments able to fail") could not land
-because its ceilings only reach zero in Wave 5, and Wave 6 rewrites the corpus Wave 0's gates read.
-
-**The rule.** A new or newly-armed ZERO-ARMED or STRUCTURAL instrument — a tripwire armed at 0
-(protocol vocabulary, no `busbar-unit-*` crate, no `busbar-*-codec` crate, the pragma
-`frozen_literal` rule, the ABI location), a dependency or vocabulary EDGE (a new cross-kind edge), a
-census floor — pins its ceiling at TODAY'S MEASURED VALUE and refuses every rise from that moment.
-The drain runs behind it, ratcheting the ceiling down. An instrument's proof of life is that it CAN
-fail and that it RUNS — never that its number is zero.
-
-**Size is not a CI check (owner 2026-10-02).** This law does not arm a line count. Owner, verbatim:
-*"lets drop the line count issue from ci. delete the check. its irrelevant and we are doing our own
-checks manually in perf time with the hash tool but line count shouldnt halt ci."* No CI rung
-measures or blocks on size — the kernel, the contract, the kernel + contract + unit-* union, a
-per-file split, a surface ceiling, a kind-isolation figure count. There is no hand-kept size integer
-in the tree and no raise to declare. Size is measured by hand at PERF (`cargo xtask loc`, the hash
-tool).
-
-This is how every ratchet in this tree already works. Stating it as a law is what dissolves the
-cycle: item 6 splits into "wire the gates into CI" (a set-equality check about registration,
-landable immediately) and "make the gates green" (content, which waits for the tree to settle).
-
 ### Law 10 — a forgiveness whose premise is never checked is a blindfold
+
+Scope (OWNER 2026-10-24): this law applies to the oracle's accepted-differences register only.
 
 The oracle's register may forgive a difference, and every entry states WHY. That `why` is a
 premise about the build under test, and nothing evaluates it.
@@ -2894,26 +2721,10 @@ shape guarantee each is a clean add, never a break. That is "fits-or-cleanly-ext
 > 2026-09-30 (superseded by the TODO phases); git keeps them. What stays here is the DEV-GREEN
 > definition and the owner rulings that shape execution.
 
-## DONE = DEV-GREEN (the definition every wave drives to)
-DEV-GREEN is reached when ALL of the following hold ~~and turnstile boards ADMIT~~ and ModernCI's ~~`predev` → `dev` move (`.ci/predev.yaml`) is green and lands~~ `dev` → `qa` move (`.ci/dev.yaml`): all six checks green on dev's head [AMENDED 2026-10-16 by OWNER: predev retired; the landing into qa is the owner's approval] (Part 6, "BUSBAR-RELEASE RETIRED FROM BUSBAR", OWNER 2026-10-12/13):
-1. **Oracle byte-identical vs the 1.5.5 golden on every family** (money sacred, #9/#10). The ONLY
-   accepted diffs are the entries of `testing/shadow-oracle/accepted-differences.json`, all 45
-   re-signed by the owner 2026-09-30 [STATUS 2026-10-14: the register holds 72 entries, each with a `signoff` (`testing/shadow-oracle/accepted-differences.json`); a money cell is registered citing the OWNER 2026-10-14 money ruling, never an owner sign-off (Appendix B)]. Everything else byte-green.
-2. **All P-item behaviours match 1.5.5** — refusal-reason collapse, unary/empty terminality,
-   wrong-provider attribution, voice tool-args — fixed as BUGS, not signed (#43/#71). Gemini usage
-   is the exception: a registered, signed money improvement (item 1).
-3. **The full xtask gate battery is GREEN** — construction, kind-isolation (7 kinds, dep-wall allowlist
-   ⊆ {busbar-contract}, #40), plane-purity, naming (#34),
-   no-codec-crate (#39), no-testkit (#33), kernel-string-neutrality (#49), transport-scheme fail-closed
-   (#50), seal-witness (KernelSeal kernel-only/unforgeable, #65), Pass/Grant per-call binding (#74),
-   admin↔config parity (#52), secret-hygiene blocking (#53), legacy-drain = 0 (#19/#37).
-4. **Conformance MUST-set landed + green for all 5 planes** (llm/mcp/a2a/streaming/decisions), incl.
-   ~~landing `integration/conformance-b`~~ (#68) [STATUS 2026-10-14: no `integration/*` branch exists; the MUST set is the `conformance` check on ~~`.ci/predev.yaml:51-89`~~ `.ci/dev.yaml`; named conformance gaps must be 0, OWNER 2026-10-14, Appendix B].
-5. **Audit-ledger clean + the architecture audit (OWNER ruling 2026-10-01, QUESTIONS Q128, option A):** one fresh,
-   independent architecture audit on the DEV-GREEN candidate sha, graded against the Laws and THE DESIGN; it
-   passes with no open BLOCK findings. The "two audits ≥9/10" requirement is struck (#60; the §11a baseline
-   that score depended on never existed).
-6. ~~**turnstile BOARD = ADMIT → train ff `predev`→`dev` = DEV-GREEN** (#32/#67).~~ SUPERSEDED 2026-10-13 by Part 6, "BUSBAR-RELEASE RETIRED FROM BUSBAR": ~~**ModernCI's `predev` → `dev` move green on `.ci/predev.yaml` and landed = DEV-GREEN.**~~ [AMENDED 2026-10-16 by OWNER: predev retired; **DEV-GREEN = all six `.ci/dev.yaml` checks (gates, oracle vs the 1.5.5 golden, conformance MUST-set, `verify-1.6.0-done.sh`, the Q128 audit, test-gated) green on dev's head; the landing into qa is the owner's approval.**
+## DONE = DEV-GREEN
+DEV-GREEN is the five checks of Part 0, "What done means (OWNER 2026-10-24)", green on one dev sha.
+The earlier six-check battery (gates, conformance, `verify-1.6.0-done.sh`, the Q128 audit,
+test-gated) is struck (OWNER 2026-10-24); git keeps it.
 
 ## money-touching step shadow-oracle-gated; ~~each wave loops `/codeaudit` to 2 clean passes #60)~~ [RETIRED 2026-09-30 with the W0-W8 waves (l.2892-2894); the /codeaudit loop SUPERSEDED by Q128, ARCHITECT ruling M6 2026-10-14. W0-W8 below are the record]
 
@@ -4319,6 +4130,17 @@ Non-English instance ids (llm, mcp, a2a, voice, and every plugins.yaml alias) st
 Requirements: RED plants for the key-position and identifier cases, a GREEN plant for the prose case, and a tree-wide lowering in the same commit.
 This resolves the busbar × plane +1 from c8400fb00 (linked.rs:586 "which streams.") without rewording.
 It follows the owner law: the kernel speaks kinds, and the gate measures instances.
+
+### 2026-10-21 — ARCHITECT RULING (amended): frozen 1.5.5 customer-observable bytes are exempt from law0 only in place
+The basis is customer-observable bytes only. Part 0 (l.79, l.1790) holds what a customer sees to the bytes of the published 1.5.5, and DoD item 6 (l.2022) holds the config and the admin API to it; a plugin name that 1.5.5 wrote into such bytes cannot be drained without changing them.
+- The artifacts are exactly five: `crates/busbar-core-admin/src/v1/json/openapi.json`, `crates/busbar-kernel/src/config/config-schema.snapshot.json`, `crates/busbar-kernel/src/config/migrate.rs`, `crates/busbar-kernel/src/config/migrate_export.rs` and `crates/busbar-contract/src/secret_ref.rs`. Test code is not customer-observable: `migrate_tests.rs` is no artifact, and every hit in it counts.
+- openapi.json and config-schema.snapshot.json: a line is exempt when it is byte-equal to the same artifact's line at v1.5.5 and stands where the release had it (positional, by a minimal line diff against the release; an equal string written elsewhere is not exempt).
+- migrate.rs, migrate_export.rs and secret_ref.rs: only a hit inside a STRING LITERAL on such a byte-equal v1.5.5 line is exempt. Identifiers, comments, doc comments and locals on the same line count.
+- Any edited, moved or new line counts.
+- For a byte-equal customer-observable v1.5.5 line, this exemption overrides the l.4318 rule that non-English instance ids "still count everywhere, including prose". That covers "LLM" in the OpenAPI prose and the plugins.yaml aliases (otlp, prometheus, webhook, admin-tokens, github, env, file) in those bytes. The ground is Part 0's rule that customer-visible behaviour stays identical to 1.5.5 (l.79, l.1790). Everywhere else l.4318 and the 2026-09-27 English-word ruling (l.4316-4321) stand unchanged.
+- The release is read only through `refs/tags/v1.5.5`, which must resolve to the pinned tag object `d3c50432995b8f4b4582380b6c4415308ed44cfc` and peel to the pinned commit `a71b21e9fa0e8a35bd0c86f53f8a79eac2974d05`. A missing or moved tag, or a branch named v1.5.5, freezes nothing.
+- Gate-scope rulings Q1, Q2 and Q4 of 2026-10-20 are withdrawn.
+Requirements: RED plants for an edited, moved or copied frozen line, an identifier and a comment on a frozen Rust line, a line of migrate_tests.rs, and a branch named v1.5.5 (and a moved tag); GREEN plants for an unchanged JSON line and a string literal on an unchanged Rust line; each `[[law0]]` ceiling set to the measure in the same commit.
 
 ### 2026-09-27 — OWNER RULED Q2: the plane is "decisions"
 The owner said "decisions feels right".

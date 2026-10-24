@@ -503,6 +503,18 @@ pub const CLAIM_SIGNED_INGRESS: u32 = 1 << 4;
 /// route and takes no arrival (ARCHITECT ruling 2026-10-17). Never with [`CLAIM_OPEN`],
 /// [`CLAIM_EXACT`] or [`CLAIM_PATTERN`]. Bits 3 and 4 are taken by flags in flight.
 pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
+/// [`Claim::flags`]: the target is an ENTRY FACT, the request shape whose arrival opens the entry
+/// span the claim states ([`PlaneSnapshot::arrival_spans`]; an empty name ends the reading there,
+/// and the arrival opens none). The host reads a plane's entry facts in its snapshot's order, ahead
+/// of the span the arrival's own claim states, and the first one the request meets decides. The
+/// target is one or more space-separated predicates, every one of which the request must meet:
+/// `field:<name>` (a head field `<name>`, lower-case, is present), `field:<name>=<prefix>` (its value
+/// starts with `<prefix>`; a field the host's auth consumed is read by its scheme word alone), and
+/// at most one `path:<pattern>` over the raw, undecoded path, in which `*` matches any run of bytes
+/// and a whole segment `{}` or `{<field>}` matches one non-empty segment, `{<field>}` recording it,
+/// percent-decoded, as the span's field `<field>` ([`check::entry_fact`]). An entry fact mounts no
+/// route and takes no arrival. Never with another flag.
+pub const CLAIM_ENTRY: u32 = 1 << 6;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.

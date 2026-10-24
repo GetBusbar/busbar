@@ -399,6 +399,10 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
     },
 ]);
 
+/// The claims' arrival spans (status row 173), one per claim: an arrival on `/call` opens
+/// `test_arrival`; `/open` and `/framed` open none, the RED arm of the root's span test.
+static ARRIVALS: Shared<[AbiStr; 3]> = Shared([s(b"test_arrival"), s(b""), s(b"")]);
+
 /// The admin routes the snapshot publishes, served through `serve`: an audited admin route, and a
 /// public one the kernel's admin table never serves.
 static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
@@ -679,8 +683,8 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             resource_facts,
             listed: std::ptr::null(),
             listed_len: 0,
-            arrival_spans: std::ptr::null(),
-            arrival_spans_len: 0,
+            arrival_spans: ARRIVALS.0.as_ptr(),
+            arrival_spans_len: ARRIVALS.0.len(),
         });
         let me = Box::new(Inst {
             wake,

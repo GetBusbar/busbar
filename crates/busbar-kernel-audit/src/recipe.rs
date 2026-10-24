@@ -48,8 +48,10 @@
 /// two boots; the boot the unit ran in (`What::incarnation`) makes the pair unique. Nodes share one
 /// store, and a monotonic reading compares only within the node that took it, so the sealing node
 /// (`AuditRecord::node`) is digested beside `mono` (THE DESIGN §1: "when (wall + monotonic,
-/// node)"). `v3` never shipped (THE DESIGN §7: "The audit digest that ships is v4 (v3 never
-/// shipped)"), so no node holds a `v3` record and this build reads none; its page,
+/// node)"). Each hook that ran carries its `head` and whether it `failed` directly after its key
+/// (`hooks[].head`, `hooks[].failed`; THE DESIGN §1: "controls (... hooks applied)"), framed in
+/// place before `v4` shipped. `v3` never shipped (THE DESIGN §7: "The audit digest that ships is
+/// v4 (v3 never shipped)"), so no node holds a `v3` record and this build reads none; its page,
 /// `docs/audit-chain-digest-v3.md`, stays published as the history of the field list, as the `v1`
 /// page does.
 pub const DIGEST_RECIPE: &str = "busbar.audit.digest.v4";
@@ -276,6 +278,12 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
     ));
     for hook in &record.controls.hooks_applied {
         f.push(DigestField::text("hooks[].hook", hook.hook.clone()));
+        // `v4` frames each hook's decision head and whether it failed beside its key (audit
+        // root#3; THE DESIGN §1: "controls (... hooks applied)"); `v2` framed the key alone.
+        if record.recipe == Recipe::V4 {
+            f.push(DigestField::text("hooks[].head", hook.head.as_str()));
+            f.push(DigestField::num("hooks[].failed", u64::from(hook.failed)));
+        }
     }
     f.push(DigestField::num(
         "replayed",

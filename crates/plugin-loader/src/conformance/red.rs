@@ -44,13 +44,13 @@ use busbar_contract::abi::transport::{FramePiece, TransportTail};
 use busbar_contract::conn::{ConnError, DeclaredConns};
 
 use super::{
-    bind, connection_fixture, dispatcher, load, real_door, restated_door, with_an_outbound_need,
-    Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, FINGERPRINTED,
-    LAID, PIECED, VERSIONED,
+    bind, connection_fixture, dispatcher, load, load_dropped_staged, real_door, restated_door,
+    with_an_outbound_need, Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport,
+    CONNECTED, FINGERPRINTED, LAID, PIECED, VERSIONED,
 };
 use crate::dispatch::conn_services::CONN_SLOTS;
 use crate::dispatch::{
-    load_dropped, load_linked, rendering_of, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin,
+    load_linked, rendering_of, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin,
 };
 
 /// The door functions of [`VERSIONED`] and [`CONNECTED`] (`super::restated_door`).
@@ -119,7 +119,7 @@ pub fn red_statement(s: &Subject) {
             "a linked row stating another Statement is refused"
         );
         assert_eq!(
-            load_dropped::<K>(&s.cdylib(), &lying, s.bind(&d, "red-dropped")).map(|_| ()).err(),
+            load_dropped_staged::<K>(&s.cdylib(), &lying, s.bind(&d, "red-dropped")).map(|_| ()).err(),
             Some(LoadError::StatementMismatch),
             "a signed manifest stating another Statement is refused"
         );
