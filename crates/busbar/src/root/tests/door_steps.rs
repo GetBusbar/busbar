@@ -2584,6 +2584,10 @@ pub(crate) mod tool_door {
                     wall: Arc::clone(&wall),
                 }),
             ));
+            // The transport doors bind on this dispatcher and reach its host services (the clock
+            // the program carrier supervises a member's program by), as main.rs hands the process's
+            // one dispatcher to `root::doors` before any door binds.
+            crate::root::doors::install_dispatcher(Arc::clone(&dispatcher));
             crate::root::connector::install_io(&dispatcher);
             // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -6872,12 +6876,17 @@ pub(crate) mod program_member {
 
     /// The section: one registration that is the program above, its one tool approved.
     fn section() -> serde_yaml::Value {
+        section_running(script())
+    }
+
+    /// The section: one registration whose program is `/bin/sh -c <script>`, its one tool approved.
+    pub(crate) fn section_running(script: String) -> serde_yaml::Value {
         let mut fs = serde_yaml::Mapping::new();
         fs.insert("transport".into(), "stdio".into());
         fs.insert("command".into(), "/bin/sh".into());
         fs.insert(
             "args".into(),
-            serde_yaml::Value::Sequence(vec!["-c".into(), script().into()]),
+            serde_yaml::Value::Sequence(vec!["-c".into(), script.into()]),
         );
         fs.insert(
             "pin".into(),
@@ -6954,6 +6963,52 @@ pub(crate) mod program_member {
             fact(&second, "pongs"),
             "1",
             "the child's own request was answered once: {second}"
+        );
+    }
+}
+
+/// THE PROGRAM'S SUPERVISOR, END TO END (THE DESIGN §2, l.388: the program's supervisor is its
+/// carrier transport's; 1.5.5's crash-loop policy): a registration whose program ends at once,
+/// called over and over through the composed door and the real connector for longer than the whole
+/// backoff (100 + 200 + 400 + 800 ms), is spawned exactly five times: the fifth end inside a minute
+/// stops its restarts and every later call is refused without a spawn. The policy lives in the
+/// program's carrier, keyed by the member's supervision key the connector hands each spawn. RED
+/// with the connector's own supervisor deleted and the carrier's absent: every call spawns the
+/// program anew.
+#[cfg(all(linked_axis_plane_door, linked_section_pools))]
+mod program_member_supervised {
+    use super::program_member::section_running;
+    use super::tool_door::{rig_tools, send, CALL};
+    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+
+    /// The section: one registration whose program appends a line to `spawns` and ends.
+    fn section(spawns: &std::path::Path) -> serde_yaml::Value {
+        section_running(format!("echo spawned >> '{}'; exit 1", spawns.display()))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_program_that_keeps_ending_is_spawned_five_times_then_refused() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-program-supervised";
+        let _published = Published(instance);
+        let spawns =
+            std::env::temp_dir().join(format!("busbar-{instance}-{}-spawns", std::process::id()));
+        let _ = std::fs::remove_file(&spawns);
+        let rig = rig_tools(instance, 0, section(&spawns), &|app| app);
+
+        // Called every 150 ms for 3.6 s: well past the four backoffs (1.5 s), well inside a minute.
+        for _ in 0..24 {
+            let _ = send(&rig.router, Some(&rig.token), CALL).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        let spawned = std::fs::read_to_string(&spawns)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        let _ = std::fs::remove_file(&spawns);
+        assert_eq!(
+            spawned, 5,
+            "five ends inside a minute stop the restarts: spawned {spawned} times"
         );
     }
 }
