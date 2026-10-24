@@ -941,16 +941,51 @@ fn receiver_bound(seam: &Seam, lines: &[&str], idx: usize, open: usize, name: &s
 /// where the type names one of the seam's [`Seam::types`] (a field, a parameter, a typed binding),
 /// and every `fn name(..) -> <type>` returning one.
 fn bind_receivers<'a>(door: &mut [Seam], texts: impl Iterator<Item = &'a str>) {
-    let texts: Vec<&str> = texts.collect();
+    use std::hash::{Hash, Hasher};
+    type Memo = BTreeMap<(u64, u64), std::sync::Arc<BTreeSet<String>>>;
+    static BOUND_MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let memo = BOUND_MEMO.get_or_init(Default::default);
+    let texts: Vec<(&str, u64)> = texts
+        .map(|t| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            t.hash(&mut h);
+            (t, h.finish())
+        })
+        .collect();
     for seam in door.iter_mut().filter(|s| s.derived) {
+        let types_key = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            seam.types.hash(&mut h);
+            h.finish()
+        };
         let mut bound = BTreeSet::new();
-        for text in &texts {
-            for line in text.lines() {
-                if !seam.types.iter().any(|t| has_word(line, t)) {
-                    continue;
+        for (text, text_key) in &texts {
+            // What one file binds for one seam's types is a pure function of both, so it is read
+            // once per process: a battery's cases differ by a plant, not by the tree.
+            let key = (*text_key, types_key);
+            let hit = memo
+                .lock()
+                .expect("the bound memo mutex is never poisoned")
+                .get(&key)
+                .cloned();
+            let part = match hit {
+                Some(p) => p,
+                None => {
+                    let mut part = BTreeSet::new();
+                    for line in text.lines() {
+                        if !seam.types.iter().any(|t| has_word(line, t)) {
+                            continue;
+                        }
+                        bind_line(line, &seam.types, &mut part);
+                    }
+                    let part = std::sync::Arc::new(part);
+                    memo.lock()
+                        .expect("the bound memo mutex is never poisoned")
+                        .insert(key, std::sync::Arc::clone(&part));
+                    part
                 }
-                bind_line(line, &seam.types, &mut bound);
-            }
+            };
+            bound.extend(part.iter().cloned());
         }
         seam.bound = Some(bound);
     }
