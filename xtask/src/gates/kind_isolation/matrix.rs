@@ -172,7 +172,10 @@ fn scan_floor(cx: &Ctx) -> usize {
 }
 
 mod auth_words;
+mod carriers;
+mod config_words;
 mod external;
+mod frozen;
 mod instances;
 mod os_words;
 mod vendors;
@@ -275,7 +278,8 @@ fn alias_of(a: &str, b: &str) -> bool {
 ///   identity, decisions, …]`), a frozen wire word the kernel's export projection and the contract's
 ///   export ABI spell as the stream's own name. Counting it would report the export stream as the
 ///   plane, which is the collision `plane-purity` and `plane-abi-neutrality` exempt for the same
-///   plane.
+///   plane. Its sibling 1.5.x config word `streams` (the export key) is exempt only where a
+///   customer's config spells it ([`config_words`], architect ruling 2026-10-23 (R-3), L0-1).
 const BARE_WORD_COLLISIONS: &[&str] = &["decisions"];
 
 /// EVERY KIND'S VOCABULARY, READ OFF THE CENSUS.
@@ -813,6 +817,10 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
     // file reads (the same answer whoever fills it), shared under a lock.
     let wire_locks: std::sync::Mutex<BTreeMap<String, BTreeSet<String>>> =
         std::sync::Mutex::new(BTreeMap::new());
+    // FROZEN 1.5.5 CUSTOMER-OBSERVABLE BYTES IN PLACE (ARCHITECT ruling 2026-10-21, [`frozen`]): on
+    // the same line a named artifact carried at the pinned v1.5.5, unchanged, a JSON document's hit
+    // is that release's wire, and so is a Rust artifact's hit INSIDE A STRING LITERAL; nothing else.
+    let frozen_lines = frozen::load(cx);
     let scanned = crate::par::par_map(&files, |(rel, text)| {
         // OWNER 2026-10-03: "Cargo.toml is ignored blanketly from this check" (see the module doc).
         if is_cargo_manifest(rel) {
@@ -837,6 +845,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         }
         let auth = auth_words::scope(c.kind, &dir, rel).filter(|_| auth_decision);
         let plane = c.kind == Some("plane");
+        let loader = c.name == carriers::LOADER_PACKAGE;
         // The two plane-crate masks read the tree beside the file: whether it is a dialect module,
         // and the wire lock a dialect mapping file names. Both are read here, for the key.
         let dialect_module = plane && in_dialect_module(cx, &dir, rel);
@@ -864,6 +873,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
             plane.hash(&mut h);
             dialect_module.hash(&mut h);
             wire.hash(&mut h);
+            loader.hash(&mut h);
             h.finish()
         };
         let memo = MASKED_MEMO.get_or_init(Default::default);
@@ -887,6 +897,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
                     auth,
                     dialect_module,
                     wire: wire.as_ref(),
+                    loader,
                 }));
                 if walk == Walk::Memoised {
                     memo.lock()
@@ -896,6 +907,12 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
                 m
             }
         };
+        // A RUST ARTIFACT'S FROZEN LINES ARE READ WITHOUT THEIR LITERALS: the identifiers, comments,
+        // doc comments and locals on them count as anywhere else ([`frozen::literals_struck`]).
+        let masked = match frozen::literals_struck(&frozen_lines, rel, text, &masked) {
+            Some(struck) => std::sync::Arc::new(struck),
+            None => masked,
+        };
         let hits = match walk {
             Walk::Memoised => scan_file(per_kind, &dir, rel, &masked),
             Walk::Full => scan_fresh(per_kind, &dir, rel, &masked),
@@ -904,6 +921,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         // hit's line is looked up in the file's line list, read once, rather than by walking the
         // text from its start once per hit — and only when the witness grant can excuse a hit of
         // this crate at all.
+        let frozen_mask = frozen::exempt_lines(&frozen_lines, rel, text);
         let lines: Vec<&str> = if hits
             .iter()
             .any(|h| super::witness_may_apply(&granted, c, h.kind))
@@ -915,6 +933,14 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         let kept: Vec<bool> = hits
             .iter()
             .map(|h| {
+                if frozen_mask.as_ref().is_some_and(|m| frozen::at(m, h.line)) {
+                    return false;
+                }
+                // THE CONNECTOR'S CARRIER NAMES (architect ruling 2026-10-23 (R-3), L0-3): the
+                // bare `tcp`/`stdio` in the connector and in the loader's need-service files.
+                if carriers::exempt_hit(&c.name, &dir, rel, h.kind, &h.word) {
+                    return false;
+                }
                 if !super::witness_may_apply(&granted, c, h.kind) {
                     return true;
                 }
@@ -970,6 +996,8 @@ struct MaskInputs<'a> {
     auth: Option<bool>,
     dialect_module: bool,
     wire: Option<&'a BTreeSet<String>>,
+    /// The file is the loader's: its two loader-wide carrier positions are masked ([`carriers`]).
+    loader: bool,
 }
 
 /// THE MASK CHAIN, in its order, over one file: a pure function of [`MaskInputs`], which is what
@@ -984,6 +1012,7 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
         auth,
         dialect_module,
         wire,
+        loader,
     } = m;
     // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
     // vocabulary is its own row's to measure (see [`contract_identifiers`]).
@@ -998,8 +1027,15 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
     let masked = external::mask_kernel_facade(rel, &masked);
     // English words that are also instance names are not counted as English prose.
     let masked = mask_english_prose(rel, &masked);
-    // An export entry's frozen 1.5.x `streams: [` key is the export projection, not the plane.
-    let masked = match mask_export_streams_key(&masked) {
+    // The 1.5.x customer config words, where a customer's config spells them, are not the plane
+    // (architect ruling 2026-10-23 (R-3), L0-1; [`config_words`]).
+    let masked = match config_words::mask(&masked) {
+        Some(owned) => std::borrow::Cow::Owned(owned),
+        None => masked,
+    };
+    // The loader names the need service and a need's carrier by THE DESIGN §5's carrier words
+    // (architect ruling 2026-10-23 (R-3), L0-3; [`carriers`]).
+    let masked = match loader.then(|| carriers::mask_loader(&masked)).flatten() {
         Some(owned) => std::borrow::Cow::Owned(owned),
         None => masked,
     };
@@ -1384,51 +1420,6 @@ fn mask_english_prose<'a>(rel: &str, text: &'a str) -> std::borrow::Cow<'a, str>
         out.push_str(&mask_prose_words(prose));
     }
     std::borrow::Cow::Owned(out)
-}
-
-/// THE FROZEN 1.5.x EXPORT KEY (ARCHITECT ruling, Law 0 root lane: a gate exemption only for frozen
-/// 1.5.x bytes, modelled on [`BARE_WORD_COLLISIONS`]). `streams` is the streaming plane's section-key
-/// alias, and it is also the key of an `export:` entry's projection list — `streams: [logs,
-/// identity, decisions, …]` (v1.5.5 crates/busbar/src/config/migrate_export.rs:17, :178), frozen
-/// operator config text every export entry carries. The two are told apart by the value the key
-/// takes: an export entry's `streams:` is a flow LIST, and a plane's section is a mapping. So a
-/// `streams` standing on its own (not joined to a neighbouring name by `-`, `_`, `.` or a letter),
-/// followed by `:` (not `::`) and then, past spaces, by `[`, is masked before the scanners read the
-/// line; in every other position — a section key over a mapping, an identifier, a literal of its
-/// own — it still counts.
-const EXPORT_STREAMS_KEY: &str = "streams";
-
-/// `text` with every export entry's `streams: [` key masked (same-length filler, so lines and
-/// columns hold), or `None` when it holds none; see [`EXPORT_STREAMS_KEY`].
-fn mask_export_streams_key(text: &str) -> Option<String> {
-    if !text.contains(EXPORT_STREAMS_KEY) {
-        return None;
-    }
-    let b = text.as_bytes();
-    let joins = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.');
-    let mut out = b.to_vec();
-    let mut changed = false;
-    let mut from = 0;
-    while let Some(off) = text[from..].find(EXPORT_STREAMS_KEY) {
-        let i = from + off;
-        let j = i + EXPORT_STREAMS_KEY.len();
-        from = j;
-        if i > 0 && joins(b[i - 1]) {
-            continue;
-        }
-        if b.get(j) != Some(&b':') || b.get(j + 1) == Some(&b':') {
-            continue;
-        }
-        let mut k = j + 1;
-        while matches!(b.get(k), Some(b' ' | b'\t')) {
-            k += 1;
-        }
-        if b.get(k) == Some(&b'[') {
-            out[i..j].fill(b'x');
-            changed = true;
-        }
-    }
-    changed.then(|| String::from_utf8(out).expect("ascii-for-ascii"))
 }
 
 /// The byte offset of a `//` comment on `line` that is not inside a `"…"` string literal.
@@ -3649,7 +3640,14 @@ fn measured_row(
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, || vendors::offenders(cx, crates, &files))
                     .expect("spawn the vendor-name scan thread");
-                let inst = instances::measure_reserved(crates, &files, &ivocab, &reg.shape_words);
+                let frozen_lines = frozen::load(cx);
+                let inst = instances::measure_reserved(
+                    crates,
+                    &files,
+                    &ivocab,
+                    &reg.shape_words,
+                    &frozen_lines,
+                );
                 (
                     inst,
                     vendor
@@ -4458,6 +4456,418 @@ pub fn selftest<'a>(
     // THE FIVE INSTANCE AXES (item 118) — every one planted in core, plus the listed/unlisted pair.
     instances::selftest(cx, gate, over_fixture, false, report);
 
+    // FROZEN 1.5.5 BYTES ARE EXEMPT ONLY IN PLACE ([`frozen`], ARCHITECT ruling 2026-10-21). Each
+    // named artifact gets one line 1.6.0 never shipped in 1.5.5 (a plane package name in the two
+    // JSON documents, an instance name of a different axis in each Rust artifact) and every one of
+    // those cells GROWS over the merge-base: the exemption reaches the release's bytes and nothing
+    // written beside them.
+    match instances::one_name_per_axis(cx) {
+        Ok(names) => {
+            let name = |k: &str| {
+                names
+                    .iter()
+                    .find(|(axis, _)| *axis == k)
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_default()
+            };
+            let grown: [(&str, String); 5] = [
+                (
+                    "crates/busbar-core-admin/src/v1/json/openapi.json",
+                    "\"x-planted\": \"busbar-plane-mcp\"\n".to_string(),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/config-schema.snapshot.json",
+                    "\"x-planted\": \"busbar-plane-llm\"\n".to_string(),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/migrate.rs",
+                    format!("pub const PLANTED_EXPORT: &str = \"{}\";\n", name("export")),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/migrate_export.rs",
+                    format!("pub const PLANTED_STORE: &str = \"{}\";\n", name("store")),
+                ),
+                (
+                    "crates/busbar-contract/src/secret_ref.rs",
+                    format!("pub const PLANTED_SECRET: &str = \"{}\";\n", name("secret")),
+                ),
+            ];
+            let mut ov = crate::ctx::Overlay::new();
+            for (rel, line) in &grown {
+                let was = cx.read(rel).unwrap_or_default();
+                ov.set(*rel, format!("{}\n{line}", was.trim_end()));
+            }
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "a line 1.6.0 wrote into a frozen 1.5.5 artifact still grows its cell",
+                &[ROW_LAW0_BASE],
+                ov,
+                &[
+                    "law0-grown",
+                    "busbar-core-admin \u{d7} plane",
+                    "busbar-kernel \u{d7} plane",
+                    "busbar-kernel \u{d7} instance:export",
+                    "busbar-kernel \u{d7} instance:store",
+                    "busbar-contract \u{d7} instance:secret",
+                ],
+            ));
+        }
+        Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+            "an instance name per axis to plant into the frozen artifacts",
+            &[ROW_LAW0_BASE],
+            &["law0-grown"],
+            why,
+        ))),
+    }
+
+    // THE EXEMPTION IS POSITIONAL AND READS ONLY CUSTOMER-OBSERVABLE BYTES ([`frozen`], ARCHITECT
+    // ruling 2026-10-21 as amended). Both sides are planted: the artifact's bytes at the pinned
+    // release with the planted lines appended ([`frozen::show_key`]), and the artifact in this tree.
+    // GREEN: a JSON line and a Rust string literal standing unchanged where the release had them. RED,
+    // each its own case: the line EDITED in place, MOVED to the top, or COPIED to a new position (the
+    // 1.6.0 `"streams"` key of the schema snapshot, whose text was a 1.5.5 line elsewhere); an
+    // IDENTIFIER and a COMMENT on an unchanged Rust line; a line of migrate_tests.rs, test code no
+    // customer observes; and a release read through anything but the pinned tag (a branch named
+    // v1.5.5, a moved tag). Each grows its cell over the merge-base.
+    {
+        // The test file the release shipped beside migrate.rs: no artifact, whatever its bytes.
+        const TESTS_HERE: &str = "crates/busbar-kernel/src/config/tests/migrate_tests.rs";
+        // qa-names: crates/busbar/src/config/tests/migrate_tests.rs -- xtask/src/gates/kind_isolation/matrix.rs -- v1.5.5 path read via git show at the pinned tag
+        const TESTS_RELEASED: &str = "crates/busbar/src/config/tests/migrate_tests.rs";
+        let rust = frozen::artifact("crates/busbar-kernel/src/config/migrate.rs");
+        let json = frozen::artifact("crates/busbar-kernel/src/config/config-schema.snapshot.json");
+        // (path here, the release's overlay key, its path at the release, its bytes there, here)
+        type Sides = (&'static str, String, &'static str, String, String);
+        let sides = |a: Option<&'static frozen::Artifact>| -> Result<Sides, String> {
+            let a = a.ok_or("the artifact is not in frozen::ARTIFACTS")?;
+            let then = frozen::released_bytes(cx, a)?;
+            let now = cx.read(a.path)?;
+            Ok((a.path, frozen::show_key(a), a.released, then, now))
+        };
+        let tests = || -> Result<Sides, String> {
+            let commit = frozen::release_commit(cx)?;
+            Ok((
+                TESTS_HERE,
+                format!("git-show:{commit}:{TESTS_RELEASED}"),
+                TESTS_RELEASED,
+                cx.git_show(commit, TESTS_RELEASED)?,
+                cx.read(TESTS_HERE)?,
+            ))
+        };
+        match (
+            instances::one_name_per_axis(cx),
+            sides(rust),
+            sides(json),
+            tests(),
+        ) {
+            (Ok(names), Ok(rs), Ok(js), Ok(ts)) => {
+                let export = names
+                    .iter()
+                    .find(|(axis, _)| *axis == "export")
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_default();
+                let line = format!("pub const PLANTED_EXPORT: &str = \"{export}\";");
+                let edited = format!("pub const PLANTED_EXPORT_EDITED: &str = \"{export}\";");
+                let key = "\"x-planted\": \"busbar-plane-llm\",".to_string();
+                // A plane's bare id in each of a Rust line's three readings: the literal (exempt on
+                // a frozen line), an identifier and a comment (never exempt).
+                let in_literal = "pub const PLANTED_ROUTE: &str = \"mcp\";".to_string();
+                let in_ident = "pub const PLANTED_MCP_ROUTE: &str = \"route\";".to_string();
+                let in_comment = "// PLANTED: the mcp route.".to_string();
+                // One file's two sides: its release bytes with `released` appended, and `now`.
+                let both = |side: &Sides, released: &str, now: String| {
+                    let (path, show, _, then, _) = side;
+                    let mut ov = crate::ctx::Overlay::new();
+                    ov.set_command(show.clone(), format!("{}\n{released}\n", then.trim_end()));
+                    ov.set(*path, now);
+                    ov
+                };
+                let rs_now = rs.4.trim_end().to_string();
+                let js_now = js.4.trim_end().to_string();
+                let ts_now = ts.4.trim_end().to_string();
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a frozen 1.5.5 line that stands unchanged where the release had it is exempt",
+                    &[ROW_LAW0_BASE],
+                    both(&rs, &line, format!("{rs_now}\n{line}\n")).layered(&both(
+                        &js,
+                        &key,
+                        format!("{js_now}\n{key}\n"),
+                    )),
+                ));
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a plane's id inside a string literal on an unchanged 1.5.5 Rust line is exempt",
+                    &[ROW_LAW0_BASE],
+                    both(&rs, &in_literal, format!("{rs_now}\n{in_literal}\n")),
+                ));
+                let rust_red = [
+                    (
+                        "a frozen 1.5.5 line EDITED in place counts",
+                        both(&rs, &line, format!("{rs_now}\n{edited}\n")),
+                        "busbar-kernel \u{d7} instance:export",
+                    ),
+                    (
+                        "a frozen 1.5.5 line MOVED to a new position counts",
+                        both(&rs, &line, format!("{line}\n{rs_now}\n")),
+                        "busbar-kernel \u{d7} instance:export",
+                    ),
+                    (
+                        "a 1.5.5 line COPIED to a new position counts there, beside the original \
+                         in place",
+                        both(&js, &key, format!("{key}\n{js_now}\n{key}\n")),
+                        "busbar-kernel \u{d7} plane",
+                    ),
+                    (
+                        "an IDENTIFIER on an unchanged 1.5.5 Rust line counts: only literals are \
+                         customer bytes",
+                        both(&rs, &in_ident, format!("{rs_now}\n{in_ident}\n")),
+                        "busbar-kernel \u{d7} plane",
+                    ),
+                    (
+                        "a COMMENT on an unchanged 1.5.5 Rust line counts: only literals are \
+                         customer bytes",
+                        both(&rs, &in_comment, format!("{rs_now}\n{in_comment}\n")),
+                        "busbar-kernel \u{d7} plane",
+                    ),
+                    (
+                        "a line of migrate_tests.rs counts though 1.5.5 shipped it: test code is \
+                         no customer-observable artifact",
+                        both(&ts, &line, format!("{ts_now}\n{line}\n")),
+                        "busbar-kernel \u{d7} instance:export",
+                    ),
+                ];
+                for (how, ov, cell) in rust_red {
+                    report.push(prove_rows_red(
+                        cx,
+                        gate,
+                        how,
+                        &[ROW_LAW0_BASE],
+                        ov,
+                        &["law0-grown", cell],
+                    ));
+                }
+                // THE RELEASE IS READ THROUGH THE PINNED TAG AND NOTHING ELSE. Each plant carries
+                // the release's bytes with the planted line under every name a resolver could take
+                // (`v1.5.5:<path>`, which a branch answers when the tag is gone, and the pinned
+                // commit's), and the tree carries the same line: a resolver that read any of them
+                // would exempt it. The strict one refuses the release and the line counts.
+                let (_, show, released, then, _) = &rs;
+                let with_line = format!("{}\n{line}\n", then.trim_end());
+                let shadowed = |tag: &str| {
+                    let mut ov = crate::ctx::Overlay::new();
+                    ov.set_command(frozen::rev_parse_key(frozen::RELEASE_TAG_REF), tag);
+                    ov.set_command(
+                        frozen::rev_parse_key(&format!("refs/heads/{}", frozen::RELEASE)),
+                        frozen::RELEASE_COMMIT,
+                    );
+                    ov.set_command(
+                        format!("git-show:{}:{released}", frozen::RELEASE),
+                        with_line.clone(),
+                    );
+                    ov.set_command(show.clone(), with_line.clone());
+                    ov.set(rs.0, format!("{rs_now}\n{line}\n"));
+                    ov
+                };
+                for (how, tag) in [
+                    (
+                        "a BRANCH named v1.5.5 is refused: the release is read only through \
+                         refs/tags/v1.5.5",
+                        String::new(),
+                    ),
+                    (
+                        "a MOVED v1.5.5 tag is refused: the tag must be the pinned tag object",
+                        "0".repeat(40),
+                    ),
+                ] {
+                    report.push(prove_rows_red(
+                        cx,
+                        gate,
+                        how,
+                        &[ROW_LAW0_BASE],
+                        shadowed(&tag),
+                        &["law0-grown", "busbar-kernel \u{d7} instance:export"],
+                    ));
+                }
+            }
+            (n, r, j, t) => {
+                let why = [n.err(), r.err(), j.err(), t.err()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                report.push(crate::gates::CasePlan::from(super::unplantable(
+                    "a frozen artifact's 1.5.5 bytes and an export instance name to plant",
+                    &[ROW_LAW0_BASE],
+                    &["law0-grown"],
+                    why,
+                )));
+            }
+        }
+    }
+
+    // THE CONNECTOR'S CARRIER NAMES ARE EXEMPT ONLY IN THE CONNECTOR AND THE LOADER'S NEED SERVICES
+    // (architect ruling 2026-10-23 (R-3), L0-3; [`carriers`]). GREEN: the bare `tcp`/`stdio` in a
+    // connector file and in a loader need-service file, the need service's name and a need's carrier
+    // literal elsewhere in the loader; no cell grows over the merge-base. RED, each its own case and
+    // each a cell grown over the merge-base: a transport plugin's package name in the connector, a
+    // framer's id in the connector, and a carrier word as an identifier in a loader file that is no
+    // need service.
+    {
+        let connector = "crates/busbar-core-connector/src/planted_carrier.rs";
+        let loader = "crates/plugin-loader/src/planted_need.rs";
+        let need_service = format!("crates/plugin-loader/{}", carriers::NEED_SERVICE_FILES[0]);
+        match cx.read(&need_service) {
+            Ok(was) => {
+                let mut ov = crate::ctx::Overlay::new();
+                ov.set(
+                    connector,
+                    "//! Dials the tcp carrier and spawns the stdio carrier.\n\
+                     pub enum PlantedCarrier { Tcp, Stdio }\n\
+                     pub fn planted_dial_tcp() -> &'static str { \"tcp\" }\n",
+                );
+                ov.set(
+                    loader,
+                    "pub use crate::tcp_conns::TcpConns as PlantedTable;\n\
+                     pub const PLANTED_NEED: &str = \"stdio\";\n",
+                );
+                ov.set(
+                    need_service.as_str(),
+                    format!(
+                        "{}\n// PLANTED: a stdio carrier served beside the tcp one.\n\
+                         pub fn planted_stdio_need() {{}}\n",
+                        was.trim_end()
+                    ),
+                );
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a carrier name in the connector and in the loader's need services is not a \
+                     transport instance",
+                    &[ROW_LAW0_BASE],
+                    ov,
+                ));
+            }
+            Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+                "the loader's need-service file to plant a carrier name into",
+                &[ROW_LAW0_BASE],
+                &["law0-grown"],
+                why,
+            ))),
+        }
+        for (how, rel, body, cell) in [
+            (
+                "a transport plugin's package name in the connector still counts",
+                connector,
+                "use busbar_transport_tcp::Dial;\n",
+                "busbar-core-connector \u{d7} transport",
+            ),
+            (
+                "a framer's id in the connector still counts",
+                connector,
+                "pub fn planted_grpc_frames() -> usize { 0 }\n",
+                "busbar-core-connector \u{d7} transport",
+            ),
+            (
+                "a carrier word as an identifier in a loader file that is no need service still \
+                 counts",
+                loader,
+                "pub fn planted_tcp_route() -> usize { 0 }\n",
+                "busbar-plugin-loader \u{d7} transport",
+            ),
+        ] {
+            let mut ov = crate::ctx::Overlay::new();
+            ov.set(rel, body);
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                how,
+                &[ROW_LAW0_BASE],
+                ov,
+                &["law0-grown", cell],
+            ));
+        }
+    }
+
+    // A 1.5.x CONFIG WORD THE MIGRATOR WRITES IS EXEMPT ONLY AT ITS ONE DECLARATION (architect
+    // ruling 2026-10-23, addition to R-3; [`config_words::FROZEN_CONFIG_LITERALS`]). GREEN: the
+    // declaration standing in its file under a new doc line (a position, not a line number). RED,
+    // each a cell grown over the merge-base: the same store-instance literal in another kernel
+    // file, the same declaration copied into another kernel file, and the declaration edited.
+    for f in config_words::FROZEN_CONFIG_LITERALS {
+        match cx.read(f.file) {
+            Ok(was) if was.lines().any(|l| l.trim() == f.declaration()) => {
+                let decl = f.declaration();
+                let cell = "busbar-kernel \u{d7} instance:store";
+                let mut ov = crate::ctx::Overlay::new();
+                ov.set(
+                    f.file,
+                    was.replacen(
+                        &decl,
+                        &format!("/// PLANTED: a doc line above it.\n{decl}"),
+                        1,
+                    ),
+                );
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a frozen config literal at its declaration is not a store instance",
+                    &[ROW_LAW0_BASE],
+                    ov,
+                ));
+                let elsewhere = "crates/busbar-kernel/src/planted_frozen_literal.rs";
+                for (how, rel, body) in [
+                    (
+                        "the frozen config literal's word in another kernel literal still counts",
+                        elsewhere,
+                        format!("pub const PLANTED_STORE: &str = \"{}\";\n", f.word),
+                    ),
+                    (
+                        "the frozen config literal's declaration copied into another file still \
+                         counts",
+                        elsewhere,
+                        format!("{decl}\n"),
+                    ),
+                    (
+                        "an edited declaration of the frozen config literal counts",
+                        f.file,
+                        was.replacen(
+                            &decl,
+                            &format!("pub const {}_EDITED: &str = \"{}\";", f.holder, f.word),
+                            1,
+                        ),
+                    ),
+                ] {
+                    let mut ov = crate::ctx::Overlay::new();
+                    ov.set(rel, body);
+                    report.push(prove_rows_red(
+                        cx,
+                        gate,
+                        how,
+                        &[ROW_LAW0_BASE],
+                        ov,
+                        &["law0-grown", cell],
+                    ));
+                }
+            }
+            Ok(_) => report.push(crate::gates::CasePlan::from(super::unplantable(
+                "a frozen config literal's declaration to plant beside",
+                &[ROW_LAW0_BASE],
+                &["law0-grown"],
+                format!("{} no longer declares `{}`", f.file, f.declaration()),
+            ))),
+            Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+                "a frozen config literal's declaration to plant beside",
+                &[ROW_LAW0_BASE],
+                &["law0-grown"],
+                why,
+            ))),
+        }
+    }
+
     // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP) is a COUNT property inside a
     // listed cell (`busbar-plane-llm × plane`), which presence cannot observe; it is proven on the
     // cell itself in `tests::a_dialect_wire_key_is_the_providers_word_and_the_same_word_elsewhere_counts`.
@@ -4888,19 +5298,27 @@ pub fn selftest<'a>(
         &["unlisted-cell", &fixture_subject("plane")],
     ));
 
-    // AN EXPORT ENTRY'S FROZEN 1.5.x `streams: [` KEY IS THE EXPORT PROJECTION, NOT THE PLANE
-    // ([`EXPORT_STREAMS_KEY`]). The fixture holds only export entries, in a YAML document and in a
-    // Rust string, and no row: the plane cell stays at zero (GREEN). The same word keying a mapping
-    // — the plane's section — beside them is a hit, and the cell becomes an edge nobody listed (RED).
+    // THE 1.5.x CUSTOMER CONFIG WORDS ARE EXEMPT ONLY WHERE A CUSTOMER'S CONFIG SPELLS THEM
+    // (architect ruling 2026-10-23 (R-3), L0-1; [`config_words`]). The fixture holds the export key
+    // `streams` in each of its positions (keying a flow list in a YAML document and in a Rust
+    // string, addressed by its `export.<entry>.streams` path, read through an `"export"`-rooted key
+    // path, and declared as the deserialized token list) and the stream token `decisions` in a
+    // list, and no row: the plane cell stays at zero (GREEN). Each RED adds one non-exempt
+    // occurrence beside them, and the cell becomes an edge nobody listed: the word keying a mapping
+    // (the 1.6.0 plane's section), the plane section's dotted path, the word as an identifier, and
+    // the decisions plane's own spelling inside a stream list.
     let export_fixture = |extra: Option<(&'static str, &'static str)>| {
         let mut files = vec![
             (
                 "export.yaml",
-                "export:\n  sink: { module: tail, streams: [logs, costs] }\n  other:\n    streams:  [metrics]\n",
+                "export:\n  sink: { module: tail, streams: [logs, costs] }\n  other:\n    streams:  [metrics, decisions]\n",
             ),
             (
                 "export.rs",
-                "pub const E: &str = \"  tp: { module: x, streams: [metrics] }\";\n",
+                "pub const E: &str = \"  tp: { module: x, streams: [metrics] }\";\n\
+                 pub const EMPTY: &str = \"export.{name}.streams: is EMPTY\";\n\
+                 pub fn at<'a>(doc: &'a Doc, name: &str) -> Option<&'a Doc> { dig(doc, &[\"export\", name, \"streams\"]) }\n\
+                 pub struct Def { pub streams: Option<Vec<String>>, }\n",
             ),
         ];
         files.extend(extra);
@@ -4909,18 +5327,47 @@ pub fn selftest<'a>(
     report.push(prove_rows_green(
         cx,
         over_fixture,
-        "an export entry's frozen 1.5.x `streams: [` key is not the plane",
+        "the 1.5.x export key `streams` and stream token `decisions`, where a customer's config \
+         spells them, are not the plane",
         &[ROW_MATRIX],
         export_fixture(None),
     ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "`streams:` keying a mapping beside the export entries still counts",
-        &[ROW_MATRIX],
-        export_fixture(Some(("section.yaml", "streams:\n  gw: {}\n"))),
-        &["unlisted-cell", &fixture_subject("plane")],
-    ));
+    for (how, file) in [
+        (
+            "`streams:` keying a mapping beside the export entries still counts",
+            ("section.yaml", "streams:\n  gw: {}\n"),
+        ),
+        (
+            "a plane section's dotted path `streams.<key>` beside the export entries still counts",
+            (
+                "section_path.rs",
+                "pub const P: &str = \"streams.fees.per_request\";\n",
+            ),
+        ),
+        (
+            "`streams` as an identifier beside the export entries still counts",
+            (
+                "projection.rs",
+                "pub fn from_parts(streams: &[u8]) -> usize { streams.len() }\n",
+            ),
+        ),
+        (
+            "the decisions plane's own spelling inside a stream list still counts",
+            (
+                "plane_list.yaml",
+                "export:\n  sink: { streams: [logs, plane-decisions] }\n",
+            ),
+        ),
+    ] {
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            how,
+            &[ROW_MATRIX],
+            export_fixture(Some(file)),
+            &["unlisted-cell", &fixture_subject("plane")],
+        ));
+    }
 
     // AN INSTANCE ID THAT IS ALSO A CRATE'S OR AN ABBREVIATION'S NAME COUNTS ONLY AS A REFERENCE
     // ([`COLLIDING_INSTANCE_WORDS`]). The fixture holds only the non-references and no row: the
