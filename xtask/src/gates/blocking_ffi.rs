@@ -679,7 +679,7 @@ const MIN_REASON_WORDS: usize = 4;
 /// The waiver ledger: every allow marker in the tree is a row here, keyed by its file and the
 /// reason it states, and every row must still name a marker. A marker nobody recorded is an
 /// exemption nobody reviewed; a row without a marker is a waiver the code no longer needs.
-const WAIVER_LEDGER: &str = "xtask/src/gates/blocking_ffi_waivers.toml";
+const WAIVER_LEDGER: &str = "qa/blocking-ffi-waivers.toml";
 
 /// The real ledger plus planted rows, for a selftest overlay.
 fn ledger_plus(cx: &Ctx, ov: &mut Overlay, file: &str, reason: &str) {
