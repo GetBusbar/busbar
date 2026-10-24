@@ -1,0 +1,10 @@
+{
+  "contract_abi": {
+    "min": 3,
+    "max": 3
+  },
+  "egress": "collector",
+  "needs": [
+    "http"
+  ]
+}

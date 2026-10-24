@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-stub-export-trace-plugin"
+version = "1.6.0"
+publish = false            # first-party signed cdylib, shipped as a packed/signed tarball, not to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "First-party signed kind:export plugin cdylib: the OTLP trace export sink (`module: otlp`), packaged as a droppable busbar plugin. Drop the signed tarball into `plugins/` and name it from an `export.<name>.module: otlp` block."
+license = "Apache-2.0"
+
+[lib]
+test = false
+doctest = false
+# cdylib: the DROPPED-IN door, exporting `busbar_plugin_door` (a signed tarball in `plugins/`).
+# rlib: REQUIRED for `cargo test` to emit the cdylib artifact the conformance test loads (a
+# cdylib-only package builds a trivial test harness and never produces the .so/.dylib).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# THE LOGIC, same repo: its `door::door` is the door this image exports.
+busbar-stub-export-trace = { path = "../logic" }
+busbar-contract = { workspace = true }

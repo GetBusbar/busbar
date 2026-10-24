@@ -350,13 +350,6 @@ mod both_ways;
 #[path = "tests/door_symbol_tests.rs"]
 mod door_symbol_tests;
 
-/// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
-/// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
-/// open one module.
-#[cfg(test)]
-#[path = "tests/auth_conformance_tests.rs"]
-mod auth_conformance_tests;
-
 /// `kind: auth` through both doors on the memory ABI, VERIFY VERDICTS: the token cases driven to
 /// every verdict (identify, reject, pass) over a second real auth plugin, one row and one answer
 /// either way.
