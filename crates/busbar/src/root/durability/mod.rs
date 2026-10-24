@@ -125,7 +125,7 @@ use busbar_kernel_wal::{
 /// that are part of this module's own public surface are re-exported below so no caller's path
 /// changes.
 mod replay;
-use replay::{apply_opened, replay_into, same_movement, Replayed, Replayer};
+use replay::{apply_opened, replay_into, same_movement, Replayer};
 
 /// The checkpoints this node holds, re-derived from the chain for a reader (Q128 kernel-ledger
 /// HIGH 1, ARCHITECT ruling A1). Split out for `structure-lint`.
@@ -2802,8 +2802,9 @@ pub fn node_book_over(history: HistorySource) -> NodeBook {
 ///
 /// # Errors
 ///
-/// A configured data directory could not be opened, or the journal already there could not be read.
-/// There is no error arm on the other branch: a memory-buffered journal cannot fail to open.
+/// A configured data directory could not be opened, or the journal already there could not be read
+/// or does not verify. There is no error arm on the other branch: a memory-buffered journal cannot
+/// fail to open.
 pub fn build_for_node(
     cfg: &DurabilityConfig,
     node: u64,
@@ -2964,7 +2965,7 @@ fn build_inner(
         cards_from: None,
         amendments_through: None,
         cadence: None,
-        // Set from the chain below; a chain that cannot be read numbers past the opening.
+        // Set from the chain below; a chain the boot cannot read or verify refuses it.
         next_checkpoint_seq: OPENING_CHECKPOINT_SEQ.saturating_add(1),
         lane,
         resumed,
@@ -3008,12 +3009,29 @@ fn build_inner(
             .and_then(|decoded| busbar_kernel_wal::verify_journal(&decoded).map(|()| decoded))),
         None => durability.journal.replay(),
     };
+    // A CHAIN THE BOOT CANNOT VERIFY REFUSES THE BOOT, naming the break, as a store that would not
+    // read it back does ([`build_on_store`]). Taken for an empty chain, the boot went on sealing
+    // onto it over an empty rebuild: the book and the dated history rebuilt from nothing (the card
+    // journal disarmed, so later applies were never journalled), checkpoint and audit numbering
+    // from one again on a chain that carries them, an incarnation already used, and the amendment
+    // journal never bound (audit root r4 B-2, A-5). A damaged record the log set aside verifies
+    // across its hole and never lands here: that boot serves on, and its quarantine is a finding.
+    let records = match chain {
+        Ok(Ok(records)) => records,
+        Ok(Err(broken)) => {
+            return Err(OpenError::Io(std::io::Error::other(format!(
+                "the journal does not verify: {broken}"
+            ))))
+        }
+        Err(e) => {
+            return Err(OpenError::Io(std::io::Error::other(
+                durability.unreadable(&e),
+            )))
+        }
+    };
     let mut refused_corrections = Vec::new();
     if let Some(cards) = cards {
-        let records = match (durability.keeps_chain(), &chain) {
-            (true, Ok(Ok(records))) => Some(records.as_slice()),
-            _ => None,
-        };
+        let records = durability.keeps_chain().then_some(records.as_slice());
         // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).
         refused_corrections =
             cards
@@ -3027,29 +3045,14 @@ fn build_inner(
     }
     let pinned = (durability.history)();
     let view = pinned.as_ref().map(PinnedHistory::view);
-    let (replayed, unreadable) = match chain {
-        Ok(Ok(records)) => {
-            let seeded = last_anchored_on(&records);
-            if let Some(why) = anchor_out_of_step(&records, seeded.as_ref()) {
-                durability.anchor_findings.push(why);
-            }
-            durability.anchor = SelfAttestingAnchor::seeded(seeded);
-            durability.next_checkpoint_seq = seal::next_checkpoint_seq_on(&records);
-            durability.resume_audit(&records);
-            (
-                replay_into(&mut durability.ledger, &records, view.as_ref(), false),
-                None,
-            )
-        }
-        Ok(Err(broken)) => (
-            Replayed::nothing(),
-            Some(format!("the journal does not verify: {broken:?}")),
-        ),
-        Err(e) => (
-            Replayed::nothing(),
-            Some(format!("the journal could not be read: {e}")),
-        ),
-    };
+    let seeded = last_anchored_on(&records);
+    if let Some(why) = anchor_out_of_step(&records, seeded.as_ref()) {
+        durability.anchor_findings.push(why);
+    }
+    durability.anchor = SelfAttestingAnchor::seeded(seeded);
+    durability.next_checkpoint_seq = seal::next_checkpoint_seq_on(&records);
+    durability.resume_audit(&records);
+    let replayed = replay_into(&mut durability.ledger, &records, view.as_ref(), false);
     // A sealed audit record names the boot that wrote it too, so a chain whose newest record is an
     // audit record still hands this boot the next incarnation.
     let audited = durability
@@ -3096,16 +3099,11 @@ fn build_inner(
     // AND THE RESTART RECONCILIATION RUNS OVER THE REAL BOOK: what is in memory now, against what
     // the chain rebuilds. It is a comparison of two things that can disagree, reported rather than
     // refused — a node boots over what it can read, and the finding says what it could not.
-    let mut findings: Vec<JournalDisagreement> = unreadable
+    let mut findings: Vec<JournalDisagreement> = replayed
+        .unreadable
         .into_iter()
         .map(JournalDisagreement::Unreadable)
         .collect();
-    findings.extend(
-        replayed
-            .unreadable
-            .into_iter()
-            .map(JournalDisagreement::Unreadable),
-    );
     findings.extend(
         durability
             .quarantined
