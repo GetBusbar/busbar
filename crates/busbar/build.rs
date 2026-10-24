@@ -674,18 +674,16 @@ fn driver_proofs_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Stri
     match rows.as_slice() {
         [] => words.push_str("#[allow(dead_code)]\npub(crate) const DRIVER_WORDS: &str = \"\";\n"),
         [(feature, krate)] => {
-            let dependency = metadata_value(manifest, "dependencies", krate).unwrap_or_else(|| {
-                panic!("driver-proofs row `{feature}`: `{krate}` is no dependency")
-            });
-            let path = dependency
-                .split_once("path")
-                .and_then(|(_, rest)| rest.split('"').nth(1))
-                .unwrap_or_else(|| {
-                    panic!("driver-proofs row `{feature}`: `{krate}` has no `path`")
-                });
-            let at = std::path::Path::new(&env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
-                .join(path)
-                .join("tests/on_driver");
+            // The plane states its proofs' directory under its `links` name, as it states its root
+            // cells: `DEP_BUSBAR_DOOR_CELLS_<CRATE>_DRIVER`, the same for a path and a pinned plane.
+            let var = format!(
+                "DEP_{}_DRIVER",
+                door_cells_links(krate).to_uppercase().replace('-', "_")
+            );
+            println!("cargo:rerun-if-env-changed={var}");
+            let at = std::path::PathBuf::from(env::var(&var).unwrap_or_else(|_| {
+                panic!("driver-proofs row `{feature}`: `{krate}` states no `driver=` under its links name ({var})")
+            }));
             proofs.push_str(&format!(
                 "#[path = {:?}]\npub(crate) mod proofs;\n",
                 at.join("mod.rs").display().to_string()
