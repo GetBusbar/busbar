@@ -48,6 +48,18 @@ const BOOT_LOADER: &str = "load_config_from_disk";
 const LOADED: &str = "LoadedConfig";
 /// The loader call whose result the boot consumer builds from.
 const BOOT_BUILD_SINKS: &[&str] = &["resolve", "build_app_from_config"];
+/// WHERE EACH DOOR IS MOUNTED, pinned: the handler, the token its `.route(..)` names as the path,
+/// and (for a path constant) the file and constant that give it its value. A door mounted anywhere
+/// else is a door the operator's tooling no longer finds.
+const DOOR_PATHS: &[(&str, &str, &str, &str)] = &[
+    ("apply_config", "\"/config/apply\"", "", ""),
+    (
+        "validate_config",
+        "PATH_CONFIG_VALIDATE",
+        "crates/busbar-kernel/src/admin/gate.rs",
+        "/config/validate",
+    ),
+];
 /// The doors floor: apply and its dry run. Fewer derived doors means the derivation went blind.
 const MIN_DOORS: usize = 2;
 
@@ -429,11 +441,15 @@ fn carriers(t: &[String], seed: &dyn Fn(&[String]) -> bool) -> std::collections:
                         && w[2] == "("
                         && w[3] == "|"
                     {
-                        for p in e[k + 4..].iter().take_while(|x| *x != "|") {
-                            if p != "mut" {
-                                set.insert(p.clone());
-                            }
-                        }
+                        // The closure's parameter NAMES only: a pattern like `|(a, b)|` carries `a`
+                        // and `b`, never its `(` `,` `)` tokens, which would make every call
+                        // argument holding a paren read as the loaded value.
+                        let params: Vec<String> = e[k + 4..]
+                            .iter()
+                            .take_while(|x| *x != "|")
+                            .cloned()
+                            .collect();
+                        set.extend(bindings(&params));
                     }
                 }
             }
@@ -524,7 +540,8 @@ fn literal_field(lit: &[String], field: &str) -> Option<Vec<String>> {
 
 /// Whether `args` reads a carrier.
 fn reads(args: &[String], carry: &std::collections::BTreeSet<String>) -> bool {
-    args.iter().any(|x| carry.contains(x))
+    args.iter()
+        .any(|x| x.starts_with(|c: char| c.is_alphabetic() || c == '_') && carry.contains(x))
 }
 
 /// The seed of an admin door: `let _ = ... deploy_from_deserializer ( <var> . config ) ...`.
@@ -640,9 +657,20 @@ fn routes(cx: &Ctx) -> Vec<String> {
     }
     let mut bad = Vec::new();
     for d in &ds {
+        let Some((_, path_tok, const_file, const_value)) =
+            DOOR_PATHS.iter().find(|(h, ..)| *h == d.handler)
+        else {
+            bad.push(format!(
+                "{ROUTER}: door `{}` has no pinned path in DOOR_PATHS: a whole-document door is \
+                 mounted where the operator's tooling expects it, so its path is written down",
+                d.handler
+            ));
+            continue;
+        };
         let mounted = toks.windows(9).any(|w| {
             w[0] == "route"
                 && w[1] == "("
+                && w[2] == *path_tok
                 && w[3] == ","
                 && w[4] == "post"
                 && w[5] == "("
@@ -652,9 +680,20 @@ fn routes(cx: &Ctx) -> Vec<String> {
         });
         if !mounted {
             bad.push(format!(
-                "{ROUTER}: no `.route(<path>, post({}))`: the admin door is not mounted",
+                "{ROUTER}: no `.route({path_tok}, post({}))`: the admin door is not mounted at its \
+                 pinned path",
                 d.handler
             ));
+        }
+        if !const_file.is_empty() {
+            let text = cx.read(const_file).unwrap_or_default();
+            let want = format!("{path_tok}: &str = \"{const_value}\"");
+            if !text.contains(&want) {
+                bad.push(format!(
+                    "{const_file}: `{path_tok}` is not `\"{const_value}\"`: the path `{}` is mounted at moved",
+                    d.handler
+                ));
+            }
         }
     }
     bad
@@ -815,7 +854,7 @@ impl Gate for AdminConfigParityGate {
             "the tree's two config doors are one schema",
             &[ROW_ONE_PARSER, ROW_WHOLE_DOCUMENT, ROW_ROUTES, ROW_REACHES],
         ));
-        let plants: [(&str, &str, &str, &str, &str, &str); 11] = [
+        let plants: [(&str, &str, &str, &str, &str, &str); 13] = [
             (
                 "apply parsing a plain-derived DeployCfg instead of the boot parser is RED",
                 HANDLERS,
@@ -855,6 +894,22 @@ impl Gate for AdminConfigParityGate {
                 ".route(\"/config/apply\", post(reload_config))",
                 ROW_ROUTES,
                 "apply_config",
+            ),
+            (
+                "config/apply mounted at another path is RED",
+                ROUTER,
+                ".route(\"/config/apply\", post(apply_config))",
+                ".route(\"/config/applied\", post(apply_config))",
+                ROW_ROUTES,
+                "apply_config",
+            ),
+            (
+                "the dry run's path constant moved is RED",
+                "crates/busbar-kernel/src/admin/gate.rs",
+                "pub const PATH_CONFIG_VALIDATE: &str = \"/config/validate\";",
+                "pub const PATH_CONFIG_VALIDATE: &str = \"/config/check\";",
+                ROW_ROUTES,
+                "PATH_CONFIG_VALIDATE",
             ),
             (
                 "apply parsing the document and then resolving a DIFFERENT value is RED",
