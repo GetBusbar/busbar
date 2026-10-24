@@ -1302,29 +1302,29 @@ extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut Service
     )
 }
 
-thread_local! {
-    /// The unit the crossing on this thread serves.
-    static SERVING: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
-}
-
 /// The unit a crossing serves, stated for the host services it calls on its thread, and cleared
-/// (to the unit of any crossing it is nested in) when the crossing returns.
+/// (to the unit of any crossing it is nested in) when the guard drops. A crossing states its unit
+/// with its mark (`super::plugin::with_crossing_serving`); this guard states one alone.
+#[cfg(test)]
 pub(crate) struct Serving(Option<u64>);
 
+#[cfg(test)]
 impl Drop for Serving {
     fn drop(&mut self) {
-        SERVING.with(|s| s.set(self.0));
+        super::plugin::replace_serving(self.0);
     }
 }
 
 /// State that the crossing on this thread serves `unit` until the returned guard drops.
+#[cfg(test)]
 pub(crate) fn serving(unit: Option<u64>) -> Serving {
-    Serving(SERVING.with(|s| s.replace(unit)))
+    Serving(super::plugin::replace_serving(unit))
 }
 
 /// The unit the crossing on this thread serves; `None` outside a crossing that serves one.
+#[inline(always)]
 pub(crate) fn serving_unit() -> Option<u64> {
-    SERVING.with(std::cell::Cell::get)
+    super::plugin::serving_unit()
 }
 
 extern "C" fn entitlement_check(

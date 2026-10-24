@@ -47,6 +47,7 @@ impl<'a> Answer<'a> {
     /// # Safety
     /// `input`/`out` are the op's live host-owned `in`/`out`, `in_size`/`out_size` bytes, not
     /// written by anyone while the answer lives.
+    #[inline(always)]
     pub(crate) unsafe fn new(
         slot: u32,
         outcome: Outcome,
@@ -68,11 +69,13 @@ impl<'a> Answer<'a> {
 
     /// The same answer, judged in the instance's `context` ([`super::Kind::context`]).
     #[must_use]
+    #[inline(always)]
     pub fn with_context(self, context: Option<&'a Context>) -> Self {
         Self { context, ..self }
     }
 
     /// The instance's context as the kind's type `T`, if it has one.
+    #[inline(always)]
     pub fn context<T: 'static>(&self) -> Option<&'a T> {
         self.context.and_then(|c| c.downcast_ref::<T>())
     }
@@ -82,6 +85,7 @@ impl<'a> Answer<'a> {
     /// # Errors
     /// [`Rule::Foreign`] when the host's `in` is smaller than `T` (the op was submitted with another
     /// struct than its kind names).
+    #[inline(always)]
     pub fn input<T: InFrame>(&self) -> Result<&T, Fault> {
         if self.in_size < size_of::<T>() {
             return Err(fault(Rule::Foreign, "in"));
@@ -94,6 +98,7 @@ impl<'a> Answer<'a> {
     ///
     /// # Errors
     /// [`Rule::Foreign`] when the host's `out` is smaller than `T`.
+    #[inline(always)]
     pub fn out<T: OutFrame>(&self) -> Result<&T, Fault> {
         if self.out_size < size_of::<T>() {
             return Err(fault(Rule::Foreign, "out"));

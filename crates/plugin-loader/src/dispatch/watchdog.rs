@@ -111,7 +111,8 @@ fn ticketless(pool: &Pool) {
         // the instance's counted mark are new.
         let from = inst.ticketless_counted.load(Ordering::Acquire);
         let fresh: Vec<u64> = inst
-            .lock_calls()
+            .calls
+            .listed()
             .iter()
             .filter(|&&(id, started, s)| {
                 id >= from && started.elapsed() > pool.env.budgets.of(s, DeadlineClass::Call)

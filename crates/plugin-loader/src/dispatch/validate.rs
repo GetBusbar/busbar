@@ -50,6 +50,7 @@ impl Violation {
 
 /// The mechanism's own checks of an `out` head, run on every crossing: its size, its error text
 /// and its #85 arrays.
+#[inline(always)]
 pub(crate) fn out_head(head: &OutHead, host_out_size: u32) -> Result<(), Violation> {
     let stated = head.size;
     if (stated as usize) < size_of::<OutHead>() || stated > host_out_size {
@@ -122,6 +123,7 @@ fn within<T>(ptr: *const T, len: usize) -> bool {
             .is_some_and(|bytes| bytes <= MAX_LENT_BYTES)
 }
 
+#[inline(always)]
 fn text(s: AbiStr) -> Result<(), Violation> {
     if (s.ptr.is_null() && s.len != 0) || s.len > MAX_ERROR_LEN {
         return Err(Violation::ErrorText(s.len));
@@ -129,14 +131,15 @@ fn text(s: AbiStr) -> Result<(), Violation> {
     Ok(())
 }
 
+#[inline(always)]
 fn envelope(e: &Envelope) -> Result<(), Violation> {
-    for (p, n) in [
-        (e.metrics.is_null(), e.metrics_len),
-        (e.diags.is_null(), e.diags_len),
-    ] {
-        if (p && n != 0) || n > MAX_ENVELOPE_ENTRIES {
-            return Err(Violation::EnvelopeArray(n));
-        }
+    // The metrics array, then the diagnostics array: NULL with a length, or over-long, is FAULT.
+    let (m, d) = (e.metrics_len, e.diags_len);
+    if (m != 0 && e.metrics.is_null()) || m > MAX_ENVELOPE_ENTRIES {
+        return Err(Violation::EnvelopeArray(m));
+    }
+    if (d != 0 && e.diags.is_null()) || d > MAX_ENVELOPE_ENTRIES {
+        return Err(Violation::EnvelopeArray(d));
     }
     Ok(())
 }

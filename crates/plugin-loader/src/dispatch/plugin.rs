@@ -299,6 +299,7 @@ pub(crate) struct Crossed {
 }
 
 impl Crossed {
+    #[inline(always)]
     pub(crate) fn host(outcome: Outcome) -> Self {
         Self {
             outcome,
@@ -319,39 +320,83 @@ struct Tables(Box<HostTables>);
 unsafe impl Send for Tables {}
 unsafe impl Sync for Tables {}
 
-thread_local! {
-    /// The instance whose crossing is on this thread (innermost first), for what a host entry needs
-    /// it for (#74): the instance a context must name, and the quarantine of a forged one.
-    static CROSSING: std::cell::Cell<*const Instance> = const { std::cell::Cell::new(std::ptr::null()) };
+/// What the crossing on a thread states there (innermost first): the instance crossing, for what a
+/// host entry needs it for (#74): the instance a context must name, and the quarantine of a forged
+/// one; and the unit it serves, for the host services it calls ([`super::services::serving_unit`]).
+/// One thread-local holds both, so a crossing states and restores them in one step.
+#[derive(Clone, Copy)]
+struct Mark {
+    inst: *const Instance,
+    unit: Option<u64>,
 }
 
-/// `f` run as the crossing of `inst` on this thread (`None`: as no crossing), the mark restored to
-/// the crossing it is nested in, if any, when `f` returns or unwinds. The ONE way the mark is set:
-/// a call into plugin code is either a crossing of an instance or explicitly none.
-pub(crate) fn with_crossing<R>(inst: Option<&Instance>, f: impl FnOnce() -> R) -> R {
-    struct Restore(*const Instance);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            CROSSING.with(|c| c.set(self.0));
-        }
+thread_local! {
+    /// This thread's [`Mark`].
+    static CROSSING: std::cell::Cell<Mark> = const {
+        std::cell::Cell::new(Mark {
+            inst: std::ptr::null(),
+            unit: None,
+        })
+    };
+}
+
+/// The mark a crossing replaced, put back when the crossing returns or unwinds.
+struct Restore(Mark);
+
+impl Drop for Restore {
+    #[inline(always)]
+    fn drop(&mut self) {
+        CROSSING.with(|c| c.set(self.0));
     }
-    let mark = inst.map_or(std::ptr::null(), std::ptr::from_ref);
+}
+
+/// `f` run as the crossing of `inst` serving `unit` on this thread (`None`: as no crossing), the
+/// mark restored to the crossing it is nested in, if any, when `f` returns or unwinds. The ONE way
+/// the mark is set: a call into plugin code is either a crossing of an instance or explicitly none.
+/// The instance and the unit are stated, and restored, in one step.
+#[inline(always)]
+pub(crate) fn with_crossing<R>(
+    inst: Option<&Instance>,
+    unit: Option<u64>,
+    f: impl FnOnce() -> R,
+) -> R {
+    let mark = Mark {
+        inst: inst.map_or(std::ptr::null(), std::ptr::from_ref),
+        unit,
+    };
     let _restore = Restore(CROSSING.with(|c| c.replace(mark)));
     f()
 }
 
+/// State that this thread serves `unit`, the crossing mark kept; the unit it replaced.
+#[cfg(test)]
+pub(crate) fn replace_serving(unit: Option<u64>) -> Option<u64> {
+    CROSSING.with(|c| {
+        let was = c.get();
+        c.set(Mark { unit, ..was });
+        was.unit
+    })
+}
+
+/// The unit the crossing on this thread serves; `None` outside a crossing that serves one.
+#[inline(always)]
+pub(crate) fn serving_unit() -> Option<u64> {
+    CROSSING.with(|c| c.get().unit)
+}
+
 /// `f` run with the mark nulled, so nothing it hands the host is taken for the crossing it happens
-/// to be nested in. With the HOT plane and transport load paths deleted (row 84), every call into
-/// plugin code is a mechanism crossing ([`Instance::cross`] binds it with [`with_crossing`]); this
-/// stays the explicit "no crossing" the #74 RED test nests inside one.
+/// to be nested in (the unit it serves kept). With the HOT plane and transport load paths deleted
+/// (row 84), every call into plugin code is a mechanism crossing ([`Instance::cross`] binds it with
+/// [`with_crossing`]); this stays the explicit "no crossing" the #74 RED test nests inside one.
 #[cfg(test)]
 pub(crate) fn without_crossing<R>(f: impl FnOnce() -> R) -> R {
-    with_crossing(None, f)
+    let unit = serving_unit();
+    with_crossing(None, unit, f)
 }
 
 /// The handle table entry of the instance crossing on this thread; `None` outside a crossing.
 pub(crate) fn crossing_wake() -> Option<&'static InstanceWake> {
-    let p = CROSSING.with(std::cell::Cell::get);
+    let p = CROSSING.with(|c| c.get().inst);
     // SAFETY: `CROSSING` is non-null only inside `with_crossing(Some(&*p), ..)`, which borrows the
     // instance for the whole span; its `wake` entry is leaked (`'static`).
     (!p.is_null()).then(|| unsafe { (*p).wake })
@@ -363,7 +408,7 @@ pub(crate) fn crossing_wake() -> Option<&'static InstanceWake> {
 /// there was a crossing to quarantine (a call from a plugin's own thread, outside any crossing,
 /// names no caller; it is refused and counted all the same).
 pub(crate) fn quarantine_crossing() -> bool {
-    let p = CROSSING.with(std::cell::Cell::get);
+    let p = CROSSING.with(|c| c.get().inst);
     if p.is_null() {
         return false;
     }
@@ -486,8 +531,8 @@ pub(crate) struct Instance {
     /// op's FIRST invocations are `crossings - resumes`: "one op = one crossing", however often
     /// the op pends.
     pub(crate) resumes: AtomicU64,
-    /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
-    pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
+    /// The ticket-less crossings in progress, for the watchdog.
+    pub(crate) calls: CallBoard,
     next_call: AtomicU64,
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
@@ -553,6 +598,136 @@ impl DiagIds {
         }
         // SAFETY: `validate` checked `diag_ids` holds `diag_ids_len` entries.
         str_bytes(unsafe { self.ptr.add(i).read_unaligned() })
+    }
+}
+
+/// THE TICKET-LESS CROSSINGS IN PROGRESS, for the watchdog: each one's `(id, started, slot)`.
+///
+/// A crossing takes a free CELL with one compare-exchange, writes when it started and its slot,
+/// then publishes its id; it frees the cell when it returns. No lock and no allocation on the
+/// crossing's path. The watchdog reads a cell's id before and after its fields and keeps the record
+/// only when both reads agree, so it never pairs one call's id with another's start. A crossing
+/// that finds every cell taken (more than the cells, which `max_inflight` sizes) is listed on the
+/// overflow list instead, as every crossing was before.
+pub(crate) struct CallBoard {
+    /// What every cell's `started` counts from.
+    epoch: Instant,
+    cells: Box<[CallCell]>,
+    overflow: Mutex<Vec<(u64, Instant, u32)>>,
+}
+
+/// One cell of the [`CallBoard`].
+struct CallCell {
+    /// [`CELL_FREE`], [`CELL_TAKING`] while its fields are written, else the call's id plus one.
+    tag: AtomicU64,
+    /// Nanoseconds from the board's `epoch` to the call's start.
+    started: AtomicU64,
+    /// The call's slot.
+    slot: AtomicU32,
+}
+
+/// A free [`CallCell`].
+const CELL_FREE: u64 = 0;
+/// A [`CallCell`] being written: taken, its id not yet published.
+const CELL_TAKING: u64 = u64::MAX;
+/// The most cells a board holds; more crossings at once go to its overflow list.
+const MAX_CALL_CELLS: u32 = 64;
+
+/// Where [`CallBoard::enter`] listed a crossing.
+#[derive(Clone, Copy)]
+pub(crate) enum Listed {
+    /// In this cell.
+    Cell(usize),
+    /// On the overflow list, by its id.
+    Overflow(u64),
+}
+
+impl CallBoard {
+    /// A board of one cell per `max_inflight` unit, at most [`MAX_CALL_CELLS`].
+    fn new(max_inflight: u32) -> Self {
+        let n = max_inflight.clamp(1, MAX_CALL_CELLS) as usize;
+        Self {
+            epoch: Instant::now(),
+            cells: (0..n)
+                .map(|_| CallCell {
+                    tag: AtomicU64::new(CELL_FREE),
+                    started: AtomicU64::new(0),
+                    slot: AtomicU32::new(0),
+                })
+                .collect(),
+            overflow: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// List the crossing `id` of slot `s`, started now.
+    pub(crate) fn enter(&self, id: u64, s: u32) -> Listed {
+        let now = Instant::now();
+        let started = now.saturating_duration_since(self.epoch).as_nanos() as u64;
+        let cells = &*self.cells;
+        let mut k = 0;
+        while k < cells.len() {
+            let cell = &cells[k];
+            if cell
+                .tag
+                .compare_exchange(CELL_FREE, CELL_TAKING, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                cell.started.store(started, Ordering::Release);
+                cell.slot.store(s, Ordering::Release);
+                cell.tag.store(id.wrapping_add(1), Ordering::Release);
+                return Listed::Cell(k);
+            }
+            k += 1;
+        }
+        self.overflow
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((id, now, s));
+        Listed::Overflow(id)
+    }
+
+    /// The crossing [`CallBoard::enter`] listed returned.
+    #[inline(always)]
+    pub(crate) fn leave(&self, at: Listed) {
+        match at {
+            Listed::Cell(k) => self.cells[k].tag.store(CELL_FREE, Ordering::Release),
+            Listed::Overflow(id) => self
+                .overflow
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|c| c.0 != id),
+        }
+    }
+
+    /// Every crossing listed now: `(id, started, slot)`.
+    pub(crate) fn listed(&self) -> Vec<(u64, Instant, u32)> {
+        let mut all = Vec::new();
+        for cell in &*self.cells {
+            let tag = cell.tag.load(Ordering::Acquire);
+            if tag == CELL_FREE || tag == CELL_TAKING {
+                continue;
+            }
+            let started = cell.started.load(Ordering::Acquire);
+            let s = cell.slot.load(Ordering::Acquire);
+            // A cell freed and taken again meanwhile holds another id: its fields are not this
+            // call's (ids are never reused), and the call it held has returned.
+            if cell.tag.load(Ordering::Acquire) != tag {
+                continue;
+            }
+            all.push((
+                tag - 1,
+                self.epoch + std::time::Duration::from_nanos(started),
+                s,
+            ));
+        }
+        all.extend(
+            self.overflow
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .copied(),
+        );
+        all
     }
 }
 
@@ -628,6 +803,7 @@ impl Instance {
 
     /// The instance's handle (#74): what the plugin is handed and hands back, verified by the host
     /// on every call ([`super::handle::resolve`]).
+    #[inline(always)]
     pub(crate) fn ctx(&self) -> HostCtx {
         self.tables.0.ctx
     }
@@ -637,17 +813,20 @@ impl Instance {
         self.ready.is_some()
     }
 
+    #[inline(always)]
     pub(crate) fn slot_count(&self) -> u32 {
         self.slots.len() as u32
     }
 
     /// Whether `open` answered READY and `close` has not.
+    #[inline(always)]
     pub(crate) fn is_open(&self) -> bool {
         self.opened.load(Ordering::Acquire)
     }
 
     /// Whether the host holds a HALF-OPEN box: an `open` that pended and has not answered READY
     /// (still in flight, or ended without an answer, e.g. cancelled).
+    #[inline(always)]
     pub(crate) fn half_open(&self) -> bool {
         !self.is_open() && !self.ptr.load(Ordering::Acquire).is_null()
     }
@@ -661,32 +840,45 @@ impl Instance {
     /// again once the units are taken: a unit op counted before that is seen and the units go
     /// back; one counted after it was submitted after `close` was admitted, and meets the closing
     /// instance's own refusal.
+    #[inline(always)]
     pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
         let close = s == slot::CLOSE;
         if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
             return None;
         }
         let want = if close { self.cap } else { 1 };
-        let taken = self
-            .inflight
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
-                let fits = if close { n == 0 } else { n < self.cap };
-                fits.then_some(n + want)
-            })
-            .ok()
-            .map(|_| want)?;
+        // One compare-exchange per attempt (`fetch_update`'s loop, written out: this runs on every
+        // crossing).
+        let mut n = self.inflight.load(Ordering::SeqCst);
+        loop {
+            let fits = if close { n == 0 } else { n < self.cap };
+            if !fits {
+                return None;
+            }
+            match self.inflight.compare_exchange_weak(
+                n,
+                n + want,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(now) => n = now,
+            }
+        }
         if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
-            self.release(taken);
+            self.release(want);
             return None;
         }
-        Some(taken)
+        Some(want)
     }
 
+    #[inline(always)]
     pub(crate) fn release(&self, units: u32) {
         self.inflight.fetch_sub(units, Ordering::AcqRel);
     }
 
     /// Enter the crossing gate for op `s`; see [`Instance::gate`].
+    #[inline(always)]
     fn enter_gate(&self, s: u32) -> bool {
         if s == slot::CLOSE {
             return self
@@ -694,13 +886,23 @@ impl Instance {
                 .compare_exchange(0, CLOSING | 1, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok();
         }
-        self.gate
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |g| {
-                (g & CLOSING == 0).then_some(g + 1)
-            })
-            .is_ok()
+        // `fetch_update`'s loop, written out: this runs on every crossing.
+        let mut g = self.gate.load(Ordering::Acquire);
+        loop {
+            if g & CLOSING != 0 {
+                return false;
+            }
+            match self
+                .gate
+                .compare_exchange_weak(g, g + 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(now) => g = now,
+            }
+        }
     }
 
+    #[inline(always)]
     fn leave_gate(&self, s: u32, closed: bool) {
         match (s == slot::CLOSE, closed) {
             // Closed for good: the gate stays shut.
@@ -712,11 +914,8 @@ impl Instance {
         }
     }
 
-    pub(crate) fn lock_calls(&self) -> std::sync::MutexGuard<'_, Vec<(u64, Instant, u32)>> {
-        self.calls.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     /// Whether `close` answered READY or FAULT.
+    #[inline(always)]
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
     }
@@ -869,6 +1068,7 @@ impl Instance {
     /// box admits only its `close`, once its `open` is over: the lifecycle exclusion), a second
     /// `open`, an `open` whose frame cannot hold `OpenIn`/`OpenOut`, or a `validate` whose frame
     /// cannot hold `ValidateIn`.
+    #[inline(always)]
     pub(crate) fn refuse(&self, s: u32, in_size: usize, out_size: usize) -> Option<Outcome> {
         if self.faulted.load(Ordering::Acquire) || self.is_closed() {
             return Some(Outcome::Fault);
@@ -883,16 +1083,16 @@ impl Instance {
             return Some(Outcome::Refused);
         }
         let open = self.is_open();
-        let half_open = self.half_open();
+        // Whether a half-open box is held is asked only by the two ops it decides (`open`, `close`).
         match s {
             slot::VALIDATE if in_size < size_of::<ValidateIn>() => Some(Outcome::Refused),
             slot::VALIDATE => None,
-            slot::OPEN if open || half_open => Some(Outcome::Refused),
+            slot::OPEN if open || self.half_open() => Some(Outcome::Refused),
             slot::OPEN if in_size < size_of::<OpenIn>() || out_size < size_of::<OpenOut>() => {
                 Some(Outcome::Refused)
             }
             slot::OPEN => None,
-            slot::CLOSE if half_open => None,
+            slot::CLOSE if self.half_open() => None,
             _ if !open => Some(Outcome::Refused),
             _ => None,
         }
@@ -959,12 +1159,12 @@ impl Instance {
         frame.name_unit(unit.unwrap_or(0));
         let (input, out, out_size) = frame.prepare(ticket, class as u8);
         let id = self.next_call.fetch_add(1, Ordering::Relaxed);
-        self.lock_calls().push((id, Instant::now(), slot::CANCEL));
+        let listed = self.calls.enter(id, slot::CANCEL);
         // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
         let crossed = crate::ffi_thread::on_plugin_thread(|| unsafe {
             self.cross(slot::CANCEL, input, out, out_size)
         });
-        self.lock_calls().retain(|c| c.0 != id);
+        self.calls.leave(listed);
         crossed.map_or(Outcome::Fault, |c| c.outcome)
     }
 
@@ -1095,9 +1295,9 @@ impl Instance {
         }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
-        // The unit this crossing serves, for the host services it calls.
+        // The unit this crossing serves, for the host services it calls: stated on the thread the
+        // plugin runs on, with the crossing's mark.
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
-        let _unit = super::services::serving(unit);
         // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
         // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still
@@ -1122,8 +1322,7 @@ impl Instance {
             let routed = crate::ffi_thread::on_plugin_thread(|| {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
-                let _unit = super::services::serving(unit);
-                with_crossing(Some(self), || {
+                with_crossing(Some(self), unit, || {
                     enter_lifecycle((self.op_name)(s), op, instance, input, output)
                 })
             });
@@ -1134,7 +1333,7 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
-            with_crossing(Some(self), || {
+            with_crossing(Some(self), unit, || {
                 op(instance, input.cast_const().cast(), out.cast())
             })
         };
@@ -1260,6 +1459,10 @@ impl Instance {
     /// The #85 envelope, range-checked against the Statement and handed to the sink.
     fn ingest(&self, head: &OutHead) {
         let env = head.envelope;
+        // An empty envelope (the common answer) carries nothing to range-check or hand on.
+        if env.metrics_len == 0 && env.diags_len == 0 {
+            return;
+        }
         // SAFETY: the envelope's arrays are plugin memory valid until the next op on the ticket
         // (NONE: until this crossing returned); read here, before either.
         let metrics = unsafe { array(env.metrics, env.metrics_len) };
@@ -1376,6 +1579,7 @@ impl Instance {
 }
 
 /// OUTCOME AUTHORITY: the return value decides; see the module docs.
+#[inline(always)]
 pub(crate) fn judge(raw: RawOutcome, head: &OutHead, ticket: Ticket, out_size: u32) -> Outcome {
     if !(1..=4).contains(&raw.0) || head.outcome != raw {
         return Outcome::Fault;
@@ -1655,7 +1859,7 @@ impl<K: Kind> Plugin<K> {
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),
                 resumes: AtomicU64::new(0),
-                calls: Mutex::new(Vec::new()),
+                calls: CallBoard::new(st.max_inflight.clamp(1, bind.max_inflight_cap.max(1))),
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
                 drainable: AtomicU32::new(0),
@@ -1785,6 +1989,7 @@ impl<K: Kind> Plugin<K> {
     /// pend (PENDING is FAULT). Everything the plugin pointed at is copied before this returns. The
     /// crossing is recorded for the watchdog of the dispatcher that adopted the instance: past its
     /// budget the instance is faulted (the caller's thread cannot be replaced).
+    #[inline(always)]
     pub fn call<I: InFrame, O: OutFrame>(&self, s: u32, frame: &mut Frame<I, O>) -> Called {
         self.call_once(s, frame, false)
     }
@@ -1840,6 +2045,7 @@ impl<K: Kind> Plugin<K> {
         Arc::as_ptr(&self.inner) as usize
     }
 
+    #[inline(always)]
     fn call_once<I: InFrame, O: OutFrame>(
         &self,
         s: u32,
@@ -1876,7 +2082,7 @@ impl<K: Kind> Plugin<K> {
         };
         let (i, o, out_size) = frame.heads();
         let id = inst.next_call.fetch_add(1, Ordering::Relaxed);
-        inst.lock_calls().push((id, Instant::now(), s));
+        let listed = inst.calls.enter(id, s);
         // SAFETY: the frame is ours for the call; its heads lead the structs.
         let crossed = unsafe {
             let head = &mut *i;
@@ -1892,7 +2098,7 @@ impl<K: Kind> Plugin<K> {
             head.ticket = ticket;
             inst.cross(s, i, o, out_size)
         };
-        inst.lock_calls().retain(|c| c.0 != id);
+        inst.calls.leave(listed);
         inst.release(units);
         if lifecycle {
             inst.leave_lifecycle();
@@ -1909,6 +2115,7 @@ impl<K: Kind> Plugin<K> {
 }
 
 impl From<Crossed> for Called {
+    #[inline(always)]
     fn from(c: Crossed) -> Self {
         Self {
             outcome: c.outcome,

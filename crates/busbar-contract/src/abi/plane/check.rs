@@ -117,7 +117,12 @@ fn named(s: AbiStr, field: &'static str) -> Result<(), Fault> {
 
 fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
     let counts = first(buf, n, "unit")?;
-    for (i, u) in counts.iter().enumerate() {
+    // The (class, billing) pairs already seen, for the classes below 64: one bit per class, one
+    // mask per billing kind. A class at 64 or above is looked up among the counts before it.
+    let mut seen = [0_u64; 2];
+    let mut i = 0;
+    while i < counts.len() {
+        let u = &counts[i];
         index(u.class, b.billable_classes, "unit.class")?;
         code(
             u64::from(u.source),
@@ -128,12 +133,29 @@ fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
         // ONE CUMULATIVE COUNT per class and source, and ONE BILLING COUNT per class: a second is a
         // contradiction (two running totals of one thing), never a sum the host would have to add
         // and never a choice it would have to make between a reported count and a floor.
-        if counts[..i]
-            .iter()
-            .any(|p| p.class == u.class && units_bill(p.source) == units_bill(u.source))
-        {
+        let bill = usize::from(units_bill(u.source));
+        let again = if u.class < 64 {
+            let bit = 1_u64 << u.class;
+            let again = seen[bill] & bit != 0;
+            seen[bill] |= bit;
+            again
+        } else {
+            let mut j = 0;
+            let mut again = false;
+            while j < i {
+                let p = &counts[j];
+                if p.class == u.class && usize::from(units_bill(p.source)) == bill {
+                    again = true;
+                    break;
+                }
+                j += 1;
+            }
+            again
+        };
+        if again {
             return Err(fault(Rule::Contradiction, "unit.class"));
         }
+        i += 1;
     }
     Ok(())
 }

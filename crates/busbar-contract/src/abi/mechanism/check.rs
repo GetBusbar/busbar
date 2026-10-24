@@ -83,6 +83,7 @@ pub struct Fault {
 
 /// A [`Fault`].
 #[must_use]
+#[inline(always)]
 pub const fn fault(rule: Rule, field: &'static str) -> Fault {
     Fault { rule, field }
 }
@@ -102,6 +103,7 @@ pub enum Filled {
 /// # Errors
 ///
 /// The rule the pair breaks.
+#[inline(always)]
 pub const fn result(
     outcome: Outcome,
     written: u64,
@@ -156,25 +158,44 @@ pub struct Dim {
 ///
 /// The rule the answer breaks; `group` names the answer for the whole-answer rules.
 pub fn results(outcome: Outcome, group: &'static str, dims: &[Dim]) -> Result<Filled, Fault> {
-    for d in dims {
+    // One pass gathers what the rules read, in the order they are judged: a `needed` over its max
+    // (the first such dimension), the first dimension stating a `needed`, whether any `needed`
+    // exceeds its cap, and whether anything was written. Plain loops: this runs on every answer.
+    let mut first_needed: Option<&Dim> = None;
+    let mut over_cap = false;
+    let mut written = false;
+    let mut k = 0;
+    while k < dims.len() {
+        let d = &dims[k];
         if d.needed > d.max {
             return Err(fault(Rule::OverMax, d.field));
         }
+        if d.needed != 0 && first_needed.is_none() {
+            first_needed = Some(d);
+        }
+        over_cap |= d.needed > d.cap;
+        written |= d.written != 0;
+        k += 1;
     }
-    if let Some(d) = dims.iter().find(|d| d.needed != 0) {
+    if let Some(d) = first_needed {
         if outcome != Outcome::Failed {
             return Err(fault(Rule::NeededNotFailed, d.field));
         }
-        if !dims.iter().any(|d| d.needed > d.cap) {
+        if !over_cap {
             return Err(fault(Rule::WastedRecall, group));
         }
-        if dims.iter().any(|d| d.written != 0) {
+        if written {
             return Err(fault(Rule::WrittenOnShort, group));
         }
         return Ok(Filled::Short);
     }
-    for d in dims {
-        within(d.written, d.cap, d.field)?;
+    let mut k = 0;
+    while k < dims.len() {
+        let d = &dims[k];
+        if d.written > d.cap {
+            return Err(fault(Rule::OverCap, d.field));
+        }
+        k += 1;
     }
     Ok(Filled::Written)
 }
@@ -184,6 +205,7 @@ pub fn results(outcome: Outcome, group: &'static str, dims: &[Dim]) -> Result<Fi
 /// # Errors
 ///
 /// [`Rule::OverCap`].
+#[inline(always)]
 pub const fn within(len: u64, cap: u64, field: &'static str) -> Result<(), Fault> {
     if len > cap {
         return Err(fault(Rule::OverCap, field));
@@ -196,6 +218,7 @@ pub const fn within(len: u64, cap: u64, field: &'static str) -> Result<(), Fault
 /// # Errors
 ///
 /// [`Rule::NullWithCount`].
+#[inline(always)]
 pub fn listed<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), Fault> {
     if len > 0 && ptr.is_null() {
         return Err(fault(Rule::NullWithCount, field));
@@ -231,6 +254,7 @@ pub fn bounded<T>(ptr: *const T, len: usize, field: &'static str) -> Result<(), 
 /// # Safety
 ///
 /// A non-NULL `ptr` is the host's own buffer of at least `cap` live `T`s.
+#[inline(always)]
 pub unsafe fn reported<'a, T>(
     ptr: *const T,
     count: u64,
@@ -254,6 +278,7 @@ pub unsafe fn reported<'a, T>(
 /// # Errors
 ///
 /// [`Rule::NullWithCount`].
+#[inline(always)]
 pub fn text(s: AbiStr, field: &'static str) -> Result<(), Fault> {
     listed(s.ptr, s.len, field)
 }
@@ -275,6 +300,7 @@ pub fn texts(list: &[AbiStr], field: &'static str) -> Result<(), Fault> {
 /// # Errors
 ///
 /// [`Rule::IndexOutOfRange`].
+#[inline(always)]
 pub const fn index(i: u32, len: u64, field: &'static str) -> Result<(), Fault> {
     if i as u64 >= len {
         return Err(fault(Rule::IndexOutOfRange, field));
@@ -287,6 +313,7 @@ pub const fn index(i: u32, len: u64, field: &'static str) -> Result<(), Fault> {
 /// # Errors
 ///
 /// [`Rule::UnknownCode`].
+#[inline(always)]
 pub const fn code(v: u64, lo: u64, hi: u64, field: &'static str) -> Result<(), Fault> {
     if v < lo || v > hi {
         return Err(fault(Rule::UnknownCode, field));
@@ -299,6 +326,7 @@ pub const fn code(v: u64, lo: u64, hi: u64, field: &'static str) -> Result<(), F
 /// # Errors
 ///
 /// [`Rule::UnknownCode`].
+#[inline(always)]
 pub const fn bits(v: u64, known: u64, field: &'static str) -> Result<(), Fault> {
     if v & !known != 0 {
         return Err(fault(Rule::UnknownCode, field));
@@ -312,6 +340,7 @@ pub const fn bits(v: u64, known: u64, field: &'static str) -> Result<(), Fault> 
 /// # Errors
 ///
 /// [`Rule::SpanNotAbsent`], [`Rule::SpanOutOfBounds`].
+#[inline(always)]
 pub const fn span(offset: u32, len: u32, bound: u64, field: &'static str) -> Result<(), Fault> {
     if offset == SPAN_ABSENT {
         if len != 0 {
@@ -354,11 +383,13 @@ pub fn weight(w: f64, field: &'static str) -> Result<(), Fault> {
 /// # Errors
 ///
 /// [`Rule::OverCap`] when the buffer holds fewer.
+#[inline(always)]
 pub fn first<'a, T>(buf: &'a [T], n: u64, field: &'static str) -> Result<&'a [T], Fault> {
-    usize::try_from(n)
-        .ok()
-        .and_then(|n| buf.get(..n))
-        .ok_or(fault(Rule::OverCap, field))
+    if n > buf.len() as u64 {
+        return Err(fault(Rule::OverCap, field));
+    }
+    // `n` is at most the buffer's length, a `usize`.
+    Ok(buf.split_at(n as usize).0)
 }
 
 /// A plugin-owned blob: a length above zero never comes with a NULL pointer, and never exceeds

@@ -214,6 +214,7 @@ pub struct NeedKeep {
 
 /// The instance's tail bounds; an answer judged without them is FAULT (a plane instance always
 /// binds with its tail).
+#[inline(always)]
 fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
     a.context::<PlaneFacts>()
         .map(|f| &f.bounds)
@@ -1505,25 +1506,23 @@ impl Kind for Plane {
     // bytes, written by the host for this crossing; only the dispatcher calls it.
     #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn unit_of(s: u32, input: *const InHead, in_size: usize) -> Option<u64> {
-        /// The host's `in` read as a `T`, when its frame holds a whole one.
-        ///
-        /// # Safety
-        /// `input` is the host's own `in`, `in_size` bytes, live for the crossing.
-        unsafe fn read<T: Copy>(input: *const InHead, in_size: usize) -> Option<T> {
-            // SAFETY: the frame holds a whole `T` (the caller's contract).
-            (in_size >= std::mem::size_of::<T>())
-                .then(|| unsafe { input.cast::<T>().read_unaligned() })
-        }
-        // SAFETY: the dispatcher hands its own `in` and the size it wrote.
-        let key = unsafe {
-            match s {
-                slot::ARRIVE => read::<ArriveIn>(input, in_size).map(|i| i.unit),
-                slot::ON_PIECE => read::<OnPieceIn>(input, in_size).map(|i| i.unit),
-                slot::REFUSAL => read::<RefusalIn>(input, in_size).map(|i| i.unit),
-                _ => None,
-            }
+        // The `unit` field alone of the host's `in`, read when its frame holds a whole `T`: the
+        // rest of the struct is not copied.
+        // SAFETY (each arm): `input` is the host's own `in` of `in_size` bytes, live for the
+        // crossing, and holds a whole `T`, so its `unit` field is in bounds.
+        let key = match s {
+            slot::ARRIVE if in_size >= std::mem::size_of::<ArriveIn>() => unsafe {
+                std::ptr::addr_of!((*input.cast::<ArriveIn>()).unit).read_unaligned()
+            },
+            slot::ON_PIECE if in_size >= std::mem::size_of::<OnPieceIn>() => unsafe {
+                std::ptr::addr_of!((*input.cast::<OnPieceIn>()).unit).read_unaligned()
+            },
+            slot::REFUSAL if in_size >= std::mem::size_of::<RefusalIn>() => unsafe {
+                std::ptr::addr_of!((*input.cast::<RefusalIn>()).unit).read_unaligned()
+            },
+            _ => 0,
         };
-        key.filter(|k| *k != 0)
+        (key != 0).then_some(key)
     }
 
     fn short(a: &Answer) -> bool {

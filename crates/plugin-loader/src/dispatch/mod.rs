@@ -348,6 +348,7 @@ impl<I: InFrame, O: OutFrame> Frame<I, O> {
         Self { input, out }
     }
 
+    #[inline(always)]
     pub(crate) fn heads(&mut self) -> (*mut InHead, *mut OutHead, u32) {
         (
             std::ptr::addr_of_mut!(self.input).cast(),
