@@ -1726,7 +1726,7 @@ it, no exceptions (7). Full text in Part 1; the kernel<>plugins design is THE DE
    must produce y. Every accepted difference is owner-signed with a premise the runner checks.
 5. Supply chain: `cargo deny` (advisories, licences, bans, sources) and `cargo vet`.
 
-Nothing else is a done criterion. Dev green is the stop: nothing is pushed to qa or main.
+Nothing else is a done criterion. Dev green is the stop: nothing goes to qa or main.
 
 ### Who tests what
 - Core tests itself: its ABIs and loader, against a neutral stub plugin. Core never tests plugins.
