@@ -241,20 +241,12 @@ fn compute_layout() -> String {
         MechOutHead,
         [size, outcome, _reserved, wake_at_ns, lease, error, envelope, extensions]
     );
-    record!(
-        s,
-        MechDoor,
-        [
-            magic,
-            mechanism_version,
-            size,
-            kind,
-            kind_abi,
-            statement,
-            ops,
-            ready
-        ]
-    );
+    // The door's fields are private (status row 195, the sealed door): it records its own offsets.
+    for (field, at) in MechDoor::__layout() {
+        writeln!(s, "MechDoor.{field}={at}").unwrap();
+    }
+    writeln!(s, "MechDoor.__size={}", std::mem::size_of::<MechDoor>()).unwrap();
+    writeln!(s, "MechDoor.__align={}", std::mem::align_of::<MechDoor>()).unwrap();
     record!(
         s,
         MechMetricFamily,

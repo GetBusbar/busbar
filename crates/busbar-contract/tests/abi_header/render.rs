@@ -948,6 +948,15 @@ impl Resolver<'_> {
                     .map_err(|e| format!("array length: {e}"))?;
                 Ok(Ty::Array(Box::new(self.map_type(&a.elem, f)?), n))
             }
+            // A shared `'static` reference is the C pointer it is laid out as, never NULL: the
+            // sealed door function answers one (`DoorFn`, status row 195), and C reads it as
+            // `const T *`. Any other reference has no C mapping.
+            syn::Type::Reference(r)
+                if r.mutability.is_none()
+                    && r.lifetime.as_ref().is_some_and(|l| l.ident == "static") =>
+            {
+                Ok(Ty::Ptr(true, Box::new(self.map_type(&r.elem, f)?)))
+            }
             syn::Type::Paren(p) => self.map_type(&p.elem, f),
             syn::Type::Group(g) => self.map_type(&g.elem, f),
             syn::Type::BareFn(b) => {

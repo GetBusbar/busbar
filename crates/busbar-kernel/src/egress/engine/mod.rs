@@ -106,7 +106,8 @@ pub struct EngineSpec {
     /// DNS when unpinned.
     pub dns: Dns,
     /// The destination guard every address `dns` answers with is judged by when unpinned: `None`
-    /// = the guard behind the root-installed egress-trust seam, read at each dial.
+    /// = the guard behind the egress-trust capability a test binary handed in, read at each dial
+    /// (none in a shipped build: every answer refused, fail closed).
     pub judge: Option<Arc<dyn crate::host_services::DestJudge>>,
     /// Peer-certificate observation for SPKI pinning ([`observe`]). Off on the pooled posture (no
     /// walk, no hash per connect); on for every pinned posture.
@@ -125,9 +126,10 @@ pub struct EngineSpec {
     /// h2 keep-alive interval/timeout + adaptive window: `Some` on the pooled posture, `None` on
     /// the pinned postures (reqwest set none — parity).
     pub h2_keepalive: Option<H2KeepAlive>,
-    /// The TLS wrap the https arm is secured by: `None` (every blessed posture) = the connector's,
-    /// carried by the root-installed egress-trust capability (`crate::secure::layer`). A test
-    /// hands its own TLS double here, as it hands its own names to `dns` and its own guard to `judge`.
+    /// The TLS wrap the https arm is secured by: `None` (every blessed posture) = the wrap of the
+    /// egress-trust capability a test binary handed in (`crate::secure::layer`; none in a shipped
+    /// build). A test hands its own TLS double here, as it hands its own names to `dns` and its own
+    /// guard to `judge`.
     pub tls: Option<Arc<dyn crate::secure::SecureLayer>>,
     /// TCP keepalive: pooled `Some(60s)`; pinned `None` (reqwest default — parity). nodelay is
     /// unconditional (both stacks set it).
