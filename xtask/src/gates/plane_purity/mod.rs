@@ -153,7 +153,11 @@ pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 /// protocol registry leaves with its suites (`busbar-kernel/src/proto/{mod,registry,installed}.rs`,
 /// `proto/tests/{installed_tests,neutral_protocols,registry_builtins}.rs`, `tests/proto.rs`), and
 /// #1276's body-ingress arrival host with its terminal tests, against the files dev landed since.
-pub const NEUTRAL_FLOOR: usize = 1107;
+///
+/// RE-PINNED 1107 -> 1119 merging dev d7990ee031 into GetBusbar/busbar#1454: the gate's measure on
+/// the merged tree (f7fa3eeeaa with dev d7990ee031, read by the approval desk) is
+/// `neutral_files=1119`, the files dev landed since (Law 9: the floor pins at today's measure).
+pub const NEUTRAL_FLOOR: usize = 1119;
 
 /// THE PLANE WALK'S FLOOR: the `.rs` files the plane population (in-tree and pinned planes) held on
 /// dev, measured (606 on f49c8bf98c, the RED branch's `plane_files`). Same rule as
