@@ -31,13 +31,16 @@ Each plane is inert until its section is written. An `mcp:` block with an empty 
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
 wildcard grants over every registered server: close the data-plane chain, or drop the block.
 
-A plane is opened once, at start, when its section is configured. A config apply, reload or named
-definition write that first writes the section of a plane this process started without is accepted,
-validated and stored, but that plane serves nothing until the next restart. The answer says so the
-way 1.5.5 named a newly declared plugin route: `reload_to_apply` lists the section and `note`
-explains, on `POST /config/apply`, `POST /config/reload` and the named-definition write. `GET
-/config` lists the same sections under `reload_to_apply`. Every field is omitted when nothing is
-pending, so a 1.5.5 configuration's answers are unchanged.
+A plane is loaded once, at start, when the configuration uses it. A plane that the configuration
+did not use at start cannot take its first section on a running process. A `POST /config/apply`,
+`POST /config/reload` or `POST /config/validate` whose document first writes such a section is
+refused whole with `400`, and nothing is stored or changed. The message names the section and the
+plane and says to write the section in the config file and restart. If a plane was loaded at start
+but not opened, a change that first writes its section is accepted. That plane serves nothing until
+the next restart, and the answer says so the way 1.5.5 named a newly declared plugin route:
+`reload_to_apply` lists the section and `note` explains. `GET /config` lists the same sections under
+`reload_to_apply`. Every one of these fields is omitted when nothing is pending, so a 1.5.5
+configuration's answers are unchanged.
 
 ### Behaviour identical to 1.5.5
 
@@ -88,6 +91,14 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 ### Security
 
+- **A metadata host-list entry is read the way the destination it guards is read.**
+  1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.
+  On 1.5.5 the lists compared raw strings, so `１０.９９.９９.９９` matched nothing and
+  `https://10.99.99.99/` was dialled; now it is blocked. A `://` URL's host is decoded first and an
+  IPv6 zone id (`fe80::1%eth0`) is judged as its address, as before. The entries that warn are a `%`
+  outside a zone id, a number-like last label that is no IPv4 address (`db.1`, `1.2.3.4.5`), and
+  non-ASCII that UTS #46 cannot map. Every other ASCII host gets 1.5.5's verdicts and texts, and a CIDR
+  entry is still refused with 1.5.5's text (owner-approved 2026-10-21).
 - **The OIDC auth plugin no longer follows a redirect into a private network or a metadata service.**
   1.6.0 Changed: the OIDC auth plugin refuses a discovery or JWKS redirect to a cloud metadata or IPv6 link-local host from any host, and a redirect to a private or loopback host (an IP literal, or the localhost name) unless the hop that sent it is itself on a private or loopback host; each hop is judged by the host that redirected, so a chain that leaves through a public host cannot come back into the private network. The check reads the literal host only, with no DNS lookup, so an identity provider reached by any other DNS name counts as public.
   The refusal names the URL that was asked, not the redirect target:

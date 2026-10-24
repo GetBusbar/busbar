@@ -89,6 +89,7 @@ async fn a_routed_planes_section_attach_binds_to_its_units() {
         pool: "plane-a/m",
         principal: None,
         dialect: 0,
+        request_id: None,
     };
     let bound = binder(ATTACHED)
         .bind(&unit)
