@@ -1,0 +1,101 @@
+{
+  "_comment": "THE LEDGER the subject leg's gate (scripts/a2a-subject/boot.sh assert_tck_number) reads. Every entry is {id, why, premise}, and the premise is a non-empty list of conditions the gate EVALUATES against the run in front of it (BUSBAR-1.6.0.md Law 10). `waived` forgives a MUST that reports FAIL; `skipped` justifies a MUST that reports SKIPPED (Law 8: every SKIP is named, never excused as a class). An entry whose requirement is not in the state it forgives, or whose premise is false on the run, is RED: retire it. A FAIL outside `waived` is RED; a SKIPPED outside `skipped` is RED. The dated reasoning lives in WAIVERS.md; this file is the machine-checked half. `not_applicable` holds a MUST the suite can exercise only against a feature the A2A spec makes optional and busbar does not implement: it reports SKIPPED, carries the spec `citation` that makes the feature optional, and its premise is evaluated the same way (ARCHITECT ruling 2026-10-14 under owner rule 22: such a requirement is not a named gap).",
+  "waived": [
+    {
+      "id": "PUSH-DELIVER-001",
+      "why": "busbar refuses a plaintext push callback, and the pinned TCK's webhook receiver is http:// by literal (WAIVERS.md, PUSH-DELIVER, blocker 1).",
+      "premise": [
+        {
+          "kind": "errors_match",
+          "pattern": "push callback scheme `http` is refused"
+        }
+      ]
+    },
+    {
+      "id": "PUSH-DELIVER-002",
+      "why": "busbar refuses a plaintext push callback, and the pinned TCK's webhook receiver is http:// by literal (WAIVERS.md, PUSH-DELIVER, blocker 1).",
+      "premise": [
+        {
+          "kind": "errors_match",
+          "pattern": "push callback scheme `http` is refused"
+        }
+      ]
+    },
+    {
+      "id": "PUSH-DELIVER-003",
+      "why": "busbar refuses a plaintext push callback, and the pinned TCK's webhook receiver is http:// by literal (WAIVERS.md, PUSH-DELIVER, blocker 1).",
+      "premise": [
+        {
+          "kind": "errors_match",
+          "pattern": "push callback scheme `http` is refused"
+        }
+      ]
+    }
+  ],
+  "skipped": [],
+  "not_applicable": [
+    {
+      "id": "CARD-EXT-002",
+      "why": "Extended-card-not-configured error: the test skips when the card declares extendedAgentCard and the extended card is returned successfully, which CARD-EXT-001 passing on the same run proves (WAIVERS.md, NOT APPLICABLE).",
+      "citation": "A2A specification v1.0.1 3.3.4: 'If the agent declares support but has not configured an extended card, it MUST return ExtendedAgentCardNotConfiguredError'. pinned TCK 5996b79f9cefa6fc390980e383e358a66fb9e49e tests/compatibility/core_operations/test_error_handling.py:386-428 (TestExtendedCardNotConfigured: 'can only pass or skip', skips when the extended card is returned). busbar serves an extended card whenever the deployment fronts an agent, which the subject rig always does: GetBusbar/busbar-plane-a2a @ d7cf79d32b442c8e68610adb82192db5f7d05911 (the rev Cargo.toml pins) plane-a2a/src/task_door.rs:1300-1328 (extended_card answers ExtendedAgentCardNotConfigured only for a deployment fronting no agents) and plane-a2a/src/served_card.rs:328 (extended_card_document).",
+      "premise": [
+        {
+          "kind": "card_equals",
+          "path": "capabilities.extendedAgentCard",
+          "value": true
+        },
+        {
+          "kind": "requirement_passes",
+          "id": "CARD-EXT-001"
+        }
+      ]
+    },
+    {
+      "id": "CORE-CAP-001",
+      "why": "Push-not-supported error: the test skips when the card declares pushNotifications, which busbar's served card does (WAIVERS.md, NOT APPLICABLE).",
+      "citation": "A2A specification v1.0.1 (a2aproject/A2A @ v1.0.1, docs/specification.md) 3.3.4 Capability Validation: 'Agents declare optional capabilities in their AgentCard'; each MUST there binds an agent that does NOT declare the capability. pinned TCK 5996b79f9cefa6fc390980e383e358a66fb9e49e tests/compatibility/core_operations/test_error_handling.py:211-226 (TestCapabilityPushNotifications: `if caps.get(\"pushNotifications\"): ... skip('Agent supports push notifications')`). busbar always serves this capability: GetBusbar/busbar-plane-a2a @ d7cf79d32b442c8e68610adb82192db5f7d05911 (the rev Cargo.toml pins) plane-a2a/src/served_card.rs:204-208 (self_card_document) writes capabilities {streaming, pushNotifications, extendedAgentCard} true on busbar's own card, and no busbar configuration turns one off.",
+      "premise": [
+        {
+          "kind": "card_equals",
+          "path": "capabilities.pushNotifications",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "CORE-CAP-002",
+      "why": "Streaming-not-supported error: the test skips when the card declares streaming, which busbar's served card does (WAIVERS.md, NOT APPLICABLE).",
+      "citation": "A2A specification v1.0.1 (a2aproject/A2A @ v1.0.1, docs/specification.md) 3.3.4 Capability Validation: 'Agents declare optional capabilities in their AgentCard'; each MUST there binds an agent that does NOT declare the capability. pinned TCK 5996b79f9cefa6fc390980e383e358a66fb9e49e tests/compatibility/core_operations/test_error_handling.py:261-276 (TestCapabilityStreaming: skips when the card declares streaming). busbar always serves this capability: GetBusbar/busbar-plane-a2a @ d7cf79d32b442c8e68610adb82192db5f7d05911 (the rev Cargo.toml pins) plane-a2a/src/served_card.rs:204-208 (self_card_document) writes capabilities {streaming, pushNotifications, extendedAgentCard} true on busbar's own card, and no busbar configuration turns one off.",
+      "premise": [
+        {
+          "kind": "card_equals",
+          "path": "capabilities.streaming",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "CORE-CAP-003",
+      "why": "Extended-card-not-supported error: the test skips when the card declares extendedAgentCard, which busbar's served card does (WAIVERS.md, NOT APPLICABLE).",
+      "citation": "A2A specification v1.0.1 (a2aproject/A2A @ v1.0.1, docs/specification.md) 3.3.4 Capability Validation: 'Agents declare optional capabilities in their AgentCard'; each MUST there binds an agent that does NOT declare the capability. pinned TCK 5996b79f9cefa6fc390980e383e358a66fb9e49e tests/compatibility/core_operations/test_error_handling.py:362-378 (TestCapabilityExtendedCard: skips when the card declares extendedAgentCard). busbar always serves this capability: GetBusbar/busbar-plane-a2a @ d7cf79d32b442c8e68610adb82192db5f7d05911 (the rev Cargo.toml pins) plane-a2a/src/served_card.rs:204-208 (self_card_document) writes capabilities {streaming, pushNotifications, extendedAgentCard} true on busbar's own card, and no busbar configuration turns one off.",
+      "premise": [
+        {
+          "kind": "card_equals",
+          "path": "capabilities.extendedAgentCard",
+          "value": true
+        }
+      ]
+    },
+    {
+      "id": "CORE-CAP-004",
+      "why": "Required-extension-missing error: the test runs only against an agent card that declares urn:a2a:tck:required-extension as REQUIRED. Extensions are optional in A2A, busbar implements none, and so it declares none; there is no busbar behaviour for this MUST to verify (WAIVERS.md, NOT APPLICABLE).",
+      "citation": "A2A specification v1.0.1 4.6 Extensions: extensions provide functionality 'beyond the core specification'; 3.3.4 binds only an agent whose card marks an extension required: true. pinned TCK 5996b79f9cefa6fc390980e383e358a66fb9e49e tests/compatibility/core_operations/test_error_handling.py:296-321 (TestCapabilityExtensionRequired: skips unless the card declares urn:a2a:tck:required-extension as required). busbar implements no A2A extension and its own card declares none: GetBusbar/busbar-plane-a2a @ d7cf79d32b442c8e68610adb82192db5f7d05911 (the rev Cargo.toml pins) plane-a2a/src/served_card.rs:192-213 (self_card_document has no extensions member).",
+      "premise": [
+        {
+          "kind": "card_lacks_required_extension",
+          "uri": "urn:a2a:tck:required-extension"
+        }
+      ]
+    }
+  ]
+}

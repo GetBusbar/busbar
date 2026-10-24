@@ -1,0 +1,12 @@
+{
+  "schema": "busbar.conformance.verdict/1",
+  "suite": "jev",
+  "standard": "jev decision plane",
+  "status": "fail",
+  "armed": true,
+  "commit": "50018e0285d9021b8cf3fa21a0eb70cb5a9856b4",
+  "run_id": "latchkey:lk-cached jev-conformance at 50018e028",
+  "evidence": "latchkey:lk-cached jev-conformance at 50018e028",
+  "generated_at": "2026-09-28T18:19:26Z",
+  "reason": "not served: POST /v1/systemone answers 404, the absence code on this boot; the decisions plane is registered and configured but no route serves its operation (the kernel plane driver serves it)"
+}

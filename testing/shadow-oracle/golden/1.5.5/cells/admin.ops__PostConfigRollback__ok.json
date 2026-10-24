@@ -1,0 +1,52 @@
+{
+  "applied": [
+    "hdr.date",
+    "hdr.etag"
+  ],
+  "body": {
+    "json": {
+      "config_version": 2,
+      "restored_version": 0
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "config.rollback",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "applied",
+          "resource": "config:v0"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "path": "/api/v1/admin/config/settings",
+        "status": 200,
+        "body": {
+          "json": {
+            "applied": false,
+            "config_version": 2,
+            "settings": {
+              "limits": {
+                "request_body_max_bytes": 33554432
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "41",
+    "content-type": "application/json",
+    "etag": "<ETAG>"
+  },
+  "status": 200
+}

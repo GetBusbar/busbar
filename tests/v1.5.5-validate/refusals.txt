@@ -1,0 +1,23 @@
+# GOLDEN: the published busbar 1.5.5 binary's --validate refusals for the export instances in cases.txt.
+# Captured by capture.sh; each case: `=== <export block>` then the refusal's item lines.
+===   trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" } }\n
+===   trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [bogus] }\n
+  - export.trace.fields: the `traces` stream cannot be projected with `fields:` in this release — its PINNED field `trace_id` (which `fields:` may never omit, because it is what makes the records joinable) HAS NO PRODUCER yet and arrives in a later release. Omit `fields:` to receive the stream's produced default set.
+  - export.trace.fields: unknown field `bogus`. The fields of the subscribed streams are: pool | provider | trace_id | span_id | parent_span_id | name | start | duration_us | ingress | op | lane | model.
+===   trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [trace_id, span_id] }\n
+  - export.trace.fields: the `traces` stream cannot be projected with `fields:` in this release — its PINNED field `trace_id` (which `fields:` may never omit, because it is what makes the records joinable) HAS NO PRODUCER yet and arrives in a later release. Omit `fields:` to receive the stream's produced default set.
+===   trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [pool] }\n
+  - export.trace.fields: the `traces` stream cannot be projected with `fields:` in this release — its PINNED field `trace_id` (which `fields:` may never omit, because it is what makes the records joinable) HAS NO PRODUCER yet and arrives in a later release. Omit `fields:` to receive the stream's produced default set.
+===   trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [] }\n
+  - export.trace.fields: is EMPTY — `fields:` is an EXHAUSTIVE OVERRIDE, so an empty list means a record with no fields at all. Omit the key to take each subscribed stream's default fields.
+===   trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, fields: [model_requested] }\n
+  - export.trace.fields: the `traces` stream cannot be projected with `fields:` in this release — its PINNED field `trace_id` (which `fields:` may never omit, because it is what makes the records joinable) HAS NO PRODUCER yet and arrives in a later release. Omit `fields:` to receive the stream's produced default set.
+  - export.trace.fields: `model_requested` is not a field of any subscribed stream (traces), so it would never arrive. The fields of the subscribed streams are: pool | provider | trace_id | span_id | parent_span_id | name | start | duration_us | ingress | op | lane | model.
+===   trace: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" }, streams: [logs] }\n
+  - export.trace.streams: `module: otlp` cannot carry the `logs` stream (it carries: traces), so this subscription would deliver nothing. Point a different module at this stream, or drop it from `streams:`.
+===   traces: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" } }\n  again: { module: otlp, settings: { url: \"http://localhost:4318/v1/traces\" } }\n
+  - export.again: a second `module: otlp` instance (already defined as 'traces'). OTLP installs the ONE process-global tracer subscriber, so a second instance could only be silently ignored — keep a single instance.
+===   traces: { module: otlp, settings: { url: \"http://x/\", otlp_endpoint: \"y\" } }\n
+  - export.traces.settings: unknown field `otlp_endpoint`, expected `url`
+===   traces: { module: otlp, settings: {} }\n
+  - export.traces.settings: missing field `url`

@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":"169.254.0.0/16\n100.100.100.200\n168.63.129.16\n192.0.0.192\nfd00:ec2::254\nmetadata.google.internal\nmetadata.internal\nmetadata.tencentyun.com\nmetadata.platformequinix.com\ninstance-data\ninstance-data.ec2.internal\n"},"effects":{"exec_rules":[],"stderr":""},"headers":{},"status":0}

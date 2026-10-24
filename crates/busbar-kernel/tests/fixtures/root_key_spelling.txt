@@ -1,0 +1,16 @@
+# The quoted non-plane root keys each production file may hold (tests/root_key_spelling.rs), armed
+# at the count measured when THE KIND -> VERB LIST (`Kind::verb()`) landed. Every root-key READ is
+# read off the list; what is held here is the same words in other roles: a kind's or axis's name, a
+# sub-key (a pool's or a plane section's `hooks:`, the legacy `governance.store`), doc prose, and
+# the frozen grammar's serde `rename` — plus ONE root key still spelled: `providers` in
+# plane/registry.rs's CORE_OWNED_CONCRETE_SECTIONS, whose file row (`loc-ceilings:kernel:registry`)
+# has no slack for the line the re-point costs. A row only ever goes DOWN, to the measure.
+crates/busbar-kernel/src/config/migrate.rs 10
+crates/busbar-kernel/src/config/mod.rs 1
+crates/busbar-kernel/src/plane/registry.rs 1
+crates/busbar-kernel/src/plugin_routes.rs 1
+crates/busbar-kernel/src/preflight.rs 1
+crates/busbar/src/linked_gen.rs 1
+crates/busbar/src/root/linked.rs 2
+crates/plugin-loader/src/registry.rs 1
+crates/plugin-loader/src/sign.rs 3

@@ -30,9 +30,10 @@
 //!   HTML-comment note in the doc itself pointing at the plugin-free substitute example.
 
 // The shipped/marked examples this file validates assume the DEFAULT feature set (what a real
-// user's copy-pasted config targets) -- an admin-tokens block in an example fails closed under
-// `--no-default-features` (correct production behavior, not a bug this file should catch).
-#![cfg(feature = "auth-admin-tokens")]
+// user's copy-pasted config targets) -- an operator-credential block in an example fails closed
+// under `--no-default-features` (correct production behavior, not a bug this file should catch).
+// Gated on the operator credential's linked row (`linked_operator_auth`, build.rs).
+#![cfg(linked_operator_auth)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -51,10 +52,17 @@ fn fixture_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-docs-examples-{}-{tag}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            format!(
+                "{}-{}-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+                line!(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )
+        }
     ));
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -137,9 +145,12 @@ fn run_validate(config_path: &Path, providers_path: &Path) -> (i32, String, Stri
     let effective = rewritten.as_deref().unwrap_or(config_path);
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_busbar"));
+    // 1.6.0: the catalog lives at the shipped root, NOT next to the temp config, so point busbar at
+    // it with the `--providers` flag (the removed `BUSBAR_PROVIDERS` env var no longer works).
     cmd.arg("--validate")
-        .env("BUSBAR_CONFIG", effective)
-        .env("BUSBAR_PROVIDERS", providers_path);
+        .arg("--providers")
+        .arg(providers_path)
+        .env("BUSBAR_CONFIG", effective);
     for name in &referenced {
         // 64 hex chars: valid for `auth.signing_key`, and harmless as any other secret's value.
         cmd.env(
@@ -245,7 +256,7 @@ fn marked_config_examples_validate() {
         marked.len() >= 3,
         "only found {} `doc-check: config`-marked examples — expected at least 3 \
          (getting-started.md x2, configuration.md x1; reliability.md's example is deliberately \
-         left unmarked, see its own `store.module: sqlite` note). Either a marker was removed, or \
+         left unmarked, see its own `store.module` note). Either a marker was removed, or \
          the extractor regressed — either way this guard just went quiet.",
         marked.len()
     );
@@ -271,15 +282,21 @@ fn marked_config_examples_validate() {
     );
 }
 
-/// The SHIPPED config artifacts users literally copy — root `config.yaml` and the
-/// clean 1.5.0 example — validate clean against the shipped `providers.yaml`. Three lines of
-/// coverage; nothing validated these in CI before this test existed.
+/// The SHIPPED config artifacts users literally copy or run — root `config.yaml`, the clean 1.5.0
+/// example, and `docker/config.yaml` (the default the getbusbar/busbar image boots when nothing is
+/// mounted, which the README's `docker run` relies on) — validate clean against the shipped
+/// `providers.yaml`. The docker default once shipped without the `store:` block 1.6.0 requires
+/// (Q-STORE (B)) and the image refused to boot; this list is what catches that.
 #[test]
 fn shipped_config_artifacts_validate() {
     let root = repo_root();
     let providers_path = root.join("providers.yaml");
 
-    for shipped in ["config.yaml", "examples/clean-config-1.5.0.yaml"] {
+    for shipped in [
+        "config.yaml",
+        "examples/clean-config-1.5.0.yaml",
+        "docker/config.yaml",
+    ] {
         let path = root.join(shipped);
         assert!(path.is_file(), "shipped artifact {shipped} must exist");
         let (code, stdout, stderr) = run_validate(&path, &providers_path);
@@ -288,5 +305,79 @@ fn shipped_config_artifacts_validate() {
             "shipped {shipped} failed --validate: stdout={stdout} stderr={stderr}"
         );
         assert!(stdout.contains("ok: config valid"), "{shipped}: {stdout}");
+    }
+}
+
+/// The protocols this build's binary knows, read off the refusal an operator reads for a provider
+/// naming one it does not (`must be one of: ...`), so this file names none of them.
+#[cfg(linked_axis_body_ingress)]
+fn known_protocols() -> Vec<String> {
+    let dir = fixture_dir("known-protocols");
+    let providers = dir.join("providers.yaml");
+    std::fs::write(
+        &providers,
+        "probe:\n  protocol: definitely-not-a-protocol\n  base_url: https://probe.invalid\n",
+    )
+    .unwrap();
+    let config = dir.join("config.yaml");
+    std::fs::write(
+        &config,
+        "listen: \"127.0.0.1:0\"\nstore: {module: memory}\nproviders:\n  probe:\n    api_key: { env: \
+         PROBE_KEY }\nmodels:\n  probe-model:\n    provider: probe\n",
+    )
+    .unwrap();
+    let (code, stdout, stderr) = run_validate(&config, &providers);
+    let _ = std::fs::remove_dir_all(&dir);
+    let all = format!("{stdout}{stderr}");
+    assert_ne!(code, 0, "an unknown protocol must fail validation: {all}");
+    let tail = all
+        .split("must be one of: ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("the refusal lists the known protocols: {all}"));
+    tail.lines()
+        .next()
+        .unwrap_or_default()
+        .split(", ")
+        .filter_map(|item| item.split_whitespace().next())
+        .map(|item| {
+            item.trim_end_matches(['.', ',', ';', '"', '\''])
+                .to_string()
+        })
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
+/// LEGACY the retiring engine crate's `src/engine/tests/dialect_registry_facts_tests.rs::test_shipped_providers_catalog_valid`
+/// (coverage map v2 row 101). 1.5.5: the shipped `providers.yaml` catalog parses, is non-trivial
+/// (at least 10 providers), every entry names a protocol this build knows, and every entry's
+/// `base_url` is `https://`.
+///
+/// RED: the catalog stops parsing, shrinks below 10 entries, an entry names a protocol the binary
+/// does not speak (a dead lane at boot), or an entry's `base_url` is not `https://`.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn test_shipped_providers_catalog_valid() {
+    let raw =
+        std::fs::read_to_string(repo_root().join("providers.yaml")).expect("read providers.yaml");
+    let defs: std::collections::BTreeMap<String, serde_yaml::Value> =
+        serde_yaml::from_str(&raw).expect("parse providers.yaml");
+    assert!(defs.len() >= 10, "catalog should be non-trivial");
+    let known = known_protocols();
+    assert!(!known.is_empty(), "the binary knows at least one protocol");
+    for (name, def) in &defs {
+        let protocol = def["protocol"]
+            .as_str()
+            .unwrap_or_else(|| panic!("provider '{name}' names a protocol"));
+        assert!(
+            known.iter().any(|k| k == protocol),
+            "provider '{name}' names unknown protocol '{protocol}' (known: {known:?})"
+        );
+        let base_url = def["base_url"]
+            .as_str()
+            .unwrap_or_else(|| panic!("provider '{name}' names a base_url"));
+        assert!(
+            base_url.starts_with("https://"),
+            "provider '{name}' base_url must be https"
+        );
     }
 }

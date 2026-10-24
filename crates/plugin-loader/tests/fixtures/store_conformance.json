@@ -1,0 +1,29 @@
+{
+  "settings": {},
+  "store": {
+    "credential_kind": "conformance",
+    "node": 1,
+    "caps": {
+      "bucket": "g",
+      "window_start": 60000,
+      "requests": 3,
+      "input": 10
+    },
+    "draw": {
+      "requests": 2,
+      "input": 9
+    },
+    "usage": {
+      "bucket": "k",
+      "window": 60
+    },
+    "stream": "journal",
+    "schema": "sch",
+    "keys": {
+      "grouped": "a",
+      "group": "g",
+      "plain": "b",
+      "absent": "zz"
+    }
+  }
+}

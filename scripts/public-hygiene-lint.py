@@ -140,8 +140,16 @@ RULES = [
         # vocabulary for a gate's own pass/fail state (`plugins.yaml`, `config-stability-gate.sh`,
         # `release-check.sh` all use them correctly), and flagging them would make the gate a nuisance
         # on exactly the files that are most careful. Both are GREEN fixtures below.
+        #
+        # "RED BEFORE GREEN" alone is ALSO ordinary vocabulary here for a regression test's own
+        # provenance: `xtask/tests/gate_ceiling.rs`, `xtask/tests/git_batch.rs` and `scripts/land.sh`
+        # all use the phrase, on its own line, to say a real hang/deadlock/watchdog-timeout is what
+        # made the test fail before the fix — a fact about the BUG the test guards against, not our
+        # process. What IS our process, and stays flagged, is the phrase paired with `TDD` on the
+        # same line: that combination names the development methodology rather than the failure mode,
+        # which is the distinction the `require` below draws.
         [
-            Pat(r"RED[-_ ]before[-_ ]GREEN"),
+            Pat(r"RED[-_ ]before[-_ ]GREEN", require=r"\bTDD\b"),
             Pat(r"\bTDD\b", flags=0),
         ],
     ),
@@ -157,8 +165,13 @@ RULES = [
             Pat(r"\bsurviv(?:ing|ed|es)\s+mutants?\b"),
         ],
         # A file whose SUBJECT is the mutation-testing run may name the tool it runs. Basename-scoped,
-        # so it exempts `scripts/run-mutants-ec2.sh` and nothing that merely mentions it in passing.
-        skip_paths=r"(^|/)[^/]*mutants[^/]*$",
+        # so it exempts `scripts/run-mutants-ec2.sh` and `xtask/tests/gate_mutation_proof.rs` — the
+        # actual bridge test `cargo-mutants` drives — and nothing that merely mentions the tool in
+        # passing. `docs/ci/` is the same exemption at directory scope: it exists to document this
+        # repo's own CI machinery, including the pinned tool (`cargo-mutants`, run by
+        # `scripts/gate-mutants.sh`) a gate wraps — obscuring that name would make the doc
+        # describing the gate less accurate, not more honest.
+        skip_paths=r"(^|/)[^/]*mutants[^/]*$|(^|/)[^/]*mutation_proof[^/]*$|(^|/)docs/ci/",
     ),
     Rule(
         "internal-issue-id",
@@ -193,6 +206,20 @@ RULES = [
             # exclusions are the vendor error code (`GH013`) and the latency percentile (`P95`),
             # both of which are real technical tokens that wear the same shape.
             Pat(r"[(,;]\s*(?!P(?:50|95|99)\b|GH\d)[A-Z]{1,2}(?:\d{1,2}|-\d{3})\s*\)", flags=0),
+            # THE WORD `auditor` MAKES IT A CITATION, whatever the id looks like. The three patterns
+            # above all lean on the id SHAPE (`C6`, `R27`, `E-007`), and shape-matching has a tail:
+            # `auditor MCP-2 M` and `(auditor MCP-1 H9)` are audit findings cited exactly the same
+            # way, and both slip past every one of them. `auditor` followed by anything id-shaped
+            # needs no heuristic — the phrasing already says it is a reference to an audit the reader
+            # has never seen.
+            Pat(r"\bauditor\s+[A-Za-z]{1,4}[-\s]?\d", flags=re.I),
+            # SEVERITY-PREFIXED ids need no surrounding phrasing to give them away: the severity
+            # word IS the citation. `MAJOR-5`, `FATAL-1`, `MINOR-7`, `CRIT-2` name a row in an audit
+            # the reader has never seen, and they carry none of the ambiguity the shape-based
+            # patterns above have to hedge against — no real technical prose writes `FATAL-1` to
+            # mean anything but a finding. The rationale sentence beside such an id is the part
+            # worth keeping; the id itself is the part that means nothing outside its audit.
+            Pat(r"\b(?:MAJOR|MINOR|FATAL|CRIT)-\d+\b", flags=0),
         ],
     ),
     Rule(
@@ -206,6 +233,21 @@ RULES = [
             Pat(r"\bENGINE-BUGS\.md\b"),
             Pat(r"[A-Za-z0-9_-]+-SPEC\.md\b"),
             Pat(r"\bbusbarAI-private\b|\b_handoffs\b"),
+            # PRIVATE DESIGN DOCUMENTS, BY NAME. These have to be listed explicitly, and the reason
+            # is a false negative this rule carried until 2026-08-09: the `§` pattern below EXEMPTS
+            # any line containing `.md`, because naming a real in-repo doc beside a section number is
+            # exactly the citation we want people to keep writing. The exemption could not tell a
+            # PUBLIC doc from a PRIVATE one, so `mcp-design.md §5.1` sailed through while a bare
+            # `§5.1` was caught — handing the reader the precise filename of a document they cannot
+            # open, which is a WORSE leak than the dangling reference the rule does catch.
+            Pat(r"\b(?:mcp|a2a|smart-router|config-redesign)-design\.md\b"),
+            Pat(r"\baudit-decisions[A-Za-z0-9_.-]*\.md\b"),
+            Pat(r"\b\d+\.\d+\.\d+-(?:design|dev|brief|DECISIONS)[A-Za-z0-9_.-]*\.md\b"),
+            # A DANGLING THREAT-CATALOGUE ROW. `threat 17` is a row of the private threat→defence
+            # table, cited the same way a `§` is and leaking the same way, in a shape the section
+            # pattern does not match. `threat model` / `threat surface` as prose is fine and is not
+            # matched: this is specifically a NUMBERED row.
+            Pat(r"\bthreat\s+\d+\b", forbid=r"THREAT_MODEL\.md\b|\bdocs/"),
             # A DANGLING section reference: `§9.1` with nothing on the line saying which document. A
             # line that names a real in-repo doc, a docs/ path or an RFC is exactly the citation we
             # want people to keep writing, so it is excluded — and so is every prose file, where a
@@ -217,7 +259,7 @@ RULES = [
                 # discouraged: auth-oidc cites `OIDC Core 1.0 §3.1.3.7` correctly.
                 forbid=r"\.md\b|\bRFC\b|\bdocs/|\bhttps?://|\bOIDC\b|\bOpenID\b|\bOAuth\b|\bSAML\b|"
                        r"\bJWT\b|\bJWS\b|\bJOSE\b|\bIETF\b|\bW3C\b|\bECMA\b|\bPOSIX\b|\bUnicode\b|"
-                       r"\bISO[ -]?\d",
+                       r"\bISO[ -]?\d|\bJSON-RPC\b|\bMCP\b|\bA2A\b|\bSEP-\d",
                 path_forbid=r"\.(md|rst|txt|html?)$"),
         ],
     ),
@@ -344,12 +386,41 @@ SKIP_FILES = re.compile(
 # prose: scrubbing a phrase out of a 2026 config to satisfy a rule written in 2026 would corrupt the
 # very thing the corpus exists to preserve, and the corpus README says in terms that the fix for a
 # failure there is the migrator, never the file.
-SKIP_PATHS = re.compile(r"(^|/)tests/migration-corpus/")
+#
+# `testing/llm-conformance/specs/` holds provider API descriptions vendored BYTE-FOR-BYTE from the
+# provider (the conformance job diffs recordings against them); their prose is the provider's, and
+# editing it would break the very comparison the file exists for.
+SKIP_PATHS = re.compile(r"(^|/)tests/migration-corpus/|^testing/llm-conformance/specs/")
+
+
+# Internal engineering DESIGN docs. `docs/design/` holds the build's own design and roadmap prose —
+# phases, migration steps, audit rounds, per-commit plans, security-posture reframes. That IS the
+# process, described on purpose: a design doc's SUBJECT is how the software is being built, which is
+# precisely the vocabulary every rule here exists to keep OUT of the prose a customer reads. These
+# files live in the repo but describe the WORK, not the product, so they are out of scope for a gate
+# whose whole charter is "public prose describes the software, not the process". The PUBLISHED product
+# surface stays fully in scope: everything under `docs/` OTHER than `design/`, `SECURITY.md`, the
+# per-crate READMEs, and every source comment (a shipped comment is read as the software, so it is
+# held to the software standard even when it cites a design doc — the citation belongs in the design
+# doc, not the code).
+#
+# `qa/evidence/` is the same category, moved out of docs/design on 2026-09-27 when the owner cut
+# docs/design to the spec and the TODO: the 1.5.5 behaviour inventory, the audit evidence records and
+# the generated audit status report. They are RECORDS of the work, quoted as captured (the audit
+# evidence cites commits and tracker rows because that is what it is evidence of), not prose about the
+# product — so they keep the exemption they had, and nothing else under `qa/` gains it.
+#
+# `qa/parity-bindings.md` is the same again: Appendix B of the former docs/design/ARCHITECTURE.md,
+# moved verbatim as the design-bindings gate's source table. Its rows are parsed and regenerated
+# byte for byte, so an allow marker cannot be threaded into a row, and the one id the public
+# projection must not show (`D2`) is already worded out by the gate's own PUBLIC_WORDED table in
+# qa/DESIGN-BINDINGS.md, which stays in scope.
+SKIP_DESIGN = re.compile(r"(^|/)(docs/design/|qa/evidence/|qa/parity-bindings\.md$)")
 
 
 def is_text_candidate(rel):
     base = os.path.basename(rel)
-    if SKIP_FILES.search(rel) or SKIP_PATHS.search(rel):
+    if SKIP_FILES.search(rel) or SKIP_PATHS.search(rel) or SKIP_DESIGN.search(rel):
         return False
     if any(part in SKIP_DIRS for part in rel.split("/")):
         return False
@@ -429,9 +500,12 @@ def scan_text(rel, body):
     """Every rule against every line of one file -> (hits, allowed)."""
     hits, allowed = [], []
     lines = body.split("\n")
+    # EVERY LINE IS SCANNED, WHATEVER ITS LENGTH. A length cut-off here once skipped any line over
+    # 4,000 characters on the theory that long lines are machine output — but a hand-written markdown
+    # table row in the operator-facing API document runs longer than that, and was silently exempt.
+    # Machine output is excluded BY PATH (SKIP_FILES: lockfiles, *.min.*, bundles, source maps),
+    # which says what a file IS rather than guessing from how wide one of its lines happens to be.
     for i, line in enumerate(lines):
-        if len(line) > 4000:  # a minified or generated one-liner: not prose anyone reads
-            continue
         for rule in RULES:
             if rule.skip and rule.skip.search(rel):
                 continue
@@ -500,13 +574,17 @@ def report(hits, allowed, out=sys.stdout):
 # weaker copy of the red one.
 FIXTURES = {
     "tdd-narration": (
-        "// RED-BEFORE-GREEN: the pre-fix branch returned None here, so this assertion failed.\n"
-        "// Proven by TDD before the fix landed.\n",
+        "// RED-BEFORE-GREEN, proven by TDD: the pre-fix branch returned None here, so this\n"
+        "// assertion failed before the fix landed.\n",
         "// The pre-1.5.3 branch returned None here; this asserts the 1.5.3 behaviour instead.\n"
         "fn red_before_green_guard() {}\n"
         "const TDD_NOTE: &str = \"x\";\n"
         "// The registry gate goes RED until every consumer is wired, and its own self-test proves\n"
-        "// the classifier's RED/GREEN discipline before its verdict is trusted.\n",
+        "// the classifier's RED/GREEN discipline before its verdict is trusted.\n"
+        # RED BEFORE GREEN alone, with no TDD on the line, is provenance about a real bug (a hang
+        # this test used to trip before the fix), not development-process narration.
+        "// RED BEFORE GREEN: this hung against a deadlocked pipe before the write-order fix; the\n"
+        "// watchdog below is what a regression back to that shape now trips.\n",
     ),
     "mutation-testing": (
         "// cargo-mutants flags this comparison; the test below kills the `<=` mutant.\n",
@@ -524,7 +602,11 @@ FIXTURES = {
     "audit-finding-id": (
         "/// `allowed_scopes` OMITTED = ALL scopes of every kind (C6).\n"
         "// MINT-TIME group resolution (self-service D2): a bound group must exist now.\n"
-        "// The assertion that would have caught D4 (a leaked temp on a pre-rename error).\n",
+        "// The assertion that would have caught D4 (a leaked temp on a pre-rename error).\n"
+        # Shape-matching has a tail: these two are audit findings cited identically and slipped
+        # past every shape pattern, because `MCP-2 M` and `MCP-1 H9` are not `C6`.
+        "// Auditor MCP-2 M is the finding, and this module is where it lands.\n"
+        "// The stdio child is net-new engine surface (auditor MCP-1 H9).\n",
         "/// `allowed_scopes` OMITTED = ALL scopes of every kind; an explicit `[]` = none.\n"
         "// The assertion that pins the leaked-temp case: a failed write leaves no `.tmp`.\n"
         "// Serves HTTP/2 (h2) and falls back to HTTP/1.1.\n"
@@ -536,10 +618,21 @@ FIXTURES = {
     "private-doc-reference": (
         "// See the companion design's section on projections, and design doc section 5.\n"
         "// Filed in busbar-ui/docs/ENGINE-BUGS.md and plugin-settings-schema-SPEC.md.\n"
-        "// The ceiling rule is stated at §9.1.\n",
+        "// The ceiling rule is stated at §9.1.\n"
+        # The false negative this rule carried until 2026-08-09. Naming the private document is a
+        # WORSE leak than a dangling `§`, and the `.md` exemption used to wave it through.
+        "// `mcp-design.md` §5.1 locks the config block as `tools:`.\n"
+        "// The trust lifecycle is a2a-design.md §6.1's contract, parameterised.\n"
+        "// Recorded in audit-decisions-1.5.3.md as the resolved reading.\n"
+        "// The rationale is 1.5.4-design.md §3, which this mirrors.\n"
+        # A numbered row of the private threat catalogue, leaking the same way a `§` does.
+        "// This fallback IS threat 17: the caller's own credential, silently substituted.\n",
         "// See docs/admin-api.md §5 for the projection rules this implements.\n"
         "// RFC 7231 §5.2 defines the negotiation this follows.\n"
-        "// For the MULTI-VALUED array form, OIDC Core 1.0 §3.1.3.7 is the governing rule.\n",
+        "// For the MULTI-VALUED array form, OIDC Core 1.0 §3.1.3.7 is the governing rule.\n"
+        # `threat` as prose, and the PUBLISHED threat model, must both keep working.
+        "// The threat model for this path is the confused deputy, not replay.\n"
+        "// THREAT_MODEL.md numbers this threat 3; the defence is the audience check.\n",
     ),
     "phase-plan": (
         "/// The Feature-2 decision-observability catalog; 1.5.3 unit G covers the gate.\n"
@@ -599,13 +692,26 @@ EXTRA_GREEN = {
         "          git config user.name \"Matthew Jackson\"\n"
         "          git config user.email \"matthew@example.com\"\n"
     ),
+    # A doc under docs/ci/ whose SUBJECT is the CI's own mutation-testing job: naming the pinned
+    # tool it wraps is the doc doing its job, not a campaign leaking into unrelated shipped prose.
+    "docs/ci/gate-integrity.md": (
+        "`scripts/gate-mutants.sh` runs `cargo-mutants` (pinned by version, cached) over the gate\n"
+        "sources changed on this branch, with the four gates' own `--selftest` as the test command.\n"
+    ),
+    # A test file whose SUBJECT is the mutation bridge itself (basename carries `mutation`, not
+    # `mutants`): it must name the tool it drives to explain why the file exists at all.
+    "xtask/tests/gate_mutation_proof.rs": (
+        "//! The one runner `cargo-mutants` knows how to drive. Under `cargo-mutants` the binary\n"
+        "//! these commands build is the mutated one, so a stub no self-test case holds down\n"
+        "//! leaves all four green and the mutant SURVIVES.\n"
+    ),
 }
 
 # An allow-marker fixture: the escape hatch must be PROVEN to work, or the first legitimate exception
 # turns into an argument for switching the whole gate off.
 ALLOWED_FIXTURE = (
     "// public-hygiene-lint: allow — this file documents the lint's own vocabulary\n"
-    "// RED-BEFORE-GREEN narration, deliberately quoted.\n"
+    "// RED-BEFORE-GREEN, proven by TDD, narration, deliberately quoted.\n"
 )
 
 
@@ -716,6 +822,31 @@ def selftest(out=sys.stdout):
                 devnull.close()
         finally:
             shutil.rmtree(empty, ignore_errors=True)
+
+        # (6) LENGTH IS NOT AN EXEMPTION. Every rule's RED fixture line, buried at the end of a
+        #     hand-written prose line far wider than any editor window, must still be flagged by that
+        #     rule. Control: the same fixture line on its own is flagged, so a miss below is the
+        #     length and nothing else.
+        pad = "| a hand-written table cell describing the endpoint in plain prose " * 80
+        long_bad, probed = [], 0
+        for rid, (red, _green) in FIXTURES.items():
+            probe = next((ln for ln in red.split("\n")
+                          if any(h.rule.id == rid for h in scan_text(f"docs/{rid}.md", ln)[0])), None)
+            if probe is None:
+                continue  # a fixture whose hit needs multi-line context; (2) already proves it RED
+            probed += 1
+            long_line = pad + probe
+            if not any(h.rule.id == rid for h in scan_text(f"docs/{rid}.md", long_line)[0]):
+                long_bad.append((rid, len(long_line)))
+        if probed == 0:
+            fail = 1
+            out.write("  LONG-LINE FAILED: no fixture yielded a single-line probe; the check is vacuous\n")
+        elif long_bad:
+            fail = 1
+            out.write(f"  LONG-LINE FAILED: a violation on a long prose line went unscanned: {long_bad}\n")
+        else:
+            out.write(f"  LONG-LINE: {probed}/{len(FIXTURES)} rules still fire on a {len(pad)}+ character prose line "
+                      "(line length is not an exemption; machine output is excluded by path)\n")
 
         out.write(f"  self-test: {len(RULES)} rules, {red_ok} red fixtures flagged, "
                   f"{len(RULES) - len({p for p, _, _ in loud})} green twins silent\n")

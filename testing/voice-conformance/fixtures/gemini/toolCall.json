@@ -1,0 +1,11 @@
+{
+  "toolCall": {
+    "functionCalls": [
+      {
+        "id": "function-call-14582213604383",
+        "name": "get_weather",
+        "args": { "city": "Paris" }
+      }
+    ]
+  }
+}

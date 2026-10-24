@@ -1,0 +1,1 @@
+{"contents":[{"parts":[{"text":"What is 2+2?"}],"role":"user"},{"parts":[{"text":"4"}],"role":"model"},{"parts":[{"text":"And squared?"}],"role":"user"}],"generationConfig":{"maxOutputTokens":1024,"stopSequences":["END","STOP"],"temperature":0.7,"topP":0.9},"model":"gpt-4o-mini","systemInstruction":{"parts":[{"text":"You are terse."}]}}

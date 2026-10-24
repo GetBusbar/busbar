@@ -1,0 +1,6 @@
+llm|gemini|gemini|request|ok_stream_array	PASS	HTTP 200 (fixture)	
+llm|gemini|gemini|request|malformed	PASS	HTTP 400 (fixture)	
+llm|gemini|gemini|request|unauthenticated	PASS	HTTP 400 (fixture)	
+llm|gemini|gemini|request|out_of_scope	PASS	HTTP 403 (fixture)	
+llm|gemini|gemini|request|over_budget	PASS	HTTP 429 (fixture)	
+llm|gemini|gemini|request|upstream_down	PASS	HTTP 503 (fixture)	

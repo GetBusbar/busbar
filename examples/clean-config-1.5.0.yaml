@@ -75,8 +75,22 @@ groups:
       - { concurrent: 5 }                                   # no `per` = in-flight cap
 
 # ── PRICING: the ONE cost source ──
+# Every billable class the plane declares must be configured on the card, on any entry (0 = free;
+# a token tier an entry omits is 0): the LLM plane also ledgers every count a provider reports
+# beside its tokens (search units, Cohere classifications, web fetches, the tokens a stated total
+# counts above its itemized buckets, images, transcription milliseconds, Bedrock guardrail policy
+# units), each under its own class.
 rate_card:
-  sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75 }
+  sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
+                      units: { search_units: 0, classifications: 0, web_fetch_requests: 0,
+                              unitemized_tokens: 0, images: 0, audio_ms: 0,
+                              guardrail_automated_reasoning_policies: 0,
+                              guardrail_automated_reasoning_policy_units: 0,
+                              guardrail_content_policy_image_units: 0, guardrail_content_policy_units: 0,
+                              guardrail_contextual_grounding_policy_units: 0,
+                              guardrail_sensitive_information_policy_free_units: 0,
+                              guardrail_sensitive_information_policy_units: 0,
+                              guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }
   sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0 }
 per_request_fee: 0
 
@@ -116,7 +130,7 @@ pools:
 # ── HOOKS: the top-level NAMED-DEFINITION map; pools reference by bare name ──
 # hooks:                                        # requires plugins.enabled: true + the signed tarball
 #   pii:
-#     module: busbar-webrequest-hook
+#     module: busbar-hook-webrequest
 #     settings: { url: "https://sidecar.internal/pii" }
 #     groups: [engineering]                     # SCOPE: omit = all callers
 #     phase: [request, response]                # omit = the four core stages (request/candidate/routing/response)

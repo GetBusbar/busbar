@@ -1,0 +1,13 @@
+{
+  "name": "mcp-independent-test-battery",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Independent, differential conformance battery for MCP servers and clients (revision 2026-07-28). Knows nothing about any particular implementation.",
+  "bin": { "mcp-battery": "./bin/mcp-battery.mjs" },
+  "scripts": {
+    "list": "node bin/mcp-battery.mjs list",
+    "control": "./scripts/run-control.sh"
+  },
+  "engines": { "node": ">=20" }
+}

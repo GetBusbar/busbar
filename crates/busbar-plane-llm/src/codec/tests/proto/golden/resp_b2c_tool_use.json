@@ -1,0 +1,1 @@
+{"finish_reason":"TOOL_CALL","id":"00000000-0000-4000-8000-000000000000","message":{"content":[{"text":"Let me check.","type":"text"}],"role":"assistant","tool_calls":[{"function":{"arguments":"{\"city\":\"SF\"}","name":"get_weather"},"id":"tu_1","type":"function"}]},"usage":{"tokens":{"input_tokens":42,"output_tokens":15}}}

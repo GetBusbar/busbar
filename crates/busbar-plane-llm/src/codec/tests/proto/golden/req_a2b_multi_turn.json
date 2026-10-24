@@ -1,0 +1,1 @@
+{"inferenceConfig":{"maxTokens":1024,"stopSequences":["END","STOP"],"temperature":0.7,"topP":0.9},"messages":[{"content":[{"text":"What is 2+2?"}],"role":"user"},{"content":[{"text":"4"}],"role":"assistant"},{"content":[{"text":"And squared?"}],"role":"user"}],"system":[{"text":"You are terse."}]}

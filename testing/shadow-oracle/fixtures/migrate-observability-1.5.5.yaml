@@ -1,0 +1,141 @@
+# THE 1.5.5 BYTES of the 1.5.3 observability lift-out and the 1.x hook registry, which the 1.6.0
+# kernel prints from the root legacy table's rows (plugins.yaml `legacy:`);
+# crates/busbar/src/root/tests/legacy.rs holds `--migrate-config`, boot's 1.x refusal and the
+# unknown-field hints to these. NOT HAND-WRITTEN: every output below is the verbatim stdout/stderr
+# of the PUBLISHED v1.5.5 binary, busbar-aarch64-apple-darwin extracted from the release asset
+# busbar-aarch64-apple-darwin.tar.gz (sha256 93f8f02a018c0f476c36a84aceb3e851999bee09584114ba01e2a9bd309e3c1b),
+# binary sha256 48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48 (both pinned in testing/shadow-oracle/golden-digests.tsv), run as:
+#   busbar --migrate-config config.yaml > migrate_stdout 2> migrate_stderr
+#   BUSBAR_CONFIG=config.yaml busbar --validate 2> validate_stderr
+#   BUSBAR_CONFIG=<hints[n].config> busbar --validate 2> hints[n].stderr
+config: |
+  hooks:
+    audit:
+      webhook: "https://sidecar.internal/audit"
+      kind: tap
+    bare:
+      kind: tap
+  observability:
+    otlp_endpoint: "http://otel:4318/v1/traces"
+    request_log_webhook_url: "https://logs.example.com/busbar"
+    max_inflight_webhook_deliveries: 32
+    webhook_delivery_timeout_secs: 5
+  metrics:
+    buffer_seconds: 60
+  providers: {}
+  models: {}
+  pools: {}
+migrate_stdout: |
+  # busbar 1.5.5 config, migrated by `busbar --migrate-config`.
+  # The items below need a decision; `busbar --validate` must pass.
+  # TODO(migrate): hook 'bare': no module/socket/webhook/plugin transport found; set `module:` to a `kind: hook` plugin
+  
+  pools: {}
+  hooks:
+    audit:
+      module: webhook
+      settings:
+        url: https://sidecar.internal/audit
+      kind: tap
+      phase:
+      - request
+    bare:
+      module: webhook
+      kind: tap
+      phase:
+      - request
+  export:
+    req-log:
+      module: request-log-webhook
+      settings:
+        url: https://logs.example.com/busbar
+        max_inflight_deliveries: 32
+        delivery_timeout_secs: 5
+      streams:
+      - logs
+    metrics:
+      module: prometheus
+      settings:
+        buffer_seconds: 60
+      streams:
+      - metrics
+    traces:
+      module: otlp
+      settings:
+        url: http://otel:4318/v1/traces
+      streams:
+      - traces
+  providers: {}
+  models: {}
+migrate_stderr: |
+  migrated 'config.yaml' to the 1.5.0 config shape.
+  
+  CHANGES (10):
+    - top-level 1.x hooks: registry -> named hooks: definition map (1.5.3)
+    - observability.otlp_endpoint -> otlp_url
+    - observability.request_log_webhook_url (+ webhook limits) -> export.request-log-webhook.settings (built-in exporter)
+    - metrics: block -> export.prometheus.settings (built-in exporter)
+    - export.request-log-webhook (type-keyed) -> export.req-log: { module: request-log-webhook } (1.5.3 named export map — the same module can now back several named instances)
+    - export.prometheus (type-keyed) -> export.metrics: { module: prometheus } (1.5.3 named export map — the same module can now back several named instances)
+    - observability.otlp_url -> export.traces: { module: otlp } (the `observability:` block is DELETED in 1.5.3; `export:` is the single telemetry-egress surface)
+    - export.req-log: added `streams: [logs]` (1.5.3 projection grammar — each export instance is a          PROJECTION of the engine's data, and the streams a sink subscribes to are now declared          rather than implied by `module:`. This is what the deployment already meant; narrow it          further with `fields:`).
+    - export.metrics: added `streams: [metrics]` (1.5.3 projection grammar — each export instance is a          PROJECTION of the engine's data, and the streams a sink subscribes to are now declared          rather than implied by `module:`. This is what the deployment already meant; narrow it          further with `fields:`).
+    - export.traces: added `streams: [traces]` (1.5.3 projection grammar — each export instance is a          PROJECTION of the engine's data, and the streams a sink subscribes to are now declared          rather than implied by `module:`. This is what the deployment already meant; narrow it          further with `fields:`).
+  
+  TODO (1) - a human must decide:
+    * hook 'bare': no module/socket/webhook/plugin transport found; set `module:` to a `kind: hook` plugin
+  
+  Review the output, then run `busbar --validate` on it before deploying.                  NOTE: 1.x virtual keys do not carry over - mint fresh signed keys (the 1.5.0                  security headline: keys now expire).
+validate_stderr: |
+  [error] config.yaml: this looks like a busbar 1.x config; run `busbar --migrate-config <config.yaml>` and review the flagged items. 1.x markers found:
+    - top-level `hooks:` REGISTRY block with legacy socket:/webhook: entries (1.x transports removed; a 1.5.3 `hooks:` DEFINITION entry names a `module:` — a `kind: hook` plugin — and carries `groups:`/`phase:` scope)
+    - top-level `metrics:` block (retired 1.5.3 → export.prometheus.settings.{buffer_seconds, key_gauge_limit})
+    - `observability.request_log_webhook_url:` (retired 1.5.3 → export.request-log-webhook.settings.url)
+    - `observability.max_inflight_webhook_deliveries:` (retired 1.5.3 → export.request-log-webhook.settings.max_inflight_deliveries)
+    - `observability.webhook_delivery_timeout_secs:` (retired 1.5.3 → export.request-log-webhook.settings.delivery_timeout_secs)
+    - top-level `observability:` block (DELETED 1.5.3 → an `export:` instance with `module: otlp` and `settings.url`); all telemetry egress is now the single `export:` surface
+  The 1.5.0 config redesign moved these surfaces (governance dissolved into store/rate_card/groups/advanced; group_map became auth.role_bindings; hooks became inline refs; *_env fields became secret references; pool member target became model). Booting a 1.x config under 1.5.0 rules would silently flip semantics (most critically `allowed_pools: []`, which now means NO pools), so busbar refuses to start instead.
+  ALREADY RAN THE MIGRATOR AND STILL SEEING THIS? Then the flagged block was written in a shape the migrator could not read, so it was LEFT EXACTLY AS YOU WROTE IT rather than being silently dropped, and it is still a 1.x marker. Running `--migrate-config` again will produce the same file. Look for the `# TODO` the migrator emitted for that exact path, then either fix the block into the shape the TODO names or delete it by hand.
+hints:
+  - config: |
+      otlp_url: "https://x.example/a"
+      providers: {}
+      models: {}
+      pools: {}
+    stderr: |
+      [error] config.yaml: invalid YAML: unknown field `otlp_url`, expected one of `listen`, `public_url`, `tls`, `admin_listen`, `config`, `providers_file`, `admin_tls`, `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`
+        hint: `otlp_url` was retired in 1.5.3 — it is now `an `export:` instance with `module: otlp` and `settings.url``. Run `busbar --migrate-config <config.yaml>` to rewrite it in place
+  - config: |
+      otlp_endpoint: "https://x.example/a"
+      providers: {}
+      models: {}
+      pools: {}
+    stderr: |
+      [error] config.yaml: invalid YAML: unknown field `otlp_endpoint`, expected one of `listen`, `public_url`, `tls`, `admin_listen`, `config`, `providers_file`, `admin_tls`, `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`
+        hint: `otlp_endpoint` was retired in 1.5.3 — it is now `an `export:` instance with `module: otlp` and `settings.url``. Run `busbar --migrate-config <config.yaml>` to rewrite it in place
+  - config: |
+      request_log_webhook_url: "https://x.example/a"
+      providers: {}
+      models: {}
+      pools: {}
+    stderr: |
+      [error] config.yaml: invalid YAML: unknown field `request_log_webhook_url`, expected one of `listen`, `public_url`, `tls`, `admin_listen`, `config`, `providers_file`, `admin_tls`, `admin_require_mtls`, `auth`, `identity-providers`, `providers`, `models`, `pools`, `hooks`, `groups`, `rate_card`, `per_request_fee`, `store`, `secrets`, `advanced`, `export`, `plugins`, `security`, `limits`, `health`, `routing`
+        hint: `request_log_webhook_url` was retired in 1.5.3 — the observability sink moved to the built-in EXPORTERS (`export.request-log-webhook.settings.url`). Run `busbar --migrate-config <config.yaml>` or move the field yourself
+  - config: |
+      providers: {}
+      models: {}
+      pools: {}
+      limits:
+        metrics: 1
+    stderr: |
+      [error] config.yaml: invalid YAML: limits: unknown field `metrics`, expected one of `upstream_request_timeout_secs`, `request_body_max_bytes`, `pool_max_idle_per_host`, `pool_idle_timeout_secs`, `max_inbound_concurrent`, `max_keys_per_principal`, `max_auto_provisioned_groups`, `hard_down_cooldown_secs`, `upstream_error_body_max_bytes`, `tls_handshake_timeout_secs`, `request_body_read_timeout_secs`, `max_honored_retry_after_secs`, `default_max_tokens`, `reasoning_effort_budgets` at line 5 column 3
+        hint: `metrics` was retired in 1.5.3 — the observability sink moved to the built-in EXPORTERS (`export.prometheus.settings (buffer_seconds / key_gauge_limit)`). Run `busbar --migrate-config <config.yaml>` or move the field yourself
+  - config: |
+      providers: {}
+      models: {}
+      pools: {}
+      limits:
+        observability: 1
+    stderr: |
+      [error] config.yaml: invalid YAML: limits: unknown field `observability`, expected one of `upstream_request_timeout_secs`, `request_body_max_bytes`, `pool_max_idle_per_host`, `pool_idle_timeout_secs`, `max_inbound_concurrent`, `max_keys_per_principal`, `max_auto_provisioned_groups`, `hard_down_cooldown_secs`, `upstream_error_body_max_bytes`, `tls_handshake_timeout_secs`, `request_body_read_timeout_secs`, `max_honored_retry_after_secs`, `default_max_tokens`, `reasoning_effort_budgets` at line 5 column 3
+        hint: `observability` was retired in 1.5.3 — it is now `the `export:` NAMED map — a `module: prometheus` / `module: request-log-webhook` / `module: otlp` instance (all telemetry egress is now the single `export:` surface)`. Run `busbar --migrate-config <config.yaml>` to rewrite it in place

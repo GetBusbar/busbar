@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config validation failed:\n  - hook 'h59' on_error fallback 'h59t' is a tap; a fallback must be a gate (fire-and-wait) \u2014 a tap cannot decide\n"},"headers":{},"status":1}

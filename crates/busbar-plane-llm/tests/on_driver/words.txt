@@ -1,0 +1,53 @@
+# THE LLM PLANE'S DOOR WORDS, read as data by the composition root's pools-door cells under the fold
+# switch (crates/busbar src/root/tests/serve_hook_seats.rs `word`, and the door cells of
+# serve_tests.rs): `key = value`, one per line, `#` a comment. The root names no plane and no dialect
+# (ARCHITECT ruling, #464), so the dialects those cells speak are this plane's words, kept here.
+#
+# The dialect the cells' members and callers speak: the caller's chat completions, and each member's
+# far end, unless a cell names another.
+dialect = openai
+# A far dialect that cannot carry a control the caller set (`logit_bias`), so a TRANSLATE attempt
+# writes 1.5.5's `egress.control_unrepresentable` rows (`<control> on <dialect>`,
+# `<path> from <dialect>`), and that dialect's answer: a message whose usage carries a member the
+# caller's dialect has no form for.
+untranslatable_dialect = anthropic
+untranslatable_answer = {"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0}}}
+# The dialect whose callers and members speak messages (the root's F25 rehome cells: its answers,
+# its streamed events, its error envelopes), and that dialect's answer (1 in, 1 out).
+messages_dialect = anthropic
+messages_answer = {"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1}}
+# Each caller dialect's own path onto pool `p`, and a request body in that dialect.
+messages_path = /v1/messages
+respond_path = /v1/responses
+respond_body = {"model":"p","input":"hi"}
+chat_v2_path = /v2/chat
+chat_v2_body = {"model":"p","messages":[{"role":"user","content":"hi"}]}
+generate_path = /v1beta/models/p:generateContent
+generate_v1_path = /v1/models/p:generateContent
+generate_body = {"contents":[{"role":"user","parts":[{"text":"hi"}]}]}
+converse_path = /model/p/converse
+converse_body = {"messages":[{"role":"user","content":[{"text":"hi"}]}]}
+# The converse dialect's model-scoped invoke path, and the generate dialect's token-count action
+# (one the door does not serve), both on pool `p`.
+invoke_path = /model/p/invoke
+count_tokens_path = /v1beta/models/p:countTokens
+# The messages dialect's whole answer reporting 1500 in and 90 out, its `stop_reason` before its
+# `usage` (a cut before `stop_reason` reported nothing).
+messages_answer_usage = {"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"a long enough answer that the client stopped reading part way through"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1500,"output_tokens":90}}
+# The streamed paths of the two dialects that name their model in the path, on pool `p`.
+generate_stream_path = /v1beta/models/p:streamGenerateContent?alt=sse
+converse_stream_path = /model/p/converse-stream
+# The bytes-per-token divisor of the floor a delivered body bills when its usage cannot be read.
+truncated_tail_bytes_per_token = 4
+# That far dialect's 2xx answer its reader refuses (a role no answer has), with usage stated (7 in,
+# 3 out): untranslatable to the caller's dialect, so the caller gets its own 500 and no tokens bill.
+unreadable_answer = {"id":"msg_1","type":"message","role":"wizard","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":7,"output_tokens":3}}
+# The dialect whose callers and members rerank (the root's door money cells), its rerank path on
+# pool `p`, a rerank request in it, and that dialect's rerank answer billing 50 search units, 1
+# search unit, and none.
+rerank_dialect = cohere
+rerank_path = /v2/rerank
+rerank_body = {"model":"p","query":"which is fastest","documents":["a","b","c"]}
+rerank_answer_50 = {"id":"rr-1","results":[{"index":0,"relevance_score":0.9}],"meta":{"billed_units":{"search_units":50}}}
+rerank_answer_1 = {"id":"rr-1","results":[{"index":0,"relevance_score":0.9}],"meta":{"billed_units":{"search_units":1}}}
+rerank_answer_unbilled = {"id":"rr-1","results":[{"index":0,"relevance_score":0.9}]}

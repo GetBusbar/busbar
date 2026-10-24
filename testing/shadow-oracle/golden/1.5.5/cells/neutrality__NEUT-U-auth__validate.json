@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config.yaml: invalid YAML: auth: unknown field `bogus_key`, expected one of `signing_key`, `chain`, `admin_auth`, `role_bindings`, `key_ttl` at line 15 column 3\n"},"headers":{},"status":1}

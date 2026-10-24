@@ -1,0 +1,48 @@
+{
+  "setup": {
+    "model": "models/gemini-2.0-flash-exp",
+    "generationConfig": {
+      "responseModalities": ["AUDIO"],
+      "temperature": 0.8,
+      "maxOutputTokens": 512,
+      "speechConfig": {
+        "voiceConfig": {
+          "prebuiltVoiceConfig": { "voiceName": "Puck" }
+        }
+      }
+    },
+    "systemInstruction": {
+      "parts": [
+        { "text": "You are a concise, friendly voice assistant. Keep answers short." }
+      ]
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "get_weather",
+            "description": "Get the current weather for a city.",
+            "parameters": {
+              "type": "OBJECT",
+              "properties": {
+                "city": { "type": "STRING", "description": "City name" }
+              },
+              "required": ["city"]
+            }
+          }
+        ]
+      }
+    ],
+    "realtimeInputConfig": {
+      "automaticActivityDetection": {
+        "disabled": false,
+        "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
+        "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH",
+        "prefixPaddingMs": 300,
+        "silenceDurationMs": 500
+      }
+    },
+    "inputAudioTranscription": {},
+    "outputAudioTranscription": {}
+  }
+}

@@ -1,0 +1,41 @@
+# Demo: Claude Code (Anthropic protocol) → Busbar → Amazon Nova on Bedrock.
+# The agent speaks Anthropic; Busbar translates to Bedrock Converse and back.
+listen: "127.0.0.1:8080"
+
+# Signed-key auth: mint a key via the admin API (POST /api/v1/admin/keys) and give it to the
+# agent as its bearer token. An empty chain would be an open relay (dev only).
+# 1.5.3: an identity provider is DEFINED once here and REFERENCED by bare name in the chains.
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+
+auth:
+  chain: [keys]                # bare provider NAMES; `keys` is the built-in signed-key verifier
+  # REQUIRED whenever the chain names `keys` (1.5.1+ no longer auto-generates one, and validate/boot
+  # fail closed without it). Mint the file with `busbar --generate-signing-key > <path>`; a fleet
+  # shares ONE key, and rotating it revokes every outstanding virtual key.
+  signing_key: { env: BUSBAR_SIGNING_KEY }
+  admin_auth: [admin-tokens]
+
+# Response headers busbar injects are opt-in and default OFF; see
+# docs/observability.md#response-headers. This demo opts into the latency probe.
+advanced:
+  response_headers:
+    server_timing: true
+
+providers:
+  bedrock:
+    api_key: { env: AWS_BEDROCK_CREDS }
+
+models:
+  amazon-nova:
+    provider: bedrock
+    max_concurrent: 10
+    max_requests: -1
+    upstream_model: amazon.nova-pro-v1:0   # the real Bedrock modelId that answers
+
+pools:
+  upstream_credentials: own    # 1.5.3: reserved all-pools key (was auth.upstream_credentials)
+  claude-code:
+    members:
+      - model: amazon-nova
+        weight: 1

@@ -1,0 +1,196 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (C) 2026 Busbar Inc and contributors -->
+<!--
+  THE BROWSER CELL'S PAGE. The browser's own WebRTC stack offers one data channel and one audio
+  line (the fake capture device), posts the offer to the subject, applies its answer, and grades
+  what came back:
+
+    answer            the subject answered the offer (201 and a description)
+    connected         ICE and DTLS completed (connectionState "connected")
+    channel-text      20 text messages echoed back in order on the channel
+    channel-binary    one 1000-byte binary message echoed back whole
+    media-round-trip  at least 50 audio packets came back on the line (SRTP both ways)
+    media-codec       the line carries Opus
+    close             the connection closes cleanly
+
+  `runCell()` grades the subject; `runControl()` grades two of the browser's own connections
+  against each other, the known-good peer that proves the page itself can pass.
+-->
+<html>
+<head><meta charset="utf-8"><title>busbar webrtc conformance</title></head>
+<body>
+<script>
+"use strict";
+
+const TEXT_MESSAGES = 20;
+const BINARY_BYTES = 1000;
+const MEDIA_PACKETS = 50;
+
+function ok(detail) { return { pass: true, detail: String(detail || "") }; }
+function bad(detail) { return { pass: false, detail: String(detail || "") }; }
+
+async function waitFor(check, ms) {
+  const until = performance.now() + ms;
+  for (;;) {
+    if (await check()) return true;
+    if (performance.now() > until) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+async function gathered(pc, ms) {
+  await waitFor(() => pc.iceGatheringState === "complete", ms);
+}
+
+async function inboundAudio(pc) {
+  const stats = await pc.getStats();
+  let packets = 0;
+  let codecId = null;
+  stats.forEach((s) => {
+    if (s.type === "inbound-rtp" && s.kind === "audio") {
+      packets += s.packetsReceived || 0;
+      codecId = s.codecId || codecId;
+    }
+  });
+  let mime = null;
+  if (codecId) {
+    const c = stats.get(codecId);
+    mime = c ? c.mimeType : null;
+  }
+  return { packets, mime };
+}
+
+// The channel and media cells over one connection whose far end echoes.
+async function gradeEcho(pc, dc, cells) {
+  if (!(await waitFor(() => pc.connectionState === "connected", 15000))) {
+    cells["connected"] = bad("connectionState " + pc.connectionState);
+    return;
+  }
+  cells["connected"] = ok("connected");
+  if (!(await waitFor(() => dc.readyState === "open", 10000))) {
+    cells["channel-text"] = bad("the channel never opened (" + dc.readyState + ")");
+    cells["channel-binary"] = bad("the channel never opened");
+  } else {
+    dc.binaryType = "arraybuffer";
+    const texts = [];
+    const binaries = [];
+    dc.onmessage = (e) => {
+      if (typeof e.data === "string") texts.push(e.data);
+      else binaries.push(new Uint8Array(e.data));
+    };
+    const sent = [];
+    for (let n = 0; n < TEXT_MESSAGES; n++) {
+      const m = JSON.stringify({ type: "probe", n });
+      sent.push(m);
+      dc.send(m);
+    }
+    const blob = new Uint8Array(BINARY_BYTES);
+    for (let i = 0; i < blob.length; i++) blob[i] = i & 0xff;
+    dc.send(blob);
+    await waitFor(() => texts.length >= TEXT_MESSAGES && binaries.length >= 1, 10000);
+    cells["channel-text"] =
+      texts.length === TEXT_MESSAGES && texts.every((t, i) => t === sent[i])
+        ? ok(texts.length + " echoed in order")
+        : bad("echoed " + texts.length + "/" + TEXT_MESSAGES);
+    const b = binaries[0];
+    cells["channel-binary"] =
+      b && b.length === BINARY_BYTES && b.every((v, i) => v === (i & 0xff))
+        ? ok(BINARY_BYTES + " bytes echoed")
+        : bad(b ? "echoed " + b.length + " bytes, altered or short" : "no binary echo");
+  }
+  let last = { packets: 0, mime: null };
+  const got = await waitFor(async () => {
+    last = await inboundAudio(pc);
+    return last.packets >= MEDIA_PACKETS;
+  }, 15000);
+  cells["media-round-trip"] = got
+    ? ok(last.packets + " audio packets back")
+    : bad(last.packets + " audio packets back, want " + MEDIA_PACKETS);
+  cells["media-codec"] = last.mime && last.mime.toLowerCase() === "audio/opus"
+    ? ok(last.mime)
+    : bad("codec " + last.mime);
+}
+
+async function capture(pc) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  for (const t of stream.getAudioTracks()) pc.addTrack(t, stream);
+}
+
+window.runCell = async function () {
+  const cells = {};
+  try {
+    const pc = new RTCPeerConnection();
+    const dc = pc.createDataChannel("events");
+    await capture(pc);
+    await pc.setLocalDescription(await pc.createOffer());
+    await gathered(pc, 3000);
+    const r = await fetch("/offer", {
+      method: "POST",
+      headers: { "content-type": "application/sdp" },
+      body: pc.localDescription.sdp,
+    });
+    const answer = await r.text();
+    if (r.status !== 201 || !answer.startsWith("v=0")) {
+      cells["answer"] = bad("status " + r.status + ": " + answer.slice(0, 200));
+      return cells;
+    }
+    cells["answer"] = ok("201");
+    await pc.setRemoteDescription({ type: "answer", sdp: answer });
+    await gradeEcho(pc, dc, cells);
+    pc.close();
+    cells["close"] = pc.connectionState === "closed" ? ok("closed") : bad(pc.connectionState);
+  } catch (e) {
+    cells["page"] = bad(e && e.stack ? e.stack : e);
+  }
+  return cells;
+};
+
+// THE CONTROL: the browser against itself, the far connection echoing what it hears, so the
+// grading can be seen to pass a known-good peer.
+window.runControl = async function () {
+  const cells = {};
+  try {
+    const a = new RTCPeerConnection();
+    const b = new RTCPeerConnection();
+    a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate);
+    b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate);
+    b.ondatachannel = (e) => {
+      const ch = e.channel;
+      ch.binaryType = "arraybuffer";
+      ch.onmessage = (m) => ch.send(m.data);
+    };
+    b.ontrack = (e) => {
+      // Chromium pulls a received audio track's samples only while something plays it out, so a
+      // track forwarded unplayed sends nothing: a muted element is its sink.
+      const sink = new Audio();
+      sink.muted = true;
+      sink.srcObject = new MediaStream([e.track]);
+      sink.play().catch(() => {});
+      b.addTrack(e.track);
+    };
+    const dc = a.createDataChannel("events");
+    await capture(a);
+    b.onnegotiationneeded = async () => {
+      await b.setLocalDescription(await b.createOffer());
+      await a.setRemoteDescription(b.localDescription);
+      await a.setLocalDescription(await a.createAnswer());
+      await b.setRemoteDescription(a.localDescription);
+    };
+    await a.setLocalDescription(await a.createOffer());
+    await b.setRemoteDescription(a.localDescription);
+    await b.setLocalDescription(await b.createAnswer());
+    await a.setRemoteDescription(b.localDescription);
+    cells["answer"] = ok("local");
+    await gradeEcho(a, dc, cells);
+    a.close();
+    b.close();
+    cells["close"] = a.connectionState === "closed" ? ok("closed") : bad(a.connectionState);
+  } catch (e) {
+    cells["page"] = bad(e && e.stack ? e.stack : e);
+  }
+  return cells;
+};
+</script>
+</body>
+</html>

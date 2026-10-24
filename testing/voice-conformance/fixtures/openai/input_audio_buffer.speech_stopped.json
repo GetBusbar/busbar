@@ -1,0 +1,6 @@
+{
+  "event_id": "evt_server_0005",
+  "type": "input_audio_buffer.speech_stopped",
+  "audio_end_ms": 980,
+  "item_id": "item_user_002"
+}

@@ -1,0 +1,22 @@
+{
+  "version": "busbar predev-275cbd80b (FENCE, not a release)",
+  "kind": "predev-fence",
+  "predev_sha": "275cbd80b",
+  "predev_ref": "GetBusbar/busbar origin/predev 275cbd80b (clean detached worktree, no local edits)",
+  "build_profile": "release (cargo build --release -p busbar --bin busbar)",
+  "recorded_at": "2026-09-29",
+  "binary": "<predev-worktree>/target/release/busbar",
+  "binary_sha256": "b66d38fe1f4f32e0d42ad5fe3d5df8a2c7113712c077fc8c0b968c870e05d7df",
+  "host_triple": "aarch64-apple-darwin",
+  "harness_rev": "3c22decd64e19a2c10fefb1e5f60955efb391a5255cd2de39164b8ab74c41056",
+  "recorded": 2,
+  "oracle": "busbar-release 37a53a8 (busbar-oracle record --native)",
+  "stability": "two recordings byte-identical (plus a third from the pre-fmt build of the same tree)",
+  "rules": [
+    "Never merged into golden/1.5.5 and never cited as 1.5.5 evidence.",
+    "Replayed in bin/oracle replay's separate 'predev fence' section; a divergence is red.",
+    "Re-recorded only with an ARCHITECT ruling named in the commit body; never re-blessed by whoever tripped it.",
+    "Recorded only from a clean predev build at a named sha, twice, byte-identical."
+  ],
+  "ruling": "ARCHITECT 2026-09-28: fence/predev-<sha>/ approved as the home for the predev fence cells"
+}

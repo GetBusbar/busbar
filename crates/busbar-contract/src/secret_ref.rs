@@ -1,0 +1,678 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! `SecretRef` — the SECRET REFERENCE type, extracted out of `busbar`'s crate-private
+//! `crates/busbar-core/src/config/secret.rs` into its own tiny crate, and since merged into the
+//! contract (DECISIONS #83: contract = shapes). It is the ONE `SecretRef`: the placeholder
+//! `kinds::SecretRef(String)` the secret kind's trait used to take is gone, and a secret plugin
+//! resolves this type.
+//!
+//! Every secret/external value in busbar config is `{ module: <secret-module>, settings: {…} }` — a
+//! reference to a SECRET MODULE (`kind: secret` plugin), never the secret itself. The built-in
+//! modules are `env` (`settings.key` names an environment variable) and `file` (`settings.path`
+//! names a file whose contents are the secret); third-party modules (vault, cloud secret
+//! managers, …) load through the plugin system. Two ergonomic SUGAR spellings desugar to the
+//! built-ins:
+//!
+//! ```yaml
+//! api_key: { env: MY_API_KEY }                 # ⇒ { module: env,  settings: { key: MY_API_KEY } }
+//! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
+//! ```
+//!
+//! **Why this left the binary.** `SecretRef` used to live `pub(crate)` inside the `busbar` binary
+//! crate — unreachable from `busbar-plugin-pack` or any future schema-generation tooling. The
+//! `x-busbar-secret` schema vocabulary entry's `oneOf` (the reference shape busbar-ui composes for a
+//! secret field) must be generated FROM this real type, not hand-written as a parallel copy that can
+//! drift from the actual deserializer. [`oneof_schema`] is that derivation, straight from the same
+//! `Deserialize` impl `busbar`'s engine uses to parse a live config. The two are written by hand
+//! against each other, not generated one from the other, so what actually keeps them in step is the
+//! round-trip test that runs the same table of shapes through both and demands the same verdict —
+//! the drift it caught first was a whitespace-only value the schema accepted and the visitor did not.
+//!
+//! `{ literal: <value> }` (the escape hatch for a plugin whose own legitimately-shaped config field
+//! collides with a reference shape) is **not** part of `SecretRef` and never was — it is handled one
+//! layer above `SecretRef` parsing, inside busbar's `resolve_settings()`, as a wrapper around the
+//! field. A full, faithful derivation from this type therefore already excludes `literal` correctly,
+//! with no special-casing required or wanted — see the doc comment on [`oneof_schema`].
+//!
+//! `SecretRef` holds no secret material — only the module name and its opaque settings — so it is
+//! safe to derive `Debug`/`Clone`/`PartialEq` on it and on every struct embedding it.
+
+use std::fmt;
+
+use serde::de::{self, Deserializer, MapAccess, Visitor};
+use serde::Deserialize;
+
+/// The built-in `env` secret module name (settings: `{ key: <ENV_VAR> }`).
+pub const SECRET_MODULE_ENV: &str = "env";
+/// The built-in `file` secret module name (settings: `{ path: <FILE> }`).
+pub const SECRET_MODULE_FILE: &str = "file";
+/// The DECLARED-KEYLESS module name: `api_key: none` (a plain scalar — the only spelling) says
+/// "this upstream takes NO credential".
+///
+/// It exists because a secret reference that fails to resolve now REFUSES BOOT instead of degrading
+/// to an empty credential, and a keyless upstream (one that legitimately requires no credential at
+/// all) needs a way to say so on purpose rather than by pointing at a variable it knows is unset. It
+/// names no source and carries
+/// no settings, so it resolves to NOTHING: a resolver asked for its bytes is a hard error, and only
+/// a call site that genuinely permits an absent credential may accept it.
+pub const SECRET_MODULE_NONE: &str = "none";
+/// The `env` module's settings key naming the environment variable.
+pub const SECRET_ENV_SETTING_KEY: &str = "key";
+/// The `file` module's settings key naming the file path.
+pub const SECRET_FILE_SETTING_PATH: &str = "path";
+/// The TEMPLATE reference's module name: a credential value `${VAR}` filled only in part
+/// (`"Bearer ${TOKEN}"`). Its settings' `text` is the value as written, each `${VAR}` an `env`
+/// reference the host resolves where it reads the value ([`SecretRef::resolve_template`]); the
+/// text itself holds no secret byte. It names no secret module: only a host reader that resolves
+/// templates accepts it, and every other resolver refuses it as an unknown module (fail-closed).
+/// Not the bare word `template`: the config grammar already spells that word (a prompt's
+/// `template`), and a module name is one no other config word shares.
+pub const SECRET_MODULE_TEMPLATE: &str = "env-template";
+/// The template module's settings key holding the value as written.
+pub const SECRET_TEMPLATE_SETTING_TEXT: &str = "text";
+
+/// "At least one non-whitespace character", as [`oneof_schema`] states the non-empty rule. The
+/// visitor's own check is `value.trim().is_empty()`, and `minLength: 1` is NOT that: a string of
+/// three spaces has length three, so the schema accepted `{ env: "   " }` while the engine refused
+/// it — a form that validates in busbar-ui and then fails at boot. This pattern says what the
+/// deserializer means.
+const NON_BLANK: &str = r"\S";
+
+/// A reference to a secret, resolved through a secret MODULE. See the module docs for the accepted
+/// YAML/JSON spellings. `settings` is the module's own (opaque) config — busbar passes it through
+/// verbatim and never interprets it beyond the built-ins.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SecretRef {
+    /// The secret module resolving this reference (`env` / `file` built-ins, or a `kind: secret`
+    /// plugin's name/alias).
+    pub module: String,
+    /// The module's own settings (opaque to busbar; the built-ins read `key` / `path`).
+    // settings-leak-lint: allow — DECLARATION, not a projection. This bag is the REFERENCE itself
+    // — which environment variable, which path, which plugin-module key names the secret — and
+    // holding it is the entire reason this type exists: a config that carried the credential
+    // inline would not need a `SecretRef` at all. The resolved bytes never land here. The one
+    // admin read that serializes a tree containing one, `GET /config/settings`, runs
+    // `admin::v1::service::redact_settings_bags` structurally over the whole body, which rewrites
+    // every `settings` member at any depth — this one included — into `settings_keys`.
+    pub settings: serde_json::Map<String, serde_json::Value>,
+}
+
+impl SecretRef {
+    /// A `{ module: env, settings: { key } }` reference (the canonical form of the `{ env: … }` sugar).
+    pub fn env(var: impl Into<String>) -> Self {
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            SECRET_ENV_SETTING_KEY.to_string(),
+            serde_json::Value::String(var.into()),
+        );
+        Self {
+            module: SECRET_MODULE_ENV.to_string(),
+            settings,
+        }
+    }
+
+    /// A `{ module: file, settings: { path } }` reference (the canonical form of the `{ file: … }` sugar).
+    pub fn file(path: impl Into<String>) -> Self {
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            SECRET_FILE_SETTING_PATH.to_string(),
+            serde_json::Value::String(path.into()),
+        );
+        Self {
+            module: SECRET_MODULE_FILE.to_string(),
+            settings,
+        }
+    }
+
+    /// A TEMPLATE reference over `text`, a value as written whose every `${VAR}` names an
+    /// environment variable ([`SECRET_MODULE_TEMPLATE`]).
+    pub fn template(text: impl Into<String>) -> Self {
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            SECRET_TEMPLATE_SETTING_TEXT.to_string(),
+            serde_json::Value::String(text.into()),
+        );
+        Self {
+            module: SECRET_MODULE_TEMPLATE.to_string(),
+            settings,
+        }
+    }
+
+    /// The template's text, when this is a [`SECRET_MODULE_TEMPLATE`] reference.
+    pub fn template_text(&self) -> Option<&str> {
+        if self.module == SECRET_MODULE_TEMPLATE {
+            self.settings
+                .get(SECRET_TEMPLATE_SETTING_TEXT)
+                .and_then(|v| v.as_str())
+        } else {
+            None
+        }
+    }
+
+    /// THE VALUE THIS REFERENCE NAMES, resolved through `resolve`: a template's text with each
+    /// `${VAR}` replaced by what `resolve` answers for `{ env: VAR }`, any other reference handed to
+    /// `resolve` whole. `${VAR}` is read as the config interpolation reads it (every byte up to the
+    /// first `}`); a `$` that opens no `${VAR}` is kept as written.
+    ///
+    /// # Errors
+    ///
+    /// `resolve`'s error for the first reference that does not resolve, or a template with no text.
+    pub fn resolve_template(
+        &self,
+        resolve: &dyn Fn(&SecretRef) -> Result<String, String>,
+    ) -> Result<String, String> {
+        if self.module != SECRET_MODULE_TEMPLATE {
+            return resolve(self);
+        }
+        let text = self
+            .template_text()
+            .ok_or_else(|| "a template reference carries no text".to_string())?;
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find("${") {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + 2..];
+            match after.find('}') {
+                Some(end) if end > 0 => {
+                    out.push_str(&resolve(&SecretRef::env(&after[..end]))?);
+                    rest = &after[end + 1..];
+                }
+                _ => {
+                    out.push_str("${");
+                    rest = after;
+                }
+            }
+        }
+        out.push_str(rest);
+        Ok(out)
+    }
+
+    /// The `none` reference: an EXPLICIT declaration that there is no credential. See
+    /// [`SECRET_MODULE_NONE`].
+    pub fn none() -> Self {
+        Self {
+            module: SECRET_MODULE_NONE.to_string(),
+            settings: serde_json::Map::new(),
+        }
+    }
+
+    /// True when this reference is the explicit keyless declaration (`api_key: none`).
+    pub fn is_none(&self) -> bool {
+        self.module == SECRET_MODULE_NONE
+    }
+
+    /// The `env` module's variable name, when this ref uses the built-in `env` module.
+    pub fn env_var(&self) -> Option<&str> {
+        if self.module == SECRET_MODULE_ENV {
+            self.settings
+                .get(SECRET_ENV_SETTING_KEY)
+                .and_then(|v| v.as_str())
+        } else {
+            None
+        }
+    }
+
+    /// The `file` module's path, when this ref uses the built-in `file` module.
+    pub fn file_path(&self) -> Option<&str> {
+        if self.module == SECRET_MODULE_FILE {
+            self.settings
+                .get(SECRET_FILE_SETTING_PATH)
+                .and_then(|v| v.as_str())
+        } else {
+            None
+        }
+    }
+
+    /// A short display form for error messages: `none`, `env:VAR`, `file:/path`, or
+    /// `module '<name>'`.
+    pub fn describe(&self) -> String {
+        if self.is_none() {
+            SECRET_MODULE_NONE.to_string()
+        } else if let Some(var) = self.env_var() {
+            format!("env:{var}")
+        } else if let Some(path) = self.file_path() {
+            format!("file:{path}")
+        } else {
+            format!("secret module '{}'", self.module)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RefVisitor;
+
+        impl RefVisitor {
+            /// The one refusal message every inline-scalar spelling shares. Names the accepted
+            /// shapes and NEVER echoes what it was handed — the value it was handed is the secret.
+            fn inline_literal<E: de::Error>() -> E {
+                E::custom(
+                    "a secret value must be a REFERENCE, never an inline literal (the value is \
+                     not echoed): use { env: <VAR> }, { file: <path> }, \
+                     { module: <secret-module>, settings: {…} }, or the bare scalar `none` to \
+                     declare an upstream that takes NO credential",
+                )
+            }
+        }
+
+        impl<'de> Visitor<'de> for RefVisitor {
+            type Value = SecretRef;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(
+                    "a secret reference map: { module: <secret-module>, settings: {…} }, \
+                     { env: <VAR> }, { file: <path> }, or the bare scalar `none`",
+                )
+            }
+
+            // A bare scalar here is almost always a LITERAL SECRET pasted inline (the exact
+            // mistake this type exists to prevent). Reject it with a message that NEVER echoes
+            // the value — serde's default invalid-type error would print the value verbatim
+            // into boot logs.
+            //
+            // The ONE exception is the reserved word `none`: the explicit "this upstream takes no
+            // credential" declaration (see [`SECRET_MODULE_NONE`]). It is a SCALAR and only a
+            // scalar — it names no source, so a `{ none: … }` map form would invite settings that
+            // mean nothing. A real secret that happened to be the literal string `none` would fail
+            // CLOSED here (no credential presented), never leak.
+            fn visit_str<E>(self, v: &str) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                if v == SECRET_MODULE_NONE {
+                    return Ok(SecretRef::none());
+                }
+                Err(Self::inline_literal())
+            }
+
+            // Every OTHER scalar form, for the same reason and with the same non-echoing message.
+            // A secret is not always quoted: `api_key: 483920175534` and `api_key: true` are
+            // perfectly ordinary YAML, and each one landed on serde's default `invalid type`
+            // error — which prints the value it received. The one path this type exists to keep a
+            // secret off (the boot log) is exactly where it went, and unquoted is the spelling
+            // nobody thinks to check.
+            fn visit_u64<E>(self, _v: u64) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
+            }
+
+            fn visit_i64<E>(self, _v: i64) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
+            }
+
+            fn visit_f64<E>(self, _v: f64) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
+            }
+
+            fn visit_bool<E>(self, _v: bool) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
+            }
+
+            fn visit_bytes<E>(self, _v: &[u8]) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<SecretRef, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut module: Option<String> = None;
+                let mut settings: Option<serde_json::Map<String, serde_json::Value>> = None;
+                let mut sugar: Option<(&'static str, String)> = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "module" => {
+                            if module.is_some() {
+                                return Err(de::Error::duplicate_field("module"));
+                            }
+                            // Read as an untyped value and check the shape ourselves: a typed
+                            // `next_value::<String>()` on a mismatched scalar makes serde echo the
+                            // scalar verbatim into the boot log, and this deserializer NEVER echoes
+                            // what it was handed. A non-string `module:` names no module — refuse
+                            // without printing the value.
+                            match map.next_value::<serde_json::Value>()? {
+                                serde_json::Value::String(s) => module = Some(s),
+                                _ => {
+                                    return Err(de::Error::custom(
+                                        "a secret reference `module:` must be a string naming a \
+                                         secret module (the value is not echoed)",
+                                    ))
+                                }
+                            }
+                        }
+                        "settings" => {
+                            if settings.is_some() {
+                                return Err(de::Error::duplicate_field("settings"));
+                            }
+                            // Untyped-then-shape-check: `settings:` given as a scalar is a pasted
+                            // credential in the wrong slot; a typed `next_value::<Map>()` would echo
+                            // it. Refuse with the shared non-echoing message.
+                            match map.next_value::<serde_json::Value>()? {
+                                serde_json::Value::Object(m) => settings = Some(m),
+                                _ => return Err(RefVisitor::inline_literal()),
+                            }
+                        }
+                        "env" => {
+                            if sugar.is_some() {
+                                return Err(de::Error::custom(
+                                    "a secret reference takes exactly one of `env:` / `file:`",
+                                ));
+                            }
+                            // Untyped-then-shape-check: a non-string `env:` (e.g. an unquoted YAML
+                            // number/bool, or a nested map holding a literal) must not be echoed.
+                            match map.next_value::<serde_json::Value>()? {
+                                serde_json::Value::String(s) => {
+                                    sugar = Some((SECRET_MODULE_ENV, s))
+                                }
+                                _ => return Err(RefVisitor::inline_literal()),
+                            }
+                        }
+                        "file" => {
+                            if sugar.is_some() {
+                                return Err(de::Error::custom(
+                                    "a secret reference takes exactly one of `env:` / `file:`",
+                                ));
+                            }
+                            match map.next_value::<serde_json::Value>()? {
+                                serde_json::Value::String(s) => {
+                                    sugar = Some((SECRET_MODULE_FILE, s))
+                                }
+                                _ => return Err(RefVisitor::inline_literal()),
+                            }
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(
+                                other,
+                                &["module", "settings", "env", "file"],
+                            ));
+                        }
+                    }
+                }
+
+                match (module, sugar) {
+                    (Some(_), Some(_)) => Err(de::Error::custom(
+                        "a secret reference is either `{ module: …, settings: … }` or the \
+                         `{ env: … }` / `{ file: … }` sugar, not both",
+                    )),
+                    (Some(module), None) => {
+                        if module.trim().is_empty() {
+                            return Err(de::Error::custom(
+                                "a secret reference `module:` must be non-empty",
+                            ));
+                        }
+                        Ok(SecretRef {
+                            module,
+                            settings: settings.unwrap_or_default(),
+                        })
+                    }
+                    (None, Some((kind, value))) => {
+                        if settings.is_some() {
+                            return Err(de::Error::custom(
+                                "the `{ env: … }` / `{ file: … }` sugar takes no `settings:` \
+                                 (use the canonical `{ module: …, settings: … }` form instead)",
+                            ));
+                        }
+                        if value.trim().is_empty() {
+                            return Err(de::Error::custom(format!(
+                                "a `{{ {kind}: … }}` secret reference must name a non-empty value"
+                            )));
+                        }
+                        Ok(match kind {
+                            SECRET_MODULE_ENV => SecretRef::env(value),
+                            _ => SecretRef::file(value),
+                        })
+                    }
+                    (None, None) => Err(de::Error::custom(
+                        "a secret reference needs `module:` (with optional `settings:`) or the \
+                         `{ env: <VAR> }` / `{ file: <path> }` sugar",
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(RefVisitor)
+    }
+}
+
+/// Derive the `x-busbar-secret` field's `oneOf` JSON Schema (2020-12) fragment DIRECTLY from
+/// [`SecretRef`]'s own accepted shapes — the canonical `{ module, settings }` form plus the `{ env }`
+/// / `{ file }` sugar. This is the schema busbar-ui composes a secret reference against — never a
+/// bare string.
+///
+/// This fragment is WRITTEN OUT here rather than mechanically generated from the `Deserialize` impl
+/// — serde exposes no schema to generate one from — so "it cannot drift" is not something the code
+/// makes true on its own. What pins it is the round-trip test in this module's own suite: one table
+/// of shapes, each fed to BOTH the validator built from this fragment and `SecretRef::deserialize`,
+/// with the two verdicts asserted equal. Change either side alone and that test says so. It was
+/// added because the two HAD drifted: `minLength: 1` accepted a whitespace-only `{ env: "   " }`
+/// that the visitor's `trim().is_empty()` check refuses.
+///
+/// `{ "literal": <value> }` is excluded, and needs no special-casing to be: `literal` was never one
+/// of `SecretRef`'s accepted shapes in the first place (it is handled one layer above `SecretRef`
+/// parsing, inside busbar's `resolve_settings()`, as an escape hatch for a plugin whose own config
+/// happens to collide with a reference shape).
+pub fn oneof_schema() -> serde_json::Value {
+    serde_json::json!({
+        "oneOf": [
+            // The explicit keyless declaration — the ONE scalar spelling a secret field accepts.
+            // Every other bare scalar is rejected as an inline literal, so this is a `const`, not a
+            // loosening of the "never a bare string" rule.
+            {"const": SECRET_MODULE_NONE},
+            {
+                "type": "object",
+                "properties": {
+                    "module": {"type": "string", "pattern": NON_BLANK},
+                    "settings": {"type": "object"},
+                },
+                "required": ["module"],
+                "additionalProperties": false,
+            },
+            {
+                "type": "object",
+                "properties": {"env": {"type": "string", "pattern": NON_BLANK}},
+                "required": ["env"],
+                "additionalProperties": false,
+            },
+            {
+                "type": "object",
+                "properties": {"file": {"type": "string", "pattern": NON_BLANK}},
+                "required": ["file"],
+                "additionalProperties": false,
+            },
+        ],
+    })
+}
+
+// ── THE DECLARED SUGARS ────────────────────────────────────────────────────────────────────────
+
+/// The reference keys that are core secret-reference grammar, which no plugin may declare as its
+/// sugar: the canonical form's two keys, the keyless declaration and the settings escape hatch.
+const CORE_WORDS: [&str; 4] = ["module", "settings", SECRET_MODULE_NONE, "literal"];
+
+/// ONE DECLARED SUGAR, as a secret plugin's Statement states it (its `REWRITE_SUGAR*` rewrites):
+/// the shorthand `{ word: X }` the plugin answers to (audit contract-admin #10, Law 1: the plugin
+/// declares it, the host names none).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sugar {
+    /// The reference key: the `k` in `{ k: X }`.
+    pub word: String,
+    /// The plugin whose Statement declares it.
+    pub plugin: String,
+    /// The settings key the value lands under (`REWRITE_SUGAR`'s `to`).
+    pub setting: String,
+    /// The placeholder its refusals show for the value (`REWRITE_SUGAR_SHOWN`; the settings key
+    /// when unstated).
+    pub shown: String,
+    /// What the value names, in the refusal of a reference that does not set it
+    /// (`REWRITE_SUGAR_NAMES`; `the <key>` when unstated).
+    pub names: String,
+}
+
+/// THE SUGARS THE LOADED STATEMENTS DECLARE, in word order: what the host reads secret references
+/// against. Built only from Statements ([`Sugars::declare`]); empty, no shorthand is declared.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Sugars {
+    sugars: Vec<Sugar>,
+    /// `(role, word)`: each role at most once.
+    roles: Vec<(String, String)>,
+}
+
+impl Sugars {
+    /// Declare every sugar `plugin`'s Statement rewrites state (`(class, from, to)`, as a Statement
+    /// rendering reads back): each `REWRITE_SUGAR` a sugar, each `REWRITE_SUGAR_SHOWN`,
+    /// `REWRITE_SUGAR_NAMES` and `REWRITE_SUGAR_ROLE` a fact about one of them. Every other class is
+    /// not a sugar's and is passed over.
+    ///
+    /// # Errors
+    ///
+    /// A word another plugin already declares, a word that is core grammar, a sugar with no
+    /// settings key, a fact about a word this Statement does not declare, an unknown role, or a role
+    /// another plugin already claims. Each refusal names the word and both plugins.
+    pub fn declare(
+        &mut self,
+        plugin: &str,
+        rewrites: &[(u32, String, String)],
+    ) -> Result<(), String> {
+        use crate::abi::mechanism::door::{
+            REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN,
+            SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
+        };
+        let mut mine: Vec<Sugar> = Vec::new();
+        for (class, from, to) in rewrites {
+            if *class != REWRITE_SUGAR {
+                continue;
+            }
+            if CORE_WORDS.contains(&from.as_str()) {
+                return Err(format!(
+                    "plugin '{plugin}' declares the sugar `{from}:`, but `{from}` is core \
+                     secret-reference grammar and no plugin may claim it"
+                ));
+            }
+            if to.trim().is_empty() {
+                return Err(format!(
+                    "plugin '{plugin}' declares the sugar `{from}:` with no settings key \
+                     for its value"
+                ));
+            }
+            if let Some(other) = self
+                .sugars
+                .iter()
+                .chain(mine.iter())
+                .find(|s| s.word == *from)
+            {
+                return Err(format!(
+                    "plugin claim conflict: the sugar `{from}:` is declared by both '{}' and \
+                     '{plugin}' - a reference key must name one plugin; remove one",
+                    other.plugin
+                ));
+            }
+            mine.push(Sugar {
+                word: from.clone(),
+                plugin: plugin.to_string(),
+                setting: to.clone(),
+                shown: to.clone(),
+                names: format!("the {to}"),
+            });
+        }
+        let mut roles: Vec<(String, String)> = Vec::new();
+        for (class, from, to) in rewrites {
+            if ![REWRITE_SUGAR_SHOWN, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE].contains(class) {
+                continue;
+            }
+            let Some(sugar) = mine.iter_mut().find(|s| s.word == *from) else {
+                return Err(format!(
+                    "plugin '{plugin}' states a fact about the sugar `{from}:`, which its \
+                     Statement does not declare"
+                ));
+            };
+            match *class {
+                REWRITE_SUGAR_SHOWN => sugar.shown = to.clone(),
+                REWRITE_SUGAR_NAMES => sugar.names = to.clone(),
+                _ => {
+                    if ![SUGAR_ROLE_FILL, SUGAR_ROLE_PATH].contains(&to.as_str()) {
+                        return Err(format!(
+                            "plugin '{plugin}' gives the sugar `{from}:` the role '{to}', \
+                             which the core grammar does not name"
+                        ));
+                    }
+                    if let Some((_, word)) = self
+                        .roles
+                        .iter()
+                        .chain(roles.iter())
+                        .find(|(role, _)| role == to)
+                    {
+                        let other = self
+                            .sugars
+                            .iter()
+                            .chain(mine.iter())
+                            .find(|s| s.word == *word)
+                            .map_or(plugin, |s| s.plugin.as_str());
+                        return Err(format!(
+                            "plugin claim conflict: the sugar role '{to}' is claimed by \
+                             both '{other}' (`{word}:`) and '{plugin}' (`{from}:`) - a role names \
+                             one sugar; remove one"
+                        ));
+                    }
+                    roles.push((to.clone(), from.clone()));
+                }
+            }
+        }
+        self.sugars.extend(mine);
+        self.sugars.sort_by(|a, b| a.word.cmp(&b.word));
+        self.roles.extend(roles);
+        Ok(())
+    }
+
+    /// Whether no sugar is declared.
+    pub fn is_empty(&self) -> bool {
+        self.sugars.is_empty()
+    }
+
+    /// The declared sugars, in word order.
+    pub fn iter(&self) -> impl Iterator<Item = &Sugar> {
+        self.sugars.iter()
+    }
+
+    /// The sugar `word` declares.
+    pub fn get(&self, word: &str) -> Option<&Sugar> {
+        self.sugars.iter().find(|s| s.word == word)
+    }
+
+    /// The sugar the core grammar's `role` names ([`SUGAR_ROLE_FILL`], [`SUGAR_ROLE_PATH`]).
+    ///
+    /// [`SUGAR_ROLE_FILL`]: crate::abi::mechanism::door::SUGAR_ROLE_FILL
+    /// [`SUGAR_ROLE_PATH`]: crate::abi::mechanism::door::SUGAR_ROLE_PATH
+    pub fn with_role(&self, role: &str) -> Option<&Sugar> {
+        self.roles
+            .iter()
+            .find(|(r, _)| r == role)
+            .and_then(|(_, word)| self.get(word))
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/secret_ref_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "tests/sugars_tests.rs"]
+mod sugars_tests;

@@ -1,0 +1,20 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "A farmer has 17 sheep. All but 9 run away. Then he buys twice as many as he has left. How many sheep does he have? Think it through, then give the number."
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "temperature": 0,
+    "maxOutputTokens": 2048,
+    "thinkingConfig": {
+      "includeThoughts": true,
+      "thinkingBudget": 1024
+    }
+  }
+}

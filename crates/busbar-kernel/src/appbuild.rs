@@ -1,0 +1,2117 @@
+//! APP CONSTRUCTION — how a `busbar` process's App comes to exist: the environment axes, the
+//! boot banners, config load from disk, and `build_app_from_config` (the one function that turns a
+//! validated `RootCfg` into a living `App`). Reached from the binary's `run()` AND from the admin
+//! plane's config PATCH/reload path (`admin/v1/json/*` re-runs the load pipeline on a live apply),
+//! which is why this is core and not bin: a hot reload that called UP into the composition root
+//! would be the dependency inversion the core split exists to remove.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::auth::{open_operator, AuthMiddleware};
+use crate::diagnostics::{
+    diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
+    GOVERNANCE_STORE_EPHEMERAL, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
+    PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
+    STORE_SECRET_REF_UNRESOLVED,
+};
+use crate::preflight::{
+    build_secret_resolver, plugins_preflight, resolve_admin_token, resolve_signing_key,
+    validate_secret_refs,
+};
+use crate::router::project_auth_scope_caps;
+use crate::state::App;
+use crate::store::{HealthState, LaneData};
+#[allow(unused_imports)]
+use crate::{
+    admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
+    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, oauth_as,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, snapshot,
+    state, store, telemetry, tls, transport, trust,
+};
+use busbar_kernel::plane_driver::route_input::{
+    AffinityInput, AuthStyleInput, FailoverInput, HealthInput, HealthModeInput, LaneInput,
+    OnExhaustedInput, PoolInput, PoolMemberInput,
+};
+
+// The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
+// are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
+// `request_body_max_bytes`), each defaulting to its historical value at the config layer. They are
+// threaded from `cfg.limits` into the client builder and router below; the egress translate-body cap
+// is COUPLED to `request_body_max_bytes` via `busbar_kernel::proxy::max_translate_body_bytes`.
+
+/// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
+pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
+
+/// DEPRECATED (1.5.3) environment variable name for the providers.yaml path — migrated to the
+/// top-level `providers_file:` key in config.yaml. Still honored, with a deprecation warning, so an
+/// operator's existing pin keeps working across the upgrade.
+pub const ENV_PROVIDERS: &str = "BUSBAR_PROVIDERS";
+
+/// DEPRECATED (1.5.3) environment variable name for the config-overlay backend path — migrated to
+/// `config.overlay.file` in config.yaml. Still honored, with a deprecation warning, only when
+/// `config.overlay` is unset.
+pub const ENV_CONFIG_OVERLAY: &str = "BUSBAR_CONFIG_OVERLAY";
+
+/// DEPRECATED (1.5.3) environment variable that forces HTTP/2 prior-knowledge for cleartext
+/// upstreams — migrated to `advanced.upstream_h2_prior_knowledge`. Still honored, with a warning.
+pub const ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE: &str = "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE";
+
+/// DEPRECATED (1.5.3) environment variable that pins the shared upstream client to HTTP/1.1 —
+/// migrated to `advanced.upstream_http1_only`. Still honored, with a warning.
+pub const ENV_UPSTREAM_HTTP1_ONLY: &str = "BUSBAR_UPSTREAM_HTTP1_ONLY";
+
+/// A deprecated boolean env override on top of a config value: an UNSET var defers to the config
+/// value; a set var wins, with anything other than empty/`"0"` reading as `true`.
+pub fn upstream_bool_env_override(env: Option<std::ffi::OsString>, config_val: bool) -> bool {
+    match env {
+        Some(v) => v != "0" && !v.is_empty(),
+        None => config_val,
+    }
+}
+
+/// Default path to the deployment config file.
+///
+/// A UNIX path, and it is NOT made platform-conditional on purpose. On Windows `/etc/busbar/...` is
+/// drive-relative — it resolves against whatever drive the process is running from — so the default
+/// is not a usable location there and `BUSBAR_CONFIG` is effectively required. That is the right
+/// failure: the miss is loud (the config file is not found, named, at startup, before anything is
+/// served) and the fix is one env var. Inventing a second default like
+/// `C:\ProgramData\busbar\config.yaml` would instead make busbar SILENTLY read a *different* file
+/// per platform, and this constant is the bootstrap of every other trust decision in the process —
+/// "which file is my config" is the one question that must never have a platform-dependent answer
+/// nobody was told about. Documented for operators in `docs/operations.md`.
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/busbar/config.yaml";
+
+/// Return the open-relay banner to emit when the auth chain is EMPTY (open front door), or `None`
+/// when an auth module is engaged. `chain_empty` = the resolved `auth.chain` is empty. `auth_present`
+/// distinguishes an explicit empty chain (operator opted in) from a missing `auth:` block
+/// (serde-defaulted to open — the silent foot-gun the banner must call out).
+pub fn open_relay_banner(chain_empty: bool, auth_present: bool) -> Option<&'static str> {
+    if !chain_empty {
+        return None;
+    }
+    Some(if auth_present {
+        "auth is DISABLED (auth.chain is empty) — busbar is running as an OPEN RELAY; do not run this in production"
+    } else {
+        "auth is DISABLED: no `auth:` block in config — busbar is running as an OPEN RELAY (anyone can use it). Add `auth:` with `chain: [keys]` (and mint virtual keys via the admin API) before exposing it; do not run this in production"
+    })
+}
+
+/// Return the INERT-KEYS banner to emit when a DURABLE governance store still holds virtual keys
+/// from a prior run but the running `auth.chain` does NOT name the `keys` verifier. Enforcement of a
+/// virtual key is now decided by the CHAIN SHAPE, not the admin token: only when `keys` is in the
+/// data-plane chain does any request resolve to (and get governed by) a stored vkey. So if `keys`
+/// is absent, the persisted keys' per-key controls (budget, RPM/TPM, allowed_pools) are silently
+/// NOT enforced — no data-plane request ever resolves them. A RAM store can never reach this state
+/// (it starts empty every boot), so this is scoped to durable stores. Returns `None` when the state
+/// does not apply (RAM store, no keys, or `keys` IS in the chain). `key_count` is the number of keys
+/// the store reports at boot; `keys_in_chain` is whether `auth.chain` names the `keys` verifier.
+pub fn inert_durable_keys_banner(
+    store_is_durable: bool,
+    key_count: usize,
+    keys_in_chain: bool,
+) -> Option<String> {
+    if store_is_durable && key_count > 0 && !keys_in_chain {
+        Some(format!(
+            "durable governance store contains {key_count} key(s) but auth.chain does not name the \
+             `keys` verifier — those keys are INERT and NOT enforced (per-key budget / RPM / TPM / \
+             allowed_pools are bypassed; no data-plane request resolves them). Add `keys` to \
+             auth.chain to enforce them."
+        ))
+    } else {
+        None
+    }
+}
+
+/// Return the STATEFUL-PLANE ephemeral-store WARN to emit, or `None` when no sharper warn applies.
+///
+/// The generic [`crate::diagnostics::GOVERNANCE_STORE_EPHEMERAL`] notice beside the store resolution
+/// speaks to GOVERNANCE state (keys / usage / ledgers). A container plane is ALSO stateful: its
+/// in-flight TASK state lives only in the resolved store, so on the RAM store it is dropped on
+/// restart and any task that was mid-flight breaks on its next request. This returns a sharper warn
+/// NAMING that consequence — but ONLY when the RAM store is resolved AND a stateful plane is actually
+/// configured (`stateful` = a registration in a plane's declared section, or a plane pool, is
+/// present). A deployment with no container plane configured is STATELESS — a restart costs it
+/// nothing — so it gets only the generic notice: a sharper warn there would be noise that trains
+/// operators to ignore warnings. This is a WARN, never a boot-block: a durable store is opt-in and
+/// RAM is the convenience default, so busbar does not refuse to start.
+pub fn stateful_plane_ephemeral_store_warn(
+    store_is_memory: bool,
+    stateful: bool,
+) -> Option<&'static str> {
+    if store_is_memory && stateful {
+        Some(
+            "Stateful plane task state will NOT survive a restart — in-flight tasks will break on the next \
+             request. Configure a durable store plugin.",
+        )
+    } else {
+        None
+    }
+}
+
+/// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`AuthStyleInput`] the carrier holds
+/// (`None` ⇒ the protocol's native auth). The fallback plane maps it to the style its lane's credential
+/// is bound under, on the auth plugin serving that style.
+/// THE TOKEN ENDPOINT AS A PLANE MAY SEE IT (row 74, F25): `token_url` with its userinfo stripped,
+/// and the `Authorization: Basic` value that userinfo spelled, held opaque for the host to present
+/// on the mint as 1.5.5's reqwest POST did (v1.5.5's client-credentials mint, lines 119-126 of
+/// its egress-auth tree). A plane never receives a
+/// URL carrying `user:pass@`. TRANSITIONAL: deleted with the legacy lane plane (row 155 C) (the stripping stays: no plane sees a userinfo URL).
+pub(crate) fn lane_token_endpoint(
+    written: Option<&str>,
+) -> (Option<String>, Option<crate::egress::engine::UrlUserinfo>) {
+    let Some(written) = written else {
+        return (None, None);
+    };
+    (
+        Some(busbar_kernel_egress::trust::net::strip_userinfo(written).into_owned()),
+        crate::egress::engine::UrlUserinfo::of(written),
+    )
+}
+
+fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
+    match auth {
+        None => AuthStyleInput::Default,
+        Some(config::ProviderAuth::Bearer) => AuthStyleInput::Bearer,
+        Some(config::ProviderAuth::ApiKey) => AuthStyleInput::ApiKey,
+        Some(config::ProviderAuth::JwtBearer) => AuthStyleInput::JwtBearer,
+        Some(config::ProviderAuth::OAuthClientCredentials) => {
+            AuthStyleInput::OAuthClientCredentials
+        }
+    }
+}
+
+/// Mirror a provider `health:` block into the neutral [`HealthInput`] carrier field.
+fn health_input_of(h: &config::HealthCfg) -> HealthInput {
+    HealthInput {
+        mode: match h.mode {
+            config::HealthMode::None => HealthModeInput::None,
+            config::HealthMode::Dead => HealthModeInput::Dead,
+            config::HealthMode::Active => HealthModeInput::Active,
+        },
+        interval_secs: h.interval_secs,
+        timeout_secs: h.timeout_secs,
+    }
+}
+
+/// Mirror a pool `failover:` block into the neutral [`FailoverInput`] carrier field.
+fn failover_input_of(f: &config::FailoverCfg) -> FailoverInput {
+    FailoverInput {
+        timeout_secs: f.timeout_secs,
+        exclusions: f.exclusions.clone(),
+        max_hops: f.max_hops,
+    }
+}
+
+/// Mirror a pool `affinity:` block into the neutral [`AffinityInput`] carrier field (the single
+/// supported `session` mode is implied by presence; only the header name is carried).
+fn affinity_input_of(a: &config::AffinityCfg) -> AffinityInput {
+    AffinityInput {
+        header_name: a.header_name.clone(),
+    }
+}
+
+/// Mirror a pool `on_exhausted:` policy into the neutral [`OnExhaustedInput`] carrier field.
+fn on_exhausted_input_of(o: &config::OnExhausted) -> OnExhaustedInput {
+    match o {
+        config::OnExhausted::Status503 => OnExhaustedInput::Status503,
+        config::OnExhausted::FallbackPool(name) => OnExhaustedInput::FallbackPool(name.clone()),
+        config::OnExhausted::LeastBad => OnExhaustedInput::LeastBad,
+        config::OnExhausted::Queue { max_ms } => OnExhaustedInput::Queue { max_ms: *max_ms },
+    }
+}
+
+/// Resolve each model's single `context_max` from the pool members that reference it.
+///
+/// A model is realized as exactly one lane (keyed by model name in `by_model`), so its
+/// context window must be single-valued across every pool that lists it. We accept the same
+/// `context_max` repeated (including the same `Some(_)` in multiple pools, and a mix of an
+/// explicit value with `None` — the explicit value wins, since `None` only means "unspecified
+/// here"), but reject two DIFFERENT explicit limits for the same model: that is an operator
+/// contradiction that previously resolved nondeterministically to whichever pool iterated last.
+pub fn resolve_model_context_max(
+    pools: &HashMap<String, config::PoolCfg>,
+) -> Result<HashMap<String, Option<usize>>, String> {
+    let mut resolved: HashMap<String, Option<usize>> = HashMap::new();
+    for pool in pools.values() {
+        for m in &pool.members {
+            match resolved.get(&m.model) {
+                // First sighting of this model, or this member adds no opinion (None) — keep what
+                // we have / record what we got.
+                None => {
+                    resolved.insert(m.model.clone(), m.context_max);
+                }
+                Some(None) => {
+                    // Previously unspecified; let any value (including another None) refine it.
+                    resolved.insert(m.model.clone(), m.context_max);
+                }
+                Some(Some(existing)) => match m.context_max {
+                    // No opinion here, or an identical opinion — both fine, keep the explicit value.
+                    None => {}
+                    Some(c) if c == *existing => {}
+                    Some(c) => {
+                        return Err(format!(
+                            "model '{}' has conflicting context_max across pools ({} vs {}); a model maps to one lane and must declare a single context_max",
+                            m.model, existing, c
+                        ));
+                    }
+                },
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// Hard cap on live per-session slots in the neutral session substrate (see [`crate::session`]). The
+/// memory-safety bound: on overflow the least-recently-used unpinned slot is evicted, so the store can
+/// never grow without limit however many distinct sessions arrive.
+const SESSION_STORE_CAPACITY: usize = 65_536;
+/// Default TTL for a session slot, in epoch millis of idle time. An hour of no touch and the slot is
+/// swept — long enough that an active multi-turn session keeps its cleared-scan set, short enough that
+/// abandoned sessions cost nothing.
+const SESSION_STORE_TTL_MS: u64 = 60 * 60 * 1_000;
+
+/// Everything the DISK half of configuration produces, shared by boot and runtime reload.
+pub struct LoadedConfig {
+    pub deploy: config::DeployCfg,
+    pub defs: HashMap<String, config::ProviderDef>,
+    /// The RESOLVED providers-catalog path actually read (1.5.3): `config.providers_file` relative to
+    /// the config dir, the `--providers` flag override, or `providers.yaml` next to the
+    /// config. Carried so callers display / re-use the same file across a reload.
+    pub providers_path: std::path::PathBuf,
+    /// The resolved config-overlay backend path (1.5.3): `Some` = a writable file backend (mutable
+    /// config); `None` = either the config is LOCKED (`config.locked: true`) or its backend is not
+    /// writable (a read-only config mount — busbar boots and serves, but refuses config mutations).
+    /// The boot invariant guarantees `overlay_path.is_none()` whenever busbar cannot durably persist,
+    /// so a `Some` path is always one that was probed writable.
+    pub overlay_path: Option<std::path::PathBuf>,
+    /// `config.locked` (1.5.3): `true` ⇒ admin-API config mutations are refused at runtime.
+    pub config_locked: bool,
+    /// `true` ⇒ the config did NOT declare `config.locked: true`, but its overlay backend is not
+    /// writable (the read-only config mount the documented Docker quickstart creates). Busbar boots
+    /// and serves; admin-API config mutations are refused because they could not be persisted.
+    /// Distinguished from `config_locked` so the boot log can tell the operator which of the two
+    /// postures they are in — one they chose, one the filesystem chose for them.
+    pub config_read_only: bool,
+    /// The persisted overlay document (API-registered hooks), applied onto the RESOLVED config
+    /// (`overlay::merge_into(&mut RootCfg, …)`) after `config::resolve` - the runtime registry is
+    /// synthesized there, so the overlay merges post-resolve. `None` = absent / safe mode.
+    pub overlay_doc: Option<config::overlay::OverlayDoc>,
+    /// `${VAR}` refs that were UNSET during interpolation. Empty under Strict (boot/reload); populated
+    /// under Lenient (--validate), where it becomes the "set these at runtime" note.
+    pub unset_env_vars: Vec<String>,
+}
+
+/// `providers_override`: the `--providers` flag path (Some ⇒ passed), or the live providers path a
+/// runtime reload wants to re-use. When `None`, the catalog path is resolved from
+/// `config.providers_file` (relative to the config dir) or defaults to `providers.yaml` next to the
+/// resolved config.yaml (1.5.3).
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
+pub fn load_config_from_disk(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    safe_mode: bool,
+    env_mode: config::EnvSubst,
+) -> Result<LoadedConfig, String> {
+    load_config_from_disk_judged(
+        config_path,
+        providers_override,
+        safe_mode,
+        env_mode,
+        &AcceptAll,
+    )
+}
+
+/// [`load_config_from_disk`] for a RUNNING process: the document is judged by the running
+/// generation's root `rules` ([`RootRules::unloaded_plane_refusal`]) before it is parsed, so a
+/// config file that first writes the section of a plane this process did not load is refused with
+/// the rules' sentence rather than parsed.
+///
+/// # Errors
+///
+/// As [`load_config_from_disk`]; and the rules' refusal, prefixed `config.yaml: `.
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
+pub fn load_config_from_disk_judged(
+    config_path: &std::path::Path,
+    providers_override: Option<&std::path::Path>,
+    safe_mode: bool,
+    env_mode: config::EnvSubst,
+    rules: &dyn RootRules,
+) -> Result<LoadedConfig, String> {
+    let mut unset_env_vars: Vec<String> = Vec::new();
+    // 1.5.3: read + parse config.yaml FIRST — it may name the providers catalog (`providers_file:`).
+    let raw_config = std::fs::read_to_string(config_path).map_err(|e| {
+        format!(
+            "cannot read config file '{}': {e} (set {ENV_CONFIG})",
+            config_path.display()
+        )
+    })?;
+    let interpolated_config =
+        config::interpolate_env_with(&raw_config, env_mode, &mut unset_env_vars)
+            .map_err(|e| format!("config.yaml: {e}"))?;
+    // LOUD FAIL-CLOSED on a 1.x config: detect the 1.x structural markers BEFORE the
+    // typed parse, so an outdated config gets the NAMED "run --migrate-config" error instead of
+    // a pile of unknown-field messages - and, critically, so nothing from 1.x can half-parse
+    // into 1.5.0 semantics (the `allowed_pools: []` all->none flip, vanished budgets).
+    if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&interpolated_config) {
+        let markers = config::migrate::detect_legacy_markers(&doc);
+        if !markers.is_empty() {
+            return Err(format!(
+                "config.yaml: {}",
+                config::migrate::legacy_config_error(&markers)
+            ));
+        }
+        // A section of a plane this process did not load: refused before the parse, in the rules'
+        // words (the parse would name it an unknown field).
+        let keys: Vec<&str> = doc
+            .as_mapping()
+            .into_iter()
+            .flat_map(|m| m.keys())
+            .filter_map(serde_yaml::Value::as_str)
+            .collect();
+        if let Some(refusal) = rules.unloaded_plane_refusal(&keys) {
+            return Err(format!("config.yaml: {refusal}"));
+        }
+    }
+    // The 1.6.0-additive keys come off the document FIRST (see `config::prepass`), so what the
+    // frozen 1.5.5-shaped structs parse — and what they name in an unknown-key refusal — is the
+    // 1.5.5 document and nothing else.
+    let deploy: config::DeployCfg =
+        config::deploy_from_yaml_str(&interpolated_config).map_err(|e| {
+            format!(
+                "config.yaml: invalid YAML: {}",
+                config::augment_config_error(e)
+            )
+        })?;
+
+    // 1.6.0: resolve the providers CATALOG path. Precedence: the explicit override (the `--providers`
+    // flag, or a runtime reload re-using its boot path) > `config.providers_file`
+    // (relative to the config dir) > `providers.yaml` next to the resolved config.yaml.
+    let config_dir = config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let providers_path: std::path::PathBuf = match providers_override {
+        Some(p) => p.to_path_buf(),
+        None => match deploy.providers_file.as_deref() {
+            Some(f) => {
+                let p = std::path::Path::new(f);
+                if p.is_absolute() {
+                    p.to_path_buf()
+                } else {
+                    config_dir.join(p)
+                }
+            }
+            None => config_dir.join("providers.yaml"),
+        },
+    };
+    let raw_providers = std::fs::read_to_string(&providers_path).map_err(|e| {
+        format!(
+            "cannot read providers file '{}': {e} (set `providers_file:` in config.yaml, or {ENV_PROVIDERS})",
+            providers_path.display()
+        )
+    })?;
+    let interpolated_providers =
+        config::interpolate_env_with(&raw_providers, env_mode, &mut unset_env_vars)
+            .map_err(|e| format!("providers.yaml: {e}"))?;
+    let defs: HashMap<String, config::ProviderDef> = serde_yaml::from_str(&interpolated_providers)
+        .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
+
+    // 1.5.3: resolve the config-management posture + overlay backend from the `config:` block, and
+    // ENFORCE the boot invariant (`locked` XOR a writable overlay). The deprecated
+    // `BUSBAR_CONFIG_OVERLAY` env var is honored only when `config.overlay` is unset. The writability
+    // probe runs at boot/reload (Strict) but not under `--validate` (Lenient), which must stay
+    // side-effect-free.
+    let env_overlay = std::env::var(ENV_CONFIG_OVERLAY)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from);
+    let probe_fs = matches!(env_mode, config::EnvSubst::Strict);
+    let resolution = config::overlay::resolve_backend_with_env(
+        &deploy.config,
+        config_path,
+        env_overlay.as_deref(),
+        probe_fs,
+    )?;
+    let overlay_path = resolution.path;
+    let config_locked = resolution.locked;
+    let config_read_only = resolution.read_only_backend;
+
+    if safe_mode {
+        // `--safe-mode`: boot on the operator-owned base config ALONE — the persisted overlay
+        // (API-registered hooks) is quarantined, not deleted. The escape hatch for "an applied
+        // hook is harming traffic and re-applies itself every boot".
+        diag_warn!(
+            SAFE_MODE_OVERLAY_QUARANTINED,
+            "SAFE MODE: config overlay NOT merged — running on base config.yaml alone (the \
+             overlay file is untouched; boot without --safe-mode to re-apply it)"
+        );
+        return Ok(LoadedConfig {
+            deploy,
+            defs,
+            providers_path,
+            overlay_path,
+            config_locked,
+            config_read_only,
+            overlay_doc: None,
+            unset_env_vars,
+        });
+    }
+    // An overlay from a NEWER busbar is refused, not ignored: it is intact and meaningful, so
+    // starting without it would run with the operator's API-registered hooks and groups — security
+    // gates included — silently absent. `--safe-mode` boots on base config alone without touching
+    // the file, so this is a one-flag recovery rather than a brick.
+    if let Some(p) = overlay_path.as_ref() {
+        if let config::overlay::OverlayReadState::VersionTooNew(v) = config::overlay::read_state(p)
+        {
+            return Err(format!(
+                "config overlay '{}' was written by a newer busbar (overlay version {v}; this                  binary understands {}). Starting without it would silently drop API-registered                  hooks and groups. Upgrade busbar, or boot with --safe-mode to run on config.yaml                  alone (the overlay is left untouched).",
+                p.display(),
+                config::overlay::OVERLAY_VERSION
+            ));
+        }
+    }
+    let overlay_doc = overlay_path.as_ref().and_then(|p| {
+        let doc = config::overlay::read(p);
+        if let Some(ref d) = doc {
+            tracing::info!(
+                path = %p.display(),
+                hooks = d.hooks.len(),
+                "config overlay loaded (merged onto the resolved config after resolve)"
+            );
+        }
+        doc
+    });
+    Ok(LoadedConfig {
+        deploy,
+        defs,
+        providers_path,
+        overlay_path,
+        config_locked,
+        config_read_only,
+        overlay_doc,
+        unset_env_vars,
+    })
+}
+
+/// A queued-but-not-yet-applied governance credential rotation: `build_app_from_config` resolves it
+/// but does NOT invoke it (see the call site below for why). `Send` because it is carried across the
+/// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
+pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
+
+/// The operational limits a build resolved, still PROVISIONAL: nothing has published them.
+///
+/// `build_app_from_config` reads its candidate's limits through a build-scoped view
+/// (`config::limits::BuildScope`) that no other thread sees, so the build itself never puts them in
+/// force. What remains is everything the CALLER still has to do: an admin apply persists the
+/// desired state to the overlay AFTER the build returns, and a persist failure aborts the
+/// transaction with "nothing was changed (the running engine is unaffected)" — which holds only if
+/// the limits are published no earlier than the generation goes live.
+///
+/// So the publication is the CALLER's, and it is the same shape as the governance-credential
+/// rotation beside it: the build hands back an unpublished handle, the swap that installs the
+/// generation publishes its limits (`AppHandle::swap`, so the generation's first reader already
+/// sees them), and the one place that knows the transaction landed calls [`InstalledLimits::keep`]
+/// (the boot generation, which no swap installs, is published there). Dropped unkept — a persist
+/// failure, an early return, a caller that simply lets it drop — nothing was published
+/// and the running generation's limits stand.
+///
+/// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
+/// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
+/// during the build: its holder appends the rates to the dated rate-card history and journals them
+/// (#79), and neither is a thing a rejected apply may leave behind. Raised during the build, an
+/// apply whose persist then failed kept serving the old `App` while the history and the journal
+/// said its rates were in force — a price the operator was told was never applied, dated as if it
+/// had been. Dropped unkept, the resolved rates are dropped with it and nothing was raised.
+#[must_use = "an unkept InstalledLimits never publishes the generation's limits"]
+pub struct InstalledLimits {
+    /// This generation's operational limits, published process-wide at [`InstalledLimits::keep`]
+    /// (and by the swap that puts the generation live); never published by a build that is refused.
+    limits: config::LimitsResolved,
+    rates: ResolvedRates,
+    /// The rates this build STAGED with the holder (made durable before the caller persists):
+    /// withdrawn if this handle is dropped unkept, published by [`InstalledLimits::keep`].
+    staged: StagedRates,
+    /// The destinations this configuration states, raised to the destination judge at the commit
+    /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
+    /// rejected apply must not leave them in force.
+    destinations: config::Destinations,
+    /// The root's rules this build was judged by, which hear the commit
+    /// ([`RootRules::destinations_applied`]).
+    rules: std::sync::Arc<dyn RootRules>,
+}
+
+/// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
+/// the config change never committed — the holder is told to withdraw them.
+struct StagedRates {
+    armed: bool,
+}
+
+impl Drop for StagedRates {
+    fn drop(&mut self) {
+        if self.armed {
+            crate::rate_apply::rates_withdrawn();
+        }
+    }
+}
+
+impl ResolvedRates {
+    /// The neutral view the seam carries.
+    fn raw(&self) -> crate::rate_apply::RawRates<'_> {
+        crate::rate_apply::RawRates {
+            lanes: &self.lanes,
+            units: &self.units,
+            flat_minor: self.flat_minor,
+            present: self.present,
+            plane_fees: &self.plane_fees,
+        }
+    }
+}
+
+/// The rates one build resolved, held (owned) until the build's commit raises them.
+struct ResolvedRates {
+    lanes: Vec<(String, crate::billing::RawTierRates)>,
+    units: Vec<(String, String, u64)>,
+    flat_minor: i64,
+    present: bool,
+    plane_fees: config::PlaneFeesMap,
+}
+
+impl InstalledLimits {
+    /// The new generation is live (and durable, where the caller persists): KEEP these limits, and
+    /// raise the rate-apply seam with the rates this build resolved — the one moment the
+    /// configuration they came from is the one in force.
+    pub fn keep(self) {
+        let InstalledLimits {
+            limits,
+            rates,
+            mut staged,
+            destinations,
+            rules,
+        } = self;
+        busbar_kernel::config::limits::publish(&limits);
+        rules.destinations_applied(&destinations);
+        staged.armed = false;
+        crate::rate_apply::rates_applied(&rates.raw());
+    }
+}
+
+/// WHAT THE COMPOSITION ROOT KEEPS OF A RESOLVED CONFIGURATION beside the generation built from it
+/// (spec Part 1 line 569: a door plane is handed one validated `{section: value}` object per
+/// `open`/`refresh`): the root projects the sections, providers and pool bounds its door planes are
+/// sealed over, and reads the projection back when the generation is swapped in. The root hands it
+/// in on its install record ([`crate::preflight::RootInstall::config_projection`]).
+pub type ConfigProjection = fn(&config::RootCfg) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
+/// THE COMPOSITION ROOT'S RULES OF A RESOLVED CONFIGURATION: the rules only the root can state
+/// (ones over what the planes it composed declare, and the deployment facts it alone reads), judged
+/// by [`build_app_from_config`] before any part of a configuration is built or installed. A
+/// configuration they refuse is refused there, at boot and at every apply, rebuild or dry run
+/// alike, so a configuration the boot would refuse never goes live through an apply, and the running
+/// generation is untouched. The built [`App`] keeps the rules it was built under
+/// ([`App::root_rules`]), and every build after it passes them on.
+pub trait RootRules: Send + Sync {
+    /// Judge `cfg`.
+    ///
+    /// # Errors
+    ///
+    /// The refusal, in the words the operator reads.
+    fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
+
+    /// THE PLANES `cfg` WRITES THAT THIS PROCESS CANNOT SERVE UNTIL IT RESTARTS: the declaring
+    /// sections `cfg` writes whose plane the composition root did not open at boot. A door plane is
+    /// opened, driven and ticked once, at boot (Law 7 selection, BUSBAR-1.6.0.md l.547), so an
+    /// apply that first writes its section is stored and validated but RESTART-TO-APPLY: the 1.5.5
+    /// precedent for what is mounted once at boot (`plugin_routes::paths_awaiting_restart`). The
+    /// build gives such a plane no slot this generation (it claims, admits and lists nothing), and
+    /// the apply's answer names its section. Sorted. Default: none.
+    fn planes_awaiting_restart(&self, _cfg: &config::RootCfg) -> Vec<&'static str> {
+        Vec::new()
+    }
+
+    /// A CONFIGURATION COMMITTED: the deployment's destinations are now `destinations`, raised to
+    /// the deployment's one destination guard
+    /// ([`crate::host_services::DestJudge::destinations_applied`]), which re-reads its metadata lists
+    /// at every commit as 1.5.5 did. Called once per kept build ([`InstalledLimits::keep`]), never
+    /// for a build that is dropped unkept. Default: no guard hears it.
+    fn destinations_applied(&self, _destinations: &config::Destinations) {}
+
+    /// THE REFUSAL OF A DOCUMENT THAT FIRST WRITES AN UNLOADED PLANE'S SECTION, judged on its root
+    /// `keys` before it is parsed: a plane this process did not load at start (Law 7,
+    /// BUSBAR-1.6.0.md l.547: a plane loads iff config uses it) cannot take its section on a
+    /// running process, so a runtime apply or disk reload carrying one is refused whole,
+    /// fail-closed, and nothing is stored or changed (§6 item 8, l.980-982). `Some` is the operator's sentence.
+    /// Default: none (a build with no composition root's planes refuses nothing here).
+    fn unloaded_plane_refusal(&self, _keys: &[&str]) -> Option<String> {
+        None
+    }
+}
+
+/// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it
+/// accepts every configuration.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AcceptAll;
+
+impl RootRules for AcceptAll {
+    fn check(&self, _cfg: &config::RootCfg) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
+#[inline(never)]
+#[allow(clippy::too_many_arguments)] // the build's whole input, one argument each; #1001 added the root's rules
+pub fn build_app_from_config(
+    cfg: config::RootCfg,
+    plugins_cfg: config::PluginsCfg,
+    overlay_path: Option<std::path::PathBuf>,
+    base_hook_names: std::collections::HashSet<String>,
+    base_group_names: std::collections::HashSet<String>,
+    config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    prior: Option<&state::App>,
+    rules: &std::sync::Arc<dyn RootRules>,
+) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The root's rules of this configuration, before any part of it is built or installed: a
+    // refusal leaves the running generation as it is.
+    rules.check(&cfg)?;
+    // The planes this configuration writes that the process did not open at boot: restart-to-apply,
+    // so each builds no slot below and is reported by the caller, never half-served.
+    let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
+    // The root's projection of this configuration, taken before any part of it is consumed.
+    let config_projection = crate::preflight::root_rows()
+        .config_projection
+        .map(|project| project(&cfg));
+    let destinations = cfg.destinations();
+    // The config version this App will carry — computed ONCE up front because hook-transport
+    // resolution stamps it into every socket configure preamble (the preamble's
+    // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
+    let app_config_version = prior.map_or(0, |p| p.config_version.wrapping_add(1));
+    // Semantic validation — the same gate boot has always had, now on the ONE construction path
+    // so an apply/reload validates identically and an invalid config changes nothing. It runs
+    // BEFORE this configuration's limits are visible to anything (BUSBAR-1.6.0.md §3: "A validation
+    // refusal keeps the running generation").
+    if let Err(validation_errors) = config_validate::validate(&cfg) {
+        return Err(format!(
+            "config validation failed:\n  - {}",
+            validation_errors.join("\n  - ")
+        ));
+    }
+    // THE CANDIDATE'S OPERATIONAL LIMITS, VISIBLE TO THIS BUILD ONLY. The values threaded
+    // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites the
+    // build reaches (the routing policy timeout, the probe fallbacks, the upstream body cap a binding
+    // is sealed with) read them through `config::limits::installed()`, which answers the candidate on
+    // this thread for as long as the scope is held. Every other thread — the live traffic the running
+    // generation serves — keeps the published limits until this generation goes live
+    // (`AppHandle::swap` / `InstalledLimits::keep` publish them). BUSBAR-1.6.0.md THE DESIGN §6 item
+    // 8: a reload "swaps them in atomically ... and is refused, leaving the running generation
+    // serving, if any check fails" — so a build refused at ANY subsequent step (plugin fetch, pre-flight,
+    // secret refs, store open, the root's persist) never had its limits in force anywhere.
+    let _limits_scope = busbar_kernel::config::limits::BuildScope::enter(&cfg.limits);
+    // The resolved `export:` block drives the built-in exporters' plugin-route table below. Captured
+    // before `cfg`'s fields are consumed by the `App` struct literal.
+    let cfg_export = cfg.export.clone();
+    let auth_cfg = cfg
+        .auth
+        .clone()
+        .unwrap_or_else(config::AuthCfg::default_none);
+
+    // DECLARATIVE PLUGIN FETCH (`plugins.fetch:`) — download the operator-declared signed tarballs
+    // into `plugins.dir` BEFORE preflight scans it. Runs at BOOT and on `POST /plugins/reload` (both
+    // reach this construction path), NEVER in `--validate` (that path never calls
+    // `build_app_from_config`, preserving its zero-side-effect/no-network contract), and NEVER
+    // per-request. `prior.is_none()` is the boot(fatal-on-miss) vs reload(warn-on-miss) discriminator.
+    // Signature verification stays the trust gate below; fetch is integrity/cache + delivery only.
+    if plugins_cfg.enabled && !plugins_cfg.fetch.is_empty() {
+        let targets = plugins_cfg.fetch_targets()?;
+        let dir = std::path::Path::new(&plugins_cfg.dir).to_path_buf();
+        // Ensure the target dir exists so the atomic rename has a home.
+        if let Err(e) = crate::durable::create_dir_all(&dir) {
+            return Err(format!(
+                "plugins.fetch: cannot create plugins dir '{}': {e}",
+                dir.display()
+            ));
+        }
+        // The root fetches and downloads, through the connector (row 130 E6: the kernel dials
+        // nothing); the operator's metadata denylist extends the download's SSRF pre-check.
+        let fetch = crate::preflight::root_rows()
+            .plugins_fetch
+            .ok_or("plugins.fetch failed:\n  - no composition root installed the plugins fetch")?;
+        let outcomes = fetch(&dir, &targets, prior.is_none(), &cfg.blocked_metadata_hosts)
+            .map_err(|errs| format!("plugins.fetch failed:\n  - {}", errs.join("\n  - ")))?;
+        for outcome in &outcomes {
+            match outcome {
+                crate::preflight::Fetched::Cached { filename } => {
+                    tracing::info!(filename, "plugins.fetch: cached (pin match, no download)")
+                }
+                crate::preflight::Fetched::Fetched { filename } => {
+                    tracing::info!(filename, "plugins.fetch: downloaded + verified")
+                }
+                crate::preflight::Fetched::Warned { url, error } => {
+                    diag_warn!(
+                        PLUGINS_FETCH_RELOAD_MISS,
+                        url,
+                        error,
+                        "plugins.fetch: miss on reload; keeping current artifact"
+                    )
+                }
+            }
+        }
+    }
+
+    // PLUGIN PRE-FLIGHT (the ONE shared pipeline; see the fn doc). Run UP FRONT so the secret
+    // resolver - and the store open below - both draw on the same validated registry. A non-memory
+    // store, an unresolvable secret plugin, or any invalid tarball fails boot here.
+    let plugin_registry = Arc::new(plugins_preflight(
+        cfg.store.as_ref(),
+        cfg.auth.as_ref(),
+        &cfg.identity_providers,
+        &cfg.hooks,
+        &plugins_cfg,
+        &cfg.export,
+    )?);
+    // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
+    // secret axis here, never in the registry build `--validate` and every dry run share.
+    if let Some(admit) = crate::preflight::root_rows().secret_admit {
+        admit(&plugin_registry)?;
+    }
+
+    // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
+    // `kind: secret` plugin — the deferred half of the check `config_validate::validate` cannot do
+    // (it runs before the registry exists). A typo'd module fails boot HERE; the documented vault
+    // `api_key: { module: acme-vault }` passes once the plugin is loaded + trusted. This is the boot
+    // twin of the `--validate` check, sharing `validate_secret_refs`/`config_validate::secret_refs`.
+    validate_secret_refs(&plugin_registry, &cfg)?;
+
+    // The SECRET RESOLVER: built-in env/file resolve inline; any other module delegates to a
+    // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
+    // the module is unknown). Shared by provider keys, the admin token, and the TLS listener.
+    let secret_resolver = Arc::new(build_secret_resolver(
+        plugin_registry.clone(),
+        &cfg.secrets,
+    )?);
+
+    let mut lanes_data = Vec::new();
+    // Validated provider handle for each lane, captured in lockstep with `lanes_data` below. The
+    // first loop already resolves `cfg.providers.get(&mc.provider)` (failing loud via `die` on a
+    // missing provider), so the lane-build loop reuses that handle instead of re-looking it up —
+    // there is no second lookup and no `expect` on the startup path.
+    let mut lane_provider_cfgs: Vec<&config::ResolvedProvider> = Vec::new();
+    // Each lane's MODEL-ENTRY FACTS, captured in the same lockstep: what the model entry states of
+    // its lane beyond the breaker's identity and limits. The breaker store holds none of them (it
+    // reads none of them); they ride beside it to the lane input below.
+    let mut lane_model_facts: Vec<LaneModelFacts> = Vec::new();
+    let mut by_model = HashMap::new();
+    // Per-model configured default_max_tokens (injected at the translation seam for protocols that
+    // require max_tokens). Captured here because `cfg.models` is consumed by this loop.
+    let mut model_default_max_tokens: std::collections::HashMap<String, Option<u32>> =
+        std::collections::HashMap::new();
+    // Single source of truth for each provider's resolved API key. The secret-bearing read happens
+    // exactly once per provider here and the later `Lane.api_key` population reuses it, so we never
+    // read the same env var (or call the same secret plugin) twice. An entry exists IFF the
+    // provider's reference resolved or was declared `none`: an unresolvable reference returns Err
+    // from this loop, so no App is built at all.
+    let mut provider_api_keys: HashMap<String, String> = HashMap::new();
+    // Build lanes in a DETERMINISTIC order (sorted by model name) rather than `cfg.models`'
+    // HashMap iteration order, which is randomized per process start. Lane index is assigned here
+    // (`by_model` → `lanes_data.len()`), so a random iteration order gave each lane a different
+    // index every boot — surfacing as non-reproducible `/stats` lane ordering and metric lane-series
+    // identity that shifts across restarts (a scrape/dashboard annoyance and a flaky-test source).
+    // Sorting makes the whole observable surface stable. (Mirrors the deterministic-resolution fix
+    // already applied to `model_context_max` below.)
+    // Resolve the COST MODEL from THIS config (rate card + budget groups + flat fee) BEFORE
+    // `cfg.models` is consumed below. Rebuilt on every apply/reload - unlike the GovState ledger,
+    // which survives the swap - so a rate-card correction reprices every derived figure on the
+    // next read (tokens are the truth).
+    let cost = crate::cost::CostModel::resolve_parts(
+        cfg.rate_card.as_ref(),
+        cfg.per_request_fee,
+        &cfg.groups,
+    );
+    let cost = Arc::new(cost.with_plane_fees(&cfg.plane_fees));
+    // AND TELL WHOEVER ELSE PRICES AGAINST THESE FIGURES. The resolution above is what reprices the
+    // engine's own derived spend on the next read; a holder outside the engine that read the same
+    // two configured figures ONCE, at boot, would keep pricing on rates this apply has replaced —
+    // one request, two numbers, and only one of them the operator's configuration. So the one place
+    // rates are resolved captures them for the one seam that says so, on the boot resolution and on
+    // every apply/reload alike, because this function is both. The seam is RAISED at the commit
+    // (`InstalledLimits::keep`), never here: a build that fails below, or an apply whose persist
+    // fails after it, must leave the holder's dated history and its journal untouched. Nothing is
+    // installed in a build with no such holder and the raise is a no-op there.
+    let (mut lanes, mut units) = (Vec::new(), Vec::new());
+    for (lane, e) in cfg.rate_card.iter().flatten() {
+        lanes.push((lane.clone(), e.raw_tier_rates()));
+        for (class, rate) in &e.units {
+            units.push((lane.clone(), class.clone(), rate.nanos_per_unit()));
+        }
+    }
+    let resolved_rates = ResolvedRates {
+        lanes,
+        units,
+        flat_minor: cfg.per_request_fee,
+        present: cfg.rate_card.is_some(),
+        plane_fees: cfg.plane_fees.clone(),
+    };
+    let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
+    sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
+    for (model, mc) in sorted_models {
+        model_default_max_tokens.insert(model.clone(), mc.default_max_tokens);
+        let Some(provider_cfg) = cfg.providers.get(&mc.provider) else {
+            return Err(format!(
+                "model '{model}' references unknown provider '{}'",
+                mc.provider
+            ));
+        };
+        // Resolve the provider credential through its SECRET REFERENCE — FAIL-CLOSED, like every
+        // other secret. A reference that does not resolve (unset variable, missing/empty file,
+        // unknown module, secret-plugin error) REFUSES BOOT; it does not degrade to an empty
+        // credential. The degraded lane could never authenticate: it booted "healthy", the prober
+        // skipped it (no key, no probe), and it answered every request routed to it with a 401
+        // from the upstream — with one warning line at boot as the only signal. An upstream that
+        // genuinely takes NO credential is now DECLARED (`api_key: none`), never inferred from a
+        // failure to read one.
+        //
+        // The message names the provider and the reference (`env:VAR`, `file:/path`, `none`) and
+        // never a value: the resolver's own errors are value-free for exactly this reason.
+        if let std::collections::hash_map::Entry::Vacant(slot) =
+            provider_api_keys.entry(mc.provider.clone())
+        {
+            let resolved = if provider_cfg.api_key.is_none() {
+                String::new()
+            } else {
+                secret_resolver
+                    .resolve_string_at_config(
+                        &provider_cfg.api_key,
+                        &busbar_contract::config_time::ConfigScope::config_time(),
+                    )
+                    .map_err(|e| {
+                        diag_error!(
+                            PROVIDER_API_KEY_UNRESOLVABLE,
+                            provider = %mc.provider,
+                            reference = %provider_cfg.api_key.describe(),
+                            "provider api_key did not resolve: {e}"
+                        );
+                        format!(
+                            "provider '{}' api_key ({}) did not resolve: {e}. A provider \
+                             credential that cannot resolve refuses boot; if this upstream takes \
+                             NO credential (a local ollama / vLLM), declare it: `api_key: none`",
+                            mc.provider,
+                            provider_cfg.api_key.describe()
+                        )
+                    })?
+            };
+            slot.insert(resolved);
+        }
+        let limited = mc.max_requests >= 0;
+        // `max_concurrent` is an OPT-IN limiter: omitted (None) = UNBOUNDED. Realize "unbounded" as a
+        // semaphore seeded with `Semaphore::MAX_PERMITS` (usize::MAX >> 3) — a lane will never reach
+        // 2^60 concurrent in-flight requests, so this never throttles, yet it keeps the entire
+        // permit-based dispatch path (which every selection route depends on) intact. A literal
+        // usize::MAX would PANIC: `Semaphore::new` asserts `permits <= MAX_PERMITS`. `max` records the
+        // same count so /stats `inflight = max - available` stays coherent.
+        let max_concurrent = mc
+            .max_concurrent
+            .unwrap_or(tokio::sync::Semaphore::MAX_PERMITS);
+        by_model.insert(model.clone(), lanes_data.len());
+        lane_provider_cfgs.push(provider_cfg);
+        lane_model_facts.push(LaneModelFacts {
+            upstream_model: mc.upstream_model.clone(),
+            attempt_timeout_ms: mc.attempt_timeout_ms,
+            reasoning: mc.reasoning.unwrap_or(false),
+            prompt_caching: mc.prompt_caching.unwrap_or(false),
+        });
+        lanes_data.push(LaneData {
+            member: model.clone(),
+            route: mc.provider.clone(),
+            max: max_concurrent,
+            sem: std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
+            limited,
+            budget: if limited { mc.max_requests } else { -1 },
+            cooldown_until: 0,
+            streak: 0,
+            dead: false,
+            dead_reason: String::new(),
+            ok: 0,
+            err: 0,
+            client_fault: 0,
+        });
+
+        eprintln!(
+            "  model {} via {} ({}) max {}{}",
+            model,
+            mc.provider,
+            busbar_kernel_egress::trust::net::strip_userinfo(
+                provider_cfg.base_url.trim_end_matches('/')
+            ),
+            // Show the operator-facing form: an omitted cap reads "unbounded", not 2^60.
+            match mc.max_concurrent {
+                Some(n) => n.to_string(),
+                None => "unbounded".to_string(),
+            },
+            // Surface the alias→wire-id indirection at boot so an operator can see this lane sends a
+            // different model string upstream than the config key it's filed under.
+            match &mc.upstream_model {
+                Some(u) => format!(" → upstream {u}"),
+                None => String::new(),
+            }
+        );
+    }
+
+    // Build a map from model name to context_max. A model is one lane shared across every pool that
+    // names it, so its context_max must be single-valued. Previously the last pool to iterate (in
+    // nondeterministic HashMap order) silently won, so a model carrying `context_max: Some(128000)`
+    // in one pool and `None` (or a different limit) in another could end up with whichever value the
+    // iteration happened to land on — defeating the context-length failover exclusion in proxy engine
+    // and losing pool-specific limits without a diagnostic. Resolve it deterministically and fail
+    // loud on a genuine conflict instead.
+    let model_context_max = resolve_model_context_max(&cfg.pools)?;
+
+    // Every lane, flattened into the NEUTRAL `LaneInput` carrier (1.6.0 money-path Phase 3-4 C):
+    // the fallback plane's `build_runtime` reconstructs its own concrete lane object (egress targets,
+    // resolved credential, prebuilt auth) FROM these scalars — the `proxy::build_egress_targets` call
+    // and the credential's binding on its style's auth plugin run in-plane (the allowed plane→core edge), so
+    // core names no plane-owned lane/egress-target/credential-provider type. This loop keeps only the NEUTRAL work:
+    // resolve+validate the protocol name, carry the pre-resolved api-key plaintext, and mirror the
+    // provider's config into neutral scalars.
+    let mut lane_inputs: Vec<LaneInput> = Vec::new();
+    for (idx, ld) in lanes_data.iter().enumerate() {
+        // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
+        // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
+        let provider_cfg = lane_provider_cfgs[idx];
+        let facts = &lane_model_facts[idx];
+        let legacy = crate::plane_driver::route_input::LegacyLaneKeys::of(provider_cfg);
+        // The provider entry's lane-capability keys, carried unread in its table and resolved
+        // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
+        let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
+        // The "supported:" roster is the planes' DECLARED provider dialects
+        // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
+        // literal and not a codec list: a build with the plane that declares them compiled out names
+        // only what it actually serves, and a build with a new dialect names it. Empty roster is a
+        // real answer.
+        let providers = crate::plane::provider_dialects();
+        let Some(protocol) = providers
+            .iter()
+            .copied()
+            .find(|d| *d == provider_cfg.dialect())
+        else {
+            return Err(format!(
+                "provider '{}' uses unknown protocol '{}' (supported: {})",
+                ld.route,
+                provider_cfg.dialect(),
+                providers.join(", ")
+            ));
+        };
+        // Reuse the single env read captured in the lanes_data loop above (same source of truth as
+        // the empty-key warning); no second read of the secret-bearing env var. This PLAINTEXT is
+        // carried into the neutral carrier because the plane cannot re-resolve a secret ref.
+        let api_key = provider_api_keys
+            .get(&ld.route)
+            .cloned()
+            .unwrap_or_default();
+        // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
+        // egress-target build + SigV4 signed-host derivation), its userinfo stripped as 1.5.5 did
+        // (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25): every lane table, dial, signed
+        // host and rendering downstream reads the `host[:port]` it dials, never the `user:pass@`.
+        let base_url = busbar_kernel_egress::trust::net::strip_userinfo(
+            provider_cfg.base_url.trim_end_matches('/'),
+        )
+        .into_owned();
+        // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
+        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+        let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
+        let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
+        lane_inputs.push(LaneInput {
+            model: ld.member.clone(),
+            provider: ld.route.clone(),
+            protocol: protocol.to_string(),
+            base_url,
+            url_userinfo,
+            path: provider_cfg.path.clone(),
+            path_base: provider_cfg.path_base.clone(),
+            organization: legacy.organization,
+            project: legacy.project,
+            upstream_model: facts.upstream_model.clone(),
+            api_key: busbar_contract::redacted::Secret::new(api_key),
+            auth_style: auth_style_of(provider_cfg.auth),
+            scope: provider_cfg.scope.clone(),
+            token_url,
+            token_userinfo,
+            subject: provider_cfg.subject.clone(),
+            error_map: provider_cfg
+                .error_map()
+                .map(|(code, class)| (code.to_string(), class.to_string()))
+                .collect(),
+            health: provider_cfg.health.as_ref().map(health_input_of),
+            allow_metadata_hosts: provider_cfg.allow_metadata_hosts.clone(),
+            context_max: model_context_max.get(&ld.member).copied().flatten(),
+            lane_default_max_tokens: model_default_max_tokens.get(&ld.member).copied().flatten(),
+            attempt_timeout_ms: facts.attempt_timeout_ms,
+            reasoning: facts.reasoning,
+            prompt_caching: facts.prompt_caching,
+            lane_caps,
+            max_concurrent: ld.max,
+            limited: ld.limited,
+            budget: ld.budget,
+        });
+    }
+
+    // Every pool, flattened into the NEUTRAL `PoolInput` carrier: member (weight/meta) projections
+    // plus the pool's neutral `failover`/`affinity`/`on_exhausted`/`upstream_credentials` config. The
+    // plane's `build_runtime` rebuilds the `WeightedLane`/`PoolRuntime` tables from these; the pool's
+    // ROUTING POLICY / gates / rewrites are NOT carried (they resolve core-side behind
+    // `App::resolve_pool_*` — their value is the core-owned `ResolvedPolicy`, which must not cross the
+    // downcast). The member `by_model` lookup stays here so an unknown-model pool member fails boot
+    // LOUD at the composition root (not deep inside the plane).
+    let mut pool_inputs: Vec<PoolInput> = Vec::with_capacity(cfg.pools.len());
+    for (name, pool) in &cfg.pools {
+        let mut members: Vec<PoolMemberInput> = Vec::with_capacity(pool.members.len());
+        for m in pool.members.iter() {
+            let Some(&lane_idx) = by_model.get(&m.model) else {
+                return Err(format!(
+                    "pool '{name}' references unknown model '{}'",
+                    m.model
+                ));
+            };
+            members.push(PoolMemberInput {
+                model: m.model.clone(),
+                lane_idx,
+                weight: m.weight, // from config PoolMember.weight (default 1)
+                reasoning: m.reasoning,
+                attempt_timeout_ms: m.attempt_timeout_ms,
+                tier: m.tier.clone(),
+                // The routing cost scalar derives from the member's MODEL's rate_card entry — cost
+                // lives on no pool member; resolved core-side (the plane has no rate card).
+                cost_per_mtok: cfg
+                    .rate_card
+                    .as_ref()
+                    .and_then(|card| card.get(&m.model))
+                    .map(crate::config::rate_entry_per_mtok),
+                tags: m.tags.clone(),
+            });
+        }
+        if let Some(ref on_exc) = pool.on_exhausted {
+            // Same INFO line 1.5.5 logged from `main.rs`'s per-pool `on_exhausted` parse, carried
+            // here now that pool construction lives core-side (neutrality: no boot-line drift).
+            let mode = on_exc.to_runtime();
+            tracing::info!(pool = %name, on_exhausted = ?mode, "pool exhaustion policy");
+        }
+
+        pool_inputs.push(PoolInput {
+            name: name.clone(),
+            members,
+            failover: pool.failover.as_ref().map(failover_input_of),
+            affinity: pool.affinity.as_ref().map(affinity_input_of),
+            on_exhausted: pool
+                .on_exhausted
+                .as_ref()
+                .map(|o| on_exhausted_input_of(&o.to_runtime()))
+                .unwrap_or_default(),
+            upstream_credentials: pool.upstream_credentials,
+            // The pool's `breaker:` block, RESOLVED core-side into the runtime cfg
+            // (`store::breaker_cfg_to_runtime` does the config→runtime lowering + ADR-0002 trip
+            // defaults) then flattened to the neutral carrier; the plane's `build_runtime`
+            // reconstructs it via `BreakerCfg::from_breaker_input`.
+            breaker: pool
+                .breaker
+                .as_ref()
+                .map(crate::store::breaker_cfg_to_runtime)
+                .map(|b| b.to_breaker_input()),
+        });
+    }
+
+    eprintln!(
+        "busbar: {} models, {} pools",
+        lane_inputs.len(),
+        pool_inputs.len()
+    );
+    for p in &pool_inputs {
+        let agg: usize = p
+            .members
+            .iter()
+            .map(|m| lane_inputs[m.lane_idx].max_concurrent)
+            .sum();
+        eprintln!(
+            "  pool /{} = [{}] aggregate {}",
+            p.name,
+            p.members
+                .iter()
+                .map(|m| lane_inputs[m.lane_idx].model.clone())
+                .collect::<Vec<_>>()
+                .join(", "),
+            agg
+        );
+    }
+
+    // Loud warning for an empty `auth.chain` (open relay). Not fatal — busbar still starts (useful for
+    // local dev) — but operators must not run this in production. NOTE: an ABSENT `auth:` block
+    // serde-defaults to an empty chain too (`AuthCfg::default_none`), so a config that merely omits
+    // `auth:` silently becomes an open relay. Surface this at ERROR level (not warn — a warn is
+    // suppressed under RUST_LOG=error, the very level an operator most likely runs in production)
+    // AND unconditionally on stderr, so the open-relay state cannot be masked by log configuration.
+    if let Some(banner) = open_relay_banner(auth_cfg.chain.is_empty(), cfg.auth.is_some()) {
+        eprintln!("[error] {banner}");
+        diag_error!(OPEN_RELAY_NO_AUTH, "{banner}");
+    }
+
+    // FAIL-CLOSED: the auth chain resolves every non-builtin `auth.chain` module as a `kind: auth`
+    // plugin via the SAME validated registry the store/secret plugins load through. A configured
+    // auth plugin that cannot be loaded (missing/untrusted tarball, wrong kind, ABI failure) aborts
+    // boot here rather than silently dropping the module and leaving the front door open.
+    let auth_mw = Arc::new(
+        AuthMiddleware::new(&auth_cfg, &plugin_registry, &secret_resolver)
+            .map_err(|e| format!("auth chain construction failed: {e}"))?,
+    );
+    // ADMIN-plane external auth plugins (1.5.2 admin-plane OIDC): resolve every non-builtin
+    // `admin_auth:` entry as a signed `kind: auth` plugin through the SAME validated registry. Runs
+    // on boot AND reload (this whole function is `build_app_from_config`, called on both), so a
+    // reload can never leave a stale/empty admin chain. FAIL-CLOSED: an unresolvable admin module
+    // aborts the build rather than silently disabling the admin plane.
+    // The operator credential's module is opened once its token has resolved (below, beside the
+    // governance credentials it has always been resolved with).
+    let mut admin_modules =
+        crate::auth::AdminAuthChain::build(&auth_cfg, &plugin_registry, &secret_resolver)
+            .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    // HOSTED-LOGIN methods (1.5.2): resolve every `auth.methods:` entry as a login-capable
+    // `kind: auth` plugin (ABI v2). Also runs on boot AND reload (this whole fn). FAIL-CLOSED: an
+    // unresolvable method — or a `browser_login` method backed by a pre-v2 plugin (capability gate)
+    // — aborts the build rather than surfacing a 500 at request time.
+    let login_methods = Arc::new(
+        crate::auth::login::LoginMethods::build(&auth_cfg, &plugin_registry, &secret_resolver)
+            .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
+    );
+    // Thread the operator-configured hard-down cooldown + honored-Retry-After ceiling into the store
+    // (both default to their historical const at the config layer).
+    // Carry-over: an APPLY/RELOAD (prior = Some) restores every surviving lane's learned
+    // health state BY STABLE IDENTITY from the prior store; boot (None) starts fresh.
+    let store: Arc<dyn busbar_kernel::store::LaneRuntime> = match prior {
+        Some(p) => Arc::new(HealthState::new_with_limits_restored(
+            lanes_data.clone(),
+            cfg.limits.hard_down_cooldown_secs,
+            cfg.limits.max_honored_retry_after_secs,
+            &p.store.export_health(),
+        )),
+        None => Arc::new(HealthState::new_with_limits(
+            lanes_data.clone(),
+            cfg.limits.hard_down_cooldown_secs,
+            cfg.limits.max_honored_retry_after_secs,
+        )),
+    };
+
+    // The deprecated `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` / `BUSBAR_UPSTREAM_HTTP1_ONLY` env vars
+    // (migrated to `advanced.upstream_h2_prior_knowledge` / `advanced.upstream_http1_only`): the
+    // deprecation warning fires once, on the first build, exactly as it always has. The client the
+    // posture configured is the plane's own, built behind its door from its sections; the kernel
+    // hands no runtime build a client posture any more (status row 82).
+    if std::env::var_os(ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE).is_some() && prior.is_none() {
+        diag_warn!(
+            DEPRECATED_ENV_VAR_HONORED,
+            "{ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE} is DEPRECATED; set \
+             `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now)."
+        );
+    }
+    if std::env::var_os(ENV_UPSTREAM_HTTP1_ONLY).is_some() && prior.is_none() {
+        diag_warn!(
+            DEPRECATED_ENV_VAR_HONORED,
+            "{ENV_UPSTREAM_HTTP1_ONLY} is DEPRECATED; set `advanced.upstream_http1_only` in \
+             config.yaml (honored for now)."
+        );
+    }
+
+    // The hook plugin-resolution environment: the validated registry and the root's hook axis over
+    // it. Every hook `plugin:` ref opens through the axis. Built once and cloned into each resolver
+    // and onto `App` (for the control-plane reads + scrape). A 1.5.5 JSON hook plugin in the
+    // registry refuses the build here, naming the rebuild.
+    let hook_env = hooks::HookEnv::new(plugin_registry.clone(), secret_resolver.clone())?;
+
+    // FAIL-CLOSED: resolve every hook's SecretRef settings ONCE, up front, so an unresolvable
+    // hook secret aborts boot/reload here — matching the store path (above) and the auth chain
+    // (`AuthMiddleware::new`). Without this, a gate whose SecretRef fails to resolve would be
+    // silently dropped from the routing chain by `resolve_pool_gates`/`resolve_on_error_chain`
+    // (fail-OPEN), letting traffic the gate was configured to restrict/reject flow unfiltered.
+    hook_env.preresolve_hook_secrets(&cfg.hooks)?;
+
+    // The store's SecretRefs are resolved only on the BOOT arm (`prior == None`), because the store
+    // backend is reused across a hot reload. So a `PUT /config/settings` naming an unresolvable ref
+    // returned 200, persisted it, and the NEXT restart died in `resolve_settings` before serving.
+    //
+    // WARN, never fail: the store is restart-to-apply, so staging a ref whose secret the
+    // orchestrator mounts on the next deploy is a legitimate workflow — and `tls` already accepts
+    // exactly that. Rejecting here would make the store stricter than the block beside it.
+    if let Some(store_cfg) = cfg.store.as_ref() {
+        if let Err(e) = config::secret::resolve_settings(
+            &store_cfg.settings,
+            secret_resolver.as_ref(),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        ) {
+            diag_warn!(
+                STORE_SECRET_REF_UNRESOLVED,
+                store = %store_cfg.module,
+                error = %e,
+                "store settings hold a secret reference that does not resolve here; the store is \
+                 restart-to-apply, so THIS WILL FAIL THE NEXT RESTART unless the secret exists then"
+            );
+        }
+    }
+
+    // FAIL-CLOSED (open-time variant): actually OPEN every referenced decision/rewrite gate up
+    // front so an `open()`-time failure of a PRESENT plugin aborts boot/reload here — matching the
+    // store (`open_store`) and auth (`AuthMiddleware::new`) paths. Without this, a gate whose plugin
+    // fails to `open()` (constructor rejecting cfg_json, staging/mmap failure, ABI/kind mismatch
+    // observable only on load) is silently `filter_map`-dropped by the resolvers below (fail-OPEN),
+    // letting traffic a Reject/restrict/rewrite gate was configured to filter flow unfiltered while
+    // boot reports success. A GENUINELY-ABSENT plugin stays the legitimate fail-open skip.
+    // `plugins_preflight` is manifest-only (no dlopen) and `preresolve_hook_secrets` only resolves
+    // SecretRefs, so neither catches an `open()` failure — this pass does.
+    hook_env.preopen_gate_hooks(&cfg.hooks)?;
+
+    // The per-pool runtime bundle (member metadata + resolved failover/affinity/breaker), the
+    // any-pool-override fast-path flag, and the per-pool `on_exhausted:` table are all part of the
+    // fallback plane's runtime now — rebuilt IN-PLANE by that plane's `build_runtime` from the neutral
+    // `PoolInput` members of the carrier (1.6.0 money-path Phase 3-4 C). The pool ROUTING POLICIES
+    // (`resolve_pool_{ordering,gates,rewrites}`) stay resolved-and-read core-side behind the
+    // `App::resolve_pool_*` down-facade (their value is the core-owned `ResolvedPolicy`, which must not
+    // cross the neutral downcast), so they are NOT resolved here into a plane type either.
+
+    // PLUGIN PRE-FLIGHT: the same fail-closed pipeline `--validate` runs (consistency -> policy ->
+    // three-phase scan -> store resolution). Runs on EVERY construction path (boot, apply, reload),
+    // so a bad plugin state can never produce a partial App. When plugins are disabled and nothing
+    // references one, this is a no-op empty registry.
+    // open the governance store + load the virtual-key cache when enabled.
+    // Credentials RE-RESOLVED on this apply/reload; the rotation closure is handed back to the
+    // caller (see `Ok((app, rotate_gov_credentials))` below) rather than applied here. Resolution
+    // itself happens HERE and is FAIL-CLOSED: an `auth.admin_auth` token ref or an `auth.signing_key`
+    // that no longer resolves aborts the apply rather than silently leaving the old credential live.
+    let mut rotate_gov_credentials: Option<GovCredentialRotation> = None;
+    // The digest of the operator token an apply re-resolves (below), which the rotation hands the
+    // shared governance state only after the caller persists — this build's admin chain judges it.
+    let mut rotated_digest: Option<Option<String>> = None;
+    let governance = if let Some(p) = prior {
+        // REUSED across applies: the keys + spend/rate state must survive config changes. But the
+        // CREDENTIALS on it are config, not state: `GovState` used to freeze the admin-token digest
+        // and the signing key at construction, so rotating either SecretRef and reloading had no
+        // effect whatsoever — the process kept accepting the boot-time credential for its entire
+        // life. Re-resolve both refs against the fresh resolver and swap them
+        // into the reused instance.
+        //
+        // SCOPE: a credential is re-resolved exactly when THIS config DECLARES it — an
+        // operator-credential entry in `auth.admin_auth`/`auth.chain` for the admin token, an explicit
+        // `auth.signing_key` for the signing key. A config that declares neither is not asserting
+        // "no credential"; it simply does not own that credential (the dev signing key is
+        // generate-and-persist at BOOT, and re-running that on every reload would churn key
+        // material), so the live one stands. REMOVING a declaration therefore still needs a restart
+        // — documented, and the narrow case; ROTATING one, the operational path that matters and
+        // the one that silently did nothing, now works.
+        if let Some(gs) = p.governance.clone() {
+            let auth = cfg.auth.as_ref();
+            let declares_operator = auth.is_some_and(|a| {
+                a.admin_auth
+                    .iter()
+                    .chain(a.chain.iter())
+                    .any(|e| crate::config::names_operator(&e.module))
+            });
+            // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
+            // — carry on serving with the old credential — is exactly the defect being fixed.
+            let admin_token: Option<Option<busbar_contract::redacted::Secret<String>>> =
+                if declares_operator {
+                    // Declared with no token ref resolves to `None`: the admin API is credential-less
+                    // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
+                    Some(
+                        resolve_admin_token(auth, &secret_resolver)
+                            .map_err(|e| format!("{e} (nothing was changed)"))?,
+                    )
+                } else {
+                    None
+                };
+            let hash = |t: &busbar_contract::redacted::Secret<String>| {
+                busbar_contract::redacted::sha256_hex(t.expose(&crate::seal::lend()).as_bytes())
+            };
+            rotated_digest = admin_token.as_ref().map(|t| t.as_ref().map(hash));
+            let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
+                Some(_) => Some(resolve_signing_key(auth, &secret_resolver)?),
+                None => None,
+            };
+            if admin_token.is_some() || signer.is_some() {
+                rotate_gov_credentials = Some(Box::new(move || {
+                    if let Some(token) = admin_token {
+                        gs.set_admin_token(
+                            token
+                                .as_ref()
+                                .map(|r| r.expose(&crate::seal::lend()).as_str()),
+                        );
+                    }
+                    if let Some(signer) = signer {
+                        gs.set_signing_key(signer);
+                    }
+                }));
+            }
+        }
+        p.governance.clone()
+    } else {
+        // Governance is ALWAYS available (it is inert until an admin token is set and virtual keys are
+        // minted). Only the STORE backend is a choice, and config makes it (Q-STORE = (B)): a linked
+        // row, or a store PLUGIN (resolved by alias or canonical name from the validated registry —
+        // the engine sees only the returned `dyn Store`, exactly like a compiled-in backend). The
+        // validation above refused an absent block.
+        let g = cfg.store.clone().ok_or_else(config::store_required)?;
+        // Is a STATEFUL container plane actually configured? Those planes carry per-task state that
+        // the RAM store drops on restart. "Configured" = any registration in a plane's declared
+        // section OR any plane pool. A bare registration (the common case, no failover pool) is just
+        // as stateful as a pooled one, so both are checked. Computed here so the sharper warn below
+        // can fire only for a stateful deployment — never for a deployment with no container plane
+        // configured.
+        let stateful = cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
+            || cfg.plane_pools.values().any(|p| !p.is_empty());
+        // The configured store, resolved and opened on the store AXIS whichever door its row came
+        // in by (DECISIONS #2 rule (1)). A row that states itself ephemeral keeps nothing across a
+        // restart, which the operator is told before it opens.
+        let row = plugin_registry.resolve(&g.module);
+        let ephemeral = row.is_some_and(|p| p.ephemeral);
+        if ephemeral {
+            diag_warn!(
+                GOVERNANCE_STORE_EPHEMERAL,
+                "store: in-memory (ephemeral) - keys, groups' usage, and ledgers reset on \
+                     restart; configure a durable store plugin for persistence"
+            );
+            // SHARPER, CONDITIONAL warn: the generic notice above is about governance state; a
+            // container plane's task state also lives only in this RAM store. Fire the specific warn
+            // (naming the consequence) ONLY when a stateful plane is configured — a deploy with no
+            // container plane configured keeps just the generic notice. Additive to, not a
+            // replacement for, the notice above.
+            if let Some(msg) = stateful_plane_ephemeral_store_warn(true, stateful) {
+                diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
+            }
+        }
+        // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret store BEFORE
+        // the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable ref refuses the store
+        // load rather than handing the plugin a dangling reference. A row opened IN PROCESS is
+        // handed no settings, so it has none to resolve (the built-in store never read its own).
+        let resolved = match row.is_some_and(|p| p.in_process()) {
+            true => Default::default(),
+            false => config::secret::resolve_settings(
+                &g.settings,
+                secret_resolver.as_ref(),
+                &busbar_contract::config_time::ConfigScope::config_time(),
+            )
+            .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
+        };
+        let cfg_json = serde_json::Value::Object(resolved).to_string();
+        // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
+        // loaded through the root's one dispatcher and opened through the store v3 table, on the
+        // store axis the composition root installed (WIRE-STORE Q8/Q9). Compiled in or dropped
+        // in, one path.
+        let load_failed = |e: String| format!("store '{}' plugin load failed: {e}", g.module);
+        let door = plugin_registry.store_door(&g.module).map_err(load_failed)?;
+        let axis = crate::preflight::root_rows()
+            .store_axis
+            .ok_or_else(|| load_failed("no store axis is installed".to_string()))?;
+        let opened = axis()
+            .open(door, &g.module, cfg_json.as_bytes())
+            .map_err(load_failed)?;
+        let store: Arc<dyn governance::RecordStore> = opened.records;
+        let store_calls = opened.calls;
+        // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
+        // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
+        // token would lock the admin API while the operator believes it is guarded).
+        let admin_token: Option<busbar_contract::redacted::Secret<String>> =
+            resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
+        // The KEY-SIGNING key: resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
+        // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
+        // has already failed closed if the `keys` verifier is in the chain). Fleet deployments
+        // provide it (shared) so every node verifies the same tokens.
+        let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
+        match governance::GovState::new_with_signer(
+            store,
+            admin_token
+                .as_ref()
+                .map(|r| r.expose(&crate::seal::lend()).clone()),
+            signer,
+        ) {
+            Ok(gs) => {
+                let gs = Arc::new(gs);
+                // The store's typed records, kept for the kernel's host services (plane records
+                // persist in the configured store: ARCHITECT Q-L3B-RECORDS).
+                if let Some(calls) = store_calls {
+                    gs.attach_store_calls(calls);
+                }
+                // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
+                // budget-group buckets) from the durable store so a restart resumes enforcement from
+                // the persisted ledger. A no-op for the empty RAM store.
+                // Fail-open: a store error here is FATAL - resuming with empty (reset) budget
+                // cells would let a maxed-out key spend its whole cap again. Fail boot loudly.
+                if let Err(e) = gs.hydrate_budgets(&cost, busbar_kernel::store::now()) {
+                    return Err(format!(
+                        "governance boot: budget hydration failed ({e}); refusing to start with an \
+                         unenforced (reset) ledger. Fix the durable store and restart."
+                    ));
+                }
+                // BOOT FAIL-CLOSED: every stored key naming a budget_group must resolve in THIS
+                // config (mint validates it; a shared durable store can carry keys minted under a
+                // config another node no longer has). A dangling reference is a boot error naming
+                // the offender with the paste-ready fix.
+                // A store error reading the keys here must NOT be swallowed (the old `if let
+                // Ok(keys)` skipped the whole dangling-reference check on error, so a boot-time store
+                // blip published a config whose keys were never validated). Propagate it - fail boot.
+                let keys = gs.all_keys().map_err(|e| {
+                    format!(
+                        "governance boot: could not read stored keys to validate budget_group \
+                         references ({e}); refusing to start unvalidated. Fix the durable store and \
+                         restart."
+                    )
+                })?;
+                for k in &keys {
+                    if let Some(group) = k.group.as_deref() {
+                        if cost.group_named(group).is_none() {
+                            return Err(format!(
+                                "virtual key '{}' names group '{group}', which does not exist in the top-level groups block.\n\
+                                 Paste this under groups and set real limits:\n\n    {group}:\n      limits:\n        - {{ budget: 0, per: month }}\n",
+                                k.id
+                            ));
+                        }
+                    }
+                }
+                // INERT-KEYS GUARD: a durable store may carry virtual keys minted in a prior run
+                // whose data-plane chain no longer names the `keys` verifier — no request then
+                // resolves them and their per-key controls are silently bypassed. Surface it LOUD:
+                // ERROR level (survives RUST_LOG=error) AND unconditionally on stderr, mirroring the
+                // open-relay banner so log config can't mask it. RAM stores can't reach this state,
+                // so `key_count` there is 0 (or the store is non-durable) and the banner is None.
+                // `all_keys()` failure is non-fatal — treat as 0 keys (the enforcement gate is
+                // unaffected; we only lose the advisory). Inertness is now recomputed from CHAIN
+                // SHAPE (is `keys` in the running chain?), not the admin token.
+                let key_count = gs.all_keys().map(|k| k.len()).unwrap_or(0);
+                if let Some(banner) =
+                    inert_durable_keys_banner(!ephemeral, key_count, auth_mw.keys_in_chain)
+                {
+                    eprintln!("[error] {banner}");
+                    diag_error!(DURABLE_KEYS_INERT, "{banner}");
+                }
+                Some(gs)
+            }
+            Err(e) => return Err(format!("governance init failed: {e}")),
+        }
+    };
+    // The operator credential judges the token this build declares, or — when it declares none —
+    // the one the governance state holds (that live credential stands, as it does for the rotation).
+    let digest = rotated_digest.unwrap_or_else(|| governance.as_ref()?.admin_token_hash());
+    admin_modules.operator = open_operator(&plugin_registry, digest, &cfg.identity_providers)
+        .map_err(|e| format!("admin auth chain construction failed: {e}"))?;
+    let admin_modules = Arc::new(admin_modules);
+
+    // Resolve the global rewrite hooks (prompt: rw gates in global_hooks) into priority-ordered
+    // transports ONCE. Empty unless the operator configured a rewrite hook — zero cost by default.
+    let rewrite_hooks =
+        hooks::resolve_rewrite_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
+    // Resolve the global request-stage tap hooks the same way. Empty unless configured.
+    let tap_hooks = hooks::resolve_tap_hooks(
+        &cfg.hooks,
+        &cfg.global_hooks,
+        &hook_env,
+        app_config_version,
+        config::HookStage::Request,
+    );
+    let tap_hooks_candidate = hooks::resolve_tap_hooks(
+        &cfg.hooks,
+        &cfg.global_hooks,
+        &hook_env,
+        app_config_version,
+        config::HookStage::Candidate,
+    );
+    let tap_hooks_routing = hooks::resolve_tap_hooks(
+        &cfg.hooks,
+        &cfg.global_hooks,
+        &hook_env,
+        app_config_version,
+        config::HookStage::Routing,
+    );
+    let tap_hooks_response = hooks::resolve_tap_hooks(
+        &cfg.hooks,
+        &cfg.global_hooks,
+        &hook_env,
+        app_config_version,
+        config::HookStage::Response,
+    );
+    // Resolve the global DECISION gates (non-rewrite gates in global_hooks) — fired for a verdict on
+    // every request. Empty unless configured.
+    let global_gates =
+        hooks::resolve_gate_hooks(&cfg.hooks, &cfg.global_hooks, &hook_env, app_config_version);
+
+    // THE PER-POOL ROUTING POLICY / DECISION GATES / REWRITE CHAINS — resolved HERE, core-side, keyed
+    // by pool (money-path Phase 3-4 C — the RATIFIED pool-hook facade). They USED to be built into the
+    // fallback plane's own pool-runtime type, but their resolved values (`ResolvedPolicy` /
+    // `Arc<dyn RoutingPolicy>`, an Arc over a dlopen plugin) cannot cross the `build_runtime` downcast, so they stay here and the
+    // engine reads them through `App::pool_{policy,gates,rewrites}`. Byte-identical to the old inline
+    // `PoolRuntime` resolution: the SAME `hooks::resolve_pool_*` calls, same inputs, same order.
+    let default_hook = hooks::default_hook_name(&cfg.hooks).map(str::to_string);
+    let mut pool_orderings = std::collections::HashMap::new();
+    let mut pool_decision_gates = std::collections::HashMap::new();
+    let mut pool_rewrite_chains = std::collections::HashMap::new();
+    for (pool_name, pool_cfg) in &cfg.pools {
+        if let Some(policy) = hooks::resolve_pool_ordering(
+            pool_cfg,
+            &cfg.hooks,
+            &hook_env,
+            default_hook.as_deref(),
+            app_config_version,
+        ) {
+            pool_orderings.insert(pool_name.clone(), policy);
+        }
+        let gates = hooks::resolve_pool_gates(pool_cfg, &cfg.hooks, &hook_env, app_config_version);
+        if !gates.is_empty() {
+            pool_decision_gates.insert(pool_name.clone(), gates);
+        }
+        let rewrites =
+            hooks::resolve_pool_rewrites(pool_cfg, &cfg.hooks, &hook_env, app_config_version);
+        if !rewrites.is_empty() {
+            pool_rewrite_chains.insert(pool_name.clone(), rewrites);
+        }
+    }
+
+    // THE CONTAINER PLANES' GATES, resolved by the SAME function, from the SAME registry, on the
+    // same generation — which is the point. `tools.hooks:` / `agents.hooks:` and the per-entry
+    // lists have parsed and validated since 1.5.3 and fired nothing, because nothing resolved them
+    // and nothing called them. These two lines and their two firing sites are the whole of what was
+    // missing; the grammar, the validation and the cross-plane refusal were already there.
+    //
+    // Empty on every deployment that attaches nothing, which is every deployment that does not
+    // spell the key — so the dispatch paths' lookups cost one hash probe against an empty map.
+    // Each plane's per-container gates and rewrite chains, read off its declared section through the
+    // neutral `container_gates` seam and keyed by the plane's own decl key, so this composition names
+    // no plane. A section the document does not write contributes nothing; reading its key finds
+    // nothing, which is the same answer an empty map gives.
+    let mut plane_gates = std::collections::BTreeMap::new();
+    let mut plane_rewrites = std::collections::BTreeMap::new();
+    for (section, defs) in &cfg.plane_defs {
+        let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) else {
+            continue;
+        };
+        let g = defs.container_gates();
+        let containers = || {
+            g.containers
+                .iter()
+                .map(|(name, hooks)| (name.as_str(), hooks.as_slice()))
+        };
+        plane_gates.insert(
+            decl.key,
+            hooks::resolve_container_gates(
+                containers(),
+                &g.section_hooks,
+                &cfg.hooks,
+                &hook_env,
+                app_config_version,
+            ),
+        );
+        plane_rewrites.insert(
+            decl.key,
+            hooks::resolve_container_rewrites(
+                containers(),
+                &g.section_hooks,
+                &cfg.hooks,
+                &hook_env,
+                app_config_version,
+            ),
+        );
+    }
+
+    // EVERY fallible step of THIS build has now succeeded, so `rotate_gov_credentials` (if any) is
+    // ready to run. It is NOT invoked here, though: `GovState` is a process-lifetime `Arc` shared
+    // with the OLD `App` that is still serving, so invoking it now would mutate the live engine's
+    // credentials even though the candidate `App` returned below is only a CANDIDATE — the admin
+    // transaction wrapping this call (`txn.rs`) still has a fallible PERSIST step to run, and on a
+    // persist failure the transaction discards this candidate and swaps nothing. Firing the
+    // rotation here would leave the "nothing was changed" response a lie: the shared `GovState`
+    // would already carry the new credential while the old (rejected) `App` keeps serving. The
+    // caller is responsible for invoking the returned closure — after its own persist step (if any)
+    // has succeeded, never before.
+
+    // The active-probe schedule (live state, carried across an apply only when the lane set is
+    // identical) is part of the fallback plane's runtime now — its lane-indexed deadlines + the
+    // prior-runtime carry-over compare move IN-PLANE to that plane's `build_runtime`, which reads
+    // the prior generation's runtime through the neutral `PlaneSlots` seam. Core no longer names
+    // the plane's own probe-schedule type here.
+
+    // Plugin HTTP routes: the BUILT-IN exporters (`crate::export`) declare their routes
+    // into the snapshot — today the `prometheus` exporter's `GET /metrics` when `export.prometheus` is
+    // configured. Rebuilt on every config apply. A collision (a future loaded export/hook plugin
+    // claiming a built-in's path) is a LOUD build failure naming the owner, never last-writer-wins.
+    //
+    // The rebuilt TABLE is not the same thing as what the ROUTER serves: each path is registered on
+    // the router once, at boot, and an apply swaps only `Arc<App>`. So REMOVING `export.prometheus`
+    // takes effect immediately (`plugin_route_dispatch` resolves the owner from the current snapshot
+    // and 404s), while ADDING it needs a RESTART. `boot_route_paths` below is what remembers which
+    // paths the router actually has, so a config mutation can SAY so instead of
+    // reporting success for a route that will keep 404ing.
+    let plugin_routes = std::sync::Arc::new(crate::plugin_routes::build_route_table(
+        crate::export::route_decls(&cfg_export),
+    )?);
+    // Seeded ONCE, on a fresh boot (`prior == None`) from the table that is about to be mounted;
+    // every rebuild inherits the boot value unchanged. Deliberately NOT recomputed per rebuild — a
+    // recomputed set would say every newly declared path is already mounted, which is the exact
+    // silent no-op this exists to report.
+    let boot_route_paths = prior.map_or_else(
+        || std::sync::Arc::new(plugin_routes.paths()),
+        |p| p.boot_route_paths.clone(),
+    );
+
+    // THE PLANE SLOT MAP (Step 2.3's app-state seam): every registered plane's runtime object for
+    // THIS config generation, built ONCE via its own decl's `build` fn and type-erased into
+    // `Arc<dyn Any + Send + Sync>`. Built here, ahead of the `App` literal below. Each plane's object
+    // lives ONLY in this map now — the former typed `App` fields per plane were deleted in the D4
+    // step — and every reader downcasts the SAME `Arc` out of the slot rather than building a second
+    // one that could disagree. One container plane's object is already validated (its resource-from-cfg
+    // step ran at `RootCfg` construction), so its `build` fn is a wrap, not a second parse; the other
+    // container plane's object is lowered here for the first time, exactly where its own
+    // from-config constructor used to be called directly — it is still lowered ONCE, now through the
+    // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
+    // admission facts and the registry the re-verification job sweeps).
+    let plane_slots: std::collections::BTreeMap<
+        &'static str,
+        Arc<dyn std::any::Any + Send + Sync>,
+    > = {
+        // LAW 7: an unconfigured plane builds no slot, so it claims, admits and mounts nothing.
+        crate::plane::registry::plane_decls()
+            .iter()
+            .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
+            .filter(|decl| decl.fallback || !planes_awaiting_restart.contains(&decl.config_section))
+            .filter_map(|decl| {
+                let ctx = crate::plane::registry::BuildCtx {
+                    // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
+                    // config resolution: the `tools:` container plane's endpoint resource (the SAME
+                    // `Arc` it clones into `plane_slots` and downcasts inside its own module, so
+                    // "one lowering, one Arc" holds), or a raw-carried plane's `(section, value)`.
+                    // `None` when the plane's section carries none. Names no plane resource type.
+                    endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
+                    // Every declared section this document writes, by config section, behind the
+                    // neutral `PlaneCfg` seam: a plane's `build` reads its own and names no
+                    // plane-owned config type.
+                    plane_defs: &cfg.plane_defs,
+                    public_url: cfg.public_url.as_deref(),
+                    // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
+                    // coordination off its own prior runtime object across this apply — the same
+                    // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
+                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_driver::slots::PlaneSlots),
+                    // The resolved providers: a door plane's probe is handed its referenced ones.
+                    providers: Some(&cfg.providers),
+                };
+                (decl.build)(&ctx).map(|obj| (decl.key, obj))
+            })
+            .collect()
+    };
+
+    // NEUTRAL telemetry label projections (money-path Phase 3-4 B): pool→member-idx list, the
+    // direct-model index, and a lane-idx→model resolver — banked into `AppSlots::build` from the neutral
+    // rows `lane_inputs`/`pool_inputs`/`by_model`, so core's label bank names no plane-owned lane
+    // or pool type.
+    let ts_pools: Vec<(&str, Vec<usize>)> = pool_inputs
+        .iter()
+        .map(|p| {
+            (
+                p.name.as_str(),
+                p.members.iter().map(|m| m.lane_idx).collect(),
+            )
+        })
+        .collect();
+    let ts_by_model: Vec<(&str, usize)> = by_model
+        .iter()
+        .map(|(model, &idx)| (model.as_str(), idx))
+        .collect();
+    let tslots = Arc::new(telemetry::AppSlots::build(
+        &ts_pools,
+        &ts_by_model,
+        |idx| lane_inputs.get(idx).map(|lane| lane.model.as_str()),
+        crate::plane::fallback_key(),
+    ));
+
+    // THE KERNEL'S OWN TABLES over the resolved sections, for the read seam (no plane contributes a
+    // runtime of its own).
+    let config_tables = Arc::new(busbar_kernel::plane_driver::route_tables::ConfigTables::of(
+        &lane_inputs,
+        &pool_inputs,
+        &by_model,
+        cfg.upstream_credentials,
+    ));
+    // The fallback plane's runtime slot KEY (`runtime_slot_key(<fallback plane key>)`): with no
+    // registry plane building a runtime of its own (every plane is a door plane), no slot is
+    // inserted under it and the read seam walks the kernel's own tables above.
+    let fallback = crate::plane::fallback_decl();
+    let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
+
+    // THE AUTHORIZATION SERVER, built once per generation, and only when the operator asked for
+    // one. Everything
+    // this plane costs hangs off this `Option`: absent, nothing below runs, `App::oauth_as` is
+    // `None`, `oauth_as::routes::mount` returns the router untouched, and no sweeper exists.
+    //
+    // The RFC 8707 `allowed_resources` list is busbar's OWN protected resources and nothing else.
+    // Left unset, `oauth-as` would mint a token carrying whatever `resource` a client asked for in
+    // its `aud`, which any resource server verifying against our JWKS would then honour — so the
+    // list is derived here, from the planes this deployment actually serves, rather than configured
+    // separately where it could disagree with them.
+    let oauth_as_plane = match cfg.oauth_as.as_ref() {
+        None => None,
+        Some(checked) => {
+            // The block is OPAQUE here: its owner (the plane crate, through the seam) names the
+            // secret references it carries, and the kernel resolves each one. A block with no
+            // `signing_key` resolves nothing, and the owner generates an ephemeral key and says so.
+            let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
+                "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) is not \
+                 linked into this binary"
+                    .to_string()
+            })?;
+            let secrets = checked
+                .secret_refs
+                .iter()
+                .map(|(path, reference)| {
+                    secret_resolver
+                        .resolve_string_at_config(
+                            reference,
+                            &busbar_contract::config_time::ConfigScope::config_time(),
+                        )
+                        .map(|value| (path.clone(), value))
+                        .map_err(|e| format!("{path}: {e}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            // busbar's OWN protected resource is a container plane's ingress canonical URI, read back
+            // through that plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical
+            // URI — so appbuild names no plane-owned resource type. Empty when the `tools:` section is
+            // absent or its owning plane is compiled out (no built-in decl, hence no admission, so the
+            // deployment protects no such audience).
+            let protected_resources: Vec<String> = cfg
+                .endpoint_resources
+                .get(crate::config::plane_sections::EndpointSection::OWNER)
+                .and_then(|slot| {
+                    crate::plane::registry::plane_decl_for_config_section(
+                        crate::config::plane_sections::EndpointSection::OWNER,
+                    )
+                    .and_then(|d| (d.admission)(slot.as_ref()))
+                })
+                .map(|adm| adm.audience)
+                .into_iter()
+                .collect();
+            // Built through the seam (`crate::oauth_as::seam`), not `crate::oauth_as::plane::AsPlane`
+            // directly: the concrete plane type lives in the sibling `busbar-core-oauth2` crate, which
+            // core cannot name (the one-way dependency runs the other direction). The seam's `build`
+            // also hands the plane's expired-record sweep to the kernel's one clock — the same "how
+            // do I come alive" act this call site used to perform inline (`Storage::sweep_expired`
+            // is the only thing that reclaims anything in `oauth-as`, and it runs when it is called
+            // and never otherwise; registered once per generation, beaten by `crate::tick::beat`).
+            // The PRIOR generation's server goes in with it: what the server holds carries across
+            // the swap, so a reload does not void its tokens, clients, sessions and replay ledgers.
+            // The deployment's store, when one is configured: the server keeps its records there,
+            // shared by every node on it (the governance state holds the store's calls).
+            let store = governance.as_ref().and_then(|gs| gs.store_calls());
+            Some((seam.build)(
+                &checked.block,
+                secrets,
+                protected_resources,
+                prior.and_then(state::App::oauth_as_any),
+                store,
+            )?)
+        }
+    };
+
+    // The generation's hook CONTENT ceiling rides the limits this generation publishes when it goes
+    // live (`config::limits::publish` mirrors it), read on the hook seam with a single relaxed load.
+    // A refused build never publishes it.
+    let limits_resolved = cfg.limits.clone();
+
+    let app = App {
+        // The limits this generation goes live with: `AppHandle::swap` publishes them before any
+        // reader of the new generation runs, and carries them onto the plane breaker store.
+        limits: Some(limits_resolved.clone()),
+        root_rules: std::sync::Arc::clone(rules),
+        config_projection,
+        plane_sections: Some(cfg.plane_sections.clone()),
+        // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
+        // config-derived collections moved into the fallback plane's runtime bundle so its
+        // `&lanes`/`&pools`/`&by_model` borrows ran first). Identical label sets across applies re-intern to the same
+        // slots, so hot-path counters accumulate monotonically across config generations.
+        tslots,
+        // THE FALLBACK PLANE'S RUNTIME SLOT KEY (R3/R4 sub-phase B): the snapshot names only the
+        // `&'static str` key; no slot is composed under it (every plane is a door plane), so its
+        // read answers the empty default and the read seam walks `config_tables`.
+        fallback_runtime_key,
+        config_tables,
+        store,
+        // The container planes' breaker cells: PROCESS-LIFETIME, reused across an apply/reload the
+        // way the HTTP client pool and governance state are — a config swap must not un-trip a
+        // dead tool server or agent. Boot starts fresh (reliability is never persisted; the
+        // store-or-RAM rule).
+        // "What is not configured must not be loaded": a config with NO plane content — no mounted
+        // plane slot, no registration in a declared section, no plane pool — gets the
+        // INERT handle (empty lane table; see `PlaneBreakers::new_inert` for the ~130 KiB the 8
+        // placeholder cells' preallocated windows/stripes otherwise cost every planeless idle
+        // process). A PROVISIONED prior is always reused (learned reliability survives every apply,
+        // including one that removes the last plane section); an inert prior is upgraded HERE — at
+        // apply, boot-only work — the first time plane content appears, losing nothing (an inert
+        // handle never recorded anything). Note the `runtime_slot_key(<its decl key>)` companion slot
+        // is inserted on every build with that container plane compiled in, so the gate reads the
+        // DECL keys (config-conditional), never it.
+        plane_breakers: {
+            let planes_configured = crate::plane::registry::plane_decls()
+                .iter()
+                .any(|d| plane_slots.contains_key(d.key))
+                || cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
+                || cfg.plane_pools.values().any(|p| !p.is_empty());
+            match prior {
+                Some(p) if p.plane_breakers.is_provisioned() || !planes_configured => {
+                    Arc::clone(&p.plane_breakers)
+                }
+                // Built under THIS generation's limits (THE DESIGN §1: every plane honours the
+                // operator's `limits.*`); a reused prior takes them at the swap
+                // (`App::publish_limits`), never during the build.
+                _ if planes_configured => Arc::new(crate::store::PlaneBreakers::new_with_limits(
+                    cfg.limits.hard_down_cooldown_secs,
+                    cfg.limits.max_honored_retry_after_secs,
+                )),
+                _ => Arc::new(crate::store::PlaneBreakers::new_inert()),
+            }
+        },
+        // The neutral per-session substrate: PROCESS-LIFETIME like `plane_breakers`, reused across an
+        // apply so a config swap never forgets a live session. Bounded (`SESSION_STORE_CAPACITY`
+        // slots, LRU-evicted) and TTL-defaulted so an idle session's state cannot accumulate — the
+        // memory-safety bound the substrate is built around.
+        session_store: prior.map_or_else(
+            || {
+                Arc::new(crate::session::SessionStore::new(
+                    SESSION_STORE_CAPACITY,
+                    Some(SESSION_STORE_TTL_MS),
+                ))
+            },
+            |p| Arc::clone(&p.session_store),
+        ),
+        // Operator opt-in for the gate's incremental-scan tenant. Env, not config: OFF (the default,
+        // and any value that is empty or "0") keeps every gate screening the full projection —
+        // byte-identical to 1.5.4 — while an operator can turn it on without a config-schema change.
+        incremental_scan: std::env::var_os("BUSBAR_INCREMENTAL_SCAN")
+            .is_some_and(|v| !v.is_empty() && v != "0"),
+        // The failover pools, resolved-verbatim per generation (the CELLS above are process-
+        // lifetime; the pool DECLARATIONS are config like any other): each plane's pools, keyed by
+        // its stable decl key, resolved from the registry so this composition names no plane.
+        plane_pools: cfg
+            .plane_pools
+            .iter()
+            .filter_map(|(section, pools)| {
+                crate::plane::registry::plane_decl_for_config_section(section)
+                    .map(|decl| (decl.key, pools.clone()))
+            })
+            .collect(),
+        auth: auth_mw.clone(),
+        rewrite_hooks,
+        tap_hooks,
+        tap_hooks_candidate,
+        tap_hooks_routing,
+        tap_hooks_response,
+        global_gates,
+        // The per-pool routing policy / decision gates / rewrite chains, read by the fallback plane's
+        // relocated engine through `App::pool_{policy,gates,rewrites}` (the pool-hook facade).
+        pool_orderings,
+        pool_decision_gates,
+        pool_rewrite_chains,
+        // The GENERIC per-plane per-container submission-gate map and its rewrite-chain twin, keyed by
+        // each plane's stable decl key (built above).
+        plane_gates,
+        plane_rewrites,
+        hook_env: hook_env.clone(),
+        hook_registry: cfg.hooks.clone(),
+        requested_signals: hooks::requested_signals(&cfg.hooks),
+        any_content_hook: hooks::any_content_hook(&cfg.hooks),
+        export_projections: cfg.export.projection_union(),
+        global_hooks: cfg.global_hooks.clone(),
+        groups_registry: cfg.groups.clone(),
+        base_group_names,
+        // The two NAMED-DEFINITION maps the generic admin CRUD serves, carried verbatim off the
+        // resolved config (the EFFECTIVE base+overlay shape).
+        identity_providers: cfg.identity_providers.clone(),
+        export_defs: cfg.export_defs.clone(),
+        // THE `agents:` CONTAINER PLANE, built only when `agents:` defines one, is NOT mirrored into a
+        // typed `App` field any more: it lives solely in its `plane_slots` entry (built once by
+        // `PlaneDecl::build`), and every reader reaches it through that plane's own runtime accessors,
+        // which downcast that slot inside the plane's module. So there is no dedicated initializer here
+        // and `App` names no plane-owned type for the runtime object. That plane's verify-on-call GATE
+        // and boot-resolved CARD transports moved ONTO that same runtime object too (like the `tools:`
+        // container plane's own verify coalescer): they are carried across this apply INSIDE the
+        // plane's `build` (through its own carried-gates field, off `BuildCtx::prior`), so `App`
+        // carries no dedicated field for them either.
+        // History + rate windows are Arc-shared across applies (process-lifetime state).
+        admin: prior.map_or_else(
+            || Arc::new(admin::seam::AdminSlot::default()),
+            |p| p.admin.clone(),
+        ),
+        mutation_limiter: prior.map_or_else(
+            || Arc::new(ratelimit::MutationLimiter::new()),
+            |p| p.mutation_limiter.clone(),
+        ),
+        base_hook_names,
+        admin_chain: cfg.admin_auth.clone(),
+        admin_modules,
+        login_methods,
+        public_url: cfg.public_url.clone(),
+        // One container plane, and the dispatch table that governs it, are built from ONE validated
+        // object in ONE act: the resource that mounts the ingress is the same resource whose
+        // canonical URI becomes the audience the middleware enforces there. Absent its config section,
+        // the dispatch table is empty and `admission_for` answers `None` for every path, so the
+        // audience check costs one `Option` test on the hot path and changes nothing.
+        //
+        // THE SECOND CONSUMER. The other container plane mounts and admits through the very same two
+        // verbs, with its own strings and no new code in `plane/` — which is the claim that module's
+        // own doc made when it was written for a consumer that did not exist yet. It admits only when
+        // it has a RECEIVING side (its own `admission` fn answers `None` without a `public_url`), so a
+        // delegation-only deployment claims no path and binds no audience.
+        // THE DISPATCH TABLE, folded from the registered plane declarations rather than a hardcoded
+        // block per plane. Each plane's runtime object is handed to its decl (type-erased as
+        // `&dyn Any`), and the decl computes the plane's claims and admission from it — the same
+        // strings the former hardcoded per-plane blocks used to compute, now stated beside the plane
+        // they describe so an extracted plane crate contributes its own door. `build_dispatch` refuses
+        // the boot if any plane claims a path but binds no audience (ratchet R2).
+        //
+        // The slot lookup reads `plane_slots` (built above, once, via each decl's `build` fn) rather
+        // than naming either container plane's crate directly — the CLAIMS and ADMISSION logic, and now
+        // the object the two are computed from, are all reached through the decl.
+        planes: Arc::new({
+            let ref_slots: std::collections::BTreeMap<&'static str, &dyn std::any::Any> =
+                plane_slots
+                    .iter()
+                    .map(|(k, v)| (*k, v.as_ref() as &dyn std::any::Any))
+                    .collect();
+            crate::plane::registry::build_dispatch(
+                crate::plane::registry::plane_decls(),
+                &ref_slots,
+                auth_mw.keys_in_chain,
+            )?
+        }),
+        // THE TYPE-ERASED SLOT MAP ITSELF (Step 2.3). Moved in last: every typed field above that
+        // reads a plane's object does so by cloning out of this map first, so `plane_slots` and any
+        // per-plane accessor are guaranteed to agree — there is no second `build` call anywhere that
+        // could disagree with what is stored here.
+        // A CONTAINER PLANE'S PER-GENERATION RUNTIME (and the verify-on-call coalescer folded into it)
+        // is no longer a flat `App` field: it was inserted into `plane_slots` above under
+        // `runtime_slot_key(<its decl key>)`, through the plane's own `build_runtime` seam. `plane_slots`
+        // is moved into `App` on the line just above; each plane reads its runtime back through its own
+        // runtime accessor, which downcasts that slot inside the plane.
+        plane_slots,
+        oauth_as: oauth_as_plane.clone(),
+        // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
+        // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
+        // silently detach it and every later quarantine would stop being written down.
+        demotion_record: prior.map_or_else(
+            || Arc::new(crate::trust::demotion::DemotionRecord::new()),
+            |p| p.demotion_record.clone(),
+        ),
+        auth_scope_caps: cfg
+            .auth
+            .as_ref()
+            .map(project_auth_scope_caps)
+            .unwrap_or_default(),
+        role_bindings: cfg
+            .auth
+            .as_ref()
+            .map(|a| a.role_bindings.clone())
+            .unwrap_or_default(),
+        config_path: config_paths.0,
+        providers_path: config_paths.1,
+        overlay_path,
+        config_version: app_config_version,
+        max_keys_per_principal: cfg.limits.max_keys_per_principal,
+        max_auto_provisioned_groups: cfg.limits.max_auto_provisioned_groups,
+        governance,
+        secret_resolver,
+        cost,
+        plugins_dir: std::path::PathBuf::from(&plugins_cfg.dir),
+        plugins_cfg,
+        plugin_trust: crate::preflight::root_rows().trust_policy,
+        // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
+        // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
+        self_key_ttl_secs: cfg
+            .auth
+            .as_ref()
+            .and_then(|a| a.key_ttl.as_deref())
+            .map(|s| {
+                config::parse::parse_duration_secs(s)
+                    .unwrap_or(governance::mint_policy::DEFAULT_KEY_TTL_SECS)
+            })
+            .unwrap_or(governance::mint_policy::DEFAULT_KEY_TTL_SECS),
+        // Where `auth.policy:` is finally READ: the resolved mint policy (block TTL/mode ceiling +
+        // per-role `mint_ceilings`). Config-validate already proved the durations parse; a stray bad
+        // value falls back to no cap rather than fabricating a ceiling nobody wrote.
+        mint_policy: std::sync::Arc::new(governance::mint_policy::MintPolicy::from_auth(
+            cfg.auth.as_ref(),
+        )),
+        // Arc-shared like `admin`/`mutation_limiter`: a REBUILD carries the SAME counter forward
+        // (ids stay monotonic across a config reload) while a fresh boot seeds it once from OS
+        // entropy (see `state::seed_request_id_counter`) so restarts don't restamp `0, 1, 2, …`.
+        request_id_counter: prior.map_or_else(
+            || {
+                Arc::new(std::sync::atomic::AtomicU64::new(
+                    state::seed_request_id_counter(),
+                ))
+            },
+            |p| p.request_id_counter.clone(),
+        ),
+        plugin_routes,
+        boot_route_paths,
+        planes_awaiting_restart: planes_awaiting_restart
+            .iter()
+            .map(|section| (*section).to_string())
+            .collect(),
+    };
+    // PRUNE the verify-on-call gates to the subjects THIS generation still fronts. `flights` and
+    // `drift_latch` are per-subject coordination CARRIED across every apply (above); without a prune
+    // they leak one dead entry per server/agent an operator ever removed. Done here, on the same
+    // carry path, with the live registration set of each plane: a pruned subject is one no delegation
+    // can name, so dropping its coalescing state and latch cannot race a verify (fail-closed intact).
+    // Each plane prunes its OWN verify-on-call gate through its `retain_verify_gates` seam, so this
+    // composition names no plane-owned runtime type. UNCONDITIONAL per the hooks' own
+    // contract: when the operator REMOVES a plane's block the live subject set is EMPTY, so retain
+    // drops every carried flight/latch instead of leaking one per removed subject. The two hooks touch
+    // disjoint gates (each plane's own runtime `verify`), so the registry iteration order is not observable.
+    for decl in crate::plane::registry::plane_decls() {
+        if let Some(retain) = decl.retain_verify_gates {
+            retain(&app);
+        }
+    }
+    // THE CARD GOES ON THE JOURNAL BEFORE THE CONFIG CHANGE IS SAVED (MONEY-AUDIT D-6, ARCHITECT
+    // ruling 2026-10-02): the LAST fallible step of the build, so every caller's persist runs only
+    // after the holder made the rates durable. A journal that refuses them refuses the whole change:
+    // nothing is persisted, nothing is swapped, the old configuration and the old card both stay.
+    // From here the handle is armed: dropped unkept (a persist or swap that failed), the holder
+    // withdraws the staged card.
+    crate::rate_apply::rates_staged(&resolved_rates.raw()).map_err(|why| {
+        format!(
+            "the rate card could not be made durable, so the configuration change was refused \
+             and nothing was changed: {why}"
+        )
+    })?;
+    let staged = StagedRates { armed: true };
+    // The build reached its end without a single fallible step refusing — but the build is not the
+    // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
+    // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it
+    // here instead and rolls them back, exactly as before.
+    Ok((
+        app,
+        rotate_gov_credentials,
+        InstalledLimits {
+            limits: limits_resolved,
+            rates: resolved_rates,
+            staged,
+            destinations,
+            rules: std::sync::Arc::clone(rules),
+        },
+    ))
+}
+
+/// What a `models:` entry states of its lane beyond the breaker's identity and limits, carried
+/// beside the breaker store's [`LaneData`] (which reads none of it) to the lane input.
+struct LaneModelFacts {
+    /// The wire model name the lane sends in place of its config name.
+    upstream_model: Option<String>,
+    /// The entry's per-attempt time-to-headers cap (ms).
+    attempt_timeout_ms: Option<u64>,
+    /// The entry's reasoning-capability flag.
+    reasoning: bool,
+    /// The entry's prompt-caching capability flag.
+    prompt_caching: bool,
+}
+
+#[cfg(test)]
+#[path = "tests/static_seams_drained_tests.rs"]
+mod static_seams_drained_tests;

@@ -1,0 +1,13 @@
+{
+  "name": "ws-conformance",
+  "private": true,
+  "type": "module",
+  "description": "Autobahn|Testsuite harness: parser and negative-control peer for busbar's ws transport (the control peer is the ws-conformance-reference bin, subject/src/reference.rs).",
+  "scripts": {
+    "selftest": "node bin/parse-autobahn-report.mjs --selftest",
+    "broken": "node broken/broken-echo-server.mjs"
+  },
+  "devDependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,9 @@
+mcp:
+  canonical_uri: "http://127.0.0.1:{data_port}/mcp"
+  authorization_servers: ["http://127.0.0.1:{admin_port}"]
+tools:
+  t1: { url: "https://t.example/rpc", pin: { mechanism: unpinned } }
+agents:
+  a1: { url: "https://a.example/card", pin: { mechanism: unpinned } }
+streams:
+  context_window_tokens: 16384

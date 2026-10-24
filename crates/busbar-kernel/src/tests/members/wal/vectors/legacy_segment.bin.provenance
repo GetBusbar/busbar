@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# legacy_segment.bin -- provenance
+#
+# WHAT: the four records `records(3, 1, 4, 200)` (node 3, node_seq 1..=4, a 200-byte body whose byte
+# b is (node_seq + b) % 251) framed under wal layout version 1 (the layout before the header check, never
+# released; no header check): 4 frames x 512 bytes = 2048 bytes, frame i at offset 512*i, no segment header, no padding.
+# Read by `a_version_1_segment_is_quarantined_never_read` in ../corruption_verdict_tests.rs: this build
+# reads only version 3, so the segment is quarantined whole.
+#
+# ENCODER REPRODUCED: busbar_kernel_wal::record::encode_legacy (crates/busbar-kernel-wal/src/record.rs,
+# `#[cfg(test)] pub(crate) fn encode_legacy`) at commit 4aa05a13d71ce79bf8e2320c6689e39cb6e03033:
+# Record::encode (encode_frame), then version := 1, header check [34,38) := 0, digest recomputed.
+#
+# HOW GENERATED: once, by a throwaway python3 script (not committed) using only struct and
+# hashlib.sha256 (SHA-256 is the sole hash primitive; no CRC is involved). Per frame, all integers
+# little-endian, every byte not listed is zero:
+#   [0,4)     b"BWAL"                         FRAME_MAGIC
+#   [4,6)     01 00                           layout version 1
+#   [6]       00                              flags: part 0 of 1, so no FLAG_MORE_PARTS
+#   [8,16)    03 00 00 00 00 00 00 00         node
+#   [16,24)   node_seq (1..=4) as u64
+#   [24,28)   00 00 00 00                     part_index
+#   [28,32)   01 00 00 00                     part_count
+#   [32,34)   c8 00                           payload length 200
+#   [34,64)   zero                            no header check under version 1
+#   [64,96)   SHA-256( frame[0,64) || frame[96,512) )   frame_digest: digest field skipped
+#   [96,296)  the body
+#   [296,512) zero
+#
+# SHA-256(legacy_segment.bin) = 29d9b3e634b4bf1d278445d7fdb862e5ee3c694e5a6d164dca9888a65eccc286
+#
+# Frame headers [0,96) as generated (hex):
+#   0 4257414c01000000030000000000000001000000000000000000000001000000c800000000000000000000000000000000000000000000000000000000000000dbc1991820b7850bb030dd9c0e38fac054855c3706e5c856880edd4381d76e53
+#   1 4257414c01000000030000000000000002000000000000000000000001000000c800000000000000000000000000000000000000000000000000000000000000a6ca2c209ce338b5fcffbe6e8d94698fa9e767269efdecde6da94221cc3f13e1
+#   2 4257414c01000000030000000000000003000000000000000000000001000000c8000000000000000000000000000000000000000000000000000000000000001b8c1bd51bb226118c5b1be00f3a2598340b4ff4378c63a409ea6da00e92da19
+#   3 4257414c01000000030000000000000004000000000000000000000001000000c8000000000000000000000000000000000000000000000000000000000000008f436e6d36279edbc78363c382dd4bd546fdd4e085690f9bb05cd914bd470aa7
+#
+# SELF-CHECK: the test asserts, before using the vector, that each frame is version 1, matches the
+# current Record::encode byte for byte outside [4,6) (version), [34,96) (header check zeroed,
+# digest) and [511] (the current layout's end mark, which version 1 did not have), has [34,64)
+# zero, and is refused by decode_frame as an unknown layout (version 1).

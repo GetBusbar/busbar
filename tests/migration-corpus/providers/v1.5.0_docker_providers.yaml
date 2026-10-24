@@ -1,0 +1,4 @@
+anthropic:
+  protocol: anthropic
+  base_url: https://api.anthropic.com
+  error_map: {}

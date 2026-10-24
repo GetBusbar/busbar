@@ -1,0 +1,24 @@
+{
+  "event_id": "evt_client_0001b",
+  "type": "session.update",
+  "session": {
+    "modalities": ["audio", "text"],
+    "instructions": "Telephony agent. Use g711 mu-law framing.",
+    "voice": "verse",
+    "input_audio_format": "g711_ulaw",
+    "output_audio_format": "g711_ulaw",
+    "input_audio_transcription": {
+      "model": "gpt-4o-transcribe"
+    },
+    "turn_detection": {
+      "type": "semantic_vad",
+      "eagerness": "medium",
+      "create_response": true,
+      "interrupt_response": true
+    },
+    "tools": [],
+    "tool_choice": "none",
+    "temperature": 0.7,
+    "max_response_output_tokens": 4096
+  }
+}

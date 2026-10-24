@@ -1,0 +1,1 @@
+{"applied":["capture"],"body":{"json":{"exit":0,"log":["ok: config valid \u2014 1 provider(s), 1 model(s), 0 pool(s)","  config:    <WORK>/config.yaml","  providers: <WORK>/providers.yaml","  plugins:   enabled \u2014 1 validated, 0 skipped (untrusted) in '<WORK>/plugins'"],"upstream":[]}},"effects":{},"headers":{},"status":0}

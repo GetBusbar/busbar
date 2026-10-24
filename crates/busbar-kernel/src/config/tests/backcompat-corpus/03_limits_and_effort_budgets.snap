@@ -1,0 +1,9 @@
+per_request_fee = 0
+limits.default_max_tokens = 2048
+limits.reasoning_effort_budgets = minimal=512 low=2000 medium=10000 high=50000
+rate_card:
+  <absent>
+models:
+  gpt-4o: default_max_tokens=- max_requests=-1 max_concurrent=-
+  o3: default_max_tokens=32768 max_requests=-1 max_concurrent=-
+groups:

@@ -1,0 +1,756 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Frames in, frames out: which frame belongs to which unit, and when it is allowed to move.
+//!
+//! The pump is the only thing between a transport and the loop. A transport yields frames and knows
+//! nothing; a plane says what a frame MEANS and holds no connection; the pump takes the plane's
+//! answer and decides what happens to the unit table because of it. Its rules are short and each
+//! one is a rule about money or about fairness:
+//!
+//! - **One open unit per direction of a stream.** A second open on an occupied direction is
+//!   refused, and the refusal is rendered while the session stays up. Two units relaying one
+//!   direction would be two holds over one conversation.
+//! - **The interrupt is evaluated first.** A frame that supersedes the unit in flight is checked
+//!   BEFORE the slot is tested, so a barge-in reaches the compare-and-set instead of bouncing off
+//!   the slot it is trying to take over.
+//! - **One-shots do not take the slot.** They run under a small fixed concurrency, so a burst of
+//!   them cannot starve the open conversation or the node. A one-shot's place is a permit that
+//!   gives itself back when it drops, however the unit ends; one past the concurrency is refused.
+//! - **A body arrives before its unit opens.** Where a declared pointer sits at the end of a body,
+//!   the body is spooled — against its own budget, in real bytes — and the unit opens when the
+//!   deepest pointer has resolved. No pointer is ever read off a truncated document.
+//! - **Emitted frames are paced.** On a stream transport an overrun becomes backpressure; on a
+//!   datagram transport the frame is dropped and journaled as unemitted. Only emitted frames are
+//!   metered.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use busbar_contract::caps::{ReasonCode, StepName, UnitKey};
+
+use crate::grammar::{resolve_pointer, DeepestPointer, Resolved};
+use crate::inflight::{InFlight, SessionSlot};
+use crate::Nanos;
+
+/// How many one-shot units may run at once beside the open unit.
+pub const DEFAULT_ONE_SHOT_K: usize = 4;
+
+/// A stream, a direction and a frame, as the contract crate declares them.
+///
+/// A transport writes all three, so all three arrive from outside the kernel; the pump reads what
+/// it was handed rather than a restatement of it.
+pub use busbar_contract::{Direction, Frame, StreamId, MAX_NEEDMORE_FRAMES};
+
+/// What the plane made of a frame.
+///
+/// This is the pump's input, not the plane's trait: the contract's own `Ingress` and `Progress`
+/// are richer and borrow the frame buffer, and the pump only needs to know which of these shapes it
+/// was. It is a reduction of them, not a second spelling: nothing outside the kernel writes one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// Not a whole anything yet.
+    NeedMore,
+    /// A unit opens here, and relays frames until it closes.
+    Open {
+        /// The unit this one supersedes, where the plane's interrupt fact named one.
+        interrupt: Option<UnitKey>,
+    },
+    /// A whole unit in one frame.
+    OneShot,
+    /// A protocol handshake unit.
+    Handshake,
+    /// A frame belonging to a unit that is already open.
+    Relay,
+    /// The end of an open unit.
+    Close,
+    /// The last frame from an upstream.
+    Terminal,
+    /// Not ours: drop it, count it, change nothing.
+    Discard,
+}
+
+/// What the pump decided to do about a frame.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Dispatch<'s> {
+    /// Nothing yet: keep reading.
+    Wait,
+    /// Open a unit that will hold the direction until it closes.
+    OpenUnit,
+    /// Open a unit that takes no slot. It carries the unit's place under the one-shot concurrency,
+    /// which goes back when the permit drops.
+    OpenOneShot(OneShotPermit<'s>),
+    /// Open a handshake unit. No money moves in one, so it neither takes the slot nor counts
+    /// against the one-shot concurrency.
+    OpenHandshake,
+    /// Supersede the unit in flight, then open in its place.
+    Supersede {
+        /// The unit being replaced.
+        target: UnitKey,
+        /// Whether the compare-and-set won. A loss is recorded on the superseding unit and is not
+        /// an error: the target had already priced what it did.
+        won: bool,
+    },
+    /// Hand the frame to the unit that owns the direction.
+    RelayTo(UnitKey),
+    /// End the unit that owns the direction.
+    CloseUnit(UnitKey),
+    /// Drop the frame and count it into the window's aggregate.
+    Drop,
+    /// Refuse, at this step, for this reason. Rendered; the session stays open.
+    Refuse {
+        /// Where the refusal is stamped.
+        step: StepName,
+        /// Why.
+        reason: ReasonCode,
+    },
+}
+
+/// A one-shot unit's place under the concurrency, given back when it drops (item 557).
+///
+/// It used to be a bare `bool` from `start_one_shot` with a release no production code called: once
+/// K one-shots had ever opened, every later one answered `Wait` on a frame with nothing left to read
+/// — neither served, refused, dropped nor counted. Holding the place IS holding this.
+#[derive(Debug)]
+#[must_use = "the one-shot place goes back the moment this drops"]
+pub struct OneShotPermit<'s>(&'s AtomicUsize);
+
+impl Drop for OneShotPermit<'_> {
+    fn drop(&mut self) {
+        let _ = self
+            .0
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+    }
+}
+
+impl PartialEq for OneShotPermit<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.0, other.0)
+    }
+}
+
+impl Eq for OneShotPermit<'_> {}
+
+/// The scheduler: the open slot, the one-shot concurrency, and the interrupt.
+#[derive(Debug)]
+pub struct Scheduler {
+    one_shots: AtomicUsize,
+    k: usize,
+}
+
+impl Scheduler {
+    /// A scheduler allowing `k` one-shot units at once.
+    pub fn new(k: usize) -> Self {
+        Scheduler {
+            one_shots: AtomicUsize::new(0),
+            k,
+        }
+    }
+
+    /// Count one more consecutive "not yet" for a session, and say whether the run is past the
+    /// ceiling. A session with no slot — a one-shot transport — has no run to keep. The count is
+    /// the session's own, so it is neither shared with another connection nor left behind by one.
+    fn ask_again(session: Option<&SessionSlot>) -> bool {
+        match session {
+            None => false,
+            Some(session) => session.asked_again() > MAX_NEEDMORE_FRAMES,
+        }
+    }
+
+    /// How many one-shots are running.
+    pub fn one_shots(&self) -> usize {
+        self.one_shots.load(Ordering::Acquire)
+    }
+
+    /// Take a one-shot place, if there is one. It goes back when the permit drops.
+    pub fn start_one_shot(&self) -> Option<OneShotPermit<'_>> {
+        self.one_shots
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < self.k).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| OneShotPermit(&self.one_shots))
+    }
+
+    /// Decide what happens to one frame.
+    ///
+    /// `session` is `None` for a one-shot transport, which has no session and therefore no open
+    /// slot to contend for.
+    pub fn dispatch(
+        &self,
+        session: Option<&SessionSlot>,
+        in_flight: &InFlight,
+        stream: StreamId,
+        direction: Direction,
+        shape: Shape,
+    ) -> Dispatch<'_> {
+        // A frame that is something ends whatever run of "not yet" came before it.
+        if let Some(session) = session.filter(|_| shape != Shape::NeedMore) {
+            session.made_progress();
+        }
+        match shape {
+            // The handshake framing ceiling, enforced where it can be: a peer that never finishes a
+            // frame otherwise holds its session slot for as long as it likes. The run is counted per
+            // session and consecutively, so a slow-but-progressing peer never meets it.
+            Shape::NeedMore if Scheduler::ask_again(session) => Dispatch::Refuse {
+                step: StepName::Decode,
+                reason: ReasonCode::Stalled,
+            },
+            Shape::NeedMore => Dispatch::Wait,
+            Shape::Discard => Dispatch::Drop,
+            Shape::Handshake => Dispatch::OpenHandshake,
+            // A one-shot frame is a whole unit: there is nothing more to read, so one past the
+            // concurrency is REFUSED (rendered, the session stays up), never told to wait.
+            Shape::OneShot => match self.start_one_shot() {
+                Some(permit) => Dispatch::OpenOneShot(permit),
+                None => Dispatch::Refuse {
+                    step: StepName::Decode,
+                    reason: ReasonCode::InFlightCap,
+                },
+            },
+            Shape::Open { interrupt } => {
+                // The interrupt is evaluated BEFORE the slot check, on purpose: a superseding open
+                // on an occupied direction has to reach the compare-and-set.
+                if let Some(target) = interrupt {
+                    let won = in_flight
+                        .get(target)
+                        .map(|slot| slot.step().supersede())
+                        .unwrap_or(false);
+                    if won {
+                        if let Some(session) = session {
+                            // Only the direction the superseded unit was actually holding. The
+                            // frame's own direction may belong to a third unit that is still
+                            // relaying, and freeing that one is the second hold this rule forbids.
+                            session.release_open_by(stream, direction, target);
+                        }
+                    }
+                    return Dispatch::Supersede { target, won };
+                }
+                match session {
+                    None => Dispatch::OpenUnit,
+                    Some(session) => match session.open_unit(stream, direction) {
+                        None => Dispatch::OpenUnit,
+                        Some(_) => Dispatch::Refuse {
+                            step: StepName::Decode,
+                            reason: ReasonCode::OpenSlotBusy,
+                        },
+                    },
+                }
+            }
+            Shape::Relay | Shape::Terminal => {
+                match session.and_then(|s| s.open_unit(stream, direction)) {
+                    Some(unit) => Dispatch::RelayTo(unit),
+                    None => Dispatch::Drop,
+                }
+            }
+            Shape::Close => match session.and_then(|s| s.open_unit(stream, direction)) {
+                Some(unit) => Dispatch::CloseUnit(unit),
+                None => Dispatch::Drop,
+            },
+        }
+    }
+}
+
+impl Default for Scheduler {
+    fn default() -> Self {
+        Scheduler::new(DEFAULT_ONE_SHOT_K)
+    }
+}
+
+/// The bounded pool nested units run in, and the depth bound on nesting.
+///
+/// A parent's route blocks on its child's end, so a node with more parents than child permits is a
+/// node that has stopped. The permit count is what keeps that from happening: parents wait for a
+/// permit rather than deadlocking on each other, and the count of parents waiting is a number the
+/// battery can read.
+#[derive(Debug)]
+pub struct NestedPool {
+    permits: AtomicUsize,
+    refusals: AtomicUsize,
+    size: usize,
+    max_depth: usize,
+}
+
+/// A nested child's place in the pool. Give it back when the child ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "a permit that is never given back shrinks the pool for good"]
+pub struct NestedPermit {
+    /// How deep the child is.
+    pub depth: usize,
+}
+
+impl NestedPool {
+    /// A pool of `size` concurrent children, nested at most `max_depth` deep.
+    pub fn new(size: usize, max_depth: usize) -> Self {
+        NestedPool {
+            permits: AtomicUsize::new(size),
+            refusals: AtomicUsize::new(0),
+            size,
+            max_depth,
+        }
+    }
+
+    /// How many children could still start.
+    pub fn available(&self) -> usize {
+        self.permits.load(Ordering::Acquire)
+    }
+
+    /// How many times the pool had nothing to give.
+    ///
+    /// A COUNTER and not a gauge, and the distinction is the whole of it: `enter` does not block,
+    /// so a refused parent is back with its caller before this number is read and will never come
+    /// back to `leave`. Counted as "parents waiting" it only ever went up — a number that says the
+    /// pool is the bottleneck right now when what it means is that the pool has ever been one. How
+    /// much of the pool is out is `size` less `available`, and that one does come back to zero.
+    pub fn refusals(&self) -> usize {
+        self.refusals.load(Ordering::Acquire)
+    }
+
+    /// The pool's size.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Try to start a child at `depth`.
+    ///
+    /// Refused past the depth bound, which is checked at boot too, over the graph of which plane
+    /// may nest into which.
+    pub fn enter(&self, depth: usize) -> Result<NestedPermit, ReasonCode> {
+        if depth >= self.max_depth {
+            return Err(ReasonCode::ScopeDenied);
+        }
+        match self
+            .permits
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+        {
+            Ok(_) => Ok(NestedPermit { depth }),
+            Err(_) => {
+                self.refusals.fetch_add(1, Ordering::AcqRel);
+                Err(ReasonCode::InFlightCap)
+            }
+        }
+    }
+
+    /// Give a permit back. It returns the permit and nothing else: a permit coming back does not
+    /// un-refuse a parent the pool already turned away.
+    pub fn leave(&self, _permit: NestedPermit) {
+        self.permits.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Whether frames on this transport can be held back, or only dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportKind {
+    /// A stream: an overrun becomes backpressure on whatever is producing.
+    Stream,
+    /// A datagram: there is nowhere to push back to, so an overrun is a dropped frame.
+    Datagram,
+}
+
+/// What the emission clock says about the next frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emission {
+    /// Send it now.
+    Send,
+    /// Wait this long first. Stream transports only.
+    Backpressure {
+        /// Nanoseconds to wait.
+        wait: Nanos,
+    },
+    /// Drop it, and journal it as unemitted. Datagram transports only. An unemitted frame is
+    /// never metered: the client did not get it, so nobody pays for it.
+    Unemitted,
+}
+
+/// One emission clock per direction of a stream: the pace a plane declared, and a bounded queue.
+#[derive(Debug)]
+pub struct EmissionClock {
+    ns_per_frame: Nanos,
+    next_at: Nanos,
+    depth: usize,
+    queue_cap: usize,
+    kind: TransportKind,
+}
+
+impl EmissionClock {
+    /// A clock pacing one frame every `ns_per_frame`, queueing at most `queue_cap` frames.
+    pub fn new(ns_per_frame: Nanos, queue_cap: usize, kind: TransportKind) -> Self {
+        EmissionClock {
+            ns_per_frame,
+            next_at: 0,
+            depth: 0,
+            queue_cap,
+            kind,
+        }
+    }
+
+    /// How many frames are queued.
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Offer a frame at `now`.
+    pub fn offer(&mut self, now: Nanos) -> Emission {
+        if now >= self.next_at && self.depth == 0 {
+            self.next_at = now.saturating_add(self.ns_per_frame);
+            return Emission::Send;
+        }
+        if self.depth < self.queue_cap {
+            self.depth += 1;
+            let wait = self.next_at.saturating_sub(now);
+            self.next_at = self.next_at.saturating_add(self.ns_per_frame);
+            // Inside the queue both kinds behave the same: the frame waits its turn.
+            return Emission::Backpressure { wait };
+        }
+        match self.kind {
+            TransportKind::Stream => Emission::Backpressure {
+                wait: self.next_at.saturating_sub(now),
+            },
+            TransportKind::Datagram => Emission::Unemitted,
+        }
+    }
+
+    /// A queued frame left for the connection.
+    pub fn emitted(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+}
+
+/// The node-global budget for spooled request bodies, counted in real bytes.
+///
+/// Sized at exactly what was buffered before there was a budget, so no request that used to be
+/// served is refused by its existence.
+#[derive(Debug)]
+pub struct SpillBudget {
+    used: AtomicUsize,
+    cap: usize,
+}
+
+impl SpillBudget {
+    /// A budget of `cap` bytes.
+    pub fn new(cap: usize) -> Self {
+        SpillBudget {
+            used: AtomicUsize::new(0),
+            cap,
+        }
+    }
+
+    /// How many bytes are spooled node-wide.
+    pub fn used(&self) -> usize {
+        self.used.load(Ordering::Acquire)
+    }
+
+    /// Take `bytes` of it.
+    pub fn take(&self, bytes: usize) -> Result<(), ReasonCode> {
+        let mut current = self.used.load(Ordering::Acquire);
+        loop {
+            if current + bytes > self.cap {
+                return Err(ReasonCode::SpillBudget);
+            }
+            match self.used.compare_exchange_weak(
+                current,
+                current + bytes,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(seen) => current = seen,
+            }
+        }
+    }
+
+    /// Give bytes back when the body is encoded or the unit ends.
+    pub fn give_back(&self, bytes: usize) {
+        let _ = self
+            .used
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                Some(n.saturating_sub(bytes))
+            });
+    }
+}
+
+/// A body arriving in chunks, and the question "can the unit open yet?".
+///
+/// The unit opens when the deepest declared pointer has resolved, or when the declared length ends.
+/// Until then the chunks are spooled and the scanner is re-run over the longer prefix. This is why
+/// a body whose lane key is serialised last still prices correctly: the pointer is simply not
+/// resolved until the bytes that hold it have arrived.
+#[derive(Debug)]
+pub struct BodySpool {
+    bytes: Vec<u8>,
+    declared_length: Option<usize>,
+    deepest: DeepestPointer,
+    resolved: bool,
+}
+
+impl BodySpool {
+    /// A spool for a body of a declared length, or of none where the length is not declared.
+    pub fn new(declared_length: Option<usize>, deepest: DeepestPointer) -> Self {
+        BodySpool {
+            bytes: Vec::new(),
+            declared_length,
+            deepest,
+            resolved: matches!(deepest, DeepestPointer::None),
+        }
+    }
+
+    /// What has been spooled so far.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// How much.
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
+    /// Whether nothing has arrived.
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// Add a chunk, charged to the node's spill budget in actual bytes.
+    pub fn push(&mut self, chunk: &[u8], budget: &SpillBudget) -> Result<(), ReasonCode> {
+        budget.take(chunk.len())?;
+        self.bytes.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    /// Re-run the declared pointer over everything spooled so far.
+    ///
+    /// Returns whether the unit may open now.
+    pub fn try_resolve(&mut self, pointer: &str) -> bool {
+        if self.resolved {
+            return true;
+        }
+        self.resolved = match self.deepest {
+            DeepestPointer::None => true,
+            DeepestPointer::EndOfBody => self.length_complete(),
+            DeepestPointer::Offset(_) => {
+                matches!(resolve_pointer(&self.bytes, pointer), Resolved::Found(_))
+                    || self.length_complete()
+            }
+        };
+        self.resolved
+    }
+
+    /// Whether the body is as long as it said it would be.
+    pub fn length_complete(&self) -> bool {
+        match self.declared_length {
+            Some(length) => self.bytes.len() >= length,
+            None => false,
+        }
+    }
+
+    /// Whether the unit may open.
+    pub fn ready(&self) -> bool {
+        self.resolved
+    }
+
+    /// Hand the spooled bytes back to the budget at the unit's end.
+    pub fn release(self, budget: &SpillBudget) {
+        budget.give_back(self.bytes.len());
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE RECORD LEGS
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// The ceiling on one record's bytes, which is the size half of the `PlaneRecord` rule.
+pub use busbar_contract::bounded::MAX_RECORD_BYTES;
+/// A route plan's leg and where it goes, as the contract crate declares them.
+///
+/// Named here rather than restated for the same reason the frame is: a leg arrives from outside the
+/// kernel, so a kernel-local copy would be the loop deciding about something other than what the
+/// plane handed it.
+pub use busbar_contract::dest::{DestinationFacts, Leg};
+/// The record-schema identity a `PlaneRecord` leg names.
+pub use busbar_contract::ids::RecordSchemaId;
+
+/// What a plane DECLARED about its kernel-held durable records.
+///
+/// The kernel knows no schema and no operation name. What it knows is that a leg may only name a
+/// schema the calling plane declared and an operation that schema declared, and it asks this for
+/// both answers. Two methods rather than one, because "no such schema" and "that schema does not do
+/// that" are different refusals and an operator reading one must not be handed the other.
+pub trait RecordSchemas: Send + Sync {
+    /// Every schema the calling plane declares.
+    fn schemas(&self) -> &'static [RecordSchemaId];
+
+    /// Which operations one schema declares. Empty for a schema this plane does not declare.
+    fn operations_for(&self, schema: RecordSchemaId) -> &'static [&'static str];
+}
+
+/// Everything one record leg carries besides its body.
+///
+/// Typed on purpose: the sink keys, orders and retention-sweeps on these columns and never decodes
+/// the body, so a record whose identity lived inside its own bytes would be a record the sink could
+/// not sweep. The kernel writes none of them — they arrive on the leg — and reads none of them
+/// either; it carries them through so that the one runner is the only runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordKey<'a> {
+    /// The record's identity within its schema.
+    pub id: &'a str,
+    /// The parent an append-only child hangs off. `None` for a top-level schema.
+    pub parent: Option<&'a str>,
+    /// Monotonic sequence within the parent, for the append-only schemas.
+    pub seq: u64,
+    /// The record's timestamp: the axis retention compares against, and the NOW any deadline on
+    /// this key is judged at.
+    pub ts: u64,
+    /// The instant past which a capability carried by this key is dead, whatever else is true.
+    pub expires_at: u64,
+    /// Whether retention may drop the row once it is older than a cutoff.
+    pub terminal: bool,
+}
+
+/// What one record leg came back with.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecordAnswer {
+    /// The body a point read returned, where the leg read one.
+    pub body: Option<Vec<u8>>,
+    /// The bodies a scan returned, in the sink's own order.
+    pub bodies: Vec<Vec<u8>>,
+    /// Whether a capability this leg asked about is STILL LIVE.
+    ///
+    /// `None` from every operation that asked no such question, and that is the whole reason it is
+    /// an option rather than a bool: the kernel stops a plan on a dead capability without knowing
+    /// which of the plane's operations is the one that asks. A `Some(false)` is an answer, not a
+    /// failure — the sink worked perfectly and said no.
+    pub live: Option<bool>,
+}
+
+/// Why a record leg did not run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordRefusal {
+    /// The leg named a schema the calling plane does not declare.
+    UndeclaredSchema {
+        /// The schema the leg named.
+        schema: &'static str,
+        /// The operation it asked for. Carried even though the schema is the refusal, because a
+        /// caller mapping this onto its own refusal has one leg to describe and not two halves of
+        /// one, and an operator reading the record wants to know what was being attempted.
+        op: &'static str,
+    },
+    /// The leg named an operation the schema does not declare.
+    UndeclaredOp {
+        /// The schema the leg named.
+        schema: &'static str,
+        /// The operation it asked for.
+        op: &'static str,
+    },
+    /// The body is longer than one record may be.
+    Oversize {
+        /// How many bytes the leg offered.
+        bytes: usize,
+        /// How many a record may hold.
+        cap: usize,
+    },
+    /// The sink refused or failed.
+    Sink(String),
+    /// A capability leg asked whether something was still live and the answer was NO.
+    ///
+    /// Its own variant and not a [`RecordRefusal::Sink`] failure, because nothing failed. Folding
+    /// the two together would render a revoked capability as an outage — telling the operator to go
+    /// and look at a backend that is working perfectly.
+    NotLive,
+}
+
+/// Where a plane's kernel-held durable records actually go.
+///
+/// The kernel binds to one of these and never to a store, exactly as it binds to
+/// [`crate::slice::SliceStore`] for a window and never to the backend behind it. The operation is
+/// passed through as the plane spelled it: the vocabulary is the plane's, the validation is the
+/// kernel's, and the mapping onto whatever verbs the backend publishes is the implementor's.
+pub trait RecordStore: Send + Sync {
+    /// Perform one ALREADY-VALIDATED operation.
+    ///
+    /// # Errors
+    ///
+    /// The backend refused or failed. The string is the backend's own words, carried rather than
+    /// classified: the kernel has no vocabulary for what a store can go wrong about.
+    fn perform(
+        &self,
+        schema: RecordSchemaId,
+        op: &'static str,
+        key: &RecordKey<'_>,
+        body: &[u8],
+    ) -> Result<RecordAnswer, String>;
+}
+
+/// The one runner of a `PlaneRecord` leg: validate, then perform.
+///
+/// The three checks are the architecture's own `PlaneRecord` row, in its order — the schema is
+/// declared by the calling plane, the operation is within the schema's declared operations, and the
+/// body is within the record ceiling. Nothing downstream re-checks them and nothing upstream may
+/// skip them, because this is the only place a record leg is run.
+///
+/// # Errors
+///
+/// The schema is undeclared, the operation is undeclared for it, the body is oversize, or the sink
+/// refused.
+pub fn run_record_leg(
+    store: &dyn RecordStore,
+    schemas: &dyn RecordSchemas,
+    schema: RecordSchemaId,
+    op: &'static str,
+    key: &RecordKey<'_>,
+    body: &[u8],
+) -> Result<RecordAnswer, RecordRefusal> {
+    if !schemas.schemas().contains(&schema) {
+        return Err(RecordRefusal::UndeclaredSchema {
+            schema: schema.as_str(),
+            op,
+        });
+    }
+    if !schemas.operations_for(schema).contains(&op) {
+        return Err(RecordRefusal::UndeclaredOp {
+            schema: schema.as_str(),
+            op,
+        });
+    }
+    if body.len() > MAX_RECORD_BYTES {
+        return Err(RecordRefusal::Oversize {
+            bytes: body.len(),
+            cap: MAX_RECORD_BYTES,
+        });
+    }
+    store
+        .perform(schema, op, key, body)
+        .map_err(RecordRefusal::Sink)
+}
+
+/// Drive every record leg of a route plan, in the plan's own order.
+///
+/// The order is the plane's and is load-bearing: a plan that reads a row, decides, writes it back
+/// and appends the event is a plan whose reordering would append an event for a state the row never
+/// reached. Legs that are not `PlaneRecord` are skipped here — they belong to other steps.
+///
+/// A leg answering `live: Some(false)` STOPS THE PLAN where it is. The reading has to be acted on
+/// and not merely recorded: a check whose answer is filed beside the write it was supposed to
+/// prevent is not a check.
+///
+/// # Errors
+///
+/// The first leg that refuses stops the run and is returned; the legs before it have already
+/// happened, which is why a plan's record legs are ordered so that a failure leaves the durable
+/// state readable rather than half-written.
+pub fn run_record_plan(
+    store: &dyn RecordStore,
+    schemas: &dyn RecordSchemas,
+    legs: &[Leg],
+    key: &RecordKey<'_>,
+    body: &[u8],
+) -> Result<Vec<RecordAnswer>, RecordRefusal> {
+    let mut answers = Vec::new();
+    for leg in legs {
+        if let DestinationFacts::PlaneRecord { schema, op } = leg.destination {
+            let answer = run_record_leg(store, schemas, schema, op, key, body)?;
+            if answer.live == Some(false) {
+                return Err(RecordRefusal::NotLive);
+            }
+            answers.push(answer);
+        }
+    }
+    Ok(answers)
+}

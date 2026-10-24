@@ -1,0 +1,881 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+//
+// THE LINKED-TABLE GENERATOR, shared VERBATIM between `build.rs` (which `include!`s this file and
+// writes `$OUT_DIR/linked.rs` with it) and tests/composition_root_names_no_linked_plugin.rs (which
+// includes it to read the same tables and to assert what it decides). Plain and dependency-free,
+// because a build script has no dependencies to lean on.
+//
+// The composition root names no plugin. Which plugins a build links is DATA in `Cargo.toml`:
+//
+//   [package.metadata.busbar.linked]        <cargo feature> = "<plugin crate>"   (registration order;
+//                                            a row whose crate is a NON-OPTIONAL dependency is linked
+//                                            in every build and its key only names the row)
+//   [package.metadata.busbar.linked-axes]   <row key> = "<axis> <axis> …"        (what it registers)
+//   [package.metadata.busbar.linked-entry]  "<plugin crate>" or <row key> = "<entry module>" (when
+//                                            the entry is not `<crate>::linked`: its kernel-typed
+//                                            half lives in the root, or one crate carries several
+//                                            rows)
+//   [package.metadata.busbar.root-units]    <cargo feature> = "<root module>"    (`ROOT_UNIT` of
+//                                            `crate::root::<module>`, in order; the row keyed
+//                                            `node` is the node's own unit, in every build)
+//   [package.metadata.busbar.linked-name]   <row key> = "<registry key>"         (the key an `auths`
+//                                            row answers on the auth axis, and every surface prints;
+//                                            for a `hooks` row, the name the admin surface prints)
+//   [package.metadata.busbar.linked-canonical] <row key> = "<manifest name>"     (an `auths` row's
+//                                            CANONICAL name, when it is not its key: the manifest
+//                                            name its signed tarball states, plugins.yaml
+//                                            `manifest_name`; config may name the row by either)
+//
+// and this turns the rows whose feature is ENABLED into `extern crate <crate> as _;` lines, one table
+// per registration axis over each entry module's item for that axis (the `LINKED` value), the cfgs
+// of the root-bound seams some enabled entry drives, and the `ROOT_UNITS` table. The composition root
+// is the one crate that generates a linked table: no cleanliness crate has a build script that names
+// a plugin, and their tests link the kernel's kind-neutral doubles instead.
+
+/// THE NODE'S OWN ROOT-UNIT ROW (ARCHITECT Q1): keyed to the node itself rather than to a plane
+/// feature, because the node compiles in every build and every door plane — compiled in or dropped
+/// in — is driven and posted on it. Its configuration and book steps (the card repricer, the book
+/// binding) therefore run in every build.
+pub(crate) const NODE_UNIT: &str = "node";
+
+/// A registration axis: its manifest name, the `LINKED` field it fills, and the entry item a crate
+/// that registers on it exports. The plane axis is the one exception, built below (two items,
+/// joined); a plane's door is its own axis ([`PLANE_DOOR_AXIS`]).
+pub(crate) const AXES: &[(&str, &str, &str)] = &[
+    ("protocols", "protocols", "PROTOCOLS"),
+    ("body-ingress", "body_ingress", "BODY_INGRESS"),
+    ("protocol-seams", "protocol_seams", "install_protocol_seams"),
+    ("diagnostics", "diagnostics", "DIAGNOSTICS"),
+    ("on-host", "on_host", "on_host"),
+    ("compose", "compose", "compose"),
+    ("cli-help", "cli_help", "CLI_HELP"),
+    ("stores", "stores", "STORE"),
+    // The hook axis: each linked `kind: hook` row's door (`plugin_door!`), the same door its
+    // dropped-in build exports.
+    ("hooks", "hook_doors", "door"),
+    // The node axis: a plane whose units a composition root's node drives is handed that node.
+    ("node", "node", "install_node"),
+];
+
+/// The transport axis (#3, #30): each row's entry exports its memory-ABI `door` (every transport row
+/// is also a [`DOOR_AXIS`] row), and nothing else is read off it: the row's key, the layers it
+/// composes over and whether it carries a session are its door's Statement's
+/// (`crate::root::linked::linked_transport!`); the root builds each through
+/// `crate::root::doors::build` and folds them bottom-up.
+const TRANSPORT_AXIS: &str = "transport";
+
+/// Beside `transport`: the row's entry exports its memory-ABI `door` instead of a `build`, and the
+/// root builds it (`crate::root::doors::build`) — admitted through the one dispatcher and served over
+/// the host's sockets by the connector.
+pub(crate) const DOOR_AXIS: &str = "transport-door";
+
+/// Beside `transport-door`: the row's memory-ABI `door` is ALSO opened by the root's one Connector
+/// as a framer entry, so a plugin's need over this scheme is served on the connector (an export
+/// sink's outbound `http`, `BUSBAR-1.6.0.md` Part 2 #50) while the wire the registry folds is
+/// unchanged.
+pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
+
+/// The plane door axis (#2, THE DESIGN §11.4): the row's entry exports its plane kind's memory-ABI
+/// `door`, and the root hands it to the loader beside every dropped-in plane door
+/// (`crate::root::boot::discover_planes`), so a compiled-in plane is bound through the same table
+/// as a dropped-in one. It needs no `plane` beside it: the door states the plane.
+pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
+/// The export axis on the export kind's MEMORY ABI: each row's crate states its plugin `NAME`,
+/// `ALIAS` and manifest `DECLARES`, and its entry module exports its `door` (`plugin_door!`), the
+/// same door its `cdylib` exports — admitted through the one registration as a door row.
+pub(crate) const EXPORT_DOOR_AXIS: &str = "export-doors";
+
+/// The claims axis: each row's entry exports the pure plane the boot seal registers (`PLANE`) and
+/// the claims it declares (`CLAIMS`); rides on `plane`.
+const CLAIMS_AXIS: &str = "claims";
+
+/// The secret axis (THE DESIGN, "Plugins": env and file secrets are ordinary plugins, linked in the default
+/// build): each row's entry exports its memory-ABI `door`.
+const SECRET_AXIS: &str = "secret-doors";
+
+/// The auth axis (#2 rule (1), #40): each row's entry (its crate root, unless a `linked-entry` row
+/// names another module) exports, at `door::door`, the
+/// memory-ABI door every `kind: auth` plugin exports (the same door its dropped-in build exports as
+/// `busbar_plugin_door`: THE DESIGN, compiled-in = dropped-in), registered under the key its
+/// `linked-name` row states and the canonical name its `linked-canonical` row states (the key, when
+/// it has none).
+const AUTH_AXIS: &str = "auths";
+
+/// THE LINKED HOOK NAMES (`$OUT_DIR/linked_hook_names.rs`, included by `main.rs`): each enabled `hooks`-axis row's `linked-name`, in manifest order — what the
+/// root carries on its install record (`busbar_kernel::preflight::RootInstall::hook_names`) as the
+/// admin surface's compiled-in hook plugins, so that crate spells none.
+pub(crate) fn linked_hook_names_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
+    let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
+    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    // The hook axis's manifest name, read off its one spelling: the `AXES` row that fills
+    // `hook_doors`.
+    let hook_axis = AXES
+        .iter()
+        .find(|(_, field, _)| *field == "hook_doors")
+        .map(|(axis, _, _)| *axis)
+        .expect("the AXES table carries the hook axis");
+    let mut out = String::from(
+        "// @generated by build.rs from Cargo.toml metadata (src/linked_gen.rs).\n\
+         /// The name of each hook row this build links, as the admin surface prints it.\n\
+         #[allow(dead_code)]\n\
+         pub(crate) const LINKED_HOOK_NAMES: &[&str] = &[",
+    );
+    for (feature, krate) in &plugins {
+        let on_hooks = axes
+            .iter()
+            .any(|(f, list)| f == feature && list.split_whitespace().any(|a| a == hook_axis));
+        if !on_hooks || !enabled(feature) {
+            continue;
+        }
+        let name = metadata_value(manifest, "package.metadata.busbar.linked-name", feature)
+            .unwrap_or_else(|| {
+                panic!(
+                    "Cargo.toml: `{feature}` ({krate}) is on the `{hook_axis}` axis but has no \
+                     `[package.metadata.busbar.linked-name]` row naming what the admin surface prints"
+                )
+            });
+        out.push_str(&format!("{name:?}, "));
+    }
+    out.push_str("];\n");
+    out
+}
+
+/// The `value` of `key` under the `[table]` header, when the table and the row exist. The optional
+/// twin of [`metadata_map`], for the one table only some rows need.
+fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
+    let header = format!("[{table}]");
+    let mut in_table = false;
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == header;
+            continue;
+        }
+        if let (true, Some((k, v))) = (in_table, code.split_once('=')) {
+            if k.trim().trim_matches('"') == key {
+                return Some(v.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
+/// THE DOOR-ROOT TABLE (status row 195; BUSBAR-1.6.0.md Part 4 A.1, l.3560: every kind's logic
+/// crate has `fn door()` as its only public item): `<plugin crate> = "<crate>::door"`, the door its
+/// door macro emits: a `DoorFn` answering a `&'static Door`, SEALED because a `Door`'s fields are
+/// private behind the contract's one `unsafe` constructor (ARCHITECT ruling on `admit_linked`). A
+/// crate named here is DOOR-ROOT: the generated tables read that and nothing else of the crate's,
+/// hand it to the loader's safe entry (`admit_linked`, which admits it through `open_linked`, the `dlopen`
+/// path's own checks beside the one reviewed `unsafe`), hold it under one name of the root's (see
+/// [`door_root_forwarder`]), and read every fact its axis needs off that door's Statement
+/// (`crate::root::door_root`). A crate not named here is TRANSITIONAL and keeps its entry's reads
+/// (`linked-entry`, else `<crate>::linked`), so a fleet that has not converged still links; the
+/// transitional arm is deleted once every crate is named here. The table is per crate, so the two
+/// arms mix row by row. ARCHITECT ruling (row 195; l.272-274): the composition root generates the
+/// linked table and alone depends on the plugin crates; the loader names none; the root stays
+/// `forbid(unsafe_code)`.
+pub(crate) const DOOR_ROOT: &str = "package.metadata.busbar.door-root";
+
+/// The name of the generated item holding door-root crate `krate`'s door.
+pub(crate) fn door_root_fn(krate: &str) -> String {
+    format!("__door_root_{}", ident(krate))
+}
+
+/// The name of the generated function answering door-root crate `krate`'s admission.
+pub(crate) fn door_root_admitted_fn(krate: &str) -> String {
+    format!("__door_root_admitted_{}", ident(krate))
+}
+
+/// A DOOR-ROOT CRATE'S DOOR, as the generated tables hold it, over the loader at path `loader`:
+/// its `door` (the table's `door`, its only public item), named ONCE, as a `DoorFn` of the root's
+/// (the one place the root names the crate); and its admission by the loader's safe entry
+/// (`<loader>::dispatch::admit_linked`: `open_linked`, the `dlopen` path's checks, and the same
+/// refusal word for word), read once into a cell. The boot refuses a row whose admission is a
+/// refusal before its Statement is read, with the loader's words (`crate::root::door_root::check`);
+/// every read of the door runs the loader's checks again. A `DoorFn` answers a `&'static Door`, which
+/// only the contract's `unsafe` door constructor builds, so calling one is safe, and so is handing
+/// one to the loader's safe entry.
+pub(crate) fn door_root_forwarder(manifest: &str, krate: &str, loader: &str) -> String {
+    let door = metadata_rows(manifest, DOOR_ROOT)
+        .into_iter()
+        .find(|(k, _)| k == krate)
+        .map(|(_, door)| door)
+        .unwrap_or_else(|| panic!("Cargo.toml: `{krate}` is no `[{DOOR_ROOT}]` row"));
+    format!(
+        "/// The door of door-root crate `{krate}`: the one place the root names the crate.\n\
+         #[allow(dead_code, non_upper_case_globals)]\n\
+         const {name}: ::busbar_contract::abi::mechanism::door::DoorFn = ::{door};\n\
+         /// The admission of door-root crate `{krate}`'s door by the loader, read once.\n\
+         #[allow(dead_code)]\n\
+         fn {admitted}() -> &'static ::std::result::Result<{loader}::dispatch::LoadedDoor, {loader}::dispatch::LoadError> {{\n    \
+         static ADMITTED: ::std::sync::OnceLock<::std::result::Result<{loader}::dispatch::LoadedDoor, {loader}::dispatch::LoadError>> =\n        \
+         ::std::sync::OnceLock::new();\n    \
+         ADMITTED.get_or_init(|| {loader}::dispatch::admit_linked({name}))\n\
+         }}\n",
+        admitted = door_root_admitted_fn(krate),
+        name = door_root_fn(krate)
+    )
+}
+
+/// THE AXES A DOOR-ROOT ROW MAY REGISTER ON: each reads the row's `door` and what its Statement
+/// states. Every other axis reads a kernel-typed item of the crate's (`PLANE_HOOKS`, `PROTOCOLS`,
+/// `BODY_INGRESS`, `compose`, `CLI_HELP`, `install_node`, the claims, the gauntlet keys, a seam), which
+/// no Statement can carry and no plugin may hand the host (Part 2 #2: a plugin talks only over the
+/// ABI), so a door-root row naming one is refused.
+pub(crate) const DOOR_ROOT_AXES: &[&str] = &[
+    TRANSPORT_AXIS,
+    DOOR_AXIS,
+    CONNECTOR_DOOR_AXIS,
+    PLANE_DOOR_AXIS,
+    SECRET_AXIS,
+    AUTH_AXIS,
+    EXPORT_DOOR_AXIS,
+    "stores",
+];
+
+/// Whether `axis` is one a door-root row may name: [`DOOR_ROOT_AXES`], or the hook axis (read off
+/// [`AXES`] by the field it fills, so its root key is spelled once).
+pub(crate) fn is_door_root_axis(axis: &str) -> bool {
+    DOOR_ROOT_AXES.contains(&axis)
+        || AXES
+            .iter()
+            .any(|(a, field, _)| *field == "hook_doors" && *a == axis)
+}
+
+/// The `key = "value"` rows of the `[table]` header, or none when the manifest has no such table:
+/// the optional twin of [`metadata_map`], for a table only some builds carry.
+pub(crate) fn metadata_rows(manifest: &str, table: &str) -> Vec<(String, String)> {
+    let header = format!("[{table}]");
+    if !manifest
+        .lines()
+        .any(|line| line.split('#').next().unwrap_or("").trim() == header)
+    {
+        return Vec::new();
+    }
+    let mut in_table = false;
+    let mut rows = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == header;
+            continue;
+        }
+        if let (true, Some((key, value))) = (in_table, code.split_once('=')) {
+            rows.push((
+                key.trim().trim_matches('"').to_string(),
+                value.trim().trim_matches('"').to_string(),
+            ));
+        }
+    }
+    rows
+}
+
+/// THE DOOR A LINKED ROW READS, and whether the row is door-root: a door-root crate's door as the
+/// root names it (`crate::<door_root_fn>`), else `<entry>::door` (`entry` the row's transitional entry
+/// module).
+pub(crate) fn door_of(manifest: &str, krate: &str, entry: &str) -> (String, bool) {
+    match metadata_rows(manifest, DOOR_ROOT)
+        .into_iter()
+        .find(|(k, _)| k == krate)
+    {
+        Some((_, door)) => {
+            // A door-root crate's door is its door macro's `door`, the crate's only public item
+            // (BUSBAR-1.6.0.md l.3560, l.3875: `linked_gen.rs` names only `<crate>::door`): the
+            // table names exactly that.
+            assert_eq!(
+                door,
+                format!("{}::door", ident(krate)),
+                "Cargo.toml: `[{DOOR_ROOT}]` names `{door}` for `{krate}`; a door-root crate's \
+                 door is its door macro's `{}::door`, its only public item",
+                ident(krate)
+            );
+            (format!("crate::{}", door_root_fn(krate)), true)
+        }
+        None => (format!("{entry}::door"), false),
+    }
+}
+
+/// The name of the generated cell a door-root crate's door's Statement is read into, once.
+pub(crate) fn door_root_cell(krate: &str) -> String {
+    format!("__DOOR_ROOT_FACTS_{}", ident(krate).to_uppercase())
+}
+
+/// A DOOR-ROOT ROW'S MANIFEST CHECKS: it names only axes that read its door
+/// ([`DOOR_ROOT_AXES`]), and no table that reads an item of its crate's beside the door (an entry
+/// module, a `declares` path: its `declares` is its Statement's).
+pub(crate) fn check_door_root(manifest: &str, feature: &str, krate: &str, axes: &[String]) {
+    for axis in axes {
+        assert!(
+            is_door_root_axis(axis),
+            "Cargo.toml: `{krate}` is door-root (`[{DOOR_ROOT}]`): its rows read its `door` and \
+             nothing else, but `{feature}` names the `{axis}` axis, which reads a kernel-typed item \
+             of the crate's; a plugin talks to the host only over its door"
+        );
+    }
+    for table in [
+        "package.metadata.busbar.linked-entry",
+        "package.metadata.busbar.linked-declares",
+    ] {
+        let rows = metadata_rows(manifest, table);
+        assert!(
+            !rows.iter().any(|(k, _)| k == feature || k == krate),
+            "Cargo.toml: `{krate}` is door-root (`[{DOOR_ROOT}]`): `[{table}]` names an item of \
+             the crate's beside its `door`; what it would read is the door's Statement's"
+        );
+    }
+}
+
+/// The root-bound seams: an axis a crate DRIVES rather than fills, emitted as a cfg the root binds
+/// the seam under (the kernel compiles some of them only when a plane that drives them is linked).
+pub(crate) const SEAMS: &[(&str, &str)] = &[
+    ("egress", "linked_egress"),
+];
+
+/// THE SWAPS TABLE (BUSBAR-1.6.0.md Part 3 section 12, "The switch"): `<row feature> = "<switch>"`,
+/// a linked row its fold's development-only switch swaps out. While the switch is on, the row is
+/// not linked (no claims, no routes, no section of its own), so the plane's folded door is its one
+/// claimant: the switch swaps the row, it never adds a second one.
+pub(crate) const LINKED_SWAPS: &str = "package.metadata.busbar.linked-swaps";
+
+/// Whether `feature`'s row is linked: its feature is `on`, and no switch that swaps it is.
+pub(crate) fn swapped_in(
+    swaps: &[(String, String)],
+    on: &dyn Fn(&str) -> bool,
+    feature: &str,
+) -> bool {
+    on(feature)
+        && !swaps
+            .iter()
+            .any(|(row, switch)| row == feature && on(switch))
+}
+
+/// The `key = "value"` rows of the `[table]` header of a Cargo manifest, in file order. Deliberately
+/// not a TOML parser: one row per line, both sides optionally double-quoted. An absent or empty
+/// table is a build failure, never an empty list — an empty list would silently register nothing.
+pub(crate) fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)> {
+    let header = format!("[{table}]");
+    let mut in_table = false;
+    let mut rows = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == header;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if let Some((key, value)) = code.split_once('=') {
+            rows.push((
+                key.trim().trim_matches('"').to_string(),
+                value.trim().trim_matches('"').to_string(),
+            ));
+        }
+    }
+    assert!(
+        !rows.is_empty(),
+        "Cargo.toml: `{header}` is missing or empty"
+    );
+    rows
+}
+
+/// The feature names the manifest's `[features]` table declares.
+pub(crate) fn declared_features(manifest: &str) -> Vec<String> {
+    let mut in_table = false;
+    let mut out = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == "[features]";
+            continue;
+        }
+        if in_table {
+            if let Some((key, _)) = code.split_once('=') {
+                out.push(key.trim().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The crates the manifest's `[dependencies]` table declares WITHOUT `optional = true` — the edges no
+/// feature can drop, so a linked row naming one is linked in every build.
+pub(crate) fn required_deps(manifest: &str) -> Vec<String> {
+    let mut in_table = false;
+    let mut out = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == "[dependencies]";
+            continue;
+        }
+        if let (true, Some((krate, spec))) = (in_table, code.split_once('=')) {
+            if !spec.replace(' ', "").contains("optional=true") {
+                out.push(krate.trim().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// `busbar-foo` → `busbar_foo`.
+pub(crate) fn ident(krate: &str) -> String {
+    krate.replace('-', "_")
+}
+
+/// Every cfg name this generator can emit, for the build script's `rustc-check-cfg` line.
+pub(crate) fn seam_cfgs() -> Vec<&'static str> {
+    SEAMS.iter().map(|(_, cfg)| *cfg).collect()
+}
+
+/// THE GENERATED SOURCE, and the seam cfgs to set, for the rows whose feature `enabled` answers
+/// true. Every table keeps manifest order. A feature the manifest does not declare, a linked feature
+/// with no axes row, an axis nobody knows and an axes/entry row for nothing linked are all refused:
+/// each would drop a registration out of every build silently.
+pub(crate) fn linked_source(
+    manifest: &str,
+    enabled: &dyn Fn(&str) -> bool,
+) -> (String, Vec<&'static str>) {
+    let features = declared_features(manifest);
+    let required = required_deps(manifest);
+    let plugins = metadata_map(manifest, "package.metadata.busbar.linked");
+    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
+    let units = metadata_map(manifest, "package.metadata.busbar.root-units");
+    // A row is linked when its feature is on — or always, when its crate is an edge no feature can
+    // drop. Anything else would be a row no build ever links, dropped silently.
+    let door_root_rows = metadata_rows(manifest, DOOR_ROOT);
+    let always = |key: &str, krate: &str| {
+        !features.iter().any(|f| f == key) && required.iter().any(|d| d == krate)
+    };
+    for (feature, krate) in &plugins {
+        assert!(
+            features.contains(feature) || always(feature, krate),
+            "Cargo.toml: linked feature `{feature}` is not declared under [features] and \
+             `{krate}` is not a required dependency"
+        );
+    }
+    for (feature, _) in &units {
+        assert!(
+            features.contains(feature) || feature == NODE_UNIT,
+            "Cargo.toml: linked feature `{feature}` is not declared under [features]"
+        );
+    }
+    for (feature, _) in &axes {
+        assert!(
+            plugins.iter().any(|(f, _)| f == feature),
+            "Cargo.toml: `{feature}` has a linked-axes row but no linked row"
+        );
+    }
+    for (key, _) in &entries {
+        assert!(
+            plugins.iter().any(|(f, k)| k == key || f == key),
+            "Cargo.toml: `{key}` has a linked-entry row but no linked row"
+        );
+    }
+    let axes_of = |feature: &str, krate: &str| -> Vec<String> {
+        let row = axes.iter().find(|(f, _)| f == feature).unwrap_or_else(|| {
+            panic!("Cargo.toml: linked feature `{feature}` ({krate}) has no linked-axes row")
+        });
+        let list: Vec<String> = row.1.split_whitespace().map(str::to_string).collect();
+        for axis in &list {
+            assert!(
+                axis == "plane"
+                    || axis == TRANSPORT_AXIS
+                    || axis == DOOR_AXIS
+                    || axis == CONNECTOR_DOOR_AXIS
+                    || axis == PLANE_DOOR_AXIS
+                    || axis == AUTH_AXIS
+                    || axis == SECRET_AXIS
+                    || axis == EXPORT_DOOR_AXIS
+                    || axis == CLAIMS_AXIS
+                    || AXES.iter().any(|(a, _, _)| a == axis)
+                    || SEAMS.iter().any(|(a, _)| a == axis),
+                "Cargo.toml: `{krate}` names an unknown linked axis `{axis}`"
+            );
+        }
+        assert!(
+            !list.iter().any(|a| a == CLAIMS_AXIS) || list.iter().any(|a| a == "plane"),
+            "Cargo.toml: `{krate}` declares claims only beside `plane`"
+        );
+        list
+    };
+
+    let on: Vec<&(String, String)> = plugins
+        .iter()
+        .filter(|(f, k)| enabled(f) || always(f, k))
+        .collect();
+    let mut out =
+        String::from("// @generated by build.rs from Cargo.toml metadata (src/linked_gen.rs).\n");
+    let mut externs: Vec<String> = Vec::new();
+    for (_, krate) in &on {
+        // A door-root crate is the loader's edge: the root names it only at its door, once, in
+        // the item the generated tables hold.
+        if door_root_rows.iter().any(|(k, _)| k == krate) {
+            let line = format!(
+                "{}/// What door-root crate `{krate}`'s door states, read once.\n\
+                 #[allow(dead_code)]\n\
+                 static {}: ::std::sync::OnceLock<crate::root::door_root::Stated> =\n    \
+                 ::std::sync::OnceLock::new();\n",
+                door_root_forwarder(manifest, krate, "crate::root::loader"),
+                door_root_cell(krate)
+            );
+            if !externs.contains(&line) {
+                out.push_str(&line);
+                externs.push(line);
+            }
+            continue;
+        }
+        let line = format!("extern crate {} as _;\n", ident(krate));
+        if !externs.contains(&line) {
+            out.push_str(&line);
+            externs.push(line);
+        }
+    }
+    // (entry module, axes) per enabled crate, in manifest order.
+    let linked: Vec<(String, Vec<String>)> = on
+        .iter()
+        .map(|(feature, krate)| {
+            let entry = entries
+                .iter()
+                .find(|(k, _)| k == feature)
+                .or_else(|| entries.iter().find(|(k, _)| k == krate))
+                .map(|(_, path)| path.clone())
+                .unwrap_or_else(|| format!("{}::linked", ident(krate)));
+            (entry, axes_of(feature, krate))
+        })
+        .collect();
+    // (the door it reads, whether it is door-root) per enabled crate, parallel to `linked`.
+    let doors: Vec<(String, bool)> = on
+        .iter()
+        .zip(&linked)
+        .map(|((feature, krate), (entry, axes))| {
+            let (door, root) = door_of(manifest, krate, entry);
+            if root {
+                check_door_root(manifest, feature, krate, axes);
+            }
+            (door, root)
+        })
+        .collect();
+    for (krate, _) in metadata_rows(manifest, DOOR_ROOT) {
+        assert!(
+            plugins.iter().any(|(_, k)| *k == krate),
+            "Cargo.toml: `[{DOOR_ROOT}]` names `{krate}`, which no linked row links"
+        );
+    }
+    let on_axis = |axis: &str| -> Vec<&String> {
+        linked
+            .iter()
+            .filter(|(_, a)| a.iter().any(|x| x == axis))
+            .map(|(e, _)| e)
+            .collect()
+    };
+    // The door each row on `axis` reads.
+    let doors_on = |axis: &str| -> Vec<&String> {
+        linked
+            .iter()
+            .zip(&doors)
+            .filter(|((_, a), _)| a.iter().any(|x| x == axis))
+            .map(|(_, (d, _))| d)
+            .collect()
+    };
+    // THE STORE AND EXPORT AXES, read on first use: a door-root row's facts are its door's
+    // Statement's (`crate::root::door_root`), so the two tables are built when the boot first reads
+    // them, every transitional row beside them as its crate states it.
+    out.push_str(
+        "/// The store axis: each linked store's `(key, ephemeral, door, canonical)`.\n\
+         static LINKED_STORES: ::std::sync::LazyLock<::std::vec::Vec<busbar_kernel::preflight::LinkedStore>> =\n    \
+         ::std::sync::LazyLock::new(|| ::std::vec![",
+    );
+    for (((entry, axes), (door, root)), (feature, krate)) in linked.iter().zip(&doors).zip(&on) {
+        if !axes.iter().any(|a| a == "stores") {
+            continue;
+        }
+        if *root {
+            let canonical = metadata_value(
+                manifest,
+                "package.metadata.busbar.linked-canonical",
+                feature,
+            )
+            .unwrap_or_else(|| krate.clone());
+            out.push_str(&format!(
+                "crate::root::door_root::store_row(&crate::{}, {door}, {canonical:?}), ",
+                door_root_cell(krate)
+            ));
+        } else {
+            // A store crate's `STORE` in either shape (`busbar_kernel::preflight::StoreRow`): its
+            // door function, or its `MACRO_DOOR` (status rows 159 and 194).
+            out.push_str(&format!(
+                "busbar_kernel::preflight::StoreRow({entry}::STORE).linked(), "
+            ));
+        }
+    }
+    out.push_str("]);\n");
+    out.push_str(
+        "/// The export axis on the memory ABI: each linked export sink's statement and door.\n\
+         static LINKED_EXPORT_DOORS: ::std::sync::LazyLock<::std::vec::Vec<crate::root::linked::LinkedDoorExport>> =\n    \
+         ::std::sync::LazyLock::new(|| ::std::vec![",
+    );
+    for (((_, axes), (door, root)), (_, krate)) in linked.iter().zip(&doors).zip(&on) {
+        if !axes.iter().any(|a| a == EXPORT_DOOR_AXIS) {
+            continue;
+        }
+        if *root {
+            out.push_str(&format!(
+                "crate::root::door_root::export_row(&crate::{}, {door}), ",
+                door_root_cell(krate)
+            ));
+        } else {
+            let c = ident(krate);
+            out.push_str(&format!(
+                "crate::root::linked::LinkedDoorExport {{ name: {c}::NAME, alias: {c}::ALIAS, \
+                 declares: {c}::DECLARES, door: {door} }}, "
+            ));
+        }
+    }
+    out.push_str("]);\n");
+
+    let planes = on_axis("plane");
+    out.push_str(&format!(
+        "/// The plane axis: each entry's contract declaration joined kernel-side to its hooks.\n\
+         static LINKED_PLANES: [busbar_kernel::plane::registry::PlaneDecl; {}] = [\n",
+        planes.len()
+    ));
+    for e in &planes {
+        out.push_str(&format!(
+            "    busbar_kernel::plane::registry::PlaneDecl::assemble({e}::PLANE_DECLARATION, \
+             {e}::PLANE_HOOKS),\n"
+        ));
+    }
+    out.push_str("];\n");
+    out.push_str(
+        "/// Every linked plugin's entry items, one table per registration axis, in manifest order.\n\
+         static LINKED: crate::root::linked::Linked = crate::root::linked::Linked {\n    \
+         planes: &LINKED_PLANES,\n",
+    );
+    out.push_str("    plane_doors: &[");
+    for door in doors_on(PLANE_DOOR_AXIS) {
+        out.push_str(&format!("{door}, "));
+    }
+    out.push_str("],\n");
+    // THE SECRET AXIS: each linked secret plugin's memory-ABI door, loaded through the one loader
+    // (`crate::root::linked::secret_rows`).
+    out.push_str("    secrets: &[");
+    for door in doors_on(SECRET_AXIS) {
+        out.push_str(&format!("{door}, "));
+    }
+    out.push_str("],\n");
+    // EACH LINKED SECRET DOOR'S DECLARED METADATA: `(door, declares)`, the JSON its
+    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as a
+    // dropped-in copy's signed `declares` is (its disk need, THE DESIGN §11.11 R4). A secret door
+    // with no such row declares none.
+    out.push_str("    secret_declares: &[");
+    for (((_, list), (door, _)), (feature, _)) in linked.iter().zip(&doors).zip(&on) {
+        if !list.iter().any(|a| a == SECRET_AXIS) {
+            continue;
+        }
+        if let Some(path) =
+            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
+        {
+            out.push_str(&format!("({door}, {path}), "));
+        }
+    }
+    out.push_str("],\n");
+    // Each door row's place among the plane rows (how many `plane` rows precede it in manifest
+    // order): a door plane's registry row folds in at its row's place, so the layering order is the
+    // manifest's whichever axis a plane registers on.
+    out.push_str("    plane_door_slots: &[");
+    let mut planes_before = 0usize;
+    for (_, axes) in &linked {
+        if axes.iter().any(|a| a == PLANE_DOOR_AXIS) {
+            out.push_str(&format!("{planes_before}, "));
+        }
+        if axes.iter().any(|a| a == "plane") {
+            planes_before += 1;
+        }
+    }
+    out.push_str("],\n");
+    // EACH LINKED PLANE DOOR'S DECLARED METADATA: `(crate, door, declares)`, the JSON its
+    // `[package.metadata.busbar.linked-declares]` row names (the crate's `declares.json`), read as
+    // every default-linked plugin's `declares` section is, beside the door it belongs to (so the
+    // root finds a bound door plane's declaration by its Statement). A door row with no such row
+    // declares none.
+    out.push_str("    plane_door_declares: &[");
+    for ((feature, krate), (door, _)) in on.iter().zip(&doors) {
+        let is_door = axes
+            .iter()
+            .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS));
+        if !is_door {
+            continue;
+        }
+        if let Some(path) =
+            metadata_value(manifest, "package.metadata.busbar.linked-declares", feature)
+        {
+            out.push_str(&format!("({krate:?}, {door}, {path}), "));
+        }
+    }
+    out.push_str("],\n");
+    out.push_str("    transports: &[");
+    for ((e, axes), (door, _)) in linked
+        .iter()
+        .zip(&doors)
+        .filter(|((_, a), _)| a.iter().any(|x| x == TRANSPORT_AXIS))
+    {
+        // A TRANSPORT LOADS ONLY THROUGH ITS DOOR (step 36): there is no transport trait for a row
+        // to build itself as, so a transport row without the door axis is a manifest this root
+        // cannot link.
+        assert!(
+            axes.iter().any(|x| x == DOOR_AXIS),
+            "Cargo.toml: `{e}` is on the `{TRANSPORT_AXIS}` axis but not the `{DOOR_AXIS}` axis; a \
+             transport is linked only as its memory-ABI door"
+        );
+        // THE ROW IS ITS BARE `door` (BUSBAR-1.6.0.md l.3560-3561; coordinator ruling (b), row
+        // 159): its key, layers and session are read off the door's Statement, never off a constant
+        // of the entry's, so a door-root crate and a crate with a `linked` module link alike.
+        out.push_str(&format!("crate::root::linked::linked_transport!({door}), "));
+    }
+    out.push_str("],\n");
+    out.push_str("    auths: &[");
+    for (((entry, list), (door, root)), (feature, krate)) in linked.iter().zip(&doors).zip(&on) {
+        if list.iter().any(|a| a == AUTH_AXIS) {
+            let name = metadata_value(manifest, "package.metadata.busbar.linked-name", feature)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Cargo.toml: `{feature}` ({krate}) is on the `{AUTH_AXIS}` axis but has no \
+                         `[package.metadata.busbar.linked-name]` row naming its registry key"
+                    )
+                });
+            let canonical = metadata_value(
+                manifest,
+                "package.metadata.busbar.linked-canonical",
+                feature,
+            )
+            .unwrap_or_else(|| name.clone());
+            // A transitional auth row's door is its entry's `door` module's (`<entry>::door::door`);
+            // a door-root row's is the crate's one `door`.
+            let door = if *root {
+                door.clone()
+            } else {
+                format!("{entry}::door::door")
+            };
+            out.push_str(&format!("({name:?}, {canonical:?}, {door}), "));
+        }
+    }
+    out.push_str("],\n");
+    // The operator credential's provider word: the `linked-name` of the row the manifest's
+    // `operator-auth` table names, whether or not this build links it (its 1.5.5 refusals spell it).
+    let operator = metadata_value(manifest, "package.metadata.busbar.operator-auth", "row")
+        .and_then(|row| metadata_value(manifest, "package.metadata.busbar.linked-name", &row))
+        .unwrap_or_default();
+    out.push_str(&format!("    operator_auth: {operator:?},\n"));
+    out.push_str("    export_doors: &LINKED_EXPORT_DOORS,\n");
+    out.push_str("    stores: &LINKED_STORES,\n");
+    // EVERY DOOR-ROOT ROW, for the boot's check of its door's Statement against its row
+    // (`crate::root::door_root::check`): the name its row states where its axis names one (an auth
+    // row's canonical name, a store's `linked-name`).
+    out.push_str("    door_roots: &[");
+    for (((_, list), (door, root)), (feature, krate)) in linked.iter().zip(&doors).zip(&on) {
+        if !*root {
+            continue;
+        }
+        for axis in list {
+            // The name its Statement must state: an auth row's registry key (`linked-name`, the
+            // name config and every surface use, which its door states), a store's `linked-name`.
+            let name = match axis.as_str() {
+                AUTH_AXIS | "stores" => {
+                    metadata_value(manifest, "package.metadata.busbar.linked-name", feature)
+                }
+                _ => None,
+            };
+            out.push_str(&format!(
+                "crate::root::door_root::DoorRoot {{ row: {krate:?}, axis: {axis:?}, door: {door}, \
+                 facts: &crate::{}, admission: || crate::{}().as_ref().err().map(ToString::to_string), \
+                 name: {name:?} }}, ",
+                door_root_cell(krate),
+                door_root_admitted_fn(krate)
+            ));
+        }
+    }
+    out.push_str("],\n");
+    out.push_str("    claims: &[");
+    for e in on_axis(CLAIMS_AXIS) {
+        out.push_str(&format!(
+            "crate::root::linked::LinkedClaims {{ plane: || ::std::sync::Arc::new({e}::PLANE), \
+             claims: {e}::CLAIMS }}, "
+        ));
+    }
+    out.push_str("],\n");
+    for (axis, field, item) in AXES {
+        // The store axis is `LINKED_STORES`, above.
+        if *field == "stores" {
+            continue;
+        }
+        out.push_str(&format!("    {field}: &["));
+        for ((e, axes), (door, _)) in linked.iter().zip(&doors) {
+            if !axes.iter().any(|x| x == axis) {
+                continue;
+            }
+            if *item == "door" {
+                // The hook axis: the row's door, door-root or transitional alike.
+                out.push_str(&format!("{door}, "));
+            } else {
+                out.push_str(&format!("{e}::{item}, "));
+            }
+        }
+        out.push_str("],\n");
+    }
+    out.push_str("};\n");
+    // THE CONNECTOR'S VIEW of the same door rows: each memory-ABI transport door's key and its
+    // `door`, which the root's one Connector opens as a framer entry (`crate::root::connector`). The
+    // key is the door's Statement's, read on first use by the reader every row's is
+    // (`crate::root::doors::row_facts`), never a constant of the entry's (BUSBAR-1.6.0.md
+    // l.3560-3561); the table keeps its name and slice shape, which code outside this crate's
+    // source (a pinned plane's root tests) hands the connector.
+    out.push_str(
+        "/// Every linked memory-ABI transport door, by the key its Statement states, read on first use.\n\
+         static LINKED_TRANSPORT_DOORS_READ: ::std::sync::LazyLock<::std::vec::Vec<(&'static str, busbar_contract::abi::mechanism::door::DoorFn)>> =\n    \
+         ::std::sync::LazyLock::new(|| {\n        \
+         let doors: &[busbar_contract::abi::mechanism::door::DoorFn] = &[",
+    );
+    for ((_, axes), (door, _)) in linked
+        .iter()
+        .zip(&doors)
+        .filter(|((_, a), _)| a.iter().any(|x| x == TRANSPORT_AXIS))
+    {
+        if axes
+            .iter()
+            .any(|x| x == DOOR_AXIS || x == CONNECTOR_DOOR_AXIS)
+        {
+            out.push_str(&format!("{door}, "));
+        }
+    }
+    out.push_str(
+        "];\n        \
+         doors\n            \
+         .iter()\n            \
+         .map(|door| (crate::root::doors::row_facts(*door).key, *door))\n            \
+         .collect()\n    \
+         });\n\
+         /// Every linked memory-ABI transport door, by key, for the root's one Connector (a slice\n\
+         /// wherever one is asked for).\n\
+         #[allow(dead_code)]\n\
+         pub(crate) static LINKED_TRANSPORT_DOORS: &::std::sync::LazyLock<::std::vec::Vec<(&'static str, busbar_contract::abi::mechanism::door::DoorFn)>> =\n    \
+         &LINKED_TRANSPORT_DOORS_READ;\n",
+    );
+    out.push_str(
+        "/// Every enabled root unit, in manifest order.\n\
+         static ROOT_UNITS: &[&crate::root::linked::RootUnit] = &[\n",
+    );
+    for (_, module) in units.iter().filter(|(f, _)| f == NODE_UNIT || enabled(f)) {
+        out.push_str(&format!("    &crate::root::{module}::ROOT_UNIT,\n"));
+    }
+    out.push_str("];\n");
+
+    let cfgs = SEAMS
+        .iter()
+        .filter(|(axis, _)| !on_axis(axis).is_empty())
+        .map(|(_, cfg)| *cfg)
+        .collect();
+    (out, cfgs)
+}

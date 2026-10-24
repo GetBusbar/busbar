@@ -1,0 +1,967 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE ONE DROP PATH (design F3 "Drops"; spec Part 2 #76). For every dialect, in both directions, a
+//! translate attempt that cannot carry a member WARNS naming its wire path and hands the path to
+//! the seam's audit; nothing is put in a dropped block's place. Each dialect test carries a RED
+//! arm: the same request or answer with only what the dialect maps drops nothing, so a walker that
+//! names too much (or a reader that substitutes) fails here.
+
+use super::*;
+use crate::codec::proto_codec::protocol_for;
+use crate::codec::translate::{TranslateCodec as _, TranslateReqInput};
+use busbar_contract::codec::EgressWire;
+use busbar_contract::ir::egress_prep::EgressPrep;
+use busbar_contract::operation::OpVerb;
+use busbar_contract::testkit::WarnCapture;
+use serde_json::{json, Value};
+
+const SEAM: Seam<'static> = Seam {
+    direction: Direction::Request,
+    ingress: "openai",
+    egress: "anthropic",
+};
+
+fn prep(ingress: &str) -> EgressPrep<'_> {
+    EgressPrep {
+        ingress_protocol: ingress,
+        egress_requires_max_tokens: true,
+        lane_default_max_tokens: None,
+        global_default_max_tokens: 4096,
+        reasoning_allowed: true,
+        reasoning_budgets: crate::codec::ir::REASONING_BUDGET_DEFAULTS,
+        prompt_caching_allowed: true,
+        cache_control_cap: None,
+        lane_caps: Default::default(),
+        thought_signature_fill: false,
+    }
+}
+
+// ───────────────────────────── the primitive ─────────────────────────────
+
+#[test]
+fn a_drop_outside_a_translate_attempt_says_nothing() {
+    let cap = WarnCapture::default();
+    tracing::subscriber::with_default(cap.clone(), || {
+        note(Dropped::new(
+            "logit_bias",
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            "dropped",
+        ))
+    });
+    assert!(
+        cap.messages().is_empty(),
+        "a relay drops nothing: {:?}",
+        cap.messages()
+    );
+}
+
+#[test]
+fn a_drop_warns_once_per_path_and_comes_back_for_the_audit() {
+    let cap = WarnCapture::default();
+    let ((), paths) = tracing::subscriber::with_default(cap.clone(), || {
+        scope(SEAM, || {
+            for path in ["logit_bias", "store", "logit_bias"] {
+                note(Dropped::new(
+                    path,
+                    &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                    "dropped",
+                ));
+            }
+        })
+    });
+    assert_eq!(paths, ["logit_bias", "store"]);
+    assert_eq!(cap.count("path=logit_bias"), 1, "{:?}", cap.messages());
+    assert!(
+        cap.contains("diag=BUSBAR-7085")
+            && cap.contains("direction=request")
+            && cap.contains("ingress=openai")
+            && cap.contains("egress=anthropic"),
+        "the warn names the code, the direction and both dialects: {:?}",
+        cap.messages()
+    );
+}
+
+#[test]
+fn a_scope_ends_with_its_attempt_even_on_unwind() {
+    let unwound = std::panic::catch_unwind(|| {
+        scope(SEAM, || panic!("the attempt fails"));
+    });
+    assert!(unwound.is_err());
+    let cap = WarnCapture::default();
+    tracing::subscriber::with_default(cap.clone(), || {
+        note(Dropped::new(
+            "store",
+            &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+            "dropped",
+        ))
+    });
+    assert!(cap.messages().is_empty(), "no attempt is left open");
+}
+
+// ── the scope's discipline (ARCHITECT ruling, row-159 L1#4) ───────────────────────────────────
+
+fn drop_one(path: &'static str) {
+    note(Dropped::new(
+        path,
+        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+        "dropped",
+    ));
+}
+
+/// (a) Two interleaved translate calls on one thread — one nested inside the other — keep separate
+/// logs: the inner attempt's drops never reach the outer one's audit, and the outer one resumes
+/// with its own log when the inner one closes.
+#[test]
+fn nested_scopes_on_one_thread_keep_separate_logs() {
+    let inner_seam = Seam {
+        direction: Direction::Response,
+        ingress: "gemini",
+        egress: "cohere",
+    };
+    let (inner, outer) = scope(SEAM, || {
+        drop_one("logit_bias");
+        let ((), inner) = scope(inner_seam, || {
+            drop_one("store");
+            drop_one("logit_bias");
+        });
+        drop_one("seed");
+        inner
+    });
+    assert_eq!(inner, ["store", "logit_bias"]);
+    assert_eq!(outer, ["logit_bias", "seed"]);
+    assert!(!is_open());
+}
+
+/// (b) A panic inside a scope — nested or not — leaves no attempt open afterwards: the guard puts
+/// the enclosing state back on unwind.
+#[test]
+fn a_panic_inside_a_nested_scope_leaves_the_slot_closed() {
+    let unwound = std::panic::catch_unwind(|| {
+        let _ = scope(SEAM, || {
+            drop_one("logit_bias");
+            let _ = scope(SEAM, || panic!("the inner attempt fails"));
+        });
+    });
+    assert!(unwound.is_err());
+    assert!(!is_open(), "no attempt is left open after the unwind");
+    OPEN.with(|o| assert!(o.borrow().is_none()));
+}
+
+/// (c) After a scope closes, the thread holds no drop entries: the next attempt on the same thread
+/// starts with an empty log (it warns and audits the same path again), and a drop outside any
+/// attempt records nothing at all.
+#[test]
+fn a_closed_scope_leaks_no_drop_entries_into_the_next_call() {
+    let ((), first) = scope(SEAM, || drop_one("logit_bias"));
+    assert_eq!(first, ["logit_bias"]);
+    OPEN.with(|o| assert!(o.borrow().is_none(), "the slot is empty between calls"));
+    drop_one("store");
+    OPEN.with(|o| {
+        assert!(
+            o.borrow().is_none(),
+            "a drop outside an attempt writes nothing"
+        )
+    });
+    let cap = WarnCapture::default();
+    let ((), second) =
+        tracing::subscriber::with_default(cap.clone(), || scope(SEAM, || drop_one("logit_bias")));
+    assert_eq!(
+        second,
+        ["logit_bias"],
+        "the second attempt's log starts empty"
+    );
+    assert_eq!(cap.count("path=logit_bias"), 1, "{:?}", cap.messages());
+}
+
+/// A scope never spans an await, a ticket boundary or a return to the driver, so its guard is
+/// closed on the thread that opened it; a debug build panics on a guard dropped elsewhere rather
+/// than writing another thread's slot. RED before the guard checked its thread.
+#[cfg(debug_assertions)]
+#[test]
+fn a_guard_dropped_on_another_thread_panics_in_debug() {
+    let guard = ScopeGuard::open(SEAM, Vec::new());
+    let joined = std::thread::spawn(move || drop(guard)).join();
+    assert!(
+        joined.is_err(),
+        "dropping the guard on another thread panics"
+    );
+    // The opening thread's attempt was never closed by the panicking drop: clear it so this test
+    // thread ends clean.
+    OPEN.with(|o| o.replace(None));
+}
+
+#[test]
+fn the_block_walker_names_what_the_grammar_does_not_model() {
+    const TAGGED: Blocks = Blocks {
+        at: &["messages[]", "content[]"],
+        tag: Some("type"),
+        modelled: &["text"],
+        companions: &[],
+    };
+    let body = json!({"messages": [
+        {"content": [{"type": "text"}, {"type": "document"}, {"no": "type"}, "a string"]},
+        {"content": "plain"},
+        {"content": [{"type": "document"}]}
+    ]});
+    assert_eq!(
+        TAGGED.unmodelled(&body),
+        ["messages[].content[].type=document", "messages[].content[]"],
+        "each kind once; a non-object block is the reader's to refuse, never a drop"
+    );
+    const KEYED: Blocks = Blocks {
+        at: &["candidates[]", "content", "parts[]"],
+        tag: None,
+        modelled: &["text"],
+        companions: &["thought"],
+    };
+    let body = json!({"candidates": [{"content": {"parts": [
+        {"text": "a", "thought": true}, {"thought": true, "executableCode": {}}
+    ]}}]});
+    assert_eq!(
+        KEYED.unmodelled(&body),
+        ["candidates[].content.parts[].executableCode"]
+    );
+}
+
+#[test]
+fn parked_members_are_named_as_the_reader_declares_them() {
+    const PARKED: &[Parked] = &[
+        Parked {
+            key: "__hint",
+            holds: Holds::Nothing,
+        },
+        Parked {
+            key: "__names",
+            holds: Holds::Path("messages[].name"),
+        },
+        Parked {
+            key: "config",
+            holds: Holds::Members(&["carried"]),
+        },
+        Parked {
+            key: "__extras",
+            holds: Holds::Items("messages[]", &["__marker"]),
+        },
+    ];
+    let extra = json!({
+        "__hint": true,
+        "__names": {"0": "alice"},
+        "config": {"carried": 1, "mapped": 2, "lost": 3},
+        "__extras": {"0": {"audio": {}, "__marker": "f"}},
+        "logit_bias": {}
+    });
+    let paths = extra_paths(extra.as_object().unwrap(), PARKED, |p| {
+        p == ["config", "mapped"]
+    });
+    // `extra` is a sorted map: the paths come in its key order.
+    assert_eq!(
+        paths,
+        [
+            "messages[].audio",
+            "messages[].name",
+            "config.lost",
+            "logit_bias"
+        ]
+    );
+}
+
+// ───────────────────────────── request direction, per dialect ─────────────────────────────
+
+/// Translate `body` from `ingress` onto `egress`: the far end's body, what the seam audits, and the
+/// warns.
+fn translate(ingress: &str, egress: &str, body: &Value) -> (Value, Vec<String>, WarnCapture) {
+    let _ = protocol_for(ingress);
+    let handler = crate::codec::decl_of(ingress)
+        .and_then(|d| d.handler)
+        .and_then(|h| h.operation_handler(OpVerb::CHAT))
+        .expect("a chat handler");
+    let cap = WarnCapture::default();
+    let p = prep(ingress);
+    let out = tracing::subscriber::with_default(cap.clone(), || {
+        handler.translate_request(
+            crate::codec::test_host::HOST,
+            TranslateReqInput::Json(body),
+            Some(egress),
+            &p,
+            "m",
+        )
+    });
+    let Ok(out) = out else {
+        panic!("{ingress} -> {egress}: the request must translate");
+    };
+    let EgressWire::Json(wire) = out.wire else {
+        panic!("{ingress} -> {egress}: a chat request writes JSON");
+    };
+    (wire, out.dropped_controls, cap)
+}
+
+/// The drop is warned and audited under `paths`; the RED arm — the request without the unmapped
+/// members — drops nothing; and no empty text block stands in for a dropped one.
+fn request_drops(
+    ingress: &str,
+    egress: &str,
+    with: Value,
+    without: Value,
+    paths: &[&str],
+    not: &[&str],
+) {
+    let (wire, audited, cap) = translate(ingress, egress, &with);
+    for path in paths {
+        assert!(
+            audited.iter().any(|a| a == path),
+            "{ingress} -> {egress}: `{path}` must reach the audit: {audited:?}"
+        );
+        assert_eq!(
+            cap.count(&format!("path={path}")),
+            1,
+            "{ingress} -> {egress}: one warn names `{path}`: {:?}",
+            cap.messages()
+        );
+    }
+    for path in not {
+        assert!(
+            !audited.iter().any(|a| a.starts_with(path)),
+            "{ingress} -> {egress}: `{path}` crosses and must not be named: {audited:?}"
+        );
+    }
+    let written = wire.to_string();
+    assert!(
+        !written.contains(r#""text":"""#),
+        "{ingress} -> {egress}: nothing is substituted for a dropped block: {written}"
+    );
+    let (_, audited, cap) = translate(ingress, egress, &without);
+    assert!(
+        audited.is_empty() && !cap.contains("path="),
+        "{ingress} -> {egress}: RED arm — a request of mapped members drops nothing: {audited:?} \
+         {:?}",
+        cap.messages()
+    );
+}
+
+#[test]
+fn openai_chat_request_drops_name_the_wire_path() {
+    request_drops(
+        "openai",
+        "anthropic",
+        json!({"model": "m", "logit_bias": {"1": 2}, "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hi"}, {"type": "x_future", "x": 1}
+        ]}]}),
+        json!({"model": "m", "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hi"}
+        ]}]}),
+        &["logit_bias", "messages[].content[].type=x_future"],
+        &["model", "messages[].content[].type=text"],
+    );
+}
+
+#[test]
+fn anthropic_request_drops_name_the_wire_path() {
+    request_drops(
+        "anthropic",
+        "openai",
+        json!({"model": "m", "max_tokens": 10, "container": "c",
+        "metadata": {"user_id": "u", "x": "y"},
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hi"}, {"type": "container_upload", "file_id": "f"}
+        ]}]}),
+        json!({"model": "m", "max_tokens": 10, "metadata": {"user_id": "u"},
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}),
+        &[
+            "container",
+            "metadata.x",
+            "messages[].content[].type=container_upload",
+        ],
+        &["metadata.user_id", "max_tokens"],
+    );
+}
+
+#[test]
+fn gemini_request_drops_name_the_wire_path() {
+    request_drops(
+        "gemini",
+        "openai",
+        json!({"contents": [{"role": "user", "parts": [
+                {"text": "hi"}, {"executableCode": {"language": "PYTHON", "code": "1"}}
+            ]}],
+            "safetySettings": [{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"}],
+            "generationConfig": {"temperature": 0.5, "maxOutputTokens": 5,
+                "mediaResolution": "MEDIA_RESOLUTION_LOW"}}),
+        json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {"temperature": 0.5, "maxOutputTokens": 5}}),
+        &[
+            "safetySettings",
+            "generationConfig.mediaResolution",
+            "contents[].parts[].executableCode",
+        ],
+        &[
+            "generationConfig.temperature",
+            "generationConfig.maxOutputTokens",
+        ],
+    );
+}
+
+#[test]
+fn bedrock_request_drops_name_the_wire_path() {
+    request_drops(
+        "bedrock",
+        "openai",
+        json!({"messages": [{"role": "user", "content": [
+                {"text": "hi"}, {"guardContent": {"text": {"text": "g"}}}
+            ]}],
+            "guardrailConfig": {"guardrailIdentifier": "g", "guardrailVersion": "1"},
+            "inferenceConfig": {"maxTokens": 5, "temperature": 0.2}}),
+        json!({"messages": [{"role": "user", "content": [{"text": "hi"}]}],
+            "inferenceConfig": {"maxTokens": 5, "temperature": 0.2}}),
+        &["guardrailConfig", "messages[].content[].guardContent"],
+        &["inferenceConfig"],
+    );
+}
+
+#[test]
+fn cohere_request_drops_name_the_wire_path() {
+    request_drops(
+        "cohere",
+        "openai",
+        json!({"model": "m", "safety_mode": "STRICT", "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hi"}, {"type": "x_future"}
+        ]}]}),
+        json!({"model": "m", "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hi"}
+        ]}]}),
+        &["safety_mode", "messages[].content[].type=x_future"],
+        &["model"],
+    );
+}
+
+#[test]
+fn responses_request_drops_name_the_wire_path() {
+    request_drops(
+        "responses",
+        "openai",
+        json!({"model": "m", "previous_response_id": "r", "text": {"verbosity": "low", "x": 1},
+        "input": [{"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "hi"}, {"type": "x_future"}
+        ]}]}),
+        json!({"model": "m", "text": {"verbosity": "low"},
+        "input": [{"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "hi"}
+        ]}]}),
+        &[
+            "previous_response_id",
+            "text.x",
+            "input[].content[].type=x_future",
+        ],
+        &["model", "text.verbosity"],
+    );
+}
+
+// ───────────────────────────── response direction, per dialect ─────────────────────────────
+
+/// Translate the far end's `body` (`egress`) for a caller of `ingress`: the caller's body and the
+/// warns.
+fn answer(egress: &str, ingress: &str, body: &Value) -> (String, Vec<String>, WarnCapture) {
+    let _ = protocol_for(egress);
+    let ctx = crate::exchange::reply::whole::WholeCtx {
+        ingress,
+        egress,
+        operation: OpVerb::CHAT,
+        model: "m",
+        wants_stream: false,
+        json_array: false,
+        request: None,
+        now_s: 1,
+        elapsed_ms: None,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    };
+    let bytes = serde_json::to_vec(body).unwrap();
+    let cap = WarnCapture::default();
+    let whole = tracing::subscriber::with_default(cap.clone(), || {
+        crate::exchange::reply::whole::translate(crate::codec::test_host::HOST, &ctx, 200, &bytes)
+    });
+    assert_eq!(
+        whole.end,
+        crate::exchange::reply::whole::WholeEnd::Delivered,
+        "{egress} -> {ingress}: the answer must translate"
+    );
+    (
+        String::from_utf8(whole.answer.body).unwrap(),
+        whole.dropped,
+        cap,
+    )
+}
+
+/// The answer's drop is warned under `paths`; the RED arm — the answer with only what maps —
+/// drops nothing; no empty text block stands in for a dropped one.
+fn response_drops(egress: &str, ingress: &str, with: Value, without: Value, paths: &[&str]) {
+    let (body, audited, cap) = answer(egress, ingress, &with);
+    for path in paths {
+        assert_eq!(
+            audited.iter().filter(|a| a == path).count(),
+            1,
+            "{egress} -> {ingress}: one audit row names `{path}`: {audited:?}"
+        );
+        assert_eq!(
+            cap.count(&format!("path={path}")),
+            1,
+            "{egress} -> {ingress}: one warn names `{path}`: {:?}",
+            cap.messages()
+        );
+    }
+    assert!(cap.contains("direction=response"), "{:?}", cap.messages());
+    assert!(
+        !body.contains(r#""text":"""#),
+        "{egress} -> {ingress}: nothing is substituted for a dropped block: {body}"
+    );
+    let (_, audited, cap) = answer(egress, ingress, &without);
+    assert!(
+        audited.is_empty(),
+        "{egress} -> {ingress}: RED arm: {audited:?}"
+    );
+    assert!(
+        !cap.contains("path="),
+        "{egress} -> {ingress}: RED arm — an answer of mapped members drops nothing: {:?}",
+        cap.messages()
+    );
+}
+
+#[test]
+fn anthropic_answer_drops_name_the_wire_path() {
+    let answer = |content: Value| {
+        json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "m",
+            "content": content, "stop_reason": "end_turn",
+            "usage": {"input_tokens": 1, "output_tokens": 1}})
+    };
+    response_drops(
+        "anthropic",
+        "openai",
+        answer(json!([{"type": "text", "text": "hi"}, {"type": "x_future"}])),
+        answer(json!([{"type": "text", "text": "hi"}])),
+        &["content[].type=x_future"],
+    );
+}
+
+#[test]
+fn openai_chat_answer_drops_name_the_wire_path() {
+    let answer = |content: Value| {
+        json!({"id": "c", "object": "chat.completion", "created": 1, "model": "m",
+            "choices": [{"index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": content}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+    };
+    response_drops(
+        "openai",
+        "anthropic",
+        answer(json!([{"type": "text", "text": "hi"}, {"type": "x_future"}])),
+        answer(json!([{"type": "text", "text": "hi"}])),
+        &["choices[].message.content[].type=x_future"],
+    );
+}
+
+#[test]
+fn responses_answer_drops_name_the_wire_path() {
+    let answer = |content: Value| {
+        json!({"id": "resp_1", "object": "response", "created_at": 1, "model": "m",
+            "status": "completed",
+            "output": [{"type": "message", "id": "m1", "role": "assistant", "content": content}],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}})
+    };
+    response_drops(
+        "responses",
+        "openai",
+        answer(json!([
+            {"type": "output_text", "text": "hi", "annotations": []}, {"type": "x_future"}
+        ])),
+        answer(json!([{"type": "output_text", "text": "hi", "annotations": []}])),
+        &["output[].content[].type=x_future"],
+    );
+}
+
+/// DF-MAP-IR-GAPS section E: a Responses answer carrying a hosted-tool item the IR has no form for
+/// (`file_search_call`; a `web_search_call` is the IR's hosted web-search record since DF-MAP item 2)
+/// translated to another dialect gives one drop WARN and one audit row naming the wire path. RED
+/// before: the reader warned outside the drop path (no path, no audit row).
+#[test]
+fn responses_hosted_tool_item_is_dropped_on_the_drop_path() {
+    let answer = |hosted: bool| {
+        let mut output = vec![json!({"type": "message", "id": "m1", "role": "assistant",
+            "content": [{"type": "output_text", "text": "hi", "annotations": []}]})];
+        if hosted {
+            output.insert(
+                0,
+                json!({"type": "file_search_call", "id": "fs_1", "status": "completed"}),
+            );
+        }
+        json!({"id": "resp_1", "object": "response", "created_at": 1, "model": "m",
+            "status": "completed", "output": output,
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}})
+    };
+    response_drops(
+        "responses",
+        "openai",
+        answer(true),
+        answer(false),
+        &["output[].type=file_search_call"],
+    );
+}
+
+#[test]
+fn gemini_answer_drops_name_the_wire_path() {
+    let answer = |parts: Value, rated: bool| {
+        let mut candidate = json!({"content": {"role": "model", "parts": parts},
+            "finishReason": "STOP"});
+        if rated {
+            candidate["safetyRatings"] =
+                json!([{"category": "HARM_CATEGORY_HATE_SPEECH", "probability": "NEGLIGIBLE"}]);
+        }
+        json!({"candidates": [candidate],
+            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1,
+                "totalTokenCount": 2}})
+    };
+    response_drops(
+        "gemini",
+        "openai",
+        answer(
+            json!([{"text": "hi"}, {"executableCode": {"language": "PYTHON", "code": "1"}}]),
+            true,
+        ),
+        answer(json!([{"text": "hi"}]), false),
+        &[
+            "candidates[].content.parts[].executableCode",
+            "candidates[].safetyRatings",
+        ],
+    );
+}
+
+#[test]
+fn bedrock_answer_drops_name_the_wire_path() {
+    let answer = |content: Value, trace: bool| {
+        let mut body = json!({"output": {"message": {"role": "assistant", "content": content}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}});
+        if trace {
+            body["trace"] = json!({"guardrail": {}});
+        }
+        body
+    };
+    response_drops(
+        "bedrock",
+        "openai",
+        answer(json!([{"text": "hi"}, {"x_future": {}}]), true),
+        answer(json!([{"text": "hi"}]), false),
+        &["output.message.content[].x_future", "trace"],
+    );
+}
+
+#[test]
+fn cohere_answer_drops_name_the_wire_path() {
+    let answer = |content: Value| {
+        json!({"id": "c", "finish_reason": "COMPLETE",
+            "message": {"role": "assistant", "content": content},
+            "usage": {"tokens": {"input_tokens": 1, "output_tokens": 1}}})
+    };
+    response_drops(
+        "cohere",
+        "openai",
+        answer(json!([{"type": "text", "text": "hi"}, {"type": "x_future"}])),
+        answer(json!([{"type": "text", "text": "hi"}])),
+        &["message.content[].type=x_future"],
+    );
+}
+
+// ───────────────────────────── the answer walk ─────────────────────────────
+
+/// The walk names the shallowest member nothing carries, reads a union by its `type` arm where the
+/// map spells arms, treats a carried path as carrying its subtree, and skips a `null`.
+#[test]
+fn the_answer_walk_names_the_shallowest_uncarried_member() {
+    let carried = crate::codec::drops::Carried {
+        map: &[
+            "id",
+            "content",
+            "usage.input_tokens",
+            "type=message_start",
+            "type=content_block_delta.delta.type=text_delta",
+        ],
+        code: &["type=ping"],
+        drops: &[],
+        defaults: &[],
+    };
+    let answer = json!({"id": "m", "content": [{"type": "x", "deep": 1}], "container": {"id": "c"},
+        "usage": {"input_tokens": 1, "output_tokens_details": {"t": 1}}, "stop_details": null});
+    assert_eq!(
+        carried.unmapped("", &answer),
+        vec!["container", "usage.output_tokens_details"]
+    );
+    let frame = |v: Value| carried.unmapped("", &v);
+    assert!(frame(json!({"type": "message_start", "message": {"anything": 1}})).is_empty());
+    assert!(frame(json!({"type": "ping"})).is_empty());
+    assert_eq!(frame(json!({"type": "zz", "a": 1})), vec!["type=zz"]);
+    let mut named = frame(json!({"type": "content_block_delta", "index": 0,
+        "delta": {"type": "zz_delta", "x": 1}}));
+    named.sort();
+    assert_eq!(
+        named,
+        vec![
+            "type=content_block_delta.delta.type=zz_delta",
+            "type=content_block_delta.index"
+        ]
+    );
+    // Keyed by the event name: the walk starts at the event.
+    let keyed = crate::codec::drops::Carried {
+        map: &["contentBlockDelta.delta.text"],
+        code: &[],
+        drops: &[],
+        defaults: &[],
+    };
+    assert_eq!(
+        keyed.unmapped(
+            "contentBlockDelta",
+            &json!({"delta": {"text": "a", "zz": 1}})
+        ),
+        vec!["contentBlockDelta.delta.zz"]
+    );
+}
+
+/// AN ECHOED DEFAULT IS NO UNREPRESENTABLE CONTROL (ARCHITECT RULING 2026-10-04): a Responses
+/// answer restates the request's `tools`, `tool_choice` and `parallel_tool_calls`, at their
+/// defaults when the caller set none; a TRANSLATE answer drops them, and the walk names none, so
+/// no `egress.control_unrepresentable` row is written for them (the 1.5.5 rows for
+/// `llm|*|responses|request|ok`). RED arm: a value the caller actually set (a real tool, a
+/// directed choice, parallel calls off) is still named, so its drop is still audited.
+#[test]
+fn an_echoed_request_default_names_no_drop_and_a_caller_set_value_still_does() {
+    let carried = crate::codec::proto_codec::with_reader("responses", |r| r.response_carried())
+        .flatten()
+        .expect("the Responses answer is walked");
+    let echoed = json!({"id": "resp_1", "object": "response", "status": "completed",
+        "output": [], "tools": [], "tool_choice": "auto", "parallel_tool_calls": true});
+    assert!(
+        carried.unmapped("", &echoed).is_empty(),
+        "an echoed default is no control the caller set: {:?}",
+        carried.unmapped("", &echoed)
+    );
+    let set = json!({"id": "resp_1", "object": "response", "status": "completed",
+        "output": [],
+        "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        "tool_choice": "required", "parallel_tool_calls": false});
+    let mut named = carried.unmapped("", &set);
+    named.sort();
+    assert_eq!(named, vec!["parallel_tool_calls", "tool_choice", "tools"]);
+}
+
+/// DF-MAP-IR-GAPS SECTION E (ruled: every unmapped response/stream path is named, no extra
+/// bucket): every wire path of its list is named by the far end's drop walk when an answer carries
+/// it. RED before: the walk did not exist (a buffered answer named blocks and vendor metadata only;
+/// a stream named nothing), and a path inside a coarse carried row (`content` carries the blocks,
+/// not `tool_use.caller`) was never named.
+#[test]
+fn every_section_e_path_is_named_by_the_drop_walk() {
+    let mut missed = Vec::new();
+    let list = include_str!("section_e_paths.txt");
+    for line in list
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let mut it = line.splitn(3, ' ');
+        let (dialect, direction, path) =
+            (it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+        let carried = crate::codec::proto_codec::with_reader(dialect, |r| match direction {
+            "response" => r.response_carried(),
+            _ => r.stream_carried(),
+        })
+        .flatten()
+        .unwrap_or_else(|| panic!("{dialect} {direction}: no answer map"));
+        if !carried.names_path(path) {
+            missed.push(line);
+        }
+    }
+    assert!(
+        missed.is_empty(),
+        "{} not named:\n{}",
+        missed.len(),
+        missed.join("\n")
+    );
+}
+
+/// RED ARM of the buffered answer walk, over the whole golden corpus (every `resp_X2Y_*.json` is an
+/// answer written in dialect Y): the walk names nothing a dialect carries. What it does name is
+/// exactly the far end's members no other dialect has: a Responses answer's request echoes and
+/// Anthropic's `usage.output_tokens_details` (never read).
+#[test]
+fn the_answer_walk_names_only_true_drops_over_the_golden_corpus() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codec/tests/proto/golden");
+    let dialect = |letter: u8| match letter {
+        b'a' => "anthropic",
+        b'o' => "openai",
+        b'g' => "gemini",
+        b'b' => "bedrock",
+        b'r' => "responses",
+        b'c' => "cohere",
+        other => panic!("{}", other as char),
+    };
+    let mut seen = 0;
+    for entry in std::fs::read_dir(&dir).expect("golden corpus") {
+        let name = entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        if !name.starts_with("resp_") || !name.ends_with(".json") {
+            continue;
+        }
+        let far = dialect(name.as_bytes()[7]);
+        let Ok(body) = serde_json::from_slice::<Value>(&std::fs::read(dir.join(&name)).unwrap())
+        else {
+            continue;
+        };
+        let carried = crate::codec::proto_codec::with_reader(far, |r| r.response_carried())
+            .flatten()
+            .expect("an answer map");
+        let mut named = carried.unmapped("", &body);
+        named.sort();
+        let true_drops: &[&str] = match far {
+            "responses" => &[
+                "parallel_tool_calls",
+                "temperature",
+                "tool_choice",
+                "tools",
+                "top_p",
+            ],
+            "anthropic" => &["usage.output_tokens_details"],
+            _ => &[],
+        };
+        let expected: Vec<&str> = true_drops
+            .iter()
+            .copied()
+            .filter(|p| {
+                let pointer = format!("/{}", p.replace('.', "/"));
+                // An echoed request default is no drop (ARCHITECT RULING 2026-10-04).
+                let echoed = |v: &Value| {
+                    far == "responses"
+                        && crate::codec::openai_responses::ANSWER_DEFAULTS
+                            .iter()
+                            .any(|(k, d)| {
+                                *k == *p && serde_json::from_str::<Value>(d).is_ok_and(|d| d == *v)
+                            })
+                };
+                body.pointer(&pointer)
+                    .is_some_and(|v| !v.is_null() && !echoed(v))
+            })
+            .collect();
+        assert_eq!(named, expected, "{name}");
+        seen += 1;
+    }
+    assert!(seen > 20, "the corpus was read: {seen}");
+}
+
+/// A dialect never lists as dropped a path it carries (a map row or a code-carried path): the walk
+/// would name a member that crosses (red: Responses' stream events and three Gemini answer members
+/// were both carried and listed as drops after DF-MAP mapped them).
+#[test]
+fn no_dialect_drops_a_path_it_carries() {
+    for dialect in [
+        "anthropic",
+        "bedrock",
+        "cohere",
+        "gemini",
+        "openai",
+        "responses",
+    ] {
+        crate::codec::proto_codec::with_reader(dialect, |r| {
+            for (direction, carried) in [
+                ("answer", r.response_carried()),
+                ("stream", r.stream_carried()),
+            ] {
+                let Some(c) = carried else { continue };
+                for d in c.drops {
+                    assert!(
+                        !c.map.contains(d) && !c.code.contains(d),
+                        "{dialect} {direction}: `{d}` is carried and listed as dropped"
+                    );
+                }
+            }
+        });
+    }
+}
+
+/// Every dialect's drop list is sorted ascending, each path once: the walk binary-searches it for
+/// every member of every stream frame (red: a list out of order hides a drop from the walk; the
+/// linear scan it replaced made a Responses stream four times slower to relay).
+#[test]
+fn every_drop_list_is_sorted_for_the_walks_search() {
+    for dialect in [
+        "anthropic",
+        "bedrock",
+        "cohere",
+        "gemini",
+        "openai",
+        "responses",
+    ] {
+        crate::codec::proto_codec::with_reader(dialect, |r| {
+            for (direction, carried) in [
+                ("answer", r.response_carried()),
+                ("stream", r.stream_carried()),
+            ] {
+                let Some(c) = carried else { continue };
+                for pair in c.drops.windows(2) {
+                    assert!(
+                        pair[0] < pair[1],
+                        "{dialect} {direction}: `{}` is not before `{}`",
+                        pair[0],
+                        pair[1]
+                    );
+                }
+            }
+        });
+    }
+}
+
+/// F25 REHOME row 109, from `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs:146`
+/// (`egress_dropped_controls_reports_the_right_controls_per_dialect`): the chat handle's dropped
+/// controls, per egress dialect, for an OpenAI request carrying tools, `response_format: json_object`
+/// and `tool_choice: "none"`. Anthropic on a default lane drops `response_format` (1.5.5's drop,
+/// v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:343-347`; the legacy expectation of an empty
+/// list pinned the post-1.5.5 forced tool) and on a native-structured-output lane drops the
+/// schema-less `response_format` too; Bedrock drops `response_format` and `tool_choice=none`;
+/// OpenAI drops nothing.
+#[test]
+fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
+    use busbar_contract::ir::handle::IrHandle as _;
+    let body = json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{
+            "type": "function",
+            "function": {"name": "get_weather", "parameters": {"type": "object"}}
+        }],
+        "response_format": {"type": "json_object"},
+        "tool_choice": "none"
+    });
+    let ir = protocol_for("openai")
+        .unwrap()
+        .reader()
+        .read_request(&body)
+        .expect("openai body must parse to IR");
+    let default_lane = crate::codec::chat_handle::ChatReqHandle(ir.clone(), Default::default());
+    assert_eq!(
+        default_lane.egress_dropped_controls("anthropic"),
+        vec!["response_format"]
+    );
+    assert_eq!(
+        default_lane.egress_dropped_controls("bedrock"),
+        vec!["response_format", "tool_choice=none"]
+    );
+    assert!(default_lane.egress_dropped_controls("openai").is_empty());
+    let native_lane = crate::codec::chat_handle::ChatReqHandle(
+        ir,
+        busbar_contract::ir::egress_prep::LaneCaps {
+            native_structured_output: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        native_lane.egress_dropped_controls("anthropic"),
+        vec!["response_format"]
+    );
+}

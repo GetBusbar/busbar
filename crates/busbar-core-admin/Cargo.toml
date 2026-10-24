@@ -1,0 +1,62 @@
+# busbar-admin — the ADMIN API SERVICE (`/api/v1/admin/*`), extracted out of busbar-core into its own
+# sibling crate (1.6.0).
+#
+# ONE-WAY DEPENDENCY (Cargo-enforced): this crate depends on busbar-core (to reach `App`/`AppHandle`,
+# `CoreRouter`, the `governance`/`config`/`hooks`/`auth` engine internals the handlers call, and the
+# `admin::v1::contract` frozen surface + the `admin::v1::json` envelope primitives that STAYED in
+# core). busbar-core depends on NOTHING here — naming this crate from core would be a dependency
+# cycle, which Cargo refuses outright. Core reaches this crate's router only through the small seam in
+# `busbar_core::admin::seam` (`AdminMountSeam`), registered once by the composition root
+# (`crates/busbar`), exactly the way `oauth_as::seam` mounts the authorization-server plane.
+#
+# MANDATORY, NON-OPTIONAL sibling crate — NOT a plugin. Always compiled into the shipped binary;
+# runtime-optional only through the control/admin listener seam.
+[package]
+name = "busbar-core-admin"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "The busbar admin API service (`/api/v1/admin/*`). Depends one-way on busbar-core."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_core_admin"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-kernel = { path = "../busbar-kernel", default-features = false }
+# The kernel-verb store face + idempotency window the absorbed verb-execution unit binds against
+# (DECISIONS #38/#40): `busbar_contract::verb_store::{Store, StoreError, IDEMPOTENCY_TTL_SECS}`.
+busbar-contract = { path = "../busbar-contract" }
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
+tracing = { workspace = true }
+base64 = { workspace = true }
+flate2 = { workspace = true }
+schemars = { workspace = true, optional = true }
+
+[features]
+default = []
+# Pulls busbar-core's `test-support` so a SIBLING crate can build an admin-configured `TestApp`, and
+# so this crate's own dev-deps resolve the fixtures.
+test-support = ["busbar-kernel/test-support"]
+# The openapi-schema derive: the moved admin-view types derive `schemars::JsonSchema` under this
+# feature, mirroring busbar-kernel. Forwards to busbar-kernel/openapi-schema so the shared schema
+# surface resolves in lock-step. The document with the planes' sections is the composition root's to
+# generate and test, where the planes are linked.
+openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
+
+[dev-dependencies]
+# Test-only (json body decode + public-key hex in the service tests); no production use.
+hex = { workspace = true }
+http-body-util = { workspace = true }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
+axum = { workspace = true, features = ["http1"] }
+reqwest = { workspace = true, features = ["json"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing-subscriber = { workspace = true }

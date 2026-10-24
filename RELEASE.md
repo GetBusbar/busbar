@@ -1,50 +1,68 @@
 # Releasing Busbar
 
-The branch model is **dev → qa → main**, and each arrow means one thing:
+The branch ladder is **dev → qa → main** (predev is retired, OWNER 2026-10-16: lanes land on
+`dev`), and ModernCI judges and moves every rung from this repository's branch files (OWNER
+2026-10-12, "ModernCI only"; the ruling is
+[`docs/design/BUSBAR-1.6.0.md`](docs/design/BUSBAR-1.6.0.md) Part 6, "BUSBAR-RELEASE RETIRED FROM
+BUSBAR"). A branch file is named for the branch being moved and says what the move must pass.
 
-| Push to | What runs | Cost |
-|---|---|---|
-| **`dev`** | `ci.yml` — fmt, clippy, `cargo test` | cheap; push often |
-| **`qa`** | `qa-gate.yml` — `release-check.sh`, the real all-plugins end-to-end gate | ~2h; the pre-release soak |
-| **`main`** | `tag-on-main.yml` — auto-tags `crates/busbar/Cargo.toml`'s version → the release | the BOOM |
+| Move | Branch file | What it runs | Consent |
+|---|---|---|---|
+| a `lane-*` branch into **`dev`** | [`.ci/default.yaml`](.ci/default.yaml) | preflight, every registered gate, clippy, compile, test, doctest, deletion matrix, `cargo deny`, the gated suites; no worse than dev (required check `ci`) | none |
+| **`dev`** into **`qa`** | [`.ci/dev.yaml`](.ci/dev.yaml) | the gates, the oracle against the 1.5.5 golden, conformance, `scripts/verify-1.6.0-done.sh`, the Q128 audit, the gated suites; all absolute | the owner's approval (the org ruleset keeps `qa` locked) |
+| **`qa`** into **`main`** | `.ci/qa.yaml` | the same; on landing, the release is signed and published from the build that was judged, never rebuilt | the owner (the org ruleset keeps `main` locked) |
 
-`dev` is always release-ready because every push is fully CI'd. Promoting to `qa` proves the exact
-commit works against every plugin together. Promoting to `main` **is** the release.
+`.ci/qa.yaml` is not written yet: until it lands, nothing is published from `main`. The
+busbar-release hop (`promote.yml`, the engine pin) is deleted and no move is decided by it.
+busbar-release remains the tools repo: the home of the oracle (`busbar-oracle`, pinned by
+`testing/shadow-oracle/oracle-rust.pin` and fetched from its `dev-bin` release by `bin/oracle`), the
+soak and the plugin fleet generator. The 1.5.5 golden the oracle reads stays in this tree, in
+`testing/shadow-oracle/golden/1.5.5`.
+
+**The tag is an OUTPUT of a green release, never an input.** Nobody tags by hand; no workflow is
+triggered by a `v*` tag (`cargo xtask gate workflow-rules`, rule R1). Docker Hub tag immutability
+makes a published `X.Y.Z` impossible to overwrite, so a broken one is permanent.
 
 ## The one human step
 
 Write your notes under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md) (Keep-a-Changelog
-headings: Added / Changed / Fixed / Security). If you leave it empty, the release notes fall back
-to "Maintenance and dependency updates."
+headings: Added / Changed / Fixed / Security). `cargo xtask gate changelog --require-version=X.Y.Z`
+**refuses** a version whose section is missing or is not the newest entry in the file.
 
-## Cut the release
+## Preparing a version (on `dev`)
 
-1. **Prepare the bump on `dev`.** Run the **Prepare release (on dev)** workflow (Actions →
-   *Prepare release (on dev)* → Run workflow from `dev` → enter e.g. `1.5.1`). It bumps
-   `crates/busbar/Cargo.toml` + `Cargo.lock`, **regenerates the committed OpenAPI schema**
-   (`UPDATE_OPENAPI=1` — the CI drift gate that fails the build if stale), promotes
-   `CHANGELOG [Unreleased]` → `[version]` with today's date, and commits + pushes to `dev`. It does
-   **not** tag.
-2. **Promote `dev` → `qa`.** The ~2h `qa-gate.yml` full-plugin gate runs. A green run means the
-   bumped commit is release-ready.
-3. **Promote `qa` → `main`.** Landing on `main` runs `tag-on-main.yml`, which tags `vX.Y.Z` (the
-   version now in `Cargo.toml`) — and that tag is the sign-off. It is **idempotent**: if the tag
-   already exists (e.g. a docs hotfix landing on main without a version bump), it is a safe no-op,
-   so only a *new* version cuts a release.
+```
+python3 .github/scripts/bump_cargo.py 1.6.0 crates/busbar/Cargo.toml
+cargo update -p busbar --precise 1.6.0
+UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-kernel -p busbar-core-admin --features openapi-schema openapi_json_matches_committed_file
+python3 .github/scripts/roll_changelog.py 1.6.0 CHANGELOG.md
+```
 
-## What the tag triggers (automatic)
+That bumps `crates/busbar/Cargo.toml` + `Cargo.lock`, regenerates the committed OpenAPI schema, and
+rolls `[Unreleased]` to `[1.6.0]` with today's date. It does **not** tag. Land it on `dev` like
+any other change; it reaches `qa` with the next promotion.
 
-- **`release.yml`** — cross-compiles the 5 target binaries, SBOM, the OpenAPI asset, and the
-  build-provenance **attestation** (verify with `--repo GetBusbar/busbar`).
-- **`docker.yml`** — builds + pushes `getbusbar/busbar:X.Y.Z` + `latest` to Docker Hub and
-  `ghcr.io/getbusbar/busbar`, cosign-signed.
+## Moving a version up the ladder
+
+ModernCI opens and judges each promotion (`modernci call moves` shows how each stands). A red move
+is fixed forward on the lower branch: every push re-judges it on the new head.
+
+## Branch protection this assumes
+
+`dev` requires ModernCI's check `ci`; `qa` and `main` take the owner's consent (the org ruleset).
+
+Branch protection lives in repository rulesets, not in a script (see `.github/required-status-checks.md`).
+Keep `enforce_admins: true`, `required_linear_history: true`, `allow_force_pushes: false` and
+`allow_deletions: false` on `qa` and `main`. No workflow may push a commit to either branch
+(`workflow-rules` R11).
+
+The ruling: [`docs/design/BUSBAR-1.6.0.md`](docs/design/BUSBAR-1.6.0.md) Part 6, the release engine.
 
 ## Downstream (self-healing, no action needed)
 
 - **Homebrew** — the tap's `bump-formula` workflow runs daily and updates both `busbar` and
   `busbar-admin` formulae (version + checksums) when it sees a newer release. A missed run just
-  catches up the next day. *(Optional: add a PAT + fire `repository_dispatch{type: upstream-release}`
-  at the end of `release.yml` for an instant bump instead of ≤24 h.)*
+  catches up the next day.
 - **Website** — the download page shows the new version automatically (`src/release.json` is
   regenerated from Cargo at build). For the version-**pin** examples (docker/compose/helm/attestation),
   run `node scripts/bump-site-version.mjs X.Y.Z` in the marketing repo and push — or wire a

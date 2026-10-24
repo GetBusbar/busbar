@@ -1,0 +1,41 @@
+[package]
+name = "voice-conformance-harness"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.97"
+description = "The voice (streaming-plane) conformance harness: drives busbar-plane-streaming's door both ways, linked and dropped in, through the plugin loader."
+
+# TESTKIT, NOT PRODUCT PATH (ARCHITECT Q6: the streaming plane's conformance MUST-set, built against
+# `busbar-plane-streaming`, linked and dlopened, RED arm kept). `testing/voice-conformance/`'s legs
+# shell out to this binary. It is not shipped and not built by `cargo build --bin busbar`: it is the
+# same kind of member as `testing/ws-conformance/subject`, an input to a conformance leg. It lives
+# outside the plane crate so the plane's only user of the loader is its own both-ways witness
+# (`tests/conformance.rs`), the one dev-edge on the loader a plugin crate is granted.
+[[bin]]
+name = "voice_conform"
+path = "src/main.rs"
+
+[dependencies]
+busbar-contract = { path = "../../../crates/busbar-contract" }
+# THE KERNEL'S STATUS CHOICE (`plane_driver::refusal_status`): the status the plane driver hands a
+# refusal of a plane that states no row of its own, which the admit-refusal slice renders through
+# the door (a policy refusal answers its 4xx, never `server_error`).
+busbar-kernel = { path = "../../../crates/busbar-kernel", default-features = false }
+# THE PLANE UNDER TEST: its linked door (`busbar_plane_streaming::door::door`) and its codecs, which
+# compute every expectation from the wire, at the rev the root pins (GetBusbar/busbar-plane-streaming,
+# row 106). The dropped-in door is that repo's cdylib twin, `busbar-plane-streaming-plugin`, at the
+# same rev, built in this workspace (the dev edge below; `lib/conform-bin.sh`).
+busbar-plane-streaming = { workspace = true }
+# THE ONE LOADER both doors are loaded through (`load_linked`, `load_dropped`).
+busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+
+[dev-dependencies]
+# THE DROPPED-IN DOOR, in this workspace's graph so `lib/conform-bin.sh` builds it with
+# `cargo build -p busbar-plane-streaming-plugin` against the host's busbar-contract (the root's
+# [patch]), the contract the loader admits it against. A dev edge only: the harness never links it;
+# it dlopens the cdylib cargo leaves beside the harness binary.
+busbar-plane-streaming-plugin = { workspace = true }

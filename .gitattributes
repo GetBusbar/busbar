@@ -7,3 +7,4 @@
 # CI test failures (keys_error_surface_is_byte_stable, declared_error_set_is_exactly_what_the_
 # handlers_emit, load_config_from_disk_refuses_a_real_legacy_config_file_loudly) via real CI logs.
 * text=auto eol=lf
+

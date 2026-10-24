@@ -1,0 +1,62 @@
+{
+  "applied": [
+    "hdr.date"
+  ],
+  "body": {
+    "json": {
+      "error": {
+        "code": "conflict",
+        "message": "hook `busbar-webrequest` is defined in the base config file; edit config.yaml"
+      }
+    }
+  },
+  "effects": {
+    "audit": {
+      "added": 1,
+      "items": [
+        {
+          "action": "hook.settings",
+          "actor": "admin",
+          "chain_ok": true,
+          "outcome": "rejected",
+          "resource": "hook:busbar-webrequest"
+        }
+      ]
+    },
+    "egress": [],
+    "metrics": {},
+    "usage": {},
+    "readback": [
+      {
+        "path": "/api/v1/admin/hooks/busbar-webrequest",
+        "status": 200,
+        "body": {
+          "json": {
+            "at": null,
+            "global": false,
+            "kind": "gate",
+            "name": "busbar-webrequest",
+            "on_error": "nothing",
+            "priority": 0,
+            "prompt": "no",
+            "settings_keys": [
+              "timeout_ms",
+              "url"
+            ],
+            "timeout_ms": 50,
+            "transport": {
+              "kind": "plugin",
+              "target": "busbar-webrequest"
+            },
+            "user": "no"
+          }
+        }
+      }
+    ]
+  },
+  "headers": {
+    "content-length": "119",
+    "content-type": "application/json"
+  },
+  "status": 409
+}
