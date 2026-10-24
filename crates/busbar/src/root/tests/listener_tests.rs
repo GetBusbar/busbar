@@ -957,8 +957,18 @@ async fn tls_happy_path_trusted_client_gets_200() {
 
 /// A CA and a leaf it signed for `sans`: (ca_pem, leaf_pem, leaf_key_pem).
 fn gen_ca_and_leaf(sans: &[&str]) -> (String, String, String) {
-    let m = busbar_kernel::egress::fixtures::ca_and_leaf(sans);
-    (m.ca_pem, m.leaf_pem, m.leaf_key_pem)
+    let ca_kp = rcgen::KeyPair::generate().expect("ca key");
+    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("ca params");
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_pem = ca_params.self_signed(&ca_kp).expect("self-signed ca").pem();
+    let issuer = rcgen::Issuer::from_params(&ca_params, ca_kp);
+    let leaf_kp = rcgen::KeyPair::generate().expect("leaf key");
+    let leaf =
+        rcgen::CertificateParams::new(sans.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            .expect("leaf params")
+            .signed_by(&leaf_kp, &issuer)
+            .expect("leaf");
+    (ca_pem, leaf.pem(), leaf_kp.serialize_pem())
 }
 
 /// The mutual listener: client certificates must chain to the CA it names.

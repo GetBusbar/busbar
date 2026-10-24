@@ -212,10 +212,10 @@ pub mod diagnostics;
 // #33) so the loader's own writes and this crate's route through the SAME primitive. Re-exported here
 // so every existing `crate::durable::*` call site in this binary resolves unchanged.
 pub use busbar_plugin_loader::durable;
-// The host-owned outbound surface: the neutral SSRF-pinned client and the egress-trust seam. See the
-// module header.
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
+// The kernel's outbound vocabulary and the destinations seam; the kernel dials nothing. See the
+// module header.
 pub mod egress;
 pub mod endpoints;
 pub mod export;
@@ -293,11 +293,6 @@ pub mod ratelimit;
 /// THE DURABLE PER-PRINCIPAL RESIDUAL LOG: one hash-chained `usage.residual` row per settle that
 /// carried usage counts no billing class records (MONEY LAW). See the module header.
 pub mod residual_log;
-/// THE CONNECTOR'S TLS WRAP, as the kernel reaches it: this crate names no TLS library (THE DESIGN:
-/// TLS stays in the connector); the egress engine's https arm, the duplex `wss` dial and the
-/// client-identity PEM parse ask this seam, answered through the root-installed egress-trust
-/// capability. See the module header.
-pub mod secure;
 // THE NEUTRAL PER-SESSION SUBSTRATE relocated DOWN to busbar-substrate (std-only, money-safe, zero
 // busbar deps). Core re-exports it so `crate::session::{SessionStore, SessionKey, OwnerKey}` — the
 // gate's screen-cache tenant, the appbuild session_store construction and the App field — are

@@ -702,7 +702,7 @@ impl LaneSpec {
                 self.base_url.trim_end_matches('/'),
             )
             .into_owned(),
-            url_userinfo: busbar_kernel::egress::engine::UrlUserinfo::of(&self.base_url),
+            url_userinfo: busbar_kernel::bound_credential::UrlUserinfo::of(&self.base_url),
             path: self.path.clone(),
             path_base: self.path_base.clone(),
             organization: self.organization.clone(),
@@ -949,14 +949,6 @@ impl Default for TestApp {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// THE EGRESS-TRUST CAPABILITY OF A TEST BINARY: the TLS wrap, the name lookup and the
-/// destination judgement the kernel's own egress engine falls back to when a client's spec hands it
-/// none ([`crate::egress::trust::egress_trust_host`]). A shipped build has no such fallback: the
-/// static this fills exists only in a test build. The first hand-in stands.
-pub fn install_egress_trust(host: std::sync::Arc<dyn crate::egress::trust::EgressTrustHost>) {
-    let _ = crate::egress::trust::TEST_EGRESS_TRUST.set(host);
 }
 
 impl TestApp {

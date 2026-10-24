@@ -92,12 +92,10 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # states.
 axum = { workspace = true }
 tower = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
-# TEST MACHINERY ONLY since the egress-symmetry migration: every production hop rides the engine,
-# and the remaining reqwest sites are the `test_support` mock-driving helpers this feature-gated
-# edge serves (the differential harness's reference stack lives in substrate under the same
-# discipline). Optional + `test-support`; plain `cargo test -p` reaches it via [dev-dependencies].
-reqwest = { workspace = true, features = ["http2"], optional = true }
+# No `net`: the kernel opens no socket and resolves no name (THE DESIGN §5; status row 130,
+# `tests/no_socket.rs`). Its test scaffolding asks for it through `test-support` and the
+# dev-dependency below.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "io-std", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # The engine-built OAuth mint hops (`egress_auth`) form-
@@ -114,7 +112,6 @@ sonic-rs = { workspace = true }
 serde_yaml = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
-# The plane-host credential mint (`plane_host::creds`) zeroizes resolved plaintext on drop (FFI-F6).
 zeroize = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
@@ -138,12 +135,6 @@ async-trait = { workspace = true }
 # read-lock + Arc clone on EVERY extraction, on every request, across all workers.
 arc-swap = { workspace = true }
 httpdate = { workspace = true }
-hyper = { workspace = true }
-hyper-util = { workspace = true }
-# W4.b P2 (absorbed from busbar-substrate): the egress differential-harness fixtures + the relocated
-# plane_host identity/trust_anchor registry tests mint throw-away certs with rcgen; OPTIONAL, pulled
-# only by `test-support`. (A dev-dependency copy below still serves plain `cargo test -p`.)
-rcgen = { workspace = true, optional = true, features = ["pem"] }
 
 [features]
 # The `#[cfg(feature = ...)]` sites live in this crate, so this crate declares the features and
@@ -205,7 +196,9 @@ loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
 # capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
-test-support = ["dep:reqwest", "dep:rcgen", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support", "busbar-kernel-ledger/test-support"]
+# `tokio/net`: the test kit's mock servers bind loopback sockets (`test_support`); the shipped
+# kernel asks for no socket layer (THE DESIGN §5).
+test-support = ["tokio/net", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support", "busbar-kernel-ledger/test-support"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
@@ -232,7 +225,7 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # once drew from the real scrape sink and the real token-verifying module run on in-crate test
 # doubles here, and the real-plugin proofs live with the composition root, `crates/busbar/tests`.)
 metrics-exporter-prometheus = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "net"] }
 # The far side of the WS-accept seam's session tests (`tests/router_session_tests.rs`): a test client
 # only. The kernel dials no WebSocket; an upstream duplex rides the connector (row 130 E3).
 tokio-tungstenite = { workspace = true }
