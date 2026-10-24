@@ -4,7 +4,7 @@
 //! THE HOOK STAGE ON THE DRIVER (`BUSBAR-1.6.0.md` Part 3, section 12, "Hooks"; ARCHITECT K5,
 //! 2026-10-02): the request-stage hooks run at the head of the route leg, after admission, over the
 //! plane's own projection of the unit's request (`project`, pure, ticketless), in the order the
-//! previous release ran them for an LLM unit:
+//! previous release ran them:
 //!
 //! 1. the REWRITE chain (`prompt: rw` gates, the global ones then the pool's): each hook sees the
 //!    request as the previous one left it; a rewrite goes back to the plane (`ProjectIn::rewrite`),
@@ -866,15 +866,16 @@ fn fault_clear(key: &str) {
     }
 }
 
-/// Map a decision: an order normalised against the candidates (an empty one abstains), a reject
-/// clamped and sanitised (for every producer), a restrict carried with its `on_empty`.
-fn map_decision(
-    decision: RoutingDecision,
+/// Map a ranking hook's answer: an order normalised against the candidates (an empty one
+/// abstains), a reject clamped and sanitised (for every producer), a restrict carried with its
+/// `on_empty`.
+fn map_answer(
+    answer: RoutingDecision,
     name: &'static str,
     candidates: &[Candidate<'_>],
     on_empty: &PolicyOnError,
 ) -> Decided {
-    match decision {
+    match answer {
         RoutingDecision::Prefer(order) => {
             let valid: HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
             match RoutingDecision::from_ranked(order, &valid) {
@@ -978,9 +979,9 @@ impl Asked<'_> {
         )
         .await
         {
-            Ok(Ok(decision)) => {
+            Ok(Ok(answer)) => {
                 fault_clear(&key);
-                let decided = map_decision(decision, policy.name(), self.candidates, on_empty);
+                let decided = map_answer(answer, policy.name(), self.candidates, on_empty);
                 let ran = applied(policy.name(), head_of(&decided), false);
                 return (decided, Some(ran));
             }
@@ -1066,7 +1067,7 @@ impl Asked<'_> {
             )
             .await
             {
-                Ok(Ok(decision)) => {
+                Ok(Ok(answer)) => {
                     fault_clear(&key);
                     crate::diag_debug!(
                         ON_ERROR_FALLBACK_ANSWERED,
@@ -1075,7 +1076,7 @@ impl Asked<'_> {
                         pool = self.pool,
                         "on_error fallback hook answered for the failed gate"
                     );
-                    return map_decision(decision, fb.policy.name(), self.candidates, &fb.on_empty);
+                    return map_answer(answer, fb.policy.name(), self.candidates, &fb.on_empty);
                 }
                 Ok(Err(e)) => {
                     if fault_enter(&key) {
@@ -1195,12 +1196,19 @@ fn narrow(keep: &mut HashSet<usize>, facts: &[CandidateFacts], tags_any: &[Strin
 /// apply in its own dialect. These bytes are never empty, so a committed rewrite never crosses as
 /// the absent blob ([`blob`] reads empty bytes as "no rewrite"); a reply naming no messages crosses
 /// as one, and the plane applies it as nothing, as 1.5.5 did
-/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines).
+/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines). The reply is
+/// serialized straight from the hook's values, never copied into a JSON tree first; its two keys
+/// keep the order a JSON object of them serializes in.
 fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "messages": rw.messages,
-        "tools": rw.tools,
-    }))
+    #[derive(serde::Serialize)]
+    struct Crossing<'a> {
+        messages: &'a [serde_json::Value],
+        tools: &'a [serde_json::Value],
+    }
+    serde_json::to_vec(&Crossing {
+        messages: &rw.messages,
+        tools: &rw.tools,
+    })
     .unwrap_or_default()
 }
 
