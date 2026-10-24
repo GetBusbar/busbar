@@ -4,7 +4,7 @@
     "Answers, for every row id in qa/evidence/inventory/*.md, whether an oracle cell",
     "(testing/shadow-oracle/cells.json, checked against the golden ledger) covers it."
   ],
-  "generated_at": "2026-10-05",
+  "generated_at": "2026-10-24",
   "family_summary": {
     "ADM": {
       "covered": 66,
@@ -4174,10 +4174,10 @@
       "line": 379,
       "status": "covered",
       "citers": [
-        "admin.ops|PostGroups|ok",
         "admin.ops|PostGroups|bad-body",
         "admin.ops|PostGroups|if-match-malformed",
         "admin.ops|PostGroups|if-match-stale",
+        "admin.ops|PostGroups|ok",
         "admin.ops|PostGroups|unauth"
       ]
     },
