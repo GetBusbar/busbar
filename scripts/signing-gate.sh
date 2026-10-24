@@ -14,8 +14,8 @@
 #   without it the same tarball is refused for the signing reason. Otherwise the arm proves nothing.
 #   One refusal is the loader's to make under the plant and is asserted instead of the load: a
 #   plugin whose Statement DECLARES a need in an egress class the host grants a first-party plugin
-#   only (operator-infrastructure: every networked auth plugin) is refused at that grant, never
-#   loaded, when unsigned. For it the arm asserts the signing refusal is gone and that grant refusal,
+#   only (provider, loopback-allowed; operator-infrastructure is any trusted plugin's, so a networked
+#   auth plugin LOADS) is refused at that grant, never loaded, when unsigned. For it the arm asserts the signing refusal is gone and that grant refusal,
 #   word for word, is the only one; any other refusal is RED as before.
 #
 # A LINKED ROW ANSWERING THE REFERENCE (busbar links busbar-store-memory, alias `memory`): the
@@ -120,7 +120,7 @@ pack "$OTHER_PRIV" "$WORK/wrongkey.tar.gz"
 # against it, not the other way round. A statement that is not one whole rendering fails the gate.
 GRANT_NEED=$(python3 - "$WORK/unsigned.tar.gz" <<'EOF'
 import json, struct, sys, tarfile
-FIRST_PARTY = {1: "provider", 2: "operator-infrastructure", 4: "loopback-allowed"}
+FIRST_PARTY = {1: "provider", 4: "loopback-allowed"}
 with tarfile.open(sys.argv[1]) as t:
     m = json.load(t.extractfile("manifest.json"))
 st = m.get("statement")
