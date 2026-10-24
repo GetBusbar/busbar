@@ -173,8 +173,8 @@ pub struct DriverConfig {
     /// The statuses the plane's tail states per dialect and reason (validated at load).
     pub refusal_statuses: Vec<RefusalStatus>,
     /// The key the caller's opaque reference is derived under, LIVE ([`CallerRefs`]: the book's
-    /// slot, which holds the key once the node binds signing material or its deployment keyset);
-    /// `None` = no book, and no reference is lent.
+    /// slot, which always holds a key: the node's signing material, else its deployment keyset,
+    /// else its per-boot key); `None` = no book, and only then is no reference lent.
     pub caller_refs: Option<CallerRefs>,
 }
 
@@ -1297,7 +1297,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 self.response_tap(true, veto.status);
                 ReasonCode::HookVeto
             }
-            hooks::Stopped::Unreadable | hooks::Stopped::Unparseable => {
+            hooks::Stopped::Unreadable | hooks::Stopped::Unparseable { .. } => {
                 // 1.5.5 answered an unreadable request a rewrite hook had to see as a gate's
                 // refusal: the response tap reports it so.
                 let status = self.status_for(ReasonCode::DecodeFailed);
@@ -1571,7 +1571,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     }
 
     /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key; the principal itself never enters a plane input.
+    /// key (its signing material, the deployment keyset, or its per-boot key); the principal
+    /// itself never enters a plane input.
     ///
     /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
     /// unit, so a driver whose book lends references never lends an empty one to a governed
