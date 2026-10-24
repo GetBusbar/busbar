@@ -2351,23 +2351,30 @@ mod transport_pin {
         (far, accepted)
     }
 
-    /// A connector whose own trust is the public roots alone, its secure entry answering the
-    /// scripted messages, keeping every line an exchange finished on: a far end under a private
-    /// root is reached only through a need whose `trust_from` names that root.
+    /// A connector whose own trust is the public roots alone, its secure entry (riding the plain
+    /// address carrier, as [`pooled_trusting`]'s does) answering the scripted messages, keeping
+    /// every line an exchange finished on: a far end under a private root is reached only through
+    /// a need whose `trust_from` names that root.
     fn pooled_public_roots() -> Connector {
-        let view = Transports::new(vec![Entry {
-            door: Arc::new(TestDoor::new(
-                "sec",
-                &["sec"],
-                &[],
-                crate::support::Knobs {
-                    secure_name: Some("localhost"),
-                    messages: Some(crate::compose::EXCHANGE_STREAM),
-                    ..crate::support::Knobs::default()
-                },
-            )),
-            alpn: Vec::new(),
-        }])
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::identity("plain")),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "sec",
+                    &["sec"],
+                    &[],
+                    crate::support::Knobs {
+                        secure_name: Some("localhost"),
+                        messages: Some(crate::compose::EXCHANGE_STREAM),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+        ])
         .unwrap();
         let tls = crate::tls::client::build_client_config(&EgressTrust::default()).unwrap();
         Connector::serving(
