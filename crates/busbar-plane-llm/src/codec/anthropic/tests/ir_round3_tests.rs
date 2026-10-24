@@ -17,14 +17,18 @@ fn sse_payloads(out: &str) -> Vec<Value> {
 
 /// Item 10: a Chat backend's `service_tier` `flex` / `scale` rides the IR attribution slot; an
 /// Anthropic client never receives it (its SDK types the member standard | priority | batch).
-/// `default` is OpenAI's standard tier. Buffered.
+/// `default` is OpenAI's standard tier. Buffered. A tier Anthropic cannot name is the schema's
+/// `null`, never `standard` in its place (DF-SITES: no substitution), so the buffered answer agrees
+/// with the stream, whose `message_delta` omits it.
+///
+/// RED on dev: `flex` and `scale` were written as `"standard"`.
 #[test]
 fn item10_unknown_served_tier_never_reaches_an_anthropic_client_buffered() {
     for (openai_tier, want) in [
-        ("flex", "standard"),
-        ("scale", "standard"),
-        ("default", "standard"),
-        ("priority", "priority"),
+        ("flex", Value::Null),
+        ("scale", Value::Null),
+        ("default", json!("standard")),
+        ("priority", json!("priority")),
     ] {
         let chat = json!({
             "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-4o",
@@ -85,10 +89,16 @@ fn item10_unknown_served_tier_never_reaches_an_anthropic_client_stream() {
             .flatten()
             {
                 assert!(
-                    ["standard", "priority", "batch"].contains(&tier.as_str().unwrap_or("")),
+                    tier.is_null()
+                        || ["standard", "priority", "batch"].contains(&tier.as_str().unwrap_or("")),
                     "{openai_tier}: an Anthropic client got tier {tier}: {out}"
                 );
             }
+            assert!(
+                p.pointer("/usage/service_tier").is_none()
+                    || p.get("type") != Some(&json!("message_delta")),
+                "{openai_tier}: the message_delta omits a tier Anthropic cannot name: {out}"
+            );
         }
     }
 }
