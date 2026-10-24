@@ -2690,18 +2690,18 @@ pub fn verify_report_with(
     judge_report(gate, report, Some(reading))
 }
 
-/// The verdict, the coverage and, with a `reading`, the budget.
-fn judge_report(
+/// THE BUDGET'S FINDINGS for `report` under `reading`: an over-budget battery and a reading that
+/// could not be taken, each one line naming the figures. REPORTED by [`judge_report`], never a
+/// failure (OWNER 2026-10-24): what keeps a battery fast is the battery, and a budget that refuses
+/// the change it slowed blocks the work the battery exists to prove. Empty within budget.
+pub fn budget_findings(
     gate: &dyn Gate,
     report: &Report<'_>,
     reading: Option<&BudgetVerdict>,
-) -> Result<(), Vec<String>> {
-    let mut errs = report.failures();
-
-    // THE BUDGET. See [`SELFTEST_BUDGETS`]: an unmeasured selftest is one that grows until the
-    // runner kills it, and a killed job is neither green nor red.
+) -> Vec<String> {
+    let mut out = Vec::new();
     if let Some(why) = reading.and_then(|r| r.refused.as_ref()) {
-        errs.push(format!(
+        out.push(format!(
             "{}: this self-test's work units could not be read against a budget of {:.0}: {why}. \
              A budget that cannot be read is refused, never guessed (Law 8).",
             gate.name(),
@@ -2718,12 +2718,29 @@ fn judge_report(
             .retake_line()
             .map(|l| format!(" Re-taken serially and still over: {l}."))
             .unwrap_or_default();
-        errs.push(format!(
+        out.push(format!(
             "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (a unit is the ruler's CPU time per pass; as taken: {}, {:.0}s of wall clock). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}{retaken}",
             gate.name(),
             report.cost(),
             report.total().as_secs_f64()
         ));
+    }
+    out
+}
+
+/// The verdict and the coverage; with a `reading`, the budget is reported ([`budget_findings`]).
+fn judge_report(
+    gate: &dyn Gate,
+    report: &Report<'_>,
+    reading: Option<&BudgetVerdict>,
+) -> Result<(), Vec<String>> {
+    let mut errs = report.failures();
+
+    // THE BUDGET IS REPORTED, NEVER RED (OWNER 2026-10-24: a budget that blocks legitimate work
+    // is the wrong gate). [`budget_findings`] is printed; the hang ceiling ([`Watchdog`]) is the
+    // one time guard that fails a run.
+    for finding in budget_findings(gate, report, reading) {
+        println!("  budget (report-only): {finding}");
     }
 
     if !report

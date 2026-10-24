@@ -1,7 +1,12 @@
 //! AN OVER-BUDGET BATTERY IS RE-TAKEN SERIALLY BEFORE IT COUNTS (ARCHITECT 2026-10-07): the budget
 //! is measured at `--jobs 1`, so a contended reading over it is taken once more at `--jobs 1` and
-//! the serial reading is the verdict. RED: a battery twice its budget serially stays red. GREEN: a
-//! battery over only under contention comes out green. No third try.
+//! the serial reading is the verdict. A battery twice its budget serially stays over; a battery over
+//! only under contention comes out within. No third try.
+//!
+//! THE BUDGET IS REPORTED, NEVER RED (OWNER 2026-10-24): a work-unit budget that refuses the change
+//! that slowed a battery blocks the work the battery proves. [`budget_findings`] names an over-budget
+//! or unreadable battery, and `verify_report_with` passes it; the hang ceiling stays the time guard
+//! that fails a run.
 //!
 //! THE UNIT IS CPU TIME (ARCHITECT 2026-10-12, Law 8): a battery's cost is the process's CPU over it
 //! ([`take_battery`]), and a reading that cannot be trusted is REFUSED — red — never guessed. The
@@ -64,16 +69,18 @@ fn the_report_is_judged_on_the_serial_reading() {
         serial: Some(2.0),
         refused: None,
     };
-    let errs = verify_report_with(gate.as_ref(), &report, &red).expect_err("over serially is red");
+    verify_report_with(gate.as_ref(), &report, &red).expect("over budget is reported, not red");
+    let found = budget_findings(gate.as_ref(), &report, Some(&red));
     assert!(
-        errs.iter().any(|e| e.contains("contended 5 → serial 2")),
-        "{errs:?}"
+        found.iter().any(|e| e.contains("contended 5 → serial 2")),
+        "{found:?}"
     );
     let green = BudgetVerdict {
         serial: Some(0.5),
         ..red.clone()
     };
     verify_report_with(gate.as_ref(), &report, &green).expect("within budget serially is green");
+    assert!(budget_findings(gate.as_ref(), &report, Some(&green)).is_empty());
 }
 
 /// A re-take whose own reading is refused makes the verdict refused, and refused is red.
@@ -88,13 +95,13 @@ fn a_refused_serial_retake_is_red() {
     );
 }
 
-/// RULING (a): the budget is judged in ONE place, `cargo xtask selftest`. RED arm of that place: a
-/// real battery, TAKEN AS ONE AND MEASURED, read against a budget it cannot meet is refused —
-/// re-taken serially first when it was taken across the cores, and still refused. (Under `cargo
+/// RULING (a): the budget is read in ONE place, `cargo xtask selftest`. A real battery, TAKEN AS ONE
+/// AND MEASURED, read against a budget it cannot meet is reported — re-taken serially first when it
+/// was taken across the cores — and the step still passes (OWNER 2026-10-24). (Under `cargo
 /// test` another test's battery may share the process, and then the reading is refused instead:
 /// red either way, which is the property.)
 #[test]
-fn the_selftest_step_refuses_an_over_budget_battery() {
+fn the_selftest_step_reports_an_over_budget_battery() {
     let cx = crate::ctx::Ctx::workspace().expect("the workspace opens");
     let gate = (find("design-docs-allowlist").expect("registered").build)();
     let report = take_battery(gate.as_ref(), &cx);
@@ -112,11 +119,12 @@ fn the_selftest_step_refuses_an_over_budget_battery() {
             "a contended reading is re-taken serially, a serial one is not"
         );
     }
-    let errs = verify_report_with(gate.as_ref(), &report, &reading)
-        .expect_err("over budget is red in the selftest step");
+    verify_report_with(gate.as_ref(), &report, &reading)
+        .expect("over budget is reported in the selftest step, not red");
+    let found = budget_findings(gate.as_ref(), &report, Some(&reading));
     assert!(
-        errs.iter().any(|e| e.contains("against a budget of")),
-        "{errs:?}"
+        found.iter().any(|e| e.contains("against a budget of")),
+        "{found:?}"
     );
 }
 
@@ -137,31 +145,35 @@ fn a_measured_battery_is_judged_on_its_cpu_over_the_ruler() {
     let reading = budget_reading_within(gate.as_ref(), &over, &cx, 1_000.0).expect("measured");
     assert_eq!(reading.contended, 2_000.0);
     assert!(reading.over() && reading.serial.is_none(), "{reading:?}");
-    let errs = verify_report_with(gate.as_ref(), &over, &reading).expect_err("twice the budget");
+    verify_report_with(gate.as_ref(), &over, &reading).expect("twice the budget is reported");
+    let found = budget_findings(gate.as_ref(), &over, Some(&reading));
     assert!(
-        errs.iter()
+        found
+            .iter()
             .any(|e| e.contains("spent 2000 work units against a budget of 1000")),
-        "{errs:?}"
+        "{found:?}"
     );
     let within = gate.selftest(&cx).with_jobs(1).with_battery(measured(500));
     let reading = budget_reading_within(gate.as_ref(), &within, &cx, 1_000.0).expect("measured");
     assert!(!reading.over(), "{reading:?}");
     verify_report_with(gate.as_ref(), &within, &reading).expect("half the budget is green");
+    assert!(budget_findings(gate.as_ref(), &within, Some(&reading)).is_empty());
 }
 
-/// A REPORT NOTHING MEASURED IS REFUSED, NOT PASSED, and so is a reading the window refused. Only
-/// a host that cannot read CPU time at all skips the budget — and says so.
+/// A REPORT NOTHING MEASURED IS REFUSED, NOT PASSED OVER, and so is a reading the window refused:
+/// each is reported. Only a host that cannot read CPU time at all skips the budget — and says so.
 #[test]
-fn an_unmeasured_or_refused_battery_is_red_and_an_unread_one_is_not_judged() {
+fn an_unmeasured_or_refused_battery_is_reported_and_an_unread_one_is_not_read() {
     let cx = crate::ctx::Ctx::workspace().expect("the workspace opens");
     let gate = (find("design-docs-allowlist").expect("registered").build)();
     let bare = gate.selftest(&cx);
     let reading = budget_reading_within(gate.as_ref(), &bare, &cx, 9_000.0).expect("judged");
     assert!(reading.over() && reading.refused.is_some(), "{reading:?}");
-    let errs = verify_report_with(gate.as_ref(), &bare, &reading).expect_err("refused is red");
+    verify_report_with(gate.as_ref(), &bare, &reading).expect("refused is reported, not red");
+    let found = budget_findings(gate.as_ref(), &bare, Some(&reading));
     assert!(
-        errs.iter().any(|e| e.contains("could not be read")),
-        "{errs:?}"
+        found.iter().any(|e| e.contains("could not be read")),
+        "{found:?}"
     );
     let refused = gate
         .selftest(&cx)
@@ -211,8 +223,8 @@ fn a_test_still_refuses_a_wrong_verdict() {
 
 /// RULING (a), THE DISPATCHER SIDE. `cargo test -p xtask` reaches `run_selftest` through
 /// `cli::main` in-process (`gate segregation --selftest` in `cli::tests` and `tests/cli.rs`), so
-/// the budget is off unless the binary turned it on — and a test process never does. RED arm: the
-/// same judge, with a budget handed to it, still refuses a battery that cannot meet it.
+/// the budget is off unless the binary turned it on — and a test process never does. With a budget
+/// handed to it, the same judge reports a battery that cannot meet it and still passes it.
 #[test]
 fn the_dispatcher_judges_the_budget_only_in_the_binary() {
     assert!(
@@ -225,10 +237,6 @@ fn the_dispatcher_judges_the_budget_only_in_the_binary() {
     let _ = report.cases();
     verify_selftest(gate.as_ref(), &report, &cx).expect("in a test process: verdict and coverage");
     verify_selftest_within(gate.as_ref(), &report, &cx, None).expect("no budget is read");
-    let errs = verify_selftest_within(gate.as_ref(), &report, &cx, Some(0.0))
-        .expect_err("with a budget, an over-budget battery is red");
-    assert!(
-        errs.iter().any(|e| e.contains("against a budget of")),
-        "{errs:?}"
-    );
+    verify_selftest_within(gate.as_ref(), &report, &cx, Some(0.0))
+        .expect("with a budget, an over-budget battery is reported, not red");
 }
