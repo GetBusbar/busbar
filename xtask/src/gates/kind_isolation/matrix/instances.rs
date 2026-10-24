@@ -771,6 +771,7 @@ pub fn measure_reserved(
     files: &[(String, String)],
     vocab: &Vocab,
     shapes: &[super::super::ShapeWord],
+    frozen: &super::frozen::Frozen,
 ) -> (Instances, Vec<String>) {
     let mut spent: BTreeSet<usize> = BTreeSet::new();
     let by_dir: BTreeMap<&str, &CrateInfo> = crates
@@ -799,7 +800,21 @@ pub fn measure_reserved(
         let Some(c) = by_dir.get(dir.as_str()) else {
             continue;
         };
-        let lits = file_literals(rel, text);
+        // A FROZEN 1.5.5 CUSTOMER-OBSERVABLE LINE IN PLACE ([`super::frozen`], ARCHITECT ruling
+        // 2026-10-21): on the same line a named artifact carried at the pinned v1.5.5, unchanged, a
+        // JSON document's literal is that release's wire (the line is skipped below), and so is a
+        // Rust artifact's real string literal, whose content is struck before the literals are read;
+        // a quoted name in a comment on that line is no literal and still counts.
+        let struck = super::frozen::literals_struck(frozen, rel, text, text);
+        let lits = file_literals(rel, struck.as_deref().unwrap_or(text));
+        let frozen_mask = super::frozen::exempt_lines(frozen, rel, text);
+        // A 1.5.x CONFIG WORD THE MIGRATOR WRITES, AT ITS ONE DECLARATION (architect ruling
+        // 2026-10-23, addition to R-3; [`super::config_words::FROZEN_CONFIG_LITERALS`]).
+        let frozen_decl_lines: Vec<&str> = if super::config_words::holds_frozen_literal(rel) {
+            text.lines().collect()
+        } else {
+            Vec::new()
+        };
         let reserving: Vec<usize> = shapes
             .iter()
             .enumerate()
@@ -831,6 +846,19 @@ pub fn measure_reserved(
             });
             if let Some(i) = reserved {
                 spent.insert(i);
+                continue;
+            }
+            if frozen_mask
+                .as_ref()
+                .is_some_and(|m| super::frozen::at(m, *line))
+            {
+                continue;
+            }
+            let line_text = line
+                .checked_sub(1)
+                .and_then(|i| frozen_decl_lines.get(i).copied())
+                .unwrap_or("");
+            if super::config_words::frozen_literal(rel, line_text, lit) {
                 continue;
             }
             if let Some(w) = COLLIDING_LITERALS.iter().find(|w| **w == lit.as_str()) {
@@ -1053,7 +1081,9 @@ pub fn registry_aliases(text: &str) -> Vec<(String, String, String)> {
 /// ONE INSTANCE NAME PER AXIS, read off the tree's own vocabulary — never typed into a fixture.
 /// A module-name constant is preferred (it is the compiled-in name the breach is made of); an axis
 /// with none falls back to its first census id.
-fn one_name_per_axis(cx: &crate::ctx::Ctx) -> Result<Vec<(&'static str, String)>, String> {
+pub(super) fn one_name_per_axis(
+    cx: &crate::ctx::Ctx,
+) -> Result<Vec<(&'static str, String)>, String> {
     let mut crates = super::super::census(cx)?;
     let (planes, ports) = super::super::vocabularies(&crates);
     super::super::assign_instances(&mut crates, &planes, &ports);
@@ -1440,6 +1470,22 @@ pub fn selftest<'a>(
         "a `[[shape-word]]` row reserves the one constant it names",
         &[ROW_MATRIX],
         reserved(shape, "PLANTED_PLACEMENT_KEY"),
+    ));
+    // …AND A RESERVATION THIS BRANCH WROTE IS A RESERVATION NOBODY GRANTED (row 159, XC2#1). The
+    // same row, minted beside the literal it swallows, with no row struck anywhere: the hit never
+    // reaches a Law 0 cell, so the merge-base row refuses the row itself.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[shape-word]]` row the merge-base ledger does not carry is refused unless one is \
+         struck (kind-isolation:law0-base)",
+        &[super::ROW_LAW0_BASE],
+        reserved(shape, "PLANTED_PLACEMENT_KEY"),
+        &[
+            "shape-word-minted",
+            "planted_shape.rs",
+            "PLANTED_PLACEMENT_KEY",
+        ],
     ));
     report.push(prove_rows_red(
         cx,
