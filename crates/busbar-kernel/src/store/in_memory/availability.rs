@@ -361,11 +361,11 @@ impl LaneRuntime for HealthState {
         self.cooldown_remaining_for(pool, lane, now)
     }
 
-    fn record_success_in(&self, pool: &str, lane: usize) {
-        self.record_success_for(pool, lane);
+    fn record_success_in(&self, pool: &str, lane: usize, now: u64) {
+        self.record_success_for(pool, lane, now);
     }
 
-    fn record_probe_success_all_cells(&self, lane: usize) {
+    fn record_probe_success_all_cells(&self, lane: usize, now: u64) {
         let ls = self.get_lane(lane);
         // Administratively-dead lane: count the success for observability (matching
         // `record_success_for`'s dead-lane branch) but do not touch the breaker. Bump `ok` exactly
@@ -374,7 +374,6 @@ impl LaneRuntime for HealthState {
             ls.ok.add();
             return;
         }
-        let now = Self::now_secs();
         // `record_success` pushes the success outcome into every cell's window (the default cell —
         // IS the `LaneState` — and every existing per-pool cell, the SAME windows the failed-probe
         // path trips) and runs the HalfOpen→Closed CAS. It does NOT touch `ok`/`err`, so it never
@@ -407,6 +406,17 @@ impl LaneRuntime for HealthState {
         self.record_failure_for(pool, lane, Self::now_secs(), cfg, retry_after)
     }
 
+    fn record_transient_in_at(
+        &self,
+        pool: &str,
+        lane: usize,
+        now: u64,
+        cfg: &BreakerCfg,
+        retry_after: Option<u64>,
+    ) -> bool {
+        self.record_failure_for(pool, lane, now, cfg, retry_after)
+    }
+
     fn record_rate_limit_in(
         &self,
         pool: &str,
@@ -423,7 +433,7 @@ impl LaneRuntime for HealthState {
         self.record_hard_down_for("", lane, reason);
     }
 
-    fn record_hard_down_all_cells(&self, lane: usize, reason: &str) -> bool {
+    fn record_hard_down_all_cells(&self, lane: usize, reason: &str, now: u64) -> bool {
         // Mirror `record_probe_failure_all_cells` exactly: operate on the per-pool cell Arcs while
         // holding the `pool_cells` lock, applying the SAME cell mutation `record_hard_down_for` does
         // (sticky Open + cooldown, probe released) — NOT by re-calling `record_hard_down_for`, which
@@ -440,7 +450,6 @@ impl LaneRuntime for HealthState {
             cooldown_secs = hard_down_cooldown_secs,
             "lane hard-down (all cells); sticky cooldown (recovers via half-open probe)"
         );
-        let now = Self::now_secs();
         // The one breaker's fan-out: the default cell and every pool cell registered for this lane,
         // each under its own transition lock. `true` iff the DEFAULT cell was a genuine fresh trip
         // (Closed beforehand), so a persistently-dead lane's recovery-probe cycle counts nothing.
@@ -451,11 +460,10 @@ impl LaneRuntime for HealthState {
         default_was_closed
     }
 
-    fn recover_lane(&self, lane: usize) {
+    fn recover_lane(&self, lane: usize, now: u64) {
         // A health probe tests the UPSTREAM, which is shared across pools — so a successful probe
         // recovers EVERY cell for this lane (the default/direct-route cell and all per-pool cells),
         // clearing both a tripped (non-Closed) breaker AND a soft cooldown on a Closed cell.
-        let now = Self::now_secs();
         // Lock-free pre-filter: skip cells that are plainly Closed-and-cooled so we don't take the
         // transition lock (and, on close, the SWRR shard lock) for the common already-healthy case.
         // It returns the cooldown value it OBSERVED (`Some(observed)`) so the under-lock close can
@@ -488,12 +496,12 @@ impl LaneRuntime for HealthState {
         _what: &str,
         resolve_cfg: &dyn Fn(&str) -> BreakerCfg,
         retry_after: Option<u64>,
+        now: u64,
     ) {
         // Administratively-dead lanes ignore failure recording (matches record_failure_for).
         if self.get_lane(lane).dead.load(Ordering::Relaxed) {
             return;
         }
-        let now = Self::now_secs();
         // Default cell (direct/ad-hoc routes) — resolved against the `""` (no-pool) config. The
         // returned trip bool is intentionally discarded: the out-of-band prober does not emit
         // `BREAKER_TRIPS_TOTAL` (that counter is reserved for the organic request path). `retry_after`

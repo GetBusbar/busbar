@@ -245,6 +245,7 @@ admin.plugins|type-hooks@hooks-webrequest
 admin.plugins|type-missing@hooks-webrequest
 admin.plugins|type-secret@hooks-webrequest
 admin.plugins|type-store@hooks-webrequest
+auth.lifecycle|aws-credential-chain-without-keys
 auth.lifecycle|key-expiry
 auth.lifecycle|key-revoke
 auth.lifecycle|key-rotate

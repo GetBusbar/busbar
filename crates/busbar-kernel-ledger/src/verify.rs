@@ -3,8 +3,9 @@
 
 //! Verification: everything that has to be true between two checkpoints.
 //!
-//! One entry point, five kinds of answer, and each of them names something an operator would do
-//! differently. A verifier that returns a boolean tells nobody anything, gets run once, and is then
+//! Two entry points — [`verify`], the books against the last sealed checkpoint, and
+//! [`sequences_are_monotonic`], one checkpoint's chain heads against the one before it — and every
+//! kind of answer either gives names something an operator would do differently. A verifier that returns a boolean tells nobody anything, gets run once, and is then
 //! ignored — so this one returns findings.
 //!
 //! Every window is measured by the identity alone. A window is never treated as closed: a line
@@ -37,6 +38,22 @@ pub enum Finding {
         /// Where it is now.
         now: u64,
     },
+    /// A node's chain head that the earlier checkpoint held is not in the newer one at all: the
+    /// chain it named was removed between the two seals.
+    ChainHeadRemoved {
+        /// Which node.
+        node: u64,
+        /// The sequence the earlier checkpoint held it at.
+        was: u64,
+    },
+    /// A node's chain head is at the same sequence in both checkpoints but the entry there hashes
+    /// differently: the record at that position was rewritten after the earlier seal.
+    ChainHeadRewritten {
+        /// Which node.
+        node: u64,
+        /// The sequence both checkpoints name.
+        node_seq: u64,
+    },
     /// The anchored head is not the checkpoint being verified against.
     AnchorHeadDiffers {
         /// What the anchor says.
@@ -49,7 +66,7 @@ pub enum Finding {
     /// A balance the checkpoint sealed is no longer in the book.
     ///
     /// Its own finding rather than an imbalance, because the two are different events and only one
-    /// of them is a defect. A window retired by `Book::retain_from` is gone on purpose — it was
+    /// of them is a defect. A window retired by `Ledger::retire_windows` is gone on purpose — it was
     /// sealed into a checkpoint, signed and shipped, and the book stopped being the record of it.
     /// Measuring what the checkpoint holds against the zeros the book now reads back answers a
     /// question nobody asked, and answers it two different wrong ways depending on the figures:
@@ -76,6 +93,14 @@ impl std::fmt::Display for Finding {
             Finding::SequenceNotMonotonic { node, was, now } => write!(
                 f,
                 "node {node}'s sequence went from {was} to {now} — records were REMOVED or REPLAYED"
+            ),
+            Finding::ChainHeadRemoved { node, was } => write!(
+                f,
+                "node {node}'s chain head at sequence {was} is missing from the newer checkpoint — its chain was REMOVED"
+            ),
+            Finding::ChainHeadRewritten { node, node_seq } => write!(
+                f,
+                "node {node}'s entry at sequence {node_seq} hashes differently in the newer checkpoint — it was REWRITTEN"
             ),
             Finding::AnchorHeadDiffers { anchored, expected } => write!(
                 f,
@@ -158,18 +183,37 @@ pub fn verify(
     findings
 }
 
-/// Check that no node's sequence went backwards between two checkpoints.
+/// Check every chain head the earlier checkpoint held against the newer one.
+///
+/// Walked from `since`, because every way a head can go wrong is a head `since` already held: one
+/// missing from `now` is a chain that was removed ([`Finding::ChainHeadRemoved`]); one at a lower
+/// sequence went backwards ([`Finding::SequenceNotMonotonic`]); and one at the same sequence with a
+/// different hash is an entry rewritten in place ([`Finding::ChainHeadRewritten`]). A head at the
+/// same sequence and hash is an idle node, and a head further on is a node that posted — both
+/// ordinary. A node `now` holds and `since` did not is a chain that began between the two seals,
+/// which is not a defect either.
 pub fn sequences_are_monotonic(since: &Checkpoint, now: &Checkpoint) -> Vec<Finding> {
     let mut findings = Vec::new();
-    for head in &now.heads {
-        if let Some(before) = since.heads.iter().find(|h| h.node == head.node) {
-            if head.node_seq < before.node_seq {
+    for before in &since.heads {
+        match now.heads.iter().find(|h| h.node == before.node) {
+            None => findings.push(Finding::ChainHeadRemoved {
+                node: before.node,
+                was: before.node_seq,
+            }),
+            Some(head) if head.node_seq < before.node_seq => {
                 findings.push(Finding::SequenceNotMonotonic {
                     node: head.node,
                     was: before.node_seq,
                     now: head.node_seq,
                 });
             }
+            Some(head) if head.node_seq == before.node_seq && head.hash != before.hash => {
+                findings.push(Finding::ChainHeadRewritten {
+                    node: head.node,
+                    node_seq: head.node_seq,
+                });
+            }
+            Some(_) => {}
         }
     }
     findings

@@ -10,9 +10,8 @@
 # WORKSPACE DEPENDENCIES: busbar-contract only (the capability token and the shared upstream rows
 # `classify` re-exports). Concretely this means: no `axum`, and no `tracing` for the "unrecognized
 # error_map value" diagnostic (routed through an injectable sink instead — see the `// contract:`
-# note on `classify::Diagnostics`). The served path's own normalizer (`normalize`, #83a O1) moved in
-# verbatim with the `httpdate` read it has always made; its unrecognized-value report is injected
-# the same way.
+# note on `classify::Diagnostics`). The unit reads facts only: no status band, no header and no
+# vendor's status is read here (Law 1); a plane's own reading of its far end's error is the plane's.
 [package]
 name = "busbar-kernel-breaker"
 version = "1.6.0"
@@ -28,6 +27,3 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
-# The served path's `Retry-After` read (`normalize::parse_retry_after`) accepts every RFC 9110
-# HTTP-date form a provider may send, through the one date parser the host has always used.
-httpdate = { workspace = true }

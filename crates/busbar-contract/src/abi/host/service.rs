@@ -899,6 +899,26 @@ pub struct HookCallIn {
     pub into: ServiceBufs,
 }
 
+impl HookCallIn {
+    /// The `in` of a `hook.call`, built from its parts, so a caller names no field of it.
+    #[must_use]
+    pub fn over(
+        head: ServiceHead,
+        stage: u32,
+        from: u32,
+        prompt: *const crate::abi::hook::PromptView,
+        into: ServiceBufs,
+    ) -> Self {
+        Self {
+            head,
+            stage,
+            from,
+            prompt,
+            into,
+        }
+    }
+}
+
 /// `hook.call` stage: the calling unit's decision gates.
 pub const HOOK_GATE: u32 = 0;
 /// `hook.call` stage: the calling unit's rewrite chain.

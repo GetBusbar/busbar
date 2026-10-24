@@ -1,5 +1,0 @@
-{
- "binary": "fixture",
- "version": "busbar 1.5.5 cross-dialect Anthropic stream (golden/1.5.5 llm__anthropic__openai__request__ok_stream: its event sequence and its `event: ping` after message_start), with every member the pinned Anthropic spec REQUIRES and 1.5.5 omitted set to its declared null",
- "recorded": 1
-}

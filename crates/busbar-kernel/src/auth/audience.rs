@@ -49,14 +49,23 @@
 
 use base64::Engine as _;
 
-/// What could be established about a presented bearer's audience binding.
-///
-/// The enum itself relocated to the neutral seam (`busbar_kernel::plane_host::AudienceBinding`) so
-/// a plane reads the [`inspect_bearer`] verdict without naming this core auth module. Re-exported
-/// at its original path so core's own callers (the auth-chain pre-filter, `oauth_as`) and every
-/// variant name are unchanged; the JUDGEMENT below stays here, since it reaches core's governance
-/// token prefix.
-pub use busbar_kernel::plane_host::AudienceBinding as Binding;
+/// What could be established about a presented bearer's RFC 8707 audience binding — the outcome of
+/// the audience pre-filter (`crate::auth::audience::inspect_bearer`), for credentials busbar did
+/// not mint. The JUDGEMENT ([`inspect_bearer`]) stays here beside it, since it reaches core's
+/// governance token prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Binding {
+    /// A busbar-signed token. The real audience check happens in the verifier, which has the
+    /// signature and the claims; the pre-filter must not pre-judge it.
+    Deferred,
+    /// A JWT whose `aud` includes the expected value. Not an admission — the chain still verifies it.
+    Bound,
+    /// A JWT whose `aud` does not include the expected value, or which carries no `aud` at all. Both
+    /// are refused for the same reason: minted for someone else, or for nobody in particular.
+    Mismatch,
+    /// Not a JWT and not a busbar token: nothing to read. Refused.
+    Opaque,
+}
 
 /// Establish what can be established about `token`'s binding to `expected_aud`.
 ///

@@ -22,9 +22,8 @@
 //!   same `TypeId`), so byte-identity is preserved with no re-encode round-trip.
 //! - **Driven by small plane callbacks.** The plane supplies its record SHAPE, its terminal STATUSES
 //!   (as the `terminal` flag on [`HandleMeta`]), its event VOCAB, and its provenance DIGEST through
-//!   the closures the lifecycle/rehydrate entry points take. This is the same boxed-callback
-//!   idiom [`crate::plane_host::scope`] uses to hold reclaim/settle resources without naming a plane
-//!   type. No plane noun appears in this module.
+//!   the closures the lifecycle/rehydrate entry points take: boxed callbacks hold the reclaim/settle
+//!   resources without naming a plane type. No plane noun appears in this module.
 //!
 //! ## Lock discipline — the per-handle shard (outer map lock + per-handle inner lock)
 //!

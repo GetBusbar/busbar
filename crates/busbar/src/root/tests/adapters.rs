@@ -495,7 +495,7 @@ fn the_root_breaker_observes_into_the_kernels_own_cells() {
     handle
         .load()
         .store
-        .record_hard_down_all_cells(1, "one cell set");
+        .record_hard_down_all_cells(1, "one cell set", now);
     assert!(
         !breaker.ready("pool", DestinationId::new(1), now, &route_token()),
         "the root adapter answers with the trip the kernel recorded"

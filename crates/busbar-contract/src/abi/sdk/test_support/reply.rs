@@ -27,6 +27,7 @@
 
 use core::ffi::c_void;
 use core::fmt;
+use core::marker::PhantomData;
 use core::mem::size_of;
 use core::ptr;
 
@@ -34,7 +35,10 @@ use zeroize::Zeroizing;
 
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome};
 use crate::abi::mechanism::check::{Fault, HARD_MAX_BYTES, STATEMENT_LIST_MAX};
+use crate::abi::mechanism::lifecycle::slot;
 use crate::abi::sdk::door::{AbiIn, AbiOut};
+
+use super::test_in::TestIn;
 
 mod sealed {
     use crate::abi::mechanism::call::{OutHead, Outcome};
@@ -53,6 +57,10 @@ mod sealed {
         fn take(&self, outcome: Outcome, token: Token) -> <Self as super::Reply>::Owned
         where
             Self: super::Reply;
+        /// The instance an `open` `out` states; NULL for every other `out`.
+        fn opened(&self, _: Token) -> *mut core::ffi::c_void {
+            core::ptr::null_mut()
+        }
     }
 }
 
@@ -77,6 +85,35 @@ pub struct Called<O: Reply> {
     pub error: Option<String>,
     /// The `out`'s own fields, copied.
     pub owned: O::Owned,
+    /// The instance an `open` through [`call_in`] or [`call_hosted_in`] answered READY with,
+    /// until [`Called::take_instance`] takes it.
+    instance: Option<Instance<'static>>,
+}
+
+impl<O: Reply> Called<O> {
+    /// The instance this call's `open` answered READY with: `Some` once, for an `open` through
+    /// [`call_in`] or [`call_hosted_in`] that answered READY with a non-NULL instance, `None` for
+    /// every other call and every later take.
+    pub fn take_instance(&mut self) -> Option<Instance<'static>> {
+        self.instance.take()
+    }
+}
+
+/// An INSTANCE a door's `open` answered READY through [`call_in`] (status row 159): the only
+/// instance [`call_in`] hands a slot. Its fields are private, it is neither `Clone` nor `Copy`, and
+/// it is made in one place only, [`Called::take_instance`] of an `open` that answered READY, at
+/// most once. It names the door it was opened on, and [`close_in`] takes it by value: no slot is
+/// entered on a forged pointer, another door's instance, or one already closed.
+///
+/// `'h` is what its `open` was lent (status row 194). #1471 ties an instance [`call_hosted_in`]
+/// opens to its [`FakeHost`](super::fake::FakeHost) (`Instance<'h>`); here [`Called`] carries no
+/// lifetime, so every instance is `Instance<'static>`, and a test drops it before its host, as it
+/// must on #1471.
+#[derive(Debug)]
+pub struct Instance<'h> {
+    ptr: *mut c_void,
+    door: &'static crate::abi::mechanism::door::Door,
+    lent: PhantomData<&'h ()>,
 }
 
 /// Run `op` on `instance` over `input` and `out`, and copy the reply before returning. The heads
@@ -106,8 +143,128 @@ pub fn call_hosted<I: AbiIn, O: Reply>(
     run(op, instance, input.input, out)
 }
 
+/// Enter the slot `op` of a door the contract's macro built, on `instance` (`None` for `validate`
+/// and `open`; that door's READY `open`'s otherwise) over `input`, a [`TestIn`] whose every pointer
+/// borrows memory that outlives the call, and copy the reply before returning (status rows 159 and
+/// 194). An `open` that answers READY leaves its instance in [`Called::take_instance`]. #1471
+/// states its `call` as this, under this name too; `call_in(..)` compiles before and after.
+///
+/// # Panics
+///
+/// As [`call`], or the instance is missing, present where none is taken, another door's, or `op`
+/// is `close` ([`close_in`]).
+pub fn call_in<I: AbiIn, O: Reply>(
+    op: super::ViewOp,
+    instance: Option<&Instance<'_>>,
+    input: &TestIn<'_, I>,
+    out: O,
+) -> Called<O> {
+    input.check();
+    op.check_in::<I>();
+    let (raw, door, index) = op.parts();
+    let at = on(op, instance);
+    run_op(
+        raw,
+        (index == slot::OPEN).then_some(door),
+        at,
+        input.input,
+        out,
+    )
+}
+
+/// [`call_in`] over an `open` `in` a [`FakeHost`](super::fake::FakeHost) lent its tables to
+/// ([`FakeHost::lend_in`](super::fake::FakeHost::lend_in)): the borrow of the host and of every
+/// byte the `in` names lasts the whole call. #1471 states its `call_hosted` as this, under this
+/// name too.
+///
+/// # Panics
+///
+/// As [`call_in`].
+pub fn call_hosted_in<'h, I: AbiIn, O: Reply>(
+    op: super::ViewOp,
+    instance: Option<&Instance<'h>>,
+    input: &super::fake::LentIn<'h, I>,
+    out: O,
+) -> Called<O> {
+    op.check_in::<I>();
+    let (raw, door, index) = op.parts();
+    let at = on(op, instance);
+    run_op(
+        raw,
+        (index == slot::OPEN).then_some(door),
+        at,
+        input.input,
+        out,
+    )
+}
+
+/// `close` of `instance`, which this takes: the instance is gone once its door closed it. #1471
+/// states its `close` as this, under this name too.
+///
+/// # Panics
+///
+/// As [`call_in`], or `op` is not `close`, or the instance is another door's.
+pub fn close_in<'h, I: AbiIn, O: Reply>(
+    op: super::ViewOp,
+    instance: Instance<'h>,
+    input: &TestIn<'h, I>,
+    out: O,
+) -> Called<O> {
+    input.check();
+    op.check_in::<I>();
+    let (raw, door, index) = op.parts();
+    assert_eq!(
+        index,
+        slot::CLOSE,
+        "reply::close_in: the op is not its door's close"
+    );
+    assert!(
+        core::ptr::eq(door, instance.door),
+        "reply::close_in: the instance is another door's"
+    );
+    run_op(raw, None, instance.ptr, input.input, out)
+}
+
+/// The instance pointer `op` is entered on: NULL for `validate` and `open`, else `instance`'s.
+fn on(op: super::ViewOp, instance: Option<&Instance<'_>>) -> *mut c_void {
+    let (_, door, index) = op.parts();
+    assert_ne!(
+        index,
+        slot::CLOSE,
+        "reply::call_in: `close` takes its instance by value (reply::close_in)"
+    );
+    match (index, instance) {
+        (slot::VALIDATE | slot::OPEN, None) => ptr::null_mut(),
+        (slot::VALIDATE | slot::OPEN, Some(_)) => {
+            panic!("reply::call_in: `validate` and `open` run on no instance")
+        }
+        (_, None) => {
+            panic!("reply::call_in: slot {index} runs on an instance its door's open answered")
+        }
+        (_, Some(i)) => {
+            assert!(
+                core::ptr::eq(door, i.door),
+                "reply::call_in: the instance is another door's"
+            );
+            i.ptr
+        }
+    }
+}
+
 /// [`call`]'s body, over the caller's `in`, copied.
-fn run<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, mut input: I, mut out: O) -> Called<O> {
+fn run<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, input: I, out: O) -> Called<O> {
+    run_op(op, None, instance, input, out)
+}
+
+/// The crossing: `op` entered over private copies of the `in` and `out`, the reply copied, and
+/// for an `open` (`opens` its door) that answered READY, its instance kept as an [`Instance`].
+fn run_op<I: AbiIn, O: Reply>(
+    op: Op,
+    opens: Option<&'static crate::abi::mechanism::door::Door>,
+    instance: *mut c_void,
+    mut input: I,
+    mut out: O,
+) -> Called<O> {
     out.clear(Token(()));
     out.head().size = size_of::<O>() as u32;
     // SAFETY: `I: AbiIn` is `#[repr(C)]` and leads with an `InHead` (its unsafe contract), so the
@@ -121,12 +278,22 @@ fn run<I: AbiIn, O: Reply>(op: Op, instance: *mut c_void, mut input: I, mut out:
     let outcome = raw.outcome();
     let error = optional_text(out.head().error, "head.error");
     let owned = out.take(outcome, Token(()));
+    let opened = out.opened(Token(()));
     out.clear(Token(()));
+    let instance = match opens {
+        Some(door) if outcome == Outcome::Ready && !opened.is_null() => Some(Instance {
+            ptr: opened,
+            door,
+            lent: PhantomData,
+        }),
+        _ => None,
+    };
     Called {
         outcome,
         out,
         error,
         owned,
+        instance,
     }
 }
 
@@ -278,6 +445,9 @@ impl sealed::Take for crate::abi::mechanism::lifecycle::OpenOut {
         clear_head(&mut self.head);
     }
     fn take(&self, _: Outcome, _: Token) {}
+    fn opened(&self, _: Token) -> *mut c_void {
+        self.instance
+    }
 }
 impl Reply for crate::abi::mechanism::lifecycle::OpenOut {
     type Owned = ();

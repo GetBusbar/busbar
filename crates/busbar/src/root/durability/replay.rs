@@ -214,7 +214,7 @@ impl<'v, 'h> Replayer<'v, 'h> {
                     if self.keep {
                         posting.reserved = i128::from(figures.reserved);
                         posting.settled = i128::from(figures.settled);
-                        posting.overdraft = i128::from(figures.overdraft);
+                        posting.overdraft = i128::from(figures.overdraft());
                         self.read.push(posting);
                     }
                 }
@@ -309,15 +309,16 @@ fn figures_as_written(posting: &Posting) -> Result<Option<Figures>, Unplaced> {
             None => Ok(None),
         };
     }
+    // The overdraft a figures-era record wrote is still read, so a negative one is still unplaced;
+    // the book carries the one the ledger reckons from the other two (`Figures::overdraft`).
     match (
         u64::try_from(posting.reserved),
         u64::try_from(posting.settled),
         u64::try_from(posting.overdraft),
     ) {
-        (Ok(reserved), Ok(settled), Ok(overdraft)) => Ok(Some(Figures {
+        (Ok(reserved), Ok(settled), Ok(_)) => Ok(Some(Figures {
             reserved,
             settled,
-            overdraft,
             fee_count: fee_count_of(posting),
         })),
         _ => Err(Negative),
@@ -361,7 +362,6 @@ fn derived_figures(
     Ok(Some(Figures {
         reserved,
         settled,
-        overdraft: settled.saturating_sub(reserved),
         fee_count: fee_count_of(posting),
     }))
 }

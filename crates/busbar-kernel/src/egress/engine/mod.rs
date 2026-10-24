@@ -801,7 +801,7 @@ mod tunnel {
                     match bare.parse::<IpAddr>() {
                         Ok(ip) if ip != *addr => Err(format!(
                             "a pinned governed egress connects only to the address its guard judged \
-                             ({addr}); the HTTP client asked to dial the literal `{target_host}`, \
+                             ({addr}); the egress client asked to dial the literal `{target_host}`, \
                              which no guard judged"
                         )
                         .into()),

@@ -203,6 +203,12 @@ impl From<Verdict> for Answer {
     }
 }
 
+/// `VerifyOp` over the host services a real host's `open` handed (status row 194). #1471 ties
+/// `VerifyOp` to the tables its services were read from (`VerifyOp<'t>`) and states this alias as
+/// `VerifyOp<'static>`; a plugin names it where it names the op's type, and the same spelling
+/// compiles before and after.
+pub type StaticVerifyOp = VerifyOp;
+
 /// ONE `verify`'S HOST CALLS, on its ticket: what [`VerifyPlugin::verify_ticketed`] is handed. Each
 /// service it makes is issued the call's next completion handle, counted from `0` on every entry,
 /// so a body that runs again from the top on its RESUME (or on the host's re-call after a short

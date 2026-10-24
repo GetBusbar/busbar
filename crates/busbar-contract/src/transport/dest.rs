@@ -18,15 +18,15 @@ use core::fmt;
 /// business, and nothing about a certificate name is a child process's, so neither collapses into
 /// the other and neither is a key on the other.
 ///
-/// Everything a particular FAMILY needs beside its shape is a key. There was a third arm, `Grpc`,
-/// which was a `Socket` plus one `method` field — and because every reader below matches the arms
-/// by name rather than falling through a catch-all (deliberately: a catch-all would silently give a
-/// new family no program, no arguments and no environment, and the first thing anyone would learn
-/// is that it failed to dial), that one field cost six accessors an arm apiece and every reader in
-/// the tree an edit. The shape was not new. Only the fact was. So the fact is now a declared entry
-/// in [`UpstreamAddress::extras`]'s keyed map, under the same reserved key the arrival grammar
-/// already spells a request method with, and a fourth family that needs a fact of its own adds a
-/// key and edits nothing.
+/// Everything a particular FAMILY needs beside its shape is a key. There was a third arm, for the
+/// call-per-path family, which was a `Socket` plus one `method` field — and because every reader
+/// below matches the arms by name rather than falling through a catch-all (deliberately: a
+/// catch-all would silently give a new family no program, no arguments and no environment, and the
+/// first thing anyone would learn is that it failed to dial), that one field cost six accessors an
+/// arm apiece and every reader in the tree an edit. The shape was not new. Only the fact was. So
+/// the fact is now a declared entry in [`UpstreamAddress::extras`]'s keyed map, under the same
+/// reserved key the arrival grammar already spells a request method with, and a fourth family that
+/// needs a fact of its own adds a key and edits nothing.
 ///
 /// The map is CLAIM-DRIVEN in both directions, exactly as the reserved ingress fact keys are. A
 /// transport reads the keys it understands through [`UpstreamAddress::extra`] and does not see the
@@ -49,7 +49,8 @@ use core::fmt;
 /// formatted, and both are outside this tree's reading.
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum UpstreamAddress {
-    /// A socket the byte-stream families connect to: `tcp`, `tls`, `http`, `ws`, `grpc`.
+    /// A socket the byte-stream families connect to: every transport that dials a peer, plain or
+    /// sealed, however it frames what it sends.
     ///
     /// `authority` is the dial target as configured (`host:port`, or a URL for the families whose
     /// dial target is one). `sni` is the name a certificate must have been issued for, where the
@@ -64,7 +65,8 @@ pub enum UpstreamAddress {
         /// What this destination declares beyond the shape, as name/value pairs.
         extras: &'static [(&'static str, &'static str)],
     },
-    /// A program `stdio` spawns, with the argument vector and environment it is spawned under.
+    /// A program a child-process transport spawns, with the argument vector and environment it is
+    /// spawned under.
     ///
     /// The environment is named rather than inherited: a child that inherits the node's environment
     /// inherits its credentials, and an empty list is the posture a transport should default to.

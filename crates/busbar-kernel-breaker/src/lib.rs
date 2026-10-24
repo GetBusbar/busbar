@@ -41,13 +41,10 @@ pub mod cell;
 pub mod cfg;
 pub mod classify;
 pub mod journal;
-/// THE LEGACY ENGINES' NORMALIZER, NOT A BREAKER INPUT. The retiring engines read it through
-/// `busbar-kernel`'s `breaker` module until D2 deletes them with it; this unit never calls it, and
-/// no new caller may.
-pub mod normalize;
 pub mod port;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
@@ -208,8 +205,11 @@ pub struct BreakerUnit<J: JournalSink = NoopJournal> {
     /// destination is touched.
     pools_by_destination: RwLock<HashMap<DestinationId, Vec<String>>>,
     budgets: RwLock<HashMap<DestinationId, Arc<LifetimeBudget>>>,
-    hard_down_cooldown_secs: u64,
-    max_honored_retry_after_secs: u64,
+    /// Atomics, not plain fields: a unit that outlives one configuration generation (the plane
+    /// breaker store is process-lifetime) takes each new generation's `limits.*` through
+    /// [`Self::set_limits`] without being rebuilt and losing its learned cells.
+    hard_down_cooldown_secs: AtomicU64,
+    max_honored_retry_after_secs: AtomicU64,
     journal: J,
 }
 
@@ -233,8 +233,8 @@ impl<J: JournalSink> BreakerUnit<J> {
             cells: RwLock::new(HashMap::new()),
             pools_by_destination: RwLock::new(HashMap::new()),
             budgets: RwLock::new(HashMap::new()),
-            hard_down_cooldown_secs: DEFAULT_HARD_DOWN_COOLDOWN_SECS,
-            max_honored_retry_after_secs: DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
+            hard_down_cooldown_secs: AtomicU64::new(DEFAULT_HARD_DOWN_COOLDOWN_SECS),
+            max_honored_retry_after_secs: AtomicU64::new(DEFAULT_MAX_HONORED_RETRY_AFTER_SECS),
             journal,
         }
     }
@@ -242,13 +242,22 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// Override the hard-down sticky cooldown and the absolute requested-wait honoring ceiling
     /// (1.5.5's `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`).
     pub fn with_limits(
-        mut self,
+        self,
         hard_down_cooldown_secs: u64,
         max_honored_retry_after_secs: u64,
     ) -> Self {
-        self.hard_down_cooldown_secs = hard_down_cooldown_secs;
-        self.max_honored_retry_after_secs = max_honored_retry_after_secs;
+        self.set_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
         self
+    }
+
+    /// [`Self::with_limits`] on a unit already in service: the next hard-down arms the new sticky
+    /// cooldown and the next honoured wait is clamped to the new ceiling; every learned cell stays
+    /// as it is. A cooldown already armed keeps the `until` it was armed with.
+    pub fn set_limits(&self, hard_down_cooldown_secs: u64, max_honored_retry_after_secs: u64) {
+        self.hard_down_cooldown_secs
+            .store(hard_down_cooldown_secs, Ordering::Relaxed);
+        self.max_honored_retry_after_secs
+            .store(max_honored_retry_after_secs, Ordering::Relaxed);
     }
 
     /// Declare a destination's lifetime request budget. `max_requests < 0` means unlimited
@@ -279,12 +288,12 @@ impl<J: JournalSink> BreakerUnit<J> {
 
     /// The sticky cooldown a hard-down trip arms (see [`Self::with_limits`]).
     pub fn hard_down_cooldown_secs(&self) -> u64 {
-        self.hard_down_cooldown_secs
+        self.hard_down_cooldown_secs.load(Ordering::Relaxed)
     }
 
     /// The absolute ceiling on an honored upstream requested wait (see [`Self::with_limits`]).
     pub fn max_honored_retry_after_secs(&self) -> u64 {
-        self.max_honored_retry_after_secs
+        self.max_honored_retry_after_secs.load(Ordering::Relaxed)
     }
 
     /// Remaining lifetime budget for a destination, or `None` if unlimited or never declared
@@ -403,11 +412,11 @@ impl<J: JournalSink> BreakerUnit<J> {
     /// fresh (it was Closed beforehand), for a trip-count metric.
     pub fn hard_down_all(&self, destination: DestinationId, now: u64) -> bool {
         let default_cell = self.cell("", destination);
-        let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs);
+        let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs());
 
         for pool in self.named_pools(destination) {
             let cell = self.cell(&pool, destination);
-            let _ = cell.hard_down(now, self.hard_down_cooldown_secs);
+            let _ = cell.hard_down(now, self.hard_down_cooldown_secs());
         }
         default_was_fresh
     }
@@ -480,7 +489,7 @@ impl<J: JournalSink> BreakerUnit<J> {
                             now,
                             &cfg,
                             retry_after,
-                            self.max_honored_retry_after_secs,
+                            self.max_honored_retry_after_secs(),
                         );
                     }
                 }
@@ -541,25 +550,6 @@ impl<J: JournalSink> BreakerUnit<J> {
             now,
         });
     }
-
-    /// The at-capacity terminal's requested-wait: the SOONEST genuine (`> 0`) cooldown
-    /// among the given members' states, else [`AT_CAPACITY_RETRY_AFTER_SECS`], always floored at 1.
-    /// A member reporting `Suppressed { until }` with `until <= now` (an expired cooldown — the
-    /// member is actually probe-winnable) contributes no genuine cooldown, matching 1.5.5's
-    /// exclusion of an at-capacity-but-Closed member from this same computation.
-    pub fn on_exhausted_retry_after(states: impl IntoIterator<Item = LaneState>, now: u64) -> u64 {
-        let soonest = states
-            .into_iter()
-            .filter_map(|s| match s {
-                LaneState::Suppressed { until } => {
-                    let remaining = until.saturating_sub(now);
-                    (remaining > 0).then_some(remaining)
-                }
-                _ => None,
-            })
-            .min();
-        soonest.unwrap_or(AT_CAPACITY_RETRY_AFTER_SECS).max(1)
-    }
 }
 
 /// Whether `cell` is suppressed at `now` (not Closed, or Closed inside a pending soft cooldown),
@@ -610,7 +600,7 @@ impl<J: JournalSink> Breaker for BreakerUnit<J> {
                 // by the time record_failure takes the transition lock, and the journal would then
                 // name a probe failure for a fresh trip, or miss one for a reopen.
                 let effect =
-                    cell.record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs);
+                    cell.record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs());
                 if effect.reopened() {
                     let cooldown_until = match cell.state() {
                         CellState::Open { until } => until,

@@ -1309,9 +1309,8 @@ fn a_unit_with_no_new_counts_writes_nothing() {
 /// EVERY VERIFIED PRINCIPAL IS LENT A STABLE, NON-EMPTY CALLER REFERENCE (row 159 H2): a book with
 /// no signing material (an OIDC or plugin-auth chain names no `auth.signing_key`) lends one keyed by
 /// the deployment keyset it binds, through the live slot every plane driver holds, so two principals
-/// get two references and one principal gets one reference on every node of the deployment. RED:
-/// with the slot read before the keyset is bound (or never bound), every principal is lent nothing,
-/// which the plane reads as the one ungoverned owner.
+/// get two references and one principal gets one reference on every node of the deployment. Before
+/// the keyset is bound (or when none is), the node's per-boot key lends them, never nothing.
 #[test]
 fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     let node = |material: Option<[u8; 32]>| {
@@ -1330,8 +1329,11 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
         };
         (lent("oidc:alice"), lent("oidc:bob"))
     };
-    // The RED shape: nothing bound, nothing lent, and the two principals are indistinguishable.
-    assert_eq!(node(None), (String::new(), String::new()));
+    // Nothing bound: the per-boot key still lends two principals two non-empty references, and
+    // they are not the deployment keyset's.
+    let (boot_alice, boot_bob) = node(None);
+    assert!(!boot_alice.is_empty() && !boot_bob.is_empty());
+    assert_ne!(boot_alice, boot_bob);
     let keyset = [7u8; 32];
     let (alice, bob) = node(Some(keyset));
     assert!(
@@ -1343,6 +1345,37 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     assert_eq!(node(Some(keyset)), (alice.clone(), bob));
     // Another deployment's keyset gives another reference.
     assert_ne!(node(Some([8u8; 32])).0, alice);
+    assert_ne!(
+        boot_alice, alice,
+        "the keyset, once bound, keys the reference"
+    );
+}
+
+/// A NODE WITH NO SIGNING KEY AND A NON-SIGNING AUDIT CHAIN STILL LENDS EVERY VERIFIED PRINCIPAL ITS
+/// OWN REFERENCE (residual of a5d0098cc3, row 159 H2; ARCHITECT ruling: a verified principal is never
+/// lent the empty reference). Such a node binds no deployment keyset (`AuditChain::derived_secret`
+/// answers `None`), so the reference is keyed by a per-boot random key the node generates at start.
+/// RED: nothing bound means nothing lent, and the plane reads the empty reference as the one
+/// ungoverned owner, so two verified callers share one session owner.
+#[test]
+fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_references() {
+    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let money = PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted::default()));
+    let slot = money.caller_refs().expect("the book lends a slot");
+    let lent = |p: &str| {
+        slot.read()
+            .unwrap()
+            .as_ref()
+            .map(|k| k.caller_ref(p))
+            .unwrap_or_default()
+    };
+    let (alice, bob) = (lent("oidc:alice"), lent("oidc:bob"));
+    assert!(
+        !alice.is_empty() && !bob.is_empty(),
+        "a verified principal was lent the empty reference"
+    );
+    assert_ne!(alice, bob, "two verified principals share one reference");
+    assert_eq!(lent("oidc:alice"), alice, "one principal, one reference");
 }
 
 /// The signing material, when the node has one, still keys the reference (it wins over the
@@ -1365,5 +1398,73 @@ fn the_signing_material_keys_the_reference_and_the_keyset_backs_it() {
     assert_eq!(
         slot.read().unwrap().as_ref().unwrap().caller_ref("p"),
         by_keyset
+    );
+}
+
+/// The signer every reference test below keys by.
+fn signer_nine() -> Option<crate::governance::signing::TokenSigner> {
+    use crate::governance::signing::TokenSigner;
+    Some(TokenSigner::from_secret_bytes(&[9u8; 32], "k"))
+}
+
+/// The reference the node's live slot lends principal `p`, empty when the slot holds no key.
+fn lent_to_p(gov: &GovState) -> String {
+    gov.caller_ref_slot()
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|k| k.caller_ref("p"))
+        .unwrap_or_default()
+}
+
+/// One boot of a node over a fresh book, built with `signer`.
+fn booted(signer: Option<crate::governance::signing::TokenSigner>) -> GovState {
+    let store = Arc::new(MemoryStore::new());
+    GovState::new_with_signer(store, None, signer).expect("gov")
+}
+
+/// A node BUILT with a signer keys the reference by that signer from its first unit, never by its
+/// per-boot key: two boots with the same signer lend one principal one reference, and it is the
+/// reference a signer set after a keyless start lends.
+#[test]
+fn a_node_built_with_a_signer_keys_the_reference_by_it_not_by_the_boot_key() {
+    let first_boot = booted(signer_nine());
+    let second_boot = booted(signer_nine());
+    let by_signer = lent_to_p(&first_boot);
+    assert!(!by_signer.is_empty());
+    assert_eq!(
+        lent_to_p(&second_boot),
+        by_signer,
+        "a per-boot key keyed a node built with a signer"
+    );
+    let keyless = booted(None);
+    let by_boot = lent_to_p(&keyless);
+    assert_ne!(by_boot, by_signer);
+    keyless.set_signing_key(signer_nine());
+    assert_eq!(lent_to_p(&keyless), by_signer);
+}
+
+/// A reload that drops the signer on a node with no deployment keyset falls back to this boot's
+/// key, never to the empty reference: the reference is the one the node lent before the signer.
+#[test]
+fn dropping_the_signer_with_no_keyset_falls_back_to_the_boot_key_never_to_nothing() {
+    let gov = booted(None);
+    let by_boot = lent_to_p(&gov);
+    assert!(!by_boot.is_empty());
+    gov.set_signing_key(signer_nine());
+    assert_ne!(
+        lent_to_p(&gov),
+        by_boot,
+        "the signer did not key the reference"
+    );
+    gov.set_signing_key(None);
+    assert!(
+        gov.caller_ref_slot().read().unwrap().is_some(),
+        "dropping the signer emptied the slot"
+    );
+    assert_eq!(
+        lent_to_p(&gov),
+        by_boot,
+        "dropping the signer did not fall back to the boot key"
     );
 }

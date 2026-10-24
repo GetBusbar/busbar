@@ -800,6 +800,10 @@ pub struct GovState {
     caller_refs: crate::plane_driver::CallerRefs,
     /// The deployment keyset's caller-reference material, once the book binds the keyset.
     deployment_caller_ref: RwLock<Option<[u8; 32]>>,
+    /// This boot's random caller-reference key: the last resort when the node has neither signing
+    /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
+    /// Zeroised on drop and never logged (`GovState` has no `Debug`).
+    boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived

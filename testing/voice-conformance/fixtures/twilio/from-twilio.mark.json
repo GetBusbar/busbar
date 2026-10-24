@@ -1,8 +1,0 @@
-{
-  "event": "mark",
-  "sequenceNumber": "4",
-  "streamSid": "MZXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-  "mark": {
-    "name": "turn-1-done"
-  }
-}

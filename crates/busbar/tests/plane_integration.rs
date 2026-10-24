@@ -198,8 +198,8 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     );
     assert!(
         v.pointer("/error/type").is_none(),
-        "`error.type` is the OpenAI envelope's member — the vendor shape must not survive on a \
-         mounted plane; got {v}"
+        "`error.type` is the fallback dialect's envelope member — the vendor shape must not survive \
+         on a mounted plane; got {v}"
     );
 }
 

@@ -44,8 +44,10 @@
 //! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
 //!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
 //!
-//! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
-//! raw pointers as a plugin does.
+//! No `unsafe` is written here outside two places: the reactor registration in [`io::register`],
+//! one call to tokio's `AsyncFd::register_with_interest` on a descriptor the registration owns
+//! (RUSTSEC-2026-0386), and the tests' framer entry, which writes a host sink through its raw
+//! pointers as a plugin does.
 //!
 //! No thread is started per connection: every socket's readiness is the registering worker's
 //! reactor's, and every wait is not-ready with a wake. The threads that are started: a name lookup

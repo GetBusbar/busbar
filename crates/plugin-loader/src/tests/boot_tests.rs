@@ -38,6 +38,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
             bytes: Arc::new(Vec::new()),
         },
         disk: false,
+        orders: true,
     }
 }
 

@@ -8,6 +8,7 @@
 use std::os::raw::c_void;
 
 use super::ticket::{HostCtx, Ticket};
+use crate::abi::sdk::generation::Gen;
 
 /// What an op answered, as the byte crossing the boundary. An unknown byte reads as
 /// [`Outcome::Fault`].
@@ -133,6 +134,138 @@ impl AbiStr {
     }
 }
 
+/// HOW AN `AbiStr` IS MADE AND READ (status row 194), through methods rather than its pointer and
+/// length fields, which #1471 makes private:
+///
+/// * [`AbiStr::of`] / [`AbiStr::of_bytes`] — memory that lives for the program (a Statement's
+///   strings, a row's, a `'static` answer);
+/// * [`AbiStr::lent`] / [`AbiStr::lent_bytes`] — memory that lives at least until the plugin's
+///   next refresh generation, proven by the op's generation borrow ([`Gen`]);
+/// * [`AbiStr::ABSENT`] — no string (NULL).
+///
+/// The host and the loader, which lend memory for one call, make one with the `unsafe`
+/// [`AbiStr::from_raw_parts`]. A read of the bytes is `unsafe` ([`AbiStr::bytes`]): a value
+/// copied out of a call's `in` names memory the host lent for that call alone. A plugin reads the
+/// strings the host lends it through [`Lent`](crate::abi::sdk::Lent).
+///
+/// ```
+/// use busbar_contract::abi::mechanism::call::AbiStr;
+/// const NAME: AbiStr = AbiStr::of("echo");
+/// assert_eq!((NAME.ptr(), NAME.len()), (NAME.ptr, NAME.len));
+/// ```
+impl AbiStr {
+    /// No string: a NULL pointer, zero length.
+    pub const ABSENT: AbiStr = AbiStr {
+        ptr: std::ptr::null(),
+        len: 0,
+    };
+
+    /// `s`, which lives for the program. An empty `s` is present and empty, never absent.
+    ///
+    /// ```
+    /// use busbar_contract::abi::mechanism::call::AbiStr;
+    /// const NAME: AbiStr = AbiStr::of("echo");
+    /// assert_eq!(NAME.len(), 4);
+    /// assert!(!AbiStr::of("").is_absent());
+    /// ```
+    #[must_use]
+    pub const fn of(s: &'static str) -> AbiStr {
+        Self::of_bytes(s.as_bytes())
+    }
+
+    /// `bytes` (any bytes: a field value, a header), which live for the program.
+    #[must_use]
+    pub const fn of_bytes(bytes: &'static [u8]) -> AbiStr {
+        AbiStr {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+        }
+    }
+
+    /// `s`, which lives at least until the plugin's next refresh generation: the borrow checker
+    /// holds `s` to the op's generation borrow `gen`, so a string of the call's own (a local, the
+    /// host's lent `in`) does not compile here.
+    #[must_use]
+    pub fn lent<'g>(s: &'g str, gen: &Gen<'g>) -> AbiStr {
+        Self::lent_bytes(s.as_bytes(), gen)
+    }
+
+    /// As [`AbiStr::lent`], for any bytes.
+    #[must_use]
+    pub fn lent_bytes<'g>(bytes: &'g [u8], gen: &Gen<'g>) -> AbiStr {
+        let _ = gen;
+        AbiStr {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+        }
+    }
+
+    /// The string `len` bytes at `ptr` name (NULL = absent), unchecked: the host's and the
+    /// loader's door for the memory they lend one call.
+    ///
+    /// # Safety
+    ///
+    /// Every read of the string (the host's, or the plugin's through [`AbiStr::bytes`]) finds
+    /// `len` readable bytes at a non-NULL `ptr`, alive and unwritten for as long as that read: the
+    /// host keeps what it lends a call alive until the call returns, and nothing it lends reaches
+    /// data read after it.
+    #[must_use]
+    pub const unsafe fn from_raw_parts(ptr: *const u8, len: usize) -> AbiStr {
+        AbiStr { ptr, len }
+    }
+
+    /// The pointer (NULL = absent). Reading it is safe; reading through it is not.
+    #[must_use]
+    pub const fn ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    /// The length in bytes.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the string is empty (absent or zero-length).
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Whether the string is absent (NULL).
+    #[must_use]
+    pub const fn is_absent(&self) -> bool {
+        self.ptr.is_null()
+    }
+
+    /// The bytes; empty when absent.
+    ///
+    /// # Safety
+    ///
+    /// The string names `len` readable bytes, alive and unwritten for `'a`: one made by
+    /// [`AbiStr::of`] always does; one made by [`AbiStr::lent`] until the next refresh generation;
+    /// one the host lent a call, until the call returns.
+    #[must_use]
+    pub unsafe fn bytes<'a>(&self) -> &'a [u8] {
+        // SAFETY: the caller's contract.
+        unsafe { crate::abi::abi_slice(self.ptr, self.len) }
+    }
+
+    /// The bytes as UTF-8; `""` when absent.
+    ///
+    /// # Safety
+    ///
+    /// As [`AbiStr::bytes`].
+    ///
+    /// # Errors
+    ///
+    /// The bytes are not UTF-8.
+    pub unsafe fn as_str<'a>(&self) -> Result<&'a str, std::str::Utf8Error> {
+        // SAFETY: the caller's contract.
+        std::str::from_utf8(unsafe { self.bytes() })
+    }
+}
+
 /// A byte range of a buffer the call names, in bytes; `offset ==`
 /// [`SPAN_ABSENT`](super::check::SPAN_ABSENT) = absent (distinct from present and empty). THE one
 /// span of every kind.
@@ -208,6 +341,110 @@ impl Blob {
         fmt: BLOB_ABSENT,
         flags: 0,
     };
+}
+
+/// HOW A `Blob` IS MADE AND READ (status row 194), through methods rather than its pointer and
+/// length fields, which #1471 makes private: [`Blob::of`] / [`Blob::json`] over memory that lives
+/// for the program, [`Blob::lent`] over memory the op's generation borrow ([`Gen`]) proves, the
+/// `unsafe` [`Blob::from_raw_parts`] for the host's and the loader's per-call memory.
+impl Blob {
+    /// `bytes`, which live for the program, as opaque octets ([`BLOB_OCTETS`]); state another
+    /// format with [`Blob::with_fmt`].
+    ///
+    /// ```
+    /// use busbar_contract::abi::mechanism::call::{Blob, BLOB_JSON};
+    /// const SCHEMA: Blob = Blob::of(br#"{"type":"object"}"#).with_fmt(BLOB_JSON);
+    /// assert_eq!(SCHEMA.fmt, BLOB_JSON);
+    /// ```
+    #[must_use]
+    pub const fn of(bytes: &'static [u8]) -> Blob {
+        Blob {
+            ptr: bytes.as_ptr(),
+            len: bytes.len(),
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        }
+    }
+
+    /// `bytes`, which live for the program, as one JSON document ([`BLOB_JSON`]).
+    #[must_use]
+    pub const fn json(bytes: &'static [u8]) -> Blob {
+        Self::of(bytes).with_fmt(BLOB_JSON)
+    }
+
+    /// `bytes`, which live at least until the plugin's next refresh generation, as opaque octets:
+    /// the borrow checker holds them to the op's generation borrow `gen` ([`AbiStr::lent`]).
+    #[must_use]
+    pub fn lent<'g>(bytes: &'g [u8], gen: &Gen<'g>) -> Blob {
+        let s = AbiStr::lent_bytes(bytes, gen);
+        Blob {
+            ptr: s.ptr,
+            len: s.len,
+            fmt: BLOB_OCTETS,
+            flags: 0,
+        }
+    }
+
+    /// The same bytes, stated as `fmt` ([`BLOB_ABSENT`] | [`BLOB_JSON`] | [`BLOB_JSONL`] |
+    /// [`BLOB_OCTETS`]).
+    #[must_use]
+    pub const fn with_fmt(mut self, fmt: u32) -> Blob {
+        self.fmt = fmt;
+        self
+    }
+
+    /// The same bytes, flagged `flags` ([`BLOB_SECRET`]).
+    #[must_use]
+    pub const fn with_flags(mut self, flags: u32) -> Blob {
+        self.flags = flags;
+        self
+    }
+
+    /// The payload `len` bytes at `ptr` name (NULL = absent), of `fmt`, flagged `flags`,
+    /// unchecked: the host's and the loader's door for the memory they lend one call.
+    ///
+    /// # Safety
+    ///
+    /// As [`AbiStr::from_raw_parts`]: every read of the payload finds `len` readable bytes at a
+    /// non-NULL `ptr`, alive and unwritten for as long as that read.
+    #[must_use]
+    pub const unsafe fn from_raw_parts(ptr: *const u8, len: usize, fmt: u32, flags: u32) -> Blob {
+        Blob {
+            ptr,
+            len,
+            fmt,
+            flags,
+        }
+    }
+
+    /// The pointer (NULL = absent). Reading it is safe; reading through it is not.
+    #[must_use]
+    pub const fn ptr(&self) -> *const u8 {
+        self.ptr
+    }
+
+    /// The length in bytes.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the payload is empty (absent or zero-length).
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The bytes; empty when absent.
+    ///
+    /// # Safety
+    ///
+    /// As [`AbiStr::bytes`]: the payload names `len` readable bytes, alive and unwritten for `'a`.
+    #[must_use]
+    pub unsafe fn bytes<'a>(&self) -> &'a [u8] {
+        // SAFETY: the caller's contract.
+        unsafe { crate::abi::abi_slice(self.ptr, self.len) }
+    }
 }
 
 /// The head of every `in` of every kind.

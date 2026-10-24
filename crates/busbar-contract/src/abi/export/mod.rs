@@ -905,6 +905,28 @@ impl Tail {
     };
 }
 
+/// HOW THE EXPORT KIND TAIL IS MADE (status row 194): from [`Tail::EMPTY`], its plain fields set
+/// directly and each list by its setter, to items that live for the program.
+impl Tail {
+    /// Nothing stated: every string absent, every list empty, every number zero; the head
+    /// sized to the whole tail.
+    pub const EMPTY: Tail = Tail {
+        head: KindTailHead {
+            size: core::mem::size_of::<Tail>() as u32,
+            _reserved: 0,
+        },
+        streams: std::ptr::null(),
+        streams_len: 0,
+        routes: std::ptr::null(),
+        routes_len: 0,
+    };
+
+    abi_lists! {
+        streams, streams_len: u8 => streams_ptr, with_streams, with_raw_streams;
+        routes, routes_len: Route => routes_ptr, with_routes, with_raw_routes;
+    }
+}
+
 /// The export kind's [`super::mechanism::lifecycle::CancelOut::disposition`] vocabulary.
 ///
 /// ASSUMPTION (M3-SHAPES): B.5 states no cancel disposition vocabulary. `deliver`, `scrape` and

@@ -138,7 +138,7 @@ fn the_refusal_literal_is_the_shared_constant() {
 fn the_gate_first_binder_names_the_dialect_a_unit_arrived_in() {
     use super::super::HookBinder;
     let host: super::GenerationHost =
-        std::sync::Arc::new(|| -> std::sync::Arc<dyn crate::plane_host::EngineHost> {
+        std::sync::Arc::new(|| -> std::sync::Arc<dyn crate::plane_driver::EngineHost> {
             unreachable!("naming a dialect reads no generation")
         });
     let binder = super::HostGatedHooks {

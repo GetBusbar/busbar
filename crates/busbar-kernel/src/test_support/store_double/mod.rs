@@ -928,4 +928,7 @@ pub const STORE: crate::preflight::LinkedStore = (MIGRATED_STORE_MODULE, true, d
 /// and what boot opens through the stand-in store axis.
 pub use v3::door;
 
+/// The same door as the `MACRO_DOOR` `store_door!` expands beside it (status rows 159 and 194).
+pub use v3::MACRO_DOOR;
+
 mod v3;

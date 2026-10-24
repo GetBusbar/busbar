@@ -1,9 +1,0 @@
-{
-  "event": "stop",
-  "sequenceNumber": "9",
-  "stop": {
-    "accountSid": "ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    "callSid": "CAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-  },
-  "streamSid": "MZXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-}

@@ -870,7 +870,7 @@ impl MacroDoor {
 
     /// The door function.
     #[must_use]
-    pub fn door_fn(self) -> DoorFn {
+    pub const fn door_fn(self) -> DoorFn {
         self.door
     }
 }

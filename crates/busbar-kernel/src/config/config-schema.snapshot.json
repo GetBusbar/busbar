@@ -308,6 +308,10 @@
     "CandidatePoolCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "breaker": {
+          "optional": true,
+          "type": "BreakerCfg"
+        },
         "members": {
           "optional": true,
           "type": "Vec<String>"

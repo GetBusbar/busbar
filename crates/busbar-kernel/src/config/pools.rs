@@ -341,7 +341,7 @@ pub fn default_weight() -> u32 {
 }
 
 /// Trip mode for breaker configuration.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Deserialize, serde::Serialize, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BreakerTripMode {
     #[default]
@@ -350,7 +350,7 @@ pub enum BreakerTripMode {
 }
 
 /// Trip configuration parameters (ADR-0002 defaults).
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, serde::Serialize, Clone, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BreakerTripConfig {
     #[serde(default = "default_trip_mode")]
@@ -399,7 +399,7 @@ pub fn default_consecutive_n() -> u32 {
 }
 
 /// Breaker configuration per pool with full trip settings (ADR-0002).
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, serde::Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BreakerCfg {
     #[serde(default = "default_cooldown")]
@@ -409,6 +409,12 @@ pub struct BreakerCfg {
     #[serde(default)]
     pub trip: Option<BreakerTripConfig>,
 }
+
+// `Eq` by hand: the one float (`trip.threshold`) is refused at validation unless it lies in
+// (0.0, 1.0], so a configured block never holds a NaN, and the pool carriers that embed a block
+// (`CandidatePoolCfg`) keep the `Eq` they had.
+impl Eq for BreakerTripConfig {}
+impl Eq for BreakerCfg {}
 
 impl Default for BreakerCfg {
     fn default() -> Self {
@@ -680,6 +686,14 @@ pub struct CandidatePoolCfg {
     /// reroute-before-first-byte (which duplicates nothing) and no retries at all.
     #[serde(default)]
     pub repeatable: Vec<String>,
+    /// The pool's `breaker:` block, written under the pool in its section's `pools` sub-key with the
+    /// same keys as a top-level `pools:` entry's (`PoolCfg::breaker`): the same validation
+    /// (`config_validate`'s Rule 6) and the same defaults when it is absent. BUSBAR-1.6.0.md THE
+    /// DESIGN §1: "Any plugin gets all functionality" — a pool's breaker is tunable whichever plane
+    /// its members belong to. Core-owned: the host's egress reads it, and the plane is never handed
+    /// it (`serve::plane_settings` strikes it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breaker: Option<BreakerCfg>,
 }
 
 impl CandidatePoolCfg {

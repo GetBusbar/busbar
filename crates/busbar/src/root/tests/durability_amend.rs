@@ -120,7 +120,7 @@ fn restart_phase() {
             )
             .expect("a pooled root correction lands");
             let app = busbar_kernel::test_support::TestApp::new().build();
-            busbar_kernel::plane_host::engine_host(&app).hook_read(
+            busbar_kernel::plane_driver::engine_host(&app).hook_read(
                 HOOK,
                 Some("pseudonym-1"),
                 "chat",

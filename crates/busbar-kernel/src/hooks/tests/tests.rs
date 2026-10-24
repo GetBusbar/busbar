@@ -2253,7 +2253,7 @@ fn hook_with_plugin_secret() -> HookCfg {
     hook
 }
 
-/// See `auth::token::token_tests::assert_runtime_still_polls` for why this waits on WALL CLOCK and
+/// See `busbar-core-oauth2`'s `hosted_login_tests::assert_runtime_still_polls` for why this waits on WALL CLOCK and
 /// never on a Tokio timer: when every worker is parked in FFI the time driver is parked too, so a
 /// `tokio::time::timeout` does not fire — it returns late and its assertion passes against a runtime
 /// that was dead for the whole window.

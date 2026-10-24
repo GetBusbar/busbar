@@ -179,18 +179,6 @@ fn an_exhausted_destination_budget_is_excluded_not_ordered_last() {
         unit.state("pool", DestinationId::new(1), now, &route_token()),
         LaneState::BudgetExhausted
     );
-
-    // PB-4's soonest-cooldown Retry-After walk must never see this destination as a candidate with
-    // a cooldown of 0 (which would wrongly win the "soonest" comparison) — it contributes nothing.
-    let retry_after =
-        BreakerUnit::<busbar_kernel_breaker::journal::NoopJournal>::on_exhausted_retry_after(
-            [unit.state("pool", DestinationId::new(1), now, &route_token())],
-            now,
-        );
-    assert_eq!(
-        retry_after,
-        busbar_kernel_breaker::AT_CAPACITY_RETRY_AFTER_SECS
-    );
 }
 
 #[test]

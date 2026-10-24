@@ -142,7 +142,7 @@ fn the_observer_and_the_host_series_are_the_dispatchers() {
     let refused = grant_series(mine.observing(), "seam-mine", true, &claim)
         .expect_err("the host's own series is refused on the dispatcher that names it");
     assert!(refused.contains("dispatcher_owned_host_total"), "{refused}");
-    grant_series(other.observing(), "seam-other", true, &claim)
+    let _held = grant_series(other.observing(), "seam-other", true, &claim)
         .expect("a dispatcher whose host named no series refuses nothing");
     // The door's envelope sink is the adopting dispatcher's observability.
     let adopted = mine
@@ -165,15 +165,57 @@ fn a_granted_shed_declaration_is_the_hosts_shed_counter() {
         SeriesDecl::new("k9b_dropped_total", "counter").shed(),
         SeriesDecl::new("k9b_level", "gauge").shed(),
     ];
-    grant_series(&testing::observing(), "k9b-first-party", true, &declared).expect("granted");
+    let _held =
+        grant_series(&testing::observing(), "k9b-first-party", true, &declared).expect("granted");
     assert_eq!(shed_series("k9b-first-party"), vec!["k9b_dropped_total"]);
     let third: Vec<SeriesDecl> = declared
         .iter()
         .map(|d| SeriesDecl::new(format!("{}_3p", d.name), d.kind.clone()).shed())
         .collect();
-    grant_series(&testing::observing(), "k9b-third-party", false, &third)
+    let _third = grant_series(&testing::observing(), "k9b-third-party", false, &third)
         .expect("nothing to refuse");
     assert!(shed_series("k9b-third-party").is_empty());
+}
+
+/// A FIRST-PARTY GRANT GOES WITH ITS LAST INSTANCE (THE DESIGN `docs/design/BUSBAR-1.6.0.md`
+/// §11.12 H2: a per-instance host registry lets go with its instance). While one first-party
+/// instance holds its grant, the name is first-party and its series are its own; once the last
+/// holder goes, the name is not first-party (a third party loaded under it renders as a third
+/// party) and the series is free for the plugin that replaces it, with no restart. RED before: the
+/// grant and the first-party name were written at open into process-global tables nothing ever
+/// cleared.
+#[test]
+fn a_first_party_grant_goes_with_its_last_instance() {
+    use busbar_contract::abi::mechanism::observe::SeriesDecl;
+    let declared = [SeriesDecl::new("grant_life_total", "counter")];
+    {
+        let _first =
+            grant_series(&testing::observing(), "grant-life", true, &declared).expect("granted");
+        {
+            let _second = grant_series(&testing::observing(), "grant-life", true, &declared)
+                .expect("a second instance of the same plugin holds the same grant");
+        }
+        assert!(
+            first_party("grant-life"),
+            "one first-party instance still holds the grant"
+        );
+        assert!(first_party_series(
+            "grant-life",
+            "grant_life_total",
+            "counter"
+        ));
+    }
+    assert!(
+        !first_party("grant-life"),
+        "no first-party instance of the name is live"
+    );
+    assert!(!first_party_series(
+        "grant-life",
+        "grant_life_total",
+        "counter"
+    ));
+    let _next = grant_series(&testing::observing(), "grant-life-next", true, &declared)
+        .expect("a series whose plugin went is free for the plugin that replaces it");
 }
 
 // ── ENVELOPE-ALL (ARCHITECT ruling 2026-10-03): every kind's envelope, through a bounded intake ──

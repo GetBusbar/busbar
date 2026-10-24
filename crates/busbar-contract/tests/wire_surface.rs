@@ -60,17 +60,17 @@ const SURFACE: WireSurface = WireSurface {
     bindings: &[
         BindingDecl {
             name: DOC,
-            transport: "http",
+            transport: "request",
             mounts: &["/mount", "/mount/"],
         },
         BindingDecl {
             name: TGT,
-            transport: "http",
+            transport: "request",
             mounts: &[],
         },
         BindingDecl {
             name: SVC,
-            transport: "grpc",
+            transport: "call",
             mounts: &[],
         },
     ],
@@ -242,7 +242,7 @@ fn a_surface_with_no_binding_is_refused() {
 const UNADDRESSABLE: WireSurface = WireSurface {
     bindings: &[BindingDecl {
         name: TGT,
-        transport: "http",
+        transport: "request",
         mounts: &[],
     }],
     operations: &[Operation {
@@ -265,7 +265,7 @@ fn an_operation_nothing_can_reach_is_refused() {
 const DUPLICATE: WireSurface = WireSurface {
     bindings: &[BindingDecl {
         name: TGT,
-        transport: "http",
+        transport: "request",
         mounts: &[],
     }],
     operations: &[
@@ -298,7 +298,7 @@ fn two_operations_at_one_address_are_refused() {
 const BAD_TEMPLATE: WireSurface = WireSurface {
     bindings: &[BindingDecl {
         name: TGT,
-        transport: "http",
+        transport: "request",
         mounts: &[],
     }],
     operations: &[Operation {
@@ -325,7 +325,7 @@ fn a_template_outside_the_grammar_is_refused() {
 const UNKNOWN_BINDING: WireSurface = WireSurface {
     bindings: &[BindingDecl {
         name: TGT,
-        transport: "http",
+        transport: "request",
         mounts: &[],
     }],
     operations: &[Operation {

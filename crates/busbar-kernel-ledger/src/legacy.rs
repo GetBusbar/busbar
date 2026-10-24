@@ -71,6 +71,15 @@ impl std::error::Error for LegacyWriteError {}
 pub trait LegacyRows: Send {
     /// Write one posting onto the previous release's rows.
     fn write(&mut self, posting: &LegacyPosting) -> Result<(), LegacyWriteError>;
+
+    /// Drop every row in `windows`: the windows the ledger has just retired from its book
+    /// ([`crate::settle::Ledger::retire_windows`]), so the rows and the book stay bounded together
+    /// and the reconciliation never compares a row with a balance the book let go.
+    ///
+    /// Required rather than defaulted: a binding that kept its rows in memory and inherited a
+    /// do-nothing default would grow for the life of the process, which is the defect this exists
+    /// to close.
+    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>);
 }
 
 /// A binding that keeps EVERY posting it was handed, in order, so a test can look at each one.
@@ -126,6 +135,13 @@ impl LegacyRows for RecordingRows {
             .push(posting.clone());
         Ok(())
     }
+
+    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
+        self.written
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|posting| !windows.contains(&posting.window_start));
+    }
 }
 
 /// The cell a previous release's row is kept at: whose, against which bucket, in which window.
@@ -148,6 +164,11 @@ type Cell = (String, String, u64);
 /// Every figure saturates rather than wraps, as every book operator does (`settle.rs`, `totals.rs`):
 /// a sum pinned at its bound is a reading a reconciliation can still flag, where a wrapped one is a
 /// small number that looks true.
+///
+/// BOUNDED IN TIME AS WELL AS IN TRAFFIC. A cell is per window, so the rows would still grow by one
+/// per principal and bucket for every window the node ever settled into. The ledger retires a
+/// window from these rows in the same step it retires it from the book ([`LegacyRows::retire`]), at
+/// the book's horizon ([`crate::totals::WINDOW_RETENTION_SECS`]).
 #[derive(Debug, Default, Clone)]
 pub struct SummedRows {
     cells: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<Cell, LegacyPosting>>>,
@@ -212,6 +233,13 @@ impl LegacyRows for SummedRows {
             }
         }
         Ok(())
+    }
+
+    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
+        self.cells
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(_, _, window), _| !windows.contains(window));
     }
 }
 

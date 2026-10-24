@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use busbar_kernel::plane_host::EngineHost;
+use busbar_kernel::plane_driver::EngineHost;
 
 /// How many times the bound spawner ran, and whether the host it was handed was a live generation's.
 static ATTACHED: AtomicUsize = AtomicUsize::new(0);

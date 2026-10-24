@@ -228,6 +228,10 @@ pub struct Candidate {
     /// DESIGN §11.11 R4): its `resolve` runs on the host's disk lane at config time, never on a
     /// request path.
     pub disk: bool,
+    /// Whether its `decide` may answer an order (`declares.hook.orders`, a `kind: hook` plugin;
+    /// `true` unless declared `false`): a hook that declared it never orders is refused when it
+    /// does ([`crate::hook_door::HookInstance::open_declaring`]).
+    pub orders: bool,
 }
 
 impl Candidate {
@@ -273,6 +277,7 @@ impl Candidate {
             stated,
             origin,
             disk: false,
+            orders: true,
         })
     }
 
@@ -291,6 +296,15 @@ impl Candidate {
         Self::from_rendering(stated, Some(&manifest.alias), origin)
             .map(|c| c.answering(&manifest.former_names))
             .map(|c| c.reading_disk(manifest.declares.disk))
+            .map(|c| c.ordering(manifest.declares.hook_orders()))
+    }
+
+    /// This candidate, a hook that may answer an order only when `orders` (its
+    /// `declares.hook.orders`).
+    #[must_use]
+    pub fn ordering(mut self, orders: bool) -> Self {
+        self.orders = orders;
+        self
     }
 
     /// This candidate, its source reading the local disk when `disk` (its `declares.disk`: a

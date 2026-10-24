@@ -12,16 +12,15 @@
 //!
 //! A booked line ([`recompute::Posting`]) stores what happened — the quantities, the lane, the
 //! instant, the tier — and no price at all (#71, #77(3)). A statement is cut AS OF a snapshot and
-//! derives every figure from the quantities by the one lookup. (The cost unit's own posting type
-//! can carry the figure the settlement lookup answered, [`cost::CachedPrice`]; the one production
-//! writer sets it on a posting it then drops, and nothing reads it.)
+//! derives every figure from the quantities by the one lookup. The cost unit's own posting type
+//! ([`cost::Posting`]) carries no figure either.
 //!
 //! **A booked line is never rewritten, and no adjusting line is booked beside it** (#77(2)). An
 //! amendment to the history is a dated card entry; the window it corrects reprices as a VIEW over
 //! the stored quantities (#77(3), #79), so `settled` does not move, no term is added to the
 //! identity, and a window already sealed into a signed checkpoint is never edited.
 //!
-//! ## The five things in here, and why each is separate
+//! ## What each module is for, and why each is separate
 //!
 //! [`mod@settle`] — a hold and a usage report become a posting, and the books move. The hold is taken by
 //! value, so it is settled at most once by construction rather than by care.
@@ -43,6 +42,20 @@
 //! sweep over the book here: a line carries no price to go stale. The check that a settled figure
 //! still agrees with its counts is the root's restart reconciliation, which replays the journal's
 //! counts into a second book and compares it with the live one.
+//!
+//! [`mod@verify`] — everything that has to be true between two checkpoints: the identity per
+//! balance, a balance the book retired named as retired, and every chain head checked against the
+//! one the checkpoint before held.
+//!
+//! [`mod@legacy`] — the dual write onto the previous release's rows, bounded with the book.
+//!
+//! [`mod@migration`] — the opening a deployment upgrading from the previous release seals.
+//!
+//! [`mod@cost`] — the money arithmetic: the dated rate-card history, the quantities a posting
+//! stores and the one lookup over the two. [`mod@usage`] re-exports the closed usage sources and
+//! the dated pricing beside it.
+//!
+//! [`mod@digest`] — the one digest a checkpoint body is sealed with.
 //!
 //! ## What this crate does not do
 //!
@@ -98,13 +111,11 @@ pub use migration::{
     MigrationError, MigrationMarker, MigrationRecords, Opening, Outcome as MigrationOutcome,
     OPENING_CHECKPOINT_SEQ,
 };
-pub use recompute::{
-    divergence_of, price_line, Divergence, Posting, PostingOrigin, PricedLine, BASIS_POINTS,
-};
+pub use recompute::{divergence_of, price_line, Divergence, Posting, PricedLine, BASIS_POINTS};
 pub use settle::{Figures, Ledger, Overdraft, Settlement};
 pub use totals::{
-    totals_as_of, Book, BucketId, BucketScope, CapDimension, Statement, StatementRow, Totals,
-    TotalsKey, Unpriced, WindowStart,
+    past_retention, totals_as_of, Book, BucketId, BucketScope, CapDimension, Statement,
+    StatementRow, Totals, TotalsKey, Unpriced, WindowStart, ALL_TIME_WINDOW, WINDOW_RETENTION_SECS,
 };
 pub use verify::{sequences_are_monotonic, verify, Finding as VerifyFinding};
 

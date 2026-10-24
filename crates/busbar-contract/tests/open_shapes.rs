@@ -3,14 +3,14 @@
 
 //! A fourth transport family costs no reader an edit.
 //!
-//! Both shapes in this crate used to name transports in their own vocabulary: a status was
-//! `Http(u16)` or `Grpc(u8)`, and a destination that needed a method name got an arm of its own.
+//! Both shapes in this crate used to name transports in their own vocabulary: a status was one
+//! arm per shipped numbering, and a destination that needed a method name got an arm of its own.
 //! Either way, the family list lived in the type, so a fourth family was an edit to every reader
 //! that matched the arms by name — and the tree matches them by name deliberately, so that edit was
 //! fifty sites, not one.
 //!
 //! These tests plant a family this tree does not have — `quic` — and assert it answers every
-//! question the two shipped families answer, through the same keyed accessors, without a line
+//! question the reserved families answer, through the same keyed accessors, without a line
 //! changing anywhere. A closed vocabulary cannot pass them; a keyed one passes them for free.
 
 use busbar_contract::transport::registry::{facts, status_ns};
@@ -29,42 +29,49 @@ fn a_fourth_status_namespace_needs_no_reader_edit() {
     assert_eq!(quic.code, 42);
     assert_eq!(quic.in_namespace(QUIC), Some(42));
 
-    // It answers `None` to every other numbering's question BECAUSE THE NAMESPACES DIFFER — not
-    // because of a variant it is not, which is the reading that had to be re-stated at every match
-    // site.
-    assert_eq!(quic.in_namespace(status_ns::HTTP), None);
-    assert_eq!(quic.in_namespace(status_ns::GRPC), None);
+    // It answers `None` in every reserved numbering BECAUSE THE NAMESPACES DIFFER — not because
+    // of a variant it is not, which is the reading that had to be re-stated at every match site.
+    for &reserved in status_ns::RESERVED {
+        assert_eq!(quic.in_namespace(reserved), None, "{reserved}");
 
-    // And the reserved numberings are read through the same one accessor.
-    assert_eq!(
-        WireStatus::new(status_ns::HTTP, 503).in_namespace(status_ns::HTTP),
-        Some(503)
-    );
-    assert_eq!(
-        WireStatus::new(status_ns::GRPC, 14).in_namespace(status_ns::GRPC),
-        Some(14)
-    );
+        // And each reserved family is unchanged in what it says.
+        assert_eq!(
+            WireStatus::new(reserved, 503).in_namespace(reserved),
+            Some(503)
+        );
+    }
 
-    // The spelling collision the namespace exists for: `14` in gRPC's numbering is `UNAVAILABLE`
-    // and is not a status at all in HTTP's. Neither answers the other's question.
-    assert_eq!(
-        WireStatus::new(status_ns::GRPC, 14).in_namespace(status_ns::HTTP),
-        None
-    );
-    assert_eq!(
-        WireStatus::new(status_ns::HTTP, 14).in_namespace(status_ns::GRPC),
-        None
-    );
-    assert_ne!(
-        WireStatus::new(status_ns::GRPC, 14),
-        WireStatus::new(status_ns::HTTP, 14)
-    );
+    // The spelling collision the namespace exists for: one code in two numberings is two statuses,
+    // and neither answers the other's question.
+    for &one in status_ns::RESERVED {
+        for &other in status_ns::RESERVED.iter().filter(|other| **other != one) {
+            assert_eq!(
+                WireStatus::new(one, 14).in_namespace(other),
+                None,
+                "{one} vs {other}"
+            );
+            assert_ne!(WireStatus::new(one, 14), WireStatus::new(other, 14));
+        }
+    }
 }
 
 #[test]
 fn the_reserved_status_namespaces_are_spelled_once() {
-    assert!(status_ns::is_reserved(status_ns::HTTP));
-    assert!(status_ns::is_reserved(status_ns::GRPC));
+    assert!(
+        status_ns::RESERVED.len() >= 2,
+        "the collision the namespace exists for needs two numberings"
+    );
+    for &reserved in status_ns::RESERVED {
+        assert!(status_ns::is_reserved(reserved), "{reserved}");
+    }
+    let mut seen = status_ns::RESERVED.to_vec();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(
+        seen.len(),
+        status_ns::RESERVED.len(),
+        "one spelling per numbering"
+    );
     assert!(
         !status_ns::is_reserved(QUIC),
         "a namespace the kernel does not reserve is a transport's own to name"
@@ -97,21 +104,24 @@ fn a_fourth_destination_family_needs_no_reader_edit() {
 
 #[test]
 fn the_method_a_call_per_path_family_dials_by_is_a_key_on_a_socket() {
-    // The gRPC destination is a SOCKET — a peer you connect to — carrying one declared fact, under
-    // the same reserved key the arrival grammar already spells for a request method.
-    let grpc = UpstreamAddress::Socket {
+    // A call-per-path destination is a SOCKET — a peer you connect to — carrying one declared
+    // fact, under the same reserved key the arrival grammar already spells for a request method.
+    let per_path = UpstreamAddress::Socket {
         authority: "upstream.internal:8443",
         sni: Some("upstream.internal"),
         extras: &[(facts::METHOD, "/vendor.Inference/Chat")],
     };
-    assert_eq!(grpc.authority(), Some("upstream.internal:8443"));
-    assert_eq!(grpc.extra(facts::METHOD), Some("/vendor.Inference/Chat"));
+    assert_eq!(per_path.authority(), Some("upstream.internal:8443"));
+    assert_eq!(
+        per_path.extra(facts::METHOD),
+        Some("/vendor.Inference/Chat")
+    );
 
     // The other shape is a process you spawn, and it is a shape rather than a key because nothing
     // about an argument vector or a spawn environment is a socket's business.
     let program = UpstreamAddress::Program {
         path: "/usr/local/bin/server",
-        args: &["--stdio"],
+        args: &["--pipe"],
         env: &[],
         extras: &[],
     };

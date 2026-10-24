@@ -121,10 +121,11 @@ fn a_tier_that_lands_on_an_exact_half_rounds_to_even() {
 ///
 /// #44 carries two rounding rules in one sentence and they apply to different terms:
 /// *"only a 'per-N-units' division term uses banker's (half-to-even) rounding; card-build-time
-/// quantization stays half-away-from-zero (byte-identity)"*. Card-build quantisation is
-/// [`crate::cost::nano_rate`], once, at the boundary where an operator's configured decimal becomes
-/// an integer rate. The tier is not that term, and at a tie the two rules give different money —
-/// which is exactly why the row names them separately.
+/// quantization stays half-away-from-zero (byte-identity)"*. Card build no longer quantises at all:
+/// [`crate::cost::nano_rate`] reads the configured rate's shortest decimal text and refuses any rate
+/// that is not a whole number of nano-units (OWNER rule 21), so half-away-from-zero has no term left
+/// to apply to. The tier is the one division, and at a tie the two rules give different money —
+/// which is exactly why the tier must not borrow the other rule.
 ///
 /// Written as a test rather than a comment so that a future reader who reaches for the wrong half
 /// of the row gets a NO instead of a plausible-looking diff.
@@ -219,7 +220,6 @@ fn fifteen_nano_units_at_half_price_bill_seven() {
         arrived_ms: 0,
         arrived_mono: 0,
         estimated: false,
-        cached: None,
     };
     let priced = price_at_card(HistorySeq::OPENING, &card, &posting).expect("the card prices it");
     assert_eq!(

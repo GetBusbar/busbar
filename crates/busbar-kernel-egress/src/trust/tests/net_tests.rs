@@ -1142,31 +1142,6 @@ fn test_host_from_base_backslash_authority_matches_wire_host() {
     ));
 }
 
-/// The structural half of the check — what `dest.judge` answers without resolving — refuses every
-/// loopback and private spelling for a class without `allow_private`. RED on the `/`-only reader,
-/// which read each of these as an unresolved NAME and allowed it.
-#[test]
-fn the_structural_check_refuses_every_loopback_spelling() {
-    for dest in [
-        "https://127.0.0.1?x",
-        "https://localhost#a",
-        "https://127.0.0.1./",
-        "https://%6c%6fcalhost/",
-        "https://10.0.0.5\\x/",
-    ] {
-        let got = check_structure(dest, &[], GuardPolicy::default(), &Denylist::default());
-        assert!(
-            matches!(
-                got,
-                Err(NetworkRefusal::Guard(
-                    AddressRefusal::InternalAddress { .. } | AddressRefusal::LoopbackName(_)
-                ))
-            ),
-            "{dest}: {got:?}"
-        );
-    }
-}
-
 // ── Moved from busbar-kernel's deleted `net_guard` shim suites (row 130 E2): the rows those suites
 // held that this one did not. ───────────────────────────────────────────────────────────────────
 

@@ -22,7 +22,7 @@ const TOKEN: &str = "sk-live-8f2b1c";
 fn spawned() -> UpstreamAddress {
     UpstreamAddress::Program {
         path: "/usr/local/bin/grid-server",
-        args: &["--stdio", "--quiet"],
+        args: &["--pipe", "--quiet"],
         env: &[
             ("GRID_API_TOKEN", TOKEN),
             ("HOME", "/var/empty"),
@@ -60,7 +60,7 @@ fn a_spawned_programs_debug_says_which_names_are_set_and_never_a_value() {
         rendered.contains("/usr/local/bin/grid-server"),
         "{rendered}"
     );
-    assert!(rendered.contains("--stdio"), "{rendered}");
+    assert!(rendered.contains("--pipe"), "{rendered}");
 }
 
 #[test]
@@ -102,12 +102,12 @@ fn the_socket_and_call_per_path_arms_print_the_facts_that_tell_a_dial_apart() {
 
     // A call-per-path family is still a SOCKET — the same shape — with its method declared beside
     // the address under the reserved key the arrival grammar already spells a method with.
-    let grpc = UpstreamAddress::Socket {
+    let per_path = UpstreamAddress::Socket {
         authority: "10.0.0.8:443",
         sni: None,
         extras: &[(facts::METHOD, "/busbar.Ledger/Settle")],
     };
-    let rendered = format!("{grpc:?}");
+    let rendered = format!("{per_path:?}");
     assert!(rendered.contains("Socket"), "{rendered}");
     assert!(rendered.contains("10.0.0.8:443"), "{rendered}");
     assert!(rendered.contains("/busbar.Ledger/Settle"), "{rendered}");

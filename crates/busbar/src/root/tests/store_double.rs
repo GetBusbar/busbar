@@ -4,8 +4,9 @@
 //! took and can be told to REFUSE them, which is how a store that has the slots but will not take a
 //! write is posed. It keeps the single-use claims `redeem_plane_token` takes (the one atomic step a
 //! minting boot races on), and a test can redeem one first as another node would. It can be told to
-//! FAIL its scans, which is how a store that stops reading the journal back is posed. Every other
-//! slot answers FAILED: the journal must not reach them.
+//! FAIL its scans, which is how a store that stops reading the journal back is posed. It can run a
+//! PROBE at each scan, on the thread that scans, which is how a test looks at what the node holds
+//! while the store is read. Every other slot answers FAILED: the journal must not reach them.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -25,6 +26,9 @@ type Rows = BTreeMap<(String, Vec<u8>), RecordBytes>;
 /// The single-use claims the double has taken: `(kind, token)` to the instant each lapses.
 type Claims = BTreeMap<(String, String), u64>;
 
+/// What a test runs at each scan, on the thread that scans.
+type ScanProbe = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
+
 /// The double. Cheap to clone; every clone is the same store.
 #[derive(Clone, Default)]
 pub(crate) struct RecordSlots {
@@ -35,6 +39,7 @@ pub(crate) struct RecordSlots {
     /// `0`: no budget. `n + 1`: take `n` more puts, then refuse every one after.
     budget: Arc<AtomicUsize>,
     puts: Arc<AtomicUsize>,
+    probe: ScanProbe,
 }
 
 impl RecordSlots {
@@ -58,6 +63,11 @@ impl RecordSlots {
     /// journal back, as a remote store failing over does.
     pub(crate) fn fail_reads(&self, failing: bool) {
         self.unreadable.store(failing, Ordering::Release);
+    }
+
+    /// From now on, run `probe` at the start of every scan, on the thread that scans.
+    pub(crate) fn on_scan(&self, probe: impl Fn() + Send + Sync + 'static) {
+        *self.probe.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(probe));
     }
 
     /// Take the next `n` puts, then refuse every one after until [`Self::refuse`] says otherwise:
@@ -221,6 +231,14 @@ impl StoreCalls for RecordSlots {
         prefix: &'a [u8],
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
+        if let Some(probe) = self
+            .probe
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            probe();
+        }
         if self.unreadable.load(Ordering::Acquire) {
             return Box::pin(async {
                 Err(StoreFailure::Failed(

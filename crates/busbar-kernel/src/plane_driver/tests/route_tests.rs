@@ -133,8 +133,11 @@ fn test_stable_hash_is_deterministic() {
     assert_ne!(sticky_hash(b"session-abc"), sticky_hash(b"session-xyz"));
 }
 
+/// A unit lent no caller reference frames it absent (a null, zero-length string). Only a driver
+/// whose config has `caller_refs: None` (no book) leaves the reference empty: a book's slot always
+/// holds a key, the node's per-boot one when it has neither signing material nor a keyset.
 #[test]
-fn a_node_without_signing_material_lends_no_caller_reference() {
+fn a_unit_lent_no_caller_reference_frames_it_absent() {
     let mut b = bufs(0);
     b.caller_ref.clear();
     let (i, _) = frame(&mut b, &piece(FROM_CALLER, 0, false), 9);

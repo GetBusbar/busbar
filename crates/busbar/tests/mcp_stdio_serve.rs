@@ -37,10 +37,9 @@
 // through the stdio claim its door states; gated on `linked_section_tools`, set exactly when the
 // linked door declaring `tools:` is in the build.
 // It also needs the `test-harness` build (ARCHITECT ruling, busbar #700): the dropped-in OIDC module
-// states every need in the `operator-infrastructure` egress class, which the host grants to a
-// first-party plugin only (`BUSBAR-1.6.0.md` §5), and only a `test-harness` child takes the
-// first-party key a test holds (`root::boot::HARNESS_FIRST_PARTY_KEY_ENV`). So this battery runs in
-// the root test-harness row and no longer in the single-plane or plain workspace rows.
+// is signed first-party, and only a `test-harness` child takes the first-party key a test holds
+// (`root::boot::HARNESS_FIRST_PARTY_KEY_ENV`). So this battery runs in the root test-harness row and
+// no longer in the single-plane or plain workspace rows.
 #![cfg(all(linked_section_tools, feature = "test-harness"))]
 
 mod common;

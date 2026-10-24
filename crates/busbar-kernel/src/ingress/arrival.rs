@@ -30,7 +30,7 @@ use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::Response;
 
-use crate::plane_host::PlaneAnswer;
+use crate::plane_driver::PlaneAnswer;
 
 /// THE OPAQUE CORE CONTEXT of one arrival — core's `Arc<App>` + `GovCtx` + `CallerToken`, type-erased
 /// so the dialect crate carries it back into the host methods without naming a core type. Core boxes
@@ -65,7 +65,7 @@ impl ArrivalCtx {
 pub struct ArrivalPayload {
     /// The neutral engine host, minted core-side over the live `App` — the seam every reader (core's
     /// `ArrivalHost` impl and the LLM plane's ingress) drives instead of naming `Arc<App>`.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// The resolved per-request governance context (public `busbar_contract` type).
     pub gov: busbar_contract::records::PlaneRequestCtx,
     /// The caller's verified credential, as a REF the host presents upstream for a `passthrough`

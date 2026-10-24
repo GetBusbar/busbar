@@ -622,10 +622,8 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
     crate::proxy::ingress_error(proto, status, kind, message)
 }
 
-// THE PLANE-NEUTRAL JSON-RPC ENVELOPE READER, shared by every JSON-RPC-fronted mounted plane. It
-// lives under `ingress/` because that is the shared owner `structure-lint`'s plane ledger already
-// names for the ingress concern: "one plane-neutral admission in ingress/, with the plane supplying
-// its wire reader". This is the envelope half of that.
+// The one JSON-RPC body the kernel writes: a mounted path's refusal made before any envelope was
+// read (`native::native_error`'s mounted arm). The reader is `busbar_contract::jsonrpc`.
 pub mod jsonrpc;
 
 #[cfg(test)]
@@ -643,8 +641,7 @@ pub mod byte_duplex;
 #[cfg(feature = "runtime")]
 pub mod duplex_ws;
 
-/// THE ONE JSON-RPC INGRESS SEQUENCE. Read its header: it carries the thirteen-step measurement
-/// that says which four steps are a protocol's and which nine are core's.
+/// THE RFC 9728 PROTECTED-RESOURCE DOCUMENT RENDER, from the facts a door states.
 pub mod protocol;
 
 // The error-shaping boundary: the ONE place a resolved ingress becomes a native error envelope.
@@ -769,7 +766,7 @@ async fn delegate_body_arrival(
         let uri = path.parse::<axum::http::Uri>().unwrap_or_default();
         let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
-                host: crate::plane_host::engine_host(&app),
+                host: crate::plane_driver::engine_host(&app),
                 gov,
                 caller_token: caller,
             },

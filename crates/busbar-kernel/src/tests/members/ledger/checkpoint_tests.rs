@@ -144,8 +144,11 @@ fn verification_closes_the_window_when_the_books_balance_and_opens_it_when_they_
     assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
 
     // One figure edited by hand: does not.
-    ledger.book_mut().entry(k.clone(), 1).settled += 5;
-    let findings = verify(&checkpoint, &ledger.book().snapshot(), None);
+    let mut tampered = ledger.book().snapshot();
+    if let Some(figures) = tampered.get_mut(&(k.clone(), 1)) {
+        figures.settled += 5;
+    }
+    let findings = verify(&checkpoint, &tampered, None);
     assert_eq!(findings.len(), 1);
     match &findings[0] {
         Finding::Imbalanced(i) => assert_eq!(i.residual.amount(), 5),
@@ -168,8 +171,13 @@ fn a_balance_the_book_retired_is_named_as_retired_and_not_as_an_imbalance() {
     let checkpoint = seal(&ledger, 1);
     assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
 
-    // The window is sealed, so the book lets it go.
-    assert_eq!(ledger.book_mut().retain_from(2), 1);
+    // The window is sealed and past the horizon, so the book lets it go.
+    let retired = ledger.retirable(&checkpoint, u64::MAX);
+    assert_eq!(
+        retired.iter().copied().collect::<Vec<_>>(),
+        vec![1 as WindowStart]
+    );
+    assert_eq!(ledger.retire_windows(&retired), 1);
     let findings = verify(&checkpoint, &ledger.book().snapshot(), None);
     match findings.as_slice() {
         [Finding::Retired { key: k, window }] => {

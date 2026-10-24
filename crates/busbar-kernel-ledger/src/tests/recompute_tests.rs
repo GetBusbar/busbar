@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A booked line and the one lookup that prices it. The line carries quantities and an instant and
-//! never a price (#71, #77(3)), so what is tested is the lookup's answer: the origin rule on the fee
-//! line, a hole in the history refusing rather than pricing at zero, the tier rule, and an overflow
+//! never a price (#71, #77(3)), so what is tested is the lookup's answer: the fee line pricing the
+//! line's own fee count, a hole in the history refusing rather than pricing at zero, the tier rule, and an overflow
 //! refusing rather than wrapping. (The cached-price arbitration that once lived here had nothing in
 //! production to arbitrate and was deleted; the boot reconciliation re-derives every settled figure
 //! from the journal's counts instead.)
@@ -12,7 +12,7 @@ use crate::cost::{Author, CardEntryDraft, History, LaneClass, RateCard};
 use busbar_contract::caps::MeterClassId;
 
 use crate::cost::checked_apply_tier;
-use crate::recompute::{price_line, Divergence, Posting, PostingOrigin, PricedLine, BASIS_POINTS};
+use crate::recompute::{price_line, Divergence, Posting, PricedLine, BASIS_POINTS};
 
 use super::fixtures::key;
 
@@ -55,7 +55,6 @@ fn line() -> Posting {
         fee_count: 1,
         tier_bp: DISCOUNT_TIER_BP,
         arrived_ms: ARRIVED_MS,
-        origin: PostingOrigin::Client,
     }
 }
 
@@ -68,13 +67,13 @@ fn priced(line: &Posting, history: &History) -> Result<u128, Divergence> {
 }
 
 #[test]
-fn the_fee_line_is_zero_for_work_no_client_asked_for() {
+fn the_fee_line_prices_the_lines_own_fee_count() {
     let history = History::opening(opening_card(), 0);
-    let mut internal = line();
-    internal.origin = PostingOrigin::Internal;
+    let mut feeless = line();
+    feeless.fee_count = 0;
     assert!(
-        priced(&internal, &history).expect("prices") < priced(&line(), &history).expect("prices"),
-        "an internally originated line must not be charged the request fee"
+        priced(&feeless, &history).expect("prices") < priced(&line(), &history).expect("prices"),
+        "a line that carries no billable request must not be charged the request fee"
     );
 }
 

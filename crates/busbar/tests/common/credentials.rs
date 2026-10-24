@@ -106,9 +106,8 @@ pub fn harness_release_key_hex() -> String {
 /// Package the REAL token-verifying `kind: auth` plugin cdylib busbar builds (a pinned git
 /// dev-dependency, so the build leaves it under `deps/`) into a `kind: auth` tarball named `module`
 /// (alias `alias`) in `plugins_dir`, its manifest stating the door's Statement as the pack tool
-/// renders it, SIGNED first-party under [`harness_release_key`] when `first_party` (its needs are in
-/// the `operator-infrastructure` egress class, which the host grants a first-party plugin only),
-/// else under a third-party key. A cdylib that is not built fails the caller in every run.
+/// renders it, SIGNED first-party under [`harness_release_key`] when `first_party`, else under a
+/// third-party key. A cdylib that is not built fails the caller in every run.
 pub fn install_auth_plugin(plugins_dir: &Path, module: &str, alias: &str, first_party: bool) {
     let lib = super::plugins::token_verifier_cdylib_path()
         .and_then(|p| std::fs::read(p).ok())

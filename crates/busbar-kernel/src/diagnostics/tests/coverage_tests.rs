@@ -24,7 +24,7 @@ const MIGRATED_FILES: &[&str] = &[
     "src/snapshot/mod.rs",
     "src/snapshot/money.rs",
     "src/auth/exchange.rs",
-    "src/auth/token.rs",
+    "src/auth/login.rs",
     "src/auth/mod.rs",
     "src/auth/self_keys.rs",
     // `egress_auth/` is DELETED (P2 D1, the auth split): each outbound style lives in the auth

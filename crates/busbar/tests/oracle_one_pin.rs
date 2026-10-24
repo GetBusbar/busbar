@@ -113,7 +113,8 @@ fn the_engine_clone_stores_no_token_and_builds_locked() {
 /// runs it only when its sha256 is the BASE pin's line for this architecture; a `.sig` beside it must
 /// be the release key's. `bin/oracle fetch-selftest` proves, offline: the pinned judge is fetched and
 /// cached, a wrong sha256 refuses, a pin with no line for this architecture has "no judge", a
-/// disagreeing `.sha256` and another key's `.sig` refuse, and the base's pin wins over the tree's.
+/// disagreeing `.sha256` and another key's `.sig` refuse. Which commit's pin is read is
+/// `a_candidate_never_grades_itself`'s.
 #[test]
 fn the_fetched_judge_is_the_pinned_digests_or_none() {
     let shim = repo_root().join("bin/oracle");
@@ -126,6 +127,31 @@ fn the_fetched_judge_is_the_pinned_digests_or_none() {
     assert!(
         out.status.success(),
         "bin/oracle fetch-selftest failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A CANDIDATE NEVER GRADES ITSELF (architect ruling, the #1556 review). Under ModernCI the judge is
+/// ModernCI's protected config only (BUSBAR_ORACLE_RELEASE_REPO / _REF / _SHA256_LINUX_X86_64 /
+/// _SHA256_LINUX_AARCH64 / _CRATE / _BIN), any one missing is NO JUDGE, and every field of the
+/// candidate's oracle-rust.pin must equal it; the 1.5.5 golden is BUSBAR_GOLDEN_1_5_5_TREE read from
+/// the object database, never the worktree, and the candidate's golden/1.5.5 tree must equal it. No
+/// commit of the candidate's history is a source: a two-commit candidate whose first commit forges
+/// the pin and the golden is red, fast-forward or merged. `bin/oracle base-selftest` proves it offline
+/// with a GREEN twin (config equals candidate); RED against the parent revision's shim.
+#[test]
+fn a_candidate_never_grades_itself() {
+    let shim = repo_root().join("bin/oracle");
+    let out = std::process::Command::new("bash")
+        .arg(&shim)
+        .arg("base-selftest")
+        .current_dir(repo_root())
+        .output()
+        .expect("run bin/oracle base-selftest");
+    assert!(
+        out.status.success(),
+        "bin/oracle base-selftest failed:\n{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );

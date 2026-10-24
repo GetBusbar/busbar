@@ -26,6 +26,18 @@
 //! records rather than once per tick; the interval half is checked by the root's tick as well, so
 //! an idle node's last postings are sealed within one interval.
 //!
+//! ## Every seal bounds the book
+//!
+//! Each seal is taken WITHOUT the windows the last kept checkpoint already holds at the book's own
+//! figures once 1.5.5's thirty-one-day horizon has passed them
+//! ([`busbar_kernel_ledger::settle::Ledger::retirable`]), and only once that seal is signed and on
+//! the journal does the book let them go ([`busbar_kernel_ledger::settle::Ledger::retire_windows`])
+//! — the dual-write rows, the counted lines, the refused rows and the uncounted balances of those
+//! windows with it. A seal that fails retires nothing, so the checkpoint the books are verified
+//! against always holds every window the book does, every window that left is in the seal before
+//! the one that dropped it, and the book, the rows and the read-time lines stay bounded by the
+//! windows a budget can still name.
+//!
 //! ## Armed, never implied
 //!
 //! A book seals on cadence only after [`Durability::arm_checkpoints`]. The boot arms the process's
@@ -230,6 +242,7 @@ impl Durability {
         });
         let checkpoint_seq = cadence.next_checkpoint_seq;
         cadence.next_checkpoint_seq = checkpoint_seq.saturating_add(1);
+        let retiring = self.retiring_windows(now);
         // The journal numbers from one, so its last record is one below the next; a chain still at
         // genesis (an all-zero head) has no record and cross-links nothing.
         let high_water = self.journal.next_seq().saturating_sub(1);
@@ -242,7 +255,8 @@ impl Durability {
             })
             .into_iter()
             .collect();
-        let totals = self.ledger.book().snapshot();
+        let mut totals = self.ledger.book().snapshot();
+        totals.retain(|(_, window), _| !retiring.contains(window));
         let secret = ChainSecret::of(&self.record);
         let secret = secret.as_ref().map(|s| s as &dyn CheckpointSecret);
         let pinned = (self.history)();
@@ -278,10 +292,44 @@ impl Durability {
                     .map(|_| checkpoint)
                     .map_err(CheckpointFailed::Lost)
             });
+        // Signed and on the journal: only now does the book let go of what the seal left out.
+        if outcome.is_ok() {
+            self.retire_left_out(&retiring);
+        }
         cadence.sealed_through = self.journal.next_seq();
         cadence.sealed_at = now;
         self.cadence = Some(cadence);
         outcome
+    }
+
+    /// THE WINDOWS THIS SEAL LEAVES OUT (see the module doc): what the last kept seal holds past
+    /// the horizon, at the book's figures, with no hold open.
+    ///
+    /// Nothing while a settled figure still waits on the log's confirmation: its move back into
+    /// `settled` would land on a window the book had let go. Nothing with no kept seal — a
+    /// restarted node keeps every window until it has sealed once.
+    fn retiring_windows(&self, now: u64) -> std::collections::BTreeSet<WindowStart> {
+        if !self.unconfirmed.is_empty() {
+            return std::collections::BTreeSet::new();
+        }
+        match self.last_sealed.as_ref() {
+            Some(sealed) => self.ledger.retirable(sealed, now),
+            None => std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// RETIRE `windows` once the seal that left them out is durable: from the book and the
+    /// dual-write rows through the ledger's one verb, then the counted lines, the refused rows and
+    /// the uncounted balances of the same windows, whose bound is the book's.
+    fn retire_left_out(&mut self, windows: &std::collections::BTreeSet<WindowStart>) {
+        if windows.is_empty() {
+            return;
+        }
+        self.ledger.retire_windows(windows);
+        self.counted.retain(|line| !windows.contains(&line.window));
+        self.refused.retain(|row| !windows.contains(&row.window));
+        self.uncounted
+            .retain(|(_, window)| !windows.contains(window));
     }
 
     /// Seal a checkpoint if the armed cadence says one is due at `now` (wall seconds). `None` when

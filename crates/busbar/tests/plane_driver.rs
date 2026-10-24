@@ -519,8 +519,8 @@ async fn the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick() {
 }
 
 /// A plane that answers `next_tick_ns = 0` and never wakes its driver ticket is ticked once and
-/// never again (R-PUSH: `0` names no tick until a wake, and no wake comes). The llm and decisions
-/// planes answer `0` and never wake, so this is their count.
+/// never again (R-PUSH: `0` names no tick until a wake, and no wake comes). A one-direction plane
+/// that answers `0` and never wakes counts exactly this.
 #[tokio::test]
 async fn no_tick_follows_a_tick_that_asks_for_none() {
     for way in ways() {

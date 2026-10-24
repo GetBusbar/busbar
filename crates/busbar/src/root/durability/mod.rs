@@ -112,7 +112,7 @@ use busbar_kernel_ledger::legacy::{LegacyRows, SummedRows};
 use busbar_kernel_ledger::migration::OPENING_CHECKPOINT_SEQ;
 use busbar_kernel_ledger::settle::{Figures, Ledger, Settlement};
 use busbar_kernel_ledger::totals::{
-    BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
+    past_retention, BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart,
 };
 use busbar_kernel_wal::{
     BodyReader, BodyWriter, Entry, Journal, JournalAck, JournalRecord, Mode, OpenError,
@@ -134,6 +134,19 @@ mod held;
 #[cfg(any(test, feature = "root-admin"))]
 pub use held::CheckpointUnreadable;
 pub use replay::{JournalDisagreement, Recoverable};
+
+/// WHAT A HELD SEAL CARRIED PAST THE 31-DAY HORIZON (row 159's retirement under Q128 A1's
+/// head-only ring). The book lets a window go only once it is past the horizon, so at a seal every
+/// window past the horizon is either in the seal or gone from the book: the seal's balances are the
+/// chain's minus every window past `at` that is not in `kept`. The walk re-derives a held seal by
+/// that rule, which needs no record of the windows retired, only of the few the seal still held.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct SealHorizon {
+    /// The instant the horizon is measured from: the latest seal instant up to this seal.
+    pub(super) at: u64,
+    /// The windows past the horizon at `at` that the seal still carried.
+    pub(super) kept: std::collections::BTreeSet<WindowStart>,
+}
 
 /// The journal kept in the configured store: its schema and keys, the boot's read-back and the
 /// host's write-behind lane. A private child module; its public items are re-exported here.
@@ -180,6 +193,9 @@ pub use seal::{keyset_of, KeySetVerifier};
 /// a window read back off the journal, and the walk `GET /admin/verify` reports. A private child
 /// module, as `replay` is; its methods are `Durability`'s own.
 mod audit;
+// Its one caller is the admin unit's audit range read (`units_admin`), compiled with `root-admin`.
+#[cfg(feature = "root-admin")]
+pub use audit::AuditWindowAt;
 
 /// The three disaster-recovery verbs over the node's journal and the configured store (status row
 /// 187): the operator's chain break on the chain, the epoch floor in the store, the restore refused.
@@ -242,6 +258,23 @@ pub struct Durability {
     /// record of every seal; the audit chain's head history (#82(d)) is kept forever on its own.
     /// The checkpoints read serves this ring.
     pub checkpoints: Vec<CheckpointHead>,
+    /// THE NEWEST SEAL THIS NODE KEPT, WITH ITS BALANCES: the one resident sealed copy the A1
+    /// bound allows. The book's retirement measures against it (row 159: a window past 1.5.5's
+    /// 31-day horizon goes only once a kept seal holds it at the book's own figures,
+    /// `Ledger::retirable`), so it is replaced by every seal and never accumulates. `None` until
+    /// this process has sealed once: a restarted node retires nothing before its first seal.
+    last_sealed: Option<Checkpoint>,
+    /// WHAT EACH HELD SEAL KEPT PAST THE 31-DAY HORIZON, by its sequence number: what the walk
+    /// needs to re-derive it across the book's retirement ([`SealHorizon`]). One entry per seal the
+    /// ring holds, pruned with the ring; each holds only the windows that seal carried past its
+    /// horizon (one the retirement could not take yet: figures that moved since the seal before, an
+    /// open hold, an unconfirmed settlement, the first seal after a boot, or a wall clock that
+    /// stepped back behind `retire_clock`, since the retirement asks at the seal's own instant).
+    /// Never balances.
+    seal_horizons: std::collections::BTreeMap<u64, SealHorizon>,
+    /// The latest seal instant this process has sealed at: every horizon is measured from it, so
+    /// a clock that steps back never brings a retired window inside the horizon of a seal after it.
+    retire_clock: u64,
     /// THE NEWEST SEALED AUDIT RECORDS, oldest first, at most [`AUDIT_RING`]: a cache over the
     /// journal, which keeps every record this chain ever sealed. Rebuilt from the journal at boot.
     pub audit_records: Vec<AuditRecord>,
@@ -299,9 +332,9 @@ pub struct Durability {
     /// and answers the same set either side of a restart.
     ///
     /// THE BOUND IS THE BOOK'S: a line is held for exactly as long as the book holds its window.
-    /// The book retires no window today — `Book::retain_from` has no production caller, and the
-    /// boot rebuilds every window the chain carries — so neither does this; the lines grow with the
-    /// counted units this node's chain holds, as the chain itself does.
+    /// Each seal retires the windows the last kept checkpoint holds once 1.5.5's thirty-one-day
+    /// horizon has passed them, and their lines with them (`seal.rs`); the boot rebuilds every
+    /// window the chain carries, and the first seals after it bound them again.
     counted: Vec<CountedLine>,
     /// THE BALANCES A FIGURE MOVED WITH NO COUNTS BEHIND IT: a settlement whose writer knew no
     /// counts and posted a figure anyway, or a record of the era that carried figures. Such a
@@ -368,6 +401,65 @@ fn chain_of(
     }
 }
 
+/// What a read of the whole chain answers: the records oldest first, or why it could not be read.
+pub type ChainRead = std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>>;
+
+/// THE CHAIN AS OF ONE HOLD OF THE BOOK'S LOCK, to be read after letting go of it
+/// ([`Durability::chain_at`]). On a journal resumed from the store, reading the whole chain scans
+/// the store through its plugin, a wait per block of the chain; the book's lock is the one every
+/// unit's open, settle and seal takes on the request path, so a read off the request path takes
+/// this under the lock and reads it without (THE DESIGN §11.2: no blocking on the hot path).
+pub struct ChainAt(ChainSource);
+
+/// Where a [`ChainAt`] reads from.
+enum ChainSource {
+    /// Already read, under the lock: a disk, or a journal with no store behind it, reads no plugin.
+    Read(ChainRead),
+    /// What the node holds of a chain the store keeps; the store is read by [`ChainAt::read`].
+    Stored(store_chain::HeldChain),
+}
+
+impl ChainAt {
+    /// The chain as of the hold it was taken under: [`Durability::chain`]'s answer for that moment.
+    ///
+    /// # Errors
+    ///
+    /// The chain could not be read back.
+    pub fn read(self) -> ChainRead {
+        match self.0 {
+            ChainSource::Read(read) => read,
+            ChainSource::Stored(held) => held.read(),
+        }
+    }
+
+    /// The configured store the chain is read from, on a journal resumed from one.
+    fn store(&self) -> Option<&str> {
+        match &self.0 {
+            ChainSource::Read(_) => None,
+            ChainSource::Stored(held) => Some(held.store()),
+        }
+    }
+
+    /// The newest migration marker on the chain: [`Durability::migration_marker`], as of the hold.
+    #[must_use]
+    pub fn migration_marker(self) -> Option<MigrationMarker> {
+        let replayed = self.read().ok()?.ok()?;
+        replayed
+            .iter()
+            .filter(|r| r.class == RecordClass::Migration)
+            .max_by_key(|r| r.node_seq)
+            .and_then(|r| migration_marker_from(&r.body))
+    }
+}
+
+/// WHY A CHAIN READ FAILED, as [`Durability::unreadable`] says it, for a chain kept in `store`.
+fn unreadable_in(store: Option<&str>, e: &std::io::Error) -> String {
+    match store {
+        Some(store) => format!("the journal could not be read back from the store `{store}`: {e}"),
+        None => format!("the journal could not be read back: {e}"),
+    }
+}
+
 /// Where the book reads the dated rate-card history a replay prices against: a snapshot pinned
 /// at the moment of the read.
 pub type HistorySource = Box<dyn Fn() -> Option<PinnedHistory> + Send + Sync>;
@@ -410,10 +502,23 @@ impl Durability {
     /// # Errors
     ///
     /// The chain could not be read back.
-    pub fn chain(
-        &self,
-    ) -> std::io::Result<Result<Vec<JournalRecord>, busbar_kernel_wal::JournalBreak>> {
-        chain_of(&self.journal, self.store_kept())
+    pub fn chain(&self) -> ChainRead {
+        self.chain_at().read()
+    }
+
+    /// [`Durability::chain`] in two halves: what the node holds of the chain, taken here under the
+    /// book's lock, and the store read by [`ChainAt::read`] once the lock is let go. A read off the
+    /// request path takes this rather than the whole chain, so no unit waits on the store plugin
+    /// for it (THE DESIGN §11.2).
+    #[must_use]
+    pub fn chain_at(&self) -> ChainAt {
+        ChainAt(match self.store_kept() {
+            Some(lane) => match store_chain::HeldChain::of(&self.journal, lane) {
+                Ok(held) => ChainSource::Stored(held),
+                Err(e) => ChainSource::Read(Err(e)),
+            },
+            None => ChainSource::Read(self.journal.replay()),
+        })
     }
 
     /// The lane the chain is kept through, on a journal resumed from the store.
@@ -425,13 +530,7 @@ impl Durability {
     /// [`build_on_store`] gives a store that would not read the chain back the first time. A boot
     /// step that reads the chain again never takes a failed read for an empty chain.
     pub(crate) fn unreadable(&self, e: &std::io::Error) -> String {
-        match self.store_kept() {
-            Some(lane) => format!(
-                "the journal could not be read back from the store `{}`: {e}",
-                lane.store()
-            ),
-            None => format!("the journal could not be read back: {e}"),
-        }
+        unreadable_in(self.store_kept().map(JournalLane::store), e)
     }
 
     /// The host's lane to the configured store, on a book built over one.
@@ -472,6 +571,21 @@ impl Durability {
             return None;
         }
         self.lane.as_ref().and_then(JournalLane::refuses_money)
+    }
+
+    /// RE-OFFER WHAT THE JOURNAL HOLDS BACK FROM THE STORE, and answer how many records it still
+    /// holds back. A batch the full lane turned away waits in the journal, outside the lane, until
+    /// an append re-offers it; an append of nothing does that and seals nothing. Never calls the
+    /// store: the lane takes the batch or turns it away. 0 at once on a book whose durability is not
+    /// its store, and on one that holds nothing back.
+    pub fn offer_held_back(&mut self) -> usize {
+        if !self.durable_in_store() || self.journal.buffered() == 0 {
+            return 0;
+        }
+        let token = busbar_kernel::teller::Kernel::new().durability_token();
+        // Turned away again, the batch stays retained; the count below says so.
+        let _ = self.journal.append(&token, StepName::Meter, &[]);
+        self.journal.buffered()
     }
 
     /// Put a durable `ChainBreak` record on the journal for every segment remainder boot recovery
@@ -540,20 +654,59 @@ impl Durability {
             .next_checkpoint_seq
             .max(checkpoint.checkpoint_seq.saturating_add(1));
         self.checkpoints.push(checkpoint.head());
-        // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held.
+        // What the seal carried past its horizon: the walk's whole record of the retirement.
+        self.retire_clock = self.retire_clock.max(checkpoint.wall);
+        let at = self.retire_clock;
+        let horizon = SealHorizon {
+            at,
+            kept: checkpoint
+                .totals
+                .keys()
+                .map(|(_, window)| *window)
+                .filter(|window| past_retention(*window, at))
+                .collect(),
+        };
+        self.seal_horizons
+            .insert(checkpoint.checkpoint_seq, horizon);
+        self.last_sealed = Some(checkpoint.clone());
+        // The ring: the oldest seal goes once the latest CHECKPOINT_RING are held, and what it
+        // carried past its horizon goes with it.
         let over = self.checkpoints.len().saturating_sub(CHECKPOINT_RING);
         self.checkpoints.drain(..over);
+        if let Some(oldest) = self.checkpoints.first().map(|head| head.checkpoint_seq) {
+            self.seal_horizons.retain(|seq, _| *seq >= oldest);
+        }
         Ok(ack)
     }
 
     /// HOW MANY SEALED BALANCES THIS NODE HOLDS IN MEMORY beside its live book: every balance of
     /// every checkpoint it keeps. The measure of the bound the Q128 kernel-ledger ruling sets (A1):
-    /// one live book, the unsealed deltas, and at most one sealed snapshot in flight.
-    /// A [`CheckpointHead`] carries no balances, so the ring holds none: the only sealed snapshot
-    /// is the one a seal or a read has in flight.
+    /// one live book, the unsealed deltas, and one resident sealed copy. A [`CheckpointHead`]
+    /// carries no balances, so the ring holds none; the one resident sealed copy is the newest kept
+    /// seal the retirement measures against, never more balances than that seal took from the book.
     #[cfg(test)]
     pub(crate) fn sealed_balances_held(&self) -> usize {
-        0
+        self.last_sealed
+            .as_ref()
+            .map_or(0, |sealed| sealed.totals.len())
+    }
+
+    /// HOW MANY HELD SEALS THIS NODE KEEPS A HORIZON FOR: never more than the ring holds, since a
+    /// seal's horizon leaves with it.
+    #[cfg(test)]
+    pub(crate) fn seal_horizons_held(&self) -> usize {
+        self.seal_horizons.len()
+    }
+
+    /// HOW MANY WINDOW INSTANTS THIS NODE KEEPS TO RE-DERIVE ITS HELD CHECKPOINTS across the book's
+    /// retirement: the bound the 31-day horizon sets on that memory (per held seal; see
+    /// [`Durability::seal_horizons_held`] for how many seals it keeps one for).
+    #[cfg(test)]
+    pub(crate) fn retirement_windows_held(&self) -> usize {
+        self.seal_horizons
+            .values()
+            .map(|horizon| horizon.kept.len())
+            .sum()
     }
 
     /// The newest migration marker on the chain, if this deployment has migrated.
@@ -569,12 +722,7 @@ impl Durability {
     /// treating one as the other there is how a deployment re-opens balances it already opened.
     #[must_use]
     pub fn migration_marker(&self) -> Option<MigrationMarker> {
-        let replayed = self.chain().ok()?.ok()?;
-        replayed
-            .iter()
-            .filter(|r| r.class == RecordClass::Migration)
-            .max_by_key(|r| r.node_seq)
-            .and_then(|r| migration_marker_from(&r.body))
+        self.chain_at().migration_marker()
     }
 
     /// OPEN A HOLD ON THE BOOK AND ON THE JOURNAL, before the unit it reserves for runs (item 127).
@@ -1530,8 +1678,9 @@ pub struct CountedLine {
 impl CountedLine {
     /// The line as the ledger's booked line, written by `node`. `None` for a line no booked line
     /// can carry: a class nobody declared, or one this image's vocabulary does not hold. The tier
-    /// is the standard one and the origin a client, which is what every counted posting is priced
-    /// at when it settles ([`price_counts`]), so the read prices the same quantities the same way.
+    /// is the standard one and the fee count the line's own, which is what every counted posting is
+    /// priced at when it settles ([`price_counts`]), so the read prices the same quantities the
+    /// same way.
     #[must_use]
     pub fn booked(&self, node: u64) -> Option<busbar_kernel_ledger::Posting> {
         if self.undeclared {
@@ -1558,7 +1707,6 @@ impl CountedLine {
             fee_count: self.counts.fee_count,
             tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
             arrived_ms: self.arrived_ms,
-            origin: busbar_kernel_ledger::PostingOrigin::Client,
         })
     }
 }
@@ -2794,6 +2942,9 @@ fn build_inner(
             busbar_kernel::door::node()
         }),
         checkpoints: Vec::new(),
+        last_sealed: None,
+        seal_horizons: std::collections::BTreeMap::new(),
+        retire_clock: 0,
         audit_records: Vec::new(),
         audit_findings: Vec::new(),
         audit_signed_from: None,
@@ -2998,3 +3149,7 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/durability_boot_reads.rs"]
 mod boot_reads;
+
+#[cfg(all(test, feature = "root-admin"))]
+#[path = "../tests/durability_reads_unlocked.rs"]
+mod reads_unlocked;

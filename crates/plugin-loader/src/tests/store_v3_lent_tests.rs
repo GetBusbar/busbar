@@ -95,6 +95,7 @@ impl Slot for WedgedPlaneGet {
 mod wedged {
     use super::{WedgedGet, WedgedPlaneGet};
     use crate::both_ways::store_fixture::MemoryStore as M;
+    use busbar_contract::abi::sdk::life as l;
     use busbar_contract::abi::sdk::store::door as d;
     use busbar_contract::abi::sdk::Safe as S;
 
@@ -111,15 +112,15 @@ mod wedged {
             ..busbar_contract::abi::sdk::door::statement("wedged", "0", 64)
         },
                 lifecycle: {
-                    validate: S<d::Validate<M>>,
+                    validate: S<l::Validate<d::Served<M>>>,
                     open: S<d::Open<M>>,
-                    refresh: S<d::Refresh<M>>,
-                    retire: S<d::Retire<M>>,
-                    tick: S<d::Tick<M>>,
-                    drive: S<d::Drive<M>>,
-                    cancel: S<d::Cancel<M>>,
-                    release: S<d::Release<M>>,
-                    close: S<d::Close<M>>,
+                    refresh: S<l::Refresh<d::Served<M>>>,
+                    retire: S<l::Retire<d::Served<M>>>,
+                    tick: S<l::Tick<d::Served<M>>>,
+                    drive: S<l::Drive<d::Served<M>>>,
+                    cancel: S<l::Cancel<d::Served<M>>>,
+                    release: S<l::Release<d::Served<M>>>,
+                    close: S<l::Close<d::Served<M>>>,
                 },
                 kind_ops: {
                     put_key: S<d::PutKey<M>>,

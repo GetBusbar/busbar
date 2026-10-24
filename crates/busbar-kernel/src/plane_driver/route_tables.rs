@@ -143,8 +143,8 @@ impl ConfigTables {
     /// The tables of one resolved configuration generation.
     #[must_use]
     pub fn of(
-        lanes: &[crate::plane_host::LaneInput],
-        pools: &[crate::plane_host::PoolInput],
+        lanes: &[crate::plane_driver::route_input::LaneInput],
+        pools: &[crate::plane_driver::route_input::PoolInput],
         by_model: &std::collections::HashMap<String, usize>,
         upstream_credentials: busbar_contract::config::UpstreamCreds,
     ) -> Self {
@@ -166,7 +166,7 @@ impl ConfigTables {
             fallbacks: pools
                 .iter()
                 .filter_map(|p| match &p.on_exhausted {
-                    crate::plane_host::OnExhaustedInput::FallbackPool(to) => {
+                    crate::plane_driver::route_input::OnExhaustedInput::FallbackPool(to) => {
                         Some((p.name.clone(), to.clone()))
                     }
                     _ => None,

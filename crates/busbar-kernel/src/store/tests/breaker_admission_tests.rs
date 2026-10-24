@@ -10,6 +10,13 @@ use super::super::breaker_admission::PlaneBreakers;
 use super::super::{set_now_for_test, BreakerState, Unavailable};
 use crate::breaker::{CanonicalSignal, StatusClass};
 
+/// Opaque cell keys. The kernel's store never reads a key's spelling (a plane qualifies its own
+/// keys and proves its own non-collision), so these name no plane's keyspace (BUSBAR-1.6.0.md THE
+/// DESIGN §1: "Kernel tests use kind-neutral doubles").
+const KEY_A: &str = "k:a";
+const KEY_B: &str = "k:b";
+const KEY_C: &str = "k:c";
+
 fn signal(class: StatusClass) -> CanonicalSignal {
     CanonicalSignal {
         class,
@@ -24,7 +31,7 @@ fn signal(class: StatusClass) -> CanonicalSignal {
 fn transient_failures_trip_and_fast_fail() {
     set_now_for_test(1_000);
     let b = PlaneBreakers::new();
-    let key = String::from("a:fs");
+    let key = KEY_A.to_string();
     assert!(b.try_admit(&key, 0).is_ok(), "a fresh cell admits");
     // Recorded without interleaved admissions. The cell stays ADMITTING throughout the first four:
     // a sub-threshold transient does not bench the member (see
@@ -50,9 +57,9 @@ fn transient_failures_trip_and_fast_fail() {
 fn hard_down_trips_immediately_and_only_its_own_cell() {
     set_now_for_test(2_000);
     let b = PlaneBreakers::new();
-    let fs = String::from("a:fs");
-    let other = String::from("a:search");
-    let third = String::from("b:planner");
+    let fs = KEY_A.to_string();
+    let other = KEY_B.to_string();
+    let third = KEY_C.to_string();
 
     let epoch = b.try_admit(&fs, 0).expect("closed cell admits");
     b.record_signal(&fs, 0, &signal(StatusClass::Auth));
@@ -60,27 +67,9 @@ fn hard_down_trips_immediately_and_only_its_own_cell() {
 
     assert!(matches!(b.state(&fs), BreakerState::Open { .. }));
     assert!(b.try_admit(&fs, 0).is_err(), "tripped target must refuse");
-    // The neighbours are untouched — each key is its own cell.
+    // The neighbours are untouched — every key is its own cell.
     assert!(b.try_admit(&other, 0).is_ok());
     assert!(b.try_admit(&third, 0).is_ok());
-}
-
-/// Two keys that share a bare name under different prefixes have DISTINCT cells.
-#[test]
-fn two_prefixed_keys_of_one_name_never_share_a_cell() {
-    set_now_for_test(3_000);
-    let b = PlaneBreakers::new();
-    let first = String::from("a:planner");
-    let second = String::from("b:planner");
-    assert_ne!(first, second);
-    let epoch = b.try_admit(&first, 0).expect("admits");
-    b.record_signal(&first, 0, &signal(StatusClass::Auth));
-    b.release(&first, 0, epoch);
-    assert!(b.try_admit(&first, 0).is_err());
-    assert!(
-        b.try_admit(&second, 0).is_ok(),
-        "the second cell is its own"
-    );
 }
 
 /// RECOVERY IS A SINGLE-FLIGHT PROBE: once the cooldown expires exactly ONE caller is admitted
@@ -90,7 +79,7 @@ fn two_prefixed_keys_of_one_name_never_share_a_cell() {
 fn half_open_probe_is_single_flight_and_success_closes() {
     set_now_for_test(10_000);
     let b = PlaneBreakers::new();
-    let key = String::from("b:planner");
+    let key = KEY_B.to_string();
     for _ in 0..5 {
         b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
@@ -120,7 +109,7 @@ fn half_open_probe_is_single_flight_and_success_closes() {
 fn failed_probe_reopens() {
     set_now_for_test(20_000);
     let b = PlaneBreakers::new();
-    let key = String::from("a:fs");
+    let key = KEY_A.to_string();
     for _ in 0..5 {
         b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
@@ -139,7 +128,7 @@ fn failed_probe_reopens() {
 fn abandoned_probe_release_unwedges_the_cell() {
     set_now_for_test(30_000);
     let b = PlaneBreakers::new();
-    let key = String::from("a:fs");
+    let key = KEY_A.to_string();
     for _ in 0..5 {
         b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     }
@@ -159,7 +148,7 @@ fn abandoned_probe_release_unwedges_the_cell() {
 fn client_fault_never_penalizes() {
     set_now_for_test(40_000);
     let b = PlaneBreakers::new();
-    let key = String::from("a:fs");
+    let key = KEY_A.to_string();
     for _ in 0..20 {
         b.record_signal(&key, 0, &signal(StatusClass::ClientError));
     }
@@ -172,7 +161,7 @@ fn client_fault_never_penalizes() {
 fn retry_after_is_the_exact_cooldown() {
     set_now_for_test(50_000);
     let b = PlaneBreakers::new();
-    let key = String::from("b:planner");
+    let key = KEY_B.to_string();
     b.record_signal(&key, 0, &signal(StatusClass::Auth));
     // Hard-down parks the cell with the sticky cooldown (default 1800s).
     let ra = b.retry_after_secs(&key, 0);
@@ -196,7 +185,7 @@ fn retry_after_is_the_exact_cooldown() {
 fn one_sub_threshold_transient_leaves_the_cell_admitting() {
     set_now_for_test(2_000);
     let b = PlaneBreakers::new();
-    let key = String::from("a:fs");
+    let key = KEY_A.to_string();
     b.record_signal(&key, 0, &signal(StatusClass::ServerError));
     assert!(
         matches!(b.state(&key), BreakerState::Closed),
@@ -205,5 +194,59 @@ fn one_sub_threshold_transient_leaves_the_cell_admitting() {
     assert!(
         b.try_admit(&key, 0).is_ok(),
         "a cell that did not trip must not refuse the next caller"
+    );
+}
+
+/// THE OPERATOR'S LIMITS REACH THESE CELLS (BUSBAR-1.6.0.md THE DESIGN §1: "Any plugin gets all
+/// functionality"): a handle built under `limits.hard_down_cooldown_secs` arms that sticky
+/// cooldown, and a handle already in service takes a subsequent generation's value through
+/// `set_limits` without losing the cell it learned. The end-to-end RED arm (the build and the
+/// swap) is `tests::the_operator_breaker_limits_reach_every_planes_cells`.
+#[test]
+fn the_operator_hard_down_cooldown_reaches_the_cells_and_follows_a_new_generation() {
+    set_now_for_test(60_000);
+    let b = PlaneBreakers::new_with_limits(60, 86_400);
+    b.record_signal(KEY_A, 0, &signal(StatusClass::Auth));
+    assert_eq!(
+        b.retry_after_secs(KEY_A, 0),
+        60,
+        "the operator's sticky cooldown"
+    );
+
+    b.set_limits(300, 86_400);
+    assert_eq!(
+        b.retry_after_secs(KEY_A, 0),
+        60,
+        "an armed cooldown keeps the `until` it was armed with"
+    );
+    b.record_signal(KEY_B, 0, &signal(StatusClass::Auth));
+    assert_eq!(
+        b.retry_after_secs(KEY_B, 0),
+        300,
+        "the next hard-down arms the new value"
+    );
+}
+
+/// The honoured-wait CEILING reaches these cells too: an upstream asking for a day is clamped to
+/// the operator's `limits.max_honored_retry_after_secs`, not to the 24h default.
+#[test]
+fn the_operator_retry_after_ceiling_reaches_the_cells() {
+    set_now_for_test(70_000);
+    let b = PlaneBreakers::new_with_limits(1_800, 90);
+    // One sub-threshold failure: this cell benches nothing of its own, so the only wait armed is
+    // the upstream's own request — clamped to the ceiling.
+    b.record_signal(
+        KEY_A,
+        0,
+        &CanonicalSignal {
+            class: StatusClass::Overloaded,
+            provider_signal: None,
+            retry_after: Some(86_400),
+        },
+    );
+    assert_eq!(
+        b.retry_after_secs(KEY_A, 0),
+        90,
+        "an honoured wait is clamped to the operator's ceiling, not the 24h default"
     );
 }

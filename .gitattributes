@@ -8,8 +8,3 @@
 # handlers_emit, load_config_from_disk_refuses_a_real_legacy_config_file_loudly) via real CI logs.
 * text=auto eol=lf
 
-# A count row in the kind-isolation ledger is a MEASUREMENT: when two lanes move the same row, the
-# merged tree measures theirs + ours - base, and `cargo xtask ledger-merge` writes exactly that (or
-# leaves the conflict, with the reason). Register the driver once per clone:
-#   git config merge.ledger-count.driver "cargo xtask ledger-merge %O %A %B"
-qa/kind-isolation.toml merge=ledger-count

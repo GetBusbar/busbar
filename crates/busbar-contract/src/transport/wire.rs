@@ -118,11 +118,11 @@ pub enum Framing {
 
 /// The exact status an upstream put on an answer, in the numbering that spelled it.
 ///
-/// Two transports both report "a number", and the numbers mean unrelated things: HTTP's `503` and
-/// gRPC's `14` both say the upstream is unavailable, while gRPC's `5` (`NOT_FOUND`) and HTTP's `5`
-/// (nothing) share a spelling and no meaning at all. Carrying the number without its namespace
-/// pushes the disambiguation onto every reader, and a reader that guesses wrong on the money path
-/// silently stops recording breaker failures for a whole protocol.
+/// Two transports both report "a number", and the numbers mean unrelated things: one numbering's
+/// `503` and another's `14` can both say the upstream is unavailable, while the second's `5`
+/// (`NOT_FOUND`) and the first's `5` (nothing) share a spelling and no meaning at all. Carrying the
+/// number without its namespace pushes the disambiguation onto every reader, and a reader that
+/// guesses wrong on the money path silently stops recording breaker failures for a whole protocol.
 ///
 /// So the namespace travels WITH the number, in one field rather than two: an answer has exactly
 /// one status, and a second field would let a caller construct a frame claiming two.
@@ -159,7 +159,7 @@ impl WireStatus {
     }
 
     /// The number, when this status is in the numbering asked for. `None` otherwise — never a
-    /// coerced number, because there is no HTTP status a gRPC code "is".
+    /// coerced number, because no code in one numbering "is" a code in another.
     ///
     /// The one accessor every namespace-specific question is asked through, in the namespace the
     /// reader's transport declares: adding a family adds no arm here and no arm anywhere else, and
@@ -199,9 +199,10 @@ pub struct FrameMeta {
     /// no number here, never that the upstream returned zero.
     ///
     /// The namespace is not decoration. A bare number is unreadable without knowing which
-    /// vocabulary wrote it: `14` is `UNAVAILABLE` in gRPC's numbering and is not a status at all in
-    /// HTTP's, so a reader handed the number alone matches it against HTTP's bands, finds no band,
-    /// and calls a dead upstream the caller's fault. [`WireStatus`] makes that mistake unspellable.
+    /// vocabulary wrote it: `14` is `UNAVAILABLE` in a trailer numbering and is not a status at all
+    /// in a status-line one, so a reader handed the number alone matches it against the status-line
+    /// bands, finds no band, and calls a dead upstream the caller's fault. [`WireStatus`] makes
+    /// that mistake unspellable.
     pub status_code: Option<WireStatus>,
     /// The wait the upstream asked for on this answer, in WHOLE SECONDS.
     ///
@@ -470,9 +471,10 @@ impl<T: futures::io::AsyncRead + futures::io::AsyncWrite + Send + Unpin> RawIo f
 /// seam, which this crate does not name; everything on this side of the seam sees only `wrap`.
 ///
 /// A transport that can call `wrap` on its accepted/dialled stream declares
-/// [`super::TransportMeta::WRAPPABLE_BYTE_STREAM`]; one that cannot (e.g. a stdio transport, which
-/// has no byte stream to wrap at all) leaves it at its default `false` and the composition root
-/// fails closed rather than hand it a `TLS`-configured binding it would have to silently downgrade.
+/// [`super::TransportMeta::WRAPPABLE_BYTE_STREAM`]; one that cannot (e.g. a transport that talks to
+/// a child process over its pipes, which has no byte stream to wrap at all) leaves it at its
+/// default `false` and the composition root fails closed rather than hand it a `TLS`-configured
+/// binding it would have to silently downgrade.
 pub trait ConnectionSecurity: Send + Sync {
     /// Apply this binding's connection security to a freshly accepted/dialled raw stream, handing
     /// back the secured stream the transport serves from then on.
