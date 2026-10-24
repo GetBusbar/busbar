@@ -159,6 +159,7 @@ pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 ///   `egress/trust/{identity,spki,trust_anchor}.rs`, `egress/trust/tests/{identity,trust_anchor}_tests.rs`
 ///   (7), `secure.rs` and `topology/worker_shard_tests.rs` (2);
 /// * `busbar-core-connector/src/tls/{engine,engine_tests}.rs` (2).
+///
 /// None was added. The floor stays the measure, not an estimate.
 pub const NEUTRAL_FLOOR: usize = 1089;
 
