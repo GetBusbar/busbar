@@ -1863,8 +1863,29 @@ fn installed_stores(
             Some((a.parse().ok()?, b.parse().ok()?))
         })
         .collect();
-        for f in fns.iter().filter(|f| !f.intest) {
-            let (header, params, ret) = header_parts(lines, f)?;
+        // Every fn's header parts, memoised on the file's scan: a fn's header is its own lines,
+        // so a plant re-reads only the files it planted (each read compiles a pattern per fn).
+        let parts = memo_file_scan(
+            "kernel-no-protocol-registry:fn-headers".to_string(),
+            lines,
+            |lines| {
+                fns.iter()
+                    .filter(|f| !f.intest)
+                    .map(|f| match header_parts(lines, f) {
+                        Ok((header, params, ret)) => format!("{header}\u{1}{params}\u{1}{ret}"),
+                        Err(e) => format!("\u{0}{e}"),
+                    })
+                    .collect()
+            },
+        );
+        for (f, part) in fns.iter().filter(|f| !f.intest).zip(parts.iter()) {
+            if let Some(e) = part.strip_prefix('\u{0}') {
+                return Err(e.to_string());
+            }
+            let mut pieces = part.splitn(3, '\u{1}');
+            let header = pieces.next().unwrap_or_default().to_string();
+            let params = pieces.next().unwrap_or_default().to_string();
+            let ret = pieces.next().unwrap_or_default().to_string();
             let in_trait = traits.iter().any(|&(a, b)| a < f.start && f.start <= b);
             all_fns.push(F {
                 rel: rel.as_str(),
@@ -1989,26 +2010,47 @@ fn installed_stores(
                     let prefix = format!("{}::", module_of(rel));
                     let star = format!("{prefix}*");
                     let mut far_calls: BTreeMap<&str, Vec<Regex>> = BTreeMap::new();
-                    for (file, text) in &texts {
+                    // What each other file says of this setter: whether it spells the path, and
+                    // the names it imports it under. Memoised on the file's scan, keyed by every
+                    // input of the read (the path, the module prefix, the name, the glob), so a
+                    // run after the first re-reads only the files its plant changed.
+                    let tag = format!(
+                        "kernel-no-protocol-registry:far-calls:{path}\u{1}{prefix}\u{1}{}\u{1}{star}",
+                        setter.f.name
+                    );
+                    for file in texts.keys() {
                         if *file == setter.rel {
                             continue;
                         }
+                        let Some(lines) = tree.files.get(*file) else {
+                            continue;
+                        };
+                        let read = memo_file_scan(tag.clone(), lines, |lines| {
+                            let text = lines
+                                .iter()
+                                .map(|x| x.code.as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let mut out =
+                                vec![if text.contains(&path) { "far" } else { "" }.to_string()];
+                            if text.contains(&prefix) && text.contains(setter.f.name.as_str()) {
+                                for mm in import.find_iter(text.as_bytes()) {
+                                    out.push(
+                                        mm.str_of(text.as_bytes(), 1)
+                                            .unwrap_or_else(|| setter.f.name.clone()),
+                                    );
+                                }
+                            }
+                            if text.contains(&star) && glob.is_match_str(&text) {
+                                out.push(setter.f.name.clone());
+                            }
+                            out
+                        });
                         let mut calls = Vec::new();
-                        if text.contains(&path) {
+                        if read.first().is_some_and(|f| f == "far") {
                             calls.push(far.clone());
                         }
-                        let mut imported: Vec<String> = Vec::new();
-                        if text.contains(&prefix) && text.contains(setter.f.name.as_str()) {
-                            for mm in import.find_iter(text.as_bytes()) {
-                                imported.push(
-                                    mm.str_of(text.as_bytes(), 1)
-                                        .unwrap_or_else(|| setter.f.name.clone()),
-                                );
-                            }
-                        }
-                        if text.contains(&star) && glob.is_match_str(text) {
-                            imported.push(setter.f.name.clone());
-                        }
+                        let imported: Vec<String> = read.iter().skip(1).cloned().collect();
                         for n in imported {
                             let n = rx::escape(&n);
                             calls.push(Regex::new(&format!(r"(?<![.A-Za-z0-9_:]){n}\s*\("))?);
