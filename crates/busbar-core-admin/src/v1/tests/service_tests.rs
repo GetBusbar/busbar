@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/admin/v1/service.rs`.
 
 use super::*;
-use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess};
+use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess, MIGRATED_STORE_MODULE};
 
 fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
@@ -635,7 +635,7 @@ fn install_catalog_remove_roundtrip() {
 
     // Catalog: the memory head + our dynamic plugin.
     let cat = svc.store_plugin_catalog();
-    assert_eq!(cat[0].name, "memory");
+    assert_eq!(cat[0].name, MIGRATED_STORE_MODULE);
     let dyn_row = cat
         .iter()
         .find(|p| p.loader == "dynamic-library")
@@ -799,7 +799,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         "the panic fallback must be exactly the one compiled-in `memory` row: {:?}",
         page.items
     );
-    assert_eq!(page.items[0].name, "memory");
+    assert_eq!(page.items[0].name, MIGRATED_STORE_MODULE);
     assert_eq!(page.items[0].loader, "compiled-in");
 }
 
@@ -3741,8 +3741,8 @@ mod one_recorded_usage_every_surface {
         //
         // These three figures are therefore pinned, not asserted-as-correct. They are what a
         // 1.5.5 customer observes today and they are recorded in the shadow oracle
-        // (`billing|group-usage|*`, `billing|key-usage|*`, `llm|*|over_budget*`). Moving one is
-        // moving a golden, which no agent may do.
+        // (`billing|group-usage|*`, `billing|key-usage|*`, the pools plane's `*|over_budget*`
+        // cells). Moving one is moving a golden, which no agent may do.
         let flat_micros = (RATE_CURRENT as i64) * (TOKENS as i64) * 2;
         assert_eq!(
             hook_micros, flat_micros,
@@ -4264,7 +4264,7 @@ mod plane_fees_on_admin_usage {
         );
     }
 
-    /// A PLANE'S CLASSES ON THE USAGE ROW (new in 1.6.0, FLIP-A2A ruling): three tool calls at
+    /// A PLANE'S CLASSES ON THE USAGE ROW (new in 1.6.0, PLANE-FLIP ruling): three tool calls at
     /// `tool_calls` 7 and the plane's fee 3 — the row and the total each carry `classes.tool_calls`
     /// with its count 3 and its cost 21, the share of the row's 30 the class is (the fee is the
     /// rest), never a second pricing added on top.
@@ -4549,4 +4549,131 @@ fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     let mut none = (*app).clone();
     none.plugin_trust = None;
     assert!(super::operations::trust_policy(&none, "1.6.0").is_err());
+}
+
+/// An overlay file that is a NAMED PIPE, and the read of it as a race between the runtime and a
+/// watchdog: a read of the pipe parks until something opens its writing end. A sibling task on the
+/// test's one-worker runtime opens it — which it can do only if the read left that worker free. A
+/// watchdog thread opens it instead after a bound, so a read that held the worker still finishes,
+/// and says that it had to.
+///
+/// Returns whether the read ran off the worker: `true` when the sibling released it, `false` when
+/// only the watchdog could.
+#[cfg(unix)]
+async fn overlay_read_left_the_worker_free<F, Fut>(tag: &str, read: F) -> bool
+where
+    F: FnOnce(Arc<App>) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let dir = tmp_plugins_dir(tag);
+    std::fs::create_dir_all(&dir).unwrap();
+    let pipe = dir.join("overlay.json");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success(), "mkfifo {}", pipe.display());
+    let app = crate::new_test_app().overlay_path(pipe.clone()).build();
+
+    let watchdog_fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (done, finished) = std::sync::mpsc::channel::<()>();
+    let watchdog = {
+        let pipe = pipe.clone();
+        let fired = Arc::clone(&watchdog_fired);
+        std::thread::spawn(move || {
+            if finished
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_err()
+            {
+                fired.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = std::fs::OpenOptions::new().write(true).open(&pipe);
+            }
+        })
+    };
+    let sibling = {
+        let pipe = pipe.clone();
+        tokio::spawn(async move {
+            let _ = std::fs::OpenOptions::new().write(true).open(&pipe);
+        })
+    };
+    read(app).await;
+    let _ = done.send(());
+    watchdog.join().unwrap();
+    // A read that held the worker never let the sibling start, and with the read over nothing
+    // would ever open the pipe's reading end for it: cancel it before its first poll. A read that
+    // left the worker free already let it run to completion, so this cancels nothing.
+    sibling.abort();
+    let _ = sibling.await;
+    !watchdog_fired.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// RED (a read blocks an async worker): `GET /<section>` lists the overlay's unparseable entries,
+/// which reads and parses the operator's overlay FILE. That read runs off the async worker, as every
+/// other admin disk read does. RED while it ran inline: the worker parked on the file, the sibling
+/// never ran, and only the watchdog could release the read.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn list_named_defs_reads_the_overlay_off_the_async_worker() {
+    let free = overlay_read_left_the_worker_free("named-list-pipe", |app| async move {
+        let page = AdminService::new(app)
+            .list_named_defs(NamedMapSection::Export)
+            .await
+            .expect("the list answers");
+        assert!(page.items.is_empty(), "{:?}", page.items.len());
+    })
+    .await;
+    assert!(
+        free,
+        "the named-definition list read the overlay file on the async worker: no other task ran \
+         while it was parked"
+    );
+}
+
+/// RED, the single-entry twin: `GET /<section>/{name}` for a name the live config does not hold
+/// falls back to the overlay's unparseable entries — the same file read, off the worker too.
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn get_named_def_reads_the_overlay_off_the_async_worker() {
+    let free = overlay_read_left_the_worker_free("named-get-pipe", |app| async move {
+        let err = AdminService::new(app)
+            .get_named_def(NamedMapSection::Export, "absent")
+            .await
+            .expect_err("an unknown name is not found");
+        assert!(matches!(err, AdminError::NotFound { .. }), "{err:?}");
+    })
+    .await;
+    assert!(
+        free,
+        "the named-definition read held the async worker while the overlay file was read"
+    );
+}
+
+/// GREEN twin: the overlay read still FLAGS what it finds. An entry the operator's overlay holds
+/// that this binary cannot parse is listed (and answered by name) as the flagged view, beside the
+/// live definitions — moving the read off the worker changed where it runs, not what it says.
+#[tokio::test(flavor = "current_thread")]
+async fn named_defs_still_flag_an_unparseable_overlay_entry() {
+    let dir = tmp_plugins_dir("named-flagged");
+    std::fs::create_dir_all(&dir).unwrap();
+    let overlay = dir.join("overlay.json");
+    let mut doc = serde_json::json!({"version": 1, "named_maps": {}});
+    doc["named_maps"][NamedMapSection::Export.key()] =
+        serde_json::json!({"broken": {"no_such_field": true}});
+    std::fs::write(&overlay, doc.to_string()).unwrap();
+    let app = crate::new_test_app().overlay_path(overlay).build();
+    let page = AdminService::new(Arc::clone(&app))
+        .list_named_defs(NamedMapSection::Export)
+        .await
+        .expect("the list answers");
+    let names: Vec<&str> = page.items.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, ["broken"], "the unparseable overlay entry is listed");
+    let one = AdminService::new(app)
+        .get_named_def(NamedMapSection::Export, "broken")
+        .await
+        .expect("the flagged entry answers by name");
+    assert_eq!(
+        serde_json::to_value(&one).unwrap(),
+        serde_json::to_value(&page.items[0]).unwrap(),
+        "the list and the single read give the one flagged view"
+    );
 }

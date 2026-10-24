@@ -23,20 +23,21 @@ fn declared(
 }
 
 #[test]
-fn the_real_stack_boots() {
-    // `tcp → tls → http → { sse, ws, grpc }`, with `stdio` standing on its own — the seven
-    // transports' actual `TransportMeta::COMPOSES_OVER` declarations and the `composed_over` each
-    // registered row records, side by side. `tcp`, `tls` and `http` each open their own socket and answer `None`
-    // regardless of what they declare; `sse`, `ws` and `grpc` are only ever built by holding (or
-    // being handed) another instance, so they name it; `stdio` composes over nothing at all.
+fn a_layered_stack_boots() {
+    // A neutral stack of the shape a deployment composes: `base → sealed → request → { events,
+    // duplex, call }`, with `piped` standing on its own, each row's `COMPOSES_OVER` declaration and
+    // the `composed_over` its registered row records, side by side. `base`, `sealed` and `request`
+    // each open their own socket and answer `None` regardless of what they declare; `events`,
+    // `duplex` and `call` are only ever built by holding (or being handed) another instance, so
+    // they name it; `piped` composes over nothing at all.
     let registry = [
-        declared("tcp", &[], None),
-        declared("tls", &["tcp"], None),
-        declared("http", &["tcp", "tls"], None),
-        declared("sse", &["http"], Some("http")),
-        declared("ws", &["http", "tcp"], Some("http")),
-        declared("grpc", &["http", "tcp"], Some("tcp")),
-        declared("stdio", &[], None),
+        declared("base", &[], None),
+        declared("sealed", &["base"], None),
+        declared("request", &["base", "sealed"], None),
+        declared("events", &["request"], Some("request")),
+        declared("duplex", &["request", "base"], Some("request")),
+        declared("call", &["request", "base"], Some("base")),
+        declared("piped", &[], None),
     ];
     assert_eq!(check_composition(&registry), Ok(()));
 }
@@ -44,7 +45,7 @@ fn the_real_stack_boots() {
 #[test]
 fn a_declared_layer_that_nothing_registered_refuses_the_boot() {
     let registry = [
-        declared("tcp", &[], None),
+        declared("base", &[], None),
         declared("dgram", &["udp"], None),
     ];
     assert_eq!(
@@ -58,35 +59,38 @@ fn a_declared_layer_that_nothing_registered_refuses_the_boot() {
 
 #[test]
 fn a_composition_the_transport_never_declared_refuses_the_boot() {
-    // The other direction: every name resolves, but `ws` was built over a layer it does not
+    // The other direction: every name resolves, but `duplex` was built over a layer it does not
     // declare. Nothing about the registry's contents catches this — only comparing what was
     // declared against what was used.
     let registry = [
-        declared("tcp", &[], None),
-        declared("stdio", &[], None),
-        declared("ws", &["tcp"], Some("stdio")),
+        declared("base", &[], None),
+        declared("piped", &[], None),
+        declared("duplex", &["base"], Some("piped")),
     ];
     assert_eq!(
         check_composition(&registry),
         Err(CompositionError::UndeclaredComposition {
-            transport: "ws",
-            used: "stdio",
+            transport: "duplex",
+            used: "piped",
         })
     );
 }
 
 #[test]
 fn two_transports_cannot_share_one_key() {
-    let registry = [declared("tcp", &[], None), declared("tcp", &[], None)];
+    let registry = [declared("base", &[], None), declared("base", &[], None)];
     assert_eq!(
         check_composition(&registry),
-        Err(CompositionError::DuplicateKey("tcp"))
+        Err(CompositionError::DuplicateKey("base"))
     );
 }
 
 #[test]
 fn a_transport_that_opens_its_own_socket_is_checked_only_on_what_it_declares() {
-    let registry = [declared("tcp", &[], None), declared("tls", &["tcp"], None)];
+    let registry = [
+        declared("base", &[], None),
+        declared("sealed", &["base"], None),
+    ];
     assert_eq!(check_composition(&registry), Ok(()));
 }
 

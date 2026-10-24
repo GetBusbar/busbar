@@ -747,6 +747,56 @@ async fn a_sweep_past_every_expiry_leaves_no_record_behind() {
     assert!(left.is_empty(), "rows the sweep never reclaims: {left:#?}");
 }
 
+/// How many held-back point reads of the server's `bucket` records are still unspent.
+fn bucket_reads_left(store: &OneStore) -> usize {
+    let bucket = format!("{LABEL}bucket");
+    store
+        .stalls
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter(|(slot, kind, _)| *slot == "get" && *kind == bucket)
+        .count()
+}
+
+/// RED: the sweep judges each client's records on the body its listing already read, and reads a
+/// client's records again only when it has something to reclaim. Ten clients that hold nothing
+/// lapsed cost no point read; one whose code has lapsed is still read and swept. Before the fix
+/// the sweep read every client's records a second time, every minute, on every node.
+#[tokio::test]
+async fn the_sweep_reads_again_only_the_records_it_changes() {
+    let store = OneStore::default();
+    let s = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    for i in 0..10 {
+        s.put_client(client(&format!("idle-{i}")))
+            .await
+            .expect("registers");
+    }
+    s.put_client(client("lapsing")).await.expect("registers");
+    s.put_authorization_code(code("code-1", "lapsing"))
+        .await
+        .expect("issues a code");
+    // Every point read of a bucket from here spends one of these, so what is left counts them.
+    for _ in 0..32 {
+        store.stall("get", "bucket", std::time::Duration::ZERO);
+    }
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    let removed = s.sweep_expired(later).await.expect("sweeps");
+    assert_eq!(removed, 1, "the lapsed code is reclaimed");
+    assert_eq!(
+        32 - bucket_reads_left(&store),
+        1,
+        "only the client with something lapsed is read again"
+    );
+    assert!(
+        s.take_authorization_code("code-1")
+            .await
+            .expect("takes")
+            .is_none(),
+        "the lapsed code is gone"
+    );
+}
+
 fn code(code: &str, client_id: &str) -> oauth_as::authorization::AuthorizationCodeRecord {
     oauth_as::authorization::AuthorizationCodeRecord::new(
         code,

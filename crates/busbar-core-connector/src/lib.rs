@@ -44,8 +44,10 @@
 //! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
 //!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
 //!
-//! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
-//! raw pointers as a plugin does.
+//! No `unsafe` is written here outside two places: the reactor registration in [`io::register`],
+//! one call to tokio's `AsyncFd::register_with_interest` on a descriptor the registration owns
+//! (RUSTSEC-2026-0386), and the tests' framer entry, which writes a host sink through its raw
+//! pointers as a plugin does.
 //!
 //! No thread is started per connection: every socket's readiness is the registering worker's
 //! reactor's, and every wait is not-ready with a wake. The threads that are started: a name lookup
@@ -116,7 +118,7 @@ use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
-use crate::pool::{PoolKey, PoolPosture, Pools, SealRef};
+use crate::pool::{PoolKey, PoolPosture, Pools, Same};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
@@ -2260,6 +2262,9 @@ impl Connector {
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
         };
+        // The very client config the dial is secured with: a pooled line is lent only to an open
+        // secured with it.
+        let trust = dial.tls.clone().map(Same);
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
         // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
         // destination is held to them; one that pins the far end's key and is not secured has no
@@ -2295,7 +2300,7 @@ impl Connector {
             }
         };
         // The very seal the dial is held to: a pooled line is lent only to an open held to it.
-        let sealed = anchors.clone().map(SealRef);
+        let sealed = anchors.clone().map(Same);
         if anchors
             .as_ref()
             .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
@@ -2352,6 +2357,7 @@ impl Connector {
                     class: (judged_class, egress_class),
                     reach,
                     anchored_as,
+                    trust,
                     sealed,
                 },
             )

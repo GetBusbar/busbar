@@ -69,6 +69,10 @@ pub struct DoorPools {
     timeouts: BTreeMap<String, u64>,
     /// Each pool's members' tiers, in member order (`0` where a member states none).
     tiers: BTreeMap<String, Vec<u32>>,
+    /// Each pool's `breaker:` block, where its `pools:` entry states one ([`POOL_BREAKER_KEY`]):
+    /// the same block, read the same way, as a top-level pool's (BUSBAR-1.6.0.md THE DESIGN
+    /// §1: "Any plugin gets all functionality").
+    breakers: BTreeMap<String, busbar_kernel::config::BreakerCfg>,
 }
 
 /// A resolved route: its pool label (empty for a direct route) and its member entries.
@@ -151,6 +155,21 @@ impl DoorPools {
                     .collect()
             })
             .unwrap_or_default();
+        // THE POOL'S `breaker:` BLOCK, carried here by `serve::pools_into` from the pool's
+        // `<verb>.pools` entry (already held to `config_validate`'s Rule 6), never handed to the plane.
+        let breakers = map
+            .get(RESERVED_POOLS_KEY)
+            .and_then(serde_yaml::Value::as_mapping)
+            .map(|pools| {
+                pools
+                    .iter()
+                    .filter_map(|(name, pool)| {
+                        let block = pool.get(POOL_BREAKER_KEY)?.clone();
+                        Some((key(name)?, serde_yaml::from_value(block).ok()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         // THE ENTRY'S ATTEMPT BOUND (ARCHITECT timeout ruling; R2-G "per-member ... timeout"): its
         // reserved `timeout:`, read the one way the kernel judged it at load, for every plane alike.
         let timeouts = entries
@@ -172,7 +191,14 @@ impl DoorPools {
             member_granted,
             timeouts,
             tiers,
+            breakers,
         })
+    }
+
+    /// The `breaker:` block `pool` states, where it states one; `None` = the defaults.
+    #[must_use]
+    pub fn breaker(&self, pool: &str) -> Option<&busbar_kernel::config::BreakerCfg> {
+        self.breakers.get(pool)
     }
 
     /// The attempt bound of `entry`'s member, milliseconds: its reserved `timeout:`; `None` = the
@@ -248,6 +274,11 @@ impl DoorPools {
 /// grammar's own words, `busbar_kernel::config::pools::OnExhaustedCfg`).
 const ON_EXHAUSTED_KEY: &str = "on_exhausted";
 const FALLBACK_POOL_KEY: &str = "fallback_pool";
+
+/// A pool's `breaker:` key, in the pools grammar's own word (`busbar_kernel::config::PoolCfg`'s
+/// `breaker`): the core-owned block `serve::pools_into` carries onto a door section's pool and
+/// `serve::plane_settings` strikes before the plane is handed its section.
+pub(crate) const POOL_BREAKER_KEY: &str = "breaker";
 
 impl DoorPools {
     /// WHETHER THE CALLER'S GRANT ADMITS THE ROUTE AS NAMED, judged before its destination (1.5.5's
@@ -528,6 +559,9 @@ pub struct DoorFacts {
     /// (`busbar_translations_total`), as the previous release counted it, and a usage-tap fault
     /// an answer carries is counted under the unit's dialect. Empty = none counted.
     pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
+    /// The plane's dialect names, by the index `arrive` answers: the `ingress` its units' request
+    /// span records (status row 173).
+    pub dialects: Arc<[String]>,
     /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
@@ -925,6 +959,43 @@ impl DriverSteps for DoorSteps<'_> {
         let mut u = self.lock();
         u.op = Some(op);
         u.named = Some((route, pool.map(<[u8]>::to_vec)));
+    }
+
+    /// THE UNIT'S REQUEST SPAN, `forward`, as the previous release opened it around its dispatch
+    /// (v1.5.5 `proxy/engine/mod.rs:120-152`): at the hot-path level, with the pool the charge
+    /// landed on (a budget downgrade's, else the one the unit named), the dialect it was read in,
+    /// its operation class and a correlation id off the process's one counter, stamped once per
+    /// dispatched unit as 1.5.5 stamped one per dispatched request (status row 173).
+    fn request_span(
+        &self,
+        _ctx: &UnitCtx,
+        decoded: &busbar_kernel::plane_driver::Decoded,
+        op: OpClassId,
+    ) -> Option<(tracing::Span, u64)> {
+        let request_id = self.app.next_request_id();
+        let pool = self.downgraded().or_else(|| {
+            decoded
+                .pool
+                .as_deref()
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+        });
+        let ingress = self.facts.dialects.get(decoded.dialect as usize);
+        let span = tracing::span!(
+            busbar_kernel::observability::HOTPATH_LEVEL,
+            "forward",
+            pool = tracing::field::Empty,
+            ingress = tracing::field::Empty,
+            op = %op,
+            request_id = tracing::field::Empty
+        );
+        if let Some(pool) = pool.as_deref() {
+            span.record("pool", tracing::field::display(pool));
+        }
+        if let Some(ingress) = ingress {
+            span.record("ingress", tracing::field::display(ingress));
+        }
+        span.record("request_id", request_id);
+        Some((span, request_id))
     }
 
     fn expected(&self, _ctx: &UnitCtx, units: &[UnitCount]) {
@@ -1354,6 +1425,7 @@ pub fn door_facts(
         audit_kind: OpClassId::new(audit_kind),
         keeps,
         translations: (Arc::from(Vec::new()), Arc::default()),
+        dialects: Arc::from(Vec::new()),
         bench_below_trip_threshold: None,
         metric_lanes: Vec::new(),
         stream_ceiling_secs: 0,
@@ -1398,11 +1470,13 @@ pub fn label_bound(
 /// one member per entry `routes` seals (each named by its (plane key, entry), Q-FL3), a pool per
 /// named pool of its section (its members, its fallback pool) and a pool per entry its direct
 /// routes walk, the breaker under every pool's default ladder, the members' permits, the node's
-/// clock and counters, and `journal` (the write-ahead dispatch record, `$`, ARCHITECT P3 (c)).
+/// counters, `journal` (the write-ahead dispatch record, `$`, ARCHITECT P3 (c)) and `clock`, the
+/// walk's clock the plane was composed on (the node's, [`crate::root::egress_ports::NodeClock`]).
 ///
 /// # Errors
 ///
 /// A named pool whose member entry has no sealed route: the load is refused, naming both.
+#[allow(clippy::too_many_arguments)]
 pub fn compose_egress(
     facts: &DoorFacts,
     pools: &DoorPools,
@@ -1410,6 +1484,7 @@ pub fn compose_egress(
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
+    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
     stream_ceiling_secs: u64,
 ) -> Result<busbar_kernel::plane_driver::Egress, String> {
     use busbar_kernel_egress::{Member, OnExhausted, Pool};
@@ -1493,25 +1568,47 @@ pub fn compose_egress(
             Pool::new(member.name.clone(), vec![member.clone()]),
         );
     }
-    // Every cell of this plane's members under the default ladder, with the plane's declared
-    // breaker fact where it states one (ARCHITECT Q4); where it states none, the default holds.
-    let cell = || {
-        let mut cfg = busbar_kernel::store::pool_breaker_cfg(None);
+    // Every cell of this plane's members under its pool's ladder: the pool's own `breaker:` block
+    // where its `pools:` entry states one, lowered by the kernel's one lowering exactly as the
+    // top-level pools are (`BreakerPolicy::from_pools`), else the default ladder (BUSBAR-1.6.0.md
+    // THE DESIGN §1: "Any plugin gets all functionality"); with the plane's declared breaker fact
+    // where it states one (ARCHITECT Q4). A pool with no block — every pool of a default config —
+    // reads exactly the ladder it always did.
+    let cell = |pool: Option<&str>| {
+        let mut cfg = busbar_kernel::store::pool_breaker_cfg(pool.and_then(|p| pools.breaker(p)));
         if let Some(bench) = facts.bench_below_trip_threshold {
             cfg.bench_below_trip_threshold = bench;
         }
         cfg
     };
     let policy = built.keys().fold(
-        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell()),
-        |policy, pool| policy.with_pool(pool.as_str(), cell()),
+        crate::root::adapters::BreakerPolicy::new().with_default_cell(cell(None)),
+        |policy, pool| policy.with_pool(pool.as_str(), cell(Some(pool.as_str()))),
     );
+    // The process-wide `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`,
+    // as published for the generation this egress is sealed for (boot's commit, or the swap that
+    // refreshes the door planes onto a new generation): the same two limits the lane store's
+    // cells run under (THE DESIGN §1). Unpublished (a test process), the defaults — the values
+    // every default deployment runs under.
+    let (hard_down_cooldown_secs, max_honored_retry_after_secs) =
+        busbar_kernel::config::limits::installed().map_or(
+            (
+                busbar_kernel::config::limits::DEFAULT_HARD_DOWN_COOLDOWN_SECS,
+                busbar_kernel::config::limits::DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
+            ),
+            |l| (l.hard_down_cooldown_secs, l.max_honored_retry_after_secs),
+        );
+    let unit = busbar_kernel_breaker::BreakerUnit::new()
+        .with_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
     Ok(busbar_kernel::plane_driver::Egress {
         caller,
         conns,
-        breaker: Arc::new(crate::root::adapters::BreakerAdapter::with_policy(policy)),
+        breaker: Arc::new(crate::root::adapters::BreakerAdapter::new(
+            Arc::new(unit),
+            policy,
+        )),
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
-        clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
+        clock,
         journal,
         telemetry: Arc::new(
             crate::root::egress_ports::WalkTelemetry::new(names).bounded(label_bound(
@@ -1643,6 +1740,11 @@ pub struct Rules {
     /// ([`Rules::hold_unopened`]). A door plane is opened once, at boot, so a configuration that
     /// writes one of these is restart-to-apply ([`Rules::planes_awaiting_restart`]).
     unopened: Mutex<Vec<&'static str>>,
+    /// The discovered plane doors the boot's configuration did not use, so the boot never loaded
+    /// them (Law 7), held from the boot plan ([`Rules::hold_unloaded`]). A running process cannot
+    /// take a first section of one: an apply or reload that writes one is refused
+    /// ([`unloaded_plane_refusal`]).
+    unloaded: Mutex<Vec<crate::root::loader::boot::Candidate>>,
 }
 
 impl Rules {
@@ -1660,6 +1762,15 @@ impl Rules {
                 held.push(path);
             }
         }
+    }
+
+    /// Hold the discovered plane doors the boot did not load (`candidates`): each one the boot's
+    /// configuration used by no section of its ([`unloaded_doors`]).
+    pub fn hold_unloaded(&self, candidates: Vec<crate::root::loader::boot::Candidate>) {
+        self.unloaded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(candidates);
     }
 
     /// Hold the declaring sections of the door planes the boot left unopened (`sections`): each a
@@ -1684,7 +1795,60 @@ pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) 
     cfg.plane_sections.contains(section)
 }
 
+/// THE DISCOVERED PLANE DOORS THE BOOT DID NOT LOAD: every plane door discovered (linked or dropped
+/// in) that [`crate::root::boot::load_door_planes`] did not bind, because the boot's configuration
+/// uses it by no section (`used_planes`, Law 7). Read once the door planes are loaded.
+#[must_use]
+pub fn unloaded_doors() -> Vec<crate::root::loader::boot::Candidate> {
+    let bound = crate::root::boot::door_planes();
+    crate::root::boot::DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|c| c.kind == busbar_contract::abi::mechanism::KindCode::Plane)
+        .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
+        .cloned()
+        .collect()
+}
+
+/// THE REFUSAL OF A FIRST SECTION OF AN UNLOADED PLANE (u67 BLOCK 2 item 2, ruled (iv)): the first
+/// of `unloaded` that a document whose root keys are `keys` uses (`plane_use`, the boot's own
+/// selection), named with the section that uses it. A plane is loaded only at start, when config
+/// uses it (Law 7, BUSBAR-1.6.0.md l.547), so its first section cannot take effect on a running
+/// process: the change is refused whole and nothing is changed (§6 item 8, l.980-982).
+#[must_use]
+pub fn unloaded_plane_refusal(
+    unloaded: &[crate::root::loader::boot::Candidate],
+    keys: &[&str],
+) -> Option<String> {
+    let uses = crate::root::loader::boot::Uses {
+        roots: keys.iter().map(|k| (*k).to_string()).collect(),
+        ..Default::default()
+    };
+    unloaded.iter().find_map(|c| {
+        crate::root::loader::boot::plane_use(&uses, c).map(|section| {
+            format!(
+                "`{section}:` is the section of the `{plane}` plane, which this process did not \
+                 load because its configuration did not use it at start; a first `{section}:` \
+                 cannot take effect on a running process, so the change was refused and nothing \
+                 was changed: write it in the config file and restart.",
+                plane = c.name
+            )
+        })
+    })
+}
+
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
+        unloaded_plane_refusal(
+            &self
+                .unloaded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            keys,
+        )
+    }
+
     fn planes_awaiting_restart(&self, cfg: &busbar_kernel::config::RootCfg) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = self
             .unopened
@@ -2025,15 +2189,25 @@ pub struct OutboundAuths {
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
     conns: crate::root::loader::dispatch::ConnTable,
-    /// Every auth row's outbound facts, read once at the first serving (each row bound once to
-    /// read them), so a serving binds only the row it opens.
-    facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
+    /// Each linked row's outbound facts, READ off its door's `'static` Statement at the first
+    /// serving: no row is bound to read them (Law 7; ARCHITECT ruling 2026-10-20: reading a row's
+    /// static declaration, its kind tail included, is reading, not loading).
+    linked_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
+    /// Each dropped-in row's outbound facts, READ off its SIGNED MANIFEST's Statement rendering at
+    /// the first serving no linked row answers: no row is bound or opened to read them (ARCHITECT
+    /// ruling 2026-10-20, audit root#7 / loader#9: the rendering carries the whole kind tail, and
+    /// admitting the row compares its door's Statement with it).
+    dropped_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
     /// The opened instances, by key: opened OUTSIDE the map's lock (THE DESIGN §11.13 M1: the
     /// plugin's validate and open crossings never run under a host lock).
     opened: crate::root::loader::open_once::OpenOnce<
         String,
         crate::root::loader::dispatch::auth_outbound::OutboundInstance,
     >,
+    /// TEST PROBE: every row [`Self::load_with`] was asked to bind, by name, in order (Law 7: an
+    /// auth row no configured style selects is never bound).
+    #[cfg(test)]
+    bound: Mutex<Vec<String>>,
 }
 
 /// One auth row's outbound facts: where its door is, the styles its Statement states, and whether
@@ -2081,8 +2255,11 @@ impl OutboundAuths {
             linked: linked.to_vec(),
             dropped,
             conns,
-            facts: std::sync::OnceLock::new(),
+            linked_facts: std::sync::OnceLock::new(),
+            dropped_facts: std::sync::OnceLock::new(),
             opened: crate::root::loader::open_once::OpenOnce::new(),
+            #[cfg(test)]
+            bound: Mutex::default(),
         }
     }
 
@@ -2141,6 +2318,11 @@ impl OutboundAuths {
     > {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
+        #[cfg(test)]
+        self.bound
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(name.to_string());
         match door {
             AuthRowDoor::Linked(i) => {
                 let (_, _, door) = self.linked.get(i)?;
@@ -2164,32 +2346,68 @@ impl OutboundAuths {
         }
     }
 
-    /// Every auth row's outbound facts, linked first, then dropped in, read once: each row is bound
-    /// once to read them, then let go. A row that will not load is passed over.
-    fn facts(&self) -> &[AuthRowFacts] {
-        use crate::root::loader::dispatch::auth_outbound::outbound_styles;
-        self.facts.get_or_init(|| {
-            let linked = self
-                .linked
+    /// The rows stating the outbound `style`, in the order a serving tries them: the linked rows
+    /// whose Statement states it, then (read only once no linked row served it) the dropped-in rows
+    /// stating it.
+    fn stating<'a>(&'a self, style: &'a str) -> impl Iterator<Item = &'a AuthRowFacts> + 'a {
+        self.linked_facts()
+            .iter()
+            .chain(std::iter::once_with(move || self.dropped_facts()).flatten())
+            .filter(move |row| row.styles.iter().any(|s| s.name == style))
+    }
+
+    /// Every linked row's outbound facts, read once off its door's `'static` Statement: the styles
+    /// its auth tail states, and whether a need of its takes its target from its settings
+    /// (`target_from`: one instance per binding's settings). No row is bound. A row whose
+    /// Statement a bind refuses states nothing here.
+    fn linked_facts(&self) -> &[AuthRowFacts] {
+        use crate::root::loader::dispatch::kinds::auth::stated_facts;
+        use crate::root::loader::dispatch::LinkedRow;
+        self.linked_facts.get_or_init(|| {
+            self.linked
                 .iter()
                 .enumerate()
-                .map(|(i, (name, _, _))| ((*name).to_string(), AuthRowDoor::Linked(i)));
-            let dropped = self
-                .dropped
+                .filter_map(|(i, (name, _, door))| {
+                    let styles = stated_facts(*door).ok()?.styles;
+                    let per_binding = LinkedRow::of(*door)
+                        .ok()
+                        .and_then(|row| {
+                            busbar_contract::abi::mechanism::rendering::read(&row.statement).ok()
+                        })
+                        .is_some_and(|r| r.needs.iter().any(|n| !n.target_from.is_empty()));
+                    Some(AuthRowFacts {
+                        name: (*name).to_string(),
+                        door: AuthRowDoor::Linked(i),
+                        styles,
+                        per_binding,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// Every dropped-in row's outbound facts, read once off its signed manifest's Statement
+    /// rendering: the styles its auth tail states, and whether a need of its takes its target from
+    /// its settings. No row is bound or opened. A row whose rendering a bind refuses states nothing
+    /// here.
+    fn dropped_facts(&self) -> &[AuthRowFacts] {
+        use crate::root::loader::dispatch::kinds::auth::rendered_facts;
+        self.dropped_facts.get_or_init(|| {
+            self.dropped
                 .map_or(&[][..], |r| r.loadable())
                 .iter()
                 .enumerate()
                 .filter(|(_, r)| r.manifest.kind == "auth")
-                .map(|(i, r)| (r.manifest.name.clone(), AuthRowDoor::Dropped(i)));
-            linked
-                .chain(dropped)
-                .filter_map(|(name, door)| {
-                    let plugin = self.load(&name, door)?;
+                .filter_map(|(i, r)| {
+                    let stated = r.manifest.stated_rendering().ok().flatten()?;
+                    let styles = rendered_facts(&stated).ok()?.styles;
+                    let per_binding = busbar_contract::abi::mechanism::rendering::read(&stated)
+                        .is_ok_and(|r| r.needs.iter().any(|n| !n.target_from.is_empty()));
                     Some(AuthRowFacts {
-                        styles: outbound_styles(&plugin),
-                        per_binding: plugin.targets_from_settings(),
-                        name,
-                        door,
+                        name: r.manifest.name.clone(),
+                        door: AuthRowDoor::Dropped(i),
+                        styles,
+                        per_binding,
                     })
                 })
                 .collect()
@@ -2234,7 +2452,7 @@ impl OutboundAuths {
             Some((stripped, userinfo)) => (stripped, userinfo.clone().or(presented)),
             None => (settings, presented),
         };
-        for row in self.facts() {
+        for row in self.stating(style) {
             let Some(decl) = row.styles.iter().find(|s| s.name == style).cloned() else {
                 continue;
             };
@@ -2583,9 +2801,12 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
 
 impl OutboundAuths {
     /// CHECK, NEVER DIAL: `credential` bound under `settings` on a FRESH instance of the plugin
-    /// serving `style`, loaded with no need granted (so it mints nothing), and the refusals it names
-    /// for the credential itself — its `credential:` lines, their text. Empty when it accepts the
-    /// credential or no row states the style.
+    /// serving `style`, loaded as a CHECK bind (`ConnTable::Probe`: a need it declares is not
+    /// declared and it is handed no table, so it reaches nothing), and the refusals it names for the
+    /// credential itself — its `credential:` lines, their text. Empty when it accepts the credential
+    /// or no row states the style. A `ConnTable::NoNeeds` bind would REFUSE every plugin that
+    /// declares a need (a token endpoint), so the styles that mint would be passed over and their
+    /// malformed credentials pass `--validate` that boot refuses (oracle BOOT-035).
     ///
     /// # Errors
     ///
@@ -2598,11 +2819,8 @@ impl OutboundAuths {
     ) -> Result<Vec<String>, String> {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
         use crate::root::loader::dispatch::ConnTable;
-        for row in self.facts() {
-            if !row.styles.iter().any(|s| s.name == style) {
-                continue;
-            }
-            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::NoNeeds) else {
+        for row in self.stating(style) {
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::Probe) else {
                 continue;
             };
             let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;

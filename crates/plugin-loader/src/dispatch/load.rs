@@ -23,7 +23,9 @@ use busbar_contract::abi::mechanism::door::{
     Door, DoorFn, KindTailHead, MetricFamily, Statement, FAMILY_HISTOGRAM,
 };
 use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
-use busbar_contract::abi::mechanism::rendering::{render, RENDERING_MAGIC};
+use busbar_contract::abi::mechanism::rendering::{
+    render, RENDERING_MAGIC, RENDERING_MAGIC_TAIL_SIZE_ONLY,
+};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
 use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
 use busbar_contract::abi::transport::check::check_claim_rows;
@@ -52,9 +54,17 @@ impl ManifestFacts {
     ///
     /// # Errors
     ///
-    /// [`LoadError::Rendering`] for a rendering too short or without the magic, or naming no kind.
+    /// [`LoadError::Rendering`] for a rendering too short or without the magic, or naming no kind;
+    /// a rendering an older pack tool made (its tail stated by size alone) names the repack.
     pub fn read(rendering: &[u8]) -> Result<Self, LoadError> {
         let magic = RENDERING_MAGIC.len();
+        if rendering.starts_with(RENDERING_MAGIC_TAIL_SIZE_ONLY) {
+            return Err(LoadError::Rendering(
+                "it is a Statement rendering whose kind tail is stated by size alone, from an \
+                 older pack tool — repack the plugin"
+                    .into(),
+            ));
+        }
         if rendering.len() < magic + 12 || &rendering[..magic] != RENDERING_MAGIC {
             return Err(LoadError::Rendering(
                 "it does not start with a Statement rendering's head".into(),
@@ -103,6 +113,83 @@ impl LinkedRow {
             door,
         })
     }
+
+    /// [`LinkedRow::of`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows
+    /// 159 and 194). #1469 makes `of` take the `MacroDoor` alone and keeps this name beside it, so
+    /// `LinkedRow::of_macro(plugin::MACRO_DOOR)` compiles before and after.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`rendering_of`] refuses.
+    pub fn of_macro(door: busbar_contract::abi::sdk::door::MacroDoor) -> Result<Self, LoadError> {
+        Self::of(door.door_fn())
+    }
+
+    /// [`LinkedRow::of`] over a [`LoadedDoor`]: a `MacroDoor`, or a test's or the published
+    /// suite's restated door (status rows 159 and 194). #1469's name and signature, here first.
+    ///
+    /// # Errors
+    ///
+    /// As [`LinkedRow::of`].
+    pub fn of_loaded(door: LoadedDoor) -> Result<Self, LoadError> {
+        Self::of(door.door)
+    }
+}
+
+/// A DOOR THE LOADER MAY ENTER (status rows 159 and 194): a [`MacroDoor`] the contract's macro
+/// built, or a door a test or harness restates by hand through the `unsafe`
+/// [`LoadedDoor::from_raw`]. #1469 makes [`LinkedRow::of`] take the `MacroDoor` alone and keeps
+/// this type for the rest; a hand-built door reaches a row through `LinkedRow::of_loaded(unsafe {
+/// LoadedDoor::from_raw(door) })` before and after.
+///
+/// [`MacroDoor`]: busbar_contract::abi::sdk::door::MacroDoor
+#[derive(Debug, Clone, Copy)]
+pub struct LoadedDoor {
+    pub(crate) door: DoorFn,
+}
+
+impl From<busbar_contract::abi::sdk::door::MacroDoor> for LoadedDoor {
+    fn from(door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
+        Self {
+            door: door.door_fn(),
+        }
+    }
+}
+
+impl LoadedDoor {
+    /// A door the loader read itself, or a test's or harness's restated door: the one way to a
+    /// `LoadedDoor` other than a `MacroDoor`, and `unsafe`.
+    ///
+    /// # Safety
+    ///
+    /// `door` is a busbar door ([`DoorFn`]'s contract): read from the door symbol of a library
+    /// held open for every use of the value, or a function answering NULL or a `'static`, fully
+    /// initialised door whose Statement lists point at their stated counts of `'static` entries.
+    #[must_use]
+    pub const unsafe fn from_raw(door: DoorFn) -> Self {
+        Self { door }
+    }
+}
+
+/// [`rendering_of`] over a [`LoadedDoor`] (#1469's name and signature, here first).
+///
+/// # Errors
+///
+/// The refusal the door or its Statement earns.
+pub fn rendering_of_loaded(door: LoadedDoor) -> Result<Vec<u8>, LoadError> {
+    rendering_of(door.door)
+}
+
+/// [`rendering_of`] over a `MACRO_DOOR` (status rows 159 and 194), as [`LinkedRow::of_macro`]: the
+/// name #1469 keeps beside its `rendering_of(MacroDoor)`.
+///
+/// # Errors
+///
+/// The refusal the door or its Statement earns.
+pub fn rendering_of_macro(
+    door: busbar_contract::abi::sdk::door::MacroDoor,
+) -> Result<Vec<u8>, LoadError> {
+    rendering_of(door.door_fn())
 }
 
 /// A compiled-in door's Statement, checked as [`rendering_of`] checks it, for a kind's own reader
@@ -129,7 +216,7 @@ pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
     let st = statement(&door)?;
     // SAFETY: `statement` ran `check_statement`: every list is its stated count of `'static`
     // entries.
-    unsafe { render(&st) }.map_err(|e| LoadError::Rendering(format!("{} is too long", e.0)))
+    unsafe { render(&st) }.map_err(|e| LoadError::Rendering(e.to_string()))
 }
 
 /// THE ENTRY: `door_fn` called on a permanent FFI worker ([`crate::ffi_thread`]), for every kind and
@@ -669,8 +756,7 @@ pub fn load_linked<K: Kind>(row: &LinkedRow, bind: Bind) -> Result<Plugin<K>, Lo
 fn admitted<K: Kind>(door: DoorFn, stated: &[u8]) -> Result<Validated, LoadError> {
     let v = validate::<K>(door)?;
     // SAFETY: `validate` ran `check_statement` on this Statement.
-    let own = unsafe { render(&v.statement) }
-        .map_err(|e| LoadError::Rendering(format!("{} is too long", e.0)))?;
+    let own = unsafe { render(&v.statement) }.map_err(|e| LoadError::Rendering(e.to_string()))?;
     if own != stated {
         return Err(LoadError::StatementMismatch);
     }

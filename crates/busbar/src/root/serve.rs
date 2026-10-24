@@ -51,9 +51,12 @@ use crate::root::door_steps::{egress_pool, DoorCaller, DoorSteps};
 use crate::root::loader::dispatch::{in_head, out_head, Dispatcher, Frame};
 use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
+use busbar_contract::abi::plane::{
+    CLAIM_ENTRY, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX,
+};
 use busbar_contract::auth::AuthPrincipal;
 use busbar_contract::caps::{Pass, PrincipalId, Route};
+use busbar_kernel::observability::arrival::EntrySpans;
 use busbar_kernel::plane_driver::{
     Arrival, EgressFarEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope, UnitRoute,
 };
@@ -570,6 +573,13 @@ pub struct DoorApply {
     probe_schedule: Arc<busbar_kernel::probe::ProbeSchedule>,
     /// The scope kinds its Statement declares.
     scope_kinds: Vec<&'static str>,
+    /// THE WALK'S CLOCK the plane was composed on ([`compose_planes_over`]): every generation's
+    /// egress, boot's and each apply's re-seal alike, is sealed on it, so a node's walks read one
+    /// clock for its life.
+    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
+    /// The kernel's unit records its own member fetches lend a passthrough credential from
+    /// ([`bind_fetches`]), re-bound with every generation's routes.
+    units: Arc<busbar_kernel::host_units::UnitRecords>,
 }
 
 impl DoorApply {
@@ -629,11 +639,21 @@ impl DoorApply {
                     );
                 }
             }
-            Err(e) => tracing::warn!(
-                plane = self.facts.plane.as_str(),
-                error = %e,
-                "door plane kept its generation across a config apply"
-            ),
+            Err(e) => {
+                tracing::warn!(
+                    plane = self.facts.plane.as_str(),
+                    error = %e,
+                    "door plane kept its generation across a config apply"
+                );
+                // A REFUSED GENERATION IS RETIRED (THE DESIGN section 6: a refused reload leaves
+                // the running generation serving): the plane may have refreshed onto it before
+                // its pools or egress were refused here, and a plane answers from the newest
+                // generation it holds.
+                crate::root::loader::dispatch::kinds::plane::retire_door(
+                    &self.plugin,
+                    now.generation + 1,
+                );
+            }
         }
     }
 
@@ -681,15 +701,19 @@ impl DoorApply {
                     &reach,
                     scope,
                 )?;
-                Some(Arc::new(crate::root::door_steps::compose_egress(
+                let egress = crate::root::door_steps::compose_egress(
                     &self.facts,
                     &pools,
                     self.plugin.instance(),
                     Arc::clone(&r.conns),
                     &routes,
                     Arc::clone(&r.journal),
+                    Arc::clone(&self.clock),
                     r.stream_ceiling_secs,
-                )?))
+                )?;
+                // The plane's own fetches present the bindings this generation's walk does.
+                bind_fetches(&self.plugin, &self.served_facts, &routes, &self.units);
+                Some(Arc::new(egress))
             }
             None => None,
         };
@@ -799,6 +823,10 @@ impl DoorAppliers {
                 &p.plugin, &settings, &owned, next,
             ) {
                 tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
+                // A plane that answered READY may hold the generation whose snapshot the host's
+                // checks refused: retire it, so the plane answers from the one the host keeps
+                // serving.
+                crate::root::loader::dispatch::kinds::plane::retire_door(&p.plugin, next);
                 continue;
             }
             match seal_live(
@@ -808,9 +836,11 @@ impl DoorAppliers {
                 &p.scope_kinds,
                 &walked,
                 Some(egress),
+                &p.clock,
                 next,
                 p.facts.bench_below_trip_threshold,
                 &scope,
+                &p.units,
             ) {
                 Ok(mut live) => {
                     arm_probes(&p.driver, facts, &mut live, Some(egress), &p.probe_schedule);
@@ -820,6 +850,9 @@ impl DoorAppliers {
                 }
                 Err(e) => {
                     tracing::error!(plane = name, error = %e, "door plane's new configuration did not seal; it keeps serving the previous one");
+                    // The plane refreshed onto the generation the host refused: retire it, so
+                    // the plane answers from the one the host keeps serving.
+                    crate::root::loader::dispatch::kinds::plane::retire_door(&p.plugin, next);
                     continue;
                 }
             }
@@ -1026,6 +1059,7 @@ pub fn compose_served(
     let stage = host.map(|host| HookStage {
         host,
         gov: Arc::clone(&gov),
+        journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
     });
     let site = Arc::clone(&post);
     // THE ONE FLUSH EPOCH every plane's checkpoints are paced by, bumped by the served planes'
@@ -1150,6 +1184,9 @@ pub struct HookStage {
     pub host: busbar_kernel::plane_driver::GenerationHost,
     /// The governance state.
     pub gov: Arc<busbar_kernel::governance::GovState>,
+    /// Where each unit's hook stage reports the hooks it ran: the node its record is sealed on
+    /// (THE DESIGN §1: "controls (... hooks applied)"); `None` = no record names them.
+    pub journal: Option<Arc<dyn busbar_kernel::plane_driver::HookJournal>>,
 }
 
 /// What the hooks may know of a verified caller (the principal is its key's id), over the
@@ -1157,7 +1194,7 @@ pub struct HookStage {
 /// budget chain (the generation's card, through its meter pin); a hook handed the prompt leaves its
 /// access amendment through the engine host.
 struct GovCaller {
-    host: Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: Arc<dyn busbar_kernel::plane_driver::EngineHost>,
     gov: Arc<busbar_kernel::governance::GovState>,
 }
 
@@ -1213,6 +1250,8 @@ struct LiveHooks {
     host: busbar_kernel::plane_driver::GenerationHost,
     gov: Arc<busbar_kernel::governance::GovState>,
     dialects: Vec<String>,
+    /// The plane's registry key: its section's own `hooks:` attach is filed under it.
+    plane_key: String,
 }
 
 impl LiveHooks {
@@ -1226,6 +1265,7 @@ impl LiveHooks {
                 gov: Arc::clone(&self.gov),
             }),
             dialects: self.dialects.clone(),
+            plane_key: self.plane_key.clone(),
         }
     }
 }
@@ -1258,17 +1298,28 @@ impl HookStage {
         host: busbar_kernel::plane_driver::GenerationHost,
         gov: Arc<busbar_kernel::governance::GovState>,
     ) -> Self {
-        Self { host, gov }
+        Self {
+            host,
+            gov,
+            journal: None,
+        }
     }
 
-    /// The ROUTED-ORDER binder of a plane whose dialects are `dialects`, in its tail's order: the
-    /// deployment's global and per-pool hooks, bound per unit off the current generation (U22,
-    /// ARCHITECT rulings 2026-10-05).
-    fn routed(&self, dialects: &[&str]) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
+    /// The ROUTED-ORDER binder of the plane registered under `plane_key` whose dialects are
+    /// `dialects`, in its tail's order: the deployment's global and per-pool hooks, and the
+    /// plane's own section-level attach (`<section>.hooks:`, filed under its registry key), bound
+    /// per unit off the current generation (U22, ARCHITECT rulings 2026-10-05; THE DESIGN section 1:
+    /// every plane gets every capability).
+    fn routed(
+        &self,
+        plane_key: &str,
+        dialects: &[&str],
+    ) -> Arc<dyn busbar_kernel::plane_driver::HookBinder> {
         Arc::new(LiveHooks {
             host: Arc::clone(&self.host),
             gov: Arc::clone(&self.gov),
             dialects: dialects.iter().map(|d| (*d).to_string()).collect(),
+            plane_key: plane_key.to_string(),
         })
     }
 
@@ -1444,14 +1495,25 @@ pub fn pools_into(
             POOL_MEMBER_GRANTED_KEY.into(),
             serde_yaml::Value::Bool(true),
         );
+        // The pool's `breaker:` block, where it states one: core-owned, read by the door's egress
+        // (`DoorPools::breaker`) and struck before the plane is handed its section
+        // ([`plane_settings`]). A pool with none writes nothing here.
+        if let Some(block) = pool
+            .breaker
+            .as_ref()
+            .and_then(|b| serde_yaml::to_value(b).ok())
+        {
+            entry.insert(crate::root::door_steps::POOL_BREAKER_KEY.into(), block);
+        }
         map.insert(name.as_str().into(), serde_yaml::Value::Mapping(entry));
     }
     section.insert(RESERVED_POOLS_KEY.into(), serde_yaml::Value::Mapping(map));
 }
 
 /// THE SETTINGS A DOOR PLANE IS HANDED for `section`: the section with each pool member written
-/// `{name, tier}` handed as its bare name (the tier is core-owned, [`pools_into`]); every other key
-/// as written.
+/// `{name, tier}` handed as its bare name (the tier is core-owned, [`pools_into`]) and each pool's
+/// core-owned `breaker:` block struck (the breaker is the host's valve, THE DESIGN §5); every other
+/// key as written.
 #[must_use]
 pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
     use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
@@ -1461,6 +1523,9 @@ pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
         .and_then(|m| m.get_mut(RESERVED_POOLS_KEY))
         .and_then(serde_yaml::Value::as_mapping_mut);
     for (_, pool) in pools.into_iter().flat_map(|p| p.iter_mut()) {
+        if let Some(pool) = pool.as_mapping_mut() {
+            pool.remove(crate::root::door_steps::POOL_BREAKER_KEY);
+        }
         let members = pool
             .as_mapping_mut()
             .and_then(|p| p.get_mut(POOL_MEMBERS_KEY))
@@ -1519,6 +1584,10 @@ pub fn compose_planes(
     // BOOT IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here, once, and handed
     // down to every member credential the planes' egress resolves.
     let scope = busbar_contract::config_time::ConfigScope::config_time();
+    // THE NODE'S CLOCK (BUSBAR-1.6.0.md l.161, "one clock"; ARCHITECT Q-SW8: the walk's ports carry
+    // the production clock): the walks of every plane composed here read it.
+    let clock: Arc<dyn busbar_kernel_egress::ports::Clock> =
+        Arc::new(crate::root::egress_ports::NodeClock::new());
     compose_planes_over(
         &crate::LINKED,
         doors,
@@ -1529,12 +1598,17 @@ pub fn compose_planes(
         money,
         egress,
         hooks,
+        &clock,
         &scope,
     )
 }
 
 /// [`compose_planes`] over `linked`, the linked table each door plane's declared facts are read
-/// from beside the dropped-in manifests (its breaker fact, [`crate::root::linked::door_breaker`]).
+/// from beside the dropped-in manifests (its breaker fact, [`crate::root::linked::door_breaker`]),
+/// and `clock`, THE WALK'S CLOCK: every reading a plane's walk takes (an admission, the cooldown a
+/// failure records, the wait a shed advertises) is its, for every generation the plane serves
+/// ([`DoorApply`] keeps it for each apply's re-seal). [`compose_planes`] hands the node's
+/// ([`crate::root::egress_ports::NodeClock`]); a test hands its own.
 ///
 /// # Errors
 ///
@@ -1550,6 +1624,7 @@ pub(crate) fn compose_planes_over(
     money: &dyn Fn() -> Arc<PlaneMoney>,
     egress: Option<&DoorEgress<'_>>,
     hooks: Option<&HookStage>,
+    clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Served, String> {
     let mut served = Served::default();
@@ -1652,7 +1727,12 @@ pub(crate) fn compose_planes_over(
             // Every other plane runs the routed order (U22): the deployment's global and per-pool
             // hooks, bound per unit off the live generation, reach its request stage and its
             // in-session stage (`hook.call`, `content.scan`).
-            Some(stage) => driver.with_hooks(stage.routed(&served_facts.dialects)),
+            Some(stage) => driver.with_hooks(stage.routed(plugin.name(), &served_facts.dialects)),
+            None => driver,
+        };
+        // THE HOOKS EACH UNIT RAN, reported to the node its one record is sealed on.
+        let driver = match hooks.and_then(|stage| stage.journal.as_ref()) {
+            Some(journal) => driver.with_hook_journal(Arc::clone(journal)),
             None => driver,
         };
         // A plane whose tail takes a refusal as a piece first is handed it on the unit's own
@@ -1719,33 +1799,12 @@ pub(crate) fn compose_planes_over(
             &declared.scope_kinds,
             section,
             egress,
+            clock,
             1,
             bench,
             scope,
+            kernel.units(),
         )?;
-        // The door's own requests to its members carry the members' bindings (ARCHITECT round 5
-        // Q-L3B-DOOR-EXCHANGE), held on the connection table its need is declared on.
-        if let (Some(egress), Some(conn_table)) = (egress, plugin.conn_table()) {
-            // The route table: the section, with the catalog model its `session.model` names
-            // folded in.
-            let table = routes_of(section, egress.reach.catalog);
-            let pools = DoorPools::of(&table).map_err(|e| format!("{instance}: {e}"))?;
-            let routes = crate::root::door_steps::member_routes(
-                &table,
-                &pools,
-                &served_facts,
-                egress.reach,
-                scope,
-            )
-            .map_err(|e| format!("{instance}: {e}"))?;
-            crate::root::door_steps::bind_member_fetches(
-                &served_facts,
-                &routes,
-                plugin.instance(),
-                &*conn_table,
-                kernel.units(),
-            );
-        }
         let driver = Arc::new(driver);
         let probe_schedule = Arc::new(busbar_kernel::probe::ProbeSchedule::new(
             egress
@@ -1772,6 +1831,8 @@ pub(crate) fn compose_planes_over(
             driver: Arc::clone(&driver),
             probe_schedule,
             scope_kinds: declared.scope_kinds.clone(),
+            clock: Arc::clone(clock),
+            units: Arc::clone(kernel.units()),
         });
         served.planes.push(ServedPlane {
             instance: instance.clone(),
@@ -1848,7 +1909,9 @@ fn routes_of(
 /// section's pools and, with `egress`, each member's route resolved and its credential bound by the
 /// auth plugin serving its style over the connector its needs were declared on (THE DESIGN §6 steps
 /// 2-3), the plane serving the `pools` map walking its pools with the previous release's semantics
-/// on the kernel's own breaker cells ([`crate::root::model_egress`]).
+/// on the kernel's own breaker cells ([`crate::root::model_egress`]), every walk on `clock`. The
+/// plane's own requests to its members are bound to the same routes ([`bind_fetches`], lending
+/// from `units`) once its egress seals.
 ///
 /// # Errors
 ///
@@ -1861,9 +1924,11 @@ fn seal_live(
     scope_kinds: &[&str],
     section: &serde_yaml::Value,
     egress: Option<&DoorEgress<'_>>,
+    clock: &Arc<dyn busbar_kernel_egress::ports::Clock>,
     generation: u64,
     bench_below_trip_threshold: Option<bool>,
     scope: &busbar_contract::config_time::ConfigScope,
+    units: &Arc<busbar_kernel::host_units::UnitRecords>,
 ) -> Result<DoorLive, String> {
     let models_plane = served_facts.section == busbar_contract::section::RESERVED_POOLS_KEY;
     let card_plane = if models_plane { "" } else { plugin.name() };
@@ -1887,6 +1952,12 @@ fn seal_live(
     // THE PLANE'S STATED STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING), off its
     // tail: the deadline of its streamed units once their route is known; `0` = none.
     facts.stream_ceiling_secs = served_facts.stream_ceiling_secs;
+    // THE PLANE'S DIALECT NAMES: the `ingress` its units' request span records.
+    facts.dialects = served_facts
+        .dialects
+        .iter()
+        .map(|d| (*d).to_string())
+        .collect();
     // THE PLANE'S DECLARED COUNTER LANE WORDS: what, beside its entries, its attempts may state.
     facts.metric_lanes = served_facts
         .metric_lanes
@@ -1932,6 +2003,7 @@ fn seal_live(
                     Arc::clone(&egress.reach.conns),
                     &routes,
                     Arc::clone(&egress.journal),
+                    Arc::clone(clock),
                     egress.reach.stream_ceiling_secs,
                 )
                 .map(|(e, shown)| (e, Some(shown))),
@@ -1942,11 +2014,14 @@ fn seal_live(
                     Arc::clone(&egress.reach.conns),
                     &routes,
                     Arc::clone(&egress.journal),
+                    Arc::clone(clock),
                     egress.reach.stream_ceiling_secs,
                 )
                 .map(|e| (e, None)),
             };
             let (sealed, shown) = sealed.map_err(|e| format!("{instance}: {e}"))?;
+            // The plane's own fetches present the bindings this generation's walk does.
+            bind_fetches(plugin, served_facts, &routes, units);
             Some((Arc::new(sealed), shown))
         }
         None => None,
@@ -1966,11 +2041,35 @@ fn seal_live(
     })
 }
 
+/// THE DOOR'S OWN REQUESTS TO ITS MEMBERS carry the bindings of the generation whose walk `routes`
+/// seals (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE; round 4 (d): "admin connect + verify-on-call
+/// fetches use the same binding"), held on the connection table the plane's need is declared on
+/// ([`crate::root::door_steps::bind_member_fetches`]); a plane handed none holds none. Bound once
+/// per generation, boot's and each apply's alike, from the one set of routes its walk is sealed
+/// over, so the plane's fetches and its walk never present different bindings.
+fn bind_fetches(
+    plugin: &DoorPlane,
+    served_facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
+    units: &Arc<busbar_kernel::host_units::UnitRecords>,
+) {
+    if let Some(conn_table) = plugin.conn_table() {
+        crate::root::door_steps::bind_member_fetches(
+            served_facts,
+            routes,
+            plugin.instance(),
+            &*conn_table,
+            units,
+        );
+    }
+}
+
 /// THE HEALTH PROBES OF ONE GENERATION (K7; 1.5.5 `health:` per provider, `none | dead | active`):
 /// for the plane serving the `pools` map whose tail states `TAIL_PROBES`, a probe target over
 /// `live`'s sealed egress and `driver`, its probers spawned as a new generation of `schedule` (the
-/// previous generation's exit at their next tick). A build without the node has no kernel to run
-/// a probe unit on and probes nothing.
+/// previous generation's exit at their next tick). Which plane serves the `pools` map is read off
+/// its declared section at run time, never off which rows the build linked, so a dropped-in copy is
+/// probed exactly as the compiled-in one is (BUSBAR-1.6.0.md l.2179).
 fn arm_probes(
     driver: &Arc<PlaneDriver>,
     served_facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
@@ -1978,44 +2077,38 @@ fn arm_probes(
     egress: Option<&DoorEgress<'_>>,
     schedule: &Arc<busbar_kernel::probe::ProbeSchedule>,
 ) {
-    #[cfg(linked_section_pools)]
-    {
-        let (Some(sealed), Some(models)) = (&live.egress, egress.and_then(|e| e.reach.models))
-        else {
-            return;
-        };
-        if served_facts.section != busbar_contract::section::RESERVED_POOLS_KEY {
-            return;
-        }
-        let (lanes, members) = models.probe_members();
-        if members.is_empty() {
-            return;
-        }
-        let (kernel, keys) = crate::root::plane_node::node().kernel_and_keys();
-        let Some(target) = busbar_kernel::plane_driver::PlaneProbes::new(
-            if served_facts.probes {
-                busbar_contract::abi::plane::TAIL_PROBES
-            } else {
-                0
-            },
-            Arc::clone(driver),
-            Arc::clone(sealed),
-            kernel,
-            keys,
-            (0..lanes)
-                .map(|i| busbar_contract::DestinationId::new(i as u64))
-                .collect(),
-        ) else {
-            return;
-        };
-        let target = Arc::new(target);
-        let members: Vec<busbar_kernel::probe::ProbeMember> =
-            members.into_iter().map(|(_, m)| m).collect();
-        busbar_kernel::probe::spawn_probers(&target, schedule, &members);
-        live.probes = Some(target);
+    let (Some(sealed), Some(models)) = (&live.egress, egress.and_then(|e| e.reach.models)) else {
+        return;
+    };
+    if served_facts.section != busbar_contract::section::RESERVED_POOLS_KEY {
+        return;
     }
-    #[cfg(not(linked_section_pools))]
-    let _ = (driver, served_facts, live, egress, schedule);
+    let (lanes, members) = models.probe_members();
+    if members.is_empty() {
+        return;
+    }
+    let (kernel, keys) = crate::root::plane_node::node().kernel_and_keys();
+    let Some(target) = busbar_kernel::plane_driver::PlaneProbes::new(
+        if served_facts.probes {
+            busbar_contract::abi::plane::TAIL_PROBES
+        } else {
+            0
+        },
+        Arc::clone(driver),
+        Arc::clone(sealed),
+        kernel,
+        keys,
+        (0..lanes)
+            .map(|i| busbar_contract::DestinationId::new(i as u64))
+            .collect(),
+    ) else {
+        return;
+    };
+    let target = Arc::new(target);
+    let members: Vec<busbar_kernel::probe::ProbeMember> =
+        members.into_iter().map(|(_, m)| m).collect();
+    busbar_kernel::probe::spawn_probers(&target, schedule, &members);
+    live.probes = Some(target);
 }
 
 /// THE PLANE'S OTHER OWNED SECTIONS `sections` writes, as written, by section name (the names its
@@ -2360,6 +2453,9 @@ pub struct DoorRequest {
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     /// The generation serving the request.
     pub app: Arc<busbar_kernel::state::App>,
+    /// The head fields the auth gate consumed, each by name with its scheme word
+    /// (`PlaneReqCtx::consumed_fields`): what an entry fact reads of them.
+    pub consumed_fields: Vec<(String, String)>,
 }
 
 /// THE AUTH ON A DOOR CLAIM'S GUEST-LIST LINE (THE DESIGN §6, "Auth points and guest lists"): the
@@ -2609,9 +2705,10 @@ fn signed_paths(
 }
 
 /// Whether a claim writes a guest line: every claim but a raw affix (`CLAIM_RAW_AFFIX`), which
-/// states a fact about paths and mounts no route (ARCHITECT ruling 2026-10-17).
+/// states a fact about paths, and an entry fact (`CLAIM_ENTRY`), which states which entry span an
+/// arrival opens; neither mounts a route (ARCHITECT ruling 2026-10-17; status row 173).
 fn routed(claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim) -> bool {
-    claim.flags & busbar_contract::abi::plane::CLAIM_RAW_AFFIX == 0
+    claim.flags & (CLAIM_RAW_AFFIX | CLAIM_ENTRY) == 0
 }
 
 /// Where the data router mounts a guest line's path: the path itself, or for a pattern with a
@@ -2919,6 +3016,22 @@ pub fn door_mounts(
             }
         })
         .collect();
+    // THE ENTRY SPANS each plane's claims state (status row 173), their callsites built here, once.
+    let entries: Vec<Arc<EntrySpans>> = routes
+        .served
+        .planes
+        .iter()
+        .map(|p| {
+            Arc::new(EntrySpans::of(p.snapshot.claims.iter().map(|c| {
+                (
+                    c.verb.as_str(),
+                    c.target.as_str(),
+                    c.flags,
+                    c.arrival_span.as_str(),
+                )
+            })))
+        })
+        .collect();
     // THE KERNEL-SHAPED REFUSALS (ARCHITECT ruling 2026-10-16, 3b B): a method no route at a path
     // takes, a body over the cap, a request handler that panicked. The kernel decides the reason,
     // the status and the words; the plane whose line the guest list matches for the path, whatever
@@ -2999,6 +3112,7 @@ pub fn door_mounts(
                     }),
                 };
             }
+            let entry = Arc::clone(&entries[plane]);
             let routes = Arc::clone(&routes);
             PlaneRouteSpec {
                 path,
@@ -3006,9 +3120,20 @@ pub fn door_mounts(
                 auth,
                 handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
                     let routes = Arc::clone(&routes);
+                    let entry = Arc::clone(&entry);
                     Box::pin(async move {
                         match DoorRequest::of(ctx) {
-                            Some(req) => routes.answer(plane, claim, req).await,
+                            Some(req) => {
+                                // THE ENTRY SPAN the plane states for this arrival (status row
+                                // 173), opened by its claim and its raw path; the unit's request
+                                // span (`forward`) opens under it.
+                                use tracing::Instrument as _;
+                                let span = {
+                                    let field = |name: &str| req.field(name);
+                                    entry.open(claim, req.method.as_str(), req.uri.path(), field)
+                                };
+                                routes.answer(plane, claim, req).instrument(span).await
+                            }
                             None => stated(
                                 (refusal_status(ReasonCode::PlanePanic), Vec::new()),
                                 Body::empty(),
@@ -3178,6 +3303,19 @@ fn resource_documents(
 }
 
 impl DoorRequest {
+    /// A head field as an entry fact reads it (status row 173): its value where the request still
+    /// carries it, else the scheme word of the field the auth gate consumed.
+    fn field(&self, name: &str) -> Option<&str> {
+        match self.headers.get(name) {
+            Some(value) => value.to_str().ok(),
+            None => self
+                .consumed_fields
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, scheme)| scheme.as_str()),
+        }
+    }
+
     /// The request a door claim's route was handed (`None` when its engine is not the kernel's).
     fn of(ctx: PlaneReqCtx) -> Option<Self> {
         let app = ctx
@@ -3197,6 +3335,7 @@ impl DoorRequest {
             gov: ctx.gov.unwrap_or_default(),
             credential: ctx.caller_credential,
             app,
+            consumed_fields: ctx.consumed_fields,
         })
     }
 }
@@ -3260,6 +3399,7 @@ impl DataRoutes {
             gov,
             credential,
             app,
+            consumed_fields: _,
         } = req;
         let fields: HeadFields = headers
             .iter()
@@ -3540,6 +3680,7 @@ impl DataRoutes {
             gov,
             credential,
             app,
+            consumed_fields: _,
         } = req;
         let fields: HeadFields = headers
             .iter()
@@ -3850,20 +3991,10 @@ impl DataRoutes {
         let facts = live.facts.clone();
         let late: crate::root::linked::node::Late =
             Box::new(move || report_of(&money, unit, &facts));
-        // THE UNIT'S REQUEST SPAN, as the previous release's forward opened one around the whole
-        // walk (at the hot-path level, so the OTLP export carries it): the pool and the dialect the
-        // request was read in are recorded once the plane has read it.
-        let span = tracing::span!(
-            busbar_kernel::observability::HOTPATH_LEVEL,
-            "forward",
-            plane = %served.instance,
-            pool = tracing::field::Empty,
-            ingress = tracing::field::Empty,
-            request_id = tracing::field::Empty
-        );
-        let ended = {
-            use tracing::Instrument as _;
-            node.drive_borrowed(
+        // THE UNIT'S REQUEST SPAN (`forward`) opens as its route leg begins, once it is admitted
+        // and its pool is known, as the previous release's did ([`DoorSteps`]'s `request_span`).
+        let ended = node
+            .drive_borrowed(
                 unit,
                 arrived,
                 &principal,
@@ -3874,23 +4005,10 @@ impl DataRoutes {
                 nesting.as_ref().map(|n| &n.parent),
                 live.facts.audit_kind,
             )
-            .instrument(span.clone())
-            .await
-        };
-        // A budget downgrade re-pooled the unit: its span, like its request count below, names the
-        // pool the charge landed on (1.5.5 `ingress::dispatch`).
+            .await;
+        // A budget downgrade re-pooled the unit: its request count below names the pool the charge
+        // landed on (1.5.5 `ingress::dispatch`).
         let downgraded = steps.downgraded();
-        if let Some(decoded) = units.decoded() {
-            if let Some(pool) = downgraded.as_deref() {
-                span.record("pool", pool);
-            } else if let Some(pool) = decoded.pool.as_ref() {
-                span.record("pool", String::from_utf8_lossy(pool).as_ref());
-            }
-            if let Some(dialect) = served.dialects.get(decoded.dialect as usize) {
-                span.record("ingress", *dialect);
-            }
-        }
-        drop(span);
         // The caller hears how the unit ended (a framed stream closes a cut or failed unit with a
         // refusal, never as whole).
         caller.ended(ended);
@@ -4077,10 +4195,12 @@ impl<'d> DoorFar<'d, '_> {
     }
 }
 
-/// The walk's exhaustion terminal when no egress is composed: every path is spent.
+/// The walk's exhaustion terminal when no egress is composed: every path is spent. It is the
+/// walk's exhaustion, refused as `BreakerOpen` (the route step's `End::Exhausted`), so it wears
+/// that reason's status (1.5.5's pool-exhaustion 503 in the shed's words), not a not-found.
 fn spent() -> Pick {
     Pick::Exhausted {
-        status: refusal_status(ReasonCode::NoDestination),
+        status: refusal_status(ReasonCode::BreakerOpen),
         retry_after: None,
         detail: busbar_kernel_egress::wire::DETAIL_OVERLOADED,
     }
@@ -4178,6 +4298,11 @@ impl FarEnd for DoorFar<'_, '_> {
 
     fn failure(&self, token: &Pass<Route>) -> Option<&'static str> {
         self.far().and_then(|far| far.failure(token))
+    }
+
+    fn attempt_span(&self, token: &Pass<Route>) -> tracing::Span {
+        self.far()
+            .map_or_else(tracing::Span::none, |far| far.attempt_span(token))
     }
 
     /// Why nothing left, when no attempt of the walk sent its request, read off the walk.
@@ -4749,8 +4874,17 @@ pub(crate) mod planes_tests;
 #[path = "tests/serve_tests.rs"]
 mod door_tests;
 
+// THE DOOR CELLS' RIG: the one surface the door planes' own root cells reach the composition root
+// through (no struct literal of a root type, no installer by its path), so a root refactor keeps
+// its signatures and leaves a pinned plane's cells compiling. Compiled iff an enabled door's
+// cells name it (`build.rs`, `door_rig`).
+#[cfg(all(test, linked_section_pools, door_rig))]
+#[path = "tests/door_rig.rs"]
+pub(crate) mod door_rig;
+
 // The door planes' own root cells (each plane crate's `tests/root/`, one module per enabled
-// `[package.metadata.busbar.door-cells]` row), compiled here beside the rig they drive.
+// `[package.metadata.busbar.door-cells]` row), compiled here beside the rig they drive
+// ([`door_rig`]).
 #[cfg(all(test, linked_section_pools))]
 include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));
 

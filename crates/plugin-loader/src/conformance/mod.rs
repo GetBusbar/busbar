@@ -42,7 +42,8 @@
 //!
 //! * the dropped-in library states exactly the linked door's Statement (the signed manifest's
 //!   rendering IS the linked row's), and both are admitted by the ONE loader ([`load_linked`] /
-//!   [`load_dropped`]) and bound to a dispatcher of their own, as the kernel binds them;
+//!   [`load_dropped_bytes`], the library's bytes staged as every production load stages them) and
+//!   bound to a dispatcher of their own, as the kernel binds them;
 //! * the KIND'S SCRIPT (one module per kind, below) drives each leg through the same table, step by
 //!   step, and records per step its answer and the crossings the instance made, counted by the
 //!   dispatcher's own crossing gate;
@@ -83,7 +84,7 @@
 //! module; a move to another home moves this directory and the macro's path, nothing else.
 //!
 //! [`load_linked`]: crate::dispatch::load_linked
-//! [`load_dropped`]: crate::dispatch::load_dropped
+//! [`load_dropped_bytes`]: crate::dispatch::load_dropped_bytes
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
@@ -108,9 +109,9 @@ use crate::dispatch::kinds::{
 use busbar_contract::conn::DeclaredConns;
 
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, out_head, rendering_of, rendering_of_library, Bind, Called,
-    ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow, LoadError,
-    NoSink, OutFrame, Plugin,
+    in_head, load_dropped_bytes, load_linked, out_head, rendering_of, rendering_of_library, Bind,
+    Called, ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow,
+    LoadError, NoSink, OutFrame, Plugin,
 };
 use crate::tcp_conns::TcpConns;
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -159,6 +160,10 @@ pub struct Subject {
     /// THE PER-FOLD NAMESPACE HOOKS (`conformance_suite! { …, namespace: (create, drop) }`):
     /// `create` makes a fold's namespace before its open, `drop` removes it after the fold.
     pub namespace: Option<(NamespaceHook, NamespaceHook)>,
+    /// THE PLUGIN'S DECLARES (`conformance_suite!` reads its declares file, [`Subject::declared_in`]):
+    /// what the suite judges a kind's script against when the plugin states a fact about itself
+    /// (a hook's `hook.orders`). `None`: nothing stated, every fact at its default.
+    pub declares: Option<crate::sign::Declares>,
 }
 
 /// A per-fold namespace hook: called with the fold's namespace (what [`FOLD`] was filled with) and
@@ -240,9 +245,40 @@ impl Subject {
             host: None,
             anchors: None,
             namespace: None,
+            declares: None,
         };
         s.apply_env();
         s
+    }
+
+    /// [`Subject::new`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows 159
+    /// and 194). #1469 makes `new` take the `MacroDoor` alone and keeps this name beside it, so
+    /// `Subject::of_macro(plugin::MACRO_DOOR, ..)` compiles before and after.
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_macro(
+        door: busbar_contract::abi::sdk::door::MacroDoor,
+        cdylib_crate: &'static str,
+        inputs: &str,
+    ) -> Self {
+        Self::new(door.door_fn(), cdylib_crate, inputs)
+    }
+
+    /// [`Subject::new`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows 159 and
+    /// 194): a `MacroDoor`'s, or a door a crate that exports its `door` function alone restates
+    /// (`unsafe { LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_loaded(
+        door: crate::dispatch::LoadedDoor,
+        cdylib_crate: &'static str,
+        inputs: &str,
+    ) -> Self {
+        Self::new(door.door, cdylib_crate, inputs)
     }
 
     /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
@@ -251,6 +287,41 @@ impl Subject {
     pub fn with_namespace(mut self, create: NamespaceHook, drop: NamespaceHook) -> Self {
         self.namespace = Some((create, drop));
         self
+    }
+
+    /// This subject's declares are `declares`: the facts a plugin states about itself, which its
+    /// kind's script judges it against.
+    #[must_use]
+    pub fn with_declares(mut self, declares: crate::sign::Declares) -> Self {
+        self.declares = Some(declares);
+        self
+    }
+
+    /// This subject's declares are the plugin crate's own declares file ([`declares_file`] of
+    /// `manifest_dir`), read through [`crate::sign::Declares::from_declares_json`]. A crate with no
+    /// declares file states nothing here (`the_declared_needs_are_the_statements` fails it).
+    ///
+    /// # Panics
+    /// The declares file does not read.
+    #[must_use]
+    pub fn declared_in(self, manifest_dir: &str) -> Self {
+        let Some(file) = declares_file(manifest_dir) else {
+            return self;
+        };
+        let text = std::fs::read(&file)
+            .unwrap_or_else(|e| panic!("{} does not read: {e}", file.display()));
+        let declares = crate::sign::Declares::from_declares_json(&text)
+            .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        self.with_declares(declares)
+    }
+
+    /// Whether the plugin's hook may answer an order (`declares.hook.orders`; `true` when it
+    /// states none).
+    #[must_use]
+    pub fn hook_orders(&self) -> bool {
+        self.declares
+            .as_ref()
+            .is_none_or(crate::sign::Declares::hook_orders)
     }
 
     /// One fold's settings, tagged `tag` (its leg, or the RED arm that opens): [`FOLD`] filled with
@@ -860,8 +931,25 @@ pub fn bind_far(d: &Dispatcher, instance: &str, s: &Subject) -> Bind {
 pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadError> {
     match leg {
         Leg::Linked => load_linked::<K>(&LinkedRow::of(s.door)?, b),
-        Leg::Dropped => load_dropped::<K>(&s.cdylib(), &s.stated(), b),
+        Leg::Dropped => load_dropped_staged::<K>(&s.cdylib(), &s.stated(), b),
     }
+}
+
+/// The dropped-in library at `path`, admitted against `stated` as every production caller admits a
+/// dropped plugin: its bytes read and handed to [`load_dropped_bytes`], which stages them by the
+/// loader's one staging path (a sealed `memfd` on Linux, a private `0700` copy elsewhere) and opens
+/// exactly those bytes, never the build path itself (THE DESIGN §11.4: one loading path).
+///
+/// # Errors
+/// The loader's refusal; a library that cannot be read is refused as one that does not open.
+pub(crate) fn load_dropped_staged<K: Kind>(
+    path: &Path,
+    stated: &[u8],
+    b: Bind,
+) -> Result<Plugin<K>, LoadError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| LoadError::Open(format!("cannot read {}: {e}", path.display())))?;
+    load_dropped_bytes::<K>(&bytes, &path.display().to_string(), stated, b)
 }
 
 /// The crossings `p` has made, by the dispatcher's own crossing gate: every crossing, and of them
@@ -1694,7 +1782,7 @@ pub fn red_kind_abi(s: &Subject) {
                 .expect_err("a linked door at another kind ABI is refused");
             assert_eq!(refused, want);
             assert!(refused.to_string().contains("rebuild"), "{refused}");
-            let refused = load_dropped::<K>(&s.cdylib(), &stating_abi(&stated, abi), s.bind(&d, "red-dropped"))
+            let refused = load_dropped_staged::<K>(&s.cdylib(), &stating_abi(&stated, abi), s.bind(&d, "red-dropped"))
                 .map(|_| ())
                 .expect_err("a manifest stating another kind ABI is refused");
             assert_eq!(refused, LoadError::ManifestKindAbi { stated: abi, host });
@@ -2002,6 +2090,54 @@ pub fn profile(debug: bool) {
     );
 }
 
+/// THE DOOR A SUITE NAMES, as either form a plugin states it (status rows 159 and 194): its
+/// `door` function, or the `MACRO_DOOR` `plugin_door!` expands beside it. #1469 makes the suite take the `MacroDoor` alone; a plugin moves to `door:
+/// plugin::MACRO_DOOR` first, and the same line compiles before and after.
+///
+/// The two forms are told apart by method resolution: a `MacroDoor` answers its door function by
+/// value (`MacroDoorArg`); any other value (a door function) answers itself through a reference
+/// (`DoorFnArg`), and the caller's `DoorFn` annotation coerces the function item.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __conformance_door {
+    ($door:path) => {{
+        #[allow(unused_imports)]
+        use $crate::conformance::{DoorFnArg as _, MacroDoorArg as _};
+        let door: $crate::conformance::ConformanceDoorFn = (&$door).door_arg();
+        door
+    }};
+}
+
+/// The door function type a suite runs over, named where `__conformance_door!` expands.
+#[doc(hidden)]
+pub type ConformanceDoorFn = DoorFn;
+
+/// `__conformance_door!`'s arm for a `MacroDoor`.
+#[doc(hidden)]
+pub trait MacroDoorArg {
+    /// The door function the macro door names.
+    fn door_arg(&self) -> DoorFn;
+}
+
+impl MacroDoorArg for busbar_contract::abi::sdk::door::MacroDoor {
+    fn door_arg(&self) -> DoorFn {
+        self.door_fn()
+    }
+}
+
+/// `__conformance_door!`'s arm for a door function: the value itself, coerced by the caller.
+#[doc(hidden)]
+pub trait DoorFnArg<F> {
+    /// The door function, as given.
+    fn door_arg(&self) -> F;
+}
+
+impl<F: Copy> DoorFnArg<F> for &F {
+    fn door_arg(&self) -> F {
+        **self
+    }
+}
+
 /// **THE SUITE, IN A PLUGIN REPO'S `tests/conformance.rs`.** Emits the suite's tests over the
 /// plugin's linked door, its cdylib and its inputs; `plugin-ci.yml` runs them under `--release`
 /// and requires every one to RUN. The names are the contract the CI step reads.
@@ -2017,14 +2153,100 @@ macro_rules! conformance_suite {
         $(,)?
     ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
-            #[allow(unused_mut)]
-            let mut s = $crate::conformance::Subject::new($door, $cdylib, $inputs);
-            $(s = s.with_host($host);)?
-            $(s = s.with_anchors($tls);)?
-            $(s = s.with_namespace($create, $drop);)?
-            s
+            $crate::conformance_suite!(
+                @subject door: $door,
+                manifest_dir: env!("CARGO_MANIFEST_DIR"),
+                cdylib: $cdylib,
+                inputs: $inputs
+                $(, host: $host)?
+                $(, tls: $tls)?
+                $(, namespace: ($create, $drop))?
+            )
         }
-
+        $crate::conformance_suite!(@tests);
+    };
+    // A door named by a `LoadedDoor` (a crate that exports its `door` function alone restates it:
+    // `loaded: unsafe { LoadedDoor::from_raw(plugin::door) }`), the name #1469 keeps.
+    (
+        loaded: $loaded:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+        $(,)?
+    ) => {
+        fn __busbar_conformance_subject() -> $crate::conformance::Subject {
+            $crate::conformance_suite!(
+                @subject loaded: $loaded,
+                manifest_dir: env!("CARGO_MANIFEST_DIR"),
+                cdylib: $cdylib,
+                inputs: $inputs
+                $(, host: $host)?
+                $(, tls: $tls)?
+                $(, namespace: ($create, $drop))?
+            )
+        }
+        $crate::conformance_suite!(@tests);
+    };
+    // INTERNAL: the subject a suite runs over, its door named by either form, with the plugin
+    // crate's manifest dir (the suite passes its own `CARGO_MANIFEST_DIR`; a loader test passes a
+    // scratch dir). Both forms finish in the one `@declared` step, so each reads the declares file.
+    (
+        @subject door: $door:path,
+        manifest_dir: $dir:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+    ) => {
+        $crate::conformance_suite!(
+            @declared $crate::conformance::Subject::new(
+                $crate::__conformance_door!($door),
+                $cdylib,
+                $inputs,
+            ),
+            manifest_dir: $dir
+            $(, host: $host)?
+            $(, tls: $tls)?
+            $(, namespace: ($create, $drop))?
+        )
+    };
+    (
+        @subject loaded: $loaded:expr,
+        manifest_dir: $dir:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+    ) => {
+        $crate::conformance_suite!(
+            @declared $crate::conformance::Subject::of_loaded($loaded, $cdylib, $inputs),
+            manifest_dir: $dir
+            $(, host: $host)?
+            $(, tls: $tls)?
+            $(, namespace: ($create, $drop))?
+        )
+    };
+    // INTERNAL: the one step both forms share: the host, anchors and namespace hooks named, then
+    // the plugin crate's declares file read ([`Subject::declared_in`]).
+    (
+        @declared $subject:expr,
+        manifest_dir: $dir:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+    ) => {{
+        #[allow(unused_mut)]
+        let mut s: $crate::conformance::Subject = $subject;
+        $(s = s.with_host($host);)?
+        $(s = s.with_anchors($tls);)?
+        $(s = s.with_namespace($create, $drop);)?
+        s.declared_in($dir)
+    }};
+    (@tests) => {
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.
         #[test]
         fn the_linked_and_the_dropped_in_door_are_one_plugin() {
