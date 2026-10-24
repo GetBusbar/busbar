@@ -286,6 +286,9 @@ fn register_protocols() {
 fn register_planes() -> busbar_kernel::preflight::RootInstall {
     // The linked store, auth and hook rows for the kernel's cold-kind axis, with the operator
     // credential's words, on the install record the root lends, before anything resolves one.
+    // THE DOOR-ROOT ROWS FIRST (status row 195): each crate's door admitted by the loader and its
+    // Statement agreeing with its row, or the boot is refused (exit 2) before any row registers.
+    root::door_root::check_door_roots(LINKED.door_roots);
     let lent = root::linked::register_stores(&LINKED);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.

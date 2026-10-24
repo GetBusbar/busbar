@@ -356,7 +356,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             }
         };
         let mut line_framed = Vec::new();
-        for (n, (key, _)) in (0u32..).zip(doors) {
+        for (n, (key, _)) in (0u32..).zip(doors.iter()) {
             let need = ReadNeed {
                 direction: DIRECTION_OUTBOUND,
                 egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,

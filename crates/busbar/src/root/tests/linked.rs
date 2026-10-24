@@ -269,8 +269,9 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
     let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| s.1).collect();
     assert_eq!(stores, [true], "one linked store: ephemeral");
-    assert!(
-        !(crate::LINKED.stores[0].2)().is_null(),
+    assert_eq!(
+        (crate::LINKED.stores[0].2)().magic(),
+        busbar_contract::abi::mechanism::DOOR_MAGIC,
         "the linked store states its door"
     );
     let strategies = [

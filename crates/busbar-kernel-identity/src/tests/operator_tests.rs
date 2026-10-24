@@ -215,8 +215,8 @@ fn an_unjudged_admin_verdict_is_the_1_5_5_refusal() {
 }
 
 /// A door no test opens: the rows below are read for their names alone.
-extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
-    std::ptr::null()
+extern "C" fn no_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    unreachable!("the rows are read for their names; no test opens a door")
 }
 
 /// The rows a build links are an ARGUMENT: a row answers the operator provider by its key or by its
