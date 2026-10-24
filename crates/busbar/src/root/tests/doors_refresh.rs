@@ -251,7 +251,10 @@ mod held_down {
 /// The carrier, compiled in and opened through the one door with `settings`, as boot opens every
 /// transport.
 fn opened(row: &str, settings: &TransportSettings) -> Arc<Dispatched> {
-    let plugin = crate::root::test_plugins::linked_transport(held_down::door, row_bind(row));
+    let plugin = crate::root::test_plugins::linked_transport(
+        held_down::door,
+        row_bind(row).expect("the row binds"),
+    );
     Arc::new(Dispatched::open(plugin, settings).expect("the carrier opens"))
 }
 
