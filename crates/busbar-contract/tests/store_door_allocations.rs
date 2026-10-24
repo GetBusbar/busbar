@@ -500,7 +500,7 @@ mod canned {
 
 fn ops() -> &'static Ops {
     // SAFETY: the macro's door is `'static`, and a store door's table is the store `Ops`.
-    unsafe { &*(*canned::door()).ops.cast::<Ops>() }
+    unsafe { &*canned::door().ops().cast::<Ops>() }
 }
 
 fn in_head<T>(op: u32) -> InHead {
