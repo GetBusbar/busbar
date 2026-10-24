@@ -136,6 +136,19 @@ impl PlaneCalls for PlaneInstance {
         self.pure(slot::REFUSAL, input, out, grow)
     }
 
+    fn catalog(
+        &self,
+        input: &mut busbar_contract::abi::plane::CatalogIn,
+        out: &mut busbar_contract::abi::plane::CatalogOut,
+        grow: Grow<
+            '_,
+            busbar_contract::abi::plane::CatalogIn,
+            busbar_contract::abi::plane::CatalogOut,
+        >,
+    ) -> Outcome {
+        self.pure(slot::CATALOG, input, out, grow)
+    }
+
     fn project(
         &self,
         input: &mut ProjectIn,
@@ -145,11 +158,12 @@ impl PlaneCalls for PlaneInstance {
         self.pure(slot::PROJECT, input, out, grow)
     }
 
-    fn cancel(&self, ticket: Ticket) -> Option<Cancelled> {
+    fn cancel(&self, ticket: Ticket, unit: u64) -> Option<Cancelled> {
         use super::CancelFrame as _;
-        // The plane's own `cancel` frame, its record buffers lent (SEAM-L(r)).
+        // The plane's own `cancel` frame, its record buffers lent (SEAM-L(r)), naming the unit.
         let mut cancel = super::PlaneCancel::new();
         let _ = cancel.prepare(ticket, 0);
+        cancel.frame().input.unit = unit;
         let called = self.plugin.call(life::CANCEL, cancel.frame());
         (called.outcome == Outcome::Ready).then(|| Cancelled {
             disposition: cancel.disposition(),

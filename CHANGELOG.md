@@ -31,6 +31,14 @@ Each plane is inert until its section is written. An `mcp:` block with an empty 
 refuses to start, because an anonymous MCP request is never narrowed by a key and would run with
 wildcard grants over every registered server: close the data-plane chain, or drop the block.
 
+A plane is opened once, at start, when its section is configured. A config apply, reload or named
+definition write that first writes the section of a plane this process started without is accepted,
+validated and stored, but that plane serves nothing until the next restart. The answer says so the
+way 1.5.5 named a newly declared plugin route: `reload_to_apply` lists the section and `note`
+explains, on `POST /config/apply`, `POST /config/reload` and the named-definition write. `GET
+/config` lists the same sections under `reload_to_apply`. Every field is omitted when nothing is
+pending, so a 1.5.5 configuration's answers are unchanged.
+
 ### Behaviour identical to 1.5.5
 
 Measured by the shadow oracle over 780 cells — boot refusals and warnings, `--validate`,
@@ -79,6 +87,18 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   capped at 16 MiB (spec lines 863-865, signed 2026-09-28).
 
 ### Security
+
+- **The OIDC auth plugin no longer follows a redirect into a private network or a metadata service.**
+  1.6.0 Changed: the OIDC auth plugin refuses a discovery or JWKS redirect to a cloud metadata or IPv6 link-local host from any host, and a redirect to a private or loopback host (an IP literal, or the localhost name) unless the hop that sent it is itself on a private or loopback host; each hop is judged by the host that redirected, so a chain that leaves through a public host cannot come back into the private network. The check reads the literal host only, with no DNS lookup, so an identity provider reached by any other DNS name counts as public.
+  The refusal names the URL that was asked, not the redirect target:
+  `request to {asked URL} failed: a redirect to a private or loopback address is not allowed` or
+  `request to {asked URL} failed: a redirect to a cloud metadata address is not allowed`. An identity
+  provider on a private IP or at `localhost` may redirect to private or loopback hosts. One reached by
+  any other DNS name (e.g. `keycloak.corp`) counts as public, so its redirect to a private or loopback
+  host is refused, where 1.5.5 followed it. A redirect to a DNS name that resolves privately is
+  followed, and the dial guard judges it. A public-to-public https redirect is still followed. 1.5.5
+  followed up to 10 https redirects with no address check; every other error text is 1.5.5's
+  (owner-approved 2026-10-21; the DNS-name rule owner-approved 2026-10-22).
 
 - **Two admin key rotations could share one idempotency key, and the second was told the first's
   answer.** A rotate's replay key joined the key id and the `Idempotency-Key` header on a colon,
@@ -183,6 +203,11 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **The SigV4 auth plugin signs the request it sends.** 1.6.0 Changed: the SigV4 auth plugin signs the real method, query string and content type of each outbound request it signs; a POST of `application/json` with no query string signs byte-for-byte as 1.5.5 did.
+  1.5.5 only ever signed that one shape. The query is canonicalised as SigV4 requires, and a repeated
+  header name is comma-merged as the AWS spec says (owner-approved 2026-10-21).
+- **A configuration apply's limits go live with it.** A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits. 1.5.5 put them in force before
+  validating them, for the length of the build.
 - **A translated Anthropic stream's error event is the published shape.** A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires. 1.5.5's event lacked
   it.
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
@@ -247,14 +272,6 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `--providers <path>` names the provider catalog (flag > `providers_file:` > `providers.yaml`
   beside the config); both are additive. `--version` adds a `build: profile=… target=…`
   provenance line under the version.
-- **Bedrock `usage.totalTokens` counts the cache tokens AWS counts.** Converse reports
-  `inputTokens` as the non-cached input only and states the full input as
-  `inputTokens + cacheReadInputTokens + cacheWriteInputTokens`; 1.5.5 derived
-  `totalTokens = inputTokens + outputTokens` while emitting the two cache counts beside it, so on a
-  cache-bearing response the published parts summed past the published total and a consumer reading
-  `totalTokens` lost every cache token. Both the buffered Converse body and the streamed `metadata`
-  frame now publish the AWS sum. The component fields are unchanged, as is a response with no cache
-  activity. See [Spec fidelity](#spec-fidelity).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).
@@ -381,8 +398,8 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the caller's favour, reachable only on a boundary straddle, and the admission `requests` slot is
   still never refunded.
 - **The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.** New reads
-  `GET /api/v1/admin/ledger/{rate-history,repricings}`, a new operator-signed write
-  `POST /api/v1/admin/ledger/amend-rate-history`, and an optional `?as_of=<history_seq>`
+  `GET /api/v1/admin/ledger/{rate-history,repricings}`, a new write
+  `POST /api/v1/admin/ledger/amend-rate-history` (a plain `full`-scope admin verb), and an optional `?as_of=<history_seq>`
   on the existing ledger reads. Money stays unitless, exactly as in 1.5.5: a rate card is plain
   numbers and busbar attaches no currency. No 1.5.5 path or field is changed; the new operations are
   described in the one administrative OpenAPI document served at `GET /api/v1/admin/openapi.json`.
@@ -415,10 +432,9 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly nine entries of kind `breaking`
+The accepted-differences register for this release has exactly eight entries of kind `breaking`
 presented here: two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is
-unchanged in both), one confined to Cohere backends that report `usage.billed_units`, one field
-removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
+unchanged in both), one field removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
 endpoint that now refuses an overlong id like its siblings, one where rate cards become a dated
 history so a card's own effective date bounds what it reprices, one provider credential that no
 longer degrades to an empty key, and one Bedrock budget refusal that now answers an error Converse
@@ -428,7 +444,7 @@ instead, because each waives only a caller-additive or documentation-only surfac
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
 and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
 oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
-changed. A reader counting `kind: breaking` rows in the register will find eleven, not nine. One
+changed. A reader counting `kind: breaking` rows in the register will find eleven, not eight. One
 further entry, AUTH-ROW's, is also registered `breaking` and presented under Improvements: the
 differ accepts a `status` class on no other kind, and what it waives is a misconfigured admin-auth
 provider that answered 401 now authenticating.)
@@ -461,15 +477,6 @@ minted secret carries over.
   opt in now gets its usage chunk on the fallback hop too. **Migration:** if you priced or
   capacity-planned on 1.5.5's numbers for traffic that routinely fails over, expect those keys'
   recorded spend to rise to what they actually used; no config change is needed.
-- 1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both
-  the buffered and the streamed path. Cohere reports usage twice — a raw `usage.tokens` bucket and
-  a separately-metered `usage.billed_units` bucket, and `billed_units` is what the operator is
-  invoiced upstream. 1.5.5 read only `tokens` and billed those; 1.6.0 bills `billed_units` where
-  the backend reports it, and now does so identically whether the completion was served buffered or
-  streamed (the two answers for one completion previously differed). Only Cohere populates these
-  fields; every other backend's ledgered counts are byte-identical to 1.5.5. **Migration:** if a
-  Cohere lane's `billed_units` exceed its raw `tokens`, expect that key's recorded spend and
-  token-limit consumption to rise to the figure Cohere itself invoices; no config change is needed.
 - 1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google
   charges for. Vertex reports `usageMetadata.toolUsePromptTokenCount` beside `promptTokenCount`,
   not inside it — on a real `gemini-2.5-flash` capture the field is `32` while the entire
@@ -509,12 +516,12 @@ minted secret carries over.
   be <= 64 characters". **Migration:** a client that relied on the 404 for an overlong rotate id
   must expect a 400 instead, matching every other `/keys/{id}` handler; no config change is needed.
 - 1.6.0 Changed: rate cards are now a dated history, not a single mutable price. Publishing a card
-  with an effective date leaves every posting before that date priced exactly as it was; a signed
+  with an effective date leaves every posting before that date priced exactly as it was; a
   back-dated correction reprices exactly the window it names — `[effective_from, effective_until)`
   — and nothing outside it, posted as an attributed, append-only entry rather than an edit to a
   booked row. 1.5.5 derived every row's spend at read time from the current cost model, so a `PUT
   /config/settings` rate-card edit re-priced every past row with no restart and no boundary; that
-  blanket repricing is now available only as an explicit, signed correction naming its own window,
+  blanket repricing is now available only as an explicit correction naming its own window,
   never as a side effect of publishing a new card. `GET /admin/usage` resolves each metering row
   through that history at the row's own instant, so publishing a card no longer moves what an
   earlier window reports, and a card edit inside a UTC day splits that day's row at the edit with
@@ -523,11 +530,12 @@ minted secret carries over.
   `GET /admin/groups/{group}/usage`) still derive spend from the CURRENT card, because the
   enforcement ledger they read carries no price instant yet — so after a rate-card edit they and
   `/admin/usage` can report different money for the same consumption until that lands. To correct
-  what a past window was charged, post a signed correction through the new
+  what a past window was charged, post a correction through the new
   `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
   1.6.0 migration guide](docs/migration-1.6.md).
 
 - 1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.
+- 1.6.0 Changed: a translated stream that busbar cannot keep translating after its first byte is billed for the tokens the far end reported before the abort. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.
 - 1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.
   A request that arrives just before a window boundary can be charged on a group bucket another
   request has already rolled into the next window. 1.5.5 refunded such a request only against a
@@ -554,7 +562,7 @@ minted secret carries over.
   1.5.5 priced every row of `GET /api/v1/admin/usage` at the card current at read time, so a card
   edited to one micro-unit per token made requests served earlier under a dearer card read 18
   micro-units each; 1.6.0 reads them at the card they were served under (2,500,000 each on the
-  oracle's card). **Migration:** none; to change what an earlier window was charged, post a signed
+  oracle's card). **Migration:** none; to change what an earlier window was charged, post a
   correction through `POST /api/v1/admin/ledger/amend-rate-history`.
 - 1.6.0 Changed: applying a config no longer reprices spend already recorded in the `/metrics` spend series.
   In 1.5.5, `POST /api/v1/admin/config/apply` with a config that drops the rate card moved
@@ -608,6 +616,13 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   **Migration:** name an internal peer or upstream in `advanced.allow_destinations` (an A2A
   registration may also set its own `allow_private: true`), as a provider on an internal DNS name
   already needs.
+- 1.6.0 Breaking: `POST /api/v1/admin/ledger/amend-rate-history` is served on every node and needs only a `full` admin grant, with no operator key or signature.
+  1.5.5 had no such route, and its router answered the path `404 not_found`; a 1.6.0 node answers
+  with the verb's own result, so a malformed correction is `400 invalid_request`. No admin verb
+  carries an operator key, an operator signature or dual control (spec #24 and #77(9)), so the
+  `auth.operator_pub` key is gone and the request's `operator_fingerprint` and `signature` members
+  are not read. **Migration:** a config that set `auth.operator_pub` must drop it (it is now an
+  unknown key, as it was in 1.5.5); a client stops signing corrections.
 
 ### Deprecated env vars still honoured
 
@@ -743,11 +758,13 @@ each dialect translates, field by field, is listed in the generated
 
 ### Added
 
-- **`/metrics` carries two plugin-health counters.** `bb_deadline_without_wake_total` counts plugin
-  operations settled by their deadline without ever being woken, and `bb_plugin_quarantined_total`
-  counts plugin instances the crossing watchdog quarantined. Each is one counter family with its
-  `# HELP` and `# TYPE` lines, summed over every plugin, and is 0 on a healthy node. Nothing that
-  1.5.5 exposed changed. See [the observability guide](docs/observability.md).
+- **Admin authority can be granted verb by verb.** A role binding
+  (`auth.role_bindings.<provider>.<role>`) takes `verbs:`, either `"*"` (every verb, exactly
+  `admin_scope: full`) or a list of admin operation names from the closed verb table (`[get_keys,
+  post_keys]`), each admitted whatever scope it needs; a verb outside the list is the same
+  `403 forbidden` a missing scope gets. `admin_scope: read-only | full` stay the 1.5.5 shorthands
+  and a binding without `verbs:` behaves exactly as before. A name the table does not declare fails
+  `--validate`/boot. See [the configuration reference](docs/configuration.md).
 - **A plugin's inbound listener binds what its settings block states, capped at 1024 connections.**
   A need a plugin declares inbound names a settings block `{listen, tls: {cert, key, client_ca?},
   max_conns?}` (1.5.5's `listen` / `tls` shape; `cert` and `key` are secret references). The listener
@@ -905,6 +922,13 @@ each dialect translates, field by field, is listed in the generated
   as successes. This is tamper-evidence, not tamper-prevention, and chains are verified at boot.
   With `store: memory` nothing is persisted and nothing is claimed; the record is durable only on a
   store plugin that persists plane records.
+- **An MCP tool call that never left is not charged.** A `tools/call` that waited its turn on a stdio
+  server's child past its deadline, or whose server the live tool-list check could not reach, was
+  never sent: its caller is answered the same upstream-failure tool error (HTTP 200,
+  `isError: true`), but the plane reports no `per_request` fee unit, so the admission's fee is given
+  back, and its call-log line reads `refused` (audited rejected). A call that went out keeps its fee
+  whatever the server answered, and counts one `tool_calls` plus the answer's bytes whenever the
+  server answered at all, an HTTP 5xx included.
 - **A quarantined MCP upstream stays quarantined across a restart**, so a restarted Busbar no
   longer hands an upstream its approval back until the next sweep. The first observation that finds
   the upstream serving what you approved clears it.

@@ -18,8 +18,14 @@
 //! The URL is a stranger's, and `/authorize` and `/token` take no credential, so the fetch is
 //! bounded ([`Documents`]): a validated document answers for its client for [`DOCUMENT_TTL`] (at
 //! most [`MAX_CACHED_DOCUMENTS`] held), concurrent requests naming one uncached document wait on
-//! ONE fetch, and at most [`MAX_CONCURRENT_FETCHES`] fetches run at once. Past that a request
-//! naming an uncached document reads as an unknown client, as every other fetch failure does.
+//! ONE fetch, at most [`MAX_FETCHES_PER_SITE`] fetches run at once for the documents of one site
+//! ([`site_of`]: a host's registrable domain under the Public Suffix List, so one owner's many
+//! hosts are one site and the tenants of a shared suffix are each their own; an IPv6 literal's /64,
+//! the block one end site is handed whole), and at most [`MAX_CONCURRENT_FETCHES`] run at once in
+//! all, a request waiting up to [`PERMIT_WAIT`] for one of those. Past that a request naming an
+//! uncached document reads as an unknown client, as every other fetch failure does. So one owner's
+//! slow documents hold at most its own site's share, and holding every fetch takes
+//! `MAX_CONCURRENT_FETCHES / MAX_FETCHES_PER_SITE` sites the caller owns.
 //!
 //! ## Every failure is an UNKNOWN CLIENT, not an error
 //!
@@ -98,6 +104,38 @@ pub(crate) const MAX_CACHED_DOCUMENTS: usize = 1024;
 /// The most document fetches in flight at once.
 pub(crate) const MAX_CONCURRENT_FETCHES: usize = 16;
 
+/// The most document fetches in flight at once for the documents of one site ([`site_of`]).
+pub(crate) const MAX_FETCHES_PER_SITE: usize = 2;
+
+/// How long a request naming an uncached document waits for a fetch permit before its client reads
+/// as unknown.
+pub(crate) const PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The site a document URL's host belongs to, lower-cased: what one owner holds as one unit.
+///
+/// * A NAME is its registrable domain under the Public Suffix List (`psl`): the hosts one owner
+///   can mint freely (`a.attacker.example`, `b.attacker.example`) are one site, and the tenants of a
+///   shared suffix (`alice.github.io`, `bob.github.io`, `a.co.uk`) are each their own, so one
+///   tenant's slow documents never take another's share. A name that is itself a public suffix is
+///   its own site.
+/// * An IPv6 literal is its /64: one end site is handed a /64 at the least, and every address in it
+///   is that site's to use, so the addresses of one /64 are one site.
+/// * An IPv4 literal is its own site: each address is held on its own.
+pub(crate) fn site_of(url: &str) -> String {
+    let host = busbar_contract::net::parse_url(url)
+        .map(|p| p.host.to_ascii_lowercase())
+        .unwrap_or_default();
+    let host = host.trim_end_matches('.');
+    if let Ok(v6) = host.parse::<std::net::Ipv6Addr>() {
+        let s = v6.segments();
+        return format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3]);
+    }
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
+        return host.to_string();
+    }
+    psl::domain_str(host).unwrap_or(host).to_string()
+}
+
 /// THE DOCUMENTS ONE SERVER HOLDS AND FETCHES: the validated ones by URL, each until it expires;
 /// the fetch in flight for each URL, which every concurrent request naming it waits on; and the
 /// permits that bound how many fetches run at once.
@@ -105,10 +143,47 @@ pub(crate) struct Documents {
     held: Mutex<HashMap<String, (Arc<Client>, std::time::Instant)>>,
     flights: Mutex<HashMap<String, Flight>>,
     permits: tokio::sync::Semaphore,
+    /// Fetches in flight per site ([`site_of`]).
+    sites: Mutex<HashMap<String, usize>>,
 }
 
 /// One URL's fetch in flight: the client its document validated to, or `None`, once it lands.
 type Flight = Arc<tokio::sync::OnceCell<Option<Arc<Client>>>>;
+
+/// One request's hold on a URL's flight. However the request ends, answered or dropped mid-wait,
+/// the last hold to go takes the flight out of the map, so a fetch every waiter abandoned leaves no
+/// entry behind. Every hold is taken and let go under the map's lock, so the count it reads there is
+/// every holder's.
+struct Joined<'a> {
+    flights: &'a Mutex<HashMap<String, Flight>>,
+    url: &'a str,
+    flight: Option<Flight>,
+}
+
+impl Joined<'_> {
+    fn cell(&self) -> &Flight {
+        self.flight
+            .as_ref()
+            .expect("a hold keeps its flight until it is dropped")
+    }
+}
+
+impl Drop for Joined<'_> {
+    fn drop(&mut self) {
+        let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(flight) = self.flight.take() {
+            // The map's reference and this one: no other request holds the flight.
+            if Arc::strong_count(&flight) == 2
+                && flights
+                    .get(self.url)
+                    .is_some_and(|f| Arc::ptr_eq(f, &flight))
+            {
+                flights.remove(self.url);
+            }
+            drop(flight);
+        }
+    }
+}
 
 impl Default for Documents {
     fn default() -> Self {
@@ -116,11 +191,46 @@ impl Default for Documents {
             held: Mutex::new(HashMap::new()),
             flights: Mutex::new(HashMap::new()),
             permits: tokio::sync::Semaphore::new(MAX_CONCURRENT_FETCHES),
+            sites: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+/// One site's share of the fetches, held while its fetch runs.
+struct SiteShare<'a> {
+    sites: &'a Mutex<HashMap<String, usize>>,
+    site: String,
+}
+
+impl Drop for SiteShare<'_> {
+    fn drop(&mut self) {
+        let mut sites = self.sites.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(n) = sites.get_mut(&self.site) {
+            *n -= 1;
+            if *n == 0 {
+                sites.remove(&self.site);
+            }
         }
     }
 }
 
 impl Documents {
+    /// A share of `url`'s site's fetches, or `None` when its site already holds
+    /// [`MAX_FETCHES_PER_SITE`].
+    fn site_share(&self, url: &str) -> Option<SiteShare<'_>> {
+        let site = site_of(url);
+        let mut sites = self.sites.lock().unwrap_or_else(|p| p.into_inner());
+        let n = sites.entry(site.clone()).or_insert(0);
+        if *n >= MAX_FETCHES_PER_SITE {
+            return None;
+        }
+        *n += 1;
+        Some(SiteShare {
+            sites: &self.sites,
+            site,
+        })
+    }
+
     /// The validated document's client for `url`, while it has not expired.
     fn held(&self, url: &str) -> Option<Arc<Client>> {
         let held = self.held.lock().unwrap_or_else(|p| p.into_inner());
@@ -129,20 +239,18 @@ impl Documents {
             .map(|(client, _)| Arc::clone(client))
     }
 
-    /// The fetch in flight for `url`, joined, or a new one.
-    fn flight(&self, url: &str) -> Flight {
+    /// The fetch in flight for `url`, joined, or a new one, held while the caller waits on it.
+    fn flight<'a>(&'a self, url: &'a str) -> Joined<'a> {
         let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
-        Arc::clone(flights.entry(url.to_string()).or_default())
+        Joined {
+            flights: &self.flights,
+            url,
+            flight: Some(Arc::clone(flights.entry(url.to_string()).or_default())),
+        }
     }
 
-    /// The flight for `url` landed with `answer`: it is over, and a client it validated is held.
-    fn land(&self, url: &str, flight: &Flight, answer: Option<&Arc<Client>>) {
-        {
-            let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
-            if flights.get(url).is_some_and(|f| Arc::ptr_eq(f, flight)) {
-                flights.remove(url);
-            }
-        }
+    /// The fetch for `url` answered `answer`: a client it validated is held.
+    fn hold(&self, url: &str, answer: Option<&Arc<Client>>) {
         let Some(client) = answer else { return };
         let now = std::time::Instant::now();
         let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
@@ -590,6 +698,12 @@ pub(crate) struct Records {
     /// redeemed, keyed by `request_uri` (in-process records only; the store's are read from the
     /// pushed record itself). See [`Pushed`].
     pushed: Mutex<HashMap<String, Pushed>>,
+    /// Every SELF-REGISTERED client this process's records hold, by `client_id`, with the instant
+    /// until which it holds something: the latest expiry of any record written for it, or its
+    /// registration (`None`: a record that never lapses). The sweep reclaims a client
+    /// [`crate::policy::REGISTERED_CLIENT_IDLE`] past that instant. In-process records only: the
+    /// store's sweep reads the same from each client's bucket (`shared`).
+    registered: Mutex<HashMap<String, Option<std::time::SystemTime>>>,
 }
 
 impl Records {
@@ -597,6 +711,7 @@ impl Records {
         Self {
             inner: Backend::Memory(Box::new(inner)),
             pushed: Mutex::new(HashMap::new()),
+            registered: Mutex::new(HashMap::new()),
         }
     }
 
@@ -608,7 +723,52 @@ impl Records {
                 shared,
             ),
             pushed: Mutex::new(HashMap::new()),
+            registered: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// `client` was written: when it is a self-registered client in this process's records, it is
+    /// tracked, holding something from now.
+    fn track(&self, client: &Client) {
+        if self.store().is_some() || client.registration.is_none() {
+            return;
+        }
+        let now = std::time::SystemTime::now();
+        self.registered
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(client.client_id.as_str().to_string())
+            .and_modify(|held| *held = held.map(|t| t.max(now)))
+            .or_insert(Some(now));
+    }
+
+    /// A record lasting until `until` (`None`: it never lapses) was written for `client_id`: a
+    /// tracked client holds something until then at least.
+    fn holds(&self, client_id: &ClientId, until: Option<std::time::SystemTime>) {
+        let mut registered = self.registered.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(held) = registered.get_mut(client_id.as_str()) {
+            *held = match (*held, until) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                _ => None,
+            };
+        }
+    }
+
+    /// The tracked clients that have held nothing for [`crate::policy::REGISTERED_CLIENT_IDLE`] at
+    /// `now`, taken out of the tracking.
+    fn idle(&self, now: std::time::SystemTime) -> Vec<String> {
+        let mut registered = self.registered.lock().unwrap_or_else(|p| p.into_inner());
+        let idle: Vec<String> = registered
+            .iter()
+            .filter(|(_, held)| {
+                held.is_some_and(|t| t + crate::policy::REGISTERED_CLIENT_IDLE <= now)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &idle {
+            registered.remove(id);
+        }
+        idle
     }
 
     /// The store these records are kept in, when they are the deployment's.
@@ -805,9 +965,20 @@ impl CimdStore {
 impl CimdStore {
     /// One fetch of the document at `url`, validated: its client, or `None` (an unknown client)
     /// when the fetch is refused or fails, the document fails validation, or
-    /// [`MAX_CONCURRENT_FETCHES`] are already in flight.
+    /// [`MAX_FETCHES_PER_SITE`] are already in flight for its site, or no fetch permit frees within
+    /// [`PERMIT_WAIT`].
     async fn fetch_document(&self, url: &str) -> Option<Arc<Client>> {
-        let Ok(_permit) = self.documents.permits.try_acquire() else {
+        let Some(_share) = self.documents.site_share(url) else {
+            tracing::debug!(
+                client_id = url,
+                "oauth_as: this site's client metadata document fetches are all in flight; the \
+                 client is unknown"
+            );
+            return None;
+        };
+        let Ok(Ok(_permit)) =
+            tokio::time::timeout(PERMIT_WAIT, self.documents.permits.acquire()).await
+        else {
             tracing::debug!(
                 client_id = url,
                 "oauth_as: every client metadata document fetch is in flight; the client is \
@@ -865,21 +1036,27 @@ impl Storage for CimdStore {
         if let Some(held) = self.documents.held(url) {
             return Ok(Some(held));
         }
-        let flight = self.documents.flight(url);
-        let answer = flight
+        let joined = self.documents.flight(url);
+        let answer = joined
+            .cell()
             .get_or_init(|| self.fetch_document(url))
             .await
             .clone();
-        self.documents.land(url, &flight, answer.as_ref());
+        self.documents.hold(url, answer.as_ref());
+        drop(joined);
         Ok(answer)
     }
 
     // ── EVERYTHING BELOW DELEGATES VERBATIM. No logic, no logging, no reordering: the wrapper
     //    changes ONE read and must be invisible everywhere else, or the storage-conformance
     //    properties MemoryStorage holds (atomic take_*, compare-and-swap, the revocation barrier)
-    //    would silently stop being this store's. ──
+    //    would silently stop being this store's. The one addition is bookkeeping BESIDE the
+    //    delegation, never in its way: each write that gives a self-registered client something to
+    //    hold notes until when ([`Records::holds`]), and the sweep reclaims the clients that have
+    //    held nothing for the idle period. ──
 
     fn put_client(&self, client: Client) -> impl Future<Output = Result<(), StorageError>> + Send {
+        self.records.track(&client);
         self.records.inner.put_client(client)
     }
 
@@ -898,6 +1075,11 @@ impl Storage for CimdStore {
         client_id: &ClientId,
         window: RevocationWindow,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
+        self.records
+            .registered
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(client_id.as_str());
         self.records.inner.delete_client(client_id, window)
     }
 
@@ -905,6 +1087,7 @@ impl Storage for CimdStore {
         &self,
         grant: DeviceGrant,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
+        self.records.holds(&grant.client_id, Some(grant.expires_at));
         self.records.inner.put_device_grant(grant)
     }
 
@@ -937,6 +1120,8 @@ impl Storage for CimdStore {
         updated: DeviceGrant,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
         self.records
+            .holds(&updated.client_id, Some(updated.expires_at));
+        self.records
             .inner
             .compare_and_swap_device_grant(expected, updated)
     }
@@ -945,6 +1130,8 @@ impl Storage for CimdStore {
         &self,
         record: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
+        self.records
+            .holds(&record.client_id, Some(record.expires_at));
         self.records.inner.put_authorization_code(record)
     }
 
@@ -953,6 +1140,8 @@ impl Storage for CimdStore {
         expected: &AuthorizationCodeState,
         updated: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
+        self.records
+            .holds(&updated.client_id, Some(updated.expires_at));
         self.records
             .inner
             .compare_and_swap_authorization_code(expected, updated)
@@ -969,6 +1158,7 @@ impl Storage for CimdStore {
         &self,
         token: IssuedToken,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
+        self.records.holds(&token.client_id, Some(token.expires_at));
         self.records.inner.put_token(token)
     }
 
@@ -990,6 +1180,7 @@ impl Storage for CimdStore {
         &self,
         record: RefreshTokenRecord,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
+        self.records.holds(&record.client_id, record.expires_at);
         self.records.inner.put_refresh_token(record)
     }
 
@@ -1019,6 +1210,7 @@ impl Storage for CimdStore {
         &self,
         record: ConsentRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
+        self.records.holds(&record.client_id, None);
         self.records.inner.put_consent(record)
     }
 
@@ -1027,6 +1219,7 @@ impl Storage for CimdStore {
         expected: Option<&ConsentRecord>,
         updated: ConsentRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
+        self.records.holds(&updated.client_id, None);
         self.records
             .inner
             .compare_and_swap_consent(expected, updated)
@@ -1070,6 +1263,8 @@ impl Storage for CimdStore {
         &self,
         record: oauth_as::par::PushedAuthorizationRequest,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
+        self.records
+            .holds(&record.client_id, Some(record.expires_at));
         let request_uri = record.request_uri.clone();
         let summary = Pushed {
             client_id: record.client_id.as_str().to_string(),
@@ -1132,7 +1327,27 @@ impl Storage for CimdStore {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .retain(|_, p| p.expires_at > now);
-        self.records.inner.sweep_expired(now)
+        let sweep = self.records.inner.sweep_expired(now);
+        async move {
+            let mut removed = sweep.await?;
+            // The self-registered clients that have held nothing for the idle period go, each
+            // as a deletion: what it held has lapsed, so its barrier needs to bar nothing past now.
+            for id in self.records.idle(now) {
+                let window = RevocationWindow {
+                    recorded_at: now,
+                    until: now,
+                };
+                if self
+                    .records
+                    .inner
+                    .delete_client(&ClientId::new(id.as_str()), window)
+                    .await?
+                {
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        }
     }
 }
 

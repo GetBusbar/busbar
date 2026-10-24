@@ -24,13 +24,12 @@ const MIGRATED_FILES: &[&str] = &[
     "src/snapshot/mod.rs",
     "src/snapshot/money.rs",
     "src/auth/exchange.rs",
-    "src/auth/token.rs",
+    "src/auth/login.rs",
     "src/auth/mod.rs",
     "src/auth/self_keys.rs",
     // `egress_auth/` is DELETED (P2 D1, the auth split): each outbound style lives in the auth
     // plugin that serves it, and its diagnostics are that plugin's.
     "src/bound_credential.rs",
-    "src/trust/verify.rs",
     // `oauth_as/plane.rs` RELOCATED to the sibling `busbar-core-oauth2` crate with the rest of the AS
     // plane's runtime (the extraction that left only `oauth_as::config`/`oauth_as::seam` in core).
     // Core does NOT scan a plane crate's tree (the plane-purity lint forbids core naming a plane
@@ -56,11 +55,12 @@ const MIGRATED_FILES: &[&str] = &[
     // plugin sources are listed here.
     "src/ir/mod.rs",
     "src/proto/mod.rs",
-    "src/plane/approvals.rs",
-    "src/plane/quarantine.rs",
+    // `plane/approvals.rs` is DELETED (status row 82): the spent-approval ledger redeemed nothing,
+    // and approval redemption is `records.claim` alone, so no diagnostic of it moved anywhere.
+    "src/trust/demotion.rs",
     // `admin/mod.rs`, `admin/v1/service.rs`, `admin/v1/json/handlers.rs` were extracted to the
     // `busbar-admin` crate (1.6.0); their uncoded-diagnostic floor is enforced there now.
-    "src/store/planes.rs",
+    "src/store/breaker_admission.rs",
     "src/store/in_memory/mod.rs",
     "src/store/in_memory/breaker.rs",
     "src/store/in_memory/availability.rs",

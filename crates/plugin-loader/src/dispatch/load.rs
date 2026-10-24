@@ -103,6 +103,83 @@ impl LinkedRow {
             door,
         })
     }
+
+    /// [`LinkedRow::of`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows
+    /// 159 and 194). #1469 makes `of` take the `MacroDoor` alone and keeps this name beside it, so
+    /// `LinkedRow::of_macro(plugin::MACRO_DOOR)` compiles before and after.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`rendering_of`] refuses.
+    pub fn of_macro(door: busbar_contract::abi::sdk::door::MacroDoor) -> Result<Self, LoadError> {
+        Self::of(door.door_fn())
+    }
+
+    /// [`LinkedRow::of`] over a [`LoadedDoor`]: a `MacroDoor`, or a test's or the published
+    /// suite's restated door (status rows 159 and 194). #1469's name and signature, here first.
+    ///
+    /// # Errors
+    ///
+    /// As [`LinkedRow::of`].
+    pub fn of_loaded(door: LoadedDoor) -> Result<Self, LoadError> {
+        Self::of(door.door)
+    }
+}
+
+/// A DOOR THE LOADER MAY ENTER (status rows 159 and 194): a [`MacroDoor`] the contract's macro
+/// built, or a door a test or harness restates by hand through the `unsafe`
+/// [`LoadedDoor::from_raw`]. #1469 makes [`LinkedRow::of`] take the `MacroDoor` alone and keeps
+/// this type for the rest; a hand-built door reaches a row through `LinkedRow::of_loaded(unsafe {
+/// LoadedDoor::from_raw(door) })` before and after.
+///
+/// [`MacroDoor`]: busbar_contract::abi::sdk::door::MacroDoor
+#[derive(Debug, Clone, Copy)]
+pub struct LoadedDoor {
+    pub(crate) door: DoorFn,
+}
+
+impl From<busbar_contract::abi::sdk::door::MacroDoor> for LoadedDoor {
+    fn from(door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
+        Self {
+            door: door.door_fn(),
+        }
+    }
+}
+
+impl LoadedDoor {
+    /// A door the loader read itself, or a test's or harness's restated door: the one way to a
+    /// `LoadedDoor` other than a `MacroDoor`, and `unsafe`.
+    ///
+    /// # Safety
+    ///
+    /// `door` is a busbar door ([`DoorFn`]'s contract): read from the door symbol of a library
+    /// held open for every use of the value, or a function answering NULL or a `'static`, fully
+    /// initialised door whose Statement lists point at their stated counts of `'static` entries.
+    #[must_use]
+    pub const unsafe fn from_raw(door: DoorFn) -> Self {
+        Self { door }
+    }
+}
+
+/// [`rendering_of`] over a [`LoadedDoor`] (#1469's name and signature, here first).
+///
+/// # Errors
+///
+/// The refusal the door or its Statement earns.
+pub fn rendering_of_loaded(door: LoadedDoor) -> Result<Vec<u8>, LoadError> {
+    rendering_of(door.door)
+}
+
+/// [`rendering_of`] over a `MACRO_DOOR` (status rows 159 and 194), as [`LinkedRow::of_macro`]: the
+/// name #1469 keeps beside its `rendering_of(MacroDoor)`.
+///
+/// # Errors
+///
+/// The refusal the door or its Statement earns.
+pub fn rendering_of_macro(
+    door: busbar_contract::abi::sdk::door::MacroDoor,
+) -> Result<Vec<u8>, LoadError> {
+    rendering_of(door.door_fn())
 }
 
 /// A compiled-in door's Statement, checked as [`rendering_of`] checks it, for a kind's own reader
@@ -766,7 +843,28 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
     })
 }
 
-/// The table: `slots` and `size` equal to the host's table of `K`, every slot non-NULL.
+/// THE ABSENT OP: what the host calls for an optional kind op a door left NULL. It answers READY,
+/// writing nothing but `outcome` into the host's `out` head: a pass, read as the kind states for an
+/// absent op (no refusal, no destination).
+extern "C" fn absent(
+    _: *mut std::ffi::c_void,
+    _: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> busbar_contract::abi::mechanism::call::RawOutcome {
+    use busbar_contract::abi::mechanism::call::{OutHead, Outcome, RawOutcome};
+    if !out.is_null() {
+        // SAFETY: a non-NULL host `out` leads with an `OutHead` (the call convention), and the
+        // host built it.
+        unsafe {
+            std::ptr::addr_of_mut!((*out.cast::<OutHead>()).outcome)
+                .write_unaligned(RawOutcome::of(Outcome::Ready));
+        }
+    }
+    RawOutcome::of(Outcome::Ready)
+}
+
+/// The table: `slots` and `size` equal to the host's table of `K`, every slot non-NULL but the
+/// kind's optional ones, which are the host's [`absent`] op when left NULL.
 fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
     if ops.is_null() {
         return Err(LoadError::NullOps);
@@ -798,7 +896,12 @@ fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
     (0..slots)
         .map(|i| {
             // SAFETY: `size` equals the host's table, which holds `slots` contiguous slots here.
-            unsafe { first.add(i as usize).read_unaligned() }.ok_or(LoadError::NullSlot(i))
+            match unsafe { first.add(i as usize).read_unaligned() } {
+                Some(op) => Ok(op),
+                // An OPTIONAL kind op left NULL is absent: the host's own pass answers it.
+                None if K::optional_slot(i) => Ok(absent as Op),
+                None => Err(LoadError::NullSlot(i)),
+            }
         })
         .collect()
 }

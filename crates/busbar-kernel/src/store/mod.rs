@@ -53,14 +53,10 @@ fn write_recover<T>(m: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_,
     m.write().unwrap_or_else(|e| e.into_inner())
 }
 
-// The production wall clock (`now`, `now_ms`) moved to the neutral substrate so the plane crates
-// name it without reaching into busbar-core.
-//
-// R5-store: the `crate::store::{now, now_ms}` re-export is DELETED and its ~110 call sites across
-// twelve core modules name `busbar_kernel::store::{now, now_ms}` — the crate that defines it —
-// instead. Core keeps a PRIVATE import, not a re-export: `now()` is still the fallback the
-// #[cfg(test)] test-clock below (TEST_NOW / now_for_test) reads through, and that clock stays in
-// core because it owns the thread-local injection the in-core breaker/store tests drive.
+// The production wall clock (`now`, `now_ms`) is defined in this module's `vocab` and reaches
+// every caller through the `pub use vocab::*` below. The #[cfg(test)] test-clock that follows
+// (TEST_NOW / now_for_test) falls back to it, and stays here because it owns the thread-local
+// injection the in-crate breaker/store tests drive.
 
 // Test-clock storage, THREAD-LOCAL.
 //
@@ -127,12 +123,16 @@ fn now_for_test() -> u64 {
 mod in_memory;
 pub use in_memory::*;
 
-mod planes;
-pub use planes::{PlaneBreakers, MAX_POOL_MEMBERS};
-// `PlaneAdmission` is the RAII admission token the plane dispatch paths hand around; with BOTH
-// planes compiled out nothing names it, so this re-export is unused in that config alone.
+mod breaker_admission;
+pub use breaker_admission::{PlaneBreakers, MAX_POOL_MEMBERS};
+
+/// THE PLANE STORE SEAM: the `PlaneStore` trait a plane persists its own kind-tagged rows through,
+/// and the `PlaneStoreView` that narrows a real `RecordStore` to it (no audit-chain authority).
+pub mod plane_view;
+// `PlaneAdmission` is the RAII admission token the plane dispatch paths hand around; with no plane
+// consumer compiled in nothing names it, so this re-export is unused in that config alone.
 #[allow(unused_imports)]
-pub(crate) use planes::Admission as PlaneAdmission;
+pub(crate) use breaker_admission::Admission as PlaneAdmission;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

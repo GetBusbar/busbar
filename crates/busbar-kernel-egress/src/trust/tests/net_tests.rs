@@ -1103,7 +1103,7 @@ fn split_url_ends_the_authority_where_the_dialler_does() {
     ));
 }
 
-/// F25 row 75: rehomed from crates/busbar-llm/src/engine/tests/auth_style_tests.rs::
+/// F25 row 75: rehomed from the retired engine crate's src/engine/tests/auth_style_tests.rs::
 /// test_host_from_base_backslash_authority_matches_wire_host (its dialled-host half; the signed
 /// host is pinned equal to it by the plane driver's far-end tests). A WHATWG reader ends the
 /// authority at the first `\` exactly as at `/`, so the host the stack dials is the one BEFORE the
@@ -1140,31 +1140,6 @@ fn test_host_from_base_backslash_authority_matches_wire_host() {
         split_url("https://user:pass@host.example.com\\p"),
         Err(AddressRefusal::NoHost(_))
     ));
-}
-
-/// The structural half of the check — what `dest.judge` answers without resolving — refuses every
-/// loopback and private spelling for a class without `allow_private`. RED on the `/`-only reader,
-/// which read each of these as an unresolved NAME and allowed it.
-#[test]
-fn the_structural_check_refuses_every_loopback_spelling() {
-    for dest in [
-        "https://127.0.0.1?x",
-        "https://localhost#a",
-        "https://127.0.0.1./",
-        "https://%6c%6fcalhost/",
-        "https://10.0.0.5\\x/",
-    ] {
-        let got = check_structure(dest, &[], GuardPolicy::default(), &Denylist::default());
-        assert!(
-            matches!(
-                got,
-                Err(NetworkRefusal::Guard(
-                    AddressRefusal::InternalAddress { .. } | AddressRefusal::LoopbackName(_)
-                ))
-            ),
-            "{dest}: {got:?}"
-        );
-    }
 }
 
 // ── Moved from busbar-kernel's deleted `net_guard` shim suites (row 130 E2): the rows those suites

@@ -425,6 +425,16 @@ pub trait AuthAxis: Send + Sync {
         Vec::new()
     }
 
+    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key, read from the Statements without
+    /// opening any instance: the first credential reader (as [`Self::credential_readers`] orders
+    /// them) whose Statement states an issued shape, as its first credential kind and that shape.
+    /// A fact of the build's linked rows, not of the operator's chain: the admin mint draws it
+    /// whether or not `auth.chain` names `keys` (1.5.5 minted it on the flag alone). `None` when no
+    /// row states one. None by default.
+    fn issued_credential(&self) -> Option<(String, IssuedShape)> {
+        None
+    }
+
     /// The inbound carriers the auth row answering `module` states (its Statement's carrier word
     /// marks, lower-case, in the Statement's order), read without opening it; none when no row
     /// answers `module` or it states none. Opaque words to the kernel (THE DESIGN, "Auth points and

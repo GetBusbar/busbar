@@ -4,7 +4,7 @@
 //! Tests for `crates/busbar-core/src/admin/v1/service.rs`.
 
 use super::*;
-use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess};
+use busbar_kernel::config::{HookCfg, HookKind, PromptAccess, UserAccess, MIGRATED_STORE_MODULE};
 
 fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
@@ -635,7 +635,7 @@ fn install_catalog_remove_roundtrip() {
 
     // Catalog: the memory head + our dynamic plugin.
     let cat = svc.store_plugin_catalog();
-    assert_eq!(cat[0].name, "memory");
+    assert_eq!(cat[0].name, MIGRATED_STORE_MODULE);
     let dyn_row = cat
         .iter()
         .find(|p| p.loader == "dynamic-library")
@@ -799,7 +799,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         "the panic fallback must be exactly the one compiled-in `memory` row: {:?}",
         page.items
     );
-    assert_eq!(page.items[0].name, "memory");
+    assert_eq!(page.items[0].name, MIGRATED_STORE_MODULE);
     assert_eq!(page.items[0].loader, "compiled-in");
 }
 
@@ -1751,6 +1751,122 @@ async fn get_group_usage_unknown_group_not_found() {
     assert!(
         matches!(&err, AdminError::NotFound { what: m, .. } if m.contains("ghost")),
         "unknown group is not_found: {err:?}"
+    );
+}
+
+/// A store whose FIRST `get_usage` waits (at most five seconds) for a sibling task's word, sent
+/// once the read has started: the sibling can run while the read is in progress only if the read
+/// is on a blocking thread. Everything else is the in-memory store's.
+struct WaitsForTheRuntime {
+    inner: MemoryStore,
+    started: Arc<tokio::sync::Notify>,
+    word: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    waited: std::sync::atomic::AtomicBool,
+    heard: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl busbar_contract::records::RecordStore for WaitsForTheRuntime {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.put_key(key)
+    }
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
+        self.inner.get_key(id)
+    }
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
+        self.inner.list_keys()
+    }
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.delete_key(id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if !self.waited.swap(true, SeqCst) {
+            self.started.notify_one();
+            let word = self
+                .word
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if word.recv_timeout(std::time::Duration::from_secs(5)).is_ok() {
+                self.heard.store(true, SeqCst);
+            }
+        }
+        self.inner.get_usage(bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.put_usage(bucket_id, window_start, ledger)
+    }
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        self.inner.add_metering(delta)
+    }
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
+        self.inner.list_metering(bucket)
+    }
+}
+
+/// RED (audit core-admin #6, "a read blocks an async worker"): `GET /groups/{name}/usage` reads
+/// the store off the async worker, as every other admin usage read does. On a one-thread runtime,
+/// a sibling task gives the store's first read its word once the read has started; it can run only
+/// if the read is on a blocking thread. RED while the reads ran inline: the sibling never ran and
+/// the read waited out its bound without hearing it.
+#[tokio::test(flavor = "current_thread")]
+async fn get_group_usage_reads_the_store_off_the_async_worker() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let (tell, word) = std::sync::mpsc::channel();
+    let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let store = Arc::new(WaitsForTheRuntime {
+        inner: MemoryStore::new(),
+        started: Arc::clone(&started),
+        word: std::sync::Mutex::new(word),
+        waited: std::sync::atomic::AtomicBool::new(false),
+        heard: Arc::clone(&heard),
+    });
+    let sibling = tokio::spawn(async move {
+        started.notified().await;
+        let _ = tell.send(());
+    });
+    let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
+    let gov = Arc::new(GovState::new(store, None).unwrap());
+    let app = crate::new_test_app()
+        .group("acme", usage_group_cfg())
+        .cost(usage_cost(&groups))
+        .governance(gov)
+        .build();
+    let view = AdminService::new(app)
+        .get_group_usage("acme")
+        .await
+        .expect("usage read");
+    assert_eq!(view.buckets.len(), 3, "{:?}", view.buckets);
+    sibling.await.expect("the sibling task runs");
+    assert!(
+        heard.load(std::sync::atomic::Ordering::SeqCst),
+        "the group usage read held the async worker: no other task ran while the store read was \
+         in progress"
     );
 }
 
@@ -2810,7 +2926,6 @@ mod dated_rate_card_history {
             card: card(5.0),
             appended_at: busbar_kernel::store::now().saturating_mul(1_000),
             author: Author::Amend {
-                operator_fingerprint: "sha256:operator".to_string(),
                 reason_hash: [7u8; 32],
             },
         });
@@ -3235,7 +3350,6 @@ mod usage_as_of {
             card: card(5.0),
             appended_at: busbar_kernel::store::now().saturating_mul(1_000),
             author: Author::Amend {
-                operator_fingerprint: "sha256:operator".to_string(),
                 reason_hash: [7u8; 32],
             },
         });
@@ -3627,8 +3741,8 @@ mod one_recorded_usage_every_surface {
         //
         // These three figures are therefore pinned, not asserted-as-correct. They are what a
         // 1.5.5 customer observes today and they are recorded in the shadow oracle
-        // (`billing|group-usage|*`, `billing|key-usage|*`, `llm|*|over_budget*`). Moving one is
-        // moving a golden, which no agent may do.
+        // (`billing|group-usage|*`, `billing|key-usage|*`, the pools plane's `*|over_budget*`
+        // cells). Moving one is moving a golden, which no agent may do.
         let flat_micros = (RATE_CURRENT as i64) * (TOKENS as i64) * 2;
         assert_eq!(
             hook_micros, flat_micros,
@@ -3768,6 +3882,7 @@ mod plane_fees_on_admin_usage {
                     caller_credential_refusal: None,
                 },
                 wire_format_names: || &[],
+                provider_dialects: || &[],
                 claims: |_| Vec::new(),
                 admission: |_| None,
                 build: |_| None,
@@ -4149,7 +4264,7 @@ mod plane_fees_on_admin_usage {
         );
     }
 
-    /// A PLANE'S CLASSES ON THE USAGE ROW (new in 1.6.0, FLIP-A2A ruling): three tool calls at
+    /// A PLANE'S CLASSES ON THE USAGE ROW (new in 1.6.0, PLANE-FLIP ruling): three tool calls at
     /// `tool_calls` 7 and the plane's fee 3 — the row and the total each carry `classes.tool_calls`
     /// with its count 3 and its cost 21, the share of the row's 30 the class is (the fee is the
     /// rest), never a second pricing added on top.

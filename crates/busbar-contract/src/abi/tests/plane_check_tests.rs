@@ -16,7 +16,9 @@ use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
 use crate::abi::mechanism::call::{AbiStr, Blob, MAX_TEXT};
 use crate::abi::mechanism::check::{check_needs, fault};
-use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::abi::mechanism::door::{
+    Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
+};
 use crate::abi::plane::*;
 use crate::caps::ReasonCode;
 
@@ -1054,6 +1056,56 @@ fn a_snapshot_from_before_listed_is_read_and_its_list_is_judged() {
     );
 }
 
+/// THE ARRIVAL SPANS (status row 173): a snapshot published before they were appended states the
+/// size its fields end at and opens none; a list is none or one per claim, never counted over NULL,
+/// and each name is empty (that claim opens none) or at most `MAX_ARRIVAL_SPAN` bytes.
+#[test]
+fn a_snapshots_arrival_spans_are_none_or_one_per_claim() {
+    use crate::abi::plane::check::check_arrival_spans;
+    use crate::abi::plane::MAX_ARRIVAL_SPAN;
+    let mut sn = snapshot();
+    sn.size = std::mem::offset_of!(PlaneSnapshot, arrival_spans) as u32;
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        Ok(()),
+        "the pre-append size is accepted"
+    );
+    let claims = [
+        claim("POST", "/a", CLAIM_EXACT),
+        claim("POST", "/b", CLAIM_EXACT),
+    ];
+    let mut sn = snapshot();
+    sn.claims = claims.as_ptr();
+    sn.claims_len = 2;
+    let one = [s("arrival")];
+    sn.arrival_spans = one.as_ptr();
+    sn.arrival_spans_len = 1;
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        f(Rule::Contradiction, "snapshot.arrival_spans"),
+        "RED: a list that is not one per claim"
+    );
+    let two = [s("arrival"), s("")];
+    sn.arrival_spans = two.as_ptr();
+    sn.arrival_spans_len = 2;
+    assert_eq!(check_snapshot(&sn, 7), Ok(()));
+    sn.arrival_spans = std::ptr::null();
+    assert_eq!(
+        check_snapshot(&sn, 7),
+        f(Rule::NullWithCount, "snapshot.arrival_spans")
+    );
+    assert_eq!(check_arrival_spans(&[s("arrival"), s("")]), Ok(()));
+    let long = "x".repeat(MAX_ARRIVAL_SPAN + 1);
+    let long = crate::abi::mechanism::call::AbiStr {
+        ptr: long.as_ptr(),
+        len: long.len(),
+    };
+    assert_eq!(
+        check_arrival_spans(&[long]),
+        f(Rule::OverMax, "snapshot.arrival_spans")
+    );
+}
+
 fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
     Claim {
         verb: s(verb),
@@ -1069,8 +1121,14 @@ fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
 fn a_claim_states_only_known_flags() {
     let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
     assert_eq!(check_claims(&[open_exact], 1), Ok(()));
-    // RED: a bit none of CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN.
-    let unknown = claim("V", "/t", CLAIM_PATTERN << 1);
+    // A catalog route is a known flag (ARCHITECT ruling 2026-10-16, 3b C).
+    let catalog = claim("V", "/t", CLAIM_EXACT | CLAIM_CATALOG);
+    assert_eq!(check_claims(&[catalog], 1), Ok(()));
+    // A signed-ingress path is a known flag (ARCHITECT ruling 2026-10-16, 3b A).
+    let signed = claim("V", "/t", CLAIM_EXACT | CLAIM_SIGNED_INGRESS);
+    assert_eq!(check_claims(&[signed], 1), Ok(()));
+    // RED: a bit none of the known claim bits.
+    let unknown = claim("V", "/t", CLAIM_RAW_AFFIX << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
@@ -1195,6 +1253,82 @@ fn a_pattern_claims_one_level_only() {
     assert!(!crate::grammar::pattern_matches(p, "/v1/tasks"));
 }
 
+/// THE MULTI-SEGMENT PLACEHOLDER (ARCHITECT ruling 2026-10-16, 3b A): `{name+}` takes one or more
+/// segments, so `/model/{id+}/converse` matches an identifier carrying a raw `/` (an unencoded
+/// inference-profile ARN) and an encoded one alike, the previous release's prefix-and-suffix rule;
+/// it never matches nothing, and a sibling suffix is a different path.
+#[test]
+fn a_plus_placeholder_spans_one_or_more_segments() {
+    let Ok(crate::grammar::Selector::PathPattern(p)) =
+        claim_selector("/model/{id+}/converse", CLAIM_PATTERN, kept)
+    else {
+        panic!("a pattern claim reads as a segment pattern");
+    };
+    assert_eq!(
+        p,
+        &[
+            PathSeg::Lit("model"),
+            PathSeg::Plus,
+            PathSeg::Lit("converse")
+        ]
+    );
+    let arn = "/model/arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.m-v1:0/converse";
+    let encoded =
+        "/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Ainference-profile%2Fus.m-v1%3A0/converse";
+    for path in ["/model/m/converse", arn, encoded, "/model/a/b/c/converse"] {
+        assert!(crate::grammar::pattern_matches(p, path), "{path}");
+    }
+    for path in [
+        "/model/converse",
+        "/model//converse",
+        "/model/m/converse-stream",
+        "/model/m/invoke",
+        "/model/m/converse/x",
+    ] {
+        assert!(!crate::grammar::pattern_matches(p, path), "{path}");
+    }
+}
+
+/// RED: a pattern names at most one `{name+}` (two cannot be split deterministically), and the
+/// placeholder's name is a name.
+#[test]
+fn a_pattern_with_two_plus_placeholders_is_refused_at_registration() {
+    assert_eq!(
+        check_claim_target("/a/{x+}/b/{y+}", CLAIM_PATTERN),
+        f(Rule::Contradiction, "claim.pattern.spans")
+    );
+    assert_eq!(
+        check_claim_target("/a/{+}/b", CLAIM_PATTERN),
+        f(Rule::Contradiction, "claim.pattern")
+    );
+    assert_eq!(check_claim_target("/a/{x+}/b/{y}", CLAIM_PATTERN), Ok(()));
+}
+
+/// Two patterns that differ only after a `{name+}` are disjoint, so the two signed bedrock claims
+/// seal side by side at one precedence; a `{name+}` beside a one-segment variable over the same
+/// suffix overlaps.
+#[test]
+fn plus_patterns_overlap_exactly() {
+    use crate::grammar::Selector;
+    let a = Selector::PathPattern(&[
+        PathSeg::Lit("model"),
+        PathSeg::Plus,
+        PathSeg::Lit("converse"),
+    ]);
+    let b = Selector::PathPattern(&[
+        PathSeg::Lit("model"),
+        PathSeg::Plus,
+        PathSeg::Lit("converse-stream"),
+    ]);
+    let c = Selector::PathPattern(&[
+        PathSeg::Lit("model"),
+        PathSeg::Var,
+        PathSeg::Lit("converse"),
+    ]);
+    assert!(!a.overlaps(&b));
+    assert!(a.overlaps(&c));
+}
+
 #[test]
 fn every_snapshot_claim_and_route_is_named() {
     let c = claim("V", "/t", 0);
@@ -1285,11 +1419,32 @@ fn exactly_one_section_is_the_declaring_one() {
     assert_eq!(check_sections(&[unnamed]), f(Rule::Missing, "section.name"));
 }
 
+/// A plane's section may select it without being its verb (`SECTION_SELECTS`, Law 7), never as
+/// well as being its verb. RED: before the bit was known, the selecting section was an unknown code.
+#[test]
+fn a_selecting_section_is_not_the_declaring_one() {
+    assert_eq!(
+        check_sections(&[
+            section(SECTION_DECLARING),
+            section(SECTION_CONSUMED | SECTION_REQUIRED | SECTION_SELECTS),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        check_sections(&[section(SECTION_DECLARING | SECTION_SELECTS)]),
+        f(Rule::Contradiction, "section.flags")
+    );
+    assert_eq!(
+        check_sections(&[section(SECTION_SELECTS)]),
+        f(Rule::NotExactlyOne, "section.declaring")
+    );
+}
+
 #[test]
 fn dialect_auth_names_a_dialect_and_a_style() {
     let d = DialectAuth {
         dialect: 0,
-        _reserved: 0,
+        flags: 0,
         style: s("st"),
         params: Blob::ABSENT,
     };
@@ -1324,6 +1479,27 @@ fn dialect_auth_names_a_dialect_and_a_style() {
     assert_eq!(
         check_dialect_auth(&[dangling], 1),
         f(Rule::NullWithCount, "dialect_auth.params")
+    );
+}
+
+/// THE PER-DIALECT FLAGS (ARCHITECT ruling 2026-10-16, item 3): a line states whether a provider may
+/// name its dialect; the word was padding, so `0` (a line that predates it) states no. RED arm: a
+/// bit past the known one refuses the load.
+#[test]
+fn dialect_auth_flags_are_provider_and_nothing_else() {
+    let mut d = DialectAuth {
+        dialect: 0,
+        flags: 0,
+        style: s("st"),
+        params: Blob::ABSENT,
+    };
+    assert_eq!(check_dialect_auth(&[d], 1), Ok(()));
+    d.flags = DIALECT_PROVIDER;
+    assert_eq!(check_dialect_auth(&[d], 1), Ok(()));
+    d.flags = DIALECT_PROVIDER << 1;
+    assert_eq!(
+        check_dialect_auth(&[d], 1),
+        f(Rule::UnknownCode, "dialect_auth.flags")
     );
 }
 
@@ -2352,6 +2528,22 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
         RefusalCode::CredentialUnavailable,
         "credential_unavailable",
     ),
+    // The kernel's own refusals, rendered by the owning plane (ARCHITECT ruling 2026-10-16, 3b B).
+    (44, RefusalCode::MethodNotAllowed, "method_not_allowed"),
+    (45, RefusalCode::Internal, "internal"),
+    // The walk's exhaustion with nothing sent: kernel-to-plane piece reasons alone.
+    (46, RefusalCode::UnsentNoAttempt, "unsent_no_attempt"),
+    (47, RefusalCode::UnsentNoRoute, "unsent_no_route"),
+    (48, RefusalCode::UnsentNeedUnbound, "unsent_need_unbound"),
+    (
+        49,
+        RefusalCode::UnsentTargetNotPath,
+        "unsent_target_not_path",
+    ),
+    (50, RefusalCode::UnsentFieldName, "unsent_field_name"),
+    (51, RefusalCode::UnsentUnrecorded, "unsent_unrecorded"),
+    (52, RefusalCode::UnsentAuthFailed, "unsent_auth_failed"),
+    (53, RefusalCode::UnsentOpenRefused, "unsent_open_refused"),
 ];
 
 #[test]
@@ -2373,6 +2565,18 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
             assert_eq!(reason_of(*number), None, "{word}: no plane carries it");
             continue;
         }
+        if code.unsent() {
+            // The walk's exhaustion with nothing sent: the kernel's piece reason, never a reason a
+            // plane states, and the one family `nothing_sent` reads beside the credential's.
+            assert_eq!(reason_of(*number), None, "{word}: no plane states it");
+            assert!(nothing_sent(*number), "{word}: nothing left");
+            continue;
+        }
+        assert_eq!(
+            nothing_sent(*number),
+            *code == RefusalCode::CredentialUnavailable,
+            "{word}: only the credential's refusal and the unsent codes say nothing left"
+        );
         let reason = reason_of(*number).expect("a pinned code names a reason");
         assert_eq!(reason.as_str(), *word, "code {number}");
         assert_eq!(reason_code(reason), *number);
@@ -3376,5 +3580,30 @@ fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
     assert!(
         !raw_affix_matches("/model/converse", "/model/converse"),
         "not a raw affix"
+    );
+}
+
+/// THE SIGNED FLAG RIDES A RAW AFFIX ALONE (ARCHITECT ruling 2026-10-17): a signed path is matched
+/// against the raw path as the previous release matched it, so the flag on an exact, pattern or
+/// prefix claim is refused at bind, and a raw affix, which mounts no route, lists no catalog.
+#[test]
+fn a_signed_claim_is_a_raw_affix_and_a_raw_affix_is_no_catalog() {
+    let signed = CLAIM_RAW_AFFIX | CLAIM_SIGNED_INGRESS;
+    assert_eq!(check_claim_target("/door/*/sign", signed), Ok(()));
+    // RED: the flag beside every other path form.
+    for (target, form) in [
+        ("/door/x/sign", CLAIM_EXACT),
+        ("/door/{id+}/sign", CLAIM_PATTERN),
+        ("/door", 0),
+    ] {
+        assert_eq!(
+            check_claim_target(target, form | CLAIM_SIGNED_INGRESS),
+            f(Rule::Contradiction, "claim.flags"),
+            "{target}"
+        );
+    }
+    assert_eq!(
+        check_claim_target("/door/*/sign", CLAIM_RAW_AFFIX | CLAIM_CATALOG),
+        f(Rule::Contradiction, "claim.flags")
     );
 }

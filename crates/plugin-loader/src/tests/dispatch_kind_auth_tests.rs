@@ -978,13 +978,13 @@ fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
         };
         <Auth as Kind>::context(&st).map(|c| <Auth as Kind>::credential_kinds(c.as_deref()))
     };
-    const SIGV4: &[AbiStr] = &[abi_str("sigv4")];
+    const SIGNED: &[AbiStr] = &[abi_str("signed")];
     const BLANK: &[AbiStr] = &[abi_str("")];
     let host = size_of::<AuthTail>();
     let reads = FACT_READS_CREDENTIALS;
     assert_eq!(
-        bind(host, CAP_INBOUND, reads, SIGV4),
-        Ok(vec!["sigv4".to_string()])
+        bind(host, CAP_INBOUND, reads, SIGNED),
+        Ok(vec!["signed".to_string()])
     );
     assert_eq!(bind(host, CAP_INBOUND, 0, &[]), Ok(vec![]));
     assert!(
@@ -992,7 +992,7 @@ fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
         "the fact without kinds"
     );
     assert!(
-        bind(host, CAP_INBOUND, 0, SIGV4).is_err(),
+        bind(host, CAP_INBOUND, 0, SIGNED).is_err(),
         "kinds without the fact"
     );
     assert!(
@@ -1000,11 +1000,11 @@ fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
         "a blank kind"
     );
     assert!(
-        bind(host, CAP_OUTBOUND, reads, SIGV4).is_err(),
+        bind(host, CAP_OUTBOUND, reads, SIGNED).is_err(),
         "a reader that does not verify"
     );
     assert_eq!(
-        bind(host - 16, CAP_INBOUND, 0, SIGV4),
+        bind(host - 16, CAP_INBOUND, 0, SIGNED),
         Ok(vec![]),
         "a 56-byte tail reads no kinds; its appended list is never read"
     );

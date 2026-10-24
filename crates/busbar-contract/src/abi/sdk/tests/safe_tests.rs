@@ -61,6 +61,9 @@ const OPEN_INSTALLS_NOTHING: usize = 5;
 const OPEN_DROP_PANICS: usize = 6;
 /// `close` with these `in.flags` answers FAILED.
 const CLOSE_FAILS: u32 = 7;
+/// `close` with these `in.flags` answers READY naming a reason leased from the state's own table
+/// (memory the box that goes at this `close` owns).
+const CLOSE_LEASES_ERROR: u32 = 8;
 /// `drive` with these `in.flags` answers FAILED with a reason leased from a table the body made
 /// for itself.
 const DRIVE_LOCAL_LEASE: u32 = 0x100;
@@ -164,10 +167,14 @@ mod plugin {
     safe_slot!(Release, Probe, ReleaseIn, OutHead, |_i, _input, _o| {
         Outcome::Ready
     });
-    safe_slot!(Close, Probe, InHead, OutHead, |_i, input, _o| {
+    safe_slot!(Close, Probe, InHead, OutHead, |i, input, o| {
         if input.flags == CLOSE_FAILS {
             Outcome::Failed
         } else {
+            if input.flags == CLOSE_LEASES_ERROR {
+                let p = i.get().expect("open installed a probe");
+                o.lease_str(|o| &o.error, &p.leases, "closing".to_string());
+            }
             Outcome::Ready
         }
     });
@@ -263,10 +270,16 @@ fn tick(instance: *mut c_void) -> (Outcome, u64) {
 }
 
 fn close(instance: *mut c_void, flags: u32) -> Outcome {
+    close_out(instance, flags).0
+}
+
+/// `close` with `flags`: its outcome and the `out` the host reads after it.
+fn close_out(instance: *mut c_void, flags: u32) -> (Outcome, OutHead) {
     let mut input = in_head::<InHead>(slot::CLOSE);
     input.flags = flags;
     let mut out = out_head::<OutHead>();
-    call(table().head.close, instance, &input, &mut out)
+    let o = call(table().head.close, instance, &input, &mut out);
+    (o, out)
 }
 
 #[test]
@@ -394,4 +407,68 @@ fn red_an_answer_leased_from_a_table_the_body_dropped_is_fault() {
     // The GREEN twin: leased from the instance's table, the answer stands.
     assert_eq!(drive(inst, DRIVE_STATE_LEASE), Outcome::Failed);
     assert_eq!(close(inst, 0), Outcome::Ready);
+}
+
+/// THE REQUEST PATH TAKES NO SHARED LOCK WHEN NOTHING IS PARKED (THE DESIGN, the plugin ABI: "no allocation
+/// and no blocking on the hot path"). Every worker on an instance enters through the same `Head`;
+/// an entry on an instance with nothing parked must not touch the parked table's mutex, so it
+/// cannot wait on another worker holding it.
+#[test]
+fn an_entry_with_nothing_parked_takes_no_parked_lock() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    // SAFETY: the instance the SDK minted above, alive until the `close` below.
+    let h = unsafe { super::head(inst) }.expect("an open instance has a head");
+    let held = h.parked();
+    let at = inst as usize;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = tx.send(tick(at as *mut c_void));
+    });
+    let answered = rx.recv_timeout(std::time::Duration::from_secs(5));
+    drop(held);
+    worker.join().expect("the worker returns");
+    assert_eq!(
+        answered.ok(),
+        Some((Outcome::Ready, 42)),
+        "an entry with nothing parked waited on the parked table's lock"
+    );
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}
+
+/// A CROSSING ALLOCATES NOTHING, ITS PER-CALL LOG SCOPE INCLUDED (THE DESIGN, the plugin ABI: "no
+/// allocation and no blocking on the hot path"; the per-call scoped capture is kept). The
+/// thread's capture dispatcher is built once, on the worker's first crossing; every later crossing
+/// scopes the body under it with a reference-count clone and a thread-local swap, and allocates
+/// nothing.
+#[test]
+fn a_crossing_with_its_scoped_capture_allocates_nothing() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    // The worker's first crossings build its capture slot.
+    assert_eq!(tick(inst), (Outcome::Ready, 42));
+    assert_eq!(tick(inst), (Outcome::Ready, 42));
+    crate::alloc_counter::reset();
+    let answered = tick(inst);
+    let allocations = crate::alloc_counter::allocations();
+    assert_eq!(answered, (Outcome::Ready, 42));
+    assert_eq!(allocations, 0, "a warm crossing allocated");
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}
+
+#[test]
+fn red_a_ready_close_names_no_memory_its_freed_state_owned() {
+    // RED before the fix: the reason `close` leased from the state's table named the box the
+    // trampoline then freed, and the host read freed memory. The `out` the host reads now names
+    // none of it: its error is absent, the state gone, the answer READY.
+    let (o, instance, drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    let (closed, out) = close_out(instance, CLOSE_LEASES_ERROR);
+    assert_eq!(closed, Outcome::Ready);
+    assert_eq!(drops.load(Ordering::SeqCst), 1, "the state is gone");
+    assert!(
+        out.error.ptr.is_null() && out.error.len == 0,
+        "no reason names the freed box"
+    );
+    assert!(out.extensions.ptr.is_null(), "nor does any payload");
 }

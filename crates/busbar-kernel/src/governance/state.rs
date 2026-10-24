@@ -115,6 +115,14 @@ impl GovState {
             denylist,
             busbar_kernel::store::now(),
         );
+        // THE PER-BOOT CALLER-REFERENCE KEY (row 159 H2 residual, ARCHITECT ruling): the key a
+        // verified principal's reference is derived under when the node has neither signing
+        // material nor a signing audit chain to bind a deployment keyset from. Random per process,
+        // zeroised on drop, never logged. Session ownership without a durable key does not survive
+        // a restart anyway, so a per-boot key is the honest one.
+        let mut boot_caller_ref = zeroize::Zeroizing::new([0u8; 32]);
+        getrandom::fill(boot_caller_ref.as_mut_slice())
+            .expect("OS randomness for the per-boot caller-reference key");
         Ok(Self {
             store,
             caches: RwLock::new(GovCaches {
@@ -130,16 +138,19 @@ impl GovState {
             budget: Sharded::new(),
             pending_metering: PendingMetering::new(),
             money_view: money_view::MoneyView::default(),
-            caller_refs: Arc::new(RwLock::new(
-                signer
-                    .as_ref()
-                    .map(|s| Arc::new(crate::auth::CallerRefKey::derive(&s.secret_bytes()))),
-            )),
+            caller_refs: Arc::new(RwLock::new(Some(Arc::new(match signer.as_ref() {
+                Some(s) => crate::auth::CallerRefKey::derive(&s.secret_bytes()),
+                None => crate::auth::CallerRefKey::derive(&boot_caller_ref[..]),
+            })))),
             deployment_caller_ref: RwLock::new(None),
+            boot_caller_ref,
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
             self_mint_lock: std::sync::Mutex::new(()),
+            self_mint_holds: std::sync::atomic::AtomicBool::new(
+                SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
+            ),
             store_calls: std::sync::OnceLock::new(),
         })
     }
@@ -418,8 +429,8 @@ impl GovState {
     /// (`crate::auth::CallerRefKey`, HKDF label `busbar caller-ref v1`): derived from this node's
     /// token-signing material, else from the DEPLOYMENT KEYSET the book binds
     /// ([`Self::bind_deployment_caller_ref`]; row 159 H2). Either way the same principal has the same
-    /// reference on every node of the deployment and across restarts, and a verified principal is
-    /// never lent an empty one. `None` before either is bound.
+    /// reference on every node of the deployment and across restarts. A node with neither derives
+    /// it from its per-boot random key, so a verified principal is never lent an empty one.
     #[must_use]
     pub fn caller_ref_key(&self) -> Option<Arc<crate::auth::CallerRefKey>> {
         self.caller_refs
@@ -447,17 +458,20 @@ impl GovState {
     }
 
     /// Re-derive [`Self::caller_ref_key`]: the signing material when the node has one, else the
-    /// deployment keyset's material, else none.
+    /// deployment keyset's material, else this boot's random key. Never none.
     fn refresh_caller_refs(&self) {
         let key = match self.signing_material() {
-            Some(m) => Some(crate::auth::CallerRefKey::derive(&m.signer.secret_bytes())),
-            None => self
+            Some(m) => crate::auth::CallerRefKey::derive(&m.signer.secret_bytes()),
+            None => match *self
                 .deployment_caller_ref
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
-                .map(|m| crate::auth::CallerRefKey::derive(&m)),
+            {
+                Some(m) => crate::auth::CallerRefKey::derive(&m),
+                None => crate::auth::CallerRefKey::derive(&self.boot_caller_ref[..]),
+            },
         };
-        *self.caller_refs.write().unwrap_or_else(|e| e.into_inner()) = key.map(Arc::new);
+        *self.caller_refs.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(key));
     }
 
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.
@@ -750,6 +764,32 @@ impl GovState {
         add: MeterCounts,
         now: u64,
     ) {
+        self.record_metered_request_dated(
+            key_id,
+            model,
+            provider,
+            add,
+            now,
+            &crate::store::now_ms,
+            &crate::rate_apply::effective_from_at,
+        );
+    }
+
+    /// [`Self::record_metered_request`] with the price-instant clock and the rate dater passed in,
+    /// so a test drives the dating behaviourally against a dater double rather than the
+    /// process-wide `OnceLock` holder. The production path passes the wall clock in milliseconds
+    /// and the installed holder.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_metered_request_dated(
+        &self,
+        key_id: &str,
+        model: &str,
+        provider: &str,
+        add: MeterCounts,
+        now: u64,
+        clock_ms: &dyn Fn() -> u64,
+        dater: &dyn Fn(u64) -> u64,
+    ) {
         // THE CELL'S PRICE INSTANT (DECISION #79): when the card this response was served under
         // STARTED, not which card it is. A build with no root ledger in it answers zero, the
         // opening entry's own `effective_from`, so the cell still dates to a card that covers it
@@ -764,7 +804,7 @@ impl GovState {
         // two card publishes and still resolving to the first. Two clocks of different resolution
         // cannot order two events inside one tick of the coarser one, so the accrual reads the
         // finer one, which is the one the thing it is being compared against was written on.
-        let priced_from_ms = crate::rate_apply::effective_from_at(crate::store::now_ms());
+        let priced_from_ms = dater(clock_ms());
         let key: MeterKey = (
             key_id.to_string(),
             metering_bucket(now),

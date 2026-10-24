@@ -57,8 +57,6 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 /// providers/models are required in YAML).
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
-        tools: Default::default(),
-        agents: Default::default(),
         declared: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
         // Left at its type default (unset).
@@ -599,7 +597,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
 /// NEVER panic the process, and it must never silently default/skip the section (DECISIONS #42: an
 /// unknown is refused, never defaulted).
 ///
-/// RED before the fix: `PoolsCfg::deserialize` → `plane::config::split_section_for_plane` called
+/// RED before the fix: `PoolsCfg::deserialize` → `config::plane_sections::split_section_for_plane` called
 /// `super::plane_decl(fallback_key())` — the PANICKING lookup — with `fallback_key()`'s own
 /// documented, honest empty-string answer for "no fallback plane registered", so this exact
 /// scenario (a build with a registered plane count of zero) crashed the process instead of
@@ -1477,10 +1475,10 @@ fn error_class<'a>(p: &'a ResolvedProvider, code: &str) -> Option<&'a str> {
 
 // THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
 // `crates/busbar/tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
-// `busbar_llm::PLANE_HOOKS.resolve_provider` hook, which only type-checks against core's OWN
+// the retired engine crate's `PLANE_HOOKS.resolve_provider` hook, which only type-checks against core's OWN
 // `ProviderDef`/`ProviderDeploy` when there is ONE `busbar_kernel` in the graph (an integration-test
 // target), not the two copies busbar-kernel's own `#[cfg(test)]` dev-dependency back-edge onto
-// busbar-llm produces. See that file's header for the full rationale.
+// the retired engine crate produces. See that file's header for the full rationale.
 
 /// A provider credential is a SECRET REFERENCE, never an inline literal. A plain-string
 /// `api_key:` (the pre-1.0 inline-key shape) is REJECTED AT PARSE (SecretRef deserializes only
@@ -1656,7 +1654,7 @@ fn test_on_exhausted_rejects_unknown_and_legacy_string_form() {
     assert!(serde_yaml::from_str::<OnExhaustedCfg>("fallback_pols: x").is_err());
 }
 
-/// F25 row 518: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::
+/// F25 row 518: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::
 /// test_config_parsing_queue_unknown_inner_key_fails. `deny_unknown_fields` on the queue's inner
 /// body: a typo'd `max_millis` fails parsing instead of being ignored, while the same body spelled
 /// `max_ms` parses to the 250 ms queue.
@@ -1674,7 +1672,7 @@ fn test_config_parsing_queue_unknown_inner_key_fails() {
     assert_eq!(ok.to_runtime(), OnExhausted::Queue { max_ms: 250 });
 }
 
-/// F25 row 36: rehomed from crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::
+/// F25 row 36: rehomed from the retired engine crate's src/engine/engine_tests/stream_deadline_tests.rs::
 /// the_total_deadline_the_stream_rides_defaults_to_five_minutes. The total deadline a proxied
 /// stream rides defaults to the value the binding names: 300 seconds.
 #[test]
@@ -1712,7 +1710,6 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
     std::env::set_var("BUSBAR_T_DEBUG_SECRET", "SECRET-resolved-value-zzz");
     let auth = crate::config::AuthDeployCfg {
         signing_key: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
-        operator_pub: None,
         chain: vec![KEYS_MODULE.to_string()],
         admin_auth: vec![crate::config::operator_provider().to_string()],
         role_bindings: RoleBindings::new(),
@@ -1817,7 +1814,10 @@ models:
         DEFAULT_MAX_HONORED_RETRY_AFTER_SECS
     );
     assert_eq!(l.default_max_tokens, DEFAULT_DEFAULT_MAX_TOKENS);
-    assert_eq!(l.default_max_tokens, crate::proto::DEFAULT_MAX_TOKENS);
+    assert_eq!(
+        l.default_max_tokens,
+        crate::config::limits::DEFAULT_MAX_TOKENS
+    );
     // The webhook sink's in-flight bound and delivery deadline are its own settings, checked by the
     // sink (`busbar-export-webhook`), never projected onto `LimitsResolved`.
     assert_eq!(l.key_gauge_limit, DEFAULT_KEY_GAUGE_LIMIT);
@@ -3594,7 +3594,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
 
 // ══ THE FAILOVER POOLS' CROSS-REFERENCES ═════════════════════════════════════════════════════════
 //
-// `tool_pools:`/`agent_pools:` are OPT-IN, so the first thing checked is that saying nothing changes
+// A plane's pools (`<section>.pools`) are OPT-IN, so the first thing checked is that saying nothing changes
 // nothing; the rest is the one shared check refusing what an operator cannot have meant.
 
 /// THE DEFAULT IS UNCHANGED. A config that says nothing about failover resolves exactly as it always
@@ -3604,12 +3604,8 @@ fn failover_pools_are_absent_by_default() {
     let deploy = base_deploy();
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert!(
-        cfg.tool_pools.is_empty(),
-        "no tool-plane failover unless asked for"
-    );
-    assert!(
-        cfg.agent_pools.is_empty(),
-        "no agent-plane failover unless asked for"
+        cfg.plane_pools.is_empty(),
+        "no plane failover unless asked for"
     );
 }
 
@@ -3629,22 +3625,23 @@ fn failover_pools_are_absent_by_default() {
 /// turned into the answer, and a default that drifted here would be invisible there.
 #[test]
 fn nothing_is_repeatable_unless_the_operator_names_it() {
-    let pool = crate::failover::CandidatePoolCfg {
+    let pool = crate::config::pools::CandidatePoolCfg {
         members: vec!["a".into(), "b".into()],
         repeatable: vec!["search_code".into()],
+        breaker: None,
     };
     assert_eq!(
         pool.repeatability("search_code"),
-        crate::failover::Repeatable::Yes
+        crate::config::pools::Repeatable::Yes
     );
     assert_eq!(
         pool.repeatability("send_email"),
-        crate::failover::Repeatable::No,
+        crate::config::pools::Repeatable::No,
         "an operation nobody spoke about is NEVER repeated"
     );
     assert_eq!(
-        crate::failover::CandidatePoolCfg::default().repeatability("search_code"),
-        crate::failover::Repeatable::No,
+        crate::config::pools::CandidatePoolCfg::default().repeatability("search_code"),
+        crate::config::pools::Repeatable::No,
         "and an empty declaration repeats nothing at all"
     );
 }
@@ -3812,7 +3809,7 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
 const NEUTRAL_SECTION: &str = "neutral_section";
 
 /// A NEUTRAL plane that DECLARES AND OWNS a singular section of its own ([`NEUTRAL_SECTION`]) — the
-/// map carrier `plane::config::DeclaredSections` holds it — all hooks stubbed, so the
+/// map carrier `config::plane_sections::DeclaredSections` holds it — all hooks stubbed, so the
 /// pre-pass, which lifts only the sections a REGISTERED plane declares, lifts it. With no
 /// `parse_section` hook the value is captured raw.
 static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
@@ -4067,9 +4064,9 @@ static PLANE_SAW: std::sync::Mutex<Vec<serde_yaml::Value>> = std::sync::Mutex::n
 
 fn record_plane_section(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
+) -> Result<Box<dyn busbar_kernel::config::plane_sections::PlaneCfg>, String> {
     PLANE_SAW.lock().unwrap().push(v.clone());
-    Ok(Box::<crate::plane::config::RawPlaneSection>::default())
+    Ok(Box::<crate::config::plane_sections::RawPlaneSection>::default())
 }
 
 /// A stub plane owning the registry section a card is authored in, whose `parse_section` records
@@ -4096,6 +4093,7 @@ static CARD_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::P
         caller_credential_refusal: None,
     },
     wire_format_names: || &[],
+    provider_dialects: || &[],
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
@@ -4332,6 +4330,7 @@ const fn requiring_plane(required: &'static [&'static str]) -> crate::plane::reg
             caller_credential_refusal: None,
         },
         wire_format_names: || &[],
+        provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,
@@ -4503,7 +4502,7 @@ fn the_provider_tenant_merges_deployment_over_catalog() {
     // The tenant keys are the plane's: they ride the resolved entry's table (#957), read as the
     // legacy lane carrier reads them.
     let tenant = |def: &ProviderDef, deploy: &ProviderDeploy| {
-        crate::plane_host::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
+        crate::plane_driver::route_input::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
     };
     assert_eq!(tenant(&def, &deploy).organization, None);
     def.organization = Some("org-catalog".to_string());
@@ -4554,4 +4553,18 @@ fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
     )
     .expect("the plane's own section alone parses");
     assert!(!bare.plane_raw.contains_key("beside_owned"));
+}
+
+/// An `on_exhausted` mapping naming BOTH `fallback_pool` and `queue` is refused with an "exactly
+/// one of" error, never force-fit to one of them. Rehomes
+/// the retired engine crate's `src/engine/tests/on_exhausted_tests.rs::test_config_parsing_both_fallback_and_queue_conflicts`.
+#[test]
+fn an_on_exhausted_naming_both_a_fallback_and_a_queue_is_refused() {
+    let err =
+        serde_yaml::from_str::<OnExhaustedCfg>("{ fallback_pool: cold, queue: { max_ms: 250 } }")
+            .expect_err("both keys present is an error");
+    assert!(
+        err.to_string().contains("exactly one of"),
+        "must reject both fallback_pool and queue; got: {err}"
+    );
 }

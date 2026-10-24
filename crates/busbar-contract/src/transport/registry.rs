@@ -75,9 +75,10 @@ pub mod facts {
 /// A transport in one of these names the constant, in `TransportMeta::STATUS_NAMESPACE`. A transport
 /// with a numbering of its own names it whatever it likes, and none of this applies.
 pub mod status_ns {
-    /// HTTP's status codes, as the `http` (and SSE-over-HTTP) transports read them off a response.
+    /// The status-line numbering: three-digit codes, as the request-response transports (and the
+    /// event streams composed over them) read them off a response.
     pub const HTTP: &str = "http";
-    /// `grpc-status`, as the gRPC transport reads it off an answer's trailer.
+    /// The trailer numbering, as a call-per-path transport reads it off an answer's trailer.
     pub const GRPC: &str = "grpc";
 
     /// Every reserved numbering, for the readers that walk them.
@@ -93,9 +94,9 @@ pub mod status_ns {
 /// The deployment's settings every transport is built from — the operator's `limits:` knobs a wire
 /// holds itself to, resolved once by the composition root and handed to each transport's build.
 ///
-/// A shape of the contract because the root that resolves it and the transports that read it may
-/// not name each other: each transport's linked entry takes it at `build`, and none of them reads
-/// a `Default` the served door does not. The body cap is the SAME number the door's inbound limit is
+/// A shape of the contract because the root that resolves it and the host wire that reads it sit in
+/// different crates: the root's host-wire build takes it, and no transport plugin reads it — a
+/// transport's knobs reach it as the settings its door declares. The body cap is the SAME number the door's inbound limit is
 /// built from, on either side of an exchange; the request timeout is the operator's own
 /// `limits.upstream_request_timeout_secs`.
 #[derive(Clone, Copy, Debug)]

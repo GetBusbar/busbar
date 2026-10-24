@@ -290,18 +290,21 @@ pub struct Declares {
     /// the plugin's host ops name the key, never a path.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub destinations: Vec<String>,
+    /// How many archives the host's disk lane keeps when it rolls a declared destination over
+    /// (THE DESIGN: `disk.append` rotation is declared per destination, `{path_key,
+    /// rotate_size_key, keep}`), keyed by the destination's settings key; the host turns it into
+    /// its rotation ([`busbar_contract::services::DiskRotate::declared`]). `0`: no archive — a due
+    /// file is truncated in place, 1.5.5's request-log rollover. A destination not named here takes
+    /// [`busbar_contract::services::DISK_ROTATE_UNDECLARED`]. Left off the wire when empty, so every
+    /// manifest packed before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keep: BTreeMap<String, u32>,
     /// The EGRESS POLICY the host applies to every request the plugin asks it to admit or carry
     /// (K9e-2, export ABI minor 10) — see [`EgressPolicy`]. Granted to a first-party plugin only
     /// when it is not the default; the default is left off the wire, so every manifest packed
     /// before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "EgressPolicy::is_default")]
     pub egress: EgressPolicy,
-    /// SUPERSEDED contract-ABI range (THE DESIGN §2 table, §11.2: a kind has one ABI version, the
-    /// manifest's `abi_version`, and that is the only version fact admission reads). Still PARSED
-    /// and carried, so a tarball signed while the range existed keeps its canonical bytes and its
-    /// signature; [`validate_abi`] no longer reads it, and nothing newly packed states it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub contract_abi: Option<ContractAbiRange>,
     /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
     /// failure that does not trip them — see [`BreakerDecl`]. Absent, the host's default posture
     /// holds; left off the wire when absent, so every manifest packed before the field existed
@@ -315,6 +318,30 @@ pub struct Declares {
     /// false, so every manifest packed before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub disk: bool,
+    /// THE HOOK FACTS a `kind: hook` plugin states about itself (ARCHITECT ruling, status row 194,
+    /// BUSBAR-1.6.0.md l.246: `declares` carries structured answers): see [`HookDecl`]. Absent, the
+    /// hook is judged and served as every hook before the field existed (it may order); left off
+    /// the wire when absent, so every manifest packed before the field existed keeps its canonical
+    /// bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hook: Option<HookDecl>,
+}
+
+/// A hook's declared FACTS (`declares.hook`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookDecl {
+    /// Whether the hook's `decide` ever answers an order (PREFER). `false`: it always abstains, the
+    /// conformance suite judges it on abstain-only and fails it if it orders, and the loader refuses
+    /// an order it answers at run. Absent, `true`.
+    #[serde(default = "HookDecl::orders_by_default")]
+    pub orders: bool,
+}
+
+impl HookDecl {
+    const fn orders_by_default() -> bool {
+        true
+    }
 }
 
 /// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
@@ -326,15 +353,6 @@ pub struct BreakerDecl {
     /// cooldown. `false`: a cell refuses only on a TRIP (the host's trip thresholds), an upstream
     /// `Retry-After` still honoured.
     pub bench_below_trip_threshold: bool,
-}
-
-/// The superseded `declares.contract_abi` range, kept so an already-signed manifest carrying it
-/// still parses and its signed bytes are unchanged. Admission ignores it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ContractAbiRange {
-    pub min: u32,
-    pub max: u32,
 }
 
 /// The EGRESS POLICY the host applies to every request a sink asks it to admit or carry (K9e-2,
@@ -400,7 +418,22 @@ impl Declares {
                 }
             }
         }
-        serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))
+        // The superseded contract-ABI range (THE DESIGN §2 l.237-240: a plugin declares its kind's
+        // ABI version, never a range): a declares FILE may still state it until the fleet's
+        // re-render strips it from every repo (the DECLARES gate accepts it until then), so it is
+        // dropped here, never read and never carried into a manifest.
+        if let Some(m) = doc.as_object_mut() {
+            m.remove("contract_abi");
+        }
+        let read: Self =
+            serde_json::from_value(doc).map_err(|e| format!("not a `declares` section: {e}"))?;
+        // A retention is stated for a declared destination only.
+        if let Some(key) = read.keep.keys().find(|k| !read.destinations.contains(k)) {
+            return Err(format!(
+                "not a `declares` section: `keep` names `{key}`, which is not a declared destination"
+            ));
+        }
+        Ok(read)
     }
 
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
@@ -408,10 +441,17 @@ impl Declares {
         self.metrics.is_empty()
             && self.diagnostics.is_empty()
             && self.destinations.is_empty()
+            && self.keep.is_empty()
             && self.egress.is_default()
-            && self.contract_abi.is_none()
             && self.breaker.is_none()
             && !self.disk
+            && self.hook.is_none()
+    }
+
+    /// Whether the hook may answer an order: `declares.hook.orders`, `true` when not stated.
+    #[must_use]
+    pub fn hook_orders(&self) -> bool {
+        self.hook.is_none_or(|h| h.orders)
     }
 }
 
@@ -672,19 +712,22 @@ pub enum RejectKind {
     EgressGrant,
 }
 
-/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: every
-/// class that relaxes the open web's rule — a provider's allow-list and metadata hosts, the
-/// operator infrastructure's private and plaintext targets, a collector's loopback plaintext.
-/// The connector's default class and the open web are any trusted plugin's (ARCHITECT ruling
-/// EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
-pub const FIRST_PARTY_EGRESS: [(u32, &str); 3] = [
+/// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a
+/// provider's allow-list and metadata hosts (a plane's upstreams) and a collector's loopback
+/// plaintext. The connector's default class and the open web are any trusted plugin's (ARCHITECT
+/// ruling EGRESS-GRANT 2026-10-03; the cold lane's `declares.egress` grant, on the door's needs).
+///
+/// `operator-infrastructure` is NOT here. §5's egress-class table gives it to "databases, vault,
+/// ldap; auth mint endpoints" with no first-party condition (`BUSBAR-1.6.0.md` l.604-611): its
+/// targets come from operator settings, and the plugins that dial them (a store, a secret service, a
+/// directory, an IdP's token exchange) were dropped-in plugins in 1.5.5 that an operator's
+/// `plugins.trust` opt-in loaded. Refusing that class to a plugin the operator admitted changes what
+/// 1.5.5 served, which only an owner signature may do ("Law beats table", l.613; "the default is
+/// 1.5.5's behaviour", l.364-365); the opt-in is the operator's grant (l.829, Part 2 #75 l.2276).
+pub const FIRST_PARTY_EGRESS: [(u32, &str); 2] = [
     (
         busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
         "provider",
-    ),
-    (
-        busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE,
-        "operator-infrastructure",
     ),
     (
         busbar_contract::abi::host::conn::connector::EGRESS_LOOPBACK_ALLOWED,
@@ -1002,7 +1045,7 @@ pub fn validate_abi(
 ) -> Result<(), String> {
     // `supported_abi` returns a CONTIGUOUS `[floor, max]` inclusive range (its endpoints) of the
     // ABI versions the binary speaks for this kind (the kind's ONE version, THE DESIGN §11.2; a
-    // legacy `declares.contract_abi` range is parsed but never consulted). Negotiate the manifest's declared
+    // manifest states no contract-ABI range). Negotiate the manifest's declared
     // `abi_version` against it: in range → ok; below floor / above max → refuse LOUD naming both.
     // An empty slice means the kind is unsupported (already caught by KNOWN_KINDS, but fail-closed).
     let supported = supported_abi(&m.kind);
