@@ -73,34 +73,24 @@ const HOOK_FIELDS: &[(&str, fn(&PlaneDecl) -> bool)] = &[
 const MIN_HOOK_FIELDS: usize = 15;
 
 /// Floor on the allowlist: an empty allowlist against a decl set that HAS asymmetries could only be a
-/// file that was gutted. Re-armed at today's measured count (Law 9) by FLIP-A2A (#787), which
-/// deleted the retired agent engine and with it its plane's installed PlaneDecl (that plane is
-/// door-only now and installs none). That decl was the one installed decl stating `admin_routes`,
-/// `openapi`, `config_validate`, `registry_contains`, `reresolve_gates`, `retain_verify_gates`,
-/// `card_signing_domain` and `card_kid_prefix` (eight hooks, a row each against the two other
-/// installed planes) and the one without `build_runtime` (a row against itself): those 17 rows left
-/// with the decl they described, 21 measured at #778's head, 4 after. The four left are the hooks
-/// one installed plane states and the other does not (`routes`, `hydrate`, `start`,
-/// `default_section`), each still judged. Re-armed again at the measured count by FLIP-STREAMING
-/// merged with FLIP-A2A: the streaming plane is door-only too, so llm is the one installed decl and
-/// a single plane has no sibling to be asymmetric against; those four rows left with the streaming
-/// decl, and the measured count is 0.
+/// file that was gutted. Re-armed at today's measured count (Law 9) each time a plane left the
+/// installed axis for its memory-ABI door. The first such flip (#787) took the one installed decl
+/// stating `admin_routes`, `openapi`, `config_validate`, `registry_contains`, `reresolve_gates`,
+/// `retain_verify_gates`, `card_signing_domain` and `card_kid_prefix` (eight hooks, a row each against
+/// the two other installed planes) and the one without `build_runtime` (a row against itself): those
+/// 17 rows left with the decl they described, 21 measured at #778's head, 4 after. The four left were
+/// the hooks one installed plane states and the other does not (`routes`, `hydrate`, `start`,
+/// `default_section`). The next flip left a single installed decl, which has no sibling to be
+/// asymmetric against; those four rows left with the decl that departed, and the measured count is 0.
 /// Read only by the gate cell below, which runs where the build carries the plane axis.
 #[cfg(linked_axis_plane)]
 const MIN_ASYMMETRIES: usize = 0;
 
-/// The doctrine map: each INSTALLED plane crate key → the directional ledger column(s) it answers to
-/// in `qa/capability-equality.json`. The bidirectional protocols count in both directions. Pinned
-/// (not derived) for the same reason `capability_equality.rs` pins its axes: it is the owner's ruling.
-fn plane_ledger_columns() -> Vec<(&'static str, &'static [&'static str])> {
-    common::doctrine_rows("installed")
-        .into_iter()
-        .map(|r| {
-            let cols: &'static [&'static str] = Box::leak(r[1..].to_vec().into_boxed_slice());
-            (r[0], cols)
-        })
-        .collect()
-}
+/// THE INSTALLED-PLANE AXIS, PINNED: how many planes the composition root installs as a `PlaneDecl`
+/// from their own linked entry. It is the owner's ruling, so it is a number a diff must change, not
+/// a count read off the tree; the planes themselves are the linked rows carrying the `plane` axis
+/// ([`installed_decls`]), and the composition root's manifest is the one place they are named.
+const INSTALLED_PLANES: usize = 0;
 
 #[cfg(linked_axis_plane)]
 fn repo_root() -> PathBuf {
@@ -349,9 +339,26 @@ fn read_json(path: &Path) -> serde_json::Value {
     .unwrap_or_else(|e| panic!("{} does not parse as JSON: {e}", path.display()))
 }
 
+/// Each INSTALLED plane key → the directional ledger column(s) it answers to in
+/// `qa/capability-equality.json`, by the ledger's own naming rule (`common::plane_columns`): the key
+/// itself for a one-direction plane, `<key>-client` / `<key>-server` for a bidirectional one.
 #[cfg(linked_axis_plane)]
 fn columns_map() -> BTreeMap<&'static str, &'static [&'static str]> {
-    plane_ledger_columns().into_iter().collect()
+    let ledger = read_json(&repo_root().join("qa/capability-equality.json"));
+    let columns: Vec<&'static str> = ledger["planes"]
+        .as_object()
+        .expect("`planes` is an object")
+        .keys()
+        .map(|k| -> &'static str { Box::leak(k.clone().into_boxed_str()) })
+        .collect();
+    installed_decls()
+        .into_iter()
+        .map(|(key, _)| {
+            let cols: &'static [&'static str] =
+                Box::leak(common::plane_columns(key, &columns).into_boxed_slice());
+            (key, cols)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -545,26 +552,33 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
     const {
         assert!(MIN_HOOK_FIELDS >= 15);
     }
-    // The doctrine's installed-plane axis, verbatim: EMPTY. P3 DEL-MCP (ARCHITECT 2026-10-05) and the
-    // door flips after it each took a plane off it, and the deletion of the model plane's retired
-    // engine crate (DEV-GREEN row 83, coordinator ruling 2026-10-18) took the last: every plane is
-    // served through its memory-ABI door alone and installs no PlaneDecl from a linked entry.
-    let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
-    assert!(
-        keys.is_empty(),
-        "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
-    );
+    // The doctrine's installed-plane axis: EMPTY. Each door flip (ARCHITECT 2026-10-05 onward) took a
+    // plane off it, and the deletion of the fallback plane's retired engine crate (DEV-GREEN row 83,
+    // coordinator ruling 2026-10-18) took the last: every plane is served through its memory-ABI door
+    // alone and installs no PlaneDecl from a linked entry.
+    const {
+        assert!(
+            INSTALLED_PLANES == 0,
+            "the installed-plane axis is the owner's ruling; changing it is a doctrine change"
+        );
+    }
     // With every plane compiled in, the pinned axis is exactly the planes the root installs from
-    // their own linked entries — two artifacts (the doctrine, the linked table) that must agree. A
-    // linked row that registers on the plane axis again compiles this and finds the axis it pinned.
+    // their own linked entries — two artifacts (the pin, the linked table) that must agree. A linked
+    // row that registers on the plane axis again compiles this and finds the axis it pinned, and each
+    // installed plane answers to at least one ledger column.
     #[cfg(all(linked_every_plane, linked_axis_plane))]
     {
-        let pinned: BTreeSet<&str> = keys.iter().copied().collect();
-        let installed: BTreeSet<&str> = installed_decls().iter().map(|(k, _)| *k).collect();
         assert_eq!(
-            pinned, installed,
+            installed_decls().len(),
+            INSTALLED_PLANES,
             "the installed-plane axis is the linked planes"
         );
+        for (key, cols) in columns_map() {
+            assert!(
+                !cols.is_empty(),
+                "installed plane `{key}` answers to no ledger column"
+            );
+        }
     }
 }
 
