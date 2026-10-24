@@ -1943,10 +1943,15 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
     let table = std::sync::Arc::new(TokenEndpoint::default());
     let auths = linked_mint_plugin(&table);
     // The style as the operator's config spells it (a fixture), read by the config's own parser.
-    let style = super::style_word(
-        serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
-            .expect("a provider style"),
+    // A style word parses when a loaded auth row declares it: the build's linked rows.
+    busbar_kernel::preflight::install_linked_auth(
+        crate::LINKED.auths,
+        crate::root::auth_bindings::operator_words(),
     );
+    let parsed: busbar_kernel::config::ProviderAuth =
+        serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
+            .expect("a provider style");
+    let style = parsed.as_str();
     // What the plane built its binding from: the stripped endpoint.
     let settings = serde_json::json!({
         "token_url": TOKEN_URL,

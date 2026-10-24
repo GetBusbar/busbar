@@ -371,6 +371,72 @@ impl AuthRows {
         Ok(Arc::new(opened))
     }
 
+    /// THE OUTBOUND STYLES every auth row this build reaches declares (linked rows first, then
+    /// dropped-in rows), in the host's one listing order
+    /// ([`busbar_contract::auth_calls::listed_styles`]), read as [`Self::stated`] reads each row (a
+    /// linked door's `'static` Statement; a dropped-in row loaded with no table): no instance is
+    /// opened (Law 7). A row whose Statement a bind refuses declares none here; its load refuses
+    /// it where it is used.
+    #[must_use]
+    pub fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        let declared = rows
+            .filter(|p| p.manifest.kind == AUTH)
+            .filter_map(|row| self.stated(row))
+            .flat_map(|f| f.styles)
+            .map(|s| busbar_contract::auth_calls::DeclaredStyle {
+                name: s.name,
+                flags: s.flags,
+            });
+        busbar_contract::auth_calls::listed_styles(declared)
+    }
+
+    /// TEST STAND-IN: [`busbar_contract::auth_calls::AuthAxis::check_outbound_entry`] over the
+    /// already-revealed `credential` (`None`: the entry declares none): the binding opened on a
+    /// FRESH instance of the row serving `style`, bound with no need, and every line its refusal
+    /// names, verbatim. Never shipped: the root checks entries.
+    ///
+    /// # Errors
+    /// The serving row would not open for its outbound styles.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn check_entry(
+        &self,
+        style: &str,
+        credential: Option<&[u8]>,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        use crate::dispatch::auth_outbound::OutboundInstance;
+        let rows = self
+            .registry
+            .linked()
+            .iter()
+            .chain(self.registry.loadable());
+        // Only the row that STATES the style is opened (Law 7): read off the rows' facts first.
+        let serving = rows.filter(|p| p.manifest.kind == AUTH).find(|row| {
+            self.stated(row)
+                .is_some_and(|f| f.styles.iter().any(|s| s.name == style))
+        });
+        if let Some(row) = serving {
+            let Ok(Door::Memory(plugin, _)) = self.load(row, &row.manifest.alias, false) else {
+                return Ok(Vec::new());
+            };
+            let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+            let instance =
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &bytes)?;
+            return Ok(
+                match instance.open_outbound_raw(style, credential.unwrap_or_default(), settings) {
+                    Ok(_) => Vec::new(),
+                    Err((_, why)) => why.lines().map(str::to_string).collect(),
+                },
+            );
+        }
+        Ok(Vec::new())
+    }
+
     /// TEST STAND-IN: the auth row serving the outbound `style`, its instance opened for its
     /// outbound styles over `settings` (as the composition root's `OutboundAuths::serving` opens
     /// one, without its instance cache or its tick schedule); `None` when no row this build reaches
@@ -411,6 +477,50 @@ impl AuthRows {
         }
         Ok(None)
     }
+}
+
+/// THE ONE READER OF AN AUTH ROW'S FACTS WITHOUT OPENING IT (Law 7; Part 2 #2): its Statement
+/// rendering (a linked door's own, a dropped plugin's signed one), read back and judged exactly as
+/// a bound door's Statement is ([`crate::dispatch::kinds::auth::rendered_facts`]). Selection and
+/// listing read this; only the row a configuration names is ever loaded.
+///
+/// # Errors
+/// The row states no rendering, it does not read back, or its facts refuse the load.
+pub fn stated_facts(
+    row: &LoadablePlugin,
+) -> Result<crate::dispatch::kinds::auth::AuthFacts, String> {
+    match row.door() {
+        Some(door) => door_facts(door),
+        None => rendering_facts(
+            &row.manifest
+                .stated_rendering()?
+                .ok_or_else(|| NO_DOOR.to_string())?,
+        ),
+    }
+}
+
+/// [`stated_facts`] of a compiled-in auth door: its own Statement rendering, nothing opened.
+///
+/// # Errors
+/// As [`stated_facts`].
+pub fn door_facts(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<crate::dispatch::kinds::auth::AuthFacts, String> {
+    rendering_facts(&LinkedRow::of(door).map_err(|e| e.to_string())?.statement)
+}
+
+/// [`stated_facts`] of a Statement rendering's bytes.
+///
+/// # Errors
+/// As [`stated_facts`].
+pub fn rendering_facts(stated: &[u8]) -> Result<crate::dispatch::kinds::auth::AuthFacts, String> {
+    let r = read(stated).map_err(|e| {
+        format!(
+            "the Statement rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })?;
+    crate::dispatch::kinds::auth::rendered_facts(&r)
 }
 
 /// The aliases `row`'s Statement states (its [`REWRITE_ALIAS`] rewrites; the design's One
@@ -502,6 +612,10 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
 
     fn default_inbound_style(&self) -> Result<Vec<String>, String> {
         AuthRows::default_inbound_style(self)
+    }
+
+    fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        AuthRows::outbound_styles(self)
     }
 
     fn open(

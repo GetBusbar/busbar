@@ -737,6 +737,27 @@ fn every_claim_element_is_checked() {
     assert_eq!(check_claims(&[c]), f(Rule::UnknownCode, "claim.status_at"));
 }
 
+/// THE CLAIM'S ONE FLAG (BUSBAR-1.6.0.md #50: a transport declares its secure scheme as a claim of
+/// its own, `https` / `wss`). RED: a row stating any bit but [`CLAIM_SECURE`] is refused at load; a
+/// row stating it, or stating nothing (a plaintext scheme, and every plugin built before the bit was
+/// named), loads.
+#[test]
+fn a_claim_states_no_flag_but_secure() {
+    let mut c = claim();
+    assert_eq!(c.flags, 0, "a row that states nothing is plaintext");
+    assert_eq!(check_claims(&[c]), Ok(()));
+    c.flags = CLAIM_SECURE;
+    assert_eq!(check_claims(&[c]), Ok(()));
+    for unknown in [2_u32, 1 << 31, CLAIM_SECURE | 4] {
+        c.flags = unknown;
+        assert_eq!(
+            check_claims(&[c]),
+            f(Rule::UnknownCode, "claim.flags"),
+            "flags {unknown:#x}"
+        );
+    }
+}
+
 fn row(claim: u32, lo: u32, hi: u32, class: u32) -> StatusRow {
     StatusRow {
         claim,

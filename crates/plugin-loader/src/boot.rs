@@ -218,6 +218,10 @@ pub struct Candidate {
     pub verbs: Vec<String>,
     /// The URL schemes it claims (its Statement's claims; a transport's).
     pub schemes: Vec<String>,
+    /// The claims among [`Candidate::schemes`] whose row states `CLAIM_SECURE`: the secure forms
+    /// of its wire (BUSBAR-1.6.0.md #50), read off the rendering's claim flags as the same plugin
+    /// compiled in is read off its rows (Part 2 #2).
+    pub secure: Vec<String>,
     /// Its connection needs, in its Statement's order (a need's index is its place here).
     pub needs: Vec<ReadNeed>,
     /// Its Statement rendering: what [`load`] admits it against.
@@ -269,6 +273,13 @@ impl Candidate {
                 .iter()
                 .filter(|(_, flags)| flags & SECTION_DECLARING != 0)
                 .map(|(name, _)| name.clone())
+                .collect(),
+            secure: r
+                .claims
+                .iter()
+                .zip(&r.claim_flags)
+                .filter(|(_, f)| *f & busbar_contract::abi::transport::CLAIM_SECURE != 0)
+                .map(|(c, _)| c.clone())
                 .collect(),
             schemes: r.claims,
             needs: r.needs,

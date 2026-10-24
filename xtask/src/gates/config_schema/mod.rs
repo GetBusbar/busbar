@@ -504,10 +504,17 @@ impl Gate for ConfigSchemaGate {
             Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
         };
         let reading = schema::reading(&read, &declared);
-        let fresh = match &reading.extracted {
+        // The memoised extraction, then the declared-word nodes (`schema::DECLARED_TYPES`), read
+        // fresh on every run: their fixtures are no tracked source, so they are no memo key.
+        let fresh = match reading
+            .extracted
+            .clone()
+            .and_then(|doc| schema::with_declared_types(cx, doc))
+        {
             Ok(v) => v,
-            Err(why) => return refuse(ROW_TRACKED_SOURCES, why.clone()),
+            Err(why) => return refuse(ROW_TRACKED_SOURCES, why),
         };
+        let fresh = &fresh;
         let fresh_text = schema::canonical(fresh);
         let n_types = type_count(fresh);
 

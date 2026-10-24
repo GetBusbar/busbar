@@ -236,6 +236,42 @@ pub const STYLE_NEEDS_HEADERS: u32 = 2;
 /// `caller-credential {as: X}` / `upstream_credentials: passthrough` config to style `X` in
 /// [`MODE_PASSTHROUGH`] (KERNEL<>PLUGINS step 21 seam; not built here).
 pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
+/// [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint.
+///
+/// The binding's settings carry it as `token_url`, which the HOST judges as a destination before
+/// any binding is opened (its scheme and the cloud-metadata denylist, in the previous release's
+/// words; ARCHITECT ruling 2026-09-28 Q2 (a): a need's target is the kernel's to judge). A style
+/// that does not state it has any `token_url` left unjudged and unread, as the previous release
+/// ignored one on such a style.
+pub const STYLE_ENDPOINT_TOKEN_URL: u32 = 32;
+/// [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself.
+///
+/// The credential is a document that names the endpoint (`token_uri`), and the HOST reads it out
+/// and judges it as a destination before the binding is opened (ARCHITECT ruling 2026-09-28 Q2
+/// (a)), handing the plugin its judged copy as the `token_uri` setting. A style takes its endpoint
+/// from one place: it never states this beside [`STYLE_ENDPOINT_TOKEN_URL`].
+pub const STYLE_ENDPOINT_FROM_CREDENTIAL: u32 = 64;
+/// [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]).
+pub const STYLE_RANK_SHIFT: u32 = 16;
+/// [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked).
+///
+/// Where the style stands when the host lists the outbound styles a provider's `auth:` may name
+/// (the refusal of an unknown one renders the list): ranked styles first, by rank, then the
+/// unranked ones in plugin registration order. A rank orders a list and grants nothing; two
+/// styles of one rank keep registration order. [`ranked`] spells one; [`style_rank`] reads it.
+pub const STYLE_RANK_MASK: u32 = 0x00ff_0000;
+
+/// The [`StyleDecl::flags`] bits stating list rank `rank` ([`STYLE_RANK_MASK`]).
+#[must_use]
+pub const fn ranked(rank: u8) -> u32 {
+    (rank as u32) << STYLE_RANK_SHIFT
+}
+
+/// The list rank a [`StyleDecl::flags`] states (`0` = unranked; [`STYLE_RANK_MASK`]).
+#[must_use]
+pub const fn style_rank(flags: u32) -> u32 {
+    (flags & STYLE_RANK_MASK) >> STYLE_RANK_SHIFT
+}
 
 /// One outbound style a plugin serves: an open string the provider's `auth:` resolves against.
 #[repr(C)]
@@ -243,7 +279,8 @@ pub const STYLE_CALLER_CREDENTIAL: u32 = 4;
 pub struct StyleDecl {
     /// The style name.
     pub name: AbiStr,
-    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`].
+    /// [`STYLE_NEEDS_HEADERS`] | [`STYLE_CALLER_CREDENTIAL`] | [`STYLE_ENDPOINT_TOKEN_URL`] |
+    /// [`STYLE_ENDPOINT_FROM_CREDENTIAL`], and a list rank ([`STYLE_RANK_MASK`]).
     pub flags: u32,
     /// The [`AuthPoints`] the style needs: a valid, non-empty set ([`check_style_decl`]). A style
     /// that signs the body needs [`POINT_HEAD_BODY`] and reads [`FieldsIn::body`]; a style over

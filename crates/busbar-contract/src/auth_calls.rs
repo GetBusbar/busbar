@@ -505,6 +505,88 @@ pub trait AuthAxis: Send + Sync {
         let _ = (style, credential, settings);
         Ok(Vec::new())
     }
+
+    /// THE OUTBOUND STYLES this build's auth rows declare, as a provider's `auth:` may name them:
+    /// each row's tail styles, linked rows first in registration order, then dropped-in rows, in
+    /// [`listed_styles`] order (ranked first by rank, then unranked in that order; a name stated
+    /// twice listed once, at its first place), each with its declared flags. Read without opening
+    /// an instance. Empty by default.
+    fn outbound_styles(&self) -> Vec<DeclaredStyle> {
+        Vec::new()
+    }
+
+    /// CHECK A PROVIDER ENTRY, NEVER DIAL (the `--validate` dry run): bind `credential` under
+    /// `settings` on a fresh instance of the auth plugin serving `style`, one granted no need, and
+    /// answer EVERY line its refusal names, verbatim and in its order: `settings: <text>` for the
+    /// entry, `credential: <text>` for the credential (the plugin's own words; the host composes
+    /// the sentence around them). Empty when it accepts, or when no plugin serves `style`.
+    ///
+    /// # Errors
+    ///
+    /// The serving plugin would not open for its outbound styles.
+    fn check_outbound_entry(
+        &self,
+        style: &str,
+        credential: EntryCredential<'_>,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        let _ = (style, credential, settings);
+        Ok(Vec::new())
+    }
+}
+
+/// ONE OUTBOUND STYLE an auth row declares ([`AuthAxis::outbound_styles`]): its name and its
+/// `abi::auth::StyleDecl::flags` (the `STYLE_*` bits and its list rank).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredStyle {
+    /// The style name: an open string a provider's `auth:` resolves against.
+    pub name: String,
+    /// Its declared flags.
+    pub flags: u32,
+}
+
+/// THE ONE ORDER the host lists outbound styles in: `declared` (every row's styles, linked rows
+/// first in registration order, then dropped-in rows, each row's in its tail's order) with the
+/// ranked styles first, by rank ([`crate::abi::auth::style_rank`]), then the unranked ones in the
+/// order given; two of one rank keep the order given, and a name stated twice is listed once, at
+/// its first place in that order.
+#[must_use]
+pub fn listed_styles(declared: impl IntoIterator<Item = DeclaredStyle>) -> Vec<DeclaredStyle> {
+    let mut out: Vec<DeclaredStyle> = Vec::new();
+    for style in declared {
+        if !out.iter().any(|s| s.name == style.name) {
+            out.push(style);
+        }
+    }
+    // Stable: equal keys keep the order given. Unranked (`0`) sorts after every rank.
+    out.sort_by_key(|s| match crate::abi::auth::style_rank(s.flags) {
+        0 => u32::MAX,
+        rank => rank,
+    });
+    out
+}
+
+/// THE CREDENTIAL a provider entry declares, as [`AuthAxis::check_outbound_entry`] is handed it:
+/// sealed, never a bare byte string (Part 2 #54).
+#[derive(Clone, Copy)]
+pub enum EntryCredential<'a> {
+    /// The entry declares none (`api_key: none`): the plugin is handed no credential.
+    Keyless,
+    /// The entry names a credential this check cannot resolve (an unset variable at `--validate`):
+    /// the plugin is handed a stand-in, and the host drops every `credential:` line it answers.
+    Unresolved,
+    /// The resolved credential, revealed only to the binding under the kernel's seal.
+    Resolved(&'a Secret<Vec<u8>>),
+}
+
+impl std::fmt::Debug for EntryCredential<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            EntryCredential::Keyless => "Keyless",
+            EntryCredential::Unresolved => "Unresolved",
+            EntryCredential::Resolved(_) => "Resolved(<redacted>)",
+        })
+    }
 }
 
 /// ONE AUTH PLUGIN SERVING AN OUTBOUND STYLE ([`AuthAxis::serving`]): its instance, and the style

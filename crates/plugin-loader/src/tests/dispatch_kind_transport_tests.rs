@@ -456,7 +456,7 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
             session_bound: 0,
             unit0_trigger: 0,
             status_at: 0,
-            _reserved: 0,
+            flags: 0,
         },
         Claim {
             selector_forms: abi_str(""),
@@ -468,7 +468,7 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
             session_bound: 0,
             unit0_trigger: 0,
             status_at: 0,
-            _reserved: 0,
+            flags: 0,
         },
     ];
     let mut tail: TransportTail = z();
@@ -503,6 +503,136 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     assert!(Transport::context(&one_name).is_err(), "two rows, one name");
 }
 
+/// THE SECURE FORMS ARE READ OFF THE CLAIM ROWS (BUSBAR-1.6.0.md #50: a transport declares the
+/// secure form of its wire as a claim of its own): a claim whose row states `CLAIM_SECURE` is in the
+/// secure set, one whose row states nothing is plaintext, and a row stating any other bit refuses
+/// the bind. RED: a row left at `0` (every plugin built before the bit was named) is never secure.
+#[test]
+fn a_secure_claim_is_one_whose_row_states_it_and_no_other_bit_binds() {
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{Claim, TransportTail, CLAIM_SECURE, ROLE_FRAMER};
+
+    use crate::dispatch::kinds::transport::TransportFacts;
+
+    let row = |flags: u32| Claim {
+        selector_forms: abi_str(""),
+        egress_selector_forms: abi_str(""),
+        facts: std::ptr::null(),
+        facts_len: 0,
+        status_namespace: abi_str(""),
+        session: 0,
+        session_bound: 0,
+        unit0_trigger: 0,
+        status_at: 0,
+        flags,
+    };
+    let secure_of = |second: u32| -> Result<Vec<&'static str>, ()> {
+        let claims: [Claim; 2] = [row(0), row(second)];
+        let mut tail: TransportTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<TransportTail>() as u32,
+            _reserved: 0,
+        };
+        tail.role = ROLE_FRAMER;
+        tail.claim_rows = claims.as_ptr();
+        tail.claim_rows_len = 2;
+        let names = [abi_str("plain"), abi_str("sealed")];
+        let st = Statement {
+            kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+            claims: names.as_ptr(),
+            claims_len: names.len(),
+            ..statement("t", "0", 1)
+        };
+        let ctx = Transport::context(&st).map_err(|_| ())?.ok_or(())?;
+        let facts = ctx.downcast_ref::<TransportFacts>().ok_or(())?;
+        Ok(facts.secure.clone())
+    };
+    assert_eq!(secure_of(CLAIM_SECURE), Ok(vec!["sealed"]));
+    assert_eq!(
+        secure_of(0),
+        Ok(Vec::new()),
+        "a row that states nothing is plaintext"
+    );
+    assert_eq!(
+        secure_of(CLAIM_SECURE | 2),
+        Err(()),
+        "an unknown claim flag refuses the bind"
+    );
+}
+
+/// LINKED AND DROPPED JUDGE ALIKE (Part 2 #2, BUSBAR-1.6.0.md #50): the secure claims a reader
+/// that must not open the plugin reads off its signed Statement rendering (a dropped plugin's, at
+/// `--validate`) are exactly the ones the same Statement's rows state when it is bound (a linked
+/// plugin's). RED: the rendering carried claim names only, so a dropped secure transport read as
+/// plaintext while the same one compiled in read as secure.
+#[test]
+fn a_dropped_transport_states_the_same_secure_claims_as_the_same_one_linked() {
+    use std::sync::Arc;
+
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::mechanism::rendering::render;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{Claim, TransportTail, CLAIM_SECURE, ROLE_FRAMER};
+
+    use crate::boot::{Candidate, Origin};
+    use crate::dispatch::kinds::transport::TransportFacts;
+
+    let row = |flags: u32| Claim {
+        selector_forms: abi_str(""),
+        egress_selector_forms: abi_str(""),
+        facts: std::ptr::null(),
+        facts_len: 0,
+        status_namespace: abi_str(""),
+        session: 0,
+        session_bound: 0,
+        unit0_trigger: 0,
+        status_at: 0,
+        flags,
+    };
+    for second in [CLAIM_SECURE, 0] {
+        let claims: [Claim; 2] = [row(0), row(second)];
+        let mut tail: TransportTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<TransportTail>() as u32,
+            _reserved: 0,
+        };
+        tail.role = ROLE_FRAMER;
+        tail.claim_rows = claims.as_ptr();
+        tail.claim_rows_len = 2;
+        let names = [abi_str("plain"), abi_str("sealed")];
+        let st = Statement {
+            kind: Transport::CODE as u32,
+            kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+            claims: names.as_ptr(),
+            claims_len: names.len(),
+            ..statement("t", "0", 1)
+        };
+        let ctx = Transport::context(&st)
+            .expect("a framer tail binds")
+            .expect("a context");
+        let linked: Vec<String> = ctx
+            .downcast_ref::<TransportFacts>()
+            .expect("the transport facts")
+            .secure
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        // SAFETY: every list above is live for the call, of its stated count.
+        let stated = unsafe { render(&st) }.expect("renders");
+        let dropped = Candidate::from_rendering(
+            stated,
+            None,
+            Origin::Dropped {
+                file: "t.tar.gz".into(),
+                bytes: Arc::new(Vec::new()),
+            },
+        )
+        .expect("the rendering reads back");
+        assert_eq!(dropped.secure, linked, "flags {second:#x}");
+    }
+}
+
 /// THE UPGRADE LINES ARE READ OFF THE CLAIM ROWS (ARCHITECT ruling Q128 U7): a claim whose row states
 /// `unit0_trigger = UNIT0_UPGRADE` is an upgrade line, and a claim that states anything else is not —
 /// RED: the same scheme with the trigger left at 0 yields an EMPTY upgrade set, so the host mounts no
@@ -526,7 +656,7 @@ fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
             session_bound: 0,
             unit0_trigger: trigger,
             status_at: 0,
-            _reserved: 0,
+            flags: 0,
         }];
         let mut tail: TransportTail = z();
         tail.head = KindTailHead {
@@ -586,7 +716,7 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
         session_bound: 0,
         unit0_trigger: 0,
         status_at: 0,
-        _reserved: 0,
+        flags: 0,
     }];
     let status = [StatusRow {
         claim: 0,
@@ -687,7 +817,7 @@ fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
             session_bound: 0,
             unit0_trigger: 0,
             status_at: 0,
-            _reserved: 0,
+            flags: 0,
         }];
         let mut tail: TransportTail = z();
         tail.head = KindTailHead {

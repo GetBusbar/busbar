@@ -69,6 +69,9 @@ pub struct TransportFacts {
     /// `UNIT0_FIRST_LINE`): a carrier of whole lines, read off the claim rows, as the upgrade
     /// lines are.
     pub lines: Vec<&'static str>,
+    /// The claims whose row states `CLAIM_SECURE`: the secure forms of its wire (BUSBAR-1.6.0.md
+    /// #50), read off the claim rows. Every other claim is plaintext.
+    pub secure: Vec<&'static str>,
     /// The claims it composes over; empty = directly over the host's socket (a framer) or the
     /// bottom of its stack (a carrier).
     pub composes_over: Vec<&'static str>,
@@ -204,6 +207,12 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         .filter(|(_, row)| row.session == 1)
         .map(|(name, _)| *name)
         .collect();
+    let secure = claims
+        .iter()
+        .zip(rows)
+        .filter(|(_, row)| row.flags & busbar_contract::abi::transport::CLAIM_SECURE != 0)
+        .map(|(name, _)| *name)
+        .collect();
     // THE TWO TABLES: the status class (the fee decision's leg) and the fault reading (the
     // breaker's). A claim that classes its answers reads them for the breaker too.
     let status: &[StatusRow] = if tail.status_rows_len == 0 {
@@ -230,6 +239,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         upgrades,
         sessions,
         lines,
+        secure,
         composes_over: under
             .iter()
             .map(|s| owned(*s, "composes_over"))

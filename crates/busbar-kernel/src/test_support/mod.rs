@@ -686,11 +686,13 @@ impl LaneSpec {
     /// registered `build_runtime` fn-pointer exactly as production `appbuild` does, so core's test
     /// fixture names no `Lane`/`NativeRuntime` — plane-agnostic, like the MCP/A2A test-kits.
     fn to_lane_input(&self) -> busbar_kernel::plane_driver::route_input::LaneInput {
+        // The style a lane fixture names, carried opaque with no endpoint bit (a header style).
         let auth_style = match self.auth.as_deref() {
             None => busbar_kernel::plane_driver::route_input::AuthStyleInput::Default,
-            Some("api-key") => busbar_kernel::plane_driver::route_input::AuthStyleInput::ApiKey,
-            Some("bearer") => busbar_kernel::plane_driver::route_input::AuthStyleInput::Bearer,
-            Some(other) => panic!("unexpected test auth style in LaneSpec: {other}"),
+            Some(style) => busbar_kernel::plane_driver::route_input::AuthStyleInput::Named {
+                style: style.to_string(),
+                flags: 0,
+            },
         };
         busbar_kernel::plane_driver::route_input::LaneInput {
             model: self.model.clone(),

@@ -447,7 +447,11 @@ pub fn classify_with(baseline: &Value, fresh: &Value, see: &SeeThrough) -> Vec<F
         };
         let bk = str_of(b, "kind");
         let fk = str_of(f, "kind");
-        if bk != fk {
+        // A FROZEN ENUM MAY BECOME PLUGIN-DECLARED (coordinator ruling (b) on arch-audit u29): its
+        // words move from a kernel enum to the linked plugins' declarations, held exactly as an
+        // enum's variants are below (every baseline word still declared, or it is a break).
+        let declared = fk == "declared" && (bk == "enum" || bk == "declared");
+        if bk != fk && !declared {
             add(
                 &mut out,
                 Severity::Breaking,
@@ -516,12 +520,16 @@ pub fn classify_with(baseline: &Value, fresh: &Value, see: &SeeThrough) -> Vec<F
                 seen.as_ref().or(f.get("fields")).unwrap_or(&null),
                 &mut out,
             );
-        } else if bk == "enum" {
+        } else if bk == "enum" || bk == "declared" {
             variant_findings(
                 tname,
                 b.get("variants"),
                 f.get("variants"),
-                "enum variant",
+                if declared {
+                    "declared word"
+                } else {
+                    "enum variant"
+                },
                 &mut out,
             );
         } else {

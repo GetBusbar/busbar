@@ -385,6 +385,38 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     // A source that silently drops out of the set silently un-freezes its grammar. Each of these is
     // a way that could happen, and each must stop the gate rather than narrow the scan.
 
+    // ══ THE PLUGIN-DECLARED TYPES (coordinator ruling (b) on arch-audit u29 F1/F2) ══════════════
+    // A declared type's words are the linked plugins' (`schema::DECLARED_TYPES`, its fixture written
+    // only by the composition root's drift test). A fixture that drops a word the baseline froze is
+    // a break; a fixture that is gone is a coverage hole, never an empty set.
+
+    let (declared_type, fixture) = super::schema::DECLARED_TYPES[0];
+    let mut ov = fixture_base(cx);
+    let without = cx
+        .read(fixture)
+        .unwrap_or_default()
+        .replace("\"jwt-bearer\",", "");
+    ov.set(fixture, without);
+    report.push(prove_rows_red(
+        &on_fixture(cx),
+        gate,
+        "a declared fixture that drops a baseline word is a break",
+        &[ROW_ADDITIVE_ONLY],
+        ov,
+        &[&format!("{declared_type}::jwt-bearer")],
+    ));
+
+    let mut ov = Overlay::new();
+    ov.remove(fixture);
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a declared fixture that VANISHED is a hard error, never an empty set",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+        &[fixture],
+    ));
+
     let mut ov = Overlay::new();
     ov.remove(SECRETREF_SRC);
     report.push(prove_rows_red(

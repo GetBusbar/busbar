@@ -166,23 +166,43 @@ fn make_member(model: &str) -> config::PoolMember {
     }
 }
 
+/// THE AUTH STYLE IS A DECLARED WORD (BUSBAR-1.6.0.md #50; arch-audit u29 F1): a provider's
+/// `auth:` parses when some loaded auth plugin declares it, and an undeclared word is refused at
+/// deserialize with serde's own unknown-variant text over the declared styles, in the host's
+/// listing order. RED: the words were a closed kernel enum, so a declared style the enum lacked was
+/// refused.
 #[test]
-fn test_provider_auth_style_is_a_closed_enum() {
-    // The per-provider auth-style override is a `ProviderAuth` enum, so an unrecognized spelling
-    // is rejected at DESERIALIZE time (no hand-check in validate()). The two accepted wire strings
-    // ('bearer' / 'api-key') are unchanged from the pre-enum `Option<String>` field.
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("bearer").unwrap(),
-        config::ProviderAuth::Bearer
-    );
-    assert_eq!(
-        serde_yaml::from_str::<config::ProviderAuth>("api-key").unwrap(),
-        config::ProviderAuth::ApiKey
-    );
+fn test_provider_auth_style_is_a_declared_word() {
+    use crate::test_support::outbound_auth::{
+        double_styles, DOUBLE_STYLE_FROM_CREDENTIAL, DOUBLE_STYLE_HEADER, DOUBLE_STYLE_TOKEN_URL,
+    };
+    for word in [
+        DOUBLE_STYLE_HEADER,
+        DOUBLE_STYLE_TOKEN_URL,
+        DOUBLE_STYLE_FROM_CREDENTIAL,
+    ] {
+        let parsed = serde_yaml::from_str::<config::ProviderAuth>(word)
+            .unwrap_or_else(|e| panic!("the declared style `{word}` parses: {e}"));
+        assert_eq!(
+            serde_json::to_value(&parsed).ok(),
+            Some(serde_json::Value::String(word.to_string()))
+        );
+    }
+    let refused = serde_yaml::from_str::<config::ProviderAuth>("oauth2")
+        .expect_err("an undeclared style is refused")
+        .to_string();
+    let listed: Vec<String> = crate::preflight::declared_styles()
+        .into_iter()
+        .map(|s| format!("`{}`", s.name))
+        .collect();
     assert!(
-        serde_yaml::from_str::<config::ProviderAuth>("oauth2").is_err(),
-        "'oauth2' is not a recognized provider auth style and must fail to deserialize"
+        refused.starts_with(&format!(
+            "unknown variant `oauth2`, expected one of {}",
+            listed.join(", ")
+        )),
+        "{refused}"
     );
+    assert!(listed.len() >= double_styles().len());
 }
 
 #[test]
@@ -467,7 +487,8 @@ fn test_validate_token_url_ssrf_and_scheme() {
         );
         entra.token_url = Some(token_url.to_string());
         entra.scope = Some("api://x/.default".into());
-        entra.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        entra.auth =
+            serde_yaml::from_str(crate::test_support::outbound_auth::DOUBLE_STYLE_TOKEN_URL).ok();
         providers.insert("entra".to_string(), entra);
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("entra", 10));
@@ -5952,7 +5973,7 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
 
     let mut errors = Vec::new();
-    super::validate_providers_with(&[], &cfg, &[], &mut errors);
+    super::validate_providers_with(&[], &[], &cfg, &[], &mut errors);
 
     // Every provider is refused, and refused ONCE, and the refusal names the BUILD as the cause —
     // not the provider for naming an "unknown" protocol against an empty must-be-one-of list. The
@@ -5981,7 +6002,7 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
     // with the choices named. Without this half, a sweep that refused everything unconditionally
     // would also satisfy the assertions above.
     let mut errors = Vec::new();
-    super::validate_providers_with(&[proto_a(), proto_b()], &cfg, &[], &mut errors);
+    super::validate_providers_with(&[proto_a(), proto_b()], &[], &cfg, &[], &mut errors);
     assert!(
         !errors.iter().any(|e| e.contains("prov-a")),
         "a provider naming a compiled-in protocol validates: {errors:?}"
@@ -6026,7 +6047,7 @@ fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
     let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
 
     let mut errors = Vec::new();
-    super::validate_providers_with(known, &cfg, &[], &mut errors);
+    super::validate_providers_with(known, &[], &cfg, &[], &mut errors);
     assert_eq!(
         errors.len(),
         1,
@@ -6759,6 +6780,268 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
     let want = "live.rate_card configures unit(s) per_session not declared by this plane \
                 (declared: calls); remove them or fix the name";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
+}
+
+// ── #50: a provider's base_url scheme is judged against the schemes the LOADED transports claim ──
+
+/// The claims of a build whose transports declare one secure scheme and one plaintext scheme,
+/// spelled as neutral words: the kernel judges what a claim row states, never a scheme's name.
+fn claims_secure_and_plain() -> Vec<crate::preflight::ClaimedScheme> {
+    vec![
+        crate::preflight::ClaimedScheme {
+            scheme: "sealed-wire".into(),
+            secure: true,
+        },
+        crate::preflight::ClaimedScheme {
+            scheme: "plain-wire".into(),
+            secure: false,
+        },
+    ]
+}
+
+/// The refusals the provider sweep answers for ONE provider at `base_url` under `claimed`.
+fn provider_refusals(base_url: &str, claimed: &[crate::preflight::ClaimedScheme]) -> Vec<String> {
+    let mut providers = HashMap::new();
+    providers.insert(
+        "p".to_string(),
+        make_provider(proto_a(), base_url, "U29_UNSET_KEY"),
+    );
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let mut errors = Vec::new();
+    super::validate_providers_with(&[proto_a()], claimed, &cfg, &[], &mut errors);
+    errors
+}
+
+/// BUSBAR-1.6.0.md #50 (l.2237): "At BOOT the kernel matches every provider's base_url scheme
+/// against the registered transport plugins' declared scheme-sets ... no match => fail closed".
+/// RED (before the claims were read): a scheme a loaded transport declares SECURE was refused with
+/// "must use http or https", whatever the transports declared. Now it validates to a PUBLIC host,
+/// and the same URL with no transport claiming its scheme is refused in 1.5.5's exact words.
+#[test]
+fn a_scheme_a_loaded_transport_claims_secure_validates_to_a_public_host() {
+    let url = "sealed-wire://api.example.com/v1";
+    assert_eq!(
+        provider_refusals(url, &claims_secure_and_plain()),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        provider_refusals(url, &[]),
+        vec![format!(
+            "provider 'p' base_url must use http or https (got '{url}')"
+        )],
+        "no loaded transport claims the scheme: fail closed, in 1.5.5's words"
+    );
+}
+
+/// THE 1.5.5 PLAINTEXT RULE, GENERIC (coordinator ruling on u29 F3 Q2): a claim whose row does not
+/// state SECURE carries the credential in clear, so it is refused to a PUBLIC host — with the bytes
+/// 1.5.5 refused that very URL with — and allowed to a private/loopback one, exactly as `http` is.
+/// RED: accepted to a public host, it would put the provider key on an off-box wire in clear.
+#[test]
+fn a_plaintext_claim_is_refused_to_a_public_host_and_allowed_to_loopback() {
+    let public = "plain-wire://api.example.com/v1";
+    assert_eq!(
+        provider_refusals(public, &claims_secure_and_plain()),
+        vec![format!(
+            "provider 'p' base_url must use http or https (got '{public}')"
+        )]
+    );
+    for local in [
+        "plain-wire://127.0.0.1:9000",
+        "plain-wire://10.0.0.5:9000/v1",
+    ] {
+        assert_eq!(
+            provider_refusals(local, &claims_secure_and_plain()),
+            Vec::<String>::new(),
+            "{local}"
+        );
+    }
+    // A claim the kernel cannot read the row of (a dropped transport's, before the seal opens it)
+    // is stated plaintext by the root: the same refusal, never a secure acceptance.
+    let unread = [crate::preflight::ClaimedScheme {
+        scheme: "sealed-wire".into(),
+        secure: false,
+    }];
+    assert_eq!(
+        provider_refusals("sealed-wire://api.example.com/v1", &unread).len(),
+        1,
+        "a claim not stated SECURE is plaintext"
+    );
+}
+
+/// The two schemes this rule has always judged by name keep 1.5.5's rule and bytes whatever the
+/// transports claim: a public `https` validates, a public `http` is refused in 1.5.5's plaintext
+/// words, a loopback `http` validates.
+#[test]
+fn the_web_schemes_keep_their_1_5_5_rule_under_any_claims() {
+    for claimed in [Vec::new(), claims_secure_and_plain()] {
+        assert_eq!(
+            provider_refusals("https://api.example.com/v1", &claimed),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            provider_refusals("http://127.0.0.1:11434", &claimed),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            provider_refusals("http://api.example.com/v1", &claimed),
+            vec![
+                "provider 'p' base_url must use https for a public host (got \
+                 'http://api.example.com/v1'); plaintext http is permitted only for a \
+                 private/loopback local-model upstream"
+                    .to_string()
+            ]
+        );
+    }
+}
+
+/// A CLAIMED SCHEME IS NO WAY PAST THE METADATA DENYLIST. The web-only host reader reads no host
+/// under any other scheme, so a claimed `base_url` aimed at IMDS would have passed the guard
+/// unjudged. RED: `sealed-wire://169.254.169.254/` validated; now it is refused as the `https` spelling
+/// of the same host is, and so is a `path` that composes onto it.
+#[test]
+fn a_claimed_scheme_is_judged_by_the_metadata_denylist() {
+    let refusals = provider_refusals(
+        "sealed-wire://169.254.169.254/v1",
+        &claims_secure_and_plain(),
+    );
+    assert_eq!(refusals.len(), 1, "{refusals:?}");
+    assert!(
+        refusals[0].starts_with(
+            "provider 'p' base_url 'sealed-wire://169.254.169.254/v1' targets a blocked \
+             cloud-metadata host '169.254.169.254'"
+        ),
+        "{refusals:?}"
+    );
+}
+
+/// `token_url` STAYS http(s) ONLY (coordinator ruling on u29 F3: #50 governs base_url alone; the
+/// token endpoint is POSTed the client secret by the auth plugin's mint). RED: a token_url under a
+/// scheme a loaded transport claims SECURE is still refused, in 1.5.5's words (oracle BOOT-032).
+#[test]
+fn a_token_url_under_a_claimed_scheme_is_still_refused() {
+    let mut p = make_provider(proto_a(), "https://api.example.com", "U29_UNSET_KEY");
+    p.auth = serde_yaml::from_str(crate::test_support::outbound_auth::DOUBLE_STYLE_TOKEN_URL).ok();
+    p.scope = Some("scope".into());
+    p.token_url = Some("sealed-wire://login.example.com/token".into());
+    let mut providers = HashMap::new();
+    providers.insert("p".to_string(), p);
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let mut errors = Vec::new();
+    super::validate_providers_with(
+        &[proto_a()],
+        &claims_secure_and_plain(),
+        &cfg,
+        &[],
+        &mut errors,
+    );
+    assert_eq!(
+        errors,
+        vec!["provider 'p' token_url must use http or https (got \
+             'sealed-wire://login.example.com/token')"
+            .to_string()]
+    );
+}
+
+// ── arch-audit u29 F1: the auth style's endpoint is judged by what the style DECLARES ────────────
+
+/// The refusals the sweep answers for one provider under `style` with `token_url`, keyed by the
+/// credential `api_key`.
+fn style_refusals(style: &str, token_url: &str, api_key: config::SecretRef) -> Vec<String> {
+    let mut p = make_provider(proto_a(), "https://api.example.com", "U29_UNSET_KEY");
+    p.auth = serde_yaml::from_str(style).ok();
+    p.token_url = Some(token_url.into());
+    p.scope = Some("scope".into());
+    p.api_key = api_key;
+    let mut providers = HashMap::new();
+    providers.insert("p".to_string(), p);
+    let cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
+    let mut errors = Vec::new();
+    super::validate_providers_with(&[proto_a()], &[], &cfg, &[], &mut errors);
+    errors
+}
+
+/// A STYLE THAT STATES NO TOKEN ENDPOINT HAS NONE JUDGED (1.5.5 judged `token_url` for one style
+/// only, and ignored it on every other): the same metadata-host `token_url` that is refused under
+/// a style declaring `STYLE_ENDPOINT_TOKEN_URL` passes unjudged under a header style. RED (the
+/// parity half): judging every `token_url` would refuse configurations 1.5.5 accepted.
+#[test]
+fn a_token_url_is_judged_only_for_a_style_declaring_it() {
+    use crate::test_support::outbound_auth::{DOUBLE_STYLE_HEADER, DOUBLE_STYLE_TOKEN_URL};
+    let imds = "https://169.254.169.254/token";
+    let refused = style_refusals(
+        DOUBLE_STYLE_TOKEN_URL,
+        imds,
+        config::SecretRef::env("U29_UNSET_KEY"),
+    );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        refused[0].starts_with(&format!(
+            "provider 'p' token_url '{imds}' targets a blocked cloud-metadata host '169.254.169.254'"
+        )),
+        "{refused:?}"
+    );
+    assert_eq!(
+        style_refusals(
+            DOUBLE_STYLE_HEADER,
+            imds,
+            config::SecretRef::env("U29_UNSET_KEY")
+        ),
+        Vec::<String>::new()
+    );
+    let plain = style_refusals(
+        DOUBLE_STYLE_TOKEN_URL,
+        "http://token.example.com/oauth",
+        config::SecretRef::env("U29_UNSET_KEY"),
+    );
+    assert_eq!(
+        plain,
+        vec![
+            "provider 'p' token_url must use https for a public host (got \
+             'http://token.example.com/oauth'); it carries the client secret, so plaintext http \
+             is permitted only for a private/loopback token endpoint"
+                .to_string()
+        ]
+    );
+}
+
+/// A CREDENTIAL THAT NAMES ITS OWN ENDPOINT HAS IT JUDGED (`STYLE_ENDPOINT_FROM_CREDENTIAL`;
+/// ARCHITECT ruling 2026-09-28 Q2 (a)): an inline credential document whose `token_uri` is a
+/// blocked metadata host is refused, in 1.5.5's sentence, before its own shape is judged; the same
+/// document under a style stating no such bit is not read. No file is read for it (R4).
+#[test]
+fn a_credential_endpoint_is_judged_for_a_style_declaring_it() {
+    use crate::test_support::outbound_auth::{DOUBLE_STYLE_FROM_CREDENTIAL, DOUBLE_STYLE_HEADER};
+    let document = serde_json::json!({
+        "client_email": "svc@example.test",
+        "private_key": "unused",
+        "token_uri": "https://169.254.169.254/token",
+    })
+    .to_string();
+    let credential = config::SecretRef::template(document.clone());
+    let refused = style_refusals(
+        DOUBLE_STYLE_FROM_CREDENTIAL,
+        "https://unused.example.com/token",
+        credential.clone(),
+    );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        refused[0].starts_with(&format!(
+            "provider 'p' {DOUBLE_STYLE_FROM_CREDENTIAL} credential (from {}) is invalid: ",
+            credential.describe()
+        )) && refused[0].contains("169.254.169.254"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        style_refusals(
+            DOUBLE_STYLE_HEADER,
+            "https://unused.example.com/token",
+            credential
+        ),
+        Vec::<String>::new()
+    );
+    // A credential that is no inline document is the plugin's to refuse: the kernel reads no file.
+    assert!(super::service_account_token_uri("/no/such/key.json").is_err());
 }
 
 /// An EMPTY `error_map` is valid: the HTTP status still classifies every answer. Rehomes

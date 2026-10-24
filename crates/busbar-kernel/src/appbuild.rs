@@ -170,15 +170,13 @@ pub(crate) fn lane_token_endpoint(
     )
 }
 
-fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
+fn auth_style_of(auth: Option<&config::ProviderAuth>) -> AuthStyleInput {
     match auth {
         None => AuthStyleInput::Default,
-        Some(config::ProviderAuth::Bearer) => AuthStyleInput::Bearer,
-        Some(config::ProviderAuth::ApiKey) => AuthStyleInput::ApiKey,
-        Some(config::ProviderAuth::JwtBearer) => AuthStyleInput::JwtBearer,
-        Some(config::ProviderAuth::OAuthClientCredentials) => {
-            AuthStyleInput::OAuthClientCredentials
-        }
+        Some(style) => AuthStyleInput::Named {
+            style: style.as_str().to_string(),
+            flags: crate::preflight::style_flags(style.as_str()),
+        },
     }
 }
 
@@ -975,7 +973,7 @@ pub fn build_app_from_config(
             project: legacy.project,
             upstream_model: facts.upstream_model.clone(),
             api_key: busbar_contract::redacted::Secret::new(api_key),
-            auth_style: auth_style_of(provider_cfg.auth),
+            auth_style: auth_style_of(provider_cfg.auth.as_ref()),
             scope: provider_cfg.scope.clone(),
             token_url,
             token_userinfo,

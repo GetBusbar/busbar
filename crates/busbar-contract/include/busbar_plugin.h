@@ -222,6 +222,10 @@ extern "C" {
 #define BB_AUTH_LOGIN_KIND_CREDENTIAL UINT32_C(2) /* [`AuthTail::login_kind`]: a credential form the core renders. */
 #define BB_AUTH_STYLE_NEEDS_HEADERS UINT32_C(2) /* [`StyleDecl::flags`]: `fields` needs [`FieldsIn::headers`], the exact envelope, for this style. */
 #define BB_AUTH_STYLE_CALLER_CREDENTIAL UINT32_C(4) /* [`StyleDecl::flags`]: this style serves [`MODE_PASSTHROUGH`] as well as [`MODE_OWN`] — the */
+#define BB_AUTH_STYLE_ENDPOINT_TOKEN_URL UINT32_C(32) /* [`StyleDecl::flags`]: the style sends the credential to the provider entry's token endpoint. */
+#define BB_AUTH_STYLE_ENDPOINT_FROM_CREDENTIAL UINT32_C(64) /* [`StyleDecl::flags`]: the style takes its token endpoint from the credential itself. */
+#define BB_AUTH_STYLE_RANK_SHIFT UINT32_C(16) /* [`StyleDecl::flags`]: the lowest bit of the style's LIST RANK ([`STYLE_RANK_MASK`]). */
+#define BB_AUTH_STYLE_RANK_MASK UINT32_C(0xff0000) /* [`StyleDecl::flags`]: the style's LIST RANK, `1..=255`, or `0` (unranked). */
 #define BB_AUTH_AUTH_TAIL_FROZEN ((size_t)40) /* The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the */
 #define BB_AUTH_CANCEL_ABANDONED UINT32_C(1) /* [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: abandoned, */
 #define BB_AUTH_CANCEL_CONTINUES UINT32_C(2) /* [`CancelOut::disposition`](super::mechanism::lifecycle::CancelOut) for an auth op: the call is */
@@ -557,6 +561,7 @@ extern "C" {
 #define BB_TRANSPORT_UNIT0_FIRST_DATAGRAM UINT8_C(4) /* [`Claim::unit0_trigger`]: the first datagram. */
 #define BB_TRANSPORT_UNIT0_UPGRADE UINT8_C(5) /* [`Claim::unit0_trigger`]: an upgrade. */
 #define BB_TRANSPORT_UNIT0_HANDSHAKE UINT8_C(6) /* [`Claim::unit0_trigger`]: a handshake. */
+#define BB_TRANSPORT_CLAIM_SECURE UINT32_C(1) /* [`Claim::flags`]: the scheme is the secure form of its wire (the host secures the connection). */
 #define BB_TRANSPORT_SETTING_FLAG UINT32_C(1) /* [`SettingDecl::kind`]: `0`/`1`. */
 #define BB_TRANSPORT_SETTING_COUNT UINT32_C(2) /* [`SettingDecl::kind`]: an unsigned integer. */
 #define BB_TRANSPORT_SETTING_TEXT UINT32_C(3) /* [`SettingDecl::kind`]: text. */
@@ -3174,7 +3179,7 @@ struct bb_transport_Claim {
     uint8_t session_bound;
     uint8_t unit0_trigger;
     uint8_t status_at;
-    uint32_t _reserved;
+    uint32_t flags;
 };
 
 /* One status-table row: a code range of a claim's numbering and the class it means. The breaker */
@@ -5714,7 +5719,7 @@ BB_ASSERT(offsetof(bb_transport_Claim, session) == 64, "bb_transport_Claim.sessi
 BB_ASSERT(offsetof(bb_transport_Claim, session_bound) == 65, "bb_transport_Claim.session_bound: offset");
 BB_ASSERT(offsetof(bb_transport_Claim, unit0_trigger) == 66, "bb_transport_Claim.unit0_trigger: offset");
 BB_ASSERT(offsetof(bb_transport_Claim, status_at) == 67, "bb_transport_Claim.status_at: offset");
-BB_ASSERT(offsetof(bb_transport_Claim, _reserved) == 68, "bb_transport_Claim._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_Claim, flags) == 68, "bb_transport_Claim.flags: offset");
 BB_ASSERT(sizeof(bb_transport_StatusRow) == 16, "bb_transport_StatusRow: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_StatusRow) == 4, "bb_transport_StatusRow: alignment");
 BB_ASSERT(offsetof(bb_transport_StatusRow, claim) == 0, "bb_transport_StatusRow.claim: offset");

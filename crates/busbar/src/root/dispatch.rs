@@ -126,6 +126,19 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         crate::root::door_steps::process_auths().check(style, credential, settings)
     }
 
+    fn outbound_styles(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        crate::root::door_steps::process_auths().declared()
+    }
+
+    fn check_outbound_entry(
+        &self,
+        style: &str,
+        credential: busbar_contract::auth_calls::EntryCredential<'_>,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        crate::root::door_steps::process_auths().check_entry(style, credential, settings)
+    }
+
     fn serving(
         &self,
         style: &str,

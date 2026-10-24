@@ -346,7 +346,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
         }
     }
-    validate_providers_with(&known_protocols, cfg, unset_env_vars, &mut errors);
+    let claimed = crate::preflight::transport_schemes();
+    validate_providers_with(&known_protocols, &claimed, cfg, unset_env_vars, &mut errors);
 
     // Rule 2 & 3: Validate each pool's members
     for (pool_name, pool_cfg) in &cfg.pools {
@@ -2147,6 +2148,7 @@ pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allow
 /// the production code path, error ordering and all — against an empty set.
 fn validate_providers_with(
     known: &[&str],
+    claimed: &[crate::preflight::ClaimedScheme],
     cfg: &RootCfg,
     unset_env_vars: &[String],
     errors: &mut Vec<String>,
@@ -2217,8 +2219,8 @@ fn validate_providers_with(
             }
         }
 
-        // The optional auth-style override (`bearer` / `api-key`) is now a `ProviderAuth` enum, so an
-        // invalid spelling is rejected at deserialize time — no hand-check needed here.
+        // The optional auth-style override is a word some loaded auth plugin declares
+        // (`ProviderAuth`), so an undeclared word is refused at deserialize time.
 
         // The resolved base_url is the actual upstream target for signed (API-key-bearing) calls.
         // It is operator config (a client never chooses a provider URL — it picks a model NAME that
@@ -2248,17 +2250,29 @@ fn validate_providers_with(
             .collect();
 
         let base_url = &provider_cfg.base_url;
-        let host_for_scheme = extract_normalized_host(base_url);
+        // A scheme some LOADED transport claims (BUSBAR-1.6.0.md #50: the base_url's scheme selects
+        // the transport that declares it), when it is not one of the two this rule has always
+        // judged by name: those keep 1.5.5's rule and text exactly.
+        let web = scheme_is(base_url, "https") || scheme_is(base_url, "http");
+        let claim = (!web).then(|| claimed_scheme(claimed, base_url)).flatten();
+        let host_for_scheme = match claim {
+            Some(_) => claimed_host(base_url),
+            None => extract_normalized_host(base_url),
+        };
         let host_is_local = host_for_scheme
             .as_deref()
             .map(host_is_private_or_loopback)
             .unwrap_or(false);
         // Case-INSENSITIVE scheme check (RFC 3986 §3.1) — a raw `starts_with("https://")` rejected
         // the valid uppercase spelling reqwest would accept, and diverged from the webhook guard's
-        // `scheme_is`.
+        // `scheme_is`. A claimed scheme is judged as its claim states it: a SECURE one as `https`
+        // is, a plaintext one as `http` is (the credential would cross an off-box hop in clear, so
+        // only a private/loopback host may take it). A scheme no loaded transport claims is
+        // refused, naming the provider and the URL, in 1.5.5's words (oracle BOOT-032's family).
         let scheme_ok = is_env_placeholder(base_url)
             || scheme_is(base_url, "https")
-            || (host_is_local && scheme_is(base_url, "http"));
+            || (host_is_local && scheme_is(base_url, "http"))
+            || claim.is_some_and(|c| c.secure || host_is_local);
         if !scheme_ok {
             // What an error may repeat of the base URL: a `user:pass@` the operator wrote is
             // ACCEPTED (and stripped where the base URL enters the served flow, as 1.5.5 did — row
@@ -2277,7 +2291,7 @@ fn validate_providers_with(
                 )
             });
         } else if let Some(host) = ssrf_blocked_host(
-            base_url,
+            judged(base_url, claim.is_some()),
             &allow_overrides,
             cfg.allow_all_metadata,
             &cfg.blocked_metadata_hosts,
@@ -2317,7 +2331,7 @@ fn validate_providers_with(
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
                 if let Some(host) = ssrf_blocked_host(
-                    &composed,
+                    judged(&composed, claim.is_some()),
                     &allow_overrides,
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
@@ -2340,7 +2354,7 @@ fn validate_providers_with(
             } else if scheme_ok {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
                 if let Some(host) = ssrf_blocked_host(
-                    &composed,
+                    judged(&composed, claim.is_some()),
                     &allow_overrides,
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
@@ -2352,184 +2366,263 @@ fn validate_providers_with(
                 }
             }
         }
-        // `oauth-client-credentials` needs a token endpoint + scope to run the exchange; without them
-        // a lane would boot but never mint a token (every request 401s). Fail at validate time. The
-        // token_url carries the client_secret, so it must be https for a public host (loopback/private
-        // may use http, mirroring base_url).
-        if matches!(
-            provider_cfg.auth,
-            Some(crate::config::ProviderAuth::OAuthClientCredentials)
-        ) {
-            // A keyless declaration contradicts the grant: this flow MINTS its token FROM the
-            // credential (`client_id:client_secret`), so `none` leaves it nothing to exchange.
-            if provider_cfg.api_key.is_none() {
-                errors.push(format!(
-                    "provider '{provider_name}' uses auth: oauth-client-credentials but declares \
-                     `api_key: none`; that grant mints its token FROM the credential \
-                     (`client_id:client_secret`), so there is nothing to declare keyless"
-                ));
-            }
-            if provider_cfg
-                .token_url
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                errors.push(format!(
-                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `token_url` (the OAuth token endpoint the client credentials are POSTed to)"
-                ));
-            } else if let Some(tu) = &provider_cfg.token_url {
-                // token_url carries the client secret in the POST body, so it gets the SAME two guards
-                // as base_url — not a lone scheme check: (1) case-INSENSITIVE https requirement (http
-                // permitted only for a private/loopback token endpoint; a raw `starts_with("http://")`
-                // let `HTTPS://`/scheme-less/`FTP://` bypass it, the exact base_url bug this mirrors),
-                // and (2) the SSRF/metadata denylist — an operator typo/template pointing token_url at
-                // IMDS or metadata.google.internal would POST the client secret straight to it.
-                let host_private = extract_normalized_host(tu)
-                    .as_deref()
-                    .map(host_is_private_or_loopback)
-                    .unwrap_or(false);
-                let tu_scheme_ok = is_env_placeholder(tu)
-                    || scheme_is(tu, "https")
-                    || (host_private && scheme_is(tu, "http"));
-                if !tu_scheme_ok {
-                    // Repeated with its userinfo redacted: a `user:pass@` in token_url is accepted
-                    // and rides the mint as 1.5.5's did (row 74, F25), never a message.
-                    let plaintext = scheme_is(tu, "http");
-                    let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
-                    errors.push(if plaintext {
-                        format!(
-                            "provider '{provider_name}' token_url must use https for a public host (got '{tu}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
-                        )
-                    } else {
-                        format!(
-                            "provider '{provider_name}' token_url must use http or https (got '{tu}')"
-                        )
-                    });
-                } else if let Some(host) = ssrf_blocked_host(
-                    tu,
-                    &allow_overrides,
-                    cfg.allow_all_metadata,
-                    &cfg.blocked_metadata_hosts,
-                ) {
-                    let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
-                    errors.push(format!(
-                        "provider '{provider_name}' token_url '{tu}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
-                    ));
-                }
-            }
-            if provider_cfg
-                .scope
-                .as_deref()
-                .unwrap_or("")
-                .trim()
-                .is_empty()
-            {
-                errors.push(format!(
-                    "provider '{provider_name}' uses auth: oauth-client-credentials but has no `scope`"
-                ));
-            }
-            // Dry-run credential-format check (parity with jwt-bearer below): the `client_id:client_secret`
-            // colon-split lives only in `build()`, which `--validate` never reaches, so a malformed
-            // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
-            // resolves (an unset var can't be validated — caught at boot).
-            let cred = crate::config::secret::resolve_linked_string_at_config(
-                &provider_cfg.api_key,
-                &busbar_contract::config_time::ConfigScope::config_time(),
-            )
-            .unwrap_or_default();
-            if !cred.trim().is_empty() {
-                // The credential's shape is the serving auth plugin's to judge, in its own words,
-                // through the same `open_outbound` the build binds it with (never dialing).
-                // The endpoint as the plugin is handed it at the build: its userinfo stripped.
-                let token_url = provider_cfg.token_url.as_deref().unwrap_or_default();
-                let params = serde_json::json!({
-                    "token_url": busbar_kernel_egress::trust::net::strip_userinfo(token_url),
-                    "scope": provider_cfg.scope.clone().unwrap_or_default(),
-                });
-                for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
-                    errors.push(format!(
-                        "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
-                    ));
-                }
-            }
+        // THE PROVIDER'S AUTH STYLE, as its plugin declares it (BUSBAR-1.6.0.md #50: an opaque word;
+        // arch-audit u29 F1). The kernel judges the style's token endpoint as a destination
+        // (ARCHITECT ruling 2026-09-28 Q2 (a): a need's target is the kernel's to judge), triggered
+        // by the endpoint bit the style DECLARES, never by its name; every other finding is the
+        // serving plugin's own, in its own words, through the dry `open_outbound` the build binds
+        // with ([`entry_refusals`]).
+        if let Some(style) = provider_cfg
+            .auth
+            .as_ref()
+            .map(crate::config::ProviderAuth::as_str)
+        {
+            validate_auth_style(
+                provider_name,
+                provider_cfg,
+                style,
+                crate::preflight::style_flags(style),
+                &is_env_placeholder,
+                &MetadataPosture {
+                    allow_overrides: allow_overrides.clone(),
+                    allow_all: cfg.allow_all_metadata,
+                    blocked_hosts: cfg.blocked_metadata_hosts.clone(),
+                },
+                errors,
+            );
         }
+    }
+}
 
-        // jwt-bearer: dry-run key validation. `build()` (SA-JSON parse + PKCS#8 key check + token_uri
-        // SSRF) does NOT run on the `--validate` path, so a malformed credential otherwise surfaces only
-        // at boot/apply. Validate it here IF the credential env var is actually set (an unset var can't
-        // be validated — it is checked at boot, where unset is a hard error).
-        if matches!(
-            provider_cfg.auth,
-            Some(crate::config::ProviderAuth::JwtBearer)
-        ) {
-            // Same contradiction as the oauth arm above: this grant SIGNS its assertion with the
-            // credential (the service-account JSON or key file), so `none` disarms it entirely.
-            if provider_cfg.api_key.is_none() {
-                errors.push(format!(
-                    "provider '{provider_name}' uses auth: jwt-bearer but declares \
-                     `api_key: none`; that grant signs its assertion WITH the credential (the \
-                     service-account JSON or key file), so there is nothing to declare keyless"
-                ));
-            }
-            let config_time = busbar_contract::config_time::ConfigScope::config_time();
-            let cred = crate::config::secret::resolve_linked_string_at_config(
-                &provider_cfg.api_key,
-                &config_time,
-            )
-            .unwrap_or_default();
-            // A credential naming its key file is read as the build reads it, in the same words.
-            let cred = match service_account_json(cred.into_bytes(), |file| {
-                crate::config::secret::SecretResolver::builtins_only()
-                    .resolve_at_config(file, &config_time)
-            }) {
-                Ok(json) => String::from_utf8(json).unwrap_or_default(),
-                Err(e) => {
-                    errors.push(format!("provider '{provider_name}' (jwt-bearer auth): {e}"));
-                    String::new()
-                }
-            };
-            if !cred.trim().is_empty() {
-                // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE (THE DESIGN §5; ARCHITECT ruling
-                // 2026-09-28, Q2 (a)): the service account's `token_uri`, under the SAME operator
-                // metadata posture as every other destination, before the key material is judged —
-                // 1.5.5's order. The service account's own shape (its JSON, its key) is the serving
-                // auth plugin's to judge, in its own words.
-                let vetted = service_account_token_uri(&cred).map_or(Ok(()), |uri| {
-                    vet_token_uri(
-                        &uri,
-                        &MetadataPosture {
-                            allow_overrides: allow_overrides.clone(),
-                            allow_all: cfg.allow_all_metadata,
-                            blocked_hosts: cfg.blocked_metadata_hosts.clone(),
-                        },
-                    )
-                });
-                let refusals = match vetted {
-                    Err(e) => vec![e],
-                    Ok(()) => {
-                        let mut params = serde_json::Map::new();
-                        if let Some(scope) = &provider_cfg.scope {
-                            params.insert("scope".into(), serde_json::Value::String(scope.clone()));
-                        }
-                        outbound_credential_refusals(
-                            "jwt-bearer",
-                            &cred,
-                            &serde_json::Value::Object(params),
-                        )
-                    }
-                };
-                for e in refusals {
-                    errors.push(format!(
-                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
-                        provider_cfg.api_key.describe()
-                    ));
-                }
+/// The claim a loaded transport makes on `url`'s scheme (case-insensitive, RFC 3986 §3.1), if any.
+fn claimed_scheme<'c>(
+    claimed: &'c [crate::preflight::ClaimedScheme],
+    url: &str,
+) -> Option<&'c crate::preflight::ClaimedScheme> {
+    let (scheme, _) = url.split_once("://")?;
+    claimed
+        .iter()
+        .find(|c| c.scheme.eq_ignore_ascii_case(scheme))
+}
+
+/// The host of a URL under a CLAIMED scheme: its authority, read past the `scheme://` by the same
+/// normalization every destination check uses (the web-only extraction reads no host for any
+/// other scheme, and a destination with no host would pass every host rule unjudged).
+fn claimed_host(url: &str) -> Option<String> {
+    let (_, rest) = url.split_once("://")?;
+    busbar_contract::net::extract_normalized_authority_host(rest)
+}
+
+/// The spelling of `url` the metadata denylist judges: the URL itself under the web schemes, its
+/// authority-and-path under a claimed one (the denylist reads a host from either spelling, and
+/// from the second only when no `scheme://` precedes it).
+fn judged(url: &str, claimed: bool) -> &str {
+    match url.split_once("://") {
+        Some((_, rest)) if claimed => rest,
+        _ => url,
+    }
+}
+
+/// ONE PROVIDER'S AUTH STYLE, judged (arch-audit u29 F1). `flags` are the style's declared
+/// `abi::auth::StyleDecl::flags`.
+///
+/// - A style that sends the credential to the entry's `token_url`
+///   (`STYLE_ENDPOINT_TOKEN_URL`) has that endpoint judged as a destination, 1.5.5's guards and
+///   words: https for a public host (http only for a private or loopback one: it receives the
+///   client secret), never a cloud-metadata host the posture blocks.
+/// - A style that takes its endpoint from the credential itself (`STYLE_ENDPOINT_FROM_CREDENTIAL`)
+///   has the endpoint the credential names judged the same way, before the credential is.
+/// - For either, the serving plugin then judges the entry and its credential, in its own words
+///   ([`entry_refusals`]): exactly the two styles 1.5.5 judged here, picked by what they declare.
+///   A style stating no endpoint is not checked, as 1.5.5 checked none.
+fn validate_auth_style(
+    provider_name: &str,
+    provider_cfg: &crate::config::ResolvedProvider,
+    style: &str,
+    flags: u32,
+    is_env_placeholder: &dyn Fn(&str) -> bool,
+    posture: &MetadataPosture,
+    errors: &mut Vec<String>,
+) {
+    use busbar_contract::abi::auth::{STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL};
+    let token_url = flags & STYLE_ENDPOINT_TOKEN_URL != 0;
+    let from_credential = flags & STYLE_ENDPOINT_FROM_CREDENTIAL != 0;
+    if !token_url && !from_credential {
+        return;
+    }
+    let keyless = provider_cfg.api_key.is_none();
+    let resolved = if keyless {
+        String::new()
+    } else {
+        crate::config::secret::resolve_linked_string_at_config(
+            &provider_cfg.api_key,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .unwrap_or_default()
+    };
+    // The endpoint the credential is sent to, judged first (its refusal leads, as 1.5.5's did).
+    let mut endpoint: Vec<String> = Vec::new();
+    if token_url {
+        if let Some(tu) = provider_cfg
+            .token_url
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+        {
+            if let Some(e) = token_url_refusal(provider_name, tu, is_env_placeholder, posture) {
+                endpoint.push(e);
             }
         }
     }
+    // A credential that names its own endpoint may name its key FILE (1.5.5 took the document
+    // inline or as a path): read here through the secret kind's file source, never by the kernel
+    // (R4), in 1.5.5's words when it cannot be read; the plugin is judged on the document.
+    let resolved = if from_credential && !keyless {
+        let config_time = busbar_contract::config_time::ConfigScope::config_time();
+        match service_account_json(resolved.into_bytes(), |file| {
+            crate::config::secret::SecretResolver::builtins_only()
+                .resolve_at_config(file, &config_time)
+        }) {
+            Ok(json) => String::from_utf8(json).unwrap_or_default(),
+            Err(e) => {
+                errors.push(format!("provider '{provider_name}' ({style} auth): {e}"));
+                return;
+            }
+        }
+    } else {
+        resolved
+    };
+    let mut params = serde_json::Map::new();
+    for (key, value) in [
+        ("token_url", provider_cfg.token_url.as_deref()),
+        ("scope", provider_cfg.scope.as_deref()),
+        ("subject", provider_cfg.subject.as_deref()),
+    ] {
+        if let Some(v) = value {
+            // The endpoint as the plugin is handed it at the build: its userinfo stripped.
+            let v = busbar_kernel_egress::trust::net::strip_userinfo(v);
+            params.insert(key.into(), serde_json::Value::String(v.into_owned()));
+        }
+    }
+    let credential = busbar_contract::redacted::Secret::new(resolved.clone().into_bytes());
+    let entry = if keyless {
+        busbar_contract::auth_calls::EntryCredential::Keyless
+    } else if resolved.trim().is_empty() {
+        busbar_contract::auth_calls::EntryCredential::Unresolved
+    } else {
+        busbar_contract::auth_calls::EntryCredential::Resolved(&credential)
+    };
+    // The endpoint a credential names is judged before the credential's own shape, as 1.5.5's
+    // build did: a refusal there stands for the credential.
+    // A document the host cannot read an endpoint from is the plugin's to refuse, in its own words.
+    if from_credential && !keyless {
+        if let Some(Ok(uri)) = credential_endpoint(&resolved) {
+            if let Err(e) = vet_token_uri(&uri, posture) {
+                errors.push(format!(
+                    "provider '{provider_name}' {style} credential (from {}) is invalid: {e}",
+                    provider_cfg.api_key.describe()
+                ));
+                return;
+            }
+        }
+    }
+    let lines = entry_refusals(style, entry, &serde_json::Value::Object(params));
+    // 1.5.5's order: the keyless contradiction, then the token endpoint (missing, or refused as a
+    // destination), then the rest.
+    let at = usize::from(keyless).min(lines.len());
+    let mut composed: Vec<String> = lines
+        .into_iter()
+        .filter_map(|line| {
+            if let Some(text) = line.strip_prefix("settings: ") {
+                Some(format!("provider '{provider_name}' {text}"))
+            } else {
+                line.strip_prefix("credential: ").map(|text| {
+                    format!(
+                        "provider '{provider_name}' {style} credential (from {}) is invalid: {text}",
+                        provider_cfg.api_key.describe()
+                    )
+                })
+            }
+        })
+        .collect();
+    for (i, e) in endpoint.into_iter().enumerate() {
+        composed.insert(at + i, e);
+    }
+    errors.extend(composed);
+}
+
+/// A token endpoint the credential is POSTed to, judged as a destination: 1.5.5's two guards and
+/// words for `token_url` (https for a public host, http only for a private or loopback one; never
+/// a blocked cloud-metadata host). Repeated with its userinfo redacted (row 74, F25).
+fn token_url_refusal(
+    provider_name: &str,
+    tu: &str,
+    is_env_placeholder: &dyn Fn(&str) -> bool,
+    posture: &MetadataPosture,
+) -> Option<String> {
+    let host_private = extract_normalized_host(tu)
+        .as_deref()
+        .map(host_is_private_or_loopback)
+        .unwrap_or(false);
+    let scheme_ok =
+        is_env_placeholder(tu) || scheme_is(tu, "https") || (host_private && scheme_is(tu, "http"));
+    if !scheme_ok {
+        let plaintext = scheme_is(tu, "http");
+        let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
+        return Some(if plaintext {
+            format!(
+                "provider '{provider_name}' token_url must use https for a public host (got '{tu}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
+            )
+        } else {
+            format!("provider '{provider_name}' token_url must use http or https (got '{tu}')")
+        });
+    }
+    ssrf_blocked_host(
+        tu,
+        &posture.allow_overrides,
+        posture.allow_all,
+        &posture.blocked_hosts,
+    )
+    .map(|host| {
+        let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
+        format!(
+            "provider '{provider_name}' token_url '{tu}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
+        )
+    })
+}
+
+/// THE ENTRY REFUSALS the auth plugin serving `style` names for a provider entry: every line of its
+/// dry `open_outbound` (`settings: …` / `credential: …`), never dialing. A credential this check
+/// could not resolve is judged by nothing: its `credential:` lines are dropped. None when no
+/// plugin this build reaches serves the style.
+fn entry_refusals(
+    style: &str,
+    credential: busbar_contract::auth_calls::EntryCredential<'_>,
+    params: &serde_json::Value,
+) -> Vec<String> {
+    let Some(axis) = crate::preflight::linked_auth_axis() else {
+        return Vec::new();
+    };
+    let unresolved = matches!(
+        credential,
+        busbar_contract::auth_calls::EntryCredential::Unresolved
+    );
+    axis.check_outbound_entry(style, credential, params)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|l| !(unresolved && l.starts_with("credential: ")))
+        .collect()
+}
+
+/// The endpoint a credential document names INLINE (its `token_uri`, else the default
+/// [`service_account_token_uri`] gives); `None` when the credential is no inline document (the
+/// host's secret file source delivers a key file's JSON, so a credential that is still a path is
+/// the plugin's to refuse, in its own words). No file is read here (R4: the kernel touches no disk
+/// outside the host's disk lane).
+fn credential_endpoint(credential: &str) -> Option<Result<String, String>> {
+    credential
+        .trim_start()
+        .starts_with('{')
+        .then(|| service_account_token_uri(credential))
 }
 
 /// ONE PROVIDER'S METADATA POSTURE, owned: the hosts its destinations may reach past the
@@ -2573,21 +2666,6 @@ impl MetadataPosture {
             blocked_hosts: self.blocked_hosts.clone(),
         }
     }
-}
-
-/// THE CREDENTIAL REFUSALS the auth plugin serving `style` names for `credential` under `params`,
-/// through the dry `open_outbound` the build binds with (the plugin's `credential:` lines, their
-/// text only). None when no plugin this build reaches serves the style.
-fn outbound_credential_refusals(
-    style: &str,
-    credential: &str,
-    params: &serde_json::Value,
-) -> Vec<String> {
-    let Some(axis) = crate::preflight::linked_auth_axis() else {
-        return Vec::new();
-    };
-    axis.check_outbound(style, credential.as_bytes(), params)
-        .unwrap_or_default()
 }
 
 /// THE SERVICE ACCOUNT A `jwt-bearer` CREDENTIAL CARRIES, as bytes of its JSON (Q128 audit

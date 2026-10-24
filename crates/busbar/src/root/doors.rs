@@ -460,6 +460,19 @@ pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
+/// The claims a linked row's door states SECURE (their row's `CLAIM_SECURE`), read off the door's
+/// Statement: the secure forms of its wire (BUSBAR-1.6.0.md #50).
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn secure_of(door: DoorFn) -> Vec<&'static str> {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.secure)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
 /// The claims a linked row's door opens on their FIRST LINE (their row's `unit0_trigger`), read off
 /// the door's Statement: the carriers of whole lines, one of which the process's own stdin/stdout
 /// serves (`crate::root::serve::lines::line_carrier`).

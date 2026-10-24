@@ -880,6 +880,110 @@ fn a_login_carries_no_decision_strip_or_credential() {
     );
 }
 
+/// A STYLE STATES ITS LIST RANK AND ITS ENDPOINTS IN ITS FLAGS (u29 F1 rulings: no layout change):
+/// a rank `1..=255` in [`STYLE_RANK_MASK`], and the two endpoint bits the host judges a destination
+/// by, each accepted beside the existing bits.
+#[test]
+fn a_style_decl_states_a_rank_and_its_endpoints() {
+    use busbar_contract::abi::auth::{
+        ranked, style_rank, STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL,
+        STYLE_RANK_MASK,
+    };
+    for flags in [
+        ranked(1),
+        ranked(255),
+        ranked(4) | STYLE_ENDPOINT_TOKEN_URL,
+        ranked(3) | STYLE_ENDPOINT_FROM_CREDENTIAL,
+        STYLE_NEEDS_HEADERS | STYLE_CALLER_CREDENTIAL | STYLE_RANK_MASK,
+    ] {
+        assert_eq!(
+            check_style_decl(flags, POINT_HEAD),
+            Ok(AuthPoints::HEAD),
+            "{flags:#x}"
+        );
+    }
+    assert_eq!(style_rank(ranked(7) | STYLE_NEEDS_HEADERS), 7);
+    assert_eq!(style_rank(STYLE_CALLER_CREDENTIAL), 0, "unranked");
+}
+
+/// RED: the rank field opens no other bit. A flag above the rank, or between the named bits and
+/// the rank, is still outside the vocabulary.
+#[test]
+fn a_style_decl_bit_outside_the_rank_and_the_named_bits_is_still_fault() {
+    use busbar_contract::abi::auth::ranked;
+    for flags in [1 << 24, 1 << 31, 1 << 8, 1 << 15, ranked(2) | (1 << 7)] {
+        assert_eq!(
+            check_style_decl(flags, POINT_HEAD),
+            red(Rule::UnknownCode, "style.unknown_flags"),
+            "{flags:#x}"
+        );
+    }
+}
+
+/// THE ONE LISTING ORDER (u29 F1, coordinator ruling (a)): ranked styles first by rank, then the
+/// unranked in the order given (linked rows, then dropped-in rows); a name stated twice is listed
+/// once, at its first place, whatever the second statement's rank. RED: registration order alone
+/// put the first row's unranked styles between the ranked ones.
+#[test]
+fn outbound_styles_list_ranked_first_then_registration_order_once_each() {
+    use busbar_contract::abi::auth::ranked;
+    use busbar_contract::auth_calls::{listed_styles, DeclaredStyle};
+    let d = |name: &str, flags: u32| DeclaredStyle {
+        name: name.to_string(),
+        flags,
+    };
+    // Three linked rows, then one dropped in.
+    let declared = vec![
+        d("first-a", ranked(1)),
+        d("first-b", ranked(2)),
+        d("first-c", 0),
+        d("first-d", 0),
+        d("second-a", 0),
+        d("third-a", ranked(3)),
+        d("third-b", ranked(4) | STYLE_NEEDS_HEADERS),
+        d("third-c", 0),
+        d("dropped-a", 0),
+        d("first-c", ranked(1)),
+    ];
+    let names: Vec<String> = listed_styles(declared.clone())
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "first-a",
+            "first-b",
+            "third-a",
+            "third-b",
+            "first-c",
+            "first-d",
+            "second-a",
+            "third-c",
+            "dropped-a",
+        ]
+    );
+    // The flags travel with the name, from its first statement.
+    let listed = listed_styles(declared);
+    assert_eq!(listed[3], d("third-b", ranked(4) | STYLE_NEEDS_HEADERS));
+    assert_eq!(listed[4], d("first-c", 0));
+}
+
+/// A STYLE TAKES ITS TOKEN ENDPOINT FROM ONE PLACE (af24 review of #1233): the entry's `token_url`
+/// or the credential itself, never both, so the host never judges two endpoints for one binding.
+/// RED: both endpoint bits together loaded.
+#[test]
+fn a_style_decl_stating_both_endpoints_is_a_contradiction() {
+    use busbar_contract::abi::auth::{STYLE_ENDPOINT_FROM_CREDENTIAL, STYLE_ENDPOINT_TOKEN_URL};
+    assert_eq!(
+        check_style_decl(
+            STYLE_ENDPOINT_TOKEN_URL | STYLE_ENDPOINT_FROM_CREDENTIAL,
+            POINT_HEAD
+        ),
+        red(Rule::Contradiction, "style.endpoints")
+    );
+}
+
 /// RED: `target` names its URL within the host's buffer, or nothing; a failure names nothing.
 #[test]
 fn a_target_is_a_span_in_the_buffer_or_absent() {

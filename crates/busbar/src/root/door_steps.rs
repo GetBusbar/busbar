@@ -1965,17 +1965,6 @@ impl StyleParams {
     }
 }
 
-/// The `auth:` spelling of a provider's style override, as config writes it.
-fn style_word(auth: busbar_kernel::config::ProviderAuth) -> &'static str {
-    use busbar_kernel::config::ProviderAuth as Style;
-    match auth {
-        Style::Bearer => "bearer",
-        Style::ApiKey => "api-key",
-        Style::JwtBearer => "jwt-bearer",
-        Style::OAuthClientCredentials => "oauth-client-credentials",
-    }
-}
-
 /// TRANSITIONAL (row 155 B1b; drains at B1c, where the plane states the default auth style its
 /// dialect implies per provider and the root reads that style, never the dialect): one resolved
 /// provider as [`provider_routes`] reads it, its kernel-owned keys through the provider itself and
@@ -2031,7 +2020,7 @@ pub fn provider_routes(
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
                     credential: p.api_key.clone(),
-                    style: p.auth.map(|a| style_word(a).to_string()),
+                    style: p.auth.as_ref().map(|a| a.as_str().to_string()),
                     params: StyleParams {
                         token_url: p.token_url.clone(),
                         token_uri: None,
@@ -2720,6 +2709,64 @@ impl OutboundAuths {
                         .collect(),
                 },
             );
+        }
+        Ok(Vec::new())
+    }
+
+    /// THE OUTBOUND STYLES every auth row declares, linked first, then dropped in, in the host's
+    /// one listing order (`busbar_contract::auth_calls::listed_styles`).
+    pub fn declared(&self) -> Vec<busbar_contract::auth_calls::DeclaredStyle> {
+        let rows = self.linked_facts().iter().chain(self.dropped_facts());
+        busbar_contract::auth_calls::listed_styles(rows.flat_map(|row| {
+            row.styles
+                .iter()
+                .map(|s| busbar_contract::auth_calls::DeclaredStyle {
+                    name: s.name.clone(),
+                    flags: s.flags,
+                })
+        }))
+    }
+
+    /// CHECK A PROVIDER ENTRY, NEVER DIAL: as [`Self::check`] (a CHECK bind, `ConnTable::Probe`),
+    /// over the entry's declared credential, answering EVERY line the plugin's refusal names,
+    /// verbatim (`settings: ...` and `credential: ...`). A keyless entry hands the plugin no
+    /// credential; an unresolved one a one-byte stand-in, and its `credential:` lines are dropped
+    /// (nothing was there to judge); a resolved one is revealed to the binding alone, under the
+    /// kernel's seal (Part 2 #54).
+    ///
+    /// # Errors
+    ///
+    /// The serving plugin would not open for its outbound styles.
+    pub fn check_entry(
+        &self,
+        style: &str,
+        credential: busbar_contract::auth_calls::EntryCredential<'_>,
+        settings: &serde_json::Value,
+    ) -> Result<Vec<String>, String> {
+        use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
+        use crate::root::loader::dispatch::ConnTable;
+        use busbar_contract::auth_calls::EntryCredential;
+        let seal = busbar_kernel::seal::lend();
+        let (bytes, unresolved): (&[u8], bool) = match credential {
+            EntryCredential::Keyless => (&[], false),
+            EntryCredential::Unresolved => (b"-", true),
+            EntryCredential::Resolved(secret) => (secret.expose(&seal).as_slice(), false),
+        };
+        for row in self.stating(style) {
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::Probe) else {
+                continue;
+            };
+            let opened = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
+            let instance =
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &opened)?;
+            return Ok(match instance.open_outbound_raw(style, bytes, settings) {
+                Ok(_) => Vec::new(),
+                Err((_, why)) => why
+                    .lines()
+                    .filter(|l| !(unresolved && l.starts_with("credential: ")))
+                    .map(str::to_string)
+                    .collect(),
+            });
         }
         Ok(Vec::new())
     }
@@ -3992,6 +4039,10 @@ fn peer_key_pin_refusal(at: &str, keys: &[busbar_contract::plane::TrustKeyDecl])
          plain `<base64>` of the same digest is also accepted)."
     )
 }
+
+#[cfg(test)]
+#[path = "tests/declared_styles.rs"]
+mod declared_styles_tests;
 
 #[cfg(test)]
 #[path = "tests/door_steps.rs"]
