@@ -2459,9 +2459,12 @@ fn a_trust_decision_the_store_refused_never_takes_effect() {
     );
 }
 
+/// What one mint was handed: the key id, the prefix, the lifetime and the record.
+type Minted = (String, String, u64, Vec<u8>);
+
 /// A press that mints `<prefix><key>:<ttl>` and expires at `now + ttl`, keeping what it was handed.
 #[derive(Default)]
-struct Press(Mutex<Vec<(String, String, u64, Vec<u8>)>>);
+struct Press(Mutex<Vec<Minted>>);
 
 impl TicketPress for Press {
     fn mint(
