@@ -42,57 +42,86 @@ pub const REMOTE_BASE_KEY: &str = "plugin-pins-remote-base";
 
 const ORG_PREFIX: &str = "https://github.com/GetBusbar/";
 
-pub struct PluginPinsOnDevGate;
+#[derive(Default)]
+pub struct PluginPinsOnDevGate {
+    /// The local directory of repos the selftest's own instance fetches from. The gate that proves
+    /// itself carries this on the INSTANCE, so the unplanted baseline and every plant read the same
+    /// remote whatever overlay or base layer a case runs under.
+    remote: Option<String>,
+}
 
-/// One pinned plugin: dependency name, repo URL as written, rev.
+/// One GetBusbar git dependency: dependency name, repo URL as written, and the rev it pins (`None`
+/// when it pins nothing: a `branch =` or `tag =` or no selector at all).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pin {
     dep: String,
     url: String,
-    rev: String,
+    rev: Option<String>,
+    /// What the dependency names instead of a rev, for the refusal (`branch = "dev"`).
+    floating: Option<String>,
 }
 
-/// The value of `key = "…"` inside an inline table's raw text.
-fn inline_value(raw: &str, key: &str) -> Option<String> {
-    let body = raw.trim().strip_prefix('{')?.trim_end().strip_suffix('}')?;
-    for item in body.split(',') {
-        if let Some((k, v)) = item.split_once('=') {
-            if k.trim() == key {
-                return Some(v.trim().trim_matches('"').to_string());
+/// Every GetBusbar git dependency of `[workspace.dependencies]`, in all the spellings TOML has for
+/// it: an inline table (`name = { git = '…', rev = '…' }`, either quote), a dotted table
+/// (`[workspace.dependencies.name]`) and dotted keys (`name.git = "…"`). A dependency with no
+/// `rev` is returned too, because skipping it is how a branch-tracking dependency goes unchecked.
+fn pins(manifest: &str) -> Vec<Pin> {
+    use std::collections::BTreeMap;
+    let doc = toml_lite::parse_text(manifest);
+    let mut deps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    for (dep, raw) in &doc.table("workspace.dependencies").entries {
+        match toml_lite::inline_table(raw) {
+            Some(items) => {
+                let m = deps.entry(dep.clone()).or_default();
+                for (k, v) in items {
+                    m.insert(k, toml_lite::string_value(&v));
+                }
+            }
+            None => {
+                if let Some((name, key)) = dep.split_once('.') {
+                    deps.entry(name.to_string())
+                        .or_default()
+                        .insert(key.to_string(), toml_lite::string_value(raw));
+                }
             }
         }
     }
-    None
-}
-
-/// Every `[workspace.dependencies]` git dependency on a GetBusbar repo that carries a `rev`.
-fn pins(manifest: &str) -> Vec<Pin> {
-    let doc = toml_lite::parse_text(manifest);
-    let table = doc.table("workspace.dependencies");
-    let mut out = Vec::new();
-    for (dep, raw) in &table.entries {
-        let (Some(url), Some(rev)) = (inline_value(raw, "git"), inline_value(raw, "rev")) else {
+    for (path, table) in &doc.tables {
+        let Some(name) = path.strip_prefix("workspace.dependencies.") else {
             continue;
         };
-        if url.starts_with(ORG_PREFIX) {
-            out.push(Pin {
-                dep: dep.clone(),
-                url,
-                rev,
-            });
+        let m = deps.entry(name.to_string()).or_default();
+        for (k, v) in &table.entries {
+            m.insert(k.clone(), toml_lite::string_value(v));
         }
+    }
+    let mut out = Vec::new();
+    for (dep, kv) in deps {
+        let Some(url) = kv.get("git").filter(|u| u.starts_with(ORG_PREFIX)) else {
+            continue;
+        };
+        let floating = ["branch", "tag"]
+            .iter()
+            .find_map(|k| kv.get(*k).map(|v| format!("{k} = \"{v}\"")));
+        out.push(Pin {
+            dep,
+            url: url.clone(),
+            rev: kv.get("rev").cloned(),
+            floating,
+        });
     }
     out
 }
 
-fn remote_base(cx: &Ctx) -> Option<String> {
+fn remote_base(cx: &Ctx, own: Option<&str>) -> Option<String> {
     cx.overlay_command(REMOTE_BASE_KEY)
+        .or_else(|| own.map(str::to_string))
         .or_else(|| cx.base().and_then(|b| b.command(REMOTE_BASE_KEY)).cloned())
 }
 
 /// The URL actually fetched: the pinned one, or the local stand-in under the selftest's base.
-fn fetch_url(cx: &Ctx, url: &str) -> String {
-    match remote_base(cx) {
+fn fetch_url(cx: &Ctx, own: Option<&str>, url: &str) -> String {
+    match remote_base(cx, own) {
         Some(base) => {
             let repo = url.trim_start_matches(ORG_PREFIX).trim_end_matches(".git");
             format!("{}/{repo}", base.trim_end_matches('/'))
@@ -178,6 +207,11 @@ impl Gate for PluginPinsOnDevGate {
             )]);
         }
 
+        // ONE FETCH AT A TIME: the cases of a battery run in parallel and share the bare cache and
+        // its FETCH_HEAD, and two fetches into one repo refuse each other.
+        static FETCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _one_at_a_time = FETCH.lock().unwrap_or_else(|e| e.into_inner());
+
         let mut repos: Vec<&str> = pinned.iter().map(|p| p.url.as_str()).collect();
         repos.sort_unstable();
         repos.dedup();
@@ -185,7 +219,7 @@ impl Gate for PluginPinsOnDevGate {
         let mut fetched: std::collections::BTreeMap<&str, Result<PathBuf, String>> =
             std::collections::BTreeMap::new();
         for url in repos {
-            let real = fetch_url(cx, url);
+            let real = fetch_url(cx, self.remote.as_deref(), url);
             let cache = cache_dir(cx, &real);
             let got = fetch_dev(&cache, &real).map(|()| cache);
             fetched.insert(url, got);
@@ -195,20 +229,29 @@ impl Gate for PluginPinsOnDevGate {
         let mut ok = Vec::new();
         for p in &pinned {
             let repo = p.url.trim_start_matches(ORG_PREFIX);
+            let Some(rev) = p.rev.as_deref() else {
+                bad.push(format!(
+                    "{repo} ({}): pins no rev ({}) — a dependency that follows a moving ref is \
+                     not a pin; name the merged commit with `rev =`",
+                    p.dep,
+                    p.floating.as_deref().unwrap_or("no branch, tag or rev")
+                ));
+                continue;
+            };
             match &fetched[p.url.as_str()] {
                 Err(why) => bad.push(format!(
                     "{repo} ({}): could not fetch dev, so the pin {} is unproven: {why}",
-                    p.dep, p.rev
+                    p.dep, rev
                 )),
-                Ok(cache) => match reachable(cache, &p.rev) {
-                    Ok(true) => ok.push(format!("{repo}@{}", &p.rev[..p.rev.len().min(12)])),
+                Ok(cache) => match reachable(cache, rev) {
+                    Ok(true) => ok.push(format!("{repo}@{}", &rev[..rev.len().min(12)])),
                     Ok(false) => bad.push(format!(
                         "{repo} ({}): rev {} is not reachable from dev",
-                        p.dep, p.rev
+                        p.dep, rev
                     )),
                     Err(why) => bad.push(format!(
                         "{repo} ({}): could not test rev {}: {why}",
-                        p.dep, p.rev
+                        p.dep, rev
                     )),
                 },
             }
@@ -264,15 +307,20 @@ impl Gate for PluginPinsOnDevGate {
             )
         };
 
-        // BASE: the dev rev, fetched from the local remote. Baseline and green both read it.
+        // THE GATE UNDER PROOF CARRIES THE REMOTE ITSELF, so the unplanted baseline and every plant
+        // fetch the same local repo whatever overlay or base layer the case runs under.
+        let gate: &'a PluginPinsOnDevGate = Box::leak(Box::new(PluginPinsOnDevGate {
+            remote: Some(fake.base.display().to_string()),
+        }));
+
+        // BASE: the dev rev. Baseline and green both read it.
         let mut base = Overlay::new();
         base.set("Cargo.toml", manifest(&fake.dev_sha));
-        base.set_command(REMOTE_BASE_KEY, fake.base.display().to_string());
         let cx = cx.with_base(base);
 
         report.push(prove_green(
             &cx,
-            self,
+            gate,
             "a rev on the remote's dev is GREEN",
             &[ROW_PINS],
         ));
@@ -282,7 +330,7 @@ impl Gate for PluginPinsOnDevGate {
         side.set("Cargo.toml", manifest(&fake.side_sha));
         report.push(prove_red(
             &cx,
-            self,
+            gate,
             "a rev only on a side branch is RED, naming the repo and the rev",
             &[ROW_PINS],
             side,
@@ -301,11 +349,60 @@ impl Gate for PluginPinsOnDevGate {
         );
         report.push(prove_red(
             &cx,
-            self,
+            gate,
             "a repo whose dev cannot be fetched is RED, never skipped",
             &[ROW_PINS],
             gone,
             &["zz-fake-plugin", "could not fetch dev"],
+        ));
+
+        // PLANTS (c-e): the three spellings a pin can hide in.
+        let unknown = "0000000000000000000000000000000000000001";
+        let mut single = Overlay::new();
+        single.set(
+            "Cargo.toml",
+            format!(
+                "[workspace.dependencies]\nzz-fake-plugin = {{ git = '{ORG_PREFIX}zz-fake-plugin', rev = '{unknown}' }}\n"
+            ),
+        );
+        report.push(prove_red(
+            &cx,
+            gate,
+            "a single-quoted pin with a rev dev does not contain is RED",
+            &[ROW_PINS],
+            single,
+            &["zz-fake-plugin", "not reachable from dev"],
+        ));
+        let mut dotted = Overlay::new();
+        dotted.set(
+            "Cargo.toml",
+            format!(
+                "[workspace.dependencies.zz-fake-plugin]\ngit = \"{ORG_PREFIX}zz-fake-plugin\"\nrev = \"{}\"\n",
+                fake.side_sha
+            ),
+        );
+        report.push(prove_red(
+            &cx,
+            gate,
+            "a pin written as a [workspace.dependencies.<name>] table is read, and RED when off dev",
+            &[ROW_PINS],
+            dotted,
+            &["zz-fake-plugin", "not reachable from dev"],
+        ));
+        let mut floating = Overlay::new();
+        floating.set(
+            "Cargo.toml",
+            format!(
+                "[workspace.dependencies]\nzz-fake-plugin = {{ git = \"{ORG_PREFIX}zz-fake-plugin\", branch = \"dev\" }}\n"
+            ),
+        );
+        report.push(prove_red(
+            &cx,
+            gate,
+            "a GetBusbar git dependency that follows a branch and pins no rev is RED, never skipped",
+            &[ROW_PINS],
+            floating,
+            &["zz-fake-plugin", "pins no rev"],
         ));
 
         report

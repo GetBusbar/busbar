@@ -3771,7 +3771,7 @@ pub static REGISTRY: &[Registration] = &[
         name: "plugin-pins-on-dev",
         batch: 1,
         tier: Tier::Full,
-        build: || Box::new(plugin_pins_on_dev::PluginPinsOnDevGate),
+        build: || Box::new(plugin_pins_on_dev::PluginPinsOnDevGate::default()),
         summary: "every GetBusbar plugin rev the root Cargo.toml pins is reachable from that \
                   repo's dev branch (git merge-base --is-ancestor <rev> FETCH_HEAD); a failed \
                   fetch is RED",
