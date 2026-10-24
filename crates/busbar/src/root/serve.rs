@@ -2526,7 +2526,7 @@ fn transport_rows(
     let linked = transports.iter().map(|t| TransportRow {
         claims: (t.claims)(),
         upgrades: (t.upgrades)(),
-        under: t.composes_over.first().copied(),
+        under: (t.composes_over)().first().copied(),
         offered: (t.offered)(),
     });
     let dropped = dropped.iter().map(|d| TransportRow {

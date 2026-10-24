@@ -329,12 +329,13 @@ fn register_planes() {
     root::linked::seal(ROOT_UNITS);
 }
 
-/// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
-/// axis (`busbar_kernel::diagnostics::install_diagnostics`). The neutral
-/// `REGISTRY ∪ installed` fold makes these codes resolve through `by_code` and land in a rendered
-/// catalog. Installed BEFORE any reader; a build with a plane compiled out contributes nothing.
+/// REGISTER THE LINKED PLANES' AND PLUGINS' DIAGNOSTICS — the composition root's one write into the
+/// diagnostics axis (`busbar_kernel::diagnostics::install_diagnostics`): each linked plane's owned
+/// codes and every linked plugin's declared ones. The neutral `REGISTRY ∪ installed` fold makes
+/// these codes resolve through `by_code` and land in a rendered catalog. Installed BEFORE any
+/// reader; a build with a plane or plugin compiled out contributes nothing for it.
 fn register_diagnostics() {
-    root::linked::register_diagnostics(&LINKED);
+    root::linked::register_diagnostics(&LINKED, LINKED_TRANSPORT_DOORS);
 }
 
 /// The data-plane worker count and its warnings, resolved once at the top of `main()`.

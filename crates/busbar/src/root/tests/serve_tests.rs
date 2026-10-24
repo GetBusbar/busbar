@@ -41,7 +41,7 @@ use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SE
 #[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
 #[cfg(feature = "plane-decisions")]
-use busbar_plane_decisions::plane_door::door as decisions_door;
+use busbar_plane_decisions::door as decisions_door;
 #[cfg(feature = "plane-decisions")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -4488,18 +4488,34 @@ async fn serve_configured(
 const STATES_NO_BENCH: &str = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
 
 #[cfg(feature = "plane-decisions")]
-/// The linked table with the decisions door's row stating `declares` (the
-/// `[package.metadata.busbar.linked-declares]` row a plane's door crate names).
-fn declaring(declares: &'static str) -> crate::root::linked::Linked {
-    crate::root::linked::Linked {
-        plane_door_declares: vec![(
-            "busbar-plane-decisions",
-            decisions_door as busbar_contract::abi::mechanism::door::DoorFn,
-            declares,
-        )]
-        .leak(),
-        ..crate::LINKED
-    }
+/// Whether `door` is the decisions door: its Statement states the decisions door's name.
+fn is_decisions(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
+    LinkedRow::of(door)
+        .ok()
+        .and_then(|row| busbar_contract::abi::mechanism::rendering::read(&row.statement).ok())
+        .is_some_and(|read| read.name == decisions_name())
+}
+
+#[cfg(feature = "plane-decisions")]
+/// The linked table with the decisions door's Statement read as stating `declares` `$json`
+/// (`Linked::declares_of`, the root's one reader of a door's `declares`); every other door's as it
+/// states it.
+macro_rules! declaring {
+    ($json:expr) => {{
+        fn declares_of(
+            door: busbar_contract::abi::mechanism::door::DoorFn,
+        ) -> Result<Option<String>, String> {
+            if is_decisions(door) {
+                Ok(Some($json.to_string()))
+            } else {
+                crate::root::linked::stated_declares(door)
+            }
+        }
+        crate::root::linked::Linked {
+            declares_of,
+            ..crate::LINKED
+        }
+    }};
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -4538,7 +4554,7 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-breaker-stated";
     let _published = Published(instance);
-    let linked = declaring(STATES_NO_BENCH);
+    let linked = declaring!(STATES_NO_BENCH);
     assert_eq!(
         crate::root::linked::door_breaker(&linked, None, &decisions_name())
             .expect("the fact reads"),
@@ -4548,7 +4564,7 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
         "the root reads the fact off the door's declares, by its Statement name"
     );
     let with_needs =
-        declaring(r#"{"needs":["scheme-a"],"breaker":{"bench_below_trip_threshold":false}}"#);
+        declaring!(r#"{"needs":["scheme-a"],"breaker":{"bench_below_trip_threshold":false}}"#);
     assert_eq!(
         crate::root::linked::door_breaker(&with_needs, None, &decisions_name())
             .expect("the fact reads beside `needs`"),
@@ -4556,11 +4572,10 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
             bench_below_trip_threshold: false
         })
     );
-    let malformed = declaring(r#"{"needs":"scheme-a"}"#);
+    let malformed = declaring!(r#"{"needs":"scheme-a"}"#);
     let refused = crate::root::linked::door_breaker(&malformed, None, &decisions_name())
         .expect_err("a `needs` that is not a list");
-    let row = malformed.plane_door_declares[0].0;
-    assert!(refused.contains(row), "{refused}");
+    assert!(refused.contains(&decisions_name()), "{refused}");
     let (port, mut heard) = far_end_failing_first(1).await;
     let serving = serve_over(&linked, instance, port).await;
 
@@ -4592,7 +4607,7 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
     let _published = Published(instance);
     // The door's row states a `declares` section without the fact; the shipped table has no row
     // for it (the MCP door's row states the fact for the MCP plane alone).
-    let silent = declaring("{}");
+    let silent = declaring!("{}");
     assert_eq!(
         crate::root::linked::door_breaker(&silent, None, &decisions_name()).expect("it reads"),
         None
@@ -10025,7 +10040,7 @@ async fn a_failing_decisions_provider_records_into_its_breaker_cell_until_the_ce
     let instance = "serve-door-breaker-trip";
     let _published = Published(instance);
     let (port, mut heard) = far_end_failing_first(MAX_FAILURES).await;
-    let serving = serve_over(&declaring(STATES_NO_BENCH), instance, port).await;
+    let serving = serve_over(&declaring!(STATES_NO_BENCH), instance, port).await;
     assert!(serving.ready(), "the member's cell starts closed");
     let trips = counted(
         &serving.scrape().await,
@@ -10071,7 +10086,7 @@ async fn a_tripped_decisions_provider_is_refused_before_the_dial_at_once() {
         }
     }))
     .await;
-    let serving = serve_over(&declaring(STATES_NO_BENCH), instance, port).await;
+    let serving = serve_over(&declaring!(STATES_NO_BENCH), instance, port).await;
     trip(&serving, &mut heard).await;
 
     // From here a dialled far end never answers: only the breaker can answer the next unit.

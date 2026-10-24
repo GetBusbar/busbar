@@ -710,24 +710,6 @@ pub const SELF_SUBJECT_UNSAFE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A configured egress API key contains bytes invalid for a header value: the auth plugin that
-/// presents a static header omits it and raises this code, at warn, on each request it meets.
-pub const EGRESS_APIKEY_INVALID_BYTES: Diagnostic = Diagnostic {
-    code: 4013,
-    class: Class::Auth,
-    slug: "egress-apikey-invalid-bytes",
-    title: "Egress API key contains invalid header bytes (auth header omitted)",
-    severity: Severity::Actionable,
-    summary: "A configured static egress credential contains bytes that are invalid in a header \
-              value (an ASCII control character, such as a trailing newline), so the auth plugin \
-              omits the auth header and the upstream rejects the request with 401. It is raised on \
-              each request that would have carried the header.",
-    action: "Fix the credential's configured value: strip the control character (often a trailing \
-             newline in the secret's source). Egress to that upstream 401s until it is fixed.",
-    since: "1.6.0",
-    retired: false,
-};
-
 /// A minted token contains bytes invalid for a header value: the auth plugin that mints it omits
 /// the header and raises this code, at warn, when such a token is minted.
 pub const EGRESS_OAUTH_TOKEN_INVALID_BYTES: Diagnostic = Diagnostic {
@@ -1943,28 +1925,6 @@ pub const PLANE_AUDIT_ROW_UNREADABLE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// An egress bearer credential contains bytes invalid for a header value: the auth plugin that
-/// presents it omits the header and raises this code on each request it meets. An actionable warn
-/// line, as it was before the code existed; the catalogue never demotes it to debug.
-pub const PROTO_AUTH_INVALID_HEADER_BYTES: Diagnostic = Diagnostic {
-    code: 7087,
-    class: Class::Plane,
-    slug: "proto-auth-invalid-header-bytes",
-    title: "Egress credential has invalid header bytes (auth header omitted)",
-    severity: Severity::Actionable,
-    summary:
-        "An egress authorization credential contains bytes that are not valid in an HTTP header \
-              (e.g. an ASCII control character), so the Authorization header is omitted entirely \
-              rather than sent malformed — the upstream will reject the request with 401. The key \
-              itself is never logged, only the protocol name. It is raised on each request that \
-              would have carried the header.",
-    action:
-        "Fix the misconfigured lane's credential — the configured secret contains invalid header \
-             bytes. The protocol name in the log line locates the lane.",
-    since: "1.6.0",
-    retired: false,
-};
-
 pub const PLANE_TASK_ROW_UNREADABLE: Diagnostic = Diagnostic {
     code: 7089,
     class: Class::Plane,
@@ -2905,7 +2865,6 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &ADMIN_FORBIDDEN_SUPPRESSED,
     &KEYS_IN_CHAIN_PASSTHROUGH_CONFLICT,
     &SELF_SUBJECT_UNSAFE,
-    &EGRESS_APIKEY_INVALID_BYTES,
     &EGRESS_OAUTH_TOKEN_INVALID_BYTES,
     &EGRESS_OAUTH_EMPTY_TOKEN,
     &EGRESS_OAUTH_MINT_FAILED,
@@ -2973,7 +2932,6 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &PLANE_CALLLOG_ROW_UNREADABLE,
     &PLANE_JOURNAL_ROW_UNREADABLE,
     &PLANE_AUDIT_ROW_UNREADABLE,
-    &PROTO_AUTH_INVALID_HEADER_BYTES,
     &PLANE_TASK_ROW_UNREADABLE,
     &PLANE_SSRF_CALLBACK_AT_STORE,
     &APPROVAL_LEDGER_UNREACHABLE_REFUSED,

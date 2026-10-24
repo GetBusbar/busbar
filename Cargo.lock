@@ -376,7 +376,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=bf1abefdec57c35afcf15b9076addeb39fb2ca5a#bf1abefdec57c35afcf15b9076addeb39fb2ca5a"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=d6e7d536812ec966db6091ca3e7963edc4f90838#d6e7d536812ec966db6091ca3e7963edc4f90838"
 dependencies = [
  "busbar-contract",
  "serde",

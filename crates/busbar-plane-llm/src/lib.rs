@@ -36,10 +36,14 @@ pub mod exchange;
 pub mod meta;
 pub mod plane;
 pub mod plane_door;
+/// THE DOOR (BUSBAR-1.6.0.md, Crate shape and the door-only gate): the one path a composition
+/// root's linked row names into this crate, `busbar_plane_llm::door`.
+pub use plane_door::door;
 pub mod refusal;
 
 /// THE PLANE'S DECLARED METADATA (`declares.json`): the `declares` section its signed tarball carries
-/// and the one the composition root reads for its linked door (`linked-declares`), one file for both
+/// and the one this door's Statement carries under `EXT_DECLARES` (the one a composition root reads
+/// off the door, linked or dropped in), one file for both
 /// — the transport scheme it needs and every code its catalog holds
 /// ([`codec::diagnostics::DIAGNOSTICS`]; a test holds the two equal), so the host's catalogue learns
 /// this plane's codes from its door's declaration whichever way the plane came in.

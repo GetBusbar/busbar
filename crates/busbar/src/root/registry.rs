@@ -286,14 +286,14 @@ enum Row<'r> {
 impl Row<'_> {
     fn key(self) -> &'static str {
         match self {
-            Row::Linked(row) => row.key,
+            Row::Linked(row) => (row.key)(),
             Row::Door(door) => door.key,
         }
     }
 
     fn composes_over(self) -> &'static [&'static str] {
         match self {
-            Row::Linked(row) => row.composes_over,
+            Row::Linked(row) => (row.composes_over)(),
             Row::Door(door) => door.composes_over.as_slice(),
         }
     }

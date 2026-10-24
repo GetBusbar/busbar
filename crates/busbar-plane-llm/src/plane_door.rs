@@ -391,11 +391,18 @@ const TAIL_ROW: PlaneTail = {
 /// THE STATEMENT TAIL, as the Statement points at it.
 pub const TAIL: &PlaneTail = &TAIL_ROW;
 
-/// The Statement's extensions: the plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) under the
-/// contract's one key for them, built at compile time.
-const EXTENSIONS: &[u8] = &extensions::entry::<
-    { extensions::entry_len(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()) },
->(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes());
+busbar_contract::statement_extensions!(
+    /// The Statement's extensions, built at compile time: the plane's provider keys
+    /// ([`crate::meta::PROVIDER_KEYS`]) under the contract's one key for them, and its whole
+    /// `declares` document ([`crate::DECLARES`]) under `EXT_DECLARES` (ARCHITECT ruling 2026-10-21;
+    /// BUSBAR-1.6.0.md l.246: the Statement's `declares` is "metric series, diagnostics,
+    /// structured answers"), which a composition root reads off this door rather than off the
+    /// crate, linked or dropped in alike.
+    EXTENSIONS: [
+        (EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()),
+        (extensions::EXT_DECLARES, crate::DECLARES.as_bytes()),
+    ]
+);
 
 /// THE STATEMENT: the plane's key and version, its sections, its needs, its tail and its extensions.
 pub const STATEMENT: Statement = {
@@ -403,7 +410,7 @@ pub const STATEMENT: Statement = {
         .with_kind_tail(TAIL)
         .with_sections(SECTIONS)
         .with_needs(NEEDS);
-    s.extensions = Blob::of(EXTENSIONS);
+    s.extensions = EXTENSIONS;
     s
 };
 

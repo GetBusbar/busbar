@@ -1259,8 +1259,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "export"
-count = "7"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 15 -> 14: the Law 0 root lane (lane-law0-root PR1): the metrics opt-in comment names the scrape exporter by its role (law0-slack); LOWERED 14 -> 13: the Law 0 root lane (lane-law0-root PR3a, integration tests): goldens of the default distribution (the method-coverage axes, the shipped session table, the unknown-exporter and settings-refusal pins) become invariants over the inventory and the binary's own answers, and plane-naming prose, identifiers and colliding config spellings in the root's integration tests are reworded (law0-slack); LOWERED 13 -> 7: Law 0 package P10 (root cli, admin and export integration tests): export-sink package names and kind-qualified ids leave the export tests' prose (law0-slack)"
+count = "5"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 15 -> 14: the Law 0 root lane (lane-law0-root PR1): the metrics opt-in comment names the scrape exporter by its role (law0-slack); LOWERED 14 -> 13: the Law 0 root lane (lane-law0-root PR3a, integration tests): goldens of the default distribution (the method-coverage axes, the shipped session table, the unknown-exporter and settings-refusal pins) become invariants over the inventory and the binary's own answers, and plane-naming prose, identifiers and colliding config spellings in the root's integration tests are reworded (law0-slack); LOWERED 13 -> 7: Law 0 package P10 (root cli, admin and export integration tests): export-sink package names and kind-qualified ids leave the export tests' prose (law0-slack); LOWERED 7 -> 5: the gate's measure of #1433 merged with dev 8792bef1ba (ModernCI gates log, de154a5314; law0-slack; Law 9: the ceiling only falls)"
 
 [[law0]]
 crate = "busbar"

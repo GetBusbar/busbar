@@ -49,15 +49,15 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
         "every linked wire is built"
     );
     for (row, t) in &built {
-        assert_eq!(t.key(), row.key, "a wire answers the key its row declares");
+        let key = row.key();
+        assert_eq!(t.key(), key, "a wire answers the key its door states");
         let (_, expected) = shipped
             .iter()
-            .find(|(key, _)| *key == row.key)
-            .unwrap_or_else(|| panic!("`{}` is linked but the shipped fold has no row", row.key));
+            .find(|(shipped_key, _)| *shipped_key == key)
+            .unwrap_or_else(|| panic!("`{key}` is linked but the shipped fold has no row"));
         assert_eq!(
             *expected, None,
-            "{} is served over the host's sockets and is built over nothing",
-            row.key
+            "{key} is served over the host's sockets and is built over nothing"
         );
     }
     // NO TRANSPORT NAMES ANOTHER (ARCHITECT ruling Q128 U7; TRANSPORT-STACK (2), :4721): the carrier

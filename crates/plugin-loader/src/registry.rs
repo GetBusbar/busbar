@@ -1018,9 +1018,26 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
     // actually referenced, in which case resolution fails loudly with this reason attached.
     match evaluate(&unpacked.lib_bytes, &unpacked.manifest, policy) {
         Ok(verdict) => {
+            // Phase 2a: the plugin's `declares` off its Statement (ARCHITECT ruling 2026-10-21;
+            // BUSBAR-1.6.0.md l.246): the signed rendering's document, read once, by the same code
+            // a linked row's is, after the signature held over the manifest as packed.
+            let manifest = match unpacked.manifest.with_stated_declares() {
+                Ok(m) => m,
+                Err(reason) => return FileOutcome::Invalid { file, reason },
+            };
+            if manifest.declares.disk && manifest.kind != "secret" {
+                return FileOutcome::Invalid {
+                    file,
+                    reason: format!(
+                        "manifest kind '{}' declares a disk need in its Statement; only a `kind: \
+                         secret` source may (THE DESIGN §11.11 R4)",
+                        manifest.kind
+                    ),
+                };
+            }
             let plugin = LoadablePlugin {
                 file,
-                manifest: unpacked.manifest,
+                manifest,
                 verdict,
                 lib_bytes: unpacked.lib_bytes,
                 ephemeral: false,

@@ -2823,10 +2823,20 @@ fn overlay_reset_doc_row_matches_the_section_set() {
 fn linked_export_axis() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        // The sink's name and alias are its door's Statement's (`name`, its `REWRITE_ALIAS`
+        // rewrite): the test names `<crate>::door` and nothing else, as the root's row does.
+        let door = busbar_export_prometheus::door;
+        let stated = busbar_plugin_loader::dispatch::rendering_of(door).expect("the door states");
+        let read =
+            busbar_contract::abi::mechanism::rendering::read(&stated).expect("its Statement reads");
+        let alias = read
+            .rewrites
+            .iter()
+            .find(|(class, _, _)| *class == busbar_contract::abi::mechanism::door::REWRITE_ALIAS)
+            .map(|(_, from, _)| from.clone())
+            .expect("the sink states its alias");
         busbar_kernel::test_support::export_axis::install_first_party_door(
-            busbar_export_prometheus::NAME,
-            busbar_export_prometheus::ALIAS,
-            busbar_export_prometheus::door::door,
+            &read.name, &alias, door,
         );
     });
 }

@@ -528,7 +528,7 @@ pub fn refuse_unserved_inbound(
 pub fn dropped_from_config(
     linked: &Linked,
 ) -> Option<&'static crate::root::loader::PluginRegistry> {
-    let rows = linked_exports(linked.export_doors).unwrap_or_else(|refusal| {
+    let rows = linked_exports(linked.export_doors, linked.declares_of).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
     });

@@ -6,13 +6,13 @@ use crate::root::linked::LinkedTransport;
 
 /// A transport row whose claims are `claims` and whose first-line claims are `lines`, built never.
 fn row(
-    key: &'static str,
+    key: fn() -> &'static str,
     claims: fn() -> Vec<&'static str>,
     lines: fn() -> Vec<&'static str>,
 ) -> LinkedTransport {
     LinkedTransport {
         key,
-        composes_over: &[],
+        composes_over: || &[],
         build: |_| unreachable!("the carrier is read off the rows, never off a built wire"),
         claims,
         upgrades: Vec::new,
@@ -27,11 +27,11 @@ fn row(
 fn the_line_carrier_is_the_claim_a_row_declares_opening_on_its_first_line() {
     let rows = [
         row(
-            "framed-wire",
+            || "framed-wire",
             || vec!["framed-wire", "framed-too"],
             Vec::new,
         ),
-        row("pipe-wire", || vec!["pipe-wire"], || vec!["pipe-wire"]),
+        row(|| "pipe-wire", || vec!["pipe-wire"], || vec!["pipe-wire"]),
     ];
     assert_eq!(line_carrier(&rows), Ok(Some("pipe-wire")));
     assert_eq!(line_carrier(&rows[..1]), Ok(None));
@@ -43,8 +43,12 @@ fn the_line_carrier_is_the_claim_a_row_declares_opening_on_its_first_line() {
 #[test]
 fn two_claims_opening_on_their_first_line_are_refused() {
     let rows = [
-        row("pipe-wire", || vec!["pipe-wire"], || vec!["pipe-wire"]),
-        row("other-pipe", || vec!["other-pipe"], || vec!["other-pipe"]),
+        row(|| "pipe-wire", || vec!["pipe-wire"], || vec!["pipe-wire"]),
+        row(
+            || "other-pipe",
+            || vec!["other-pipe"],
+            || vec!["other-pipe"],
+        ),
     ];
     let refusal = line_carrier(&rows).expect_err("two line carriers are ambiguous");
     assert!(refusal.contains("`pipe-wire`"), "{refusal}");

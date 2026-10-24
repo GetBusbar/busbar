@@ -415,17 +415,50 @@ pub fn build(
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
-/// Every scheme a linked row's door claims, its own first, read off the door's Statement (ONE ENTRY
-/// PER PLUGIN: the schemes are its claims). The seal registers each under its own key.
+/// WHAT A LINKED ROW'S DOOR STATES, read off its Statement and transport tail by the one reader a
+/// bind checks them with (no `validate` or `open` runs). Every fact the root holds about a linked
+/// transport row is read here: the row names its `door` and nothing else.
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn stated_of(door: DoorFn) -> TransportFacts {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// A linked row's registry key: its door's Statement `name`, the name its instance is bound under
+/// ([`row_bind`]) and the seal registers its wire under.
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn name_of(door: DoorFn) -> &'static str {
+    stated_of(door).name
+}
+
+/// The layers a linked row's door declares, read off its tail's `composes_over` (empty: no
+/// transport names another, ARCHITECT Q128 U7).
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn composes_over_of(door: DoorFn) -> Vec<&'static str> {
+    stated_of(door).composes_over
+}
+
+/// Every scheme a linked row's door claims, read off the door's Statement (ONE ENTRY PER PLUGIN:
+/// the schemes are its claims). The seal registers each under its own key.
 ///
 /// # Panics
 ///
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
 pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
-    super::loader::dispatch::kinds::transport::linked_facts(door)
-        .map(|facts| facts.claims)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+    stated_of(door).claims
 }
 
 /// The auth points a linked row's door offers, read off its Statement's `extensions`
@@ -436,9 +469,7 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
 pub fn offered_of(door: DoorFn) -> busbar_contract::abi::auth::AuthPoints {
-    super::loader::dispatch::kinds::transport::linked_facts(door)
-        .map(|facts| facts.offered)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+    stated_of(door).offered
 }
 
 /// The auth points a row that states no record offers (a row off the door axis states none).
@@ -455,9 +486,7 @@ pub fn offers_unstated() -> busbar_contract::abi::auth::AuthPoints {
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
 pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
-    super::loader::dispatch::kinds::transport::linked_facts(door)
-        .map(|facts| facts.upgrades)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+    stated_of(door).upgrades
 }
 
 /// The claims a linked row's door opens on their FIRST LINE (their row's `unit0_trigger`), read off
@@ -469,7 +498,5 @@ pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
 pub fn lines_of(door: DoorFn) -> Vec<&'static str> {
-    super::loader::dispatch::kinds::transport::linked_facts(door)
-        .map(|facts| facts.lines)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+    stated_of(door).lines
 }

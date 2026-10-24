@@ -228,8 +228,8 @@ unit-b = "beta"
     assert!(out.contains("    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"));
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
     assert!(
-        out.contains("    plane_doors: &[busbar_fourth::linked::door, ],\n"),
-        "the plane door axis references the entry's door: {out}"
+        out.contains("    plane_doors: &[busbar_fourth::door, ],\n"),
+        "the plane door axis names the crate's door, never an entry module: {out}"
     );
     assert!(
         !out.contains("hot_planes"),
@@ -263,17 +263,19 @@ unit-b = "beta"
 }
 
 /// THE TRANSPORT AND CLAIMS AXES, and the rows no feature can drop. A row whose crate is a required
-/// dependency is linked in every build and its key only names the row; two rows may share a crate,
-/// each naming its own entry; a `transport` row fills `transports` with the entry's `KEY`,
-/// `COMPOSES_OVER`, and the build, claims and upgrade claims its `door` answers; a `claims` row fills
-/// `claims` with its `PLANE` and `CLAIMS`. A row on an OPTIONAL crate still needs its feature,
-/// `claims` off the plane axis is refused, and so is a `transport` row off the door axis: a
-/// transport is linked only as its memory-ABI door (step 36).
+/// dependency is linked in every build and its key only names the row; a `transport` row fills
+/// `transports` with the key, layers, build, claims and upgrade claims its crate's `door` answers
+/// off its Statement, naming `<crate>::door` and nothing else (BUSBAR-1.6.0.md, the door-only gate);
+/// a `claims` row fills `claims` with its `PLANE` and `CLAIMS`. A row on an OPTIONAL crate still
+/// needs its feature, `claims` off the plane axis is refused, so is a `transport` row off the door
+/// axis (a transport is linked only as its memory-ABI door, step 36), and so are two door rows on
+/// one crate (a plugin crate states one door). No `linked-entry` table is needed.
 #[test]
 fn the_generator_folds_the_transport_and_claims_axes() {
     let manifest = r#"
 [dependencies]
 busbar-wire = { path = "../busbar-wire" }
+busbar-wire-high = { path = "../busbar-wire-high" }
 busbar-plane-host = { path = "../busbar-plane-host", optional = true }
 
 [features]
@@ -282,15 +284,12 @@ host = ["dep:busbar-plane-host"]
 [package.metadata.busbar.linked]
 host = "busbar-plane-host"
 wire-low = "busbar-wire"
-wire-high = "busbar-wire"
+wire-high = "busbar-wire-high"
 
 [package.metadata.busbar.linked-axes]
 host = "plane claims"
 wire-low = "transport transport-door"
 wire-high = "transport transport-door"
-
-[package.metadata.busbar.linked-entry]
-wire-high = "busbar_wire::linked::high"
 
 [package.metadata.busbar.root-units]
 host = "unit"
@@ -299,24 +298,43 @@ host = "unit"
     assert_eq!(
         out.matches("extern crate busbar_wire as _;").count(),
         1,
-        "two rows on one crate link it once: {out}"
+        "a linked crate is linked once: {out}"
     );
-    // A door row is built from its door and reads its claims, upgrades, lines and offered points off
-    // the door's Statement (`crate::root::doors::{build, claims_of, upgrades_of, lines_of,
-    // offered_of}`).
-    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: __door_build_0, claims: __door_claims_0, upgrades: __door_upgrades_0, lines: __door_lines_0, offered: __door_offered_0 }"), "{out}");
+    // A door row is built from its door and reads its key, layers, claims, upgrades, lines and
+    // offered points off the door's Statement (`crate::root::doors::{name_of, composes_over_of,
+    // build, claims_of, upgrades_of, lines_of, offered_of}`): it names its `door` and nothing else.
+    assert!(out.contains("key: __door_key_0, composes_over: __door_composes_over_0, build: __door_build_0, claims: __door_claims_0, upgrades: __door_upgrades_0, lines: __door_lines_0, offered: __door_offered_0 }"), "{out}");
+    assert!(
+        out.contains("crate::root::doors::name_of(busbar_wire::door)"),
+        "{out}"
+    );
+    assert!(
+        out.contains("crate::root::doors::composes_over_of(busbar_wire::door)"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("::KEY") && !out.contains("::COMPOSES_OVER"),
+        "a transport row names no item of its crate but its door: {out}"
+    );
     assert!(
         out.contains(
-            "fn __door_claims_0() -> Vec<&'static str> {\n    crate::root::doors::claims_of(busbar_wire::linked::door)\n}"
+            "fn __door_claims_0() -> Vec<&'static str> {\n    crate::root::doors::claims_of(busbar_wire::door)\n}"
         ),
         "{out}"
     );
-    assert!(out.contains("key: busbar_wire::linked::high::KEY"), "{out}");
+    assert!(
+        out.contains("crate::root::doors::name_of(busbar_wire_high::door)"),
+        "{out}"
+    );
+    assert!(
+        !out.contains("::linked::door"),
+        "a door row names no entry module of its crate: {out}"
+    );
     assert!(out.contains("::std::sync::Arc::new(busbar_plane_host::linked::PLANE), claims: busbar_plane_host::linked::CLAIMS"), "{out}");
 
     let (off, _) = linked_source(manifest, &|_: &str| false);
     assert!(
-        off.contains("busbar_wire::linked::KEY"),
+        off.contains("busbar_wire::door"),
         "a required crate's row is always linked: {off}"
     );
     assert!(
@@ -334,6 +352,11 @@ host = "unit"
             "wire-low = \"transport transport-door\"",
             "wire-low = \"transport\"",
         ),
+        // RED: two door rows on one crate — one crate states one door.
+        manifest.replace(
+            "wire-high = \"busbar-wire-high\"",
+            "wire-high = \"busbar-wire\"",
+        ),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &|f: &str| f == "host"));
         assert!(refused.is_err(), "must be refused:\n{broken}");
@@ -341,7 +364,7 @@ host = "unit"
 }
 
 /// THE PLANE DOOR AXIS (#2, THE DESIGN §11.4): a `plane-door` row fills `plane_doors` with its
-/// entry's `door`, the table the root hands the loader beside every dropped-in plane door; with its
+/// crate's `door` (an entry row does not move it: a door row names `<crate>::door` only), the table the root hands the loader beside every dropped-in plane door; with its
 /// feature off the table is empty.
 #[test]
 fn the_generator_folds_the_plane_door_axis() {
@@ -366,7 +389,7 @@ door = "unit"
 "#;
     let (on, _) = linked_source(manifest, &|f: &str| f == "door");
     assert!(
-        on.contains("plane_doors: &[busbar_plane_door::plane_door::door, ],"),
+        on.contains("plane_doors: &[busbar_plane_door::door, ],"),
         "{on}"
     );
     let (off, _) = linked_source(manifest, &|_: &str| false);

@@ -485,6 +485,19 @@ impl SecretRows {
         Ok(self)
     }
 
+    /// The LINKED row `door` states, its `declares` read off its own Statement
+    /// ([`crate::sign::Declares::stated_json_of_door`]), as a dropped-in copy's is read off its
+    /// signed one: its disk need. A door whose Statement states none declares none.
+    ///
+    /// # Errors
+    /// As [`SecretRows::declare_linked`].
+    pub fn declare_linked_stated(&mut self, door: DoorFn) -> Result<&mut Self, String> {
+        match crate::sign::Declares::stated_json_of_door(door)? {
+            Some(json) => self.declare_linked(door, &json),
+            None => Ok(self),
+        }
+    }
+
     /// `opened` as `c` declares it: on the disk lane when its source reads the disk.
     fn placed(&self, c: &Candidate, opened: LoadedSecret) -> LoadedSecret {
         if c.disk {

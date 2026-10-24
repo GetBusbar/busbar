@@ -76,24 +76,22 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
     }
 }
 
-/// The framer entries of `doors` (key, door), each loaded and opened on the process's one
-/// dispatcher with the deployment's value of every setting it declares (`settings`: the h2c
-/// prior-knowledge and http1-only keys, the request timeout and body cap, at their 1.5.5 paths). A
-/// door that will not load or open is named in the refusal.
+/// The framer entries of `doors` (each linked row's door, the only item its row names), each
+/// loaded and opened on the process's one dispatcher with the deployment's value of every setting
+/// it declares (`settings`: the h2c prior-knowledge and http1-only keys, the request timeout and
+/// body cap, at their 1.5.5 paths). A door that will not load or open refuses with the reason; one
+/// that opens is named by its Statement.
 ///
 /// # Errors
 ///
 /// The first door that would not load or open.
-pub fn entries(
-    doors: &[(&str, DoorFn)],
-    settings: &TransportSettings,
-) -> Result<Vec<Entry>, String> {
+pub fn entries(doors: &[DoorFn], settings: &TransportSettings) -> Result<Vec<Entry>, String> {
     doors
         .iter()
-        .map(|(key, door)| {
+        .map(|door| {
             let plugin = LinkedRow::of(*door)
                 .and_then(|row| load_linked::<TransportKind>(&row, crate::root::doors::bind()))
-                .map_err(|e| format!("transport `{key}`: {e}"))?;
+                .map_err(|e| format!("a linked transport door: {e}"))?;
             let door: Arc<dyn FramerDoor> =
                 Arc::new(crate::root::doors::Dispatched::open(plugin, settings)?);
             Ok(Entry {
@@ -193,7 +191,7 @@ pub fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretF
 /// the same settings' pool posture, and install it. A connector that cannot be built refuses the
 /// boot, as an unsealed composition does.
 pub fn boot(
-    doors: &[(&str, DoorFn)],
+    doors: &[DoorFn],
     settings: &TransportSettings,
     dest: Arc<dyn DestJudge>,
     listens: &[&str],

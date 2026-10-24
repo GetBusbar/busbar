@@ -137,7 +137,7 @@ fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refuse
     std::fs::write(dir.join("plugins").join("otlp.tar.gz"), tarball).unwrap();
     // THE WIRE UNDER THE DOOR. A build that does not link the wire's row boots only with it dropped
     // in; one that links it would refuse the tarball as a second row on the same key.
-    if !LINKED_TRANSPORTS.iter().any(|w| w.key == WIRE) {
+    if !LINKED_TRANSPORTS.iter().any(|w| w.key() == WIRE) {
         let (lib, _) = common::plugins::transport_cdylib_under(&[WIRE]).unwrap_or_else(|| {
             common::plugins::missing(&format!("{WIRE} transport"), common::plugins::BUILD_PINNED)
         });

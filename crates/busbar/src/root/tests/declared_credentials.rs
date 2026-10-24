@@ -821,8 +821,10 @@ fn main_log(f: impl FnOnce()) -> Vec<String> {
 }
 
 /// The main log's lines while `binding` was bound with `key` and asked for one `mode` request
-/// (`Passthrough`: `key` is the caller's, the lane binds none).
+/// (`Passthrough`: `key` is the caller's, the lane binds none), under the build's diagnostics
+/// catalogue as boot installs it (the linked plugins' declared codes included).
 fn lines_in(binding: &StyleBinding, key: &str, mode: UpstreamCreds) -> Vec<String> {
+    crate::root::linked::install_catalogue_once();
     let own = match mode {
         UpstreamCreds::Own => key,
         UpstreamCreds::Passthrough => "",
@@ -869,7 +871,10 @@ fn an_unsendable_session_token_logs_the_signers_own_line() {
 
 /// A bearer credential with a byte no header value may carry logs the bearer builder's 1.5.5
 /// line, naming the protocol; a static custom header's and a credential-family table's keep
-/// theirs, each naming the header it omitted.
+/// theirs, each naming the header it omitted. Each carries the code the plugin raises it under
+/// and declares (BUSBAR-7087, BUSBAR-4013, BUSBAR-4030): the linked build installs the plugin's
+/// declared codes as its dropped-in build does. RED for the family line with the linked plugins'
+/// declared codes left out of the catalogue (no `diag` field).
 #[test]
 fn an_unpresentable_static_credential_logs_its_builders_own_line() {
     let bearer = named_binding("openai", "static-twin-bearer");
@@ -900,8 +905,8 @@ fn an_unpresentable_static_credential_logs_its_builders_own_line() {
             vec![format!(
                 "auth credential contains bytes invalid for an HTTP header value (e.g. a \
                  trailing newline); omitting the credential header — upstream will return \
-                 401, check the key configuration protocol=static-twin-versioned \
-                 header={header}"
+                 401, check the key configuration diag=BUSBAR-4030 \
+                 protocol=static-twin-versioned header={header}"
             )]
         );
     }
@@ -1043,6 +1048,8 @@ fn a_credential_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_e
     use busbar_contract::diagnostic::Severity;
     use tracing_subscriber::layer::SubscriberExt as _;
     let sink = crate::root::door_steps::MainLogSink(Arc::new(NoSink));
+    // 4013 and 7087 are the header plugin's own declared entries, installed as boot installs them.
+    crate::root::linked::install_catalogue_once();
     for code in [4013u16, 4014, 4015, 4016, 7087] {
         let entry = busbar_kernel::diagnostics::by_code(code)
             .unwrap_or_else(|| panic!("BUSBAR-{code:04} is in the catalogue"));

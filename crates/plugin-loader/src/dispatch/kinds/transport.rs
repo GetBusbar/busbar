@@ -52,6 +52,9 @@ const TRANSPORT_TAIL_FROZEN: usize = std::mem::offset_of!(TransportTail, fault_r
 /// [`crate::dispatch::Plugin::context`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportFacts {
+    /// The Statement's `name` (interned): the entry's registry key, the name the seal registers it
+    /// under and its instance is labelled with.
+    pub name: &'static str,
     /// `ROLE_CARRIER` | `ROLE_FRAMER`.
     pub role: u32,
     /// Every scheme the entry answers for, in order (interned: one allocation per distinct name for
@@ -222,6 +225,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_cover(status, faults).map_err(broke)?;
     Ok(TransportFacts {
+        name: owned(st.name, "Statement name")?,
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         offered,

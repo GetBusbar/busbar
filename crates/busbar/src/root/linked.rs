@@ -28,6 +28,7 @@
 
 use std::sync::Arc;
 
+use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_kernel::ingress::arrival::BodyIngressEntry;
 use busbar_kernel::plane::registry::PlaneDecl;
 use busbar_kernel::plane::registry::PlaneDeclaration;
@@ -59,19 +60,15 @@ pub struct Linked {
     /// Each plane door row's place among [`Linked::planes`] (how many plane rows precede it in
     /// manifest order), parallel to [`Linked::plane_doors`]: where its folded registry row goes.
     pub plane_door_slots: &'static [usize],
-    /// Each linked secret door's DECLARED METADATA, `(door, declares)`: its `declares.json` (named by
-    /// `[package.metadata.busbar.linked-declares]`), read as a dropped-in copy's signed `declares`
-    /// is — its disk need (THE DESIGN §11.11 R4). A door with no row declares none.
-    pub secret_declares: &'static [(busbar_contract::abi::mechanism::door::DoorFn, &'static str)],
-    /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
-    /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
-    /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
-    /// first-party.
-    pub plane_door_declares: &'static [(
-        &'static str,
-        busbar_contract::abi::mechanism::door::DoorFn,
-        &'static str,
-    )],
+    /// HOW A LINKED DOOR'S DECLARED METADATA IS READ: its `declares` document, off its own
+    /// Statement ([`stated_declares`] in every build; ARCHITECT ruling 2026-10-21, BUSBAR-1.6.0.md
+    /// l.246: the Statement's `declares` is "metric series, diagnostics, structured answers", the
+    /// whole document as one JSON payload read once at load). The secret, plane-door and export
+    /// axes read every linked door's through it — its disk need (THE DESIGN §11.11 R4), its
+    /// breaker fact, its catalogue entries, its series — as a dropped-in copy's is read off its
+    /// signed Statement, by the same reader (`sign::Declares::stated`). A linked door is
+    /// first-party. `None`: the door states none.
+    pub declares_of: fn(DoorFn) -> Result<Option<String>, String>,
     /// Protocol declarations, appended to the installed protocol set in this order.
     pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
     /// Body-model arrivals, by protocol name.
@@ -90,8 +87,9 @@ pub struct Linked {
     /// The export axis on the memory ABI: each linked export sink's statement and door (see
     /// [`LinkedDoorExport`]).
     pub export_doors: &'static [LinkedDoorExport],
-    /// The store axis: each linked in-process store's `(name, ephemeral, default, open)`.
-    pub stores: &'static [LinkedStore],
+    /// The store axis: each linked store's `(key, ephemeral, door, canonical)`, its key and
+    /// `ephemeral` read off its door's Statement the first time the kernel asks ([`store_row`]).
+    pub stores: fn() -> &'static [LinkedStore],
     /// The hook axis: each linked `kind: hook` row's door, bound through the one loader path by the
     /// root's hook axis (`crate::root::hooks`).
     pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
@@ -100,8 +98,9 @@ pub struct Linked {
     /// The operator credential's provider word: the key the manifest's operator row states
     /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
     pub operator_auth: &'static str,
-    /// The transport axis (#3, #30): each linked wire's key, declared layers and build, in manifest
-    /// order — the boot seal folds them bottom-up (see `crate::root::registry`).
+    /// The transport axis (#3, #30): each linked wire's key, declared layers and build, each read off
+    /// its door's Statement, in manifest order — the boot seal folds them bottom-up (see
+    /// `crate::root::registry`).
     pub transports: &'static [LinkedTransport],
     /// Each linked plane's pure plane, as the boot seal registers it, and the claims it declares.
     pub claims: &'static [LinkedClaims],
@@ -153,19 +152,20 @@ pub mod node {
     pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 }
 
-/// One linked wire, as its crate's entry states it: the registry key, the layers it declares it can
-/// be built over, and its build — handed the layer the root built beneath it, where one is, and the
-/// deployment's transport settings.
+/// One linked wire, as its door's Statement states it: the registry key, the layers it declares it
+/// can be built over, and its build. The row names its crate's `door` and nothing else; every fact
+/// here is read off that door (`crate::root::doors::stated_of`), when the seal first asks.
 #[derive(Clone, Copy)]
 pub struct LinkedTransport {
-    /// The wire's registry key.
-    pub key: &'static str,
-    /// The layers it declares, in the order it would take one.
-    pub composes_over: &'static [&'static str],
+    /// The wire's registry key: its door's Statement `name` (`crate::root::doors::name_of`).
+    pub key: KeyOf,
+    /// The layers it declares, in the order it would take one: its door's tail `composes_over`
+    /// (`crate::root::doors::composes_over_of`).
+    pub composes_over: LayersOf,
     /// Open the row's door and serve it over the host's sockets (it is handed no layer: no transport
     /// names another).
     pub build: BuildTransport,
-    /// Every scheme its entry claims, its own first: a door row's are read off the door's
+    /// Every scheme its entry claims: a door row's are read off the door's
     /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
     pub claims: ClaimsOf,
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
@@ -178,6 +178,12 @@ pub struct LinkedTransport {
     /// EXT_OFFERED_POINTS`): a guest-list line's auth may need no other (THE DESIGN §6 step 3).
     pub offered: OfferedOf,
 }
+
+/// A row's registry key, read off its door's Statement once, when the seal first asks.
+pub type KeyOf = fn() -> &'static str;
+
+/// A row's declared layers, read off its door's tail once, when the seal first asks.
+pub type LayersOf = fn() -> &'static [&'static str];
 
 /// A row's claims, read when the seal runs.
 pub type ClaimsOf = fn() -> Vec<&'static str>;
@@ -201,19 +207,76 @@ pub struct LinkedClaims {
     pub claims: &'static [busbar_contract::grammar::Claim],
 }
 
-/// A linked export sink on the export kind's MEMORY ABI: what its signed tarball states (its name,
-/// its alias, the manifest `declares` section as JSON) and its door (`plugin_door!`), the same door
-/// its `cdylib` exports.
+/// A linked export sink on the export kind's MEMORY ABI: its door (`plugin_door!`), the same door
+/// its `cdylib` exports. Its name is its door's Statement `name` ([`LinkedDoorExport::name`]), its
+/// alias the Statement's `REWRITE_ALIAS` rewrite ([`LinkedDoorExport::alias`]) and its `declares`
+/// the Statement's document ([`Linked::declares_of`]): the row names `<crate>::door`
+/// (BUSBAR-1.6.0.md l.3875, the door-only gate) and every fact is read off it.
 #[derive(Clone, Copy)]
 pub struct LinkedDoorExport {
-    /// The plugin's name.
-    pub name: &'static str,
-    /// The module name an `export:` instance names it by.
-    pub alias: &'static str,
-    /// Its manifest `declares` section.
-    pub declares: &'static str,
     /// Its door.
     pub door: busbar_contract::abi::mechanism::door::DoorFn,
+}
+
+impl LinkedDoorExport {
+    /// The plugin's name: its door's Statement `name`, read off the door's Statement rendering (the
+    /// rendering a dropped-in copy's signed manifest carries).
+    ///
+    /// # Errors
+    ///
+    /// The door or its Statement is refused.
+    pub fn name(&self) -> Result<String, String> {
+        let row =
+            crate::root::loader::dispatch::LinkedRow::of(self.door).map_err(|e| e.to_string())?;
+        busbar_contract::abi::mechanism::rendering::read(&row.statement)
+            .map(|read| read.name)
+            .map_err(|e| format!("its Statement rendering: byte {} is not {}", e.at, e.what))
+    }
+
+    /// The module name an `export:` instance names it by: the door's Statement `REWRITE_ALIAS`
+    /// rewrite (BUSBAR-1.6.0.md, One Statement: `rewrites` carries the live aliases).
+    ///
+    /// # Errors
+    ///
+    /// The door or its Statement is refused, or the Statement states no alias.
+    pub fn alias(&self) -> Result<String, String> {
+        let row =
+            crate::root::loader::dispatch::LinkedRow::of(self.door).map_err(|e| e.to_string())?;
+        let read = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+            .map_err(|e| format!("its Statement rendering: byte {} is not {}", e.at, e.what))?;
+        read.rewrites
+            .into_iter()
+            .find(|(class, _, _)| *class == busbar_contract::abi::mechanism::door::REWRITE_ALIAS)
+            .map(|(_, from, _)| from)
+            .ok_or_else(|| format!("`{}` states no alias (no REWRITE_ALIAS rewrite)", read.name))
+    }
+}
+
+/// A linked store row off its door (WIRE-STORE Q8/Q9): its key is the door's Statement `name`, its
+/// `ephemeral` the Statement's `MARK_EPHEMERAL`, and its canonical name the row's
+/// `linked-canonical` (its key, when it has none). The row names `<crate>::door` and nothing else
+/// (BUSBAR-1.6.0.md, the door-only gate).
+///
+/// # Panics
+///
+/// The build's own store door is refused, as a linked transport door's is
+/// (`crate::root::doors::name_of`).
+#[must_use]
+pub fn store_row(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+    canonical: Option<&'static str>,
+) -> LinkedStore {
+    let stated = crate::root::loader::dispatch::rendering_of(door)
+        .unwrap_or_else(|e| panic!("a linked store door is refused: {e}"));
+    let read = busbar_contract::abi::mechanism::rendering::read(&stated).unwrap_or_else(|e| {
+        panic!(
+            "a linked store door's Statement rendering: byte {} is not {}",
+            e.at, e.what
+        )
+    });
+    let key: &'static str = Box::leak(read.name.into_boxed_str());
+    let ephemeral = read.marks & busbar_contract::abi::mechanism::door::MARK_EPHEMERAL != 0;
+    (key, ephemeral, door, canonical.unwrap_or(key))
 }
 
 /// The newest export payload schema this binary speaks — what a linked sink states.
@@ -227,6 +290,7 @@ fn export_abi() -> u32 {
 /// `signature`, which describe a file a linked row does not have.
 pub fn linked_exports(
     doors: &[LinkedDoorExport],
+    declares_of: fn(DoorFn) -> Result<Option<String>, String>,
 ) -> Result<Vec<crate::root::loader::LinkedPlugin>, String> {
     let manifest = |name: &str, alias: &str, declares: &str| {
         let declares = crate::root::loader::sign::Declares::from_declares_json(declares.as_bytes())
@@ -255,7 +319,14 @@ pub fn linked_exports(
     let mut rows = doors
         .iter()
         .map(|d| {
-            manifest(d.name, d.alias, d.declares)
+            let name = d.name().map_err(|e| format!("a linked export door: {e}"))?;
+            let alias = d
+                .alias()
+                .map_err(|e| format!("a linked export door: {e}"))?;
+            let declares = declares_of(d.door)
+                .map_err(|e| format!("linked export '{name}': {e}"))?
+                .unwrap_or_else(|| "{}".to_string());
+            manifest(&name, &alias, &declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
                 .map(busbar_kernel::preflight::answering_former_names)
         })
@@ -341,9 +412,9 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// the one config names (Q-STORE = (B)). A linked secret door that does not state itself refuses
 /// the boot (exit 2) before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    match link_secrets(linked.secrets, linked.secret_declares) {
+    match link_secrets(linked.secrets, linked.declares_of) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
-            stores: linked.stores,
+            stores: (linked.stores)(),
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
@@ -397,7 +468,7 @@ static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRow
 /// A linked secret door that does not state itself, naming why.
 pub fn link_secrets(
     doors: &[busbar_contract::abi::mechanism::door::DoorFn],
-    declares: &[(busbar_contract::abi::mechanism::door::DoorFn, &str)],
+    declares_of: fn(DoorFn) -> Result<Option<String>, String>,
 ) -> Result<&'static crate::root::loader::secret_calls::SecretRows, String> {
     if let Some(rows) = SECRETS.get() {
         return Ok(rows);
@@ -412,8 +483,10 @@ pub fn link_secrets(
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
     }
-    for (door, json) in declares {
-        rows.declare_linked(*door, json)?;
+    for door in doors {
+        if let Some(json) = declares_of(*door)? {
+            rows.declare_linked(*door, &json)?;
+        }
     }
     rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
@@ -653,9 +726,58 @@ pub(crate) fn dropped() -> Option<&'static crate::root::loader::PluginRegistry> 
     DROPPED.get().copied()
 }
 
+/// EVERY LINKED PLUGIN'S DOOR: each plane and export row's, then [`stated_doors`]. Each states its
+/// `declares` on its own Statement, as its dropped-in copy states it on the signed one (compiled in
+/// = dropped in).
+pub fn linked_doors(linked: &Linked, transports: &[DoorFn]) -> Vec<DoorFn> {
+    let mut doors: Vec<DoorFn> = linked.plane_doors.to_vec();
+    doors.extend(linked.export_doors.iter().map(|d| d.door));
+    doors.extend(stated_doors(linked, transports));
+    doors
+}
+
+/// THE LINKED DOORS NO REGISTRY ROW CARRIES THE `declares` OF: each auth, hook, secret and store
+/// row's, then the linked memory-ABI `transports` (the connector's doors). A plane door's are read
+/// off its Statement beside them ([`register_diagnostics`]); an export row's ride its row in the
+/// boot registry ([`linked_exports`]), read there with the dropped-in rows'.
+pub fn stated_doors(linked: &Linked, transports: &[DoorFn]) -> Vec<DoorFn> {
+    let mut doors: Vec<DoorFn> = linked.auths.iter().map(|&(_, _, door)| door).collect();
+    doors.extend_from_slice(linked.hook_doors);
+    doors.extend_from_slice(linked.secrets);
+    doors.extend((linked.stores)().iter().map(|&(_, _, door, _)| door));
+    doors.extend_from_slice(transports);
+    doors
+}
+
+/// A linked door's Statement `name`.
+fn door_name(door: DoorFn) -> Result<String, String> {
+    let row = crate::root::loader::dispatch::LinkedRow::of(door).map_err(|e| e.to_string())?;
+    busbar_contract::abi::mechanism::rendering::read(&row.statement)
+        .map(|read| read.name)
+        .map_err(|e| {
+            format!(
+                "a linked door's Statement rendering: byte {} is not {}",
+                e.at, e.what
+            )
+        })
+}
+
+/// THE ROOT'S ONE READER OF A LINKED DOOR'S `declares` (every build's [`Linked::declares_of`]): the
+/// JSON document its Statement carries under the contract's `declares` key, read off its rendering
+/// by the loader's one reader (`sign::Declares::stated_json_of_door`), as a dropped-in copy's is
+/// read off its signed Statement (ARCHITECT ruling 2026-10-21; BUSBAR-1.6.0.md l.246, Part 2 #2
+/// rule (1)). `None`: the door states none.
+///
+/// # Errors
+///
+/// The door does not state itself, or its document is not UTF-8.
+pub fn stated_declares(door: DoorFn) -> Result<Option<String>, String> {
+    crate::root::loader::sign::Declares::stated_json_of_door(door)
+}
+
 /// THE BREAKER FACTS A DOOR PLANE DECLARES (`declares.breaker`, ARCHITECT Q4), found by the plane's
-/// Statement name: a linked door's in its row's `declares.json` ([`Linked::plane_door_declares`]),
-/// a dropped-in plane's in its signed manifest (`dropped`). `None`: it declares none, and its
+/// Statement name: a linked door's off its own Statement ([`Linked::declares_of`]), a dropped-in
+/// plane's off its signed Statement (`dropped`, read at load by the same reader). `None`: it declares none, and its
 /// members' cells keep the host's default posture. The root names no plane: whichever plane states
 /// the fact, it reads it.
 ///
@@ -668,23 +790,19 @@ pub fn door_breaker(
     dropped: Option<&crate::root::loader::PluginRegistry>,
     plane: &str,
 ) -> Result<Option<crate::root::loader::sign::BreakerDecl>, String> {
-    for (row, door, json) in linked.plane_door_declares {
-        let stated = crate::root::loader::dispatch::LinkedRow::of(*door)
-            .map_err(|e| format!("plugin '{row}': {e}"))?;
-        let name = busbar_contract::abi::mechanism::rendering::read(&stated.statement)
-            .map_err(|e| {
-                format!(
-                    "plugin '{row}': its Statement rendering does not read back at byte {}",
-                    e.at
-                )
-            })?
-            .name;
+    for door in linked.plane_doors {
+        let name = door_name(*door)?;
         if name != plane {
             continue;
         }
+        let Some(json) =
+            (linked.declares_of)(*door).map_err(|e| format!("plugin '{name}': {e}"))?
+        else {
+            return Ok(None);
+        };
         let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
             .map_err(|e| {
-                format!("plugin '{row}' states a `declares` section that does not read: {e}")
+                format!("plugin '{name}' states a `declares` section that does not read: {e}")
             })?;
         return Ok(declares.breaker);
     }
@@ -768,14 +886,20 @@ static DROPPED: std::sync::OnceLock<&'static crate::root::loader::PluginRegistry
     std::sync::OnceLock::new();
 
 /// THE DIAGNOSTICS AXIS: every entry's owned diagnostics, and every first-party plugin's DECLARED
-/// ones (K9a S3), installed once. A declaration the catalogue refuses refuses the boot.
-pub fn register_diagnostics(linked: &Linked) {
+/// ones (K9a S3), installed once: every linked plugin's, read off its own Statement (the plane
+/// doors and the [`stated_doors`]; `transports` are the linked transport doors) or its boot
+/// registry row (an export's), and every dropped-in one's. A linked plugin's codes join exactly as
+/// its dropped-in copy's would (compiled in = dropped in). A declaration the catalogue refuses
+/// refuses the boot.
+pub fn register_diagnostics(linked: &Linked, transports: &[DoorFn]) {
     let mut installed: Vec<&'static busbar_contract::diagnostic::Diagnostic> = linked
         .diagnostics
         .iter()
         .flat_map(|diags| diags.iter().copied())
         .collect();
-    match door_declared_diagnostics(linked.plane_door_declares, &installed) {
+    let mut doors: Vec<DoorFn> = linked.plane_doors.to_vec();
+    doors.extend(stated_doors(linked, transports));
+    match door_declared_diagnostics(&doors, linked.declares_of, &installed) {
         Ok(declared) => installed.extend(declared),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
@@ -792,6 +916,15 @@ pub fn register_diagnostics(linked: &Linked) {
         }
     }
     busbar_kernel::diagnostics::install_diagnostics(installed.leak());
+}
+
+/// The build's diagnostics axis as boot installs it ([`register_diagnostics`] over the build's own
+/// linked tables), installed ONCE for the test binary: a second install panics by design, and every
+/// test that reads the catalogue or writes a declared line reads this one.
+#[cfg(test)]
+pub(crate) fn install_catalogue_once() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| register_diagnostics(&crate::LINKED, crate::LINKED_TRANSPORT_DOORS));
 }
 
 /// PLUGIN DIAGNOSTICS (K9a S3): the catalogue entries `registry`'s plugins DECLARE
@@ -818,22 +951,26 @@ pub fn declared_diagnostics(
     Ok(declared)
 }
 
-/// THE DIAGNOSTICS LINKED PLANE DOORS DECLARE (`declares.json`, first-party by being linked), each
-/// judged as a dropped plugin's declaration is ([`declared_diagnostics`]).
+/// THE DIAGNOSTICS LINKED `doors` DECLARE (each door's Statement `declares`, read by
+/// `declares_of`; first-party by being linked), each judged as a dropped plugin's declaration is
+/// ([`declared_diagnostics`]).
 ///
 /// # Errors
 ///
-/// A declaration that is not a `declares` section, or one the catalogue refuses.
+/// A door that does not state itself, a declaration that is not a `declares` section, or one the
+/// catalogue refuses.
 pub fn door_declared_diagnostics(
-    doors: &[(
-        &'static str,
-        busbar_contract::abi::mechanism::door::DoorFn,
-        &'static str,
-    )],
+    doors: &[DoorFn],
+    declares_of: fn(DoorFn) -> Result<Option<String>, String>,
     taken: &[&'static busbar_contract::diagnostic::Diagnostic],
 ) -> Result<Vec<&'static busbar_contract::diagnostic::Diagnostic>, String> {
     let mut declared = Vec::new();
-    for (name, _, json) in doors {
+    for door in doors {
+        let name = door_name(*door)?;
+        let name = name.as_str();
+        let Some(json) = declares_of(*door).map_err(|e| format!("plugin '{name}': {e}"))? else {
+            continue;
+        };
         let declares = crate::root::loader::sign::Declares::from_declares_json(json.as_bytes())
             .map_err(|e| {
                 format!("plugin '{name}' states a `declares` section that does not read: {e}")

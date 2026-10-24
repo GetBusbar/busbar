@@ -88,7 +88,7 @@ busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tc
 busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "223ec3f02000de94089a1752635b9e206f7492e5" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
-busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "bf1abefdec57c35afcf15b9076addeb39fb2ca5a" }
+busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "d6e7d536812ec966db6091ca3e7963edc4f90838" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
 # rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the

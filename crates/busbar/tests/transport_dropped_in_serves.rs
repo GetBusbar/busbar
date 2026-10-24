@@ -62,7 +62,7 @@ const EXCHANGE: &str = include_str!("fixtures/transport_dropped_in_exchange.txt"
 fn transport_cdylib() -> (Vec<u8>, &'static str) {
     let under: Vec<&str> = LINKED_TRANSPORTS
         .iter()
-        .flat_map(|w| w.composes_over.iter().copied())
+        .flat_map(|w| w.composes_over())
         .collect();
     common::plugins::transport_cdylib_under(&under).unwrap_or_else(|| {
         common::plugins::missing("kind: transport floor door", common::plugins::BUILD_PINNED)
@@ -315,7 +315,7 @@ fn pinned() -> String {
 #[test]
 fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
     let (lib, key) = transport_cdylib();
-    let linked = LINKED_TRANSPORTS.iter().any(|w| w.key == key);
+    let linked = LINKED_TRANSPORTS.iter().any(|w| w.key() == key);
     let dir = fixture_dir("serve");
     let (data_port, admin_port) = (free_port(), free_port());
     write_configs(&dir, data_port, admin_port);

@@ -1499,3 +1499,59 @@ fn only_a_secret_source_may_declare_a_disk_need() {
         Ok(true)
     );
 }
+
+/// LINKED AND DROPPED READ ONE `declares` (ARCHITECT ruling 2026-10-21; BUSBAR-1.6.0.md l.246, the
+/// One Statement table's `declares` row; Part 2 #2 rule (1)): a plugin's Statement carries its
+/// whole `declares` document under `EXT_DECLARES`, written by the contract's one call
+/// (`statement_extensions!`). Its linked build's document (read off the door's own rendering) and
+/// its dropped-in build's (its signed manifest's rendering, read at load by
+/// `Manifest::with_stated_declares`) are the same reader over the same bytes, and equal. RED: a
+/// dropped-in manifest that kept its packed section instead (empty here) differs from the linked
+/// read; and a Statement stating none leaves the packed section standing.
+#[test]
+fn a_dropped_and_a_linked_build_of_one_plugin_yield_identical_declares() {
+    use busbar_contract::abi::mechanism::extensions::EXT_DECLARES;
+    use busbar_contract::abi::mechanism::rendering::{read, render};
+    use busbar_contract::abi::sdk::door::statement;
+    const DOC: &str = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
+    busbar_contract::statement_extensions!(EXT: [(EXT_DECLARES, DOC.as_bytes())]);
+    let mut st = statement("busbar-store-x", "1.5.0", 4);
+    st.extensions = EXT;
+    // SAFETY: the Statement names only `'static` strings, no list, and a `'static` blob.
+    let rendering = unsafe { render(&st) }.unwrap();
+
+    // The linked build: the door's own rendering, read by the one reader.
+    let linked = Declares::stated(&read(&rendering).unwrap().extensions.bytes)
+        .unwrap()
+        .expect("the Statement states its declares");
+    assert_eq!(
+        linked,
+        Declares::from_declares_json(DOC.as_bytes()).unwrap()
+    );
+
+    // The dropped-in build: the signed manifest's rendering, read at load.
+    let key = test_key(12);
+    let mut m = manifest("busbar-store-x", "x", "busbar");
+    m.statement = Some(hex::encode(&rendering));
+    let signed = sign(&key, m, b"lib");
+    assert!(signature_ok(&signed, b"lib", &key.verifying_key()).is_ok());
+    assert_ne!(
+        signed.declares, linked,
+        "RED: the packed section alone is not the Statement's document"
+    );
+    let dropped = signed.with_stated_declares().unwrap();
+    assert_eq!(
+        dropped.declares, linked,
+        "linked and dropped read one declares"
+    );
+
+    // A Statement stating none leaves the packed section standing.
+    let plain = statement("busbar-store-x", "1.5.0", 4);
+    // SAFETY: as above.
+    let bare = unsafe { render(&plain) }.unwrap();
+    let mut m = manifest("busbar-store-x", "x", "busbar");
+    m.statement = Some(hex::encode(&bare));
+    m.declares = Declares::from_declares_json(br#"{"disk": true}"#).unwrap();
+    let kept = m.clone().with_stated_declares().unwrap();
+    assert_eq!(kept.declares, m.declares);
+}

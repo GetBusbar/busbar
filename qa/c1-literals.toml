@@ -107,12 +107,6 @@ count = 11
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "http"
-count = 1
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/client.rs"
 item = "https"
 count = 1

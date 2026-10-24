@@ -10,7 +10,12 @@
 //! `contract-stateless`):
 //!
 //! * **`plugin-path`** — a Rust path into a plugin crate (`busbar_plane_llm::…`) other than
-//!   `<crate>::door`.
+//!   `<crate>::door`: spelled in the closure's source, or EMITTED by the composition root's
+//!   linked-table generator (`crates/busbar/src/linked_gen.rs`, which `build.rs` runs over the
+//!   `[package.metadata.busbar.linked]` rows). The generator is compiled in here and run over the
+//!   manifest this gate reads, every row on, so a generated row naming `<crate>::linked::KEY` is
+//!   judged exactly as a spelled one is (BUSBAR-1.6.0.md, Crate shape and the door-only gate: the
+//!   logic crate's only public item is `door()`, and the generated rows name only `<crate>::door`).
 //! * **`static-seam`** — a `static` whose type holds a function pointer, a `Fn` trait or a trait
 //!   object: a seam another crate installs Rust code into, bypassing every door. Exactly two are
 //!   exempt, the oauth2 and admin cleanliness seams the owner ruled core
@@ -24,6 +29,18 @@ use crate::gates::{Gate, Report};
 use crate::ledger::Verdict;
 
 pub const ROW_PATH: &str = "door-only:plugin-path";
+
+/// The generator the composition root's linked tables are emitted by: `build.rs` includes this
+/// same file, so the paths judged here are the paths the build writes.
+pub const GENERATOR: &str = "crates/busbar/src/linked_gen.rs";
+/// The manifest whose linked rows the generator reads.
+pub const ROOT_MANIFEST: &str = "crates/busbar/Cargo.toml";
+
+/// THE LINKED-TABLE GENERATOR, verbatim (plain and dependency-free; `build.rs` and the root's
+/// tests include it the same way).
+#[allow(dead_code, clippy::all, clippy::pedantic)]
+#[path = "../../../crates/busbar/src/linked_gen.rs"]
+mod linked_gen;
 pub const ROW_SEAM: &str = "door-only:static-seam";
 
 /// The two static fn-pointer seams the owner ruled core (oauth2 and admin), and no others.
@@ -93,9 +110,77 @@ fn holds_code(ty: &str) -> bool {
         || one_abi::has_word(ty, "dyn")
 }
 
+/// Every path into a linked plugin crate the generator EMITS for `manifest`, every row on, other
+/// than `<crate>::door`, in order and once each. A plugin crate is a linked row's crate that
+/// [`one_abi::is_plugin_crate`] names one.
+///
+/// # Errors
+///
+/// The generator refused the manifest (it panics on a row it cannot link), naming why.
+pub fn generated_paths(manifest: &str) -> Result<Vec<String>, String> {
+    let ran = std::panic::catch_unwind(|| {
+        let crates = linked_gen::metadata_map(manifest, "package.metadata.busbar.linked");
+        let (source, _) = linked_gen::linked_source(manifest, &|_: &str| true);
+        (crates, source)
+    });
+    let (crates, source) = ran.map_err(|payload| {
+        let why = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default();
+        format!("{GENERATOR} refused {ROOT_MANIFEST}: {why}")
+    })?;
+    let mut idents: Vec<String> = crates
+        .iter()
+        .filter(|(_, krate)| one_abi::is_plugin_crate(krate))
+        .map(|(_, krate)| linked_gen::ident(krate))
+        .collect();
+    idents.sort();
+    idents.dedup();
+    let mut paths = std::collections::BTreeSet::new();
+    for id in &idents {
+        let door = format!("{id}::door");
+        let needle = format!("{id}::");
+        let mut from = 0;
+        while let Some(i) = source[from..].find(&needle) {
+            let at = from + i;
+            from = at + needle.len();
+            let before = source[..at].chars().next_back();
+            if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            let path: String = source[at..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+                .collect();
+            let path = path.trim_end_matches(':');
+            if path != door {
+                paths.insert(path.to_string());
+            }
+        }
+    }
+    Ok(paths.into_iter().collect())
+}
+
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     let mut findings = Vec::new();
     let mut errors = Vec::new();
+    // THE GENERATED ROWS: what the build writes into the composition root, judged as spelled.
+    match cx
+        .read(ROOT_MANIFEST)
+        .map_err(|e| format!("{ROOT_MANIFEST}: {e}"))
+    {
+        Ok(manifest) => match generated_paths(&manifest) {
+            Ok(paths) => findings.extend(
+                paths
+                    .into_iter()
+                    .map(|path| Finding::new(ROW_PATH, GENERATOR, path, 0)),
+            ),
+            Err(e) => errors.push(e),
+        },
+        Err(e) => errors.push(e),
+    }
     let members = match one_abi::members(cx) {
         Ok(m) => m,
         Err(e) => return (findings, vec![e]),
@@ -235,6 +320,16 @@ impl Gate for DoorOnlyGate {
             file,
             "pub static PLANTED_SEAM: std::sync::OnceLock<fn() -> u8> = std::sync::OnceLock::new();\n",
         );
+        // A GENERATED ROW naming `<crate>::linked::DIAGNOSTICS`: the first linked secret or plane
+        // door row is given an entry axis whose item the generator writes into the root's table.
+        let generated = match generated_plant(cx) {
+            Ok(plant) => plant,
+            Err(e) => {
+                let mut report = Report::new();
+                report.note_infra_failure(format!("door-only selftest: {e}"));
+                return report;
+            }
+        };
         let mut door = Overlay::new();
         door.set(
             file,
@@ -257,6 +352,12 @@ impl Gate for DoorOnlyGate {
                     seam,
                     vec![file, "PLANTED_SEAM"],
                 ),
+                (
+                    ROW_PATH,
+                    "a generated linked row naming <crate>::linked::DIAGNOSTICS is RED, naming the path",
+                    generated.0,
+                    vec![GENERATOR, generated.1],
+                ),
             ],
         );
         report.push(crate::gates::prove_rows_green(
@@ -268,4 +369,45 @@ impl Gate for DoorOnlyGate {
         ));
         report
     }
+}
+
+/// The generated-row plant: [`ROOT_MANIFEST`] with the first linked secret or plane door row also
+/// filling the `diagnostics` axis through a `linked-entry` row naming `<crate>::linked`, so the
+/// generator writes `<crate>::linked::DIAGNOSTICS` into the root's table; and that path. (A door row
+/// itself names only `<crate>::door`; an entry axis is the one place a manifest row still makes the
+/// generator spell a crate's item.)
+fn generated_plant(cx: &Ctx) -> Result<(Overlay, &'static str), String> {
+    let manifest = cx
+        .read(ROOT_MANIFEST)
+        .map_err(|e| format!("{ROOT_MANIFEST}: {e}"))?;
+    let axes = linked_gen::metadata_map(&manifest, "package.metadata.busbar.linked-axes");
+    let (feature, krate, list) =
+        linked_gen::metadata_map(&manifest, "package.metadata.busbar.linked")
+            .into_iter()
+            .find_map(|(feature, krate)| {
+                if !one_abi::is_plugin_crate(&krate) {
+                    return None;
+                }
+                let list = axes.iter().find(|(f, _)| *f == feature)?.1.clone();
+                list.split_whitespace()
+                    .any(|a| a == "secret-doors" || a == "plane-door")
+                    .then_some((feature, krate, list))
+            })
+            .ok_or_else(|| {
+                format!("{ROOT_MANIFEST} links no secret or plane door row to plant on")
+            })?;
+    let row = format!("\n{feature} = \"{list}\"");
+    if !manifest.contains(&row) {
+        return Err(format!(
+            "{ROOT_MANIFEST} spells no `{}` axes row to plant on",
+            row.trim()
+        ));
+    }
+    let id = linked_gen::ident(&krate);
+    let path: &'static str = Box::leak(format!("{id}::linked::DIAGNOSTICS").into_boxed_str());
+    let planted = manifest.replacen(&row, &format!("\n{feature} = \"{list} diagnostics\""), 1)
+        + &format!("\n[package.metadata.busbar.linked-entry]\n{feature} = \"{id}::linked\"\n");
+    let mut ov = Overlay::new();
+    ov.set(ROOT_MANIFEST, planted);
+    Ok((ov, path))
 }

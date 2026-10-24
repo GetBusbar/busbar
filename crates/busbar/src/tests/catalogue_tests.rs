@@ -18,14 +18,14 @@ use busbar_contract::diagnostic::Diagnostic;
 /// The runtime catalogue — the host registry and every linked plane's own — as the composition root
 /// installs it, installed ONCE for this test binary (a second `install_diagnostics` panics by design).
 fn installed() -> Vec<&'static Diagnostic> {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(register_diagnostics);
+    crate::root::linked::install_catalogue_once();
     busbar_kernel::diagnostics::all()
 }
 
 /// The codes the linked first-party plugins DECLARE (K9a S3), read off each linked row's `declares`
 /// section exactly as the plugin states it — the same field-by-field reading the composition root's
-/// declaration check makes, so the page documents what the catalogue installs. Read only by the
+/// declaration check makes, so the page documents what the catalogue installs: every linked plugin
+/// but a plane (whose codes the page publishes only where it lists them, below). Read only by the
 /// `linked_axis_export_doors` cells, so gated with them.
 #[cfg(linked_axis_export_doors)]
 fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
@@ -39,11 +39,28 @@ fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
         )
     };
     let mut out = Vec::new();
-    // The export axis: each memory-ABI row on `export-doors` states its `declares`.
-    let rows = LINKED.export_doors.iter().map(|d| (d.name, d.declares));
-    for (name, declares) in rows {
-        let decl: serde_json::Value = serde_json::from_str(declares)
-            .unwrap_or_else(|e| panic!("linked export '{name}': its declares section: {e}"));
+    // Each export door on `export-doors`, then every other non-plane linked door (an auth, hook,
+    // secret, store or transport row's), states its `declares`.
+    let mut doors: Vec<_> = LINKED.export_doors.iter().map(|d| d.door).collect();
+    doors.extend(crate::root::linked::stated_doors(
+        &LINKED,
+        LINKED_TRANSPORT_DOORS,
+    ));
+    let rows = doors.into_iter().map(|door| {
+        let declares = (LINKED.declares_of)(door)
+            .expect("a linked door states its declares")
+            .unwrap_or_else(|| "{}".to_string());
+        (door, declares)
+    });
+    for (door, declares) in rows {
+        let decl: serde_json::Value = serde_json::from_str(&declares).unwrap_or_else(|e| {
+            let name = crate::root::loader::dispatch::rendering_of(door)
+                .ok()
+                .and_then(|r| busbar_contract::abi::mechanism::rendering::read(&r).ok())
+                .map(|r| r.name)
+                .unwrap_or_default();
+            panic!("linked plugin '{name}': its declares section: {e}")
+        });
         for d in decl["diagnostics"].as_array().into_iter().flatten() {
             let code = d["code"].as_u64().expect("a code") as u16;
             let severity = [
@@ -115,9 +132,10 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
     );
 }
 
-/// A declared code never collides with the catalogue (the root refuses that at boot; the page would
-/// document two meanings for one banner) — and the linked plugins do declare codes, so the page's
-/// declared half is not vacuously empty.
+/// A declared code never collides with the kernel's catalogue (the root refuses that at boot; the
+/// page would document two meanings for one banner) and is installed at most once, as the plugin's
+/// own entry — and the linked plugins do declare codes, so the page's declared half is not
+/// vacuously empty.
 // "The linked plugins declare codes" reads the linked export rows' declared codes; a build that
 // links no plugin (`--no-default-features`) declares none, so this cell gates on the exports axis.
 #[cfg(linked_axis_export_doors)]
@@ -128,9 +146,18 @@ fn declared_codes_do_not_collide_with_the_registry() {
     let installed = installed();
     for d in declared {
         assert!(
-            installed.iter().all(|r| r.code != d.code),
-            "{} collides",
+            busbar_kernel::diagnostics::REGISTRY
+                .iter()
+                .all(|r| r.code != d.code),
+            "{} collides with the kernel's catalogue",
             d.code
+        );
+        let held: Vec<_> = installed.iter().filter(|r| r.code == d.code).collect();
+        assert!(
+            held.len() <= 1 && held.iter().all(|r| r.slug == d.slug),
+            "{} is installed as another entry, or twice: {:?}",
+            d.code,
+            held.iter().map(|r| r.slug).collect::<Vec<_>>()
         );
     }
 }
@@ -171,13 +198,13 @@ mod page {
     /// (`docs/diagnostics-<plane>.md`) — one code, one page.
     fn host_page() -> Vec<&'static Diagnostic> {
         let published = published_numbers();
-        let in_registry = |d: &Diagnostic| REGISTRY.iter().any(|r| r.code == d.code);
         let mut page: Vec<&'static Diagnostic> = REGISTRY.to_vec();
         page.extend(declared_by_linked_plugins());
+        let listed: Vec<u16> = page.iter().map(|d| d.code).collect();
         page.extend(
             installed()
                 .into_iter()
-                .filter(|d| !in_registry(d) && published.contains(&u64::from(d.code))),
+                .filter(|d| !listed.contains(&d.code) && published.contains(&u64::from(d.code))),
         );
         page
     }

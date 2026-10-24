@@ -645,7 +645,7 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
         let own = crate::LINKED
             .transports
             .iter()
-            .find(|r| r.composes_over.is_empty());
+            .find(|r| (r.composes_over)().is_empty());
         (own.expect("a wire that opens its own socket").build)(settings)
     }
     let limits = busbar_kernel::config::limits::LimitsResolved {
@@ -704,24 +704,20 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
     for entry in crate::LINKED.transports {
         // Every linked entry is built, after the entries the table puts before it (no layer
         // reorders them: no transport names another) …
-        let at = position(entry.key).unwrap_or_else(|| panic!("`{}` is not built", entry.key));
+        let key = (entry.key)();
+        let at = position(key).unwrap_or_else(|| panic!("`{key}` is not built"));
         assert!(
             last.is_none_or(|l| l < at),
-            "`{}` was built out of the table's order: {built:?}",
-            entry.key
+            "`{key}` was built out of the table's order: {built:?}"
         );
         last = Some(at);
         // … and the schemes it claims past its own register right after it, in its order.
-        let past: Vec<&str> = (entry.claims)()
-            .into_iter()
-            .filter(|c| *c != entry.key)
-            .collect();
+        let past: Vec<&str> = (entry.claims)().into_iter().filter(|c| *c != key).collect();
         for (n, claim) in past.iter().enumerate() {
             assert_eq!(
                 position(claim),
                 Some(at + 1 + n),
-                "`{claim}`, which `{}` claims, is not registered right after it: {built:?}",
-                entry.key
+                "`{claim}`, which `{key}` claims, is not registered right after it: {built:?}"
             );
         }
         if !past.is_empty() {
@@ -777,17 +773,17 @@ fn transports_layered_over_each_other_refuse_at_boot() {
     let own = *crate::LINKED
         .transports
         .iter()
-        .find(|r| r.composes_over.is_empty())
+        .find(|r| (r.composes_over)().is_empty())
         .expect("a wire that opens its own socket");
     let rows = [
         LinkedTransport {
-            key: "upper",
-            composes_over: &["lower"],
+            key: || "upper",
+            composes_over: || &["lower"],
             ..own
         },
         LinkedTransport {
-            key: "lower",
-            composes_over: &["upper"],
+            key: || "lower",
+            composes_over: || &["upper"],
             ..own
         },
     ];
@@ -971,8 +967,8 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
     ];
     let linked = [
         LinkedTransport {
-            key: "framed",
-            composes_over: &[],
+            key: || "framed",
+            composes_over: || &[],
             build: |_| dropped_doors()[0].wire.clone(),
             claims: || vec!["framed"],
             upgrades: Vec::new,
@@ -980,8 +976,8 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
             offered: || AuthPoints::PEER,
         },
         LinkedTransport {
-            key: "upgraded",
-            composes_over: &["framed"],
+            key: || "upgraded",
+            composes_over: || &["framed"],
             build: |_| dropped_doors()[0].wire.clone(),
             claims: || vec!["upgraded"],
             upgrades: || vec!["upgraded"],
@@ -1053,10 +1049,10 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
 /// The linked row the dropped-in wire stands in for: its key, composing over nothing, built in
 /// process as the same served wire. The build's own linked table holds no row for the neutral
 /// claim, so a proof that the dropped-in wire takes a linked row's place adds that row first.
-fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
+fn the_wires_linked_row() -> LinkedTransport {
     LinkedTransport {
-        key: wire.key,
-        composes_over: &[],
+        key: || dropped_doors()[0].key,
+        composes_over: || &[],
         build: |_| dropped_doors()[0].wire.clone(),
         claims: || vec![dropped_doors()[0].key],
         upgrades: Vec::new,
@@ -1116,7 +1112,7 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
     static ROWS: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
     let with = crate::root::linked::Linked {
         transports: rows_of(&ROWS, || {
-            [crate::LINKED.transports, &[the_wires_linked_row(wire)]].concat()
+            [crate::LINKED.transports, &[the_wires_linked_row()]].concat()
         }),
         ..crate::LINKED
     };
@@ -1146,7 +1142,7 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
 #[test]
 fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
     let wire = &dropped_doors()[0];
-    let row = the_wires_linked_row(wire);
+    let row = the_wires_linked_row();
     static ONCE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
     let with = crate::root::linked::Linked {
         transports: rows_of(&ONCE, || [crate::LINKED.transports, &[row]].concat()),

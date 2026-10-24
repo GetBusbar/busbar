@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A reference's bytes through the root's linked secret sources, at config time (with the proof).
 fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
-    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.declares_of)
         .expect("the linked secret doors state");
     let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
     axis.shared(&secret.module)?
@@ -43,7 +43,7 @@ fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
 /// A reference's bytes through the root's linked secret sources as a request path would ask: with
 /// no config-time proof.
 fn resolve_on_a_request_path(secret: &SecretRef) -> Result<Vec<u8>, String> {
-    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.declares_of)
         .expect("the linked secret doors state");
     let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
     axis.shared(&secret.module)?

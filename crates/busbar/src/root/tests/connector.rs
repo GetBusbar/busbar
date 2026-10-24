@@ -355,11 +355,12 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             }
         };
         let mut line_framed = Vec::new();
-        for (n, (key, _)) in (0u32..).zip(doors) {
+        for (n, door) in (0u32..).zip(doors) {
+            let key = crate::root::doors::name_of(*door);
             let need = ReadNeed {
                 direction: DIRECTION_OUTBOUND,
                 egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
-                transport: (*key).to_owned(),
+                transport: key.to_owned(),
                 auth: String::new(),
                 target_from: "settings.server".to_owned(),
                 trust_from: String::new(),
@@ -386,7 +387,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
                     Some(b"again:{\"id\":1}".as_slice()),
                     "a message is one line to the program; its answer one frame back"
                 );
-                line_framed.push(*key);
+                line_framed.push(key);
             }
             c.close(owner, conn).expect("closes");
         }

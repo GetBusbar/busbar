@@ -437,39 +437,14 @@ plane-mcp-door = "plane-door"
 plane-streaming = "plane-door"
 plane-a2a-door = "plane-door"
 
-# A linked crate whose entry module is not `<crate>::linked`.
+# A linked crate whose entry module is not `<crate>::linked`, for the axes that read an entry's
+# items. A DOOR row has no entry: every door axis names its crate's `door` and nothing else
+# (BUSBAR-1.6.0.md, the door-only gate: `linked_gen.rs` names only `<crate>::door`), and every fact
+# its Statement carries is read off that door.
 [package.metadata.busbar.linked-entry]
-# A secret plugin's door is its `door` module's.
-busbar-secret-env = "busbar_secret_env::door"
-busbar-secret-file = "busbar_secret_file::door"
-# An auth plugin's entry is its crate root; its memory-ABI door is `<entry>::door::door`.
-busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
-busbar-auth-header = "busbar_auth_header::compiled_in"
-busbar-auth-sigv4 = "busbar_auth_sigv4::compiled_in"
-busbar-auth-oauth = "busbar_auth_oauth::compiled_in"
-busbar-auth-webhook-signature = "busbar_auth_webhook_signature::compiled_in"
-# A plane door row's entry is the module that exports its `door`.
-plane-decisions = "busbar_plane_decisions::plane_door"
+# The fallback plane's protocol-axis row reads its dialect declarations (`PROTOCOLS`) off this
+# module: no Statement field carries them.
 plane-llm-door = "busbar_plane_llm::plane_door"
-plane-mcp-door = "busbar_plane_mcp::plane_door"
-plane-a2a-door = "busbar_plane_a2a::agent_door"
-# A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
-busbar-export-prometheus = "busbar_export_prometheus::door"
-busbar-export-otlp = "busbar_export_otlp::door"
-# The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
-busbar-export-file = "busbar_export_file"
-busbar-export-webhook = "busbar_export_webhook"
-plane-streaming = "busbar_plane_streaming::door"
-
-# Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
-# holds it. A door row with no row here declares nothing.
-[package.metadata.busbar.linked-declares]
-plane-llm-door = "busbar_plane_llm::DECLARES"
-plane-mcp-door = "busbar_plane_mcp::DECLARES"
-plane-a2a-door = "busbar_plane_a2a::DECLARES"
-# The file source reads the disk (`"disk": true`): the host resolves it only at config time, on its
-# disk lane, never from a request path (BUSBAR-1.6.0.md l.1464-1469, R4).
-secret-file = "busbar_secret_file::DECLARES"
 
 # Each linked plane door's DECLARING section (the one its Statement flags `SECTION_DECLARING`): the
 # build sets `linked_section_<section>` when the row's feature is on, so a test that needs "the plane
@@ -493,11 +468,13 @@ auth-oauth = "busbar-auth-oauth"
 hooks-ranking = "ranking"
 auth-webhook-signature = "busbar-auth-webhook-signature"
 
-# The CANONICAL name of an `auths` row whose key is not its manifest name: the name its signed
+# The CANONICAL name of an `auths` or `stores` row whose key is not its manifest name: the name its signed
 # tarball's manifest states (plugins.yaml `manifest_name`, the repo). Config may name the row by
 # either; the key stays what every surface prints (ARCHITECT C').
 [package.metadata.busbar.linked-canonical]
 auth-admin-tokens = "busbar-auth-admin-tokens"
+# A `stores` row's canonical name, the same rule: its key is its door's Statement `name`.
+store-memory = "busbar-store-memory"
 
 # THE OPERATOR CREDENTIAL'S ROW: the `auths` row whose registry key (its `linked-name`) is the
 # operator credential's provider word — the `auth.admin_auth:` default, the one `module:` whose

@@ -245,6 +245,24 @@ impl Manifest {
             .transpose()
     }
 
+    /// THIS MANIFEST WITH ITS `declares` READ OFF ITS STATEMENT ([`Declares::stated`]): a dropped-in
+    /// plugin's document is the one its signed Statement rendering carries, read by the same code a
+    /// linked row's is (Part 2 #2 rule (1)), once, at load. A Statement that states none leaves the
+    /// manifest's own `declares` section standing (a tarball packed before its plugin stated it).
+    ///
+    /// # Errors
+    /// The `statement` does not read, or its document is not a `declares` section.
+    pub fn with_stated_declares(mut self) -> Result<Self, String> {
+        if let Some(read) = self.stated()? {
+            if let Some(declares) = Declares::stated(&read.extensions.bytes)
+                .map_err(|e| format!("its Statement's declares: {e}"))?
+            {
+                self.declares = declares;
+            }
+        }
+        Ok(self)
+    }
+
     /// The facts this manifest's Statement rendering carries, read back without opening the plugin
     /// ([`rendering::read`](busbar_contract::abi::mechanism::rendering::read)); `None` when it
     /// states none.
@@ -434,6 +452,58 @@ impl Declares {
             ));
         }
         Ok(read)
+    }
+
+    /// THE `declares` A STATEMENT CARRIES (ARCHITECT ruling 2026-10-21; BUSBAR-1.6.0.md l.246, One
+    /// Statement: `declares` is "metric series, diagnostics, structured answers", travelling as one
+    /// JSON payload under [`EXT_DECLARES`](busbar_contract::abi::mechanism::extensions::EXT_DECLARES)
+    /// in the Statement's extensions). The ONE reader a linked row and a dropped-in copy go through
+    /// (Part 2 #2 rule (1)): `extensions` is the Statement rendering's extensions blob, the door's
+    /// own for a linked row and the signed manifest's (which admission compares with the door's
+    /// byte for byte) for a dropped-in one. `None`: the Statement states none.
+    ///
+    /// # Errors
+    /// The stated document is not a `declares` section ([`Declares::from_declares_json`]).
+    pub fn stated(extensions: &[u8]) -> Result<Option<Declares>, String> {
+        busbar_contract::abi::mechanism::extensions::declares(extensions)
+            .map(Declares::from_declares_json)
+            .transpose()
+    }
+
+    /// The `declares` a compiled-in `door`'s Statement carries ([`Declares::stated`]), read once
+    /// off its rendering; `None` when it states none.
+    ///
+    /// # Errors
+    /// The door does not state itself, or its document is not a `declares` section.
+    pub fn of_door(
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Result<Option<Declares>, String> {
+        Self::stated_json_of_door(door)?
+            .map(|json| Declares::from_declares_json(json.as_bytes()))
+            .transpose()
+    }
+
+    /// The `declares` document a compiled-in `door`'s Statement carries, as its JSON text; `None`
+    /// when it states none.
+    ///
+    /// # Errors
+    /// The door does not state itself, or the document is not UTF-8.
+    pub fn stated_json_of_door(
+        door: busbar_contract::abi::mechanism::door::DoorFn,
+    ) -> Result<Option<String>, String> {
+        let row = crate::dispatch::LinkedRow::of(door).map_err(|e| e.to_string())?;
+        let read = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+            .map_err(|e| format!("its Statement rendering: byte {} is not {}", e.at, e.what))?;
+        busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes)
+            .map(|b| {
+                String::from_utf8(b.to_vec()).map_err(|_| {
+                    format!(
+                        "`{}` states a `declares` document that is not UTF-8",
+                        read.name
+                    )
+                })
+            })
+            .transpose()
     }
 
     /// Nothing declared — the section is left off the wire (and out of the signed bytes).
