@@ -1491,11 +1491,12 @@ pub(crate) async fn reset_overlay_section(
                         .into(),
                 ));
             };
-            let loaded_base = busbar_kernel::load_config_from_disk(
+            let loaded_base = busbar_kernel::load_config_from_disk_judged(
                 &config_path,
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                &*snapshot.root_rules,
             )
             .map_err(AdminError::Validation)?;
             // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
@@ -2222,11 +2223,12 @@ pub(crate) fn rebuild_app_from_disk(
                 .into(),
         );
     };
-    let mut loaded = busbar_kernel::load_config_from_disk(
+    let mut loaded = busbar_kernel::load_config_from_disk_judged(
         &config_path,
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        &*current.root_rules,
     )?;
     // 1.5.0 full-config coverage: apply the overlay's `root` section (single-value config) AND the
     // `plugin_versions` rollback pins onto the base `DeployCfg` BEFORE resolve, so the limits
@@ -2454,6 +2456,11 @@ pub(crate) async fn apply_config(
             )))
         }
     };
+    // A first section of a plane this process did not load is refused whole, before the parse and
+    // before anything is built, in the running generation's root rules' words (Law 7).
+    if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
+        return err_json(&AdminError::Validation(refusal));
+    }
     // The boot pre-pass, as `validate_config` runs it: plane sections lifted, the rest frozen.
     let req_deploy: busbar_kernel::config::DeployCfg =
         match busbar_kernel::config::deploy_from_deserializer(req.config) {
@@ -2588,6 +2595,19 @@ pub(crate) async fn apply_config(
             err_json(&e)
         }
     }
+}
+
+/// THE RUNNING GENERATION'S REFUSAL of a request-body document (`config`) that writes the section
+/// of a plane this process did not load at start (`RootRules::unloaded_plane_refusal`, Law 7),
+/// judged on its root keys. `None` when it writes none.
+fn unloaded_plane_refusal(handle: &AppHandle, config: &serde_json::Value) -> Option<String> {
+    let keys: Vec<&str> = config
+        .as_object()
+        .into_iter()
+        .flat_map(|o| o.keys().map(String::as_str))
+        .collect();
+    let app = handle.load();
+    busbar_kernel::appbuild::RootRules::unloaded_plane_refusal(&*app.root_rules, &keys)
 }
 
 /// Merge a partial `RootSettings` request onto the current overlay root state: a field the request
@@ -3026,11 +3046,12 @@ pub(crate) async fn put_config_settings(
             // then merge the CURRENT hooks/groups overlay sections POST-resolve — exactly the reload
             // mechanism, with the root section coming from the just-merged desired state rather than
             // the on-disk overlay.
-            let next = busbar_kernel::load_config_from_disk(
+            let next = busbar_kernel::load_config_from_disk_judged(
                 &config_path,
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                &*snapshot.root_rules,
             )
             .and_then(|mut loaded| {
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
@@ -5365,6 +5386,10 @@ pub(crate) async fn validate_config(
             )))
         }
     };
+    // The dry run judges what an apply would: a first section of an unloaded plane is refused.
+    if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
+        return err_json(&AdminError::Validation(refusal));
+    }
     // Same lift the disk loader (boot/reload) runs before parsing `DeployCfg` — see the struct doc
     // above. `deploy_from_deserializer` is format-agnostic by design (its own doc: "the JSON-shaped
     // paths ... get it too"), so feeding it the already-parsed JSON `Value` reproduces the exact

@@ -8501,6 +8501,67 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
     );
 }
 
+/// A FIRST SECTION OF AN UNLOADED PLANE IS REFUSED, NAMED (u67 BLOCK 2 item 2, ruled (iv);
+/// BUSBAR-1.6.0.md Law 7 l.547 and §6 item 8 l.980-982): a document whose root keys use a plane
+/// door the boot did not load (its verb, or a section it marks selecting) is refused with the one pinned
+/// sentence naming the section and the plane, whatever the plane states; a document that uses none
+/// is not. RED before the fix: no rule judged it, and the parse refused the section as an unknown
+/// field without saying the plane was not loaded or what to do.
+#[test]
+fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_plane() {
+    use busbar_kernel::appbuild::RootRules as _;
+    let door = crate::root::loader::boot::Candidate {
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+        name: "zz-unloaded-red".to_string(),
+        version: "1.0.0".to_string(),
+        aliases: Vec::new(),
+        sugar: Vec::new(),
+        verbs: vec!["zz_tools_red".to_string()],
+        selecting: vec!["zz_selects_red".to_string()],
+        schemes: Vec::new(),
+        needs: Vec::new(),
+        stated: Vec::new(),
+        origin: crate::root::loader::boot::Origin::Dropped {
+            file: "zz-unloaded-red.tar.gz".to_string(),
+            bytes: std::sync::Arc::new(Vec::new()),
+        },
+        disk: false,
+        orders: true,
+    };
+    let rules = super::Rules::default();
+    assert_eq!(
+        rules.unloaded_plane_refusal(&["providers", "zz_tools_red"]),
+        None,
+        "nothing held, nothing refused"
+    );
+    rules.hold_unloaded(vec![door]);
+    assert_eq!(
+        rules.unloaded_plane_refusal(&["providers", "models", "store"]),
+        None,
+        "a document that uses no unloaded plane is not refused"
+    );
+    assert_eq!(
+        rules
+            .unloaded_plane_refusal(&["providers", "zz_tools_red"])
+            .as_deref(),
+        Some(
+            "`zz_tools_red:` is the section of the `zz-unloaded-red` plane, which this process did \
+             not load because its configuration did not use it at start; a first `zz_tools_red:` \
+             cannot take effect on a running process, so the change was refused and nothing was \
+             changed: write it in the config file and restart."
+        ),
+        "the pinned sentence, naming the section and the plane"
+    );
+    assert!(
+        rules
+            .unloaded_plane_refusal(&["zz_selects_red"])
+            .is_some_and(
+                |r| r.starts_with("`zz_selects_red:` is the section of the `zz-unloaded-red`")
+            ),
+        "a section that selects the plane uses it as its verb does"
+    );
+}
+
 /// A REQUIRED CONSUMED SECTION WRITTEN EMPTY STILL OPENS ITS PLANE (ARCHITECT row-82 ruling: a
 /// written consumed|required key counts). The previous release required `models:` and accepted it
 /// empty (v1.5.5 crates/busbar/src/config/mod.rs:2626-2632), answering from its catch-all; the
