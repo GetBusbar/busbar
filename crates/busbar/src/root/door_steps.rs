@@ -559,6 +559,9 @@ pub struct DoorFacts {
     /// (`busbar_translations_total`), as the previous release counted it, and a usage-tap fault
     /// an answer carries is counted under the unit's dialect. Empty = none counted.
     pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
+    /// The plane's dialect names, by the index `arrive` answers: the `ingress` its units' request
+    /// span records (status row 173).
+    pub dialects: Arc<[String]>,
     /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
@@ -956,6 +959,43 @@ impl DriverSteps for DoorSteps<'_> {
         let mut u = self.lock();
         u.op = Some(op);
         u.named = Some((route, pool.map(<[u8]>::to_vec)));
+    }
+
+    /// THE UNIT'S REQUEST SPAN, `forward`, as the previous release opened it around its dispatch
+    /// (v1.5.5 `proxy/engine/mod.rs:120-152`): at the hot-path level, with the pool the charge
+    /// landed on (a budget downgrade's, else the one the unit named), the dialect it was read in,
+    /// its operation class and a correlation id off the process's one counter, stamped once per
+    /// dispatched unit as 1.5.5 stamped one per dispatched request (status row 173).
+    fn request_span(
+        &self,
+        _ctx: &UnitCtx,
+        decoded: &busbar_kernel::plane_driver::Decoded,
+        op: OpClassId,
+    ) -> Option<(tracing::Span, u64)> {
+        let request_id = self.app.next_request_id();
+        let pool = self.downgraded().or_else(|| {
+            decoded
+                .pool
+                .as_deref()
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+        });
+        let ingress = self.facts.dialects.get(decoded.dialect as usize);
+        let span = tracing::span!(
+            busbar_kernel::observability::HOTPATH_LEVEL,
+            "forward",
+            pool = tracing::field::Empty,
+            ingress = tracing::field::Empty,
+            op = %op,
+            request_id = tracing::field::Empty
+        );
+        if let Some(pool) = pool.as_deref() {
+            span.record("pool", tracing::field::display(pool));
+        }
+        if let Some(ingress) = ingress {
+            span.record("ingress", tracing::field::display(ingress));
+        }
+        span.record("request_id", request_id);
+        Some((span, request_id))
     }
 
     fn expected(&self, _ctx: &UnitCtx, units: &[UnitCount]) {
@@ -1385,6 +1425,7 @@ pub fn door_facts(
         audit_kind: OpClassId::new(audit_kind),
         keeps,
         translations: (Arc::from(Vec::new()), Arc::default()),
+        dialects: Arc::from(Vec::new()),
         bench_below_trip_threshold: None,
         metric_lanes: Vec::new(),
         stream_ceiling_secs: 0,

@@ -180,11 +180,14 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return Ok(());
         };
         let entry = entry.to_string();
-        let Some(hooks) = binder.bind_gated(&entry, principal.as_deref()) else {
+        let Some(mut hooks) = binder.bind_gated(&entry, principal.as_deref()) else {
             return Ok(());
         };
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
-        span.record("request_id", hooks.request_id);
+        // The unit's own correlation id, where its host minted one (status row 173).
+        if let Some(id) = self.lock().request_id {
+            hooks.request_id = id;
+        }
+        super::record_request_id(hooks.request_id);
 
         // 1. THE DECISION GATES, over the projected invocation, keyed on the view's session.
         self.screen_gates(&hooks, &view).await?;

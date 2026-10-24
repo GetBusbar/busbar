@@ -113,6 +113,9 @@ pub struct Bind<'a> {
     pub principal: Option<&'a str>,
     /// The dialect the unit arrived in: the index into the plane's dialects.
     pub dialect: u32,
+    /// The unit's correlation id, where its host minted one (`DriverSteps::request_span`); the
+    /// binder mints one from the process's counter where it is `None`.
+    pub request_id: Option<u64>,
 }
 
 /// The stage taps a unit binds, by stage.
@@ -387,7 +390,7 @@ impl HookBinder for BoundHooks {
         Some(parts.bind(
             bind,
             (&self.caller, &self.dialects),
-            (self.next_request_id)(),
+            bind.request_id.unwrap_or_else(|| (self.next_request_id)()),
         ))
     }
 
@@ -456,7 +459,11 @@ impl HookBinder for HostHooks {
             },
             *h.requested_signals(),
         )?;
-        Some(parts.bind(bind, (&self.caller, &self.dialects), h.next_request_id()))
+        Some(parts.bind(
+            bind,
+            (&self.caller, &self.dialects),
+            bind.request_id.unwrap_or_else(|| h.next_request_id()),
+        ))
     }
 
     fn denied(&self, dialect: u32, status: u16) {
@@ -1131,6 +1138,23 @@ fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
     .unwrap_or_default()
 }
 
+/// THE UNIT'S CORRELATION ID on its request span (v1.5.5 `proxy/engine/mod.rs:120` recorded it on
+/// `forward` as a native `u64`): on the `forward` its host opened around the unit when the current
+/// span is that one (status row 173: never a second span of the same name beneath it), else on a
+/// `forward` of the kernel's own, as before a host opened one.
+pub(crate) fn record_request_id(request_id: u64) {
+    let current = tracing::Span::current();
+    let hosts = current
+        .metadata()
+        .is_some_and(|m| m.name() == "forward" && m.fields().field("request_id").is_some());
+    if hosts {
+        current.record("request_id", request_id);
+    } else {
+        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
+        span.record("request_id", request_id);
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/rewrite_crossing_tests.rs"]
 mod rewrite_crossing_tests;
@@ -1390,19 +1414,22 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .principal
             .as_ref()
             .map(|p| p.as_str().to_string());
-        let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
+        let (dialect, request_id) = {
+            let st = self.lock();
+            (st.decoded.as_ref().map_or(0, |d| d.dialect), st.request_id)
+        };
         let Some(hooks) = binder.bind(&Bind {
             pool: &walk_pool,
             principal: principal.as_deref(),
             dialect,
+            request_id,
         }) else {
             return Ok(());
         };
         self.lock().hooked_pool.clone_from(&walk_pool);
-        // The unit's correlation id, a native `u64` on its span (never a formatted string), the
-        // same value every hook payload and tap of the unit carries.
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
-        span.record("request_id", hooks.request_id);
+        // The unit's correlation id, a native `u64` on the unit's request span (never a formatted
+        // string): the same value every hook payload and tap of the unit carries.
+        record_request_id(hooks.request_id);
         // A rewrite hook configured for the unit (a global or the pool's: v1.5.5 `:728`) has the
         // plane materialize the request's document BEFORE any hook runs (`:749`): a FAULT is the
         // shared 500 and no hook is invoked.
@@ -2030,6 +2057,7 @@ impl SessionStage {
                     pool: &self.pool,
                     principal: self.principal.as_deref(),
                     dialect: self.arrived_in,
+                    request_id: None,
                 })
             })
             .as_ref()
