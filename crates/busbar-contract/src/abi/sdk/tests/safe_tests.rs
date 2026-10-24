@@ -531,10 +531,10 @@ fn red_a_warm_pending_resume_ready_cycle_on_a_recycled_ticket_allocates_nothing(
         slot: 3,
         generation: 3,
     };
-    crate::abi::CountingAlloc::reset();
+    crate::alloc_counter::reset();
     let parked = release(inst, recycled, 0);
     let resumed = release(inst, recycled, FLAG_RESUME);
-    let allocations = crate::abi::CountingAlloc::count();
+    let allocations = crate::alloc_counter::allocations();
     assert_eq!((parked, resumed), (Outcome::Pending, Outcome::Ready));
     assert_eq!(
         allocations, 0,
@@ -590,10 +590,10 @@ fn warm_cycle_allocations(instance: *mut c_void, slot: u32) -> u64 {
         slot,
         generation: 3,
     };
-    crate::abi::CountingAlloc::reset();
+    crate::alloc_counter::reset();
     let parked = release(instance, recycled, 0);
     let resumed = release(instance, recycled, FLAG_RESUME);
-    let allocations = crate::abi::CountingAlloc::count();
+    let allocations = crate::alloc_counter::allocations();
     assert_eq!((parked, resumed), (Outcome::Pending, Outcome::Ready));
     allocations
 }
