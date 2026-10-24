@@ -251,6 +251,7 @@ pub struct Freeze {
 /// `**/test_support/**`), not the narrower grep fallback: the fallback dropped the `*_test.rs`
 /// arm, so which of the two ran decided the number. One scope, named here.
 pub fn measure(files: &[SourceFile], roots: &[String], types: &[String]) -> Freeze {
+    let needles = Needles::of(types);
     let mut out = Freeze::default();
     for f in files {
         let rel = f.rel_str();
@@ -258,7 +259,7 @@ pub fn measure(files: &[SourceFile], roots: &[String], types: &[String]) -> Free
             continue;
         }
         for (idx, raw) in f.text.lines().enumerate() {
-            if !types.iter().any(|t| whole_word(raw, t)) {
+            if !needles.any_in(raw) {
                 continue;
             }
             // A comment-only mention carries no compile edge: drop from the first `//` to end of
@@ -278,6 +279,40 @@ pub fn measure(files: &[SourceFile], roots: &[String], types: &[String]) -> Free
         }
     }
     out
+}
+
+/// THE NEEDLE SET, ASKED ONCE PER LINE. A needle made only of identifier bytes occurs in a line
+/// bounded by non-identifier bytes exactly when one of the line's maximal identifier runs IS that
+/// needle, so those are looked up by run in a set: one pass over the line, not one substring search
+/// per needle (the derived set is a hundred names, over every neutral line, on every run). Any other
+/// needle is matched by [`whole_word`] as before; an empty one matches nothing, as there.
+struct Needles<'a> {
+    words: std::collections::HashSet<&'a str>,
+    other: Vec<&'a str>,
+}
+
+impl<'a> Needles<'a> {
+    fn of(types: &'a [String]) -> Needles<'a> {
+        let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let mut words = std::collections::HashSet::new();
+        let mut other = Vec::new();
+        for t in types.iter().map(String::as_str).filter(|t| !t.is_empty()) {
+            if t.bytes().all(ident) {
+                words.insert(t);
+            } else {
+                other.push(t);
+            }
+        }
+        Needles { words, other }
+    }
+
+    fn any_in(&self, line: &str) -> bool {
+        (!self.words.is_empty()
+            && line
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|run| self.words.contains(run)))
+            || self.other.iter().any(|t| whole_word(line, t))
+    }
 }
 
 /// `(^|[^A-Za-z0-9_])<word>([^A-Za-z0-9_]|$)`. Byte-wise: every word is ASCII, so a match starts
@@ -323,6 +358,34 @@ mod tests {
         assert!(!is_llm_ir_decl_file(
             "crates/busbar-plane-mcp/src/codec/ir/types.rs"
         ));
+    }
+
+    #[test]
+    fn the_needle_set_answers_as_the_whole_word_rule_does() {
+        let types: Vec<String> = ["IrUsage", "Ir-Odd", "", "CacheKind"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let n = Needles::of(&types);
+        for line in [
+            "let u: IrUsage = x;",
+            "IrUsage",
+            "IrUsageDetail",
+            "my_IrUsage",
+            "x.IrUsage()",
+            "é IrUsage é",
+            "fooCacheKind",
+            "(CacheKind)",
+            "an Ir-Odd here",
+            "an Ir-Oddity here",
+            "",
+        ] {
+            assert_eq!(
+                n.any_in(line),
+                types.iter().any(|t| whole_word(line, t)),
+                "{line}"
+            );
+        }
     }
 
     #[test]

@@ -552,23 +552,49 @@ pub fn linked_plane_crates() -> Vec<(String, String)> {
         .collect()
 }
 
-/// The rows of `tests/fixtures/plane_doctrine.txt` whose first word is `kind`, each the remaining
-/// whitespace-split words, leaked once (the doctrine is pinned for the process's life).
-pub fn doctrine_rows(kind: &str) -> Vec<Vec<&'static str>> {
-    static ROWS: std::sync::OnceLock<Vec<Vec<&'static str>>> = std::sync::OnceLock::new();
-    ROWS.get_or_init(|| {
-        fixture_lines("plane_doctrine.txt")
-            .into_iter()
-            .map(|l| {
-                let l: &'static str = Box::leak(l.into_boxed_str());
-                l.split_whitespace().collect()
-            })
-            .collect()
+/// The ledger columns a plane answers to, by `qa/capability-equality.json`'s own naming rule: the
+/// plane's key itself for a plane that declares needs in one direction alone, `<key>-client` and
+/// `<key>-server` for a plane counted in both directions. Of `columns`, in their order.
+pub fn plane_columns<'a>(key: &str, columns: &[&'a str]) -> Vec<&'a str> {
+    columns
+        .iter()
+        .copied()
+        .filter(|c| {
+            *c == key
+                || c.strip_prefix(key)
+                    .is_some_and(|rest| rest == "-client" || rest == "-server")
+        })
+        .collect()
+}
+
+/// The capability-equality ledger (`qa/capability-equality.json`), parsed once for the process.
+pub fn capability_ledger() -> &'static serde_json::Value {
+    static DOC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    DOC.get_or_init(|| {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../qa/capability-equality.json");
+        serde_json::from_str(
+            &std::fs::read_to_string(&p)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display())),
+        )
+        .expect("qa/capability-equality.json parses")
     })
-    .iter()
-    .filter(|r| r[0] == kind)
-    .map(|r| r[1..].to_vec())
-    .collect()
+}
+
+/// The ledger's root legs as `(leg, the cargo feature that compiles it into this build)`, in ledger
+/// order: each `root_legs` entry's `feature`. A door-served plane's leg is the kernel-loop rider that
+/// plane is SERVED through, so the feature that links the plane gates it.
+pub fn root_leg_features() -> Vec<(&'static str, &'static str)> {
+    capability_ledger()["root_legs"]
+        .as_object()
+        .expect("`root_legs` is an object")
+        .iter()
+        .map(|(leg, meta)| {
+            let feature = meta["feature"]
+                .as_str()
+                .unwrap_or_else(|| panic!("root leg `{leg}` names no `feature`"));
+            (leg.as_str(), feature)
+        })
+        .collect()
 }
 
 /// The cargo features this build enabled (build.rs publishes them as `BUSBAR_ENABLED_FEATURES`).
@@ -576,15 +602,13 @@ pub fn enabled_features() -> std::collections::BTreeSet<&'static str> {
     env!("BUSBAR_ENABLED_FEATURES").split_whitespace().collect()
 }
 
-/// THE ROOT LEGS THIS BUILD CARRIES: each doctrine `root-leg <leg> <feature>` row whose feature is
-/// enabled. A door-served plane's leg is the kernel-loop rider that plane is SERVED through, so the
-/// feature that links the plane gates them, not a `root-*` feature of their own.
+/// THE ROOT LEGS THIS BUILD CARRIES: each ledger root leg whose `feature` is enabled.
 pub fn compiled_root_legs() -> std::collections::BTreeSet<&'static str> {
     let on = enabled_features();
-    doctrine_rows("root-leg")
+    root_leg_features()
         .into_iter()
-        .filter(|r| on.contains(r[1]))
-        .map(|r| r[0])
+        .filter(|(_, feature)| on.contains(feature))
+        .map(|(leg, _)| leg)
         .collect()
 }
 
