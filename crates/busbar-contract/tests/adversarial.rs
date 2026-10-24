@@ -419,3 +419,38 @@ fn the_frontier_is_an_index_and_never_a_verdict() {
     assert_eq!(resolve_pointer(br#"{"a":1"#, ""), Resolved::NeedMore);
     assert_eq!(resolve_pointer(br#"{"a":1]xxxx"#, ""), Resolved::Malformed);
 }
+
+#[test]
+fn a_body_nested_to_the_v1_5_5_cap_resolves_a_top_level_pointer() {
+    // v1.5.5's `crates/busbar/src/json.rs:25` accepts nesting up to 128 (`MAX_JSON_DEPTH`) and
+    // refuses 129. The outer object counts as one level, so 127 arrays under `"b"` is exactly 128.
+    let mut body = br#"{"a":7,"b":"#.to_vec();
+    body.extend(std::iter::repeat_n(b'[', 127));
+    body.push(b'1');
+    body.extend(std::iter::repeat_n(b']', 127));
+    body.push(b'}');
+    let found = resolve_pointer(&body, "/a");
+    assert!(
+        matches!(found, Resolved::Found(span) if span.of(&body) == b"7"),
+        "a body 128 deep is the deepest v1.5.5 read, and /a did not resolve: {found:?}"
+    );
+    // The same body read the other way: the 128-deep value itself is reachable by pointer "".
+    let mut bare = vec![b'['; 128];
+    bare.push(b'1');
+    bare.extend(std::iter::repeat_n(b']', 128));
+    assert!(matches!(resolve_pointer(&bare, ""), Resolved::Found(_)));
+}
+
+#[test]
+fn a_body_one_past_the_v1_5_5_cap_still_reports_unreadable() {
+    let mut body = br#"{"a":7,"b":"#.to_vec();
+    body.extend(std::iter::repeat_n(b'[', 128));
+    body.push(b'1');
+    body.extend(std::iter::repeat_n(b']', 128));
+    body.push(b'}');
+    assert_eq!(
+        resolve_pointer(&body, "/a"),
+        Resolved::Malformed,
+        "a body 129 deep is past the v1.5.5 cap and must stay unreadable"
+    );
+}
