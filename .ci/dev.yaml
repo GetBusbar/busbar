@@ -9,7 +9,9 @@ to: qa
 # Open the dev -> qa move on every new dev head by itself (ModernCI's default is off); approve: true
 # below still holds the landing into qa for the owner.
 promote: auto
-on_green: merge
+# OWNER HARD RULE 2026-10-24: busbar stops at dev green. This move judges dev's head and reports;
+# it never merges or pushes qa (qa and main are also locked on GitHub). No qa -> main file exists.
+on_green: none
 # The owner's approval on the pull request holds the merge too; q128-audit gates the move on the
 # audit's record for the commit (no open BLOCK).
 approve: true
