@@ -475,7 +475,8 @@ pub async fn write_served_records(
 pub enum Unserved {
     /// The index names no route of the snapshot; nothing crossed.
     NoRoute,
-    /// No request ticket could be minted.
+    /// No request ticket could be minted: the in-flight cap the route step refuses a unit for
+    /// (`InFlightCap`, class `Busy`), so it answers that refusal's status, 429.
     NoTicket,
     /// The plane FAULTed, answered short twice, or answered what no reply can be.
     Fault,

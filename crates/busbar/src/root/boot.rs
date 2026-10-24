@@ -53,10 +53,25 @@ pub fn registry(
         },
         note,
     )?;
-    // The dropped-in secret plugins that state a door join the secret axis (the root's, over the
-    // one dispatcher); a 1.5.x one with no door stays on the cold lane (M6).
-    super::linked::secret_rows().admit_dropped(discovered(&registry, |kind| kind == "secret")?)?;
+    // The dropped-in secret plugins that state a door are JUDGED here, as every build judges them,
+    // and join the secret axis only through [`admit_secrets`]: this build is stage 1, which
+    // `--validate` and every dry run share, and a dry run keeps the running node's secret plugins
+    // (BUSBAR-1.6.0.md l.456-457).
+    super::linked::secret_rows().judge_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
+}
+
+/// STAGE 3's SECRET ADMISSION (BUSBAR-1.6.0.md §3, 3a/3e; the kernel's `RootInstall::secret_admit`):
+/// the dropped-in secret plugins that state a door join the secret axis (the root's, over the one
+/// dispatcher), replacing the last set; a 1.5.x one with no door stays on the cold lane (M6). Boot's
+/// scan and the app build call it; the registry build ([`registry`]) never does.
+///
+/// # Errors
+///
+/// A stated rendering that does not read back, or a dropped-in secret plugin that claims a word
+/// another plugin answers to, naming both.
+pub fn admit_secrets(registry: &PluginRegistry) -> Result<(), String> {
+    super::linked::secret_rows().admit_dropped(discovered(registry, |kind| kind == "secret")?)
 }
 
 /// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
@@ -564,7 +579,9 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
         plugins: Some(&plugins),
         data_dir: data_dir.as_deref(),
     };
-    crate::root::boot::registry(build, &mut |_| {}).ok()
+    let registry = crate::root::boot::registry(build, &mut |_| {}).ok()?;
+    admit_secrets(&registry).ok()?;
+    Some(registry)
 }
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
@@ -986,12 +1003,21 @@ pub fn book(
     super::durability::boot_recovery(&durability, calls.as_ref(), store, adapter.recovery_epoch())?;
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent
-    // an empty reference and two principals never share one.
+    // an empty reference and two principals never share one. A node with neither keeps this
+    // boot's random key, so its references differ from every other node's and from its own after
+    // a restart: a deployment that meant to bind a keyset reads that here. DEBUG, not INFO: the
+    // INFO+ boot lines are pinned by `tests/boot_lines_neutrality.rs`.
     if let Some(material) = durability
         .record
         .derived_secret(super::keyset::CALLER_REF_MATERIAL)
     {
         gov.bind_deployment_caller_ref(material);
+    } else {
+        tracing::debug!(
+            node = mig.node,
+            "no deployment keyset is bound: caller references are keyed by this boot's random key \
+             unless the node keeps signing material, so they differ per node and per restart"
+        );
     }
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
     // boot log's INFO+ line set is part of what "one plane alone ≡ 1.5.5" means — it is pinned

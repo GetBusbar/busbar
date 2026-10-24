@@ -203,6 +203,12 @@ pub trait CancelFrame: Send {
     /// The disposition its answer carried.
     fn disposition(&self) -> u32;
 
+    /// The unit the cancelled op serves (`0`: none), for a kind whose `cancel` names it (a plane's
+    /// `PlaneCancelIn::unit`); a kind whose `cancel` names none ignores it.
+    fn name_unit(&mut self, unit: u64) {
+        let _ = unit;
+    }
+
     /// The record writes its READY answer carried (a plane's, SEAM-L(r)); none for a kind whose
     /// `cancel` writes none.
     fn writes(&self) -> Vec<busbar_contract::plane_calls::CancelWrite> {

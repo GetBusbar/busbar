@@ -719,11 +719,7 @@ mod networked_judge {
     busbar_contract::auth_verify_door!(
         Judge,
         with_tail(
-            Statement {
-                needs: NEEDS.as_ptr(),
-                needs_len: NEEDS.len(),
-                ..super::judge::STATEMENT
-            },
+            super::judge::STATEMENT.with_needs(NEEDS),
             super::judge::TAIL
         )
     );

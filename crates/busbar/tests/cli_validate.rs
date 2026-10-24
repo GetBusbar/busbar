@@ -1957,3 +1957,83 @@ models:
         "an http token_url on loopback is 1.5.5's to allow: stdout={stdout} stderr={stderr}"
     );
 }
+
+/// One provider `mock` whose credential is `api_key`, presented under the style `style`, with
+/// `extra` (config-side lines, indented under the provider): `--validate`'s exit code and its whole
+/// output. `run_busbar` sets `MOCK_KEY` to `test-key-value`.
+#[cfg(all(linked_section_pools, linked_every_auth))]
+fn validate_lane(tag: &str, api_key: &str, style: &str, extra: &str) -> (i32, String) {
+    let dir = fixture_dir(tag);
+    write_configs(&dir, "");
+    let api_key = api_key.replace("{dir}", &dir.display().to_string());
+    std::fs::write(
+        dir.join("sa.json"),
+        r#"{"client_email":"a@b","private_key":"not a key"}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("pair.txt"), "client-id:client-secret").unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            "listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\nproviders:\n  mock:\n    \
+             api_key: {api_key}\n    auth: {style}\n{extra}models:\n  test-model:\n    \
+             provider: mock\n"
+        ),
+    )
+    .unwrap();
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    (code, format!("stdout={stdout} stderr={stderr}"))
+}
+
+/// `--validate` AGREES WITH BOOT ON A MALFORMED OAUTH CREDENTIAL (oracle BOOT-035; RED). An
+/// `oauth-client-credentials` credential that is no `client_id:client_secret` is refused when the
+/// lane is bound at boot, so `--validate` must refuse it too (exit 1). The credential's shape is the
+/// auth plugin's to judge, and that plugin declares its token-endpoint needs. A check bind that
+/// refuses such a plugin passes its row over, drops every refusal, and `--validate` goes green on a
+/// config boot will not start.
+#[cfg(all(linked_section_pools, linked_every_auth))]
+#[test]
+fn validate_refuses_a_malformed_oauth_client_credential_as_boot_does() {
+    let (code, out) = validate_lane(
+        "cred-shape",
+        "{ env: MOCK_KEY }",
+        "oauth-client-credentials",
+        "    token_url: \"https://127.0.0.1/token\"\n    scope: oracle\n",
+    );
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("oauth-client-credentials credential")
+            && out.contains("client_id:client_secret"),
+        "the credential refusal is named: {out}"
+    );
+}
+
+/// GREEN twin of the BOOT-035 refusal: a well-formed `client_id:client_secret` under the same lane
+/// is accepted by the auth plugin's check bind, so `--validate` stays clean (the check bind refuses
+/// only what the plugin names as the credential's own fault, and never dials the token endpoint).
+#[cfg(all(linked_section_pools, linked_every_auth))]
+#[test]
+fn validate_accepts_a_well_formed_oauth_client_credential() {
+    let (code, out) = validate_lane(
+        "cred-pair",
+        "{ file: \"{dir}/pair.txt\" }",
+        "oauth-client-credentials",
+        "    token_url: \"https://127.0.0.1/token\"\n    scope: oracle\n",
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("credential"), "no credential refusal: {out}");
+}
+
+/// The same agreement for `jwt-bearer`: a service account whose key is no key is refused by
+/// `--validate`, by the auth plugin that serves the style, as boot refuses it.
+#[cfg(all(linked_section_pools, linked_every_auth))]
+#[test]
+fn validate_refuses_a_malformed_jwt_bearer_service_account_as_boot_does() {
+    let (code, out) = validate_lane("bad-key", "{ file: \"{dir}/sa.json\" }", "jwt-bearer", "");
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("jwt-bearer credential (from ") && out.contains(") is invalid: "),
+        "the credential refusal is named: {out}"
+    );
+}

@@ -1242,11 +1242,18 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
             deliver(sink.as_ref(), &big_line(n));
         }
         until("both lines on disk", || ns(&path) == Some(vec![2]));
-        drop(sink);
+        // Read while the instance is live: its grant goes with it (§11.12 H2).
         let granted: Vec<bool> = series
             .iter()
             .map(|(s, k)| crate::observe::first_party_series(name, s, k))
             .collect();
+        drop(sink);
+        assert!(
+            series
+                .iter()
+                .all(|(s, k)| !crate::observe::first_party_series(name, s, k)),
+            "the grant goes with the instance"
+        );
         let transcript =
             serde_json::json!({ "granted": granted, "folds": tape.seen() }).to_string();
         (both_ways::row(&registry, name), transcript)

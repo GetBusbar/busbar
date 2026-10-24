@@ -3105,7 +3105,7 @@ fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
     let held = Mutex::new(None);
     // SAFETY: no buffers; the service pends.
     let pended = unsafe {
-        serve(&d.service_store(), &waking, &head, None, |c| {
+        serve(&d.service_store(), &waking, &head, 0, None, |c| {
             *held.lock().unwrap() = c;
             Ran::Later
         })
@@ -3422,5 +3422,238 @@ fn red_a_slot_whose_counter_is_spent_is_retired() {
         latch.forged(),
         0,
         "a retired slot's own generation was judged a forgery"
+    );
+}
+
+// ── the client-drop `cancel` names the unit its op serves ──────────────────────────────────────
+
+/// The unit the last client-drop `cancel` of a [`UnitKind`] op named.
+static CANCEL_NAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
+/// The test kind, its ops serving a unit: a `tick`'s `now_ns` stands for the unit key its `in`
+/// carries (as a plane's `OnPieceIn::unit` does), and its `cancel` frame records the unit it is
+/// told to name (as a plane's `PlaneCancelIn::unit`).
+struct UnitKind;
+
+impl Kind for UnitKind {
+    const CODE: KindCode = plug::KIND;
+    type Ops = OpsHead;
+    const TIMEOUT: Outcome = Outcome::Failed;
+
+    fn context(
+        st: &busbar_contract::abi::mechanism::door::Statement,
+    ) -> Result<Option<Box<crate::dispatch::Context>>, String> {
+        <TestKind as Kind>::context(st)
+    }
+
+    fn check(a: &crate::dispatch::Answer) -> Result<(), Fault> {
+        <TestKind as Kind>::check(a)
+    }
+
+    fn short(a: &crate::dispatch::Answer) -> bool {
+        <TestKind as Kind>::short(a)
+    }
+
+    fn unit_of(
+        s: u32,
+        input: *const busbar_contract::abi::mechanism::call::InHead,
+        in_size: usize,
+    ) -> Option<u64> {
+        // SAFETY: the dispatcher's own `in` of `in_size` bytes, read only when it holds a whole
+        // `TickIn`.
+        (s == TICK && in_size >= std::mem::size_of::<TickIn>())
+            .then(|| unsafe { input.cast::<TickIn>().read_unaligned() }.now_ns)
+    }
+
+    fn cancel_frame() -> Box<dyn crate::dispatch::CancelFrame> {
+        Box::new(Naming(crate::dispatch::cancel_frame(Ticket::NONE)))
+    }
+}
+
+/// The lifecycle's `cancel` frame, recording the unit it is told to name.
+struct Naming(
+    Frame<
+        busbar_contract::abi::mechanism::lifecycle::CancelIn,
+        busbar_contract::abi::mechanism::lifecycle::CancelOut,
+    >,
+);
+
+impl crate::dispatch::CancelFrame for Naming {
+    fn prepare(
+        &mut self,
+        ticket: Ticket,
+        class: u8,
+    ) -> (
+        *mut busbar_contract::abi::mechanism::call::InHead,
+        *mut OutHead,
+        u32,
+    ) {
+        crate::dispatch::CancelFrame::prepare(&mut self.0, ticket, class)
+    }
+
+    fn disposition(&self) -> u32 {
+        crate::dispatch::CancelFrame::disposition(&self.0)
+    }
+
+    fn name_unit(&mut self, unit: u64) {
+        CANCEL_NAMED.store(unit, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// RED (plane reviews, close once): the client-drop path's `cancel` of an op in flight names the
+/// unit the op serves, read off the op's own `in` (`Kind::unit_of`), so a plane that keys its units
+/// from `arrive` frees that unit by its key (`PlaneCancelIn::unit`). Before the fix the frame was
+/// never told it and a plane's `cancel` carried `unit: 0`.
+#[test]
+fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
+    let d = Dispatcher::new(config());
+    let p = load_linked::<UnitKind>(&row(), bind(quiet())).expect("the linked door loads");
+    let t = d.mint(0).expect("a ticket");
+    let opened = d
+        .submit(&p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0)
+        .wait(WAIT)
+        .expect("open answers");
+    d.recycle(t);
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let t = d.mint(0).expect("a ticket");
+    let held = frame(plug::PEND_HOLD);
+    let unit = held.input.now_ns;
+    assert_ne!(unit, 0);
+    let reply = d.submit(&p, t, TICK, held, DeadlineClass::Call, 0);
+    until("the held op", || d.is_pending(t));
+    d.drop_client(t);
+    let done = reply.wait(WAIT).expect("the drop answers");
+    d.recycle(t);
+    assert_eq!(done.outcome, Outcome::Failed, "the kind's timeout outcome");
+    assert_eq!(
+        CANCEL_NAMED.load(std::sync::atomic::Ordering::SeqCst),
+        unit,
+        "the client-drop cancel named the unit its op serves"
+    );
+}
+
+/// RED (audit loader-src PL1#7; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.13 M1, l.1652-1653:
+/// "`close` is refused while units are in flight"): an admitted unit's op (a plane's `on_piece` or
+/// `serve`, [`Dispatcher::submit_unit`]) holds no `max_inflight` unit, yet while one is in flight
+/// `close` is REFUSED and never crosses, called or submitted. RED: the unit op left `inflight` at 0,
+/// so `close` took every unit and closed the instance under a pending unit, whose resume then
+/// answered FAULT and cut a stream already answered to its caller. The GREEN twin: once the unit's
+/// op has ended, `close` crosses and closes.
+#[test]
+fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let t = d.mint(0).unwrap();
+    let held = d.submit_unit(
+        &p,
+        t,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Stream,
+        0,
+        Arc::new(()),
+    );
+    until("the unit's held op", || d.is_pending(t));
+    let n = crossings(&p);
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Refused,
+        "close crossed while a unit's op was in flight"
+    );
+    let c = d.mint(1).unwrap();
+    let ticketed = d.submit(&p, c, slot::CLOSE, close_frame(), DeadlineClass::Call, 0);
+    assert_eq!(ticketed.wait(WAIT).unwrap().outcome, Outcome::Refused);
+    assert_eq!(crossings(&p), n, "a refused close never crossed");
+    assert!(p.is_open());
+    d.drop_client(t);
+    let _ = held.wait(WAIT).unwrap();
+    assert_eq!(
+        p.call(slot::CLOSE, &mut close_frame()).outcome,
+        Outcome::Ready
+    );
+    assert!(!p.is_open());
+}
+
+/// RED (audit loader-src PL1#8; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.324-325: "The memory a
+/// call lends a plugin lives until that call completes, abandoned or not, for every kind"): when
+/// one plugin wedges a worker and the watchdog replaces it, a HEALTHY instance's op that was
+/// PENDING on that worker is sent `cancel` before its frame and lent memory go, so the plugin
+/// learns its op ended (a store op's checked-out connection is released on `cancel`). Its caller is
+/// answered FAULT, and the lent memory goes only after the `cancel`. RED: the replacement dropped
+/// the op with no `cancel`, and the plugin was never told.
+#[test]
+fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_its_memory_goes() {
+    let d = Dispatcher::new(config());
+    let (healthy, sink) = opened(&d);
+    let (owner, dropped) = lent(plug::PEND_HOLD);
+    let t = d.mint(0).unwrap();
+    let held = d.submit_lent(
+        &healthy,
+        t,
+        TICK,
+        lent_frame(&owner),
+        DeadlineClass::Call,
+        0,
+        owner.clone(),
+    );
+    drop(owner);
+    until("the healthy op pends", || d.is_pending(t));
+    let (wedger, _) = opened(&d);
+    let h = d.mint(0).unwrap();
+    let hung = d.submit(
+        &wedger,
+        h,
+        TICK,
+        frame(b"hang:orphan"),
+        DeadlineClass::Call,
+        0,
+    );
+    until("the watchdog replaced the wedged worker", || {
+        d.stats().replacements == 1
+    });
+    until("the healthy instance's orphaned op is cancelled", || {
+        count(&healthy, &sink).1 >= 1
+    });
+    assert_eq!(held.wait(WAIT).unwrap().outcome, Outcome::Fault);
+    until("the orphan's lent memory goes after its cancel", || {
+        dropped.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    // Release the hang from a third instance (the wedger is faulted).
+    let (releaser, _) = opened(&d);
+    assert_eq!(
+        releaser.call(TICK, &mut frame(b"unhang:orphan")).outcome,
+        Outcome::Ready
+    );
+    drop(hung);
+}
+
+/// RED (audit loader-src PL1#6; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.12, "the host never
+/// runs a service twice", and l.1509, "a late wake cannot resume a slot the host has since recycled
+/// to a different call"): the results an op on an INLINE ticket kept are that op's own. A resume
+/// reads them; the next NEW op on the ticket, whose handles count from 0 again, starts with none,
+/// and a dropped inline ticket takes them with it. RED: nothing forgot an inline ticket's results,
+/// so the next op on a carrier's connection side redeemed the last op's answer on its handle 0 (the
+/// same random bytes, a stale verdict), and the entries outlived the ticket.
+#[test]
+fn red_an_inline_tickets_kept_results_go_at_its_next_op_and_with_the_ticket() {
+    let d = Dispatcher::new(config());
+    let (p, _sink) = opened(&d);
+    let side = d.inline_ticket().expect("an inline ticket");
+    let t = side.ticket();
+    d.services().keep(t, 0);
+    let _ = p.call_inline(t, true, TICK, &mut frame(answer(1)));
+    assert_eq!(d.services().held(), 1, "a resume reads what its op kept");
+    let _ = p.call_inline(t, false, TICK, &mut frame(answer(1)));
+    assert_eq!(
+        d.services().held(),
+        0,
+        "a new op on an inline ticket redeems the last op's kept results"
+    );
+    d.services().keep(t, 0);
+    drop(side);
+    assert_eq!(
+        d.services().held(),
+        0,
+        "a dropped inline ticket's kept results outlive it"
     );
 }

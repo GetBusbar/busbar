@@ -1557,6 +1557,188 @@ mod hook_far_ends {
     }
 }
 
+/// A HOOK THAT DECLARED `hook.orders: false` IS JUDGED ON ABSTAIN-ONLY (ARCHITECT ruling, status
+/// row 194; the hook script's module docs). An undeclared hook still must produce the long order
+/// that walks the re-call; a declaring hook that orders FAILS (the RED arm).
+mod hook_orders {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::Arc;
+
+    use super::super::hook::{abstain_only, contract, recall_request, Request};
+    use super::super::{fold, Leg, Subject};
+    use super::step;
+    use crate::hook_door_conformance_tests::hook_door_plugin::{conforming, ordering};
+    use crate::sign::{Declares, HookDecl};
+
+    fn request(label: &str, expect: serde_json::Value) -> Arc<Request> {
+        Arc::new(Request::of(
+            &serde_json::json!({
+                "label": label,
+                "op": "decide",
+                "candidates": [{ "idx": 0 }, { "idx": 1 }, { "idx": 2 }],
+                "expect": expect,
+            }),
+            2,
+        ))
+    }
+
+    fn abstains() -> Arc<Request> {
+        request("abstains", serde_json::json!({ "verb": "abstain" }))
+    }
+
+    fn long_order() -> Arc<Request> {
+        request(
+            "long",
+            serde_json::json!({ "verb": "prefer", "order": [2, 1, 0] }),
+        )
+    }
+
+    fn declaring(orders: bool) -> Declares {
+        Declares {
+            hook: Some(HookDecl { orders }),
+            ..Declares::default()
+        }
+    }
+
+    /// The inputs of an abstain-only hook set over the conforming fixture.
+    fn inputs() -> String {
+        let abstain = |label: &str| {
+            serde_json::json!({
+                "label": label,
+                "op": "decide",
+                "candidates": [{ "idx": 0 }],
+                "expect": { "verb": "abstain" },
+            })
+        };
+        serde_json::json!({
+            "settings": { "reject_over_messages": 3 },
+            "hook": {
+                "bad_settings": ["[]"],
+                "order_cap": 2,
+                "requests": [abstain("abstains")],
+                "refresh": {
+                    "settings": { "reject_over_messages": 4 },
+                    "request": abstain("abstains again"),
+                },
+            },
+        })
+        .to_string()
+    }
+
+    fn panics(f: impl FnOnce()) -> String {
+        let e = catch_unwind(AssertUnwindSafe(f)).expect_err("the fold fails");
+        e.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default()
+    }
+
+    /// An undeclared hook still must produce a long order (unchanged): abstain-only is refused for
+    /// it, a long order is the re-call's request.
+    #[test]
+    fn an_undeclared_hook_must_still_produce_a_long_order() {
+        let none = [abstains()];
+        let e = recall_request(true, &none).err().expect("no long order");
+        assert!(e.contains("longer than hook.order_cap"), "{e}");
+        let both = [abstains(), long_order()];
+        let found = recall_request(true, &both)
+            .expect("a long order")
+            .expect("the re-call's request");
+        assert!(Arc::ptr_eq(found, &both[1]));
+    }
+
+    #[test]
+    fn a_hook_declaring_no_orders_is_judged_on_abstain_only() {
+        let none = [abstains()];
+        assert!(recall_request(false, &none)
+            .expect("abstain-only")
+            .is_none());
+        let both = [abstains(), long_order()];
+        let e = recall_request(false, &both)
+            .err()
+            .expect("an expected order");
+        assert!(
+            e.contains("`hook.orders: false`") && e.contains("'long'"),
+            "{e}"
+        );
+        assert!(abstain_only(&none).is_ok() && abstain_only(&both).is_err());
+    }
+
+    /// The steps a passing hook fold has, its requests answering `answers`.
+    fn passing(answers: &[(&str, &str)], recall: bool) -> Vec<super::Step> {
+        let mut f = vec![
+            step("validate", "Ready lease=false", 1, 1),
+            step("validate bad #0", "Failed lease=false why", 1, 1),
+            step("open", "Ready lease=false", 1, 1),
+            step("open bad", "Failed lease=false why", 1, 1),
+            step("tick", "Ready next=0", 1, 1),
+            step("refresh", "Ready lease=false", 1, 1),
+            step("refresh bad", "Failed lease=false why", 1, 1),
+            step("close", "Ready lease=false", 1, 1),
+            step("decide unopened", "Refused lease=false", 0, 0),
+            step("decide after close", "Fault lease=false", 0, 0),
+        ];
+        f.extend(answers.iter().map(|(l, a)| step(l, a, 1, 1)));
+        if recall {
+            f.push(step(
+                "re-call short again",
+                "Failed lease=false x then Fault lease=false",
+                2,
+                2,
+            ));
+        }
+        f
+    }
+
+    /// RED: a declaring hook whose fold answers an order FAILS the contract, even when the order is
+    /// the very answer the script expected; a declaring hook that abstains passes with no re-call;
+    /// an undeclared one is held to the re-call as before.
+    #[test]
+    fn red_a_hook_declaring_no_orders_fails_the_contract_when_it_orders() {
+        let abstain = (
+            "abstains",
+            "Ready lease=false | verb=abstain recalled=false",
+        );
+        let expect = [("abstains".to_string(), abstain.1.to_string())];
+        contract(&passing(&[abstain], false), &expect, false).expect("abstain-only passes");
+        let ordered = (
+            "abstains",
+            "Ready lease=false | verb=prefer order=[1] recalled=false",
+        );
+        let want = [("abstains".to_string(), ordered.1.to_string())];
+        let e = contract(&passing(&[ordered], false), &want, false)
+            .expect_err("an order from a hook that declared none");
+        assert!(e.contains("`hook.orders: false` and ordered"), "{e}");
+        assert!(
+            contract(&passing(&[abstain], false), &expect, true).is_err(),
+            "an undeclared hook is held to the re-call"
+        );
+        contract(&passing(&[abstain], true), &expect, true).expect("an undeclared hook re-calls");
+    }
+
+    /// The whole fold over the fixtures, linked: a hook declaring no orders that abstains passes;
+    /// the same set over a door that orders FAILS; an undeclared abstain-only set is refused.
+    #[test]
+    fn the_fold_judges_a_declared_abstain_only_hook() {
+        let declared = |door, orders| {
+            Subject::new(door, "hook_door", &inputs()).with_declares(declaring(orders))
+        };
+        let honest = fold(&declared(conforming::door, false), Leg::Linked);
+        assert!(honest.iter().all(|s| s.label != "re-call short again"));
+        let text = panics(|| {
+            fold(&declared(ordering::door, false), Leg::Linked);
+        });
+        assert!(text.contains("`hook.orders: false` and ordered"), "{text}");
+        let text = panics(|| {
+            fold(
+                &Subject::new(conforming::door, "hook_door", &inputs()),
+                Leg::Linked,
+            );
+        });
+        assert!(text.contains("longer than hook.order_cap"), "{text}");
+    }
+}
+
 #[test]
 fn a_subject_and_a_linked_row_name_their_door_by_macro_door_or_loaded_door_alike() {
     // The names a plugin's own tests move to (status rows 159 and 194): `of_macro` over the
