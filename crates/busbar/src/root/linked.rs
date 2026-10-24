@@ -995,7 +995,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
     busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
     busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL,
-    // `proxy_vocab`'s crate-private constant, spelled here as it renders.
+    // `hooks::taps`' crate-private constant, spelled here as it renders.
     "busbar_tap_notifications_dropped_total",
 ];
 

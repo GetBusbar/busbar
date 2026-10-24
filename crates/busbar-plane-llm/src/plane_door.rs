@@ -391,21 +391,18 @@ const TAIL_ROW: PlaneTail = {
 /// THE STATEMENT TAIL, as the Statement points at it.
 pub const TAIL: &PlaneTail = &TAIL_ROW;
 
-/// The length of the plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) as one entry under the
-/// contract's one key for them.
-const PROVIDER_KEYS_LEN: usize = extensions::entry_len(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes());
+/// The Statement's extension entries: the provider keys ([`crate::meta::PROVIDER_KEYS`]), then the
+/// plane's `declares` section ([`crate::DECLARES`], the one its signed tarball carries) under the
+/// contract's one key for it ([`EXT_DECLARES`]), so a composition root that links this door reads the
+/// plane's catalogue codes and breaker facts off its Statement, naming nothing of this crate but its
+/// door.
+const ENTRIES: &[(&str, &[u8])] = &[
+    (EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()),
+    (EXT_DECLARES, crate::DECLARES.as_bytes()),
+];
 
-/// The length of the plane's `declares` section ([`crate::DECLARES`], the one its signed tarball
-/// carries) as one entry under the contract's one key for it ([`EXT_DECLARES`]).
-const DECLARES_LEN: usize = extensions::entry_len(EXT_DECLARES, crate::DECLARES.as_bytes());
-
-/// The Statement's extensions, built at compile time: the provider keys, then the `declares`
-/// section, so a composition root that links this door reads the plane's catalogue codes and
-/// breaker facts off its Statement, naming nothing of this crate but its door.
-const EXTENSIONS: &[u8] = &extensions::concat::<{ PROVIDER_KEYS_LEN + DECLARES_LEN }>(
-    &extensions::entry::<PROVIDER_KEYS_LEN>(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()),
-    &extensions::entry::<DECLARES_LEN>(EXT_DECLARES, crate::DECLARES.as_bytes()),
-);
+/// The Statement's extensions, built at compile time from [`ENTRIES`].
+const EXTENSIONS: &[u8] = &extensions::concat::<{ extensions::entries_len(ENTRIES) }>(ENTRIES);
 
 /// THE STATEMENT: the plane's key and version, its sections, its needs, its tail and its extensions.
 pub const STATEMENT: Statement = {

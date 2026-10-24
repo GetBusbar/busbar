@@ -23,6 +23,11 @@
 //!   from the kernel's own `StepName::ALL` (set and order), the rows from the `PlaneMeta` KEY every
 //!   plane-kind crate states. A plane with no row, a kernel step the matrix lacks, and a matrix
 //!   step or row the tree does not declare are each red by name.
+//! * **a cleanliness crate's coverage is re-pointed, never retired** (BUSBAR-1.6.0.md l.3987). A
+//!   compiled-in cleanliness crate (spec Part 2 #26) is not a plane and states no `PlaneMeta`, so
+//!   its steps cannot ride the plane roster; they live under `cleanliness_rows`, one row per entry
+//!   of the gate's own [`CLEANLINESS_ROWS`] list, and every rule below judges those rows exactly as
+//!   it judges a plane row: every cell, every cited loop test, `--root-legs` and the gating bar.
 //!
 //! Plus `MIN_ROOT_NOTE`: every root verdict, proven OR gap, owes a one-line argument of at least 60
 //! characters. A label is not an argument, and `"not yet"` was the shape that rule was written
@@ -134,6 +139,21 @@ pub const ROW_EQUALITY_CELLS: &str = "teller-steps:equality-root-cells";
 /// The capability-equality ledger whose root column [`ROW_EQUALITY_CELLS`] judges.
 pub const EQUALITY_REL: &str = "qa/capability-equality.json";
 
+/// The ledger key the cleanliness rows live under, beside `matrix`.
+pub const CLEANLINESS_KEY: &str = "cleanliness_rows";
+
+/// THE CLEANLINESS ROWS THE GATE OWES, as a FIXED list: `(row, crate, manifest)`. A cleanliness
+/// crate (spec Part 2 #26: compiled-in, one-way dep on the kernel, no plugin face) is not a plane
+/// and must never state a `PlaneMeta` again just to be counted, so its row cannot be derived from
+/// the plane roster. It is named here instead, and a reviewable edit to this list is the only way
+/// to add or drop one. Each entry must carry a row; each row must be an entry; and the row is then
+/// judged under every rule a plane row is (spec l.3987: coverage "is re-pointed, never retired").
+pub const CLEANLINESS_ROWS: [(&str, &str, &str); 1] = [(
+    "admin",
+    "busbar-core-admin",
+    "crates/busbar-core-admin/Cargo.toml",
+)];
+
 // -------------------------------------------------------------------------------------------
 // The matrix
 // -------------------------------------------------------------------------------------------
@@ -157,17 +177,30 @@ impl Matrix {
         self.doc.get("root_legs")
     }
 
-    /// The declared step order — the file's key order, which is the render sequence.
-    pub fn step_order(&self) -> Vec<String> {
-        self.steps()
-            .as_object()
-            .map(|o| o.keys().map(str::to_string).collect())
-            .unwrap_or_default()
+    /// The cleanliness rows (`cleanliness_rows`), `Null` when the ledger carries none.
+    pub fn cleanliness(&self) -> &Json {
+        self.doc.get(CLEANLINESS_KEY)
     }
 
-    /// The plane rows, SORTED — `sorted(matrix)` in the Python, and the order every message and
-    /// every rendered line comes out in.
-    pub fn planes(&self) -> Vec<String> {
+    /// Is `row` a cleanliness row rather than a plane row?
+    pub fn is_cleanliness(&self, row: &str) -> bool {
+        self.cleanliness()
+            .as_object()
+            .is_some_and(|o| o.contains_key(row))
+    }
+
+    /// Where `row` lives in the ledger, as a message names it: `matrix.<row>` or
+    /// `cleanliness_rows.<row>`.
+    pub fn at(&self, row: &str) -> String {
+        if self.is_cleanliness(row) {
+            format!("{CLEANLINESS_KEY}.{row}")
+        } else {
+            format!("matrix.{row}")
+        }
+    }
+
+    /// The PLANE rows only, sorted — what the `PlaneMeta` roster is held to.
+    pub fn plane_rows(&self) -> Vec<String> {
         let mut v: Vec<String> = self
             .matrix()
             .as_object()
@@ -177,8 +210,42 @@ impl Matrix {
         v
     }
 
+    /// The cleanliness rows only, sorted.
+    pub fn cleanliness_rows(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .cleanliness()
+            .as_object()
+            .map(|o| o.keys().map(str::to_string).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    /// The declared step order — the file's key order, which is the render sequence.
+    pub fn step_order(&self) -> Vec<String> {
+        self.steps()
+            .as_object()
+            .map(|o| o.keys().map(str::to_string).collect())
+            .unwrap_or_default()
+    }
+
+    /// EVERY JUDGED ROW, SORTED: the plane rows (`sorted(matrix)` in the Python) and the
+    /// cleanliness rows together, and the order every message and every rendered line comes out
+    /// in. Every rule iterates this, which is what holds a cleanliness row to the plane rows' rules
+    /// without a second copy of any of them. Only the `PlaneMeta` roster reads [`Self::plane_rows`].
+    pub fn planes(&self) -> Vec<String> {
+        let mut v = self.plane_rows();
+        v.extend(self.cleanliness_rows());
+        v.sort();
+        v
+    }
+
     fn cell(&self, plane: &str, step: &str) -> &Json {
-        self.matrix().get(plane).get(step)
+        if self.is_cleanliness(plane) {
+            self.cleanliness().get(plane).get(step)
+        } else {
+            self.matrix().get(plane).get(step)
+        }
     }
 }
 
@@ -216,26 +283,53 @@ pub fn load(cx: &Ctx) -> Result<Matrix, String> {
     }
 
     let declared: BTreeSet<String> = steps_obj.keys().map(str::to_string).collect();
-    let mut planes: Vec<&str> = matrix.as_object().expect("checked above").keys().collect();
+    let mut planes: Vec<(&str, &str)> = matrix
+        .as_object()
+        .expect("checked above")
+        .keys()
+        .map(|k| ("matrix", k))
+        .collect();
     planes.sort_unstable();
 
-    for plane in planes {
-        let row = matrix.get(plane);
+    // THE CLEANLINESS ROWS ARE STRUCTURALLY THE SAME AS A PLANE ROW and are validated by the same
+    // loop. A row under both keys would be judged twice under one name, so that is a refusal.
+    let cleanliness = doc.get(CLEANLINESS_KEY);
+    if !matches!(cleanliness, Json::Null) {
+        let Some(c) = cleanliness.as_object() else {
+            return Err(format!(
+                "{LEDGER_REL}: '{CLEANLINESS_KEY}' is not an object of rows"
+            ));
+        };
+        let mut rows: Vec<&str> = c.keys().collect();
+        rows.sort_unstable();
+        for row in rows {
+            if matrix.get(row).as_object().is_some() {
+                return Err(format!(
+                    "{LEDGER_REL}: {CLEANLINESS_KEY}.{row} is also matrix.{row} -- one row under \
+                     two keys is judged twice under one name"
+                ));
+            }
+            planes.push((CLEANLINESS_KEY, row));
+        }
+    }
+
+    for (section, plane) in planes {
+        let row = doc.get(section).get(plane);
         let Some(row_obj) = row.as_object() else {
-            return Err(format!("{LEDGER_REL}: matrix.{plane} is not an object"));
+            return Err(format!("{LEDGER_REL}: {section}.{plane} is not an object"));
         };
         let present: BTreeSet<String> = row_obj.keys().map(str::to_string).collect();
         let missing: Vec<&String> = declared.difference(&present).collect();
         if !missing.is_empty() {
             return Err(format!(
-                "{LEDGER_REL}: matrix.{plane} is missing step(s) {}",
+                "{LEDGER_REL}: {section}.{plane} is missing step(s) {}",
                 py_list(missing.into_iter().map(String::as_str))
             ));
         }
         for step in row_obj.keys() {
             if !declared.contains(step) {
                 return Err(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} names an undeclared step"
+                    "{LEDGER_REL}: {section}.{plane}.{step} names an undeclared step"
                 ));
             }
             let cell = row.get(step);
@@ -243,12 +337,12 @@ pub fn load(cx: &Ctx) -> Result<Matrix, String> {
                 (cell.get("cell").as_str(), cell.get("status").as_str())
             else {
                 return Err(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} has no cell/status"
+                    "{LEDGER_REL}: {section}.{plane}.{step} has no cell/status"
                 ));
             };
             if !STATUSES.contains(&status) {
                 return Err(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.status {} is not one of {}",
+                    "{LEDGER_REL}: {section}.{plane}.{step}.status {} is not one of {}",
                     json_lite::py_repr(status),
                     py_list(STATUSES)
                 ));
@@ -257,7 +351,7 @@ pub fn load(cx: &Ctx) -> Result<Matrix, String> {
             // or one of the two spellings is a gap the other column reports as covered.
             if (cell_id == "none") != (status == "none") {
                 return Err(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} cell/status disagree on whether this is \
+                    "{LEDGER_REL}: {section}.{plane}.{step} cell/status disagree on whether this is \
                      a gap (cell={} status={})",
                     json_lite::py_repr(cell_id),
                     json_lite::py_repr(status)
@@ -343,9 +437,13 @@ pub fn kernel_steps(cx: &Ctx) -> Result<Vec<String>, String> {
 ///   kernel does not declare is a cell about nothing.
 /// * the ROWS are the planes the tree declares: every plane-kind crate (the kind census,
 ///   [`kind_isolation::plane_meta_declarations`]) must state a `PlaneMeta` KEY, and every key it
-///   states must be a row. A row must in turn be a key SOME crate's `impl PlaneMeta` states — which
-///   is what keeps `admin` (declared by the cleanliness crate `busbar-core-admin`, served by the
-///   loop through its own root leg) and refuses a row for a plane nothing declares any more.
+///   states must be a row. A row must in turn be a key SOME crate's `impl PlaneMeta` states, which
+///   refuses a row for a plane nothing declares any more.
+/// * the CLEANLINESS ROWS are the gate's own [`CLEANLINESS_ROWS`] list, never the plane roster: a
+///   listed crate with no row is coverage retired rather than re-pointed, a row the list does not
+///   name is a row about nothing the gate owes, a listed crate whose manifest is gone is a row for
+///   a crate the tree no longer has, and a cleanliness row some crate's `impl PlaneMeta` declares
+///   is a plane, whose row belongs in `matrix`.
 pub fn check_roster(cx: &Ctx, m: &Matrix) -> Vec<String> {
     let mut out = Vec::new();
     let order = m.step_order();
@@ -380,7 +478,32 @@ pub fn check_roster(cx: &Ctx, m: &Matrix) -> Vec<String> {
         }
     }
 
-    let rows: BTreeSet<String> = m.planes().into_iter().collect();
+    let rows: BTreeSet<String> = m.plane_rows().into_iter().collect();
+    let clean: BTreeSet<String> = m.cleanliness_rows().into_iter().collect();
+    for (row, krate, manifest) in CLEANLINESS_ROWS {
+        if !clean.contains(row) {
+            out.push(format!(
+                "{LEDGER_REL}: cleanliness crate {krate} carries no {CLEANLINESS_KEY}.{row} -- its \
+                 Teller steps are measured nowhere, and coverage is re-pointed, never retired \
+                 (BUSBAR-1.6.0.md l.3987)"
+            ));
+        }
+        if !cx.exists(manifest) {
+            out.push(format!(
+                "{LEDGER_REL}: {CLEANLINESS_KEY}.{row} is owed by cleanliness crate {krate}, whose \
+                 manifest {manifest} does not exist -- a row for a crate the tree does not have"
+            ));
+        }
+    }
+    for row in clean
+        .iter()
+        .filter(|r| !CLEANLINESS_ROWS.iter().any(|(c, _, _)| *c == r.as_str()))
+    {
+        out.push(format!(
+            "{LEDGER_REL}: {CLEANLINESS_KEY}.{row} names no cleanliness crate the gate's \
+             CLEANLINESS_ROWS list owes -- a row about nothing the gate judges"
+        ));
+    }
     match kind_isolation::plane_meta_declarations(cx) {
         Err(e) => out.push(format!(
             "{LEDGER_REL}: the plane roster cannot be derived: {e}"
@@ -418,6 +541,13 @@ pub fn check_roster(cx: &Ctx, m: &Matrix) -> Vec<String> {
                     "{LEDGER_REL}: matrix.{row} is a plane no crate declares (no `impl \
                      PlaneMeta` states KEY {}) -- a row for a plane the tree does not have",
                     json_lite::py_repr(row)
+                ));
+            }
+            for row in clean.iter().filter(|r| declared.contains(r.as_str())) {
+                out.push(format!(
+                    "{LEDGER_REL}: {CLEANLINESS_KEY}.{row} is a key some crate's `impl PlaneMeta` \
+                     declares -- a plane's row belongs in 'matrix', and a cleanliness crate states \
+                     no PlaneMeta"
                 ));
             }
         }
@@ -739,12 +869,13 @@ pub fn check_rig_column(cx: &Ctx, m: &Matrix) -> Vec<String> {
             }
             if owners.resolve(&cell_id).is_none() {
                 out.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} names rig cell {}, which NOTHING in the \
+                    "{LEDGER_REL}: {}.{step} names rig cell {}, which NOTHING in the \
                      tree owns -- no oracle cell of that id, no h2 subject script, no voice leg, \
                      no jev rig check, no suite source declaring it and no row in \
                      rigs-baseline.json. The scenario \
                      was renamed or deleted; a claim that outlives its evidence is the drift this \
                      check exists to stop",
+                    m.at(&plane),
                     json_lite::py_repr(&cell_id)
                 ));
             }
@@ -877,11 +1008,12 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             continue;
         };
         let file = &leg_file[leg];
+        let at = m.at(&plane);
         for step in m.step_order() {
             let r = m.cell(&plane, &step).get("root");
             if r.as_object().is_none() {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step} carries no 'root' verdict -- an absent \
+                    "{LEDGER_REL}: {at}.{step} carries no 'root' verdict -- an absent \
                      second verdict is indistinguishable from an oversight"
                 ));
                 continue;
@@ -889,7 +1021,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let state = r.str_or("state", "");
             if !ROOT_STATES.contains(&state.as_str()) {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root.state {} is not one of {}",
+                    "{LEDGER_REL}: {at}.{step}.root.state {} is not one of {}",
                     json_lite::py_repr_json(r.get("state")),
                     py_list(ROOT_STATES)
                 ));
@@ -898,7 +1030,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let named_leg = r.str_or("leg", "");
             if &named_leg != leg {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root names leg {}, but plane {} runs \
+                    "{LEDGER_REL}: {at}.{step}.root names leg {}, but plane {} runs \
                      through {}",
                     json_lite::py_repr_json(r.get("leg")),
                     json_lite::py_repr(&plane),
@@ -909,7 +1041,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let note = r.get("note").as_str().unwrap_or("").trim().to_string();
             if let Some(why) = note_problem(&note) {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root has note {}: {why}",
+                    "{LEDGER_REL}: {at}.{step}.root has note {}: {why}",
                     json_lite::py_repr(&note)
                 ));
                 continue;
@@ -920,13 +1052,13 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             // use a note keeps it; each later reuse is named against the cell it was taken from.
             if let Some(first) = seen_notes.get(&note) {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root reuses the note already argued at \
-                     matrix.{first} verbatim: a note copied between cells is boilerplate, not an \
+                    "{LEDGER_REL}: {at}.{step}.root reuses the note already argued at \
+                     {first} verbatim: a note copied between cells is boilerplate, not an \
                      argument about this cell's verdict"
                 ));
                 continue;
             }
-            seen_notes.insert(note.clone(), format!("{plane}.{step}"));
+            seen_notes.insert(note.clone(), format!("{at}.{step}"));
             if state == "none" {
                 continue;
             }
@@ -934,7 +1066,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let prefix = format!("{file}::");
             let Some(func) = test.strip_prefix(&prefix) else {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root is proven by {}, which does not \
+                    "{LEDGER_REL}: {at}.{step}.root is proven by {}, which does not \
                      live in {}'s own file {file} -- a leg is proven by its own cells",
                     json_lite::py_repr(&test),
                     json_lite::py_repr(leg)
@@ -946,7 +1078,7 @@ fn check_root_column_in(cx: &Ctx, m: &Matrix, view: &CiView) -> RootProblems {
             let body = cx.read(file).unwrap_or_default();
             if !body.contains(&format!("fn {func}(")) {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root is proven by {test}, but no `fn \
+                    "{LEDGER_REL}: {at}.{step}.root is proven by {test}, but no `fn \
                      {func}(` exists there. The named loop cell is gone or renamed; a claim that \
                      outlives its evidence is the drift this check exists to stop"
                 ));
@@ -1192,7 +1324,11 @@ pub fn check_gating(m: &Matrix) -> Gating {
 pub fn render(m: &Matrix) -> String {
     let mut lines = Vec::new();
     for plane in m.planes() {
-        lines.push(format!("plane {plane}:"));
+        if m.is_cleanliness(&plane) {
+            lines.push(format!("cleanliness {plane}:"));
+        } else {
+            lines.push(format!("plane {plane}:"));
+        }
         for step in m.step_order() {
             let entry = m.cell(&plane, &step);
             let status = entry.str_or("status", "");
@@ -2057,6 +2193,37 @@ impl Gate for TellerStepsGate {
                     p.set_cell_field("llm", "meter", "status", Json::Str("none".into()));
                 }),
             ),
+            // ── A CLEANLINESS ROW IS JUDGED BY THE PLANE ROWS' RULES (spec l.3987). ──────────────
+            (
+                "a cleanliness row whose cited loop test does not exist",
+                ROW_ROOT_COLUMN,
+                "cleanliness_rows.admin.meter.root is proven by",
+                Box::new(|p: &mut Plant| {
+                    p.set_root_field(
+                        "admin",
+                        "meter",
+                        "test",
+                        Json::Str(format!(
+                            "{ROOT_DIR}units_admin/tests/units_admin.rs::a_fn_that_was_renamed_away"
+                        )),
+                    );
+                }),
+            ),
+            (
+                "a cleanliness row's gating step with no cell",
+                ROW_GATING,
+                "admin.audit",
+                Box::new(|p: &mut Plant| {
+                    p.set_cell_field("admin", "audit", "cell", Json::Str("none".into()));
+                    p.set_cell_field("admin", "audit", "status", Json::Str("none".into()));
+                }),
+            ),
+            (
+                "a cleanliness row the gate's list does not owe",
+                ROW_MATRIX,
+                "cleanliness_rows.ghost names no cleanliness crate",
+                Box::new(|p: &mut Plant| p.copy_row("admin", "ghost")),
+            ),
         ];
 
         // THE GREEN BASE EVERY PLANT IS PROVEN FROM. A root cell whose named loop cell is gone
@@ -2262,7 +2429,10 @@ impl Gate for TellerStepsGate {
 /// ordinary state of the tree.
 fn missing_root_cells(cx: &Ctx, doc: &Json) -> Overlay {
     let mut stubs: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    if let Some(planes) = doc.get("matrix").as_object() {
+    for planes in ["matrix", CLEANLINESS_KEY]
+        .into_iter()
+        .filter_map(|section| doc.get(section).as_object())
+    {
         for (_, steps) in planes.iter() {
             let Some(steps) = steps.as_object() else {
                 continue;
@@ -2315,11 +2485,26 @@ struct Plant {
 }
 
 impl Plant {
+    /// The section a row lives in: `cleanliness_rows` when it is a cleanliness row, else `matrix`.
+    fn section_of(&self, plane: &str) -> &'static str {
+        if self
+            .doc
+            .get(CLEANLINESS_KEY)
+            .as_object()
+            .is_some_and(|o| o.contains_key(plane))
+        {
+            CLEANLINESS_KEY
+        } else {
+            "matrix"
+        }
+    }
+
     fn cell_mut(&mut self, plane: &str, step: &str) -> Option<&mut json_lite::Obj> {
+        let section = self.section_of(plane);
         match self
             .doc
             .as_object_mut()?
-            .get_mut("matrix")?
+            .get_mut(section)?
             .as_object_mut()?
             .get_mut(plane)?
             .as_object_mut()?
@@ -2343,10 +2528,11 @@ impl Plant {
     }
 
     fn drop_step(&mut self, plane: &str, step: &str) {
+        let section = self.section_of(plane);
         if let Some(Json::Object(row)) = self
             .doc
             .as_object_mut()
-            .and_then(|d| d.get_mut("matrix"))
+            .and_then(|d| d.get_mut(section))
             .and_then(Json::as_object_mut)
             .and_then(|m| m.get_mut(plane))
         {
@@ -2354,8 +2540,8 @@ impl Plant {
         }
     }
 
-    /// Drop `step` from the declared steps AND from every row, so the matrix is internally whole
-    /// and only the kernel's roster can see what it lost.
+    /// Drop `step` from the declared steps AND from every row, plane and cleanliness alike, so the
+    /// matrix is internally whole and only the kernel's roster can see what it lost.
     fn drop_step_everywhere(&mut self, step: &str) {
         let Some(doc) = self.doc.as_object_mut() else {
             return;
@@ -2363,19 +2549,22 @@ impl Plant {
         if let Some(Json::Object(steps)) = doc.get_mut("steps") {
             steps.remove(step);
         }
-        if let Some(Json::Object(rows)) = doc.get_mut("matrix") {
-            let planes: Vec<String> = rows.keys().map(str::to_string).collect();
-            for plane in planes {
-                if let Some(Json::Object(row)) = rows.get_mut(&plane) {
-                    row.remove(step);
+        for section in ["matrix", CLEANLINESS_KEY] {
+            if let Some(Json::Object(rows)) = doc.get_mut(section) {
+                let planes: Vec<String> = rows.keys().map(str::to_string).collect();
+                for plane in planes {
+                    if let Some(Json::Object(row)) = rows.get_mut(&plane) {
+                        row.remove(step);
+                    }
                 }
             }
         }
     }
 
-    /// Add a row `to` that is a copy of row `from`.
+    /// Add a row `to` that is a copy of row `from`, in the section `from` lives in.
     fn copy_row(&mut self, from: &str, to: &str) {
-        if let Some(Json::Object(rows)) = self.doc.as_object_mut().and_then(|d| d.get_mut("matrix"))
+        let section = self.section_of(from);
+        if let Some(Json::Object(rows)) = self.doc.as_object_mut().and_then(|d| d.get_mut(section))
         {
             if let Some(row) = rows.get(from).cloned() {
                 rows.insert(to, row);
@@ -2542,6 +2731,27 @@ mod root_gating_tests {
             lines
                 .iter()
                 .any(|l| l.contains("the shipped leg `root-y` owns no gating")),
+            "{lines:?}"
+        );
+    }
+
+    /// A cleanliness row is held to the shipped-leg bar exactly as a plane row: a gating step on a
+    /// shipped leg with no cell over the loop is red, named by the row.
+    #[test]
+    fn a_cleanliness_rows_gating_step_with_no_loop_cell_is_red() {
+        let m = Matrix {
+            doc: json_lite::parse(
+                r#"{"steps": {"admit": {"gating": true}},
+                    "matrix": {"p": {"admit": {"root": {"leg": "root-x", "state": "proven"}}}},
+                    "cleanliness_rows": {"c": {"admit": {"root": {"leg": "root-c", "state": "none"}}}},
+                    "root_legs": {"root-x": {}, "root-c": {}}}"#,
+            )
+            .expect("the planted matrix parses"),
+        };
+        let (lines, rc) = root_legs_gating_verdict(&m, &legs(&["root-x", "root-c"]));
+        assert_eq!(rc, 1, "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("c.admit (root-c)")),
             "{lines:?}"
         );
     }
