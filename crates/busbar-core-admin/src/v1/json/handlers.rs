@@ -265,7 +265,22 @@ pub(crate) async fn inspect_plugin(
             )));
         }
     };
-    respond(StatusCode::OK, service(&handle).inspect_plugin(&tarball))
+    // OFF THE ASYNC WORKER: the inspect gunzips and untars a caller archive of up to the tarball
+    // cap, hashes the library and checks its signature — seconds of work a read-scope credential
+    // can ask for, on the worker the data plane shares if it ran here.
+    let service = service(&handle);
+    match tokio::task::spawn_blocking(move || service.inspect_plugin(&tarball)).await {
+        Ok(view) => respond(StatusCode::OK, view),
+        Err(join_err) => {
+            diag_error!(
+                busbar_kernel::diagnostics::ADMIN_STORE_TASK_JOIN_FAILED,
+                operation = "plugins.inspect",
+                error = %join_err,
+                "admin blocking task failed"
+            );
+            err_json(&AdminError::Internal)
+        }
+    }
 }
 
 /// `DELETE /api/v1/admin/plugins/{file}` — REMOVE a dynamic-library plugin (Full scope): delete the
@@ -5142,10 +5157,9 @@ static OPENAPI_JSON_GZ: &[u8] = include_bytes!("openapi.json.gz");
 /// The served document, inflated PER CALL and byte-identical to the committed `openapi.json`.
 /// This used to memoize the inflation in a `OnceLock<String>` — which pinned the full 366 KB+
 /// document in RAM for the process lifetime after the FIRST `GET openapi.json`, to save ~5 ms on
-/// a cold admin/tooling path. Backwards: the handler now serves the embedded gz bytes directly to
-/// any client whose `Accept-Encoding` allows it (see [`openapi`]), so this inflate runs only for
-/// the rare identity-only client (and the drift tests), where a per-request decompress of a 43 KB
-/// gz is the honest cost and nothing is retained.
+/// a cold admin/tooling path. Backwards: the handler inflates per request, on a blocking thread
+/// (see [`openapi`]), where a per-request decompress of the embedded gz is the honest cost and
+/// nothing is retained.
 pub(crate) fn openapi_json() -> String {
     use std::io::Read;
     let mut out = String::new();
@@ -5186,9 +5200,10 @@ fn accept_encoding_allows_gzip(headers: &axum::http::HeaderMap) -> bool {
 /// `GET /api/v1/admin/openapi.json` — the OpenAPI 3.1 schema of the v1 surface (the discovery contract).
 /// Serves the committed, typed document verbatim as `application/json` (no runtime generation —
 /// see [`openapi_json`]). A client whose `Accept-Encoding` allows gzip (virtually every one) gets
-/// the embedded PRE-GZIPPED bytes with `Content-Encoding: gzip` — no inflation, no retained
-/// 366 KB+ string, byte-identical after the client's transparent decode; only an identity-only
-/// client pays a per-request inflate. `Vary: Accept-Encoding` because the body now differs by
+/// the embedded PRE-GZIPPED bytes with `Content-Encoding: gzip` when nothing is filtered — no
+/// retained 366 KB+ string, byte-identical after the client's transparent decode. Deciding whether
+/// anything IS filtered inflates and parses the document per request, so that work runs on a
+/// blocking thread, never the async worker. `Vary: Accept-Encoding` because the body differs by
 /// that header. No axum compression layer exists on this router (checked), so nothing
 /// double-compresses.
 ///
@@ -5204,24 +5219,45 @@ pub(crate) async fn openapi(
     headers: axum::http::HeaderMap,
 ) -> Response {
     const VARY: (axum::http::HeaderName, &str) = (axum::http::header::VARY, "accept-encoding");
+    /// What the blocking build settled on serving.
+    enum Served {
+        /// A JSON body: the document filtered to this node's planes, or the committed one inflated
+        /// for an identity-only client.
+        Json(String),
+        /// The embedded gzip bytes, unchanged.
+        Gzip,
+    }
     let app = handle.load();
-    let configured = |section: &str| {
-        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
-            .is_some_and(|decl| app.plane_configured(decl))
-    };
-    if let Some(filtered) = openapi_for_configured_planes(&openapi_json(), configured) {
-        return (
+    let gzip = accept_encoding_allows_gzip(&headers);
+    // OFF THE ASYNC WORKER: deciding what to serve inflates the embedded document, parses all of it
+    // and walks it for the operations of planes this node does not configure — on a node running a
+    // 1.5.5 config, on every request. That is a blocking thread's work, never the worker's the data
+    // plane shares. The document is inflated once and the inflated text reused for an identity-only
+    // client.
+    let served = tokio::task::spawn_blocking(move || {
+        let configured = |section: &str| {
+            busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+                .is_some_and(|decl| app.plane_configured(decl))
+        };
+        let committed = openapi_json();
+        match openapi_for_configured_planes(&committed, configured) {
+            Some(filtered) => Served::Json(filtered),
+            None if gzip => Served::Gzip,
+            None => Served::Json(committed),
+        }
+    })
+    .await;
+    match served {
+        Ok(Served::Json(body)) => (
             StatusCode::OK,
             [
                 (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
                 VARY,
             ],
-            filtered,
+            body,
         )
-            .into_response();
-    }
-    if accept_encoding_allows_gzip(&headers) {
-        (
+            .into_response(),
+        Ok(Served::Gzip) => (
             StatusCode::OK,
             [
                 (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
@@ -5230,17 +5266,16 @@ pub(crate) async fn openapi(
             ],
             OPENAPI_JSON_GZ,
         )
-            .into_response()
-    } else {
-        (
-            StatusCode::OK,
-            [
-                (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
-                VARY,
-            ],
-            openapi_json(),
-        )
-            .into_response()
+            .into_response(),
+        Err(join_err) => {
+            diag_error!(
+                busbar_kernel::diagnostics::ADMIN_STORE_TASK_JOIN_FAILED,
+                operation = "openapi.json",
+                error = %join_err,
+                "admin blocking task failed"
+            );
+            err_json(&AdminError::Internal)
+        }
     }
 }
 
