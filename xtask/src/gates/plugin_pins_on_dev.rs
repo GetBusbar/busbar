@@ -59,6 +59,52 @@ struct Pin {
     rev: Option<String>,
     /// What the dependency names instead of a rev, for the refusal (`branch = "dev"`).
     floating: Option<String>,
+    /// Why a github.com dependency's URL could not be read, so it is refused rather than skipped.
+    unreadable: Option<String>,
+}
+
+/// A git URL read down to the GetBusbar repo it names: `Ok(Some(repo))` for github.com/GetBusbar,
+/// `Ok(None)` for any other host or org, `Err` for a github.com URL that cannot be parsed. Host
+/// and org compare lower-cased; https, http, git, ssh and the scp form `git@github.com:org/repo`
+/// are one spelling of the same place; `www.`, user info, a port, `.git` and trailing `/` do not
+/// change which repo it is.
+fn github_repo(url: &str) -> Result<Option<String>, String> {
+    let l = url.trim().to_ascii_lowercase();
+    let l = l.strip_prefix("git+").unwrap_or(&l);
+    let (host, path) = if let Some(scp) = l.strip_prefix("git@") {
+        match scp.split_once(':') {
+            Some((h, p)) => (h.to_string(), p.to_string()),
+            None => (scp.to_string(), String::new()),
+        }
+    } else if let Some((_, rest)) = l.split_once("://") {
+        let (auth, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = auth.rsplit('@').next().unwrap_or(auth);
+        let host = host.split(':').next().unwrap_or(host);
+        (host.to_string(), path.to_string())
+    } else {
+        (String::new(), l.to_string())
+    };
+    let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
+    if host != "github.com" {
+        return if l.contains("github.com") {
+            Err(format!(
+                "`{url}` names github.com in a spelling this reader does not parse"
+            ))
+        } else {
+            Ok(None)
+        };
+    }
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path).trim_matches('/');
+    let parts: Vec<&str> = path.split('/').collect();
+    match parts.as_slice() {
+        [org, repo] if !org.is_empty() && !repo.is_empty() => {
+            Ok((*org == "getbusbar").then(|| (*repo).to_string()))
+        }
+        _ => Err(format!(
+            "`{url}` is a github.com URL without an org and a repo"
+        )),
+    }
 }
 
 /// Every GetBusbar git dependency of `[workspace.dependencies]`, in all the spellings TOML has for
@@ -97,17 +143,23 @@ fn pins(manifest: &str) -> Vec<Pin> {
     }
     let mut out = Vec::new();
     for (dep, kv) in deps {
-        let Some(url) = kv.get("git").filter(|u| u.starts_with(ORG_PREFIX)) else {
+        let Some(git) = kv.get("git") else {
             continue;
+        };
+        let (url, unreadable) = match github_repo(git) {
+            Ok(Some(repo)) => (format!("{ORG_PREFIX}{repo}"), None),
+            Ok(None) => continue,
+            Err(why) => (git.clone(), Some(why)),
         };
         let floating = ["branch", "tag"]
             .iter()
             .find_map(|k| kv.get(*k).map(|v| format!("{k} = \"{v}\"")));
         out.push(Pin {
             dep,
-            url: url.clone(),
+            url,
             rev: kv.get("rev").cloned(),
             floating,
+            unreadable,
         });
     }
     out
@@ -212,7 +264,11 @@ impl Gate for PluginPinsOnDevGate {
         static FETCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _one_at_a_time = FETCH.lock().unwrap_or_else(|e| e.into_inner());
 
-        let mut repos: Vec<&str> = pinned.iter().map(|p| p.url.as_str()).collect();
+        let mut repos: Vec<&str> = pinned
+            .iter()
+            .filter(|p| p.unreadable.is_none())
+            .map(|p| p.url.as_str())
+            .collect();
         repos.sort_unstable();
         repos.dedup();
 
@@ -229,6 +285,13 @@ impl Gate for PluginPinsOnDevGate {
         let mut ok = Vec::new();
         for p in &pinned {
             let repo = p.url.trim_start_matches(ORG_PREFIX);
+            if let Some(why) = &p.unreadable {
+                bad.push(format!(
+                    "{} ({}): the git URL cannot be read, so its pin is unproven: {why}",
+                    p.url, p.dep
+                ));
+                continue;
+            }
             let Some(rev) = p.rev.as_deref() else {
                 bad.push(format!(
                     "{repo} ({}): pins no rev ({}) — a dependency that follows a moving ref is \
@@ -403,6 +466,55 @@ impl Gate for PluginPinsOnDevGate {
             &[ROW_PINS],
             floating,
             &["zz-fake-plugin", "pins no rev"],
+        ));
+
+        // PLANTS (f-h): the same repo spelled another way is still that repo, and an off-dev rev is
+        // still RED. A spelling this reader cannot parse is refused, never skipped.
+        let spelled = |url: &str| {
+            let mut ov = Overlay::new();
+            ov.set(
+                "Cargo.toml",
+                format!(
+                    "[workspace.dependencies]\nzz-fake-plugin = {{ git = \"{url}\", rev = \"{}\" }}\n",
+                    fake.side_sha
+                ),
+            );
+            ov
+        };
+        for (name, url) in [
+            (
+                "a case-changed org",
+                "https://github.com/GETBUSBAR/zz-fake-plugin",
+            ),
+            (
+                "an ssh URL",
+                "ssh://git@github.com/GetBusbar/zz-fake-plugin.git",
+            ),
+            (
+                "an scp-style URL",
+                "git@github.com:GetBusbar/zz-fake-plugin.git",
+            ),
+            (
+                "an http www URL with a trailing slash",
+                "http://www.github.com/GetBusbar/zz-fake-plugin/",
+            ),
+        ] {
+            report.push(prove_red(
+                &cx,
+                gate,
+                format!("{name} naming a rev off dev is RED, not skipped"),
+                &[ROW_PINS],
+                spelled(url),
+                &["zz-fake-plugin", "not reachable from dev"],
+            ));
+        }
+        report.push(prove_red(
+            &cx,
+            gate,
+            "a github.com URL this reader cannot parse is RED, never skipped",
+            &[ROW_PINS],
+            spelled("https://github.com/GetBusbar"),
+            &["cannot be read"],
         ));
 
         report
