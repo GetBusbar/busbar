@@ -665,7 +665,7 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     let registry = PluginRegistry::empty()
         .link(vec![
             LinkedPlugin::auth_door_named("busbar-auth-judge", "judge", judge::door),
-            LinkedPlugin::auth_door_named(
+            LinkedPlugin::auth_door_named_raw(
                 "busbar-auth-broken",
                 "broken",
                 crate::dispatch_tests::null_door,
@@ -701,7 +701,7 @@ crate::needs_restated::tcp_restated!(networked_judge, judge::door);
 /// The judge restated with a `tcp` need (a directory it dials), linked as `judge`.
 fn networked_rows() -> AuthRows {
     let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::auth_door("judge", networked_judge)])
+        .link(vec![LinkedPlugin::auth_door_raw("judge", networked_judge)])
         .expect("the linked door registers");
     AuthRows::new(Arc::new(registry), dispatcher())
 }

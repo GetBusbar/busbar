@@ -162,8 +162,8 @@ mod plugin {
 }
 
 fn the_door() -> &'static Door {
-    // SAFETY: the macro's door is a `'static` const.
-    unsafe { &*plugin::door() }
+    // The macro's door is a `'static` const.
+    plugin::door()
 }
 
 fn table() -> &'static LifecycleOnly {
@@ -289,8 +289,8 @@ fn the_door_states_magic_versions_kind_statement_and_table() {
 fn a_compiled_in_row_holds_the_same_door_fn_and_reaches_the_same_static_door() {
     // Rust promises no single address per `const`, so the row's door is compared by contents.
     let row: DoorFn = plugin::door;
-    // SAFETY: both are the macro's `'static` door.
-    let (a, b) = unsafe { (&*row(), &*plugin::door()) };
+    // Both are the macro's `'static` door.
+    let (a, b) = (row(), plugin::door());
     assert_eq!(
         (a.magic, a.mechanism_version, a.size, a.kind, a.kind_abi),
         (b.magic, b.mechanism_version, b.size, b.kind, b.kind_abi)
@@ -668,8 +668,8 @@ mod kind_plugin {
 
 #[test]
 fn kind_ops_sit_at_lifecycle_slots_plus_k_whatever_order_they_are_named_in() {
+    let d = kind_plugin::door();
     // SAFETY: the macro's `'static` door and table.
-    let d = unsafe { &*kind_plugin::door() };
     let t = unsafe { &*d.ops.cast::<TwoKindOps>() };
     assert_eq!(d.kind, KindCode::Store as u32);
     assert_eq!(d.kind_abi, crate::abi::store::ABI_VERSION);
@@ -706,7 +706,7 @@ fn kind_ops_sit_at_lifecycle_slots_plus_k_whatever_order_they_are_named_in() {
 #[test]
 fn a_panicking_kind_op_answers_fault_and_writes_only_the_outcome() {
     // SAFETY: the macro's `'static` door and table.
-    let t = unsafe { &*(*kind_plugin::door()).ops.cast::<TwoKindOps>() };
+    let t = unsafe { &*kind_plugin::door().ops.cast::<TwoKindOps>() };
     let input = GenIn {
         head: in_head::<GenIn>(LIFECYCLE_SLOTS + 1, Ticket::NONE),
         generation: PANIC_GEN,
@@ -795,8 +795,8 @@ mod auth_plugin {
 #[test]
 fn an_auth_plugin_wires_every_kind_op() {
     use crate::abi::auth::{slot as auth_slot, FieldsIn, FieldsOut, IdentifyOut, Ops, VerifyIn};
+    let d = auth_plugin::door();
     // SAFETY: the macro's `'static` door and its auth table.
-    let d = unsafe { &*auth_plugin::door() };
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Auth as u32);
     assert_eq!(d.kind_abi, crate::abi::auth::ABI_VERSION);
@@ -876,8 +876,8 @@ mod secret_plugin {
 #[test]
 fn a_secret_plugin_wires_every_kind_op() {
     use crate::abi::secret::{slot as secret_slot, Ops, ResolveIn, ResolveOut};
+    let d = secret_plugin::door();
     // SAFETY: the macro's `'static` door and its secret table.
-    let d = unsafe { &*secret_plugin::door() };
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Secret as u32);
     assert_eq!(d.kind_abi, crate::abi::secret::ABI_VERSION);
@@ -906,12 +906,8 @@ fn a_secret_plugin_wires_every_kind_op() {
 #[test]
 fn a_kind_op_a_door_does_not_name_is_absent() {
     // SAFETY: the macros' `'static` doors and their tables.
-    let secret = unsafe {
-        &*(*secret_plugin::door())
-            .ops
-            .cast::<crate::abi::secret::Ops>()
-    };
-    let auth = unsafe { &*(*auth_plugin::door()).ops.cast::<crate::abi::auth::Ops>() };
+    let secret = unsafe { &*secret_plugin::door().ops.cast::<crate::abi::secret::Ops>() };
+    let auth = unsafe { &*auth_plugin::door().ops.cast::<crate::abi::auth::Ops>() };
     assert!(secret.check.is_none(), "an unnamed kind op is absent");
     assert!(auth.target.is_none(), "an unnamed kind op is absent");
     assert!(
@@ -961,7 +957,7 @@ mod secret_check_plugin {
 fn a_secret_plugin_that_serves_check_answers_it() {
     use crate::abi::secret::{slot as secret_slot, CheckIn, Ops};
     // SAFETY: the macro's `'static` door and its secret table.
-    let t = unsafe { &*(*secret_check_plugin::door()).ops.cast::<Ops>() };
+    let t = unsafe { &*secret_check_plugin::door().ops.cast::<Ops>() };
     assert_eq!(t.head.slots, crate::abi::secret::SLOTS);
     // SAFETY: plain data; all-zero is valid.
     let mut input: CheckIn = unsafe { std::mem::zeroed() };
@@ -1018,8 +1014,8 @@ mod export_plugin {
 #[test]
 fn an_export_plugin_wires_every_kind_op() {
     use crate::abi::export::{slot as export_slot, DeliverIn, Ops, ServeIn, ServeOut};
+    let d = export_plugin::door();
     // SAFETY: the macro's `'static` door and its export table.
-    let d = unsafe { &*export_plugin::door() };
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Export as u32);
     assert_eq!(d.kind_abi, crate::abi::export::ABI_VERSION);
@@ -1099,8 +1095,8 @@ mod hook_plugin {
 #[test]
 fn a_hook_plugin_wires_every_kind_op() {
     use crate::abi::hook::{slot as hook_slot, DecideIn, DecideOut, Ops, ServeIn, ServeOut};
+    let d = hook_plugin::door();
     // SAFETY: the macro's `'static` door and its hook table.
-    let d = unsafe { &*hook_plugin::door() };
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Hook as u32);
     assert_eq!(d.kind_abi, crate::abi::hook::ABI_VERSION);
@@ -1300,8 +1296,8 @@ mod store_plugin {
 #[test]
 fn a_store_plugin_wires_every_kind_op() {
     use crate::abi::store::{slot as store_slot, BlobIn, Ops, WindowCapsIn};
+    let d = store_plugin::door();
     // SAFETY: the macro's `'static` door and its store table.
-    let d = unsafe { &*store_plugin::door() };
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Store as u32);
     assert_eq!(d.kind_abi, crate::abi::store::ABI_VERSION);
@@ -1520,7 +1516,7 @@ mod plane_plugin {
 fn a_plane_open_in_that_ends_before_the_providers_hands_none() {
     use crate::abi::plane::{Ops, PlaneOpenIn, PlaneOpenOut, ProviderFacts};
     // SAFETY: the macro's `'static` door and its plane table.
-    let t = unsafe { &*(*plane_plugin::door()).ops.cast::<Ops>() };
+    let t = unsafe { &*plane_plugin::door().ops.cast::<Ops>() };
     // SAFETY: plain data; all-zero is valid.
     let mut input: PlaneOpenIn = unsafe { std::mem::zeroed() };
     input.open.head = in_head::<PlaneOpenIn>(slot::OPEN, Ticket::NONE);
@@ -1547,8 +1543,8 @@ fn a_plane_plugin_wires_every_kind_op() {
     use crate::abi::plane::{
         PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneSnapshot,
     };
+    let d = plane_plugin::door();
     // SAFETY: the macro's `'static` door and its plane table.
-    let d = unsafe { &*plane_plugin::door() };
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Plane as u32);
     assert_eq!(d.kind_abi, crate::abi::plane::ABI_VERSION);
@@ -1696,8 +1692,8 @@ fn a_transport_plugin_wires_every_kind_op() {
     use crate::abi::transport::{
         slot as transport_slot, FramerOut, FramingIn, ListenIn, ListenOut, Ops,
     };
+    let d = transport_plugin::door();
     // SAFETY: the macro's `'static` door and its transport table.
-    let d = unsafe { &*transport_plugin::door() };
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Transport as u32);
     assert_eq!(d.kind_abi, crate::abi::transport::ABI_VERSION);
