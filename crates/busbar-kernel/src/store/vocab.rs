@@ -663,9 +663,13 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // `#[cfg(test)]`-gated out of the release binary.
     #[cfg(any(test, feature = "test-support"))]
     fn record_success(&self, lane: usize) {
-        self.record_success_in("", lane);
+        self.record_success_in("", lane, super::HealthState::now_secs());
     }
-    fn record_success_in(&self, pool: &str, lane: usize);
+    /// Record a success on the `(pool, lane)` cell at the caller's `now` (whole seconds), never a
+    /// clock this store reads: a walk records an attempt's success at the instant its failures, its
+    /// admission and its shed read, so the error-rate window a later failure trips on holds every
+    /// outcome on one clock ([`Self::record_transient_in_at`], [`Self::record_rate_limit_in`]).
+    fn record_success_in(&self, pool: &str, lane: usize, now: u64);
     /// A SUCCESSFUL (2xx) out-of-band health probe: push a success outcome into the sliding
     /// error-rate window of EVERY cell for the lane (the default/direct-route cell AND every existing
     /// per-pool cell), mirroring the all-cells iteration of `record_probe_failure_all_cells`. The
@@ -688,7 +692,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// SWRR accumulator — the matching `reset_swrr_for` bumps the cell's stripe generation so every
     /// worker's stripe rejoins from 0, holding the per-stripe `Σ == 0` invariant. Gating the reset
     /// on the recovered-bool mirrors `record_success_for`/`recover_lane`.
-    fn record_probe_success_all_cells(&self, lane: usize);
+    ///
+    /// At the caller's `now`, as every write below: the prober and the walk record on one clock.
+    fn record_probe_success_all_cells(&self, lane: usize, now: u64);
     fn record_client_fault(&self, lane: usize);
     /// Record a transient upstream failure. `cfg` is the routing pool's resolved breaker config,
     /// which drives the trip decision (error-rate vs consecutive thresholds) and cooldown backoff.
@@ -762,10 +768,12 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// Trips every cell for `lane` hard-down. Returns `true` iff this was a genuine fresh trip of the
     /// default cell (it was `ST_CLOSED` before) — so callers can gate `BREAKER_TRIPS_TOTAL` on a
     /// LOGICAL Closed→Open trip and not re-count a persistently-dead lane on every recovery-probe.
-    fn record_hard_down_all_cells(&self, lane: usize, reason: &str) -> bool;
+    /// The sticky cooldown is armed from the caller's `now`.
+    fn record_hard_down_all_cells(&self, lane: usize, reason: &str, now: u64) -> bool;
     /// A successful out-of-band health probe: recover the lane to Closed in EVERY cell (default and
-    /// all pools), since the probe tests the shared upstream. No-op on cells already Closed.
-    fn recover_lane(&self, lane: usize);
+    /// all pools), since the probe tests the shared upstream. No-op on cells already Closed. A
+    /// cooldown is judged elapsed at the caller's `now`.
+    fn recover_lane(&self, lane: usize, now: u64);
     /// A FAILED out-of-band health probe: record a transient failure against EVERY cell for the
     /// lane (the default cell AND every existing per-pool cell), mirroring `recover_lane`'s
     /// all-cells iteration. The probe tests the shared upstream, and organic traffic routes against
@@ -785,6 +793,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
         what: &str,
         resolve_cfg: &dyn Fn(&str) -> BreakerCfg,
         retry_after: Option<u64>,
+        now: u64,
     );
 
     // concurrency + budget — lane-global (shared across every pool fronting the lane).
