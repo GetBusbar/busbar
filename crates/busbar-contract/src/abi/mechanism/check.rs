@@ -81,6 +81,18 @@ pub struct Fault {
     pub field: &'static str,
 }
 
+/// `expr?` for a `Result<_, Fault>`, written as the match it is: the per-answer checks run on
+/// every crossing, and in an unoptimised build each `?` is a call of its own.
+macro_rules! judged {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(f) => return Err(f),
+        }
+    };
+}
+pub(crate) use judged;
+
 /// A [`Fault`].
 #[must_use]
 #[inline(always)]
@@ -359,6 +371,7 @@ pub const fn span(offset: u32, len: u32, bound: u64, field: &'static str) -> Res
 /// # Errors
 ///
 /// [`Rule::SpanOutOfBounds`].
+#[inline(always)]
 pub const fn range(offset: u64, len: u64, bound: u64, field: &'static str) -> Result<(), Fault> {
     match offset.checked_add(len) {
         Some(end) if end <= bound => Ok(()),

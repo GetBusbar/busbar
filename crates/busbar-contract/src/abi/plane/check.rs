@@ -44,8 +44,8 @@ use crate::abi::hook::{
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, BLOB_ABSENT, BLOB_OCTETS, MAX_TEXT};
 use crate::abi::mechanism::check::{
-    bits, code, fault, first, index, listed, range, result, results, span, text, weight, Dim,
-    Filled, MAX_BYTES,
+    bits, code, fault, first, index, judged, listed, range, result, results, span, text, weight,
+    Dim, Filled, MAX_BYTES,
 };
 use crate::abi::mechanism::door::{
     Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
@@ -115,36 +115,42 @@ fn named(s: AbiStr, field: &'static str) -> Result<(), Fault> {
     text(s, field)
 }
 
+#[inline(always)]
 fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
-    let counts = first(buf, n, "unit")?;
+    let counts = judged!(first(buf, n, "unit"));
     // The (class, billing) pairs already seen, for the classes below 64: one bit per class, one
     // mask per billing kind. A class at 64 or above is looked up among the counts before it.
-    let mut seen = [0_u64; 2];
+    let (mut seen_billing, mut seen_other) = (0_u64, 0_u64);
     let mut i = 0;
     while i < counts.len() {
         let u = &counts[i];
-        index(u.class, b.billable_classes, "unit.class")?;
-        code(
-            u64::from(u.source),
-            u64::from(UNITS_ESTIMATED),
-            u64::from(UNITS_FLOOR),
+        judged!(index(u.class, b.billable_classes, "unit.class"));
+        judged!(code(
+            u.source as u64,
+            UNITS_ESTIMATED as u64,
+            UNITS_FLOOR as u64,
             "unit.source",
-        )?;
+        ));
         // ONE CUMULATIVE COUNT per class and source, and ONE BILLING COUNT per class: a second is a
         // contradiction (two running totals of one thing), never a sum the host would have to add
         // and never a choice it would have to make between a reported count and a floor.
-        let bill = usize::from(units_bill(u.source));
+        let bill = units_bill(u.source);
         let again = if u.class < 64 {
             let bit = 1_u64 << u.class;
-            let again = seen[bill] & bit != 0;
-            seen[bill] |= bit;
+            let seen = if bill {
+                &mut seen_billing
+            } else {
+                &mut seen_other
+            };
+            let again = *seen & bit != 0;
+            *seen |= bit;
             again
         } else {
             let mut j = 0;
             let mut again = false;
             while j < i {
                 let p = &counts[j];
-                if p.class == u.class && usize::from(units_bill(p.source)) == bill {
+                if p.class == u.class && units_bill(p.source) == bill {
                     again = true;
                     break;
                 }
@@ -160,34 +166,40 @@ fn units(buf: &[UnitCount], n: u64, b: &Bounds) -> Result<(), Fault> {
     Ok(())
 }
 
+#[inline(always)]
 fn fields(buf: &[OutField], n: u64, arena: u64) -> Result<(), Fault> {
-    for f in first(buf, n, "field")? {
-        span(f.name.offset, f.name.len, arena, "field.name")?;
-        span(f.value.offset, f.value.len, arena, "field.value")?;
+    let written = judged!(first(buf, n, "field"));
+    let mut k = 0;
+    while k < written.len() {
+        let f = &written[k];
+        judged!(span(f.name.offset, f.name.len, arena, "field.name"));
+        judged!(span(f.value.offset, f.value.len, arena, "field.value"));
+        k += 1;
     }
     Ok(())
 }
 
+#[inline(always)]
 fn records(buf: &[RecordWrite], n: u64, arena: u64, b: &Bounds) -> Result<(), Fault> {
-    for r in first(buf, n, "record")? {
+    for r in judged!(first(buf, n, "record")) {
         match r.op {
-            RECORD_PUT => index(r.kind, b.record_kinds, "record.kind")?,
+            RECORD_PUT => judged!(index(r.kind, b.record_kinds, "record.kind")),
             // The unit's audit row: its outcome where a put names its kind, and an action.
             RECORD_AUDIT => {
-                code(
-                    u64::from(r.kind),
-                    u64::from(super::AUDIT_APPLIED),
-                    u64::from(super::AUDIT_DEGRADED),
+                judged!(code(
+                    r.kind as u64,
+                    super::AUDIT_APPLIED as u64,
+                    super::AUDIT_DEGRADED as u64,
                     "record.audit_outcome",
-                )?;
+                ));
                 if r.key.len == 0 {
                     return Err(fault(Rule::Contradiction, "record.audit_without_action"));
                 }
             }
             _ => return Err(fault(Rule::UnknownCode, "record.op")),
         }
-        span(r.key.offset, r.key.len, arena, "record.key")?;
-        span(r.value.offset, r.value.len, arena, "record.value")?;
+        judged!(span(r.key.offset, r.key.len, arena, "record.key"));
+        judged!(span(r.value.offset, r.value.len, arena, "record.value"));
     }
     Ok(())
 }
@@ -205,28 +217,28 @@ pub fn check_arrive(
     units_cap: u64,
     b: &Bounds,
 ) -> Result<(), Fault> {
-    let written = u64::from(out.units_written);
-    result(
+    let written = out.units_written as u64;
+    judged!(result(
         outcome,
         written,
-        u64::from(out.units_needed),
+        out.units_needed as u64,
         units_cap,
         MAX_UNITS,
         "arrive.units",
-    )?;
-    units(units_buf, written, b)?;
+    ));
+    judged!(units(units_buf, written, b));
     // A refusal about an entry (abi/plane "A refused arrival", rule 6) names it, with its class.
     let about_entry = outcome == Outcome::Refused && (out.pool.len != 0 || !out.pool.ptr.is_null());
     if outcome == Outcome::Refused {
         if out.refusal == 0 {
             return Err(fault(Rule::Missing, "arrive.refusal"));
         }
-        code(
-            u64::from(out.refusal_status),
+        judged!(code(
+            out.refusal_status as u64,
             400,
             if about_entry { 599 } else { 499 },
             "arrive.refusal_status",
-        )?;
+        ));
         if out.refusal_flags & !REFUSED_UNSUPPORTED_ACTION != 0 {
             return Err(fault(Rule::UnknownCode, "arrive.refusal_flags"));
         }
@@ -234,30 +246,25 @@ pub fn check_arrive(
         return Err(fault(Rule::Contradiction, "arrive.refusal"));
     }
     if outcome == Outcome::Ready {
-        code(
-            u64::from(out.principal_need),
+        judged!(code(
+            out.principal_need as u64,
             0,
-            u64::from(PRINCIPAL_OPTIONAL),
+            PRINCIPAL_OPTIONAL as u64,
             "arrive.principal_need",
-        )?;
-        index(out.op_class, b.op_classes, "arrive.op_class")?;
-        index(out.dialect, b.dialects, "arrive.dialect")?;
+        ));
+        judged!(index(out.op_class, b.op_classes, "arrive.op_class"));
+        judged!(index(out.dialect, b.dialects, "arrive.dialect"));
         if out.correlation != 0 && out.cancels != 0 {
             return Err(fault(Rule::Contradiction, "arrive.cancel_with_correlation"));
         }
-        text(out.pool, "arrive.pool")?;
+        judged!(text(out.pool, "arrive.pool"));
         if out.pool.len > MAX_TEXT {
             return Err(fault(Rule::OverMax, "arrive.pool"));
         }
-        if ![
-            ROUTE_POOL,
-            ROUTE_DIRECT,
-            ROUTE_LOCAL,
-            ROUTE_SCOPE,
-            ROUTE_SCOPE_LOCAL,
-        ]
-        .contains(&out.route)
-        {
+        if !matches!(
+            out.route,
+            ROUTE_POOL | ROUTE_DIRECT | ROUTE_LOCAL | ROUTE_SCOPE | ROUTE_SCOPE_LOCAL
+        ) {
             return Err(fault(Rule::UnknownCode, "arrive.route"));
         }
         if out.route_flags & !(ROUTE_ONCE | ROUTE_SESSION | ROUTE_STREAM | ROUTE_COUNTED) != 0 {
@@ -270,7 +277,7 @@ pub fn check_arrive(
         {
             return Err(fault(Rule::Contradiction, "arrive.route_flags"));
         }
-        text(out.affinity, "arrive.affinity")?;
+        judged!(text(out.affinity, "arrive.affinity"));
         if out.affinity.len > MAX_TEXT {
             return Err(fault(Rule::OverMax, "arrive.affinity"));
         }
@@ -280,9 +287,9 @@ pub fn check_arrive(
             return Err(fault(Rule::Contradiction, "arrive.pool"));
         }
     } else if about_entry {
-        index(out.op_class, b.op_classes, "arrive.op_class")?;
-        index(out.dialect, b.dialects, "arrive.dialect")?;
-        text(out.pool, "arrive.pool")?;
+        judged!(index(out.op_class, b.op_classes, "arrive.op_class"));
+        judged!(index(out.dialect, b.dialects, "arrive.dialect"));
+        judged!(text(out.pool, "arrive.pool"));
         if out.pool.len > MAX_TEXT {
             return Err(fault(Rule::OverMax, "arrive.pool"));
         }
@@ -304,9 +311,9 @@ pub fn check_arrive(
     if outcome != Outcome::Ready && (out.affinity.len != 0 || !out.affinity.ptr.is_null()) {
         return Err(fault(Rule::Contradiction, "arrive.affinity"));
     }
-    trust_facts(outcome, out)?;
+    judged!(trust_facts(outcome, out));
     if outcome == Outcome::Refused {
-        text(out.head.error, "arrive.refusal_text")?;
+        judged!(text(out.head.error, "arrive.refusal_text"));
         if out.head.error.len as u64 > MAX_REFUSAL_TEXT {
             return Err(fault(Rule::OverMax, "arrive.refusal_text"));
         }
@@ -317,24 +324,31 @@ pub fn check_arrive(
 /// `arrive`'s TRUST FACTS (ARCHITECT 2026-10-06, the kernel's Approve): each a bounded text; a
 /// item only with a counterparty, a digest only with an item; and an answer that admits
 /// nothing states none.
+#[inline(always)]
 fn trust_facts(outcome: Outcome, out: &ArriveOut) -> Result<(), Fault> {
-    let stated = |s: AbiStr| s.len != 0 || !s.ptr.is_null();
+    #[inline(always)]
+    fn stated(s: AbiStr) -> bool {
+        s.len != 0 || !s.ptr.is_null()
+    }
     let facts = [
         (out.trust_counterparty, "arrive.trust_counterparty"),
         (out.trust_item, "arrive.trust_item"),
         (out.trust_digest, "arrive.trust_digest"),
     ];
     if outcome != Outcome::Ready {
-        if facts.iter().any(|(s, _)| stated(*s)) {
+        if stated(facts[0].0) || stated(facts[1].0) || stated(facts[2].0) {
             return Err(fault(Rule::Contradiction, "arrive.trust"));
         }
         return Ok(());
     }
-    for (s, field) in facts {
-        text(s, field)?;
+    let mut k = 0;
+    while k < facts.len() {
+        let (s, field) = facts[k];
+        judged!(text(s, field));
         if s.len > MAX_TEXT {
             return Err(fault(Rule::OverMax, field));
         }
+        k += 1;
     }
     if stated(out.trust_item) && out.trust_counterparty.len == 0 {
         return Err(fault(Rule::Contradiction, "arrive.trust_item"));
@@ -384,21 +398,19 @@ pub fn check_on_piece(
     if out.emitted > caps.reply {
         return Err(fault(Rule::OverCap, "on_piece.emitted"));
     }
-    code(u64::from(out.more), 0, 1, "on_piece.more")?;
-    bits(
-        u64::from(out.flags),
-        u64::from(
-            EMIT_TO_FAR_END
-                | EMIT_DONE
-                | EMIT_WATCH_CATALOGUE
-                | EMIT_UNWATCH_CATALOGUE
-                | PIECE_OUT_TEXT
-                | EMIT_MESSAGE_END
-                | EMIT_FINAL_STATUS,
-        ),
+    judged!(code(out.more as u64, 0, 1, "on_piece.more"));
+    judged!(bits(
+        out.flags as u64,
+        (EMIT_TO_FAR_END
+            | EMIT_DONE
+            | EMIT_WATCH_CATALOGUE
+            | EMIT_UNWATCH_CATALOGUE
+            | PIECE_OUT_TEXT
+            | EMIT_MESSAGE_END
+            | EMIT_FINAL_STATUS) as u64,
         "on_piece.flags",
-    )?;
-    final_status(out)?;
+    ));
+    judged!(final_status(out));
     // A text message is a whole message of at least one byte.
     if out.flags & PIECE_OUT_TEXT != 0 && (out.emitted == 0 || out.more != 0) {
         return Err(fault(Rule::Contradiction, "on_piece.text"));
@@ -414,22 +426,22 @@ pub fn check_on_piece(
     }
     let dims = [
         Dim {
-            written: u64::from(out.units_written),
-            needed: u64::from(out.units_needed),
+            written: out.units_written as u64,
+            needed: out.units_needed as u64,
             cap: caps.units,
             max: MAX_UNITS,
             field: "on_piece.units",
         },
         Dim {
-            written: u64::from(out.records_written),
-            needed: u64::from(out.records_needed),
+            written: out.records_written as u64,
+            needed: out.records_needed as u64,
             cap: caps.records,
             max: MAX_RECORDS,
             field: "on_piece.records",
         },
         Dim {
-            written: u64::from(out.fields_written),
-            needed: u64::from(out.fields_needed),
+            written: out.fields_written as u64,
+            needed: out.fields_needed as u64,
             cap: caps.fields,
             max: MAX_FIELDS,
             field: "on_piece.fields",
@@ -442,59 +454,65 @@ pub fn check_on_piece(
             field: "on_piece.arena",
         },
     ];
-    if results(outcome, "on_piece", &dims)? == Filled::Short && out.emitted != 0 {
+    if judged!(results(outcome, "on_piece", &dims)) == Filled::Short && out.emitted != 0 {
         return Err(fault(Rule::WrittenOnShort, "on_piece"));
     }
-    verdict(outcome, out.verdict)?;
-    fault_reading(outcome, out)?;
-    request(out)?;
+    judged!(verdict(outcome, out.verdict));
+    judged!(fault_reading(outcome, out));
+    judged!(request(out));
     // The unit's ledger lane, where the answer names one: inside the arena written.
-    span(
+    judged!(span(
         out.lane.offset,
         out.lane.len,
         out.arena_written,
         "on_piece.lane",
-    )?;
+    ));
     // The attempt's counter labels, where the answer states them: inside the arena written.
-    span(
+    judged!(span(
         out.metric_pool.offset,
         out.metric_pool.len,
         out.arena_written,
         "on_piece.metric_pool",
-    )?;
-    span(
+    ));
+    judged!(span(
         out.metric_lane.offset,
         out.metric_lane.len,
         out.arena_written,
         "on_piece.metric_lane",
-    )?;
+    ));
     // The member whose wait a refusal answers, where the answer states one: inside the arena
     // written (the kernel judges that it names a member of the unit's pool).
-    span(
+    judged!(span(
         out.wait_member.offset,
         out.wait_member.len,
         out.arena_written,
         "on_piece.wait_member",
-    )?;
+    ));
     // The reason a fault reading states, where the answer states one: inside the arena written,
     // and only beside a reading.
-    span(
+    judged!(span(
         out.fault_reason.offset,
         out.fault_reason.len,
         out.arena_written,
         "on_piece.fault_reason",
-    )?;
+    ));
     if out.fault_reason.len != 0 && out.fault == crate::abi::transport::FAULT_NONE {
         return Err(fault(Rule::Contradiction, "on_piece.fault_reason_unread"));
     }
-    units(bufs.0, u64::from(out.units_written), b)?;
-    records(bufs.1, u64::from(out.records_written), out.arena_written, b)?;
-    fields(bufs.2, u64::from(out.fields_written), out.arena_written)
+    judged!(units(bufs.0, out.units_written as u64, b));
+    judged!(records(
+        bufs.1,
+        out.records_written as u64,
+        out.arena_written,
+        b
+    ));
+    fields(bufs.2, out.fields_written as u64, out.arena_written)
 }
 
 /// `on_piece`'s message boundary and final status: a boundary ends a message toward the caller,
 /// never a request bound for the far end; a final status closes the reply ([`EMIT_DONE`]), its
 /// message and details inside the arena written; without it the three fields are zero.
+#[inline(always)]
 fn final_status(out: &OnPieceOut) -> Result<(), Fault> {
     if out.flags & EMIT_MESSAGE_END != 0 && out.flags & EMIT_TO_FAR_END != 0 {
         return Err(fault(
@@ -517,12 +535,12 @@ fn final_status(out: &OnPieceOut) -> Result<(), Fault> {
             "on_piece.final_status_not_closing",
         ));
     }
-    span(
+    judged!(span(
         out.final_message.offset,
         out.final_message.len,
         out.arena_written,
         "on_piece.final_message",
-    )?;
+    ));
     span(
         out.final_details.offset,
         out.final_details.len,
@@ -532,8 +550,9 @@ fn final_status(out: &OnPieceOut) -> Result<(), Fault> {
 }
 
 /// `on_piece`'s verdict: a known `VERDICT_*`, and none on an answer that is not READY.
+#[inline(always)]
 fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
-    code(u64::from(v), 0, u64::from(VERDICT_HARD), "on_piece.verdict")?;
+    judged!(code(v as u64, 0, VERDICT_HARD as u64, "on_piece.verdict"));
     if v != 0 && outcome != Outcome::Ready {
         return Err(fault(Rule::Contradiction, "on_piece.verdict_not_ready"));
     }
@@ -544,14 +563,15 @@ fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
 /// on an answer that is not READY, and its padding zero. Its usage-tap fault rides only a READY
 /// answer; any value is admitted there, because the kernel counts a value outside the `TAP_FAULT_*`
 /// vocabulary as `unknown` rather than refusing the answer it rides.
+#[inline(always)]
 fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
     use crate::abi::transport::{FAULT_HEALTHY, FAULT_NONE};
-    code(
-        u64::from(out.fault),
+    judged!(code(
+        out.fault as u64,
         0,
-        u64::from(FAULT_HEALTHY),
+        FAULT_HEALTHY as u64,
         "on_piece.fault",
-    )?;
+    ));
     if out.fault != FAULT_NONE && outcome != Outcome::Ready {
         return Err(fault(Rule::Contradiction, "on_piece.fault_not_ready"));
     }
@@ -566,19 +586,20 @@ fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
 
 /// `on_piece`'s request for the far end: verb and target in the arena, both or neither, and only
 /// on an answer that emits to the far end.
+#[inline(always)]
 fn request(out: &OnPieceOut) -> Result<(), Fault> {
-    span(
+    judged!(span(
         out.verb.offset,
         out.verb.len,
         out.arena_written,
         "on_piece.verb",
-    )?;
-    span(
+    ));
+    judged!(span(
         out.target.offset,
         out.target.len,
         out.arena_written,
         "on_piece.target",
-    )?;
+    ));
     let (verb, target) = (out.verb.len != 0, out.target.len != 0);
     if verb != target {
         return Err(fault(Rule::Contradiction, "on_piece.verb_without_target"));
@@ -598,20 +619,22 @@ fn request(out: &OnPieceOut) -> Result<(), Fault> {
 
 /// A string the plugin wrote into the host arena: empty, or inside the first `written` bytes that
 /// start at `arena`; checked arithmetic.
+#[inline(always)]
 fn in_arena(s: AbiStr, arena: *const u8, written: u64, field: &'static str) -> Result<(), Fault> {
     if s.len == 0 {
         return Ok(());
     }
-    let offset = s
-        .ptr
-        .addr()
-        .checked_sub(arena.addr())
-        .ok_or(fault(Rule::SpanOutOfBounds, field))?;
+    let (at, base) = (s.ptr.addr(), arena.addr());
+    if at < base {
+        return Err(fault(Rule::SpanOutOfBounds, field));
+    }
+    let offset = at - base;
     range(offset as u64, s.len as u64, written, field)
 }
 
 /// `project`'s session ([`RequestView::session`](crate::abi::hook::RequestView::session)): absent
 /// (a NULL, empty [`BLOB_ABSENT`] blob), or [`BLOB_OCTETS`] with no flag, inside the arena written.
+#[inline(always)]
 fn session(b: Blob, arena: *const u8, written: u64) -> Result<(), Fault> {
     const FIELD: &str = "project.view.session";
     if b.fmt == BLOB_ABSENT {
@@ -627,11 +650,11 @@ fn session(b: Blob, arena: *const u8, written: u64) -> Result<(), Fault> {
     if b.ptr.is_null() {
         return Err(fault(Rule::NullWithCount, FIELD));
     }
-    let offset = b
-        .ptr
-        .addr()
-        .checked_sub(arena.addr())
-        .ok_or(fault(Rule::SpanOutOfBounds, FIELD))?;
+    let (at, base) = (b.ptr.addr(), arena.addr());
+    if at < base {
+        return Err(fault(Rule::SpanOutOfBounds, FIELD));
+    }
+    let offset = at - base;
     range(offset as u64, b.len as u64, written, FIELD)
 }
 
@@ -674,14 +697,14 @@ pub fn check_project(
     let dims = [
         Dim {
             written,
-            needed: u64::from(out.signals_needed),
+            needed: out.signals_needed as u64,
             cap: host.signals_cap,
             max: MAX_SIGNALS,
             field: "project.signals",
         },
         Dim {
             written: p.message_count,
-            needed: u64::from(out.messages_needed),
+            needed: out.messages_needed as u64,
             cap: host.messages_cap,
             max: MAX_TURNS,
             field: "project.messages",
@@ -694,7 +717,7 @@ pub fn check_project(
             field: "project.arena",
         },
     ];
-    results(outcome, "project", &dims)?;
+    judged!(results(outcome, "project", &dims));
     if written != 0 && !core::ptr::eq(v.signals, signals.as_ptr()) {
         return Err(fault(Rule::Foreign, "project.view.signals"));
     }
@@ -707,69 +730,94 @@ pub fn check_project(
     if p.body.len != 0 || !p.body.ptr.is_null() {
         return Err(fault(Rule::Foreign, "project.prompt.body"));
     }
-    bits(
-        u64::from(v.flags),
-        u64::from(REQUEST_HAS_MAX_TOKENS | REQUEST_HAS_TOOLS | REQUEST_STREAM),
+    judged!(bits(
+        v.flags as u64,
+        (REQUEST_HAS_MAX_TOKENS | REQUEST_HAS_TOOLS | REQUEST_STREAM) as u64,
         "project.view.flags",
-    )?;
-    in_arena(v.pool, arena.0, out.arena_written, "project.view.pool")?;
-    in_arena(
+    ));
+    judged!(in_arena(
+        v.pool,
+        arena.0,
+        out.arena_written,
+        "project.view.pool"
+    ));
+    judged!(in_arena(
         v.ingress_dialect,
         arena.0,
         out.arena_written,
         "project.view.ingress_dialect",
-    )?;
-    in_arena(
+    ));
+    judged!(in_arena(
         p.system,
         arena.0,
         out.arena_written,
         "project.prompt.system",
-    )?;
-    in_arena(out.end_user, arena.0, out.arena_written, "project.end_user")?;
-    session(v.session, arena.0, out.arena_written)?;
-    span(
+    ));
+    judged!(in_arena(
+        out.end_user,
+        arena.0,
+        out.arena_written,
+        "project.end_user"
+    ));
+    judged!(session(v.session, arena.0, out.arena_written));
+    judged!(span(
         out.body.offset,
         out.body.len,
         out.arena_written,
         "project.body",
-    )?;
-    span(
+    ));
+    judged!(span(
         out.rewritten.offset,
         out.rewritten.len,
         out.arena_written,
         "project.rewritten",
-    )?;
+    ));
     if out.rewritten.len != 0 && !host.rewrite {
         return Err(fault(
             Rule::Contradiction,
             "project.rewritten_without_rewrite",
         ));
     }
-    for m in first(host.messages, p.message_count, "project.messages")? {
-        in_arena(m.role, arena.0, out.arena_written, "project.message.role")?;
-        in_arena(m.text, arena.0, out.arena_written, "project.message.text")?;
+    for m in judged!(first(host.messages, p.message_count, "project.messages")) {
+        judged!(in_arena(
+            m.role,
+            arena.0,
+            out.arena_written,
+            "project.message.role"
+        ));
+        judged!(in_arena(
+            m.text,
+            arena.0,
+            out.arena_written,
+            "project.message.text"
+        ));
     }
-    for e in first(signals, written, "project.signals")? {
-        code(
-            u64::from(e.id),
+    for e in judged!(first(signals, written, "project.signals")) {
+        judged!(code(
+            e.id as u64,
             0,
-            u64::from(signal::RESPONSE_TOKENS_OUT),
+            signal::RESPONSE_TOKENS_OUT as u64,
             "project.signal.id",
-        )?;
-        code(
-            u64::from(e.tag),
-            u64::from(SIGNAL_TAG_U64),
-            u64::from(SIGNAL_TAG_BOOL),
+        ));
+        judged!(code(
+            e.tag as u64,
+            SIGNAL_TAG_U64 as u64,
+            SIGNAL_TAG_BOOL as u64,
             "project.signal.tag",
-        )?;
+        ));
         if e.tag == SIGNAL_TAG_STR {
             // SAFETY: the tag names `str_` live; every bit pattern of an `AbiStr` is a valid value.
             let s = unsafe { e.value.str_ };
-            in_arena(s, arena.0, out.arena_written, "project.signal.value")?;
+            judged!(in_arena(
+                s,
+                arena.0,
+                out.arena_written,
+                "project.signal.value"
+            ));
         } else if e.tag == SIGNAL_TAG_BOOL {
             // SAFETY: the tag names `boolean` live; every `u8` is a valid value.
             let b = unsafe { e.value.boolean };
-            code(u64::from(b), 0, 1, "project.signal.value")?;
+            judged!(code(b as u64, 0, 1, "project.signal.value"));
         }
     }
     Ok(())
@@ -794,6 +842,7 @@ pub fn check_drive(outcome: Outcome, out: &PlaneDriveOut, sessions_cap: u64) -> 
 
 /// `refusal`'s and `serve`'s shared reply: body, fields and arena under the short-buffer rule; a short answer writes
 /// nothing; every field written is judged.
+#[inline(always)]
 fn reply(
     outcome: Outcome,
     op: [&'static str; 4],
@@ -812,8 +861,8 @@ fn reply(
             field: op[0],
         },
         Dim {
-            written: u64::from(fields_wn.0),
-            needed: u64::from(fields_wn.1),
+            written: fields_wn.0 as u64,
+            needed: fields_wn.1 as u64,
             cap: caps.fields,
             max: MAX_FIELDS,
             field: op[1],
@@ -826,8 +875,8 @@ fn reply(
             field: op[2],
         },
     ];
-    results(outcome, op[3], &dims)?;
-    fields(fields_buf, u64::from(fields_wn.0), arena.0)
+    judged!(results(outcome, op[3], &dims));
+    fields(fields_buf, fields_wn.0 as u64, arena.0)
 }
 
 /// `refusal`: the marker is `0` (the kernel sets [`super::MARK_GATE_REJECTED`], never a
@@ -842,7 +891,7 @@ pub fn check_refusal(
     fields_buf: &[OutField],
     caps: &Caps,
 ) -> Result<(), Fault> {
-    code(u64::from(out.marker), 0, 0, "refusal.marker")?;
+    judged!(code(out.marker as u64, 0, 0, "refusal.marker"));
     reply(
         outcome,
         [
@@ -894,6 +943,7 @@ pub fn check_serve_records(
 
 /// An answer's record writes, `(written, needed, arena written)`: the short-buffer rule over the
 /// host's buffer, then each write judged as an `on_piece` answer's.
+#[inline(always)]
 fn answer_records(
     outcome: Outcome,
     (written, needed, arena): (u32, u32, u64),
@@ -902,15 +952,15 @@ fn answer_records(
     b: &Bounds,
     field: &'static str,
 ) -> Result<(), Fault> {
-    let written = u64::from(written);
-    result(
+    let written = written as u64;
+    judged!(result(
         outcome,
         written,
-        u64::from(needed),
+        needed as u64,
         records_cap,
         MAX_RECORDS,
         field,
-    )?;
+    ));
     records(records_buf, written, arena, b)
 }
 
@@ -925,12 +975,12 @@ pub fn check_serve(
     fields_buf: &[OutField],
     caps: &Caps,
 ) -> Result<(), Fault> {
-    code(
-        u64::from(out.audit),
+    judged!(code(
+        out.audit as u64,
         0,
-        u64::from(super::AUDIT_REJECTED),
+        super::AUDIT_REJECTED as u64,
         "serve.audit",
-    )?;
+    ));
     reply(
         outcome,
         ["serve.reply", "serve.fields", "serve.arena", "serve"],
@@ -953,7 +1003,7 @@ pub fn check_catalog(
     fields_buf: &[OutField],
     caps: &Caps,
 ) -> Result<(), Fault> {
-    code(u64::from(out._reserved), 0, 0, "catalog._reserved")?;
+    judged!(code(out._reserved as u64, 0, 0, "catalog._reserved"));
     reply(
         outcome,
         [

@@ -73,6 +73,17 @@ const PLANE_TAIL_FROZEN: usize = std::mem::offset_of!(PlaneTail, stream_ceiling_
 #[derive(Debug, Clone, Copy)]
 pub struct Plane;
 
+/// `expr?` for a `Result<_, Fault>`, written as the match it is: the kind's answer check runs on
+/// every crossing, and in an unoptimised build each `?` is a call of its own.
+macro_rules! judged {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(f) => return Err(f),
+        }
+    };
+}
+
 // SAFETY: `#[repr(C)]` in `abi/plane/`, each leading with its head (`PlaneOpenIn` with an
 // `OpenIn`, `PlaneOpenOut` with an `OpenOut`, each of which leads with its head); their pointers
 // are host buffers, host-borrowed inputs, or the plugin's generation snapshot, valid until
@@ -216,9 +227,10 @@ pub struct NeedKeep {
 /// binds with its tail).
 #[inline(always)]
 fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
-    a.context::<PlaneFacts>()
-        .map(|f| &f.bounds)
-        .ok_or(fault(Rule::Missing, "plane.tail"))
+    match a.context::<PlaneFacts>() {
+        Some(f) => Ok(&f.bounds),
+        None => Err(fault(Rule::Missing, "plane.tail")),
+    }
 }
 
 /// The plane's tail, read from the Statement: a whole `PlaneTail` that passes `check_tail`, its
@@ -1379,91 +1391,91 @@ impl Kind for Plane {
             slot::ARRIVE => arrive(a),
             slot::ON_PIECE => on_piece(a),
             slot::REFUSAL => {
-                let i = a.input::<RefusalIn>()?;
-                let o = a.out::<RefusalOut>()?;
+                let i = judged!(a.input::<RefusalIn>());
+                let o = judged!(a.out::<RefusalOut>());
                 // SAFETY: `fields_buf` is the host's own buffer of `fields_cap` `OutField`s,
                 // named by this op's `in`.
-                let fields = unsafe {
+                let fields = judged!(unsafe {
                     reported(
                         i.fields_buf.cast_const(),
-                        u64::from(o.fields_written),
+                        o.fields_written as u64,
                         i.fields_cap as u64,
                         "refusal.fields",
                     )
-                }?;
+                });
                 let caps = Caps {
                     reply: i.reply_cap as u64,
                     fields: i.fields_cap as u64,
                     arena: i.arena_cap as u64,
                     ..Caps::default()
                 };
-                check_refusal(a.outcome, o, fields, &caps)?;
+                judged!(check_refusal(a.outcome, o, fields, &caps));
                 // SAFETY: `records_buf` is the host's own buffer of `records_cap` `RecordWrite`s,
                 // named by this op's `in` (NULL with `0` from a host that lends none).
-                let records = unsafe {
+                let records = judged!(unsafe {
                     reported(
                         i.records_buf.cast_const(),
-                        u64::from(o.records_written),
+                        o.records_written as u64,
                         i.records_cap as u64,
                         "refusal.records",
                     )
-                }?;
+                });
                 // A refusal that writes no record needs no tail to be judged against.
                 let b = if o.records_written == 0 {
                     Bounds::default()
                 } else {
-                    *bounds(a)?
+                    *judged!(bounds(a))
                 };
                 check_refusal_records(a.outcome, o, records, i.records_cap as u64, &b)
             }
             slot::SERVE => {
-                let i = a.input::<ServeIn>()?;
-                let o = a.out::<ServeOut>()?;
+                let i = judged!(a.input::<ServeIn>());
+                let o = judged!(a.out::<ServeOut>());
                 // SAFETY: as `refusal`: the host's `fields_buf` of `fields_cap` elements.
-                let fields = unsafe {
+                let fields = judged!(unsafe {
                     reported(
                         i.fields_buf.cast_const(),
-                        u64::from(o.fields_written),
+                        o.fields_written as u64,
                         i.fields_cap as u64,
                         "serve.fields",
                     )
-                }?;
+                });
                 let caps = Caps {
                     reply: i.reply_cap as u64,
                     fields: i.fields_cap as u64,
                     arena: i.arena_cap as u64,
                     ..Caps::default()
                 };
-                check_serve(a.outcome, o, fields, &caps)?;
+                judged!(check_serve(a.outcome, o, fields, &caps));
                 // SAFETY: as `refusal`: the host's `records_buf` of `records_cap` elements.
-                let records = unsafe {
+                let records = judged!(unsafe {
                     reported(
                         i.records_buf.cast_const(),
-                        u64::from(o.records_written),
+                        o.records_written as u64,
                         i.records_cap as u64,
                         "serve.records",
                     )
-                }?;
+                });
                 let b = if o.records_written == 0 {
                     Bounds::default()
                 } else {
-                    *bounds(a)?
+                    *judged!(bounds(a))
                 };
                 check_serve_records(a.outcome, o, records, i.records_cap as u64, &b)
             }
             slot::PROJECT => project(a),
             slot::CATALOG => {
-                let i = a.input::<plane::CatalogIn>()?;
-                let o = a.out::<plane::CatalogOut>()?;
+                let i = judged!(a.input::<plane::CatalogIn>());
+                let o = judged!(a.out::<plane::CatalogOut>());
                 // SAFETY: as `refusal`: the host's `fields_buf` of `fields_cap` elements.
-                let fields = unsafe {
+                let fields = judged!(unsafe {
                     reported(
                         i.fields_buf.cast_const(),
-                        u64::from(o.fields_written),
+                        o.fields_written as u64,
                         i.fields_cap as u64,
                         "catalog.fields",
                     )
-                }?;
+                });
                 let caps = Caps {
                     reply: i.reply_cap as u64,
                     fields: i.fields_cap as u64,
@@ -1473,46 +1485,46 @@ impl Kind for Plane {
                 plane::check::check_catalog(a.outcome, o, fields, &caps)
             }
             life::OPEN if a.outcome == Outcome::Ready => {
-                let generation = a.input::<OpenIn>()?.generation;
+                let generation = judged!(a.input::<OpenIn>()).generation;
                 snapshot(
-                    a.out::<PlaneOpenOut>()?.snapshot,
+                    judged!(a.out::<PlaneOpenOut>()).snapshot,
                     generation,
                     "open.snapshot",
                 )
             }
             life::REFRESH if a.outcome == Outcome::Ready => {
-                let generation = a.input::<RefreshIn>()?.generation;
+                let generation = judged!(a.input::<RefreshIn>()).generation;
                 snapshot(
-                    a.out::<PlaneRefreshOut>()?.snapshot,
+                    judged!(a.out::<PlaneRefreshOut>()).snapshot,
                     generation,
                     "refresh.snapshot",
                 )
             }
             life::CANCEL => {
-                let i = a.input::<plane::PlaneCancelIn>()?;
-                let o = a.out::<plane::PlaneCancelOut>()?;
-                check_cancel(a.outcome, o.cancel.disposition)?;
+                let i = judged!(a.input::<plane::PlaneCancelIn>());
+                let o = judged!(a.out::<plane::PlaneCancelOut>());
+                judged!(check_cancel(a.outcome, o.cancel.disposition));
                 // SAFETY: `records_buf` is the host's own buffer of `records_cap` `RecordWrite`s,
                 // named by this op's `in` (NULL with `0` from a host that lends none).
-                let records = unsafe {
+                let records = judged!(unsafe {
                     reported(
                         i.records_buf.cast_const(),
-                        u64::from(o.records_written),
+                        o.records_written as u64,
                         i.records_cap as u64,
                         "cancel.records",
                     )
-                }?;
+                });
                 let b = if o.records_written == 0 {
                     Bounds::default()
                 } else {
-                    *bounds(a)?
+                    *judged!(bounds(a))
                 };
                 let caps = (i.records_cap as u64, i.arena_cap as u64);
                 check_cancel_records(a.outcome, o, records, caps, &b)
             }
             life::DRIVE => {
-                let cap = a.input::<PlaneDriveIn>()?.sessions_cap as u64;
-                check_drive(a.outcome, a.out::<PlaneDriveOut>()?, cap)
+                let cap = judged!(a.input::<PlaneDriveIn>()).sessions_cap as u64;
+                check_drive(a.outcome, judged!(a.out::<PlaneDriveOut>()), cap)
             }
             // `hydrate`, `start` (a bare `OutHead`) and the other lifecycle answers: no
             // per-answer rule beyond the mechanism's.
@@ -1739,26 +1751,26 @@ impl DriveFrame for PlaneDrive {
 
 /// `arrive`: the expected units over the host's `units_buf`, `units_cap` from `ArriveIn`.
 fn arrive(a: &Answer) -> Result<(), Fault> {
-    let i = a.input::<ArriveIn>()?;
-    let o = a.out::<ArriveOut>()?;
+    let i = judged!(a.input::<ArriveIn>());
+    let o = judged!(a.out::<ArriveOut>());
     let cap = i.units_cap as u64;
     // SAFETY: `units_buf` is the host's own buffer of `units_cap` `UnitCount`s, named by this op's
     // `in`.
-    let units = unsafe {
+    let units = judged!(unsafe {
         reported(
             i.units_buf.cast_const(),
-            u64::from(o.units_written),
+            o.units_written as u64,
             cap,
             "arrive.units",
         )
-    }?;
-    check_arrive(a.outcome, o, units, cap, bounds(a)?)
+    });
+    check_arrive(a.outcome, o, units, cap, judged!(bounds(a)))
 }
 
 /// `on_piece`: units, records and fields over the host's buffers, every cap from `OnPieceIn`.
 fn on_piece(a: &Answer) -> Result<(), Fault> {
-    let i = a.input::<OnPieceIn>()?;
-    let o = a.out::<OnPieceOut>()?;
+    let i = judged!(a.input::<OnPieceIn>());
+    let o = judged!(a.out::<OnPieceOut>());
     let caps = Caps {
         reply: i.reply_cap as u64,
         units: i.units_cap as u64,
@@ -1770,56 +1782,62 @@ fn on_piece(a: &Answer) -> Result<(), Fault> {
     // `units_cap`, `records_cap` and `fields_cap` elements, named by this op's `in`.
     let (units, records, fields) = unsafe {
         (
-            reported(
+            judged!(reported(
                 i.units_buf.cast_const(),
-                u64::from(o.units_written),
+                o.units_written as u64,
                 caps.units,
                 "on_piece.units",
-            )?,
-            reported(
+            )),
+            judged!(reported(
                 i.records_buf.cast_const(),
-                u64::from(o.records_written),
+                o.records_written as u64,
                 caps.records,
                 "on_piece.records",
-            )?,
-            reported(
+            )),
+            judged!(reported(
                 i.fields_buf.cast_const(),
-                u64::from(o.fields_written),
+                o.fields_written as u64,
                 caps.fields,
                 "on_piece.fields",
-            )?,
+            )),
         )
     };
-    check_on_piece(a.outcome, o, (units, records, fields), &caps, bounds(a)?)
+    check_on_piece(
+        a.outcome,
+        o,
+        (units, records, fields),
+        &caps,
+        judged!(bounds(a)),
+    )
 }
 
 /// `project`: the view's signals over the host's `signals_buf`, its prompt turns over the host's
 /// `messages_buf`, its strings and bodies over the host's arena, every cap from `ProjectIn`.
 fn project(a: &Answer) -> Result<(), Fault> {
-    let i = a.input::<ProjectIn>()?;
-    let o = a.out::<ProjectOut>()?;
+    let i = judged!(a.input::<ProjectIn>());
+    let o = judged!(a.out::<ProjectOut>());
     let cap = i.signals_cap as u64;
     // SAFETY: `signals_buf` is the host's own buffer of `signals_cap` `SignalEntry`s, named by
     // this op's `in`.
-    let signals = unsafe {
+    let signals = judged!(unsafe {
         reported(
             i.signals_buf.cast_const(),
             o.view.signals_len as u64,
             cap,
             "project.signals",
         )
-    }?;
+    });
     let messages_cap = i.messages_cap as u64;
     // SAFETY: `messages_buf` is the host's own buffer of `messages_cap` `MessageView`s, named
     // by this op's `in`.
-    let messages = unsafe {
+    let messages = judged!(unsafe {
         reported(
             i.messages_buf.cast_const(),
             o.prompt.message_count,
             messages_cap,
             "project.messages",
         )
-    }?;
+    });
     check_project(
         a.outcome,
         o,

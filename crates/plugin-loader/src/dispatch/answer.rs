@@ -77,7 +77,10 @@ impl<'a> Answer<'a> {
     /// The instance's context as the kind's type `T`, if it has one.
     #[inline(always)]
     pub fn context<T: 'static>(&self) -> Option<&'a T> {
-        self.context.and_then(|c| c.downcast_ref::<T>())
+        match self.context {
+            Some(c) => c.downcast_ref::<T>(),
+            None => None,
+        }
     }
 
     /// The op's `in` as the kind's struct `T`.

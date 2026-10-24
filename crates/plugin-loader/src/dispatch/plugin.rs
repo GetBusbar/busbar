@@ -1233,7 +1233,11 @@ impl Instance {
         };
         // A `validate`, of every kind, is lent a reason buffer for its crossing alone (it never
         // pends): it names what it wrote in `head.error`, read below while the buffer lives.
-        let mut validate_reason = (s == slot::VALIDATE).then(|| vec![0_u8; OPEN_REASON_CAP]);
+        let mut validate_reason = if s == slot::VALIDATE {
+            Some(vec![0_u8; OPEN_REASON_CAP])
+        } else {
+            None
+        };
         if let Some(buf) = validate_reason.as_mut() {
             // SAFETY: `refuse` checked the frame holds a `ValidateIn`.
             unsafe {
@@ -1310,7 +1314,11 @@ impl Instance {
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still
         // holds (it answered READY/PENDING, the host judged FAULT) is closed by the host.
         let mut open_ended = OpenEnded {
-            ptr: (s == slot::OPEN).then_some(&self.ptr),
+            ptr: if s == slot::OPEN {
+                Some(&self.ptr)
+            } else {
+                None
+            },
             live: std::ptr::null_mut(),
         };
         let raw = if s == slot::VALIDATE || is_lifecycle(s) {
@@ -1588,7 +1596,7 @@ impl Instance {
 /// OUTCOME AUTHORITY: the return value decides; see the module docs.
 #[inline(always)]
 pub(crate) fn judge(raw: RawOutcome, head: &OutHead, ticket: Ticket, out_size: u32) -> Outcome {
-    if !(1..=4).contains(&raw.0) || head.outcome != raw {
+    if !matches!(raw.0, 1..=4) || head.outcome.0 != raw.0 {
         return Outcome::Fault;
     }
     // Validated before a byte is read through it (`validate`): size, error text, #85 arrays.
@@ -2110,10 +2118,14 @@ impl<K: Kind> Plugin<K> {
         if lifecycle {
             inst.leave_lifecycle();
         }
-        let token = crossed.short.then(|| Recall {
-            instance: self.instance_id(),
-            slot: s,
-        });
+        let token = if crossed.short {
+            Some(Recall {
+                instance: self.instance_id(),
+                slot: s,
+            })
+        } else {
+            None
+        };
         Called {
             recall: token,
             ..Called::from(crossed)
