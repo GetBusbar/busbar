@@ -9,6 +9,7 @@ fn key(name: &str, shape: Shape, required: bool) -> Key {
         name: name.to_string(),
         shape,
         required,
+        rank: None,
     }
 }
 
@@ -24,6 +25,7 @@ fn every_shape() -> ProviderKeys {
                 false,
             ),
         ],
+        expecting: None,
     };
     ProviderKeys {
         catalog: Table {
@@ -39,6 +41,7 @@ fn every_shape() -> ProviderKeys {
                     false,
                 ),
             ],
+            expecting: None,
         },
         deployment: Table {
             deny_unknown: true,
@@ -46,11 +49,15 @@ fn every_shape() -> ProviderKeys {
                 key("color", Shape::Str, false),
                 key("inner", Shape::Table(nested), false),
             ],
+            expecting: None,
         },
         entry: Table {
             deny_unknown: true,
             keys: vec![key("weights", Shape::StrMap, true)],
+            expecting: None,
         },
+        limits: None,
+        pool_member: None,
     }
 }
 
@@ -132,12 +139,20 @@ fn a_non_neutral_shape_word_is_refused() {
             "{shape}: {err}"
         );
         assert!(
-            err.contains("str, one-of, int, bool, list, str-map, table"),
+            err.contains("str, one-of, int, u32, u64, usize, bool, list, str-map, table"),
             "{err}"
         );
     }
     // Each neutral word is accepted where the same position refused the others.
-    for shape in [r#""str""#, r#""int""#, r#""bool""#, r#""str-map""#] {
+    for shape in [
+        r#""str""#,
+        r#""int""#,
+        r#""u32""#,
+        r#""u64""#,
+        r#""usize""#,
+        r#""bool""#,
+        r#""str-map""#,
+    ] {
         assert!(decode(with_shape(shape).as_bytes()).is_ok(), "{shape}");
     }
 }
@@ -182,4 +197,124 @@ fn the_encoding_states_exactly_its_members() {
         assert!(err.contains(why), "{why}: {err}");
     }
     assert!(decode(br#"{"catalog": {"deny_unknown": false, "keys": []}}"#).is_err());
+}
+
+// ── arch-audit u29 F2 (coordinator rulings): rank, widths, `expecting`, the limits and pool-member forms ──
+
+/// A descriptor stating every member the u29 F2 ruling adds: a ranked key, the three unsigned
+/// widths, a table's `expecting`, and the `limits` and `pool_member` forms.
+fn with_rulings() -> ProviderKeys {
+    let ranked = |name: &str, shape: Shape, rank: u16| Key {
+        rank: Some(rank),
+        ..key(name, shape, false)
+    };
+    let mut keys = every_shape();
+    keys.deployment.keys.push(ranked("budget", Shape::U32, 13));
+    keys.catalog.keys[4] = key(
+        "rules",
+        Shape::List(Box::new(Shape::Table(Table {
+            deny_unknown: true,
+            keys: vec![key("globs", Shape::List(Box::new(Shape::Str)), true)],
+            expecting: Some("struct Rule".into()),
+        }))),
+        false,
+    );
+    keys.limits = Some(Table {
+        deny_unknown: true,
+        keys: vec![
+            ranked("cap", Shape::U32, 14),
+            ranked("budgets", Shape::Table(Table::default()), 15),
+        ],
+        expecting: None,
+    });
+    keys.pool_member = Some(Table {
+        deny_unknown: true,
+        keys: vec![
+            ranked("window", Shape::Usize, 3),
+            key("huge", Shape::U64, false),
+        ],
+        expecting: None,
+    });
+    keys
+}
+
+/// THE RULED MEMBERS ROUND-TRIP (RED before they existed: a descriptor stating any of them was
+/// refused as a member the encoding does not state).
+#[test]
+fn the_ruled_members_round_trip() {
+    let keys = with_rulings();
+    assert_eq!(decode(&encode(&keys)), Ok(keys));
+    let written = br#"{
+        "catalog": {"deny_unknown": false, "keys": [], "expecting": "struct Entry"},
+        "deployment": {"deny_unknown": true, "keys": [
+            {"name": "n", "shape": "u64", "required": false, "rank": 2},
+            {"name": "m", "shape": "usize", "required": true}
+        ]},
+        "entry": {"deny_unknown": true, "keys": []},
+        "pool_member": {"deny_unknown": true, "keys": [{"name": "w", "shape": "u32", "required": false, "rank": 0}]}
+    }"#;
+    let read = decode(written).expect("a written descriptor with the ruled members decodes");
+    assert_eq!(read.catalog.expecting.as_deref(), Some("struct Entry"));
+    assert_eq!(read.deployment.keys[0].rank, Some(2));
+    assert_eq!(read.deployment.keys[0].shape, Shape::U64);
+    assert_eq!(read.deployment.keys[1].rank, None);
+    assert_eq!(read.deployment.keys[1].shape, Shape::Usize);
+    assert_eq!(read.limits, None);
+    assert_eq!(
+        read.pool_member
+            .map(|t| (t.keys[0].shape.clone(), t.keys[0].rank)),
+        Some((Shape::U32, Some(0)))
+    );
+}
+
+/// A DESCRIPTOR STATING NONE OF THE RULED MEMBERS ENCODES AS IT DID: every optional member is
+/// written only when stated, so a plane's descriptor is unchanged until it states one.
+#[test]
+fn a_descriptor_stating_no_ruled_member_encodes_without_them() {
+    let bytes = String::from_utf8(encode(&every_shape())).expect("UTF-8");
+    for member in ["\"rank\"", "\"expecting\"", "\"limits\"", "\"pool_member\""] {
+        assert!(!bytes.contains(member), "{member} in {bytes}");
+    }
+}
+
+/// THE RULED MEMBERS ARE CHECKED: a rank outside `u16`, an empty or non-string `expecting`, a
+/// limits form that is no table, and a member no form states are each refused.
+#[test]
+fn a_malformed_ruled_member_is_refused() {
+    let base = |deployment: &str, extra: &str| {
+        format!(
+            r#"{{"catalog": {{"deny_unknown": false, "keys": []}}, "deployment": {deployment},
+                "entry": {{"deny_unknown": true, "keys": []}}{extra}}}"#
+        )
+    };
+    for (why, doc) in [
+        (
+            "a rank over u16",
+            base(
+                r#"{"deny_unknown": true, "keys": [{"name": "n", "shape": "str", "required": false, "rank": 70000}]}"#,
+                "",
+            ),
+        ),
+        (
+            "an empty expecting",
+            base(r#"{"deny_unknown": true, "keys": [], "expecting": ""}"#, ""),
+        ),
+        (
+            "a limits form that is no table",
+            base(r#"{"deny_unknown": true, "keys": []}"#, r#", "limits": 7"#),
+        ),
+        (
+            "an unknown form",
+            base(r#"{"deny_unknown": true, "keys": []}"#, r#", "routes": {}"#),
+        ),
+        (
+            "an unknown key member",
+            base(
+                r#"{"deny_unknown": true, "keys": [{"name": "n", "shape": "u128", "required": false}]}"#,
+                "",
+            ),
+        ),
+    ] {
+        assert!(decode(doc.as_bytes()).is_err(), "{why}");
+    }
 }

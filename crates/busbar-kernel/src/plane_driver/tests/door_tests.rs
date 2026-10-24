@@ -155,7 +155,9 @@ fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
                 name: "shade".into(),
                 shape: Shape::OneOf(vec!["light".into(), "dark".into()]),
                 required: true,
+                rank: None,
             }],
+            expecting: None,
         },
         deployment: Table {
             deny_unknown: true,
@@ -163,9 +165,13 @@ fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
                 name: "weights".into(),
                 shape: Shape::StrMap,
                 required: false,
+                rank: None,
             }],
+            expecting: None,
         },
         entry: Table::default(),
+        limits: None,
+        pool_member: None,
     };
     let decl = fold(PlaneRegistration {
         provider_keys: Some(keys.clone()),
