@@ -269,7 +269,13 @@ checks:
     # or forgiven by an owner-signed accepted difference.
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      ./bin/oracle tool-dir >/dev/null
+      # A refusal to judge (no judge configured) is infra, never red or green: exit 97.
+      if ! j=$(./bin/oracle tool-dir 2>&1 >/dev/null); then
+        printf '%s\n' "$j"
+        case "$j" in *"NO JUDGE"*) echo "modernci: infra: the oracle has no judge configured"; exit 97 ;; esac
+        exit 1
+      fi
+      [ -n "$j" ] && printf '%s\n' "$j"
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
         ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
       else
