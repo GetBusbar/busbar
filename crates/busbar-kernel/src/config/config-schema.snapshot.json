@@ -182,10 +182,6 @@
           "optional": true,
           "type": "String"
         },
-        "operator_pub": {
-          "optional": true,
-          "type": "SecretRef"
-        },
         "policy": {
           "optional": true,
           "type": "AuthPolicyCfg"
@@ -312,6 +308,10 @@
     "CandidatePoolCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "breaker": {
+          "optional": true,
+          "type": "BreakerCfg"
+        },
         "members": {
           "optional": true,
           "type": "Vec<String>"
@@ -423,7 +423,7 @@
         },
         "agents": {
           "optional": true,
-          "type": "AgentsSection"
+          "type": "DeclaredSections"
         },
         "auth": {
           "optional": true,
@@ -531,11 +531,16 @@
         },
         "tools": {
           "optional": true,
-          "type": "ToolsSection"
+          "type": "DeclaredSections"
         }
       },
       "kind": "struct",
       "transparent": false
+    },
+    "EndpointSection": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
     },
     "EnvFetch": {
       "deny_unknown_fields": true,
@@ -1087,6 +1092,10 @@
         "resources_allow": {
           "optional": true,
           "type": "indexmap::IndexMap<String, ResourceAllowCfg>"
+        },
+        "sampling_bounds": {
+          "optional": true,
+          "type": "SamplingBoundsCfg"
         },
         "timeout": {
           "optional": true,
@@ -1938,6 +1947,11 @@
       "kind": "struct",
       "transparent": false
     },
+    "RawPlaneSection": {
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
+    },
     "RawPoolCfg": {
       "deny_unknown_fields": true,
       "fields": {
@@ -2126,6 +2140,10 @@
         "group": {
           "optional": true,
           "type": "String"
+        },
+        "verbs": {
+          "optional": true,
+          "type": "serde_json::Value"
         }
       },
       "kind": "struct",
@@ -2196,6 +2214,41 @@
         "default_policy_timeout_ms": {
           "optional": true,
           "type": "u64"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "SamplingBoundsCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "max_input_response_bytes": {
+          "optional": false,
+          "type": "u32"
+        },
+        "max_messages": {
+          "optional": false,
+          "type": "u32"
+        },
+        "max_prompt_bytes": {
+          "optional": false,
+          "type": "u32"
+        },
+        "max_stop_sequence_bytes": {
+          "optional": false,
+          "type": "u32"
+        },
+        "max_stop_sequences": {
+          "optional": false,
+          "type": "u32"
+        },
+        "temperature_max_milli": {
+          "optional": false,
+          "type": "u32"
+        },
+        "temperature_min_milli": {
+          "optional": false,
+          "type": "u32"
         }
       },
       "kind": "struct",
@@ -2558,6 +2611,12 @@
         "header"
       ]
     },
+    "manual-de EndpointSection": {
+      "fields": {},
+      "kind": "manual",
+      "refused": [],
+      "wire_keys": []
+    },
     "manual-de LimitCfg": {
       "fields": {
         "admission": {
@@ -2628,6 +2687,12 @@
       "wire_keys": []
     },
     "manual-de PoolsCfg": {
+      "fields": {},
+      "kind": "manual",
+      "refused": [],
+      "wire_keys": []
+    },
+    "manual-de RawPlaneSection": {
       "fields": {},
       "kind": "manual",
       "refused": [],

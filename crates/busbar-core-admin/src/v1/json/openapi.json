@@ -211,7 +211,7 @@
         "type": "object"
       },
       "AmendRateHistoryReq": {
-        "description": "`POST /ledger/amend-rate-history`: a signed, back-dated correction to the dated rate-card\nhistory. It out-ranks the entry it corrects and rewrites nothing.",
+        "description": "`POST /ledger/amend-rate-history`: a back-dated correction to the dated rate-card\nhistory. It out-ranks the entry it corrects and rewrites nothing.",
         "properties": {
           "effective_from": {
             "description": "The start of the corrected window, in the history's instant scale (milliseconds).",
@@ -228,10 +228,6 @@
               "integer",
               "null"
             ]
-          },
-          "operator_fingerprint": {
-            "description": "`sha256` of the fleet's sealed operator key, as hex: which key signed this correction.",
-            "type": "string"
           },
           "per_request_fee": {
             "default": null,
@@ -253,16 +249,10 @@
           "reason": {
             "description": "Why. Required and non-empty; the record keeps its SHA-256, not the text.",
             "type": "string"
-          },
-          "signature": {
-            "description": "The detached ed25519 signature (128 hex characters) over the canonical correction payload,\nverified strictly against the sealed operator key.",
-            "type": "string"
           }
         },
         "required": [
           "effective_from",
-          "operator_fingerprint",
-          "signature",
           "reason"
         ],
         "type": "object"
@@ -295,9 +285,6 @@
             "minimum": 0,
             "type": "integer"
           },
-          "operator_fingerprint": {
-            "type": "string"
-          },
           "reason_sha256": {
             "description": "The SHA-256 of the reason, as hex.",
             "type": "string"
@@ -308,7 +295,6 @@
           "effective_from",
           "effective_until",
           "amended_at",
-          "operator_fingerprint",
           "reason_sha256"
         ],
         "type": "object"
@@ -599,7 +585,7 @@
           },
           "scheme": {
             "default": 1,
-            "description": "WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.\n\n`#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed\nsimply lacks the key, and an absent tag means exactly scheme 1, because that is what every\nsuch row actually is — no migration of stored data is required. `link` always writes\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] on a FRESH entry; nothing mints scheme 1 going forward. A\nverifier reads this straight off the record (`ChainedRecord::framing`), so a chain mixing\nboth eras checks each entry under the rules it actually used.",
+            "description": "WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.\n\n`#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed\nsimply lacks the key, and an absent tag means exactly scheme 1, because that is what every\nsuch row actually is — no migration of stored data is required. A FRESH admin record (the\nseam's `admin_suffix`) is sealed under [`AUDIT_SCHEME_PIPE`], so its `hash` is 1.5.5's own,\nwhenever its `action`, `resource` and `outcome` carry no `|`, and under\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] only when one of them does; the ring's own `link` writes\n[`AUDIT_SCHEME_LENGTH_PREFIXED`]. A verifier reads this straight off the record\n(`ChainedRecord::framing`), so a chain mixing both schemes checks each entry under the rules\nit actually used.",
             "format": "uint8",
             "maximum": 255,
             "minimum": 0,
@@ -841,6 +827,13 @@
           },
           "note": {
             "type": "string"
+          },
+          "reload_to_apply": {
+            "description": "The plane sections this configuration writes whose plane the process did not open at boot:\na plane is opened once, at process start, when its section is configured, so each is stored\nand validated but serves nothing until the next RESTART. Omitted when none.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -942,6 +935,20 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
+          },
+          "note": {
+            "description": "A human note naming the plane sections awaiting restart (omitted with them).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reload_to_apply": {
+            "description": "The plane sections this configuration writes whose plane the process did not open at boot:\na plane is opened once, at process start, when its section is configured, so each is stored\nand validated but serves nothing until the next RESTART. Omitted when none.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "reloaded": {
             "type": "boolean"
@@ -1316,6 +1323,13 @@
           "providers": {
             "items": {
               "$ref": "#/components/schemas/ProviderView"
+            },
+            "type": "array"
+          },
+          "reload_to_apply": {
+            "description": "The plane sections the running configuration writes whose plane the process did not open at\nboot: a plane is opened once, at process start, when its section is configured, so each is\nstored and validated but serves nothing until the next RESTART. Omitted when none.",
+            "items": {
+              "type": "string"
             },
             "type": "array"
           },
@@ -4462,7 +4476,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -4493,7 +4507,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Correct a recorded unit's COUNTS, never a money figure (irreducible above `adjust_threshold`)",
+        "summary": "Correct a recorded unit's COUNTS, never a money figure",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -5879,7 +5893,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -5910,7 +5924,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Deliberately break the journal chain (disaster recovery; irreducible)",
+        "summary": "Deliberately break the journal chain (disaster recovery)",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -5968,7 +5982,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "409": {
             "content": {
@@ -5999,7 +6013,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Commit the fleet to the release this node runs (irreducible)",
+        "summary": "Commit the fleet to the release this node runs",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -10857,7 +10871,7 @@
     },
     "/api/v1/admin/ledger/amend-rate-history": {
       "post": {
-        "description": "The correction out-ranks the entry it corrects and rewrites nothing; recompute reprices the corrected window against the new entry. It must be signed by the fleet's sealed operator key (`operator_fingerprint` names it; `signature` verifies strictly over the canonical payload). A body carrying `currency` is refused. The durable record is written ahead of the append.",
+        "description": "The correction out-ranks the entry it corrects and rewrites nothing; recompute reprices the corrected window against the new entry. A body carrying `currency` is refused. The durable record is written ahead of the append.",
         "operationId": "PostLedgerAmendRateHistory",
         "requestBody": {
           "content": {
@@ -10888,7 +10902,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: malformed body, an empty or inverted window, no signer, signature or reason, a `currency` key, a negative fee or rate, a correction that moves no figure, an unknown operator fingerprint, a signature that does not verify, or a request body that could not be read to the operator's size cap"
+            "description": "`invalid_request`: malformed body, an empty or inverted window, no reason, a `currency` key, a negative fee or rate, a correction that moves no figure, or a request body that could not be read to the operator's size cap"
           },
           "401": {
             "content": {
@@ -10908,7 +10922,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -10939,7 +10953,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Append a signed, back-dated correction to the dated rate-card history (irreducible)",
+        "summary": "Append a back-dated correction to the dated rate-card history",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -11584,7 +11598,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight, or ``plane `<key>` may not write record kind `<kind>` `` — the named plane does not declare the kind in its `record_kinds`"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight, or ``plane `<key>` may not write record kind `<kind>` `` — the named plane does not declare the kind in its `record_kinds`"
           },
           "404": {
             "content": {
@@ -12590,7 +12604,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -12621,7 +12635,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Reseal the epoch floor after a chain break or restore (irreducible)",
+        "summary": "Reseal the epoch floor after a chain break or restore",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -12822,7 +12836,7 @@
     },
     "/api/v1/admin/store-restore": {
       "post": {
-        "description": "The body names the backup; there is no default. A body that names none is refused before the ceremony runs. Otherwise admitted through the same gates as every other new verb, then handed to the store.",
+        "description": "Refused, always: the configured store has no restore operation, so this node restores nothing, records nothing and changes nothing. Restores happen off-node, with the store's own tooling. A body that names no `backup_ref` is refused 400 before anything else; an admitted call is refused 503 `unavailable`, and the node logs one error line naming the verb.",
         "operationId": "PostStoreRestore",
         "requestBody": {
           "content": {
@@ -12836,7 +12850,7 @@
         },
         "responses": {
           "204": {
-            "description": "Applied: the store is restored. No body"
+            "description": "Never answered: this build has no restore operation (an admitted call is refused 503)"
           },
           "400": {
             "content": {
@@ -12866,7 +12880,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -12876,7 +12890,7 @@
                 }
               }
             },
-            "description": "`not_found`: the store holds no backup under `backup_ref`"
+            "description": "`not_found`: never answered: there is no restore operation to look `backup_ref` up in"
           },
           "503": {
             "content": {
@@ -12886,7 +12900,7 @@
                 }
               }
             },
-            "description": "`unavailable`: the node could not take the unit, or the store failed. The body is the admin error envelope with code `unavailable`"
+            "description": "`unavailable`: the configured store has no restore operation, so nothing was restored (restores happen off-node), or the node could not take the unit. The body is the admin error envelope with code `unavailable`"
           }
         },
         "security": [
@@ -12897,7 +12911,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Restore the store from a named backup (disaster recovery; irreducible)",
+        "summary": "Refused: the configured store has no restore operation (disaster recovery)",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }
@@ -13746,7 +13760,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -13845,7 +13859,7 @@
                 }
               }
             },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the fleet's operator key is not set, dual control holds the mutation for an approval, the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
+            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
           },
           "404": {
             "content": {
@@ -13889,6 +13903,15 @@
             "description": "A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate; bill from the raw token split, never store spend_micros as a ledger charge",
             "in": "query",
             "name": "window",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A rate-card history sequence number to price against (default: the history as it stands). Each row is priced at the card in force at the row's own instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by asking for it again. A seq above the head is refused, never clamped to it. Distinct from the `as_of` FIELD in the response, which is the instant the read was taken",
+            "in": "query",
+            "name": "as_of",
             "required": false,
             "schema": {
               "type": "string"

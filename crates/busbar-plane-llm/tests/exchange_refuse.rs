@@ -287,7 +287,7 @@ fn an_unparseable_body_reads_the_dialects_400() {
 
 // ── rehomed from the legacy engine's refusal tests: literal statuses and bodies ─────────────────
 
-use busbar_contract::abi::plane::{RefusalCode, REFUSAL_ANY_DIALECT};
+use busbar_contract::abi::plane::RefusalCode;
 use busbar_plane_llm::exchange::arrive::{Decline, Declined};
 use busbar_plane_llm::exchange::refuse::{declined, model_not_found, render};
 
@@ -559,14 +559,20 @@ fn a_bedrock_refusals_errortype_is_its_body_type_for_every_kind() {
     assert!(value_of(&r, "x-amzn-errortype").is_none());
 }
 
-/// The kernel answers a model that names no pool and no configured model with the status this
-/// plane states for every dialect: 404.
+/// The kernel answers a model that names no pool and no configured model with its class default
+/// (`NotFound`, 404: a policy refusal, never a server fault), which this plane does not restate.
 fn no_destination_status() -> u16 {
-    let row = busbar_plane_llm::refusal::REFUSAL_STATUSES
-        .iter()
-        .find(|r| r.dialect == REFUSAL_ANY_DIALECT && r.reason == reason::NO_DESTINATION)
-        .expect("the plane states the no-destination status");
-    assert_eq!(row.status, 404);
+    assert!(
+        !busbar_plane_llm::refusal::REFUSAL_STATUSES
+            .iter()
+            .any(|r| r.reason == reason::NO_DESTINATION),
+        "the no-destination status is the kernel's class default, not a row"
+    );
+    assert_eq!(
+        busbar_contract::abi::plane::reason_of(reason::NO_DESTINATION)
+            .map(busbar_contract::abi::plane::class_of),
+        Some(busbar_contract::abi::plane::RefusalClass::NotFound)
+    );
     404
 }
 
@@ -801,6 +807,7 @@ fn refusal_in(
             envelope,
             kind,
             message: message.into(),
+            entry: None,
         },
     )
 }
@@ -982,6 +989,100 @@ fn every_decode_refusal_reads_the_released_bytes_in_every_dialect_and_none() {
         for (why, status, kind, message) in cases {
             let r = refusal_in(dialect, why, status, kind, message);
             assert_native(dialect, &r, status, kind, message);
+        }
+    }
+}
+
+/// THE KERNEL-SHAPED REFUSALS, RENDERED BY THE PLANE (ARCHITECT ruling 2026-10-16, 3b B): the kernel
+/// decides the reason, the status and the words — a method no route at the path takes
+/// (`MethodNotAllowed`, 405), a body over the cap (`BodyTooLarge`, 413) — and the plane renders the
+/// body in the dialect its path rule reads off the target, byte for byte the previous release's
+/// recorded answer. RED arms: the reason's own word is never the message, and a reason classed
+/// otherwise would wear another kind.
+#[test]
+fn the_kernels_method_and_size_refusals_read_as_the_previous_release_answered() {
+    use busbar_contract::abi::plane::reason_code;
+    use busbar_contract::caps::ReasonCode;
+    const METHOD: &str = "method not allowed for this resource";
+    const OVERSIZED: &str = "request body exceeds the maximum allowed size";
+    for (cell, target, reason, status, text) in [
+        (
+            "http.crosscut__wrong-method__GET-messages",
+            "/v1/messages",
+            ReasonCode::MethodNotAllowed,
+            405,
+            METHOD,
+        ),
+        (
+            "http.crosscut__413__anthropic",
+            "/v1/messages",
+            ReasonCode::BodyTooLarge,
+            413,
+            OVERSIZED,
+        ),
+        (
+            "http.crosscut__413__openai",
+            "/v1/chat/completions",
+            ReasonCode::BodyTooLarge,
+            413,
+            OVERSIZED,
+        ),
+        (
+            "http.crosscut__413__gemini-path",
+            "/v1beta/models/m-gemini:generateContent",
+            ReasonCode::BodyTooLarge,
+            413,
+            OVERSIZED,
+        ),
+    ] {
+        let r = kernel_refusal(
+            HOST,
+            envelope_for(target),
+            reason_code(reason),
+            status,
+            text,
+            0,
+        );
+        assert_matches(cell, &r);
+        assert!(
+            !String::from_utf8_lossy(&r.body).contains(reason.as_str()),
+            "{cell}: the kernel's words, not the reason's"
+        );
+    }
+}
+
+/// EVERY DIALECT, AS THE PREVIOUS RELEASE'S KERNEL WROTE IT (ARCHITECT ruling 2026-10-16, 3b B): the
+/// previous release answered these three refusals with the dialect's own error writer over
+/// `(status, kind, message)` — 405 `invalid_request` "method not allowed for this resource", 413
+/// `request_too_large` "request body exceeds the maximum allowed size", and a handler panic's 500
+/// `api_error` "internal error". The plane's rendering of the kernel's reason is that same writing,
+/// field for field and byte for byte, in all six dialects. RED arm: the reason classes are what pick
+/// the kind, so a reason classed otherwise breaks the equality.
+#[test]
+fn the_kernels_refusals_are_the_previous_releases_writing_in_every_dialect() {
+    use busbar_contract::abi::plane::reason_code;
+    use busbar_contract::caps::ReasonCode;
+    use busbar_contract::protocol::{KIND_API_ERROR, KIND_INVALID_REQUEST, KIND_REQUEST_TOO_LARGE};
+    use busbar_plane_llm::exchange::refuse::render;
+    for d in SIX {
+        for (reason, status, kind, text) in [
+            (
+                ReasonCode::MethodNotAllowed,
+                405,
+                KIND_INVALID_REQUEST,
+                "method not allowed for this resource",
+            ),
+            (
+                ReasonCode::BodyTooLarge,
+                413,
+                KIND_REQUEST_TOO_LARGE,
+                "request body exceeds the maximum allowed size",
+            ),
+            (ReasonCode::Internal, 500, KIND_API_ERROR, "internal error"),
+        ] {
+            let by_reason = kernel_refusal(HOST, d, reason_code(reason), status, text, 0);
+            let as_written = render(HOST, d, status, kind, text, 0);
+            assert_eq!(by_reason, as_written, "{d} {reason}");
         }
     }
 }

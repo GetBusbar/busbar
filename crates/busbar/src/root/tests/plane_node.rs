@@ -285,7 +285,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
     let app = TestApp::new()
-        // THE CONFIGURED AUTH CHAIN, so `identity_admit_over` runs the same resolution the HTTP
+        // THE CONFIGURED AUTH CHAIN, so `admit_session` runs the same resolution the HTTP
         // middleware runs rather than falling through an open front door.
         .keys_chain()
         .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
@@ -313,8 +313,8 @@ impl Rig {
         }
     }
 
-    fn host(&self) -> Arc<dyn busbar_kernel::plane_host::EngineHost> {
-        busbar_kernel::plane_host::engine_host(&self.app)
+    fn host(&self) -> Arc<dyn busbar_kernel::plane_driver::EngineHost> {
+        busbar_kernel::plane_driver::engine_host(&self.app)
     }
 }
 
@@ -999,47 +999,31 @@ fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
     );
 }
 
-/// **THE CACHE IS WRITTEN AND IS NEVER AUTHORITATIVE.**
+/// **THE POSTING CARRIES NO PRICE; THE FIGURE IS THE LOOKUP'S.**
 ///
-/// The posting the pricing builds carries a cache — the head it settled at, the entry it
-/// resolved to, and both figures. Corrupt every one of those figures and ask again: the answer is
-/// unchanged, because the lookup does not read them. A node that fell back to the cache would
-/// answer the corrupted number and call it money.
+/// The posting the pricing builds holds the counts and the instant and no figure at all, so there is
+/// nothing on it a reader could take for the money: asked again over the same history, the posting
+/// answers exactly the figure the pricing returned, and the instant it kept is the unit's own.
 #[test]
-fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
+fn the_posting_carries_no_price_and_its_figure_is_the_lookups() {
     let kernel = Kernel::new();
     let token = kernel.usage_token();
     let history = history_of(&[(0, 1.0)]);
     let at = Arrived::at(4_000, 7);
 
-    let (mut posting, priced) = priced_posting(&history, at, &token, &report_of(1_000));
+    let (posting, priced) = priced_posting(&history, at, &token, &report_of(1_000));
     let priced = priced.expect("a card in force at the instant prices the report");
-    let cached = posting
-        .cached
-        .expect("the pricing left its cache on the posting");
-    assert_eq!(cached.priced_nanos, priced.priced_nanos);
-    assert_eq!(cached.card_seq, priced.card_seq);
-    assert_eq!(cached.history_seq, history.seq());
-    assert_eq!(cached.pre_tier_nanos, priced.pre_tier_nanos);
     assert_eq!(
         posting.arrived_ms, 4_000,
         "the posting kept its own instant"
     );
     assert_eq!(posting.arrived_mono, 7);
-
-    // The tamper. Every figure a reader could be tempted to trust, made a lie.
-    posting.cached = Some(busbar_kernel_ledger::cost::CachedPrice {
-        history_seq: busbar_kernel_ledger::cost::HistorySeq(u64::MAX),
-        card_seq: busbar_kernel_ledger::cost::HistorySeq(u64::MAX),
-        pre_tier_nanos: 1,
-        priced_nanos: 1,
-    });
     assert_eq!(
         posting
             .priced_nanos(&history.view())
             .expect("the lookup still answers"),
         priced.priced_nanos,
-        "the money moved when the cache was corrupted, so the cache was on the money path"
+        "the posting's figure is the lookup's, asked again"
     );
 }
 
@@ -2425,10 +2409,9 @@ async fn admit(
     rig: &Rig,
     cred: Credential,
 ) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
-    busbar_kernel::plane_host::identity_admit_over(
+    busbar_kernel::auth::admit::admit_session(
         Arc::clone(&rig.app),
         Some(cred.present(rig)),
-        String::new(),
         String::new(),
     )
     .await
@@ -2501,7 +2484,7 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
 /// every 401 this plane could raise is raised upstream of it. A cell that hand-built a context and
 /// handed it to the loop would prove nothing about that, because it would be asserting the fixture.
 /// So every credential here goes through the deployment's OWN door
-/// (`plane_host::identity_admit_over`: the configured chain plus the one verdict resolution the
+/// (`auth::admit::admit_session`: the configured chain plus the one verdict resolution the
 /// HTTP middleware runs) and the loop is driven with whatever the door left behind.
 ///
 /// Three credentials, and the door's answer decides which half of the cell runs:
@@ -3001,7 +2984,7 @@ async fn leg_native_run(fixture: Fixture) -> Observed {
 /// arrival's model rides its body.
 #[allow(clippy::too_many_arguments)]
 async fn native_run_via_loop(
-    host: &Arc<dyn busbar_kernel::plane_host::EngineHost>,
+    host: &Arc<dyn busbar_kernel::plane_driver::EngineHost>,
     gov: &busbar_contract::records::PlaneRequestCtx,
     proto: &'static str,
     operation: busbar_contract::operation::OpVerb,
@@ -3577,7 +3560,7 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
     );
     assert_eq!(posting.fee_count, 1, "the billable count rides the row");
 
-    // SETTLEMENT REFUSES the class, and leaves no figure cached as though it had priced it.
+    // SETTLEMENT REFUSES the class: no figure stands for it.
     assert!(
         matches!(
             priced,
@@ -3586,7 +3569,6 @@ fn an_unpriced_class_on_a_present_card_keeps_its_counts_row_and_the_read_refuses
         ),
         "settlement priced a class the present card is silent about: {priced:?}"
     );
-    assert!(posting.cached.is_none(), "a refused lookup cached a figure");
     assert!(
         matches!(
             priced_amount(&history, at, &token, &report),
@@ -3693,6 +3675,8 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         node: &node,
         slot: Arc::clone(&slot),
         arrived: Arrived::at(EPOCH * 1_000, 7),
+        op_class: busbar_contract::caps::OpClassId::new("call"),
+        hold: None,
         reached_end: false,
     });
     assert!(
@@ -3729,8 +3713,8 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
                 .iter()
                 .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
                 .count(),
-            1,
-            "the swept hold's posting is on the journal"
+            2,
+            "the swept hold's posting is on the journal, and its one audit record beside it"
         );
         assert_eq!(durability.ledger.book().len(), 1, "and on the book");
     }
@@ -3760,10 +3744,194 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
         node: &node,
         slot: Arc::clone(&slot),
         arrived: Arrived::at(EPOCH * 1_000, 8),
+        op_class: busbar_contract::caps::OpClassId::new("call"),
+        hold: None,
         reached_end: true,
     });
     assert!(!slot.is_marked());
     assert!(node.inflight.get(key).is_none());
+}
+
+/// A fresh node over a memory-buffered book, and that book.
+fn swept_node() -> (
+    Node,
+    Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+) {
+    let node = Node::new();
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_kernel_wal::NullShipper::new()),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ));
+    node.bind_book(Arc::clone(&book));
+    (node, book)
+}
+
+/// Enter unit `key` into `node`'s table with its arrival hold, then drop its guard unfinished: a
+/// unit whose task went away under operation class `op_class`, its hold at `hold` on the chain.
+fn lose_a_unit(node: &Node, key: UnitKey, op_class: &'static str, hold: Option<u64>) {
+    let slot = node
+        .inflight
+        .insert(busbar_kernel::inflight::Enter {
+            key,
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            zero_hold_tick: false,
+            arrival: busbar_kernel::inflight::arrival_hold(
+                &node.kernel,
+                &node.door,
+                PrincipalId::new("acct:swept"),
+                node.kernel.next_call(),
+            ),
+            now: EPOCH * 1_000,
+        })
+        .expect("the uncapped table takes the unit");
+    drop(Occupied {
+        node,
+        slot,
+        arrived: Arrived::at(EPOCH * 1_000, key.get()),
+        op_class: busbar_contract::caps::OpClassId::new(op_class),
+        hold,
+        reached_end: false,
+    });
+}
+
+/// Q128 p29#5: A SWEPT UNIT SEALS EXACTLY ONE AUDIT RECORD, AND ITS AMOUNT IS ITS LEDGER LINE.
+///
+/// THE DESIGN §1 (`BUSBAR-1.6.0.md` l.190-197): "The audit step writes one fixed record, for every
+/// plane ... never optional"; §7 U14 (l.1061-1065): one audit record per unit, sealed at its one
+/// line. A unit whose task disappeared is ended by the node's sweep, never by its own exit, so the
+/// record is the sweep's to seal: outcome `Failed(at, TaskLost)`, finish `Error`, the operation class
+/// the unit's guard recorded, the hold its admission opened, and the posted line by its registered
+/// class. The swept unit's evidence went with its task, so its line is the estimated zero under the
+/// kernel's own class: a money figure no registration declares and a record may not hold (§1
+/// l.193-195, #43, #77(3)), so the record names no line and its amount, zero, is the zero the line
+/// moved. And the record reads back, as every record on the journal must at the next boot.
+///
+/// RED before the fix: the sweep posted the unit's line with `None::<Sealing>` ("A unit the sweep
+/// ends never handed back its audit pass: it has no record"), so the book had a posting and the
+/// chain no record.
+#[test]
+fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line() {
+    let (node, book) = swept_node();
+    let key = UnitKey::new(51);
+    lose_a_unit(&node, key, "widget_call", Some(3));
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 1);
+
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    assert_eq!(
+        durability.ledger.book().len(),
+        1,
+        "the swept unit posted one line"
+    );
+    let records: Vec<_> = durability
+        .audit_records
+        .iter()
+        .filter(|r| r.what.unit_key == key)
+        .collect();
+    assert_eq!(
+        records.len(),
+        1,
+        "one record for the one swept unit: {:?}",
+        durability.audit_records
+    );
+    let record = records[0];
+    assert_eq!(
+        record.outcome.unit_end,
+        Outcome::Failed(
+            busbar_contract::caps::StepName::Route,
+            busbar_contract::caps::ReasonCode::TaskLost
+        )
+    );
+    assert_eq!(record.outcome.finish, RecordFinish::Error);
+    assert_eq!(record.what.op_class.as_str(), "widget_call");
+    assert_eq!(record.controls.hold_ref.as_deref(), Some("3"));
+    // The amount: the line the sweep posted was the estimated zero under the kernel's own class,
+    // which the record does not name, and the money it moved is that zero.
+    assert!(
+        record.usage.lines.is_empty(),
+        "a record names no money-class line: {:?}",
+        record.usage.lines
+    );
+    let settled: i128 = durability
+        .ledger
+        .book()
+        .iter()
+        .map(|(_, totals)| totals.settled)
+        .sum();
+    assert_eq!(
+        settled,
+        record
+            .usage
+            .lines
+            .iter()
+            .map(|l| i128::from(l.quantity))
+            .sum::<i128>(),
+        "the record's amount equals the money its line moved"
+    );
+    assert!(durability.retained_audit_findings().is_empty());
+    // It reads back off the journal, as the next boot reads it.
+    let replayed = durability
+        .journal
+        .replay()
+        .expect("reads back")
+        .expect("verifies");
+    let read_back: Vec<_> = replayed
+        .iter()
+        .filter_map(|r| crate::root::durability::decode_audit(r).expect("every record decodes"))
+        .filter(|r| r.what.unit_key == key)
+        .collect();
+    assert_eq!(
+        read_back.len(),
+        1,
+        "the swept unit's record is on the journal"
+    );
+}
+
+/// Q128 p29#5: NO UNIT SETTLES WITH ZERO AUDIT RECORDS. Every unit the sweep settles has its one
+/// record on the chain, one each, so the book's lines and the chain's records count the same units.
+///
+/// RED before the fix: the swept units posted their lines and sealed nothing.
+#[test]
+fn no_swept_unit_settles_with_zero_audit_records() {
+    let (node, book) = swept_node();
+    let keys = [UnitKey::new(61), UnitKey::new(62), UnitKey::new(63)];
+    for key in keys {
+        lose_a_unit(&node, key, "widget_call", None);
+    }
+    assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), keys.len());
+
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    let replayed = durability
+        .journal
+        .replay()
+        .expect("reads back")
+        .expect("verifies");
+    assert_eq!(
+        replayed
+            .iter()
+            .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
+            .count(),
+        2 * keys.len(),
+        "each swept unit has its posting on the journal and its one record beside it"
+    );
+    for key in keys {
+        assert_eq!(
+            durability
+                .audit_records
+                .iter()
+                .filter(|r| r.what.unit_key == key)
+                .count(),
+            1,
+            "unit {key:?} settled and must have exactly one record: {:?}",
+            durability.audit_records
+        );
+    }
+    assert_eq!(durability.audit_records.len(), keys.len());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4286,7 +4454,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     node.bind_book(Arc::clone(&book.durability));
 
     let arrival = plane::WalkArrival {
-        host: busbar_kernel::plane_host::engine_host(&app),
+        host: busbar_kernel::plane_driver::engine_host(&app),
         gov: gov_ctx.clone(),
         proto: linked_dialect(
             DIALECTS["rerank"]["path_dialect"]
@@ -5596,7 +5764,7 @@ async fn serve_rerank(
     let book = crate::root::durability::node_book_over(Box::new(move || Some(pinned.clone())));
     node.bind_book(Arc::clone(&book.durability));
     let arrival = plane::WalkArrival {
-        host: busbar_kernel::plane_host::engine_host(&app),
+        host: busbar_kernel::plane_driver::engine_host(&app),
         gov: busbar_contract::records::PlaneRequestCtx {
             key: Some(Arc::clone(&key)),
         },

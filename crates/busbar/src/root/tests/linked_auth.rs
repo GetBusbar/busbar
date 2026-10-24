@@ -27,10 +27,12 @@ fn link() {
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
+    busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
     for decls in crate::LINKED.protocols {
         busbar_kernel::proto::register_test_protocols(decls);
     }
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    busbar_kernel::test_support::register_neutral_test_plane();
 }
 
 /// The operator credential's provider key, read AFTER the root's words are handed in. Before the
@@ -418,7 +420,6 @@ fn cfg_with_credentials(
         signing_key: Some(busbar_kernel::config::SecretRef::file(
             key_path.to_string_lossy().to_string(),
         )),
-        operator_pub: None,
         chain: vec![],
         admin_auth: vec![admin_entry],
         role_bindings: busbar_kernel::config::RoleBindings::new(),
@@ -594,11 +595,9 @@ fn blank_admin_token_refuses_to_start() {
             "the refusal names the admin credential: {err}"
         );
         if !blank.is_empty() {
-            // A WHITESPACE-only value must be refused AS whitespace-only, not merely refused.
-            // The secret resolver now catches it first ("resolved to a BLANK file (whitespace
-            // only)"), ahead of the admin trim guard ("EMPTY/whitespace-only"); either guard is
-            // the refusal this case owes, and both name the whitespace, so the assertion holds
-            // the reason rather than one guard's exact wording.
+            // A WHITESPACE-only value must be refused AS whitespace-only, not merely refused. The
+            // `file:` source resolves it untouched, as 1.5.5 did, and the admin credential's own
+            // trim guard ("EMPTY/whitespace-only", 1.5.5's) is the refusal this case owes.
             assert!(
                 err.contains("whitespace"),
                 "a whitespace-only token must be refused as whitespace-only: {err}"
@@ -1067,7 +1066,8 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
              [rekey-model]\n  gpool-b:\n    members: [rekey-model]",
         )
         .expect("the section"),
-    );
+    )
+    .expect("the pools");
     // What the caller reads: the identity refusal's 401, the grant's 403, else served.
     let answer = |credential: &'static str, pool: &'static str| {
         let (auth, app, pools) = (Arc::clone(&auth), Arc::clone(&app), pools.clone());

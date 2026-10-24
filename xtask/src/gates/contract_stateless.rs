@@ -13,6 +13,13 @@
 //! feature, so such a module is compiled only into tests and never into a shipped image. The same
 //! static behind any other gate, or none, is still a finding.
 //!
+//! The dev-only `alloc-counter` feature is held the same way (ARCHITECT ruling 2026-10-21: plugin
+//! crate roots keep the literal `#![forbid(unsafe_code)]`, so the counting `GlobalAlloc` a plugin's
+//! allocation gates install lives in the contract, and its per-thread counter with it). A module
+//! declared behind exactly `#[cfg(any(test, feature = "alloc-counter"))]` is test code because
+//! `tests/test_seal_is_dev_only.rs` refuses every non-dev edge, and every `default`, that enables
+//! that feature too.
+//!
 //! REPORT-ONLY, armed at today's count as the drain-only ledger `qa/contract-stateless.toml` (see
 //! [`super::one_abi`]); the rows are the work list of the step that moves the registries into the
 //! kernel.
@@ -52,10 +59,12 @@ pub const SPEC: Spec = Spec {
 /// The once-cell spellings, each read as a word.
 const ONCE: &[&str] = &["OnceLock", "LazyLock", "OnceCell", "Lazy"];
 
-/// The attributes that confine a module to tests and the dev-only `test-seal` feature.
+/// The attributes that confine a module to tests and the dev-only `test-seal` and `alloc-counter`
+/// features.
 const TEST_SEAL_GATES: &[&str] = &[
     "#[cfg(any(test, feature = \"test-seal\"))]",
     "#[cfg(feature = \"test-seal\")]",
+    "#[cfg(any(test, feature = \"alloc-counter\"))]",
 ];
 
 /// Every module a file declares directly under a [`TEST_SEAL_GATES`] attribute, as the path its
@@ -239,6 +248,21 @@ impl Gate for ContractStatelessGate {
             &[ROW_STATIC],
             declared("#[cfg(any(test, feature = \"test-seal\"))]\n"),
         ));
+        report.push(crate::gates::prove_rows_green(
+            cx,
+            self,
+            "a static in a module declared behind the dev-only alloc-counter feature is test code",
+            &[ROW_STATIC],
+            declared("#[cfg(any(test, feature = \"alloc-counter\"))]\n"),
+        ));
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "the same static behind alloc-counter alone (not composed with test) is RED",
+            &[ROW_STATIC],
+            declared("#[cfg(feature = \"alloc-counter\")]\n"),
+            &[seal_file, "PLANTED_SEAL_STATE"],
+        ));
         report.push(crate::gates::prove_rows_red(
             cx,
             self,
@@ -295,7 +319,7 @@ impl Gate for ContractStatelessGate {
         };
         let ledger_row = SPEC.ledger_row();
         report.push(crate::gates::prove_rows_red(
-            cx,
+            &crate::gates::construction::ceilings::with_head_pin(cx),
             self,
             "a sanctioned site the tree does not carry is STALE",
             &[ledger_row.as_str()],

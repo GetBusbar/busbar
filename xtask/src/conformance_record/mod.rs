@@ -65,12 +65,14 @@ pub use oidf::{
     SUITES as OIDF_SUITES,
 };
 pub use rigs::{
-    decide_legs, decide_llm, decide_voice, decide_webrtc, decide_ws, mcp_node_platform, rig_for,
-    voice_config_command, Inputs, LlmRun, VoiceRun, WebrtcRun, WsRun, LLM_DIALECTS,
-    MCP_NODE_VERSION, VOICE_PLANE, WEBRTC_SUITE,
+    decide_legs, decide_llm, decide_voice, decide_webrtc, decide_ws, mcp_node_platform,
+    recording_for_subject, rig_for, voice_config_command, Inputs, LlmRun, VoiceRun, WebrtcRun,
+    WsRun, LLM_DIALECTS, MCP_NODE_VERSION, VOICE_PLANE, WEBRTC_SUITE,
 };
 pub use slsa::{
-    decide_slsa, dev_bin_assets, provenance_commit, SlsaRun, SOURCE_BRANCH, SOURCE_URI,
+    artifact_urls, decide_slsa, hand_off, http_answer, next_step, provenance_commit, run_state,
+    token_from, HandOff, RunState, SlsaRun, Step, PROVENANCE_ARTIFACT, RUN_POLL_SECS,
+    RUN_WAIT_CAP_SECS, SIGNER_REPO, SIGNER_WORKFLOW, SOURCE_BRANCH, SOURCE_URI, TOKEN_NEED,
 };
 pub use subject::{b64url, base_config};
 pub use tls::{decide_tls, TlsRun};
@@ -87,7 +89,9 @@ usage:
                  output); without it every llm-* verdict is not-run
     --slsa-artifact, --slsa-provenance
                  a busbar artifact built from HEAD and its SLSA provenance, minted by a trusted CI
-                 builder; without both the slsa-verifier verdict is not-run
+                 builder; without both the rig fetches HEAD's pair from the artifacts of
+                 GetBusbar/busbar's slsa-dev-provenance run (a token with actions:read on
+                 GetBusbar/busbar in BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN), else not-run
     --out        where <id>.json is written (default conformance/verdicts; relative to the checkout)
   exit: 0 every targeted verdict written (pass, fail or not-run), 2 bad arguments,
         3 a verdict or conformance/manifest.json could not be written";

@@ -159,7 +159,7 @@ fn metered_row<'a>(
 
 /// **WHETHER A METERING ROW'S USAGE VIEW CARRIES `classes`.** Only a row a non-pools plane metered
 /// (its `provider` column is that plane's registry key, as [`row_lane`] reads it): the classes that
-/// plane declares are new 1.6.0 surface (the FLIP-A2A ruling). A pools-plane row keeps 1.5.5's
+/// plane declares are new 1.6.0 surface (the PLANE-FLIP ruling). A pools-plane row keeps 1.5.5's
 /// usage shape, the token split alone, though the budget book holds an open class for it (a
 /// rerank's `search_units`, a provider-stated total's `unitemized_tokens`, LEDGER-100): that count
 /// stays ledgered and priced into the row's `spend_micros`, and the read does not itemize it. The
@@ -823,7 +823,10 @@ pub(crate) fn validate_hook_settings_size(
 // import list from growing for a single-use helper.
 
 /// The lane at `idx`'s model name projected through the neutral view; empty if the handle is stale.
-fn lane_model(view: &dyn busbar_kernel::plane_host::EngineTablesView, idx: usize) -> String {
+fn lane_model(
+    view: &dyn busbar_kernel::plane_driver::route_tables::EngineTablesView,
+    idx: usize,
+) -> String {
     view.lane_view(idx)
         .map(|l| l.model.to_string())
         .unwrap_or_default()
@@ -1336,7 +1339,7 @@ fn plane_named_def_list(
     busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
-            f(app as &dyn busbar_kernel::plane_host::PlaneSlots)
+            f(app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots)
         })
 }
 
@@ -1349,7 +1352,12 @@ fn plane_named_def_get(
 ) -> Option<NamedDefView> {
     busbar_kernel::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
-        .and_then(|f| f(app as &dyn busbar_kernel::plane_host::PlaneSlots, name))
+        .and_then(|f| {
+            f(
+                app as &dyn busbar_kernel::plane_driver::slots::PlaneSlots,
+                name,
+            )
+        })
 }
 
 #[cfg(test)]

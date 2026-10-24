@@ -14,11 +14,11 @@
 //! Unix-only: SO_REUSEPORT (and the SIGTERM-driven drain) are unix facilities; non-unix builds serve
 //! on the classic single runtime (a compile-time platform shape with no knob).
 #![cfg(unix)]
-// The fixture boots a REAL busbar with an LLM provider (`protocol: anthropic`); a `--no-default-features`
+// The fixture boots a REAL busbar with a provider on a linked wire dialect; a `--no-default-features`
 // build has no wire codec compiled in and fail-closes at boot (BUSBAR-9007), which is correct product
 // behavior, not a regression. The thread-per-core serve seam under test is plane-independent, but this
-// proof of it requires a bootable, serving server, so it is gated on the LLM plane. Full-feature builds
-// still run it.
+// proof of it requires a bootable, serving server, so it is gated on the linked provider-pool
+// section. Full-feature builds still run it.
 #![cfg(linked_section_pools)]
 
 mod common;
@@ -183,7 +183,7 @@ fn wait_for_healthz(port: u16, budget: Duration) -> String {
     try_healthz(port).unwrap_or_default()
 }
 
-/// One `GET /healthz` over a raw TCP connection; returns the HTTP status line if the server answered.
+/// One `GET /healthz` over a raw stream socket; returns the status line if the server answered.
 fn try_healthz(port: u16) -> Option<String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;

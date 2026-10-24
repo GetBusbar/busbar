@@ -335,6 +335,23 @@ fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
             file: file.to_string(),
             fields: Vec::new(),
         };
+        // A TUPLE STRUCT'S PAYLOAD IS ITS FIELDS (audit xtask G HIGH 1), named as Rust names them
+        // (`0`, `1`, …): `FiguresEra(i128, Vec<u8>)` reached through `Held` carries a money-typed
+        // figure onto the chain exactly as a named field would, and a struct with no `name:` line
+        // used to be a type with no fields at all.
+        if !is_enum {
+            if let Some((payload, at)) = tuple_payload(&lines, i, name) {
+                decl.fields
+                    .extend(payload.into_iter().enumerate().map(|(k, ty)| Field {
+                        name: k.to_string(),
+                        ty,
+                        line: at,
+                    }));
+                out.push(decl);
+                i += 1;
+                continue;
+            }
+        }
         // Find the body: a `{` before any `;` opens one; a `;` first is a tuple/unit type with no
         // named fields.
         let mut depth: i32 = 0;
@@ -395,6 +412,88 @@ fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
         i = j.max(i) + 1;
     }
     out
+}
+
+/// THE PAYLOAD OF A TUPLE STRUCT declared on `lines[i]` (`struct Name(A, pub B);`, generics and a
+/// payload wrapped over several lines included): each element's type, visibility stripped, and the
+/// declaration's line. `None` for a struct with a braced body or none.
+fn tuple_payload(lines: &[(usize, String)], i: usize, name: &str) -> Option<(Vec<String>, usize)> {
+    let (no, first) = &lines[i];
+    let mut joined = scan::blank_literals(first);
+    let after_kw = joined.find("struct ")? + "struct ".len();
+    let mut rest_at = after_kw + joined[after_kw..].find(name)? + name.len();
+    // Skip the generics, a balanced `<…>` group.
+    if joined[rest_at..].trim_start().starts_with('<') {
+        rest_at += joined[rest_at..].find('<')?;
+        let mut depth = 0i32;
+        let mut end = None;
+        for (k, c) in joined[rest_at..].char_indices() {
+            match c {
+                '<' => depth += 1,
+                '>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(rest_at + k + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        rest_at = end?;
+    }
+    if !joined[rest_at..].trim_start().starts_with('(') {
+        return None;
+    }
+    let open = rest_at + joined[rest_at..].find('(')?;
+    // The payload may wrap: join the following lines until its parens balance.
+    let mut j = i;
+    loop {
+        if scan::delta(&joined[open..], '(', ')') <= 0 {
+            break;
+        }
+        j += 1;
+        let (_, more) = lines.get(j)?;
+        joined.push(' ');
+        joined.push_str(&scan::blank_literals(more));
+    }
+    let inner_start = open + 1;
+    let mut depth = 0i32;
+    let mut close = None;
+    for (k, c) in joined[open..].char_indices() {
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            ')' | '>' | ']' => {
+                depth -= 1;
+                if depth == 0 && c == ')' {
+                    close = Some(open + k);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let inner = &joined[inner_start..close?];
+    let mut parts = Vec::new();
+    let (mut depth, mut from) = (0i32, 0usize);
+    for (k, c) in inner.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&inner[from..k]);
+                from = k + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[from..]);
+    let payload: Vec<String> = parts
+        .into_iter()
+        .map(|p| strip_vis(p.trim()).trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    Some((payload, *no))
 }
 
 /// One journal record type and the writer that turns it into a journal body.
@@ -537,6 +636,76 @@ fn word_ends(hay: &str, needle: &str) -> Vec<usize> {
 /// `checkpoint.totals.len()` is how many balances a checkpoint sealed, never their figures.
 const COUNT_READS: &[&str] = &[".len()", ".is_some()", ".is_none()", ".is_empty()"];
 
+/// Every method the writer calls ON THE RECORD it reads (`recv.name(`), by name, once each.
+fn record_methods_called(writer: &str, recv: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for end in word_ends(writer, recv) {
+        let Some(rest) = writer[end..].strip_prefix('.') else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        let after = rest[name.len()..].trim_start();
+        let call = after.starts_with('(') || after.starts_with("::<");
+        if is_ident(&name) && call && !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// The integer and money words a NUMBER is declared in.
+const NUMBER_WORDS: &[&str] = &[
+    "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "Money",
+];
+
+/// Whether `fn name` in `text` returns a number: `Some(true)` when any declaration of it does,
+/// `Some(false)` when it is declared and none does, `None` when `text` declares no `fn name`.
+fn numeric_return(text: &str, name: &str) -> Option<bool> {
+    let code: String = scan::production_lines(text)
+        .into_iter()
+        .map(|(_, l)| scan::blank_literals(&l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut found = None;
+    for end in word_ends(&code, name) {
+        let before = code[..end - name.len()].trim_end();
+        if !before.ends_with("fn")
+            || before[..before.len() - 2]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        // The header runs to the `{` or `;` at paren depth zero; the return type follows the
+        // `->` after its last `)`.
+        let mut depth = 0i32;
+        let mut stop = code.len();
+        for (k, c) in code[end..].char_indices() {
+            match c {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                '{' | ';' if depth <= 0 => {
+                    stop = end + k;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let header = &code[end..stop];
+        let returns = header
+            .rfind(')')
+            .and_then(|close| header[close..].find("->").map(|a| &header[close + a + 2..]))
+            .unwrap_or("");
+        let numeric = type_words(returns).any(|w| NUMBER_WORDS.contains(&w));
+        found = Some(found.unwrap_or(false) || numeric);
+    }
+    found
+}
+
 /// Whether the writer hands the record on WHOLE (`journal_body(record)`): an occurrence of its name
 /// that is not a field read. A writer whose argument the derivation could not name is read as
 /// whole too — over-reading is a red to look at, under-reading is a hole.
@@ -590,24 +759,110 @@ fn money_typed(ty: &str) -> bool {
 /// its text. The FILE is the unit, not the call: a writer may pick the class before it builds the
 /// entry (`durability/amend.rs` matches an adjustment to `RecordClass::Transaction` and passes the
 /// class as a variable).
-fn journal_writers(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
-    let spec = WalkSpec::new(ROOTS.iter().copied())
-        .ext("rs")
-        .exclude(EXCLUDE.iter().copied())
-        .min_files(SCAN_FLOOR);
-    let files = cx.walk(&spec).map_err(|e| format!("{e:?}"))?;
+fn journal_writers(cx: &Ctx, tree: &Tree, walk: Walk) -> Result<Vec<(String, String)>, String> {
+    let files = tree.files.as_ref().map_err(String::clone)?;
     let mut out = Vec::new();
-    for f in &files {
-        let code: String = scan::production_lines(&f.text)
-            .into_iter()
-            .map(|(_, l)| l)
-            .collect::<Vec<_>>()
-            .join("\n");
-        if code.contains("Entry::new(") && MONEY_CLASSES.iter().any(|c| code.contains(c)) {
+    for f in files {
+        if facts_of(cx, f, walk).money_writer {
             out.push((f.rel_str(), f.text.clone()));
         }
     }
     Ok(out)
+}
+
+/// Whether a per-file reading may come from its memo or must be taken afresh — the shape
+/// `kind-isolation`'s matrix keeps (`matrix::Walk`), for the same reason: the memoised verdict is
+/// held equal to the full walk's on planted trees
+/// (`the_memoised_rows_are_the_full_walk_on_planted_trees`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Walk {
+    /// `true`: every per-file reading from its memo where one is held (the gate's own path).
+    /// `false`: every per-file reading taken afresh, no memo read or written (the reference).
+    memoised: bool,
+}
+
+impl Walk {
+    const MEMOISED: Walk = Walk { memoised: true };
+    #[cfg(test)]
+    const FULL: Walk = Walk { memoised: false };
+}
+
+/// THE ONE WALK OF PRODUCTION `crates/` A GATE RUN TAKES. The journal-writer derivation, the Policy
+/// writers and the seal-site scan each used to walk the tree and lex every one of its ~1 900 files
+/// afresh, so every run lexed the whole tree three times and the self-test, which runs the gate once
+/// per case, paid for that once per case. They now share this walk, and each file's lexing is one
+/// memoised reading ([`facts_of`]), so a case lexes its planted files and looks the rest up. The
+/// walk's failure is kept as its `Debug` text, which is what each scan used to print.
+struct Tree {
+    files: Result<Vec<crate::ctx::SourceFile>, String>,
+}
+
+impl Tree {
+    fn walk(cx: &Ctx) -> Tree {
+        let spec = WalkSpec::new(ROOTS.iter().copied())
+            .ext("rs")
+            .exclude(EXCLUDE.iter().copied())
+            .min_files(SCAN_FLOOR);
+        Tree {
+            files: cx.walk(&spec).map_err(|e| format!("{e:?}")),
+        }
+    }
+}
+
+/// What one production file says that the three whole-tree scans read: whether it is a journal
+/// writer of a money record class, whether it is a Policy writer, and every seal marker in its
+/// comment-stripped code.
+struct FileFacts {
+    money_writer: bool,
+    policy_writer: bool,
+    /// `(marker, 1-based line)`, in the order the seal scan reads them.
+    seals: Vec<(&'static str, usize)>,
+}
+
+fn file_facts(text: &str) -> FileFacts {
+    let code: String = scan::production_lines(text)
+        .into_iter()
+        .map(|(_, l)| l)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let entry = code.contains("Entry::new(");
+    let mut seals = Vec::new();
+    let mut in_block = false;
+    for (i, raw) in text.lines().enumerate() {
+        let code = scan::strip_comment_line(raw, &mut in_block);
+        for marker in SEAL_MARKERS {
+            if code.contains(marker) {
+                seals.push((*marker, i + 1));
+            }
+        }
+    }
+    FileFacts {
+        money_writer: entry && MONEY_CLASSES.iter().any(|c| code.contains(c)),
+        policy_writer: entry && code.contains(POLICY_CLASS),
+        seals,
+    }
+}
+
+/// [`file_facts`] of one walked file, memoised on the file ([`scan::file_reading`]) unless `walk`
+/// says the full walk.
+fn facts_of(cx: &Ctx, f: &crate::ctx::SourceFile, walk: Walk) -> std::sync::Arc<FileFacts> {
+    static MEMO: scan::FileReadingMemo<FileFacts> = std::sync::OnceLock::new();
+    if walk.memoised {
+        scan::file_reading(&MEMO, cx, f, file_facts)
+    } else {
+        std::sync::Arc::new(file_facts(&f.text))
+    }
+}
+
+/// [`parse_decls`] of one walked file, memoised the same way.
+fn decls_of(cx: &Ctx, f: &crate::ctx::SourceFile, walk: Walk) -> std::sync::Arc<Vec<TypeDecl>> {
+    static MEMO: scan::FileReadingMemo<Vec<TypeDecl>> = std::sync::OnceLock::new();
+    let rel = f.rel_str();
+    if walk.memoised {
+        scan::file_reading(&MEMO, cx, f, |t| parse_decls(&rel, t))
+    } else {
+        std::sync::Arc::new(parse_decls(&rel, &f.text))
+    }
 }
 
 /// Every `use` path a source file declares (production code only), joined across lines.
@@ -648,7 +903,7 @@ fn crate_dir_in(uses: &[String], ty: &str) -> Option<String> {
 }
 
 /// Every production declaration under a crate source directory, keyed by type name.
-fn crate_decls(cx: &Ctx, dir: &str) -> Result<BTreeMap<String, Vec<TypeDecl>>, String> {
+fn crate_decls(cx: &Ctx, dir: &str, walk: Walk) -> Result<BTreeMap<String, Vec<TypeDecl>>, String> {
     let spec = WalkSpec::new([dir.to_string()])
         .ext("rs")
         .exclude(EXCLUDE.iter().copied())
@@ -656,8 +911,8 @@ fn crate_decls(cx: &Ctx, dir: &str) -> Result<BTreeMap<String, Vec<TypeDecl>>, S
     let files = cx.walk(&spec).map_err(|e| format!("{dir}: {e:?}"))?;
     let mut map: BTreeMap<String, Vec<TypeDecl>> = BTreeMap::new();
     for f in &files {
-        for d in parse_decls(&f.rel_str(), &f.text) {
-            map.entry(d.name.clone()).or_default().push(d);
+        for d in decls_of(cx, f, walk).iter() {
+            map.entry(d.name.clone()).or_default().push(d.clone());
         }
     }
     Ok(map)
@@ -676,6 +931,7 @@ enum Pool {
 /// Every definition of `name` in `pool`. `Err` when the pool's crate cannot be walked.
 fn lookup(
     cx: &Ctx,
+    walk: Walk,
     cache: &mut Cache,
     local: &[TypeDecl],
     pool: &Pool,
@@ -685,7 +941,7 @@ fn lookup(
         Pool::Local => Ok(local.iter().filter(|d| d.name == name).cloned().collect()),
         Pool::Crate(dir) => match cache
             .entry(dir.clone())
-            .or_insert_with(|| crate_decls(cx, dir))
+            .or_insert_with(|| crate_decls(cx, dir, walk))
         {
             Ok(map) => Ok(map.get(name).cloned().unwrap_or_default()),
             Err(e) => Err(e.clone()),
@@ -700,13 +956,14 @@ fn lookup(
 /// definitions share).
 fn resolve_word(
     cx: &Ctx,
+    walk: Walk,
     cache: &mut Cache,
     local: &[TypeDecl],
     uses: &[String],
     pool: &Pool,
     word: &str,
 ) -> Option<(TypeDecl, Pool)> {
-    match lookup(cx, cache, local, pool, word).ok()?.as_slice() {
+    match lookup(cx, walk, cache, local, pool, word).ok()?.as_slice() {
         [one] => return Some((one.clone(), pool.clone())),
         [] => {}
         _ => return None,
@@ -715,7 +972,10 @@ fn resolve_word(
     if other == *pool {
         return None;
     }
-    match lookup(cx, cache, local, &other, word).ok()?.as_slice() {
+    match lookup(cx, walk, cache, local, &other, word)
+        .ok()?
+        .as_slice()
+    {
         [one] => Some((one.clone(), other.clone())),
         _ => None,
     }
@@ -759,7 +1019,7 @@ impl Population {
     }
 }
 
-fn derive_population(cx: &Ctx) -> Population {
+fn derive_population(cx: &Ctx, tree: &Tree, walk: Walk) -> Population {
     let mut members: Vec<Member> = Vec::new();
     let mut gaps = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
@@ -794,7 +1054,7 @@ fn derive_population(cx: &Ctx) -> Population {
     let mut writers: Vec<String> = Vec::new();
     let mut written: Vec<Written> = Vec::new();
     let mut figures: Vec<String> = Vec::new();
-    match journal_writers(cx) {
+    match journal_writers(cx, tree, walk) {
         Err(e) => gaps.push(format!("the journal-writer walk could not run: {e}")),
         Ok(files) => {
             let mut cache: Cache = BTreeMap::new();
@@ -822,7 +1082,7 @@ fn derive_population(cx: &Ctx) -> Population {
                             }
                         }
                     };
-                    let candidates = match lookup(cx, &mut cache, &seam_decls, &pool, name) {
+                    let candidates = match lookup(cx, walk, &mut cache, &seam_decls, &pool, name) {
                         Ok(c) => c,
                         Err(e) => {
                             gaps.push(format!(
@@ -861,9 +1121,15 @@ fn derive_population(cx: &Ctx) -> Population {
                     while let Some((d, p)) = queue.pop() {
                         for f in &d.fields {
                             for word in type_words(&f.ty) {
-                                let Some((one, q)) =
-                                    resolve_word(cx, &mut cache, &seam_decls, &uses, &p, word)
-                                else {
+                                let Some((one, q)) = resolve_word(
+                                    cx,
+                                    walk,
+                                    &mut cache,
+                                    &seam_decls,
+                                    &uses,
+                                    &p,
+                                    word,
+                                ) else {
                                     continue;
                                 };
                                 if !members
@@ -886,6 +1152,45 @@ fn derive_population(cx: &Ctx) -> Population {
                             "`BodyWriter::figure` (a signed ledger figure) in {at}"
                         ));
                     }
+                    // WHAT A WRITER CALL IS FED (audit xtask G HIGH 1): a NUMBER a method of the
+                    // record computes reads no field, calls no `.figure(` and names no money type,
+                    // and `body.num(self.reserved(None))` puts a priced figure on the chain all the
+                    // same. A method of the record whose declared return is a number (or that this
+                    // reader cannot find) is a value the serialization read cannot judge.
+                    if !root.recv.is_empty() {
+                        let def_text = if def.file == *seam_path {
+                            Some(seam.clone())
+                        } else {
+                            cx.read(&def.file).ok()
+                        };
+                        for method in record_methods_called(&root.writer, &root.recv) {
+                            let numeric = [Some(seam.as_str()), def_text.as_deref()]
+                                .into_iter()
+                                .flatten()
+                                .map(|text| numeric_return(text, &method))
+                                .fold(None, |acc: Option<bool>, r| match (acc, r) {
+                                    (Some(true), _) | (_, Some(true)) => Some(true),
+                                    (Some(false), _) | (_, Some(false)) => Some(false),
+                                    _ => None,
+                                });
+                            match numeric {
+                                Some(false) => {}
+                                Some(true) => figures.push(format!(
+                                    "`{}.{method}()` on {} — a NUMBER a method of the record \
+                                     computes, which {at} puts on the chain: no field holds it, \
+                                     so no field rule can judge it, and a priced figure in a `u64` \
+                                     is a stored price all the same",
+                                    root.recv, root.ty
+                                )),
+                                None => figures.push(format!(
+                                    "`{}.{method}()` on {} — a value a method of the record \
+                                     computes, which {at} puts on the chain, and no declaration of \
+                                     `fn {method}` was found in {} or {} to say it is no number",
+                                    root.recv, root.ty, seam_path, def.file
+                                )),
+                            }
+                        }
+                    }
                     let mut chain = vec![(written_fields(&def, &root), def, pool)];
                     let mut read = std::collections::BTreeSet::new();
                     while let Some((fields, d, p)) = chain.pop() {
@@ -895,7 +1200,7 @@ fn derive_population(cx: &Ctx) -> Population {
                         for f in fields {
                             for word in type_words(&f.ty) {
                                 if let Some((one, q)) =
-                                    resolve_word(cx, &mut cache, &seam_decls, &uses, &p, word)
+                                    resolve_word(cx, walk, &mut cache, &seam_decls, &uses, &p, word)
                                 {
                                     chain.push((one.fields.clone(), one, q));
                                 }
@@ -1061,32 +1366,28 @@ fn policy_table_problems(table: &[(&str, &str, &str, Option<u8>)]) -> Vec<String
 
 /// The Policy writers' verdict: `(findings, gaps)`. A finding is a field or a figure the rule
 /// refuses; a gap is a Policy record the scan could not read.
-fn policy_scan(cx: &Ctx, table: &[(&str, &str, &str, Option<u8>)]) -> (Vec<String>, Vec<String>) {
+fn policy_scan(
+    cx: &Ctx,
+    tree: &Tree,
+    walk: Walk,
+    table: &[(&str, &str, &str, Option<u8>)],
+) -> (Vec<String>, Vec<String>) {
     let mut findings = policy_table_problems(table);
     let mut gaps = Vec::new();
-    let spec = WalkSpec::new(ROOTS.iter().copied())
-        .ext("rs")
-        .exclude(EXCLUDE.iter().copied())
-        .min_files(SCAN_FLOOR);
-    let files = match cx.walk(&spec) {
+    let files = match &tree.files {
         Ok(f) => f,
         Err(e) => {
             return (
                 findings,
-                vec![format!("the Policy writer walk could not run: {e:?}")],
+                vec![format!("the Policy writer walk could not run: {e}")],
             )
         }
     };
     let mut roots = 0usize;
     let mut seen_fields: std::collections::BTreeSet<(String, String)> = Default::default();
     let mut cache: Cache = BTreeMap::new();
-    for f in &files {
-        let code: String = scan::production_lines(&f.text)
-            .into_iter()
-            .map(|(_, l)| l)
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !(code.contains("Entry::new(") && code.contains(POLICY_CLASS)) {
+    for f in files {
+        if !facts_of(cx, f, walk).policy_writer {
             continue;
         }
         let path = f.rel_str();
@@ -1128,7 +1429,7 @@ fn policy_scan(cx: &Ctx, table: &[(&str, &str, &str, Option<u8>)]) -> (Vec<Strin
                 for field in fields {
                     for word in type_words(&field.ty) {
                         if let Some((one, q)) =
-                            resolve_word(cx, &mut cache, &local, &uses, &pool, word)
+                            resolve_word(cx, walk, &mut cache, &local, &uses, &pool, word)
                         {
                             chain.push((one.fields.clone(), one, q));
                         }
@@ -1179,27 +1480,17 @@ struct SealScan {
     seals_outside: Vec<String>,
 }
 
-fn scan_seal_sites(cx: &Ctx) -> Result<SealScan, String> {
-    let spec = WalkSpec::new(ROOTS.iter().copied())
-        .ext("rs")
-        .exclude(EXCLUDE.iter().copied())
-        .min_files(SCAN_FLOOR);
-    let files = cx.walk(&spec).map_err(|e| format!("{e:?}"))?;
+fn scan_seal_sites(cx: &Ctx, tree: &Tree, walk: Walk) -> Result<SealScan, String> {
+    let files = tree.files.as_ref().map_err(String::clone)?;
     let mut seals_outside = Vec::new();
-    for f in &files {
+    for f in files {
         let rel = f.rel_str();
         let allowed = SEAL_ALLOWED_ROOTS.iter().any(|root| rel.starts_with(root));
         if allowed {
             continue;
         }
-        let mut in_block = false;
-        for (i, raw) in f.text.lines().enumerate() {
-            let code = scan::strip_comment_line(raw, &mut in_block);
-            for marker in SEAL_MARKERS {
-                if code.contains(marker) {
-                    seals_outside.push(format!("`{marker}` at {rel}:{}", i + 1));
-                }
-            }
+        for (marker, line) in &facts_of(cx, f, walk).seals {
+            seals_outside.push(format!("`{marker}` at {rel}:{line}"));
         }
     }
     seals_outside.sort();
@@ -1222,7 +1513,7 @@ fn join_or_none(v: &[String]) -> String {
 /// finding). Derived from the gate's own scan, so it neutralises exactly today's findings and no
 /// more; a plant laid over it is the only thing that can turn the row red again.
 fn price_free_fixture(cx: &Ctx) -> Overlay {
-    let pop = derive_population(cx);
+    let pop = derive_population(cx, &Tree::walk(cx), Walk::MEMOISED);
     let mut by_file: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for m in &pop.members {
         for f in &m.decl.fields {
@@ -1252,10 +1543,15 @@ pub struct MoneyInvariantsGate;
 
 impl MoneyInvariantsGate {
     fn rows(cx: &Ctx) -> Vec<Row> {
-        let mut pop = derive_population(cx);
+        Self::rows_with(cx, Walk::MEMOISED)
+    }
+
+    fn rows_with(cx: &Ctx, walk: Walk) -> Vec<Row> {
+        let tree = Tree::walk(cx);
+        let mut pop = derive_population(cx, &tree, walk);
         // THE POLICY RECORDS (ARCHITECT ruling, row 159): exact integer rates at a declared scale,
         // every integer by its declared role, no Money. Their gaps refuse like the money records'.
-        let (policy_findings, policy_gaps) = policy_scan(cx, POLICY_FIELDS);
+        let (policy_findings, policy_gaps) = policy_scan(cx, &tree, walk, POLICY_FIELDS);
         pop.gaps.extend(policy_gaps);
 
         // EXISTENCE BEFORE VERDICT. Both record rows are claims ABOUT the durable records; a record
@@ -1276,7 +1572,7 @@ impl MoneyInvariantsGate {
             return vec![
                 fail(ROW_NO_PLUGIN_KEYED),
                 fail(ROW_NO_STORED_PRICE),
-                Self::seal_row(cx),
+                Self::seal_row(cx, &tree, walk),
             ];
         }
         let mut scan = scan_population(&pop);
@@ -1334,11 +1630,11 @@ impl MoneyInvariantsGate {
             )
         };
 
-        vec![no_plugin, no_price, Self::seal_row(cx)]
+        vec![no_plugin, no_price, Self::seal_row(cx, &tree, walk)]
     }
 
-    fn seal_row(cx: &Ctx) -> Row {
-        match scan_seal_sites(cx) {
+    fn seal_row(cx: &Ctx, tree: &Tree, walk: Walk) -> Row {
+        match scan_seal_sites(cx, tree, walk) {
             Err(e) => Row::fail(
                 ROW_SINGLE_SEAL,
                 "the money-invariants seal-site scan could not run",
@@ -1474,6 +1770,59 @@ impl Gate for MoneyInvariantsGate {
             ov6,
             &["`hook_cost` on HookApplied"],
         ));
+
+        // RED (g) — audit XG HIGH 1: WHAT A WRITER CALL IS FED. A priced figure carried in a `u64`
+        // and handed to `BodyWriter::num` through a price function reads no field, calls no
+        // `.figure(` and names no money type — `HoldOpened::reserved` prices the hold's counts.
+        let hold_anchor =
+            "                body.num(*arrived_ms);\n                write_counts(&mut body, Some(counts));";
+        if cx
+            .read(JOURNAL_SEAM)
+            .unwrap_or_default()
+            .contains(hold_anchor)
+        {
+            let ov7 = plant_over(cx, &fixture, JOURNAL_SEAM, |s| {
+                s.replacen(
+                    hold_anchor,
+                    &format!("{hold_anchor}\n                body.num(self.reserved(None));"),
+                    1,
+                )
+            });
+            report.push(prove_red(
+                &fcx,
+                self,
+                "a price function's u64 fed to a journal writer call is RED",
+                &[ROW_NO_STORED_PRICE],
+                ov7,
+                &["reserved", "HoldOpened"],
+            ));
+        } else {
+            report.note_infra_failure(format!(
+                "money-invariants selftest: {JOURNAL_SEAM} no longer spells the hold writer's counts arm"
+            ));
+        }
+
+        // RED (h) — audit XG HIGH 1: A TUPLE STRUCT'S PAYLOAD IS A FIELD. `FiguresEra` is reached
+        // through `Held`, which the hold writer puts on the chain; a money-typed payload in it is a
+        // stored figure though the struct names no field.
+        let era_from = "pub struct FiguresEra(u64";
+        if cx.read(JOURNAL_SEAM).unwrap_or_default().contains(era_from) {
+            let ov8 = plant_over(cx, &fixture, JOURNAL_SEAM, |s| {
+                s.replacen(era_from, "pub struct FiguresEra(i128", 1)
+            });
+            report.push(prove_red(
+                &fcx,
+                self,
+                "a money-typed tuple-struct payload a journal writer puts on the chain is RED",
+                &[ROW_NO_STORED_PRICE],
+                ov8,
+                &["FiguresEra", "i128"],
+            ));
+        } else {
+            report.note_infra_failure(format!(
+                "money-invariants selftest: {JOURNAL_SEAM} no longer declares `{era_from}..)`"
+            ));
+        }
 
         // RED (b): a stored price/spend field on a store record is caught (#77(3)).
         let ov2 = plant_over(cx, &fixture, STORE_RECORDS_PATH, |s| {
@@ -1681,7 +2030,8 @@ impl Gate for MoneyInvariantsGate {
             },
         });
         // GREEN (q): the Policy records as they are — listed time, epoch and rate fields — pass.
-        let (policy_findings, policy_gaps) = policy_scan(cx, POLICY_FIELDS);
+        let (policy_findings, policy_gaps) =
+            policy_scan(cx, &Tree::walk(cx), Walk::MEMOISED, POLICY_FIELDS);
         report.push(Case {
             name: "the Policy records' listed time, epoch and rate fields are GREEN".to_string(),
             covers: Vec::new(),
@@ -1696,7 +2046,7 @@ impl Gate for MoneyInvariantsGate {
         });
 
         // RED (c): a plane/plugin crate sealing its own facts line is caught (#77(2)).
-        let victim = "crates/busbar-llm/src/lib.rs";
+        let victim = "crates/busbar-plane-llm/src/lib.rs";
         let vtext = cx.read(victim).unwrap_or_default();
         let mut ov3 = Overlay::new();
         ov3.set(
@@ -1709,9 +2059,74 @@ impl Gate for MoneyInvariantsGate {
             "a plane crate sealing a facts line is RED",
             &[ROW_SINGLE_SEAL],
             ov3,
-            &["busbar-llm"],
+            &["busbar-plane-llm"],
         ));
 
         report
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// THE MEMOISED ROWS ARE THE FULL WALK'S, on the real tree and on planted ones: the fixture
+    /// baseline (three record files rewritten), a stored price on the audit record, a journal writer
+    /// renamed out of the derivation, an unlisted integer on a Policy record, and a seal planted in a
+    /// plane crate — each measured cold, again warm (every memo filled by the trees before it), and
+    /// in full with no memo read or written.
+    #[test]
+    fn the_memoised_rows_are_the_full_walk_on_planted_trees() {
+        let base = Ctx::workspace().expect("the workspace opens");
+        let fixture = price_free_fixture(&base);
+        let plant = |path: &str, from: &str, to: &str| {
+            let ov = plant_over(&base, &fixture, path, |s| s.replace(from, to));
+            assert!(
+                base.with_overlay(fixture.clone())
+                    .read(path)
+                    .is_ok_and(|s| s.contains(from)),
+                "{path} no longer spells `{from}`: the plant would plant nothing"
+            );
+            ov
+        };
+        let victim = "crates/busbar-llm/src/lib.rs";
+        let mut seal = Overlay::new();
+        seal.set(
+            victim,
+            format!(
+                "{}\nfn __money_invariants_probe() {{ let _ = Posted::settle(); }}\n",
+                base.read(victim).unwrap_or_default()
+            ),
+        );
+        let plants = [
+            Overlay::new(),
+            fixture.clone(),
+            plant(
+                "crates/busbar-kernel-audit/src/record.rs",
+                "pub struct AuditRecord {",
+                "pub struct AuditRecord {\n    pub price: u64,",
+            ),
+            plant(JOURNAL_SEAM, "pub fn audit_body(", "pub fn audit_bytes("),
+            plant(
+                "crates/busbar/src/root/kernel.rs",
+                "pub struct CardForm {",
+                "pub struct CardForm {\n    extra_cents: u64,",
+            ),
+            seal,
+        ];
+        for (i, ov) in plants.into_iter().enumerate() {
+            let cx = base.with_overlay(ov);
+            let memoised = MoneyInvariantsGate::rows_with(&cx, Walk::MEMOISED);
+            let again = MoneyInvariantsGate::rows_with(&cx, Walk::MEMOISED);
+            let full = MoneyInvariantsGate::rows_with(&cx, Walk::FULL);
+            assert_eq!(
+                memoised, full,
+                "plant {i}: the memoised rows are not the full walk's"
+            );
+            assert_eq!(
+                again, full,
+                "plant {i}: the warm memoised rows are not the full walk's"
+            );
+        }
     }
 }

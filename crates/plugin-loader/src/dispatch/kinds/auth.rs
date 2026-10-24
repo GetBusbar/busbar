@@ -9,7 +9,8 @@
 //!   `CompleteLoginIn::out_buf`;
 //! * `fields` by `check_fields`, over the host's field buffer and array from `FieldsIn`;
 //! * `begin_login` by `check_begin_login` (its URL and form are plugin memory under the lease, so
-//!   no host capacity is involved).
+//!   no host capacity is involved);
+//! * `target` by `check_target`, over the host's buffer from `TargetIn`.
 //!
 //! `open_outbound` and `outbound_ready` state no rule beyond the mechanism's and answer `Ok`, as
 //! does every lifecycle slot.
@@ -28,10 +29,10 @@
 
 use busbar_contract::abi::auth::{
     self, check_begin_login, check_complete_login, check_fields, check_identify,
-    check_inbound_points, check_style_decl, slot, AuthPoints, BeginLoginIn, BeginLoginOut,
-    CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, IdentityBuf, OpenOutboundIn,
-    OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName, VerifyIn, LOGIN_IDENTITY,
-    VERDICT_IDENTITY,
+    check_inbound_points, check_style_decl, check_target, slot, AuthPoints, BeginLoginIn,
+    BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, IdentityBuf,
+    OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName, TargetIn,
+    TargetOut, VerifyIn, LOGIN_IDENTITY, VERDICT_IDENTITY,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{reported, Fault};
@@ -129,6 +130,21 @@ pub fn operator_principal(door: busbar_contract::abi::mechanism::door::DoorFn) -
         .ok()
         .and_then(|v| facts(&v.statement).ok())
         .and_then(|f| f.operator_principal)
+}
+
+/// EVERYTHING the auth plugin behind `door` states (its Statement's auth tail, carriers and
+/// families), as a bind copies it out, read WITHOUT binding it: reading a linked row's static
+/// declaration is reading, not loading (Law 7; ARCHITECT ruling 2026-10-20). Reads the door's
+/// `'static` Statement only; nothing is bound or opened.
+///
+/// # Errors
+///
+/// The door's Statement does not read as an auth Statement, or its tail is one a bind refuses.
+pub fn stated_facts(
+    door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<AuthFacts, String> {
+    let v = crate::dispatch::load::validate::<Auth>(door).map_err(|e| e.to_string())?;
+    facts(&v.statement)
 }
 
 /// A `'static` Statement string, copied; `None` when malformed.
@@ -381,11 +397,13 @@ unsafe impl InFrame for CompleteLoginIn {}
 unsafe impl InFrame for OpenOutboundIn {}
 unsafe impl InFrame for OutboundReadyIn {}
 unsafe impl InFrame for FieldsIn {}
+unsafe impl InFrame for TargetIn {}
 unsafe impl OutFrame for IdentifyOut {}
 unsafe impl OutFrame for BeginLoginOut {}
 unsafe impl OutFrame for OpenOutboundOut {}
 unsafe impl OutFrame for OutboundReadyOut {}
 unsafe impl OutFrame for FieldsOut {}
+unsafe impl OutFrame for TargetOut {}
 
 /// The group spans an identity answer reports: `out.identity.groups_len` of the host's
 /// `buf.groups`, the count checked against `buf.groups_cap` first. Empty unless the answer is a
@@ -437,8 +455,15 @@ impl Kind for Auth {
             slot::OPEN_OUTBOUND => "open_outbound",
             slot::OUTBOUND_READY => "outbound_ready",
             slot::FIELDS => "fields",
+            slot::TARGET => "target",
             _ => lifecycle_name(s),
         }
+    }
+
+    /// `target` is optional: a style that states none sends its credential to no destination of
+    /// its own choosing.
+    fn optional_slot(s: u32) -> bool {
+        s == slot::TARGET
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {
@@ -501,6 +526,10 @@ impl Kind for Auth {
             slot::BEGIN_LOGIN => {
                 a.input::<BeginLoginIn>()?;
                 check_begin_login(a.outcome, a.out::<BeginLoginOut>()?)
+            }
+            slot::TARGET => {
+                let cap = a.input::<TargetIn>()?.buf_cap;
+                check_target(a.outcome, a.out::<TargetOut>()?, cap)
             }
             _ => Ok(()),
         }

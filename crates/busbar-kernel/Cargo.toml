@@ -37,8 +37,6 @@ bumpalo = { workspace = true }
 # consumer (router, the chain-verification module, config, config_validate) never has to name
 # "admin" to check a scope.
 busbar-contract = { path = "../busbar-contract" }
-# (The HOT-lane plugin/plane ABI the kernel hosts — the `#[repr(C)] PlaneHostVtable` and its POD types
-# — is `busbar_contract::abi::hot` since the #84 merge; consumed HOST-side by `src/plane_host`.)
 # THE ONE NETWORK JUDGE (#36: "the upstream leg — walk + swrr weighting + pre-dial guard; trust
 # folded in"). `busbar_kernel_egress::trust::net` is the single definition of the SSRF/metadata
 # guard — the metadata name list, the address predicates, the WHATWG host extraction, the
@@ -102,7 +100,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "tim
 reqwest = { workspace = true, features = ["http2"], optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# The engine-built OAuth mint hops (`egress_auth`) and login-hop client (`auth/token.rs`) form-
+# The engine-built OAuth mint hops (`egress_auth`) form-
 # encode through `serde_urlencoded` — the crate reqwest's `.form()` was, so the wire bytes are
 # unchanged.
 serde_urlencoded = { workspace = true }
@@ -155,10 +153,10 @@ rcgen = { workspace = true, optional = true, features = ["pem"] }
 # admin auth module, the operator credential's included, resolves through the auth kind's registry by
 # the key the configuration names. The composition root links the build's auth rows
 # (`preflight::install_linked_auth`); this crate names none of them.
-default = ["hooks-ranking", "plane-mcp", "plane-a2a"]
-# The build links the ranking hooks: the composition root registers their row (it owns the crate
-# edge); here it only decides whether a test build's stand-in rows carry that row.
-hooks-ranking = []
+# No `hooks-ranking` feature (THE DESIGN l.1443: the `hooks-ranking` kernel feature is deleted): the
+# composition root links the ranking row under its own feature, and a test build's stand-in hook
+# rows carry the kernel's ranking double in every build (`preflight::STAND_IN_HOOK_DOORS`).
+default = ["plane-mcp", "plane-a2a"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
@@ -185,7 +183,7 @@ plane-mcp = ["dispatch"]
 # Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
-plane-a2a = ["card-signing", "relay"]
+plane-a2a = ["relay"]
 # THE NEUTRAL INBOUND WS CAPABILITY — arms the core-side duplex session mount (router.rs,
 # `mount_plane_session`) that answers a door plane's session upgrade. NAMES NO PLANE: any duplex
 # plane turns on the same capability. Forwards to the neutral `runtime` (which arms `axum/ws` and the
@@ -199,17 +197,6 @@ duplex-ws  = ["runtime"]
 dispatch = []
 relay = []
 runtime = ["axum/ws"]
-# ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
-# The neutral crates must name NO plane token in source (enforced by the plane-purity
-# lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
-# guarded a CAPABILITY rather than a plane's mere presence, so the gated source names a capability, not
-# a plane. Each is enabled ONLY transitively by the plane feature(s) that supply the capability, so its
-# truth value — and thus every gated item's compilation — is byte-identical to the plane-token gate it
-# replaced:
-#   card-signing  — the host card-sign vtable slot (`plane_host::vtable::card_sign`), wired only when a
-#                   plane declares a card-signing domain. Enabled by `plane-a2a` only (was `plane-a2a`),
-#                   matching `governance::GovState::card_sign`.
-card-signing = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
@@ -218,7 +205,7 @@ loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
 # capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
-test-support = ["dep:reqwest", "dep:rcgen", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support"]
+test-support = ["dep:reqwest", "dep:rcgen", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support", "busbar-kernel-ledger/test-support"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this

@@ -39,7 +39,7 @@ pub const ALLOWED: &[(&str, &[&str])] = &[
     ),
     // The auth chain's config load (boot and reload, inside `build_app_from_config`).
     ("crates/busbar-kernel/src/auth/mod.rs", &["build", "new"]),
-    ("crates/busbar-kernel/src/auth/token.rs", &["build_on"]),
+    ("crates/busbar-kernel/src/auth/login.rs", &["build_on"]),
     // A hook's settings, resolved at the configure push (boot / apply / hot reload).
     (
         "crates/busbar-kernel/src/hooks/mod.rs",
@@ -51,7 +51,6 @@ pub const ALLOWED: &[(&str, &[&str])] = &[
         &[
             "resolve_admin_token",
             "resolve_signing_key",
-            "resolve_operator_public_key",
             "validate_builtin_secrets_resolve",
             "build_secret_resolver",
         ],

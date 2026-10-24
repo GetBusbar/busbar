@@ -236,74 +236,17 @@ fn braces(blanked: &str) -> i32 {
     delta(blanked, '{', '}')
 }
 
-/// Arm only on a line that IS the attribute: anchored at the start of a CODE line, with `test` as a
-/// cfg predicate (`#[cfg(test)]`, `#[cfg(all(test, …))]`) — never `#[cfg(not(test))]`, which is
-/// production-only code, and never `#[cfg(feature = "test-utils")]`, which is not a test gate.
+/// Arm only on a line that IS the attribute: anchored at the start of a CODE line, with `test`
+/// REQUIRED by the cfg predicate (`#[cfg(test)]`, `#[cfg(all(test, …))]`, `#[cfg(any(test,
+/// feature = "test-support"))]`) — never `#[cfg(not(test))]`, which is production-only code, never
+/// `#[cfg(feature = "test-utils")]`, which is not a test gate, and never `#[cfg(any(test, feature =
+/// "root-admin"))]`, which compiles into the default build. The rule is
+/// [`crate::cfg_scope::Pred::requires_test`], the one every classifier reads.
 fn arms_test_cfg(code: &str) -> bool {
     if !code.trim_start().starts_with("#[cfg(") {
         return false;
     }
-    if !has_test_predicate(code) {
-        return false;
-    }
-    !has_not_test(code)
-}
-
-/// `[(,][[:space:]]*test[[:space:]]*[,)]`, spelled out.
-fn has_test_predicate(code: &str) -> bool {
-    let c: Vec<char> = code.chars().collect();
-    for i in 0..c.len() {
-        if c[i] != '(' && c[i] != ',' {
-            continue;
-        }
-        let mut j = i + 1;
-        while j < c.len() && c[j].is_whitespace() {
-            j += 1;
-        }
-        if !c[j..].starts_with(&['t', 'e', 's', 't']) {
-            continue;
-        }
-        let mut k = j + 4;
-        while k < c.len() && c[k].is_whitespace() {
-            k += 1;
-        }
-        if matches!(c.get(k), Some(',') | Some(')')) {
-            return true;
-        }
-    }
-    false
-}
-
-/// `not[[:space:]]*\([[:space:]]*test[[:space:]]*\)`, spelled out.
-fn has_not_test(code: &str) -> bool {
-    let c: Vec<char> = code.chars().collect();
-    for i in 0..c.len() {
-        if !c[i..].starts_with(&['n', 'o', 't']) {
-            continue;
-        }
-        let mut j = i + 3;
-        while j < c.len() && c[j].is_whitespace() {
-            j += 1;
-        }
-        if c.get(j) != Some(&'(') {
-            continue;
-        }
-        j += 1;
-        while j < c.len() && c[j].is_whitespace() {
-            j += 1;
-        }
-        if !c[j..].starts_with(&['t', 'e', 's', 't']) {
-            continue;
-        }
-        j += 4;
-        while j < c.len() && c[j].is_whitespace() {
-            j += 1;
-        }
-        if c.get(j) == Some(&')') {
-            return true;
-        }
-    }
-    false
+    crate::cfg_scope::parse_attr(code).is_some_and(|p| p.requires_test())
 }
 
 /// `sub(/^[[:space:]]*#\[cfg\(.*\)\][[:space:]]*/, "", rest)` — the GREEDY `.*`, so `#[cfg(test)]`
@@ -800,4 +743,60 @@ fn normalize_rel(p: &str) -> String {
         }
     }
     parts.join("/")
+}
+
+/// One memo of a per-file reading ([`file_reading`]): a cell per key, handed out under the lock and
+/// FILLED OUTSIDE it, so concurrent cases that need the same file take one reading between them.
+pub type FileReadingMemo<T> = std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::OnceLock<std::sync::Arc<T>>>>,
+    >,
+>;
+
+/// `read(f.text)`, MEMOISED ON THE KEY [`cfg_test_module_files`] KEYS A FILE'S DECLARATIONS ON. A
+/// file the overlay does not touch is read from disk (or the base layer), so its ABSOLUTE PATH is a
+/// promise that its bytes are the same for the life of the process; a planted file is keyed on its
+/// path AND its bytes, so a plant is always a reading of its own.
+///
+/// A self-test case IS a gate run over a tree one plant away from the last. A gate that re-reads
+/// every unchanged file of a whole-tree scan on every run pays for the scan once per case; keying
+/// the unchanged files on their bytes would still hash the whole tree every time. Keyed this way a
+/// run reads its planted files and looks the rest up. Same bytes, same reading, so the memo cannot
+/// change a verdict — and each gate that reads through here holds its memoised verdict equal to a
+/// full walk's on planted trees in its own tests.
+pub fn file_reading<T: Send + Sync + 'static>(
+    memo: &'static FileReadingMemo<T>,
+    cx: &crate::ctx::Ctx,
+    f: &crate::ctx::SourceFile,
+    read: impl FnOnce(&str) -> T,
+) -> std::sync::Arc<T> {
+    use std::hash::{Hash, Hasher};
+    let planted = cx
+        .overlay()
+        .is_some_and(|ov| ov.paths().any(|p| *p == f.rel));
+    let key = if planted {
+        let mut a = std::collections::hash_map::DefaultHasher::new();
+        f.text.hash(&mut a);
+        let mut b = std::collections::hash_map::DefaultHasher::new();
+        (f.text.len(), &f.text).hash(&mut b);
+        0x5ca_u32.hash(&mut b);
+        format!(
+            "planted\u{0}{}\u{0}{}\u{0}{:016x}{:016x}",
+            f.rel_str(),
+            f.text.len(),
+            a.finish(),
+            b.finish()
+        )
+    } else {
+        format!("stable\u{0}{}", f.abs.to_string_lossy())
+    };
+    let cell = memo
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key)
+        .or_default()
+        .clone();
+    cell.get_or_init(|| std::sync::Arc::new(read(&f.text)))
+        .clone()
 }
