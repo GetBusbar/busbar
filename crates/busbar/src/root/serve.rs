@@ -36,12 +36,12 @@ use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
-/// The stream `Content-Type` every declared protocol states, folded at boot.
-use busbar_kernel::proto::streaming_content_types as declared_stream_media;
 use busbar_kernel::store::plane_view::KIND_DEMOTION;
 use busbar_kernel::trust::DemotionRecord;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::root::accepted::{Answer, Head, Streamed};
+pub use crate::root::accepted::{DrivenUnit, Reply as IngressReply};
 use crate::root::boot::DoorPlane;
 use crate::root::door_steps::{door_facts, DoorFacts, DoorPools};
 use crate::root::loader::dispatch::kinds::plane::OwnedSnapshot;
@@ -2254,6 +2254,9 @@ pub struct DataRoutes {
     /// The generation each unit in flight was admitted against, by unit key: a nested unit is
     /// admitted against its parent's.
     frames: Mutex<std::collections::HashMap<u64, Arc<busbar_kernel::state::App>>>,
+    /// The claims the kernel's router answers with a document it renders (a protected-resource
+    /// document): no unit is driven for them, on either serving path.
+    documented: std::collections::HashSet<DoorClaim>,
 }
 
 /// A unit's generation, kept in [`DataRoutes::frames`] while the unit runs.
@@ -2378,10 +2381,15 @@ pub fn data_mounts(
         busbar_contract::abi::mechanism::route::RouteMethod,
         busbar_contract::abi::mechanism::route::RouteAuth,
     )],
+    residual: &[(String, busbar_contract::abi::mechanism::route::RouteMethod)],
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<DataMounts, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
+        // NO PLANE CLAIMS A ROUTE: the data listener's list is the kernel's own lines and the
+        // residual line, staged all the same, so a transport the listener is served through is
+        // lent the lines the kernel's router answers.
+        stage_lines(data_chain, core, residual, upgrades, offers)?;
         return Ok((Vec::new(), Vec::new(), Vec::new(), None));
     }
     door_mounts(
@@ -2389,6 +2397,7 @@ pub fn data_mounts(
         || crate::root::kernel::ROOT_CARD.pin(),
         data_chain,
         core,
+        residual,
         upgrades,
         offers,
     )
@@ -2417,6 +2426,9 @@ pub struct DoorRequest {
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     /// The generation serving the request.
     pub app: Arc<busbar_kernel::state::App>,
+    /// The scheme of the listener the request arrived at (`SCHEME_*`): a stream another framer
+    /// frames begins with it.
+    pub scheme: u8,
 }
 
 /// THE AUTH ON A DOOR CLAIM'S GUEST-LIST LINE (THE DESIGN §6, "Auth points and guest lists"): the
@@ -2597,7 +2609,7 @@ fn claim_line(
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<(busbar_kernel::guest::Line, RouteMethod), String> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
+    use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
     let method = METHODS
         .into_iter()
         .find(|m| m.as_str() == claim.verb)
@@ -2611,7 +2623,7 @@ fn claim_line(
     let pattern = claim.flags & CLAIM_PATTERN != 0;
     let line = busbar_kernel::guest::Line {
         route: busbar_kernel::guest::Route {
-            methods: method_bit(&claim.verb),
+            methods: line_methods(method),
             // An exact claim is its target; a pattern claim is its target, each `{name}` one
             // segment (`CLAIM_PATTERN`); any other is its target's whole subtree, at any depth (the
             // guest list's tail pattern, which matches what remains, including nothing).
@@ -2691,6 +2703,233 @@ fn mount_paths(path: &str) -> Option<Vec<String>> {
 /// One claim's route: the plane it is of and the claim's index in its snapshot.
 type DoorClaim = (usize, u32);
 
+/// THE DATA LISTENER'S GUEST LIST, projected (THE DESIGN §6 step 3; row 192 D1): what the
+/// listener's transport matches each request against, and the door claims the data router mounts.
+struct DataLines {
+    /// The sealed list.
+    guests: busbar_kernel::guest::GuestList,
+    /// Each door claim's line, the method the data router mounts it under, and the claim.
+    doors: Vec<(busbar_kernel::guest::Line, RouteMethod, DoorClaim)>,
+    /// The claims on an upgrade line.
+    upgraded: std::collections::HashSet<DoorClaim>,
+}
+
+/// The `METHOD_*` set a line mounted under `method` admits: `HEAD` rides `GET`, as the data router
+/// serves a `HEAD` from the `GET` handler (1.5.5's `get()`).
+fn line_methods(method: RouteMethod) -> u32 {
+    use busbar_contract::abi::transport::route::{method_bit, METHOD_GET, METHOD_HEAD};
+    let bit = method_bit(method.as_str());
+    if bit == METHOD_GET {
+        bit | METHOD_HEAD
+    } else {
+        bit
+    }
+}
+
+/// A route of the kernel's own router as a line's path form: a path with a `{…}` segment is a
+/// pattern, any other exact.
+fn router_path_form(path: &str) -> u32 {
+    use busbar_contract::abi::transport::route::{PATH_EXACT, PATH_PATTERN};
+    if path.contains('{') {
+        PATH_PATTERN
+    } else {
+        PATH_EXACT
+    }
+}
+
+/// A line of the core's claimant: a route the kernel's own router serves.
+fn core_line(
+    methods: u32,
+    path_form: u32,
+    path: String,
+    rung: u32,
+    auth: busbar_kernel::guest::LineAuth,
+) -> busbar_kernel::guest::Line {
+    busbar_kernel::guest::Line {
+        route: busbar_kernel::guest::Route {
+            methods,
+            path_form,
+            path,
+            fields: Vec::new(),
+            rung,
+        },
+        claimant: busbar_kernel::guest::Claimant::Clean(CORE_CLAIMANT.to_string()),
+        dialect: 0,
+        auth,
+        upgrade: None,
+        // The kernel's own routes run their auth on the data listener's own framer.
+        offered: crate::root::doors::offers_unstated(),
+    }
+}
+
+/// THE DATA LISTENER'S LINES (THE DESIGN §6 step 3, l.902-904), in the order 1.5.5's router
+/// answered them:
+///
+/// * every routed claim of every plane in `planes` (`(instance, snapshot)`, in bind order), at its
+///   line's auth ([`claim_line`]);
+/// * the kernel's own data routes (`core`), at their bar;
+/// * the routes the kernel's router serves beside them with no line of their own: each plane's
+///   public routes (`ROUTE_PUBLIC`) and the plugin routes (`residual`, `/metrics` among them),
+///   each a line whose claimant runs the chain itself ([`LineAuth::Claimant`]), so a plane's
+///   subtree claim never shadows a route the router mounts more specifically;
+/// * LAST, THE RESIDUAL LINE: every method on every path (`PATH_CONTAINS` `/`, the least specific
+///   form there is), the core's claimant running the chain itself: the kernel's router, its auth
+///   around every route and its `protocol_dispatch` fallback, as 1.5.5 ran auth around the router
+///   (v1.5.5 `main.rs:3864-3874`). A method no line on a path admits, a path no line names, and
+///   the `/api` prefix on a data listener reach it, and its 401, 404, 405 and 400 bytes are the
+///   router's own.
+///
+/// `HEAD` rides `GET` on every line ([`line_methods`]).
+///
+/// [`LineAuth::Claimant`]: busbar_kernel::guest::LineAuth::Claimant
+///
+/// # Errors
+///
+/// A claim the data listener cannot mount, or a list the seal refuses, named.
+fn data_lines(
+    planes: &[(&str, &OwnedSnapshot)],
+    data_chain: &[ChainAuth],
+    core: &[(String, RouteMethod, RouteAuth)],
+    residual: &[(String, RouteMethod)],
+    upgrades: &[&str],
+    offers: &[TransportOffer],
+) -> Result<DataLines, String> {
+    use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_CONTAINS};
+    use busbar_kernel::guest::{GuestList, LineAuth};
+    let mut upgraded = std::collections::HashSet::new();
+    let mut lines = Vec::new();
+    let mut doors = Vec::new();
+    for (p, (instance, snapshot)) in planes.iter().enumerate() {
+        for (i, claim) in snapshot.claims.iter().enumerate() {
+            // A claim over the line carrier is served on the process's own stdin/stdout
+            // ([`lines`]), never on the data listener; a raw affix is served nowhere.
+            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
+                continue;
+            }
+            let rung = u32::try_from(i).map_err(|_| format!("{instance}: too many claims"))?;
+            let (line, method) = claim_line(instance, rung, claim, data_chain, upgrades, offers)?;
+            if line.upgrade.is_some() {
+                upgraded.insert((p, rung));
+            }
+            lines.push(line.clone());
+            doors.push((line, method, (p, rung)));
+        }
+    }
+    // The kernel's own data routes, lines of the core's claimant (a cleanliness crate's route,
+    // THE DESIGN §6). The kernel's router serves them, its own gate around them (THE DESIGN §6
+    // step 3: a claimant may run the chain itself): a route behind the gate is a line whose
+    // claimant runs the chain, so its request reaches the router with its credential, and the
+    // router answers it as 1.5.5's did; an open route stays open.
+    for (rung, (path, method, auth)) in (0u32..).zip(core) {
+        let auth = match auth {
+            RouteAuth::None => LineAuth::None,
+            _ => LineAuth::Claimant,
+        };
+        lines.push(core_line(
+            line_methods(*method),
+            router_path_form(path),
+            path.clone(),
+            rung,
+            auth,
+        ));
+    }
+    let mut rung = u32::try_from(core.len()).unwrap_or(u32::MAX);
+    // The routes the router serves beside them: each plane's public routes, then the plugin
+    // routes, each at its own path, its gate the router's.
+    let public = planes.iter().flat_map(|(_, snapshot)| {
+        snapshot
+            .admin_routes
+            .iter()
+            .filter(|r| r.flags & busbar_contract::abi::plane::ROUTE_PUBLIC != 0)
+            .filter_map(|r| {
+                let method = METHODS
+                    .into_iter()
+                    .find(|m| m.as_str().eq_ignore_ascii_case(&r.verb))?;
+                Some((r.target.clone(), method))
+            })
+    });
+    for (path, method) in public.chain(residual.iter().cloned()) {
+        let methods = line_methods(method);
+        let form = router_path_form(&path);
+        // One line per (path, method set): a route both lists name is one route on the router.
+        let known = lines.iter().any(|l: &busbar_kernel::guest::Line| {
+            l.claimant == busbar_kernel::guest::Claimant::Clean(CORE_CLAIMANT.to_string())
+                && l.route.path == path
+                && l.route.path_form == form
+                && l.route.methods & methods == methods
+        });
+        if !known {
+            lines.push(core_line(methods, form, path, rung, LineAuth::Claimant));
+            rung = rung.saturating_add(1);
+        }
+    }
+    // The residual line, placed last by its form.
+    lines.push(core_line(
+        METHOD_ANY,
+        PATH_CONTAINS,
+        "/".to_string(),
+        rung,
+        LineAuth::Claimant,
+    ));
+    let guests =
+        GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?;
+    Ok(DataLines {
+        guests,
+        doors,
+        upgraded,
+    })
+}
+
+/// THE DATA LISTENER'S LIST WITH NO PLANE ON IT ([`data_lines`] over none), staged for the inbound
+/// auth handle's tables as [`door_mounts`] stages a list with planes on it.
+///
+/// # Errors
+///
+/// A list the seal refuses, named.
+pub(crate) fn stage_lines(
+    data_chain: &[ChainAuth],
+    core: &[(String, RouteMethod, RouteAuth)],
+    residual: &[(String, RouteMethod)],
+    upgrades: &[&str],
+    offers: &[TransportOffer],
+) -> Result<(), String> {
+    let lines = data_lines(&[], data_chain, core, residual, upgrades, offers)?;
+    crate::root::inbound::stage(lines.guests, Vec::new(), None);
+    Ok(())
+}
+
+/// THE CARRIERS THE DATA LISTENER'S PLANE LINES NAME, in claim order, each once: what the
+/// listener's own framer is found by (`root::boot::data_door_framer`).
+#[must_use]
+pub fn line_carriers(served: &Served) -> Vec<String> {
+    let mut carriers: Vec<String> = Vec::new();
+    for plane in &served.planes {
+        for claim in &plane.snapshot.claims {
+            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
+                continue;
+            }
+            if !carriers.contains(&claim.carrier) {
+                carriers.push(claim.carrier.clone());
+            }
+        }
+    }
+    carriers
+}
+
+/// EVERY CLAIM OF EVERY TRANSPORT ROW, linked or dropped in, its own first, read off the door
+/// Statements by the one reader: the carriers a data listener with no plane line finds its framer
+/// among (`root::boot::data_door_framer`).
+#[must_use]
+pub fn transport_claims(
+    transports: &[crate::root::linked::LinkedTransport],
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Vec<&'static str> {
+    transport_rows(transports, dropped)
+        .into_iter()
+        .flat_map(|r| r.claims)
+        .collect()
+}
+
 /// THE DOOR PLANES' DATA ROUTES (ARCHITECT Q-SW1, 2026-10-02): every claim of every served plane is
 /// a line on the data listener's guest list (sealed: two claims that could meet at an equal
 /// precedence refuse the boot), mounted at its line's path and auth, its handler the plane's unit
@@ -2709,7 +2948,7 @@ pub fn door_routes(
     data_chain: &[ChainAuth],
     core: &[(String, RouteMethod, RouteAuth)],
 ) -> Result<Vec<PlaneRouteSpec>, String> {
-    door_mounts(served, pin, data_chain, core, &[], &[]).map(|m| m.routes)
+    door_mounts(served, pin, data_chain, core, &[], &[], &[]).map(|m| m.routes)
 }
 
 /// WHAT THE DATA ROUTER MOUNTS FOR THE DOOR PLANES at its construction: their request routes, and
@@ -2747,11 +2986,12 @@ pub fn door_mounts(
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
     data_chain: &[ChainAuth],
     core: &[(String, RouteMethod, RouteAuth)],
+    residual: &[(String, RouteMethod)],
     upgrades: &[&str],
     offers: &[TransportOffer],
 ) -> Result<DoorMounts, String> {
-    use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
-    use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
+    use busbar_contract::abi::transport::route::PATH_EXACT;
+    use busbar_kernel::guest::{Claimant, LineAuth, Matched};
     use std::collections::HashMap;
     // THE PUBLIC ROUTES the served planes state (SEAM-4o): each at its own target on the data
     // listener, open to a caller that presents no busbar credential, served by the plane's `serve`.
@@ -2764,55 +3004,16 @@ pub fn door_mounts(
             refuse_by_path: None,
         });
     }
-    let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
-    let mut lines = Vec::new();
-    let mut doors: Vec<(busbar_kernel::guest::Line, RouteMethod, DoorClaim)> = Vec::new();
-    for (p, plane) in served.planes.iter().enumerate() {
-        for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            // A claim over the line carrier is served on the process's own stdin/stdout
-            // ([`lines`]), never on the data listener; a raw affix is served nowhere.
-            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
-                continue;
-            }
-            let rung =
-                u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
-            let (line, method) =
-                claim_line(&plane.instance, rung, claim, data_chain, upgrades, offers)?;
-            if line.upgrade.is_some() {
-                upgraded.insert((p, rung));
-            }
-            lines.push(line.clone());
-            doors.push((line, method, (p, rung)));
-        }
-    }
-    // The kernel's own data routes, lines of the core's claimant (a cleanliness crate's route,
-    // THE DESIGN §6).
-    for (rung, (path, method, auth)) in (0u32..).zip(core) {
-        lines.push(busbar_kernel::guest::Line {
-            route: busbar_kernel::guest::Route {
-                methods: method_bit(method.as_str()),
-                path_form: if path.contains('{') {
-                    PATH_PATTERN
-                } else {
-                    PATH_EXACT
-                },
-                path: path.clone(),
-                fields: Vec::new(),
-                rung,
-            },
-            claimant: Claimant::Clean(CORE_CLAIMANT.to_string()),
-            dialect: 0,
-            auth: match auth {
-                RouteAuth::None => LineAuth::None,
-                _ => chain_auth(data_chain),
-            },
-            upgrade: None,
-            // The kernel's own routes run their auth on the data listener's own framer.
-            offered: crate::root::doors::offers_unstated(),
-        });
-    }
-    let guests =
-        GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?;
+    let snapshots: Vec<(&str, &OwnedSnapshot)> = served
+        .planes
+        .iter()
+        .map(|p| (p.instance.as_str(), &p.snapshot))
+        .collect();
+    let DataLines {
+        guests,
+        doors,
+        upgraded,
+    } = data_lines(&snapshots, data_chain, core, residual, upgrades, offers)?;
     let post = served.post.clone().unwrap_or_else(|| {
         Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),
@@ -2826,7 +3027,7 @@ pub fn door_mounts(
     for (line, method, door) in doors {
         let auth = match line.auth {
             LineAuth::None => RouteAuth::None,
-            LineAuth::Chain(..) => RouteAuth::Key,
+            LineAuth::Chain(..) | LineAuth::Claimant => RouteAuth::Key,
         };
         let tail = format!("/{{*{SUBTREE}}}");
         let paths = if let Some(paths) = mount_paths(&line.route.path) {
@@ -2890,6 +3091,7 @@ pub fn door_mounts(
             .map(|(line, (_, door))| (line, door))
             .collect(),
         frames: Mutex::default(),
+        documented: documents.keys().copied().collect(),
     });
     // THE NESTED-DISPATCH SEAM, attached once to the kernel's services: `unit.nest` runs a child
     // on these routes, on the runtime the routes are built on.
@@ -3078,6 +3280,15 @@ pub fn door_mounts(
         .collect::<Vec<_>>();
     let mut routes_of = routes_of;
     routes_of.extend(public);
+    // THE DATA LISTENER'S LIST, staged for the inbound auth handle's tables (`root::inbound`),
+    // with the door routes' unit-less refusals a stopped request is answered with.
+    crate::root::inbound::stage(
+        routes.guests.clone(),
+        refusals.clone(),
+        Some(Arc::clone(&refuse_by_path)),
+    );
+    // THE SAME ROUTES, for the accepted data door to drive the units its transport hands in.
+    crate::root::accepted::stage_routes(Arc::clone(&routes));
     Ok(DoorMounts {
         routes: routes_of,
         sessions,
@@ -3128,6 +3339,7 @@ pub(crate) fn line_routes(
         guests,
         of_line,
         frames: Mutex::default(),
+        documented: std::collections::HashSet::new(),
     });
     if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
         let _attached = kernel.attach_nest(Arc::new(DoorNests {
@@ -3254,6 +3466,7 @@ impl DoorRequest {
             gov: ctx.gov.unwrap_or_default(),
             credential: ctx.caller_credential,
             app,
+            scheme: ctx.scheme,
         })
     }
 }
@@ -3265,12 +3478,66 @@ type BoundParent = (
     crate::root::plane_node::Parent,
 );
 
+/// WHAT SERVES A REQUEST ITS TRANSPORT HANDED IN on one line of the data listener's list
+/// ([`DataRoutes::door_of_line`]; `root::accepted`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HandedDoor {
+    /// A door plane's request claim: its plane and the claim's index.
+    Request { plane: usize, claim: u32 },
+    /// A door plane's CATALOG claim (`abi::plane::CLAIM_CATALOG`): the plane's pure `catalog`, no
+    /// unit driven.
+    Catalog { plane: usize },
+    /// A door plane's claim on an UPGRADE line: served as a duplex session, the connection switched
+    /// to the framer that answers `carrier` once the plane admitted it.
+    Session {
+        plane: usize,
+        claim: u32,
+        carrier: String,
+    },
+    /// Any other line (the kernel's own routes, the public and plugin routes, the residual line):
+    /// the kernel's data router, in process, its own gate around its routes.
+    Router,
+}
+
 impl DataRoutes {
+    /// THE DOOR A HANDED-IN REQUEST ON LINE `line` IS SERVED BY: the claim a plane line names, an
+    /// upgrade line's session, or the kernel's data router for every line no plane claims.
+    pub(crate) fn door_of_line(&self, line: u32) -> HandedDoor {
+        use busbar_kernel::guest::Claimant;
+        let Some(l) = self.guests.lines().get(line as usize) else {
+            return HandedDoor::Router;
+        };
+        let Claimant::Plane(instance) = &l.claimant else {
+            return HandedDoor::Router;
+        };
+        let door = self.of_line.get(&(instance.clone(), l.route.rung)).copied();
+        if door.is_some_and(|d| self.documented.contains(&d)) {
+            return HandedDoor::Router;
+        }
+        let catalog = door.is_some_and(|(plane, claim)| {
+            self.served.planes[plane]
+                .snapshot
+                .claims
+                .get(claim as usize)
+                .is_some_and(|c| c.flags & busbar_contract::abi::plane::CLAIM_CATALOG != 0)
+        });
+        match (door, &l.upgrade) {
+            (Some((plane, _)), _) if catalog => HandedDoor::Catalog { plane },
+            (Some((plane, claim)), Some(carrier)) => HandedDoor::Session {
+                plane,
+                claim,
+                carrier: carrier.clone(),
+            },
+            (Some((plane, claim)), None) => HandedDoor::Request { plane, claim },
+            (None, _) => HandedDoor::Router,
+        }
+    }
+
     /// ONE CATALOG ROUTE'S ANSWER (ARCHITECT ruling 2026-10-16, 3b C; `abi::plane::CLAIM_CATALOG`):
     /// the names the generation lists for the caller (`endpoints::catalog_names`, the kernel's
     /// visibility rule) rendered by the plane's pure `catalog` for the request head. No unit is
     /// minted, no audit record written and nothing metered, as 1.5.5's list-models route.
-    fn catalog(&self, plane: usize, req: &DoorRequest) -> Response {
+    pub(crate) fn catalog(&self, plane: usize, req: &DoorRequest) -> Response {
         let names = busbar_kernel::endpoints::catalog_names(&req.app, &req.gov);
         let target = req
             .uri
@@ -3308,6 +3575,18 @@ impl DataRoutes {
         claim: u32,
         req: DoorRequest,
     ) -> busbar_kernel::plane_routes::SessionAnswer {
+        self.open_session_keyed(plane, claim, req, None).await
+    }
+
+    /// [`DataRoutes::open_session`] under `minted`, the key the inbound side already minted for the
+    /// arrival (`root::accepted`: one key per unit, never a second mint); `None` mints one.
+    pub(crate) async fn open_session_keyed(
+        self: Arc<Self>,
+        plane: usize,
+        claim: u32,
+        req: DoorRequest,
+        minted: Option<busbar_contract::UnitKey>,
+    ) -> busbar_kernel::plane_routes::SessionAnswer {
         use busbar_kernel::plane_routes::{SessionAnswer, SessionPipe};
         let DoorRequest {
             method,
@@ -3317,6 +3596,7 @@ impl DataRoutes {
             gov,
             credential,
             app,
+            scheme: _,
         } = req;
         let fields: HeadFields = headers
             .iter()
@@ -3362,6 +3642,7 @@ impl DataRoutes {
             key,
             open,
             credential,
+            minted,
         };
         tokio::spawn(self.session(door, caller, arrival, verdict, Attach::switched()));
         match said.await {
@@ -3401,7 +3682,7 @@ impl DataRoutes {
         }
         let live = served.live.current();
         let node = self.post.node();
-        let unit = node.mint();
+        let unit = door.minted.unwrap_or_else(|| node.mint());
         let arrived = node.arrived();
         let steps = DoorSteps::new(
             &served.facts,
@@ -3589,6 +3870,19 @@ impl DataRoutes {
     /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
     /// resolved; the unit driven inside the response, so a caller that goes away drops it.
     async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
+        self.answer_keyed(plane, claim, req, None).await
+    }
+
+    /// [`DataRoutes::answer`] under `minted`, the key the inbound side already minted for the
+    /// arrival (`root::accepted`: the unit the transport handed in is the unit driven, never a
+    /// second mint); `None` mints one.
+    pub(crate) async fn answer_keyed(
+        self: Arc<Self>,
+        plane: usize,
+        claim: u32,
+        req: DoorRequest,
+        minted: Option<busbar_contract::UnitKey>,
+    ) -> Response {
         let DoorRequest {
             method,
             uri,
@@ -3597,6 +3891,7 @@ impl DataRoutes {
             gov,
             credential,
             app,
+            scheme,
         } = req;
         let fields: HeadFields = headers
             .iter()
@@ -3647,6 +3942,7 @@ impl DataRoutes {
                 key,
                 open,
                 credential,
+                minted,
             };
             return self.open_datagram(carried, door, arrival).await;
         }
@@ -3668,7 +3964,7 @@ impl DataRoutes {
                 .collect();
             let target = String::from_utf8_lossy(&arrival.target).into_owned();
             let Ok(mut stream) = busbar_core_connector::framed_stream::FramedStream::open(
-                door, &carrier, &target, &head,
+                door, &carrier, &target, &head, scheme,
             ) else {
                 return stated(
                     (refusal_status(ReasonCode::DecodeFailed), Vec::new()),
@@ -3699,6 +3995,7 @@ impl DataRoutes {
                     &caller,
                     arrival,
                     None,
+                    minted,
                 )
                 .await
             };
@@ -3720,6 +4017,7 @@ impl DataRoutes {
                 &caller,
                 arrival,
                 None,
+                minted,
             )
             .await
         };
@@ -3819,6 +4117,7 @@ impl DataRoutes {
                     &caller,
                     arrival,
                     Some(nesting),
+                    None,
                 )
                 .await
         };
@@ -3846,6 +4145,9 @@ impl DataRoutes {
     ///
     /// A NESTED unit (`nesting`) is a child of its parent: it runs one level deeper, its door
     /// accrues against the parent's hold cell, and the node drives it under the parent.
+    ///
+    /// `minted` is the unit's key when the inbound side already minted it (the unit a transport
+    /// handed in, `root::accepted`); `None` mints one here.
     #[allow(clippy::too_many_arguments)]
     async fn drive<C: SessionCaller + Stated + Send + Sync>(
         &self,
@@ -3856,6 +4158,7 @@ impl DataRoutes {
         caller: &C,
         arrival: Arrival,
         nesting: Option<Nesting>,
+        minted: Option<busbar_contract::UnitKey>,
     ) -> Option<Rendered> {
         let served = &self.served.planes[plane];
         if let Some(refused) = journal_refused(served, &self.post, &arrival) {
@@ -3867,7 +4170,7 @@ impl DataRoutes {
         let claim = arrival.claim;
         let app_for_metrics = Arc::clone(&app);
         let node = self.post.node();
-        let unit = node.mint();
+        let unit = minted.unwrap_or_else(|| node.mint());
         let arrived = node.arrived();
         // The unit's generation, for a child it nests to be admitted against.
         self.frames_lock().insert(unit.get(), Arc::clone(&app));
@@ -4299,6 +4602,8 @@ struct SessionDoor {
     open: bool,
     /// The caller's verified credential, lent to a passthrough member alone.
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The unit's key when the inbound side already minted it; `None` mints one.
+    minted: Option<busbar_contract::UnitKey>,
 }
 
 /// THE CALLER'S SIDE OF A DUPLEX SESSION over today's hyper upgrade (K6's one `SessionCaller`;
@@ -4378,18 +4683,6 @@ pub struct IngressCaller {
     stated: std::sync::atomic::AtomicU32,
     /// The arrival's body, until a session's caller leg has read it.
     arrived: Mutex<Option<Bytes>>,
-}
-
-/// A reply head: the status number and the head fields.
-type Head = (u32, HeadFields);
-
-/// The handler's end of an [`IngressCaller`]: the reply, once the unit states its head.
-#[derive(Debug)]
-pub struct IngressReply {
-    head: oneshot::Receiver<Head>,
-    body: mpsc::Receiver<Bytes>,
-    /// The answer's trailers, where a framer renders a close after its body (ARCHITECT 4l).
-    trailers: Option<oneshot::Receiver<axum::http::HeaderMap>>,
 }
 
 impl IngressCaller {
@@ -4492,88 +4785,67 @@ impl IngressReply {
         ))
     }
 
-    /// The same reply, its body followed by the trailers `trailers` delivers (a framer's close).
-    #[must_use]
-    pub fn with_trailers(mut self, trailers: oneshot::Receiver<axum::http::HeaderMap>) -> Self {
-        self.trailers = Some(trailers);
-        self
-    }
-
     /// THE UNIT, SERVED: `unit` runs here until it states its head, then inside the response's
     /// body as the body is read, so a caller that goes away drops it (the driver's client-drop
     /// path). A unit that ends with no head answers what it rendered (a refusal or failure before
     /// any byte), or the driver's plane-fault status when it rendered nothing.
     pub async fn answer(self, unit: DrivenUnit) -> Response {
-        self.answer_with(unit, |rendered| match rendered {
-            Some(r) => stated((r.status, r.fields), Body::from(r.body)),
-            None => stated(
-                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
-                Body::empty(),
-            ),
-        })
-        .await
+        self.answer_with(unit, unrendered_response).await
     }
 
     /// [`IngressReply::answer`], a unit that ends with no head answered by `unrendered` from what
-    /// it rendered (a framed stream's framer closes it, ARCHITECT 4l).
+    /// it rendered (a framed answer's framer closes it, ARCHITECT 4l). The answer's shape is
+    /// [`crate::root::accepted::Reply::shape`]'s one choice, written as a hyper response.
     pub async fn answer_with(
         self,
-        mut unit: DrivenUnit,
-        unrendered: impl FnOnce(Option<Rendered>) -> Response,
+        unit: DrivenUnit,
+        unrendered: impl FnOnce(Option<Rendered>) -> Response + Send,
     ) -> Response {
-        let IngressReply {
-            mut head,
+        self.shape(unit, HyperAnswer(unrendered)).await
+    }
+}
+
+/// What a unit that ended with no head is answered with on the old path: what it rendered, or the
+/// driver's plane-fault status when it rendered nothing.
+pub(crate) fn unrendered_response(rendered: Option<Rendered>) -> Response {
+    match rendered {
+        Some(r) => stated((r.status, r.fields), Body::from(r.body)),
+        None => stated(
+            (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+            Body::empty(),
+        ),
+    }
+}
+
+/// THE OLD PATH'S SINK ([`Answer`]): each shape written as the hyper response the data router
+/// answers with, `unrendered` answering a unit that ended with no head.
+pub(crate) struct HyperAnswer<F>(pub(crate) F);
+
+impl<F> Answer for HyperAnswer<F>
+where
+    F: FnOnce(Option<Rendered>) -> Response + Send,
+{
+    type Out = Response;
+
+    async fn whole(self, head: Head, body: Vec<u8>) -> Response {
+        stated(head, Body::from(body))
+    }
+
+    async fn closed(self, head: Head, block: HeaderMap) -> Response {
+        closed_whole(head, block)
+    }
+
+    async fn streamed(self, head: Head, body: Streamed) -> Response {
+        let Streamed {
             body,
-            mut trailers,
-        } = self;
-        let first = tokio::select! {
-            biased;
-            h = &mut head => Ok(h.ok()),
-            rendered = &mut unit => Err(rendered),
-        };
-        let rendered = match first {
-            // A WHOLE ANSWER goes out whole: an answer whose head states its length (one the plane
-            // rendered in full) is collected to its end and sent under the length of what was
-            // written, as the previous release sent a buffered answer; any other answer goes out
-            // piece by piece as the unit writes it.
-            Ok(Some(h)) if whole_answer(&h.1) => {
-                let whole = collect(body, unit).await;
-                return stated(unlengthed(h), Body::from(whole));
-            }
-            // A STREAMED ANSWER: the unit runs on, on its own task, once its head is stated
-            // (ARCHITECT ruling 2026-10-07, STREAM-CEILING); the body only drains what it writes.
-            // A stream already closed before its first body byte goes out whole instead, the unit
-            // run to its end.
-            Ok(Some(h)) => {
-                if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
-                    let _ = unit.await;
-                    return closed_whole(h, block);
-                }
-                let running = Running(tokio::spawn(unit));
-                return stated(h, Body::new(ReplyBody(body, Some(running), trailers)));
-            }
-            Ok(None) => unit.await,
-            Err(rendered) => match head.try_recv() {
-                // The unit ended in the poll that stated its head: a whole answer is every piece it
-                // wrote, sent under its length.
-                Ok(h) if whole_answer(&h.1) => {
-                    let mut body = body;
-                    let mut whole = Vec::new();
-                    while let Ok(bytes) = body.try_recv() {
-                        whole.extend_from_slice(&bytes);
-                    }
-                    return stated(unlengthed(h), Body::from(whole));
-                }
-                Ok(h) => {
-                    if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
-                        return closed_whole(h, block);
-                    }
-                    return stated(h, Body::new(ReplyBody(body, None, trailers)));
-                }
-                Err(_) => rendered,
-            },
-        };
-        unrendered(rendered)
+            running,
+            trailers,
+        } = body;
+        stated(head, Body::new(ReplyBody(body, running, trailers)))
+    }
+
+    async fn unrendered(self, rendered: Option<Rendered>) -> Response {
+        (self.0)(rendered)
     }
 }
 
@@ -4585,92 +4857,14 @@ type UnitCaller = (
     Option<busbar_contract::redacted::Secret<Vec<u8>>>,
 );
 
-/// A FRAMED STREAM THAT CLOSED BEFORE ITS FIRST BODY BYTE (ARCHITECT ruling on #787): its close is
-/// already rendered and nothing of its body was written. The closing block, taken; `None` when the
-/// body holds bytes or the stream is still open.
-///
-/// The probe takes the trailers only when they are ready (`try_recv` leaves an open stream's where
-/// it is), and a body with bytes is never asked for its close.
-fn closed_before_body(
-    body: &mpsc::Receiver<Bytes>,
-    trailers: Option<&mut oneshot::Receiver<HeaderMap>>,
-) -> Option<HeaderMap> {
-    if !body.is_empty() {
-        return None;
-    }
-    trailers?.try_recv().ok()
-}
-
-/// [`closed_before_body`]'s answer, WHOLE: the head and the closing block as ONE header block and no
-/// body, as the previous release closed a call that ended before its first message (the line's
-/// trailers-only answer). The host renders none of the claim's wire: the block is the framer's.
+/// [`crate::root::accepted::closed_before_body`]'s answer, WHOLE: the head and the closing block
+/// as ONE header block and no body, as the previous release closed a call that ended before its
+/// first message (the line's trailers-only answer). The host renders none of the claim's wire: the block is the framer's.
 fn closed_whole(h: Head, block: HeaderMap) -> Response {
     let mut response = stated(h, Body::empty());
     response.headers_mut().extend(block);
     response
 }
-
-/// Whether a reply head is a WHOLE answer's: it states its length and is no stream (one of the
-/// [`streamed_media`] types, which the previous release relayed piece by piece).
-fn whole_answer(fields: &HeadFields) -> bool {
-    let named = |field: &[u8]| {
-        fields
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(field))
-            .map(|(_, value)| String::from_utf8_lossy(value).to_ascii_lowercase())
-    };
-    named(b"content-length").is_some()
-        && !named(b"content-type").is_some_and(|v| streamed_media(&v))
-}
-
-/// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
-/// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
-/// or the stream `Content-Type` a declared protocol states on its `ProtocolDecl` row, folded at
-/// boot ([`declared_stream_media`]).
-fn streamed_media(content_type: &str) -> bool {
-    std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
-        .chain(declared_stream_media().iter().copied())
-        .any(|media| {
-            content_type
-                .get(..media.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(media))
-        })
-}
-
-/// A whole answer's head without its stated length: the response states the length of what was
-/// written.
-fn unlengthed((status, mut fields): Head) -> Head {
-    fields.retain(|(name, _)| !name.eq_ignore_ascii_case(b"content-length"));
-    (status, fields)
-}
-
-/// Every piece the unit writes until it ends, the unit driven meanwhile (its writes wait on this
-/// side), then whatever it wrote last.
-async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Vec<u8> {
-    let mut whole = Vec::new();
-    loop {
-        tokio::select! {
-            biased;
-            piece = body.recv() => match piece {
-                Some(bytes) => whole.extend_from_slice(&bytes),
-                None => {
-                    let _ = unit.await;
-                    break;
-                }
-            },
-            _ = &mut unit => {
-                while let Ok(bytes) = body.try_recv() {
-                    whole.extend_from_slice(&bytes);
-                }
-                break;
-            }
-        }
-    }
-    whole
-}
-
-/// A unit the data door drives: what it rendered for its caller when it ended before any byte.
-pub type DrivenUnit = std::pin::Pin<Box<dyn std::future::Future<Output = Option<Rendered>> + Send>>;
 
 /// A response under a stated head: a status the wire cannot carry is the plane's fault, answered as
 /// the driver answers a plane fault; a field the wire cannot carry is not sent.
@@ -4693,26 +4887,12 @@ fn stated((status, fields): Head, body: Body) -> Response {
     response
 }
 
-/// A UNIT RUNNING ON ITS OWN TASK after its head (ARCHITECT ruling 2026-10-07, STREAM-CEILING): it
-/// is driven whether or not its body is read, so a caller that stops reading with its socket open
-/// leaves the unit's own deadline able to fire (a plane's stated stream ceiling) instead of freezing
-/// it until the socket closes. Dropping it aborts the task, which drops the unit there: the reply's
-/// body was dropped, so its caller is gone, and the unit ends on the driver's client-drop path as
-/// it did when the body owned it.
-struct Running(tokio::task::JoinHandle<Option<Rendered>>);
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 /// The response body: the pieces the unit writes, in order, until its caller side is dropped; the
 /// unit's task, which the body outlives no further than the unit's own end; and the trailers a
 /// framer's close rendered, after the last piece, where the answer has them.
 struct ReplyBody(
     mpsc::Receiver<Bytes>,
-    Option<Running>,
+    Option<crate::root::accepted::Running>,
     Option<oneshot::Receiver<axum::http::HeaderMap>>,
 );
 
@@ -4825,6 +5005,12 @@ include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));
 #[cfg(test)]
 #[path = "tests/serve_money.rs"]
 mod money_tests;
+
+// The accepted data door answers alike both ways (`root::accepted`): through the linked and the
+// dropped-in framer, and handed up and framed, over the test plane's door composed here.
+#[cfg(test)]
+#[path = "tests/accepted_both_ways.rs"]
+mod accepted_both_ways;
 
 #[cfg(all(test, linked_driver_proofs, linked_section_pools))]
 #[path = "tests/serve_hook_seats.rs"]

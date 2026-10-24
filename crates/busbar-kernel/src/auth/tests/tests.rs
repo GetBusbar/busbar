@@ -3795,3 +3795,231 @@ async fn the_admin_gate_admits_only_the_listed_verbs() {
     }
     handle.abort();
 }
+
+// ── the lines an external admin module is lent ───────────────────────────────────────────────
+
+/// A line no admin style names: a module may still name it among its own carriers.
+const STRAY_LINE: &str = "x-api-key";
+
+/// An external admin module that names its own `carriers` (and states `facts`): it identifies the
+/// candidate `tok` it is lent, and when it is lent none, the first of its carriers it is lent that
+/// carries `tok` (bare or as a Bearer); otherwise it passes. It keeps the names of every line it
+/// was lent.
+struct CarrierReader {
+    carriers: Vec<String>,
+    facts: u32,
+    lent: std::sync::Mutex<Vec<Vec<String>>>,
+}
+
+impl CarrierReader {
+    fn answer(
+        &self,
+        r: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> busbar_contract::auth_calls::VerifyAnswer {
+        use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
+        self.lent
+            .lock()
+            .unwrap()
+            .push(r.lines.iter().map(|(n, _)| n.clone()).collect());
+        let lent = r
+            .credential
+            .as_ref()
+            .map(|c| c.expose(&crate::seal::lend()).clone());
+        let own = || {
+            self.carriers.iter().find_map(|c| {
+                r.lines
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(c))
+                    .map(|(_, v)| v.expose(&crate::seal::lend()).clone())
+            })
+        };
+        let token = lent.or_else(own);
+        let holds = token.is_some_and(|t| t == b"tok" || t == b"Bearer tok");
+        if holds {
+            Verified::Identity(VerifiedIdentity {
+                subject: "ext:who".into(),
+                groups: vec!["ops".into()],
+                ..VerifiedIdentity::default()
+            })
+            .into()
+        } else {
+            Verified::Pass.into()
+        }
+    }
+}
+
+impl busbar_contract::auth_calls::AuthCalls for CarrierReader {
+    fn name(&self) -> &str {
+        "carrier-reader"
+    }
+    fn facts(&self) -> u32 {
+        self.facts
+    }
+    fn carriers(&self) -> Vec<String> {
+        self.carriers.clone()
+    }
+    fn verify_now(
+        &self,
+        r: &busbar_contract::auth_calls::VerifyRequest,
+    ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
+        Some(self.answer(r))
+    }
+    fn verify(
+        &self,
+        r: busbar_contract::auth_calls::VerifyRequest,
+    ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
+        Box::new(OperatorAnswer(Some(self.answer(&r))))
+    }
+    fn refresh(&self) -> Result<u64, String> {
+        Ok(0)
+    }
+}
+
+/// An app whose admin chain is `reader` alone, the operator credential's row stating the admin
+/// lines it was built with.
+fn reader_admin_app(reader: std::sync::Arc<CarrierReader>) -> std::sync::Arc<crate::state::App> {
+    let mut app = crate::test_support::TestApp::new()
+        .admin_chain(vec!["ext-reader".to_string()])
+        .build();
+    let mut modules = std::collections::HashMap::new();
+    modules.insert("ext-reader".to_string(), AdminModule { calls: reader });
+    let carriers = app.admin_modules.operator.carriers().to_vec();
+    std::sync::Arc::get_mut(&mut app)
+        .expect("freshly built App Arc is unshared")
+        .admin_modules = std::sync::Arc::new(AdminAuthChain {
+        modules,
+        operator: Operator::new(crate::config::operator_provider()).with_carriers(carriers),
+    });
+    app
+}
+
+/// A reader naming the admin style's own lines and [`STRAY_LINE`] among its carriers.
+fn stray_reader(facts: u32) -> std::sync::Arc<CarrierReader> {
+    let app = crate::test_support::TestApp::new().build();
+    let mut carriers = app.admin_modules.operator.carriers().to_vec();
+    carriers.push(STRAY_LINE.to_string());
+    std::sync::Arc::new(CarrierReader {
+        carriers,
+        facts,
+        lent: std::sync::Mutex::default(),
+    })
+}
+
+/// The admin plane's answer through the router to a GET under the native API's root carrying
+/// `headers`: (status, content-type, body).
+async fn admin_answer(
+    app: std::sync::Arc<crate::state::App>,
+    headers: &[(&str, &str)],
+) -> (u16, Option<String>, Vec<u8>) {
+    crate::snapshot::init();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let mut req = reqwest::Client::new().get(format!("http://{addr}/api/v1/admin/keys"));
+    for (n, v) in headers {
+        req = req.header(*n, *v);
+    }
+    let resp = req.send().await.unwrap();
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let status = resp.status().as_u16();
+    let body = resp.bytes().await.unwrap().to_vec();
+    serving.abort();
+    (status, content_type, body)
+}
+
+/// RED (/status row 192; 1.5.5 handed an admin module the Bearer, else the admin line, and no
+/// other): an external admin module is lent only the lines named both by its own carriers and by
+/// the operator credential's style. A valid token carried only on a line the module names but the
+/// admin style does not is no credential: the chain denies, and the admin plane answers 1.5.5's
+/// admin 401 bytes. The module never sees that line.
+#[tokio::test]
+async fn an_admin_module_is_not_lent_a_line_the_admin_style_does_not_name() {
+    let reader = stray_reader(0);
+    let app = reader_admin_app(std::sync::Arc::clone(&reader));
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        HeaderName::from_static(STRAY_LINE),
+        HeaderValue::from_static("tok"),
+    );
+    assert!(matches!(
+        run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
+        (ChainVerdict::Denied, _)
+    ));
+    assert!(matches!(
+        admin_door(&app, "GET", "/", &headers),
+        AdminDoor::Denied
+    ));
+    for lines in reader.lent.lock().unwrap().iter() {
+        assert!(
+            !lines.iter().any(|n| n.eq_ignore_ascii_case(STRAY_LINE)),
+            "the module was lent {STRAY_LINE}: {lines:?}"
+        );
+    }
+    let want = admin_unauthorized_response();
+    let want_type = want
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let want_status = want.status().as_u16();
+    let want_body = {
+        use http_body_util::BodyExt as _;
+        want.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec()
+    };
+    assert_eq!(
+        admin_answer(app, &[(STRAY_LINE, "tok")]).await,
+        (want_status, want_type, want_body),
+        "the 1.5.5 admin 401"
+    );
+}
+
+/// The same module, its token on the Bearer the admin style names, is identified as before.
+#[tokio::test]
+async fn an_admin_module_is_identified_on_the_admin_styles_bearer() {
+    let reader = stray_reader(0);
+    let app = reader_admin_app(reader);
+    let headers = admin_headers(Some("tok"), None);
+    assert!(matches!(
+        run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await,
+        (ChainVerdict::Identified { ref module, .. }, _) if module == "ext-reader"
+    ));
+    assert!(matches!(
+        admin_door(&app, "GET", "/", &headers),
+        AdminDoor::Identified(..)
+    ));
+}
+
+/// A module whose tail states that it reads every header line is still lent every line.
+#[tokio::test]
+async fn an_all_headers_admin_module_is_lent_every_line() {
+    let reader = stray_reader(busbar_contract::abi::auth::FACT_INBOUND_ALL_HEADERS);
+    let app = reader_admin_app(std::sync::Arc::clone(&reader));
+    let mut headers = admin_headers(Some("tok"), None);
+    headers.insert(
+        HeaderName::from_static(STRAY_LINE),
+        HeaderValue::from_static("other"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-unnamed"),
+        HeaderValue::from_static("1"),
+    );
+    let _ = run_admin_chain(&app, "GET", "/", &headers, false, &mut Default::default()).await;
+    let lent = reader.lent.lock().unwrap();
+    let lines = lent.last().expect("the module was called");
+    for name in [STRAY_LINE, "x-unnamed", "authorization"] {
+        assert!(
+            lines.iter().any(|n| n.eq_ignore_ascii_case(name)),
+            "{name} not lent: {lines:?}"
+        );
+    }
+}

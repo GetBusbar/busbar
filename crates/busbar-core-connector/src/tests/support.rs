@@ -28,7 +28,7 @@ use futures::task::AtomicWaker;
 
 use super::carrier::{Carry, Side};
 use super::compose::Via;
-use super::framer::{Call, Crossed, DoorFacts, FramerDoor};
+use super::framer::{Call, Crossed, DoorFacts, FramerDoor, GuestLine};
 
 /// The knobs.
 #[derive(Debug, Clone, Default)]
@@ -65,6 +65,13 @@ pub struct Knobs {
     pub echo: bool,
     /// Every answer the framing gives says it owes more (`YIELD_MORE`), whatever it wrote.
     pub spin: bool,
+    /// Every byte the framing ingests is ALSO kept unanswered, and its `detach` hands back what it
+    /// kept, then whatever it still holds: as an http framer hands up an upgrade request's head
+    /// (and the bytes that followed it) unanswered for the framer that adopts the connection.
+    pub holds: bool,
+    /// An accepting `begin` states this agreed protocol (`FramerYield::agreed`, a 1-based position
+    /// in the accepting offer).
+    pub agreed: Option<u32>,
     /// A STREAM'S OWN BACKPRESSURE: an `emit` that brings the bytes emitted since the stream was
     /// last writable to this many answers `YIELD_STREAM_FULL`; a scripted `w` from the far end
     /// ([`Knobs::messages`]) is a `PIECE_WRITABLE` piece on the scripted stream, and makes it
@@ -86,6 +93,8 @@ struct State {
     declared_len: Option<u64>,
     echo: bool,
     spin: bool,
+    holds: bool,
+    kept: Vec<u8>,
     full_at: Option<usize>,
     emitted: usize,
 }
@@ -111,8 +120,17 @@ pub struct TestDoor {
     pub refused_statuses: Mutex<Vec<u32>>,
     /// The opening head fields every `begin` crossing carried (`BeginIn::fields`), in order.
     pub begun_fields: Mutex<Vec<OpeningFields>>,
+    /// The target every `begin` crossing was handed (`BeginIn::target`), in order.
+    pub begun_targets: Mutex<Vec<Vec<u8>>>,
+    /// The guest list every `begin` crossing was lent (`BeginIn::lines`), read back into owned
+    /// lines, in order: empty for a crossing lent none.
+    pub begun_lines: Mutex<Vec<Vec<GuestLine>>>,
     /// The supervision key every `dial` crossing carried (`DialIn::supervision_key`), in order.
     pub dialled_keys: Mutex<Vec<u64>>,
+    /// The status (`EmitIn::status`) every `emit` crossing that carried bytes stated, in order.
+    pub emitted_statuses: Mutex<Vec<u32>>,
+    /// The leftover bytes every `adopt` crossing was handed (`AdoptIn::leftover`), in order.
+    pub adopted: Mutex<Vec<Vec<u8>>>,
     /// The supervision keys whose `dial` it REFUSES, as a carrier's supervisor refuses a member's
     /// program it holds down.
     pub held_keys: Mutex<HashSet<u64>>,
@@ -138,7 +156,8 @@ impl TestDoor {
             || knobs.fields
             || knobs.silence.is_some()
             || knobs.authority.is_some()
-            || knobs.messages.is_some();
+            || knobs.messages.is_some()
+            || knobs.holds;
         Self {
             facts: DoorFacts {
                 name: name.to_owned(),
@@ -163,7 +182,11 @@ impl TestDoor {
             threads: Mutex::new(HashSet::new()),
             refused_statuses: Mutex::new(Vec::new()),
             begun_fields: Mutex::new(Vec::new()),
+            begun_targets: Mutex::new(Vec::new()),
+            begun_lines: Mutex::new(Vec::new()),
             dialled_keys: Mutex::new(Vec::new()),
+            emitted_statuses: Mutex::new(Vec::new()),
+            adopted: Mutex::new(Vec::new()),
             held_keys: Mutex::new(HashSet::new()),
         }
     }
@@ -405,6 +428,7 @@ impl FramerDoor for TestDoor {
                     // SAFETY: host-borrowed fields, `fields_len` of them, valid for the call.
                     unsafe { std::slice::from_raw_parts(i.fields, i.fields_len) }
                 };
+                self.begun_lines.lock().unwrap().push(lines_lent(i));
                 self.begun_fields.lock().unwrap().push(
                     fields
                         .iter()
@@ -425,6 +449,7 @@ impl FramerDoor for TestDoor {
                     declared_len: self.knobs.declared_len,
                     echo: self.knobs.echo,
                     spin: self.knobs.spin,
+                    holds: self.knobs.holds,
                     full_at: self.knobs.full_at,
                     ..State::default()
                 };
@@ -447,6 +472,13 @@ impl FramerDoor for TestDoor {
                     o.yielded.frame_len = bytes.len() as u64;
                     o.yielded.heads_len = 1;
                 }
+                if let Some(n) = self
+                    .knobs
+                    .agreed
+                    .filter(|_| i.side != busbar_contract::abi::transport::SIDE_DIAL)
+                {
+                    o.yielded.agreed = n;
+                }
                 framings.insert(token, st);
                 o.framing = token;
                 ("begin", ok)
@@ -454,6 +486,10 @@ impl FramerDoor for TestDoor {
             Call::Adopt(i, o) => {
                 let token = self.next.fetch_add(1, Ordering::Relaxed);
                 let mut st = State::default();
+                self.adopted
+                    .lock()
+                    .unwrap()
+                    .push(raw(i.leftover, i.leftover_len).to_vec());
                 st.inbound.extend(raw(i.leftover, i.leftover_len));
                 answer(&mut st, &i.sink, o, silence);
                 framings.insert(token, st);
@@ -466,6 +502,9 @@ impl FramerDoor for TestDoor {
                     let bytes = raw(i.bytes, i.len);
                     st.heard |= !bytes.is_empty();
                     st.inbound.extend(bytes);
+                    if st.holds {
+                        st.kept.extend_from_slice(bytes);
+                    }
                     if st.echo {
                         st.outbound.extend(bytes);
                     }
@@ -477,6 +516,9 @@ impl FramerDoor for TestDoor {
             Call::Emit(i, o) => match framings.get_mut(&i.framing) {
                 None => ("emit", failed("no such framing")),
                 Some(st) => {
+                    if i.len != 0 {
+                        self.emitted_statuses.lock().unwrap().push(i.status);
+                    }
                     st.outbound.extend(raw(i.bytes, i.len));
                     st.emitted += i.len;
                     answer(st, &i.sink, o, silence);
@@ -535,6 +577,11 @@ impl FramerDoor for TestDoor {
             Call::Detach(i, o) => match framings.remove(&i.framing) {
                 None => ("detach", failed("no such framing")),
                 Some(mut st) => {
+                    // A framing that keeps what it ingested hands back all of it (what it still
+                    // holds was ingested, so it is kept too); any other, what it still holds.
+                    if st.holds {
+                        st.inbound = std::mem::take(&mut st.kept).into();
+                    }
                     let n = st.inbound.len().min(i.sink.frame_cap);
                     put(i.sink.frame, &mut st.inbound, n);
                     o.yielded.frame_len = n as u64;
@@ -753,8 +800,9 @@ impl TestDoor {
             }
             Carry::Arrival(i, o) => (
                 "arrival",
-                io_crossed(io.ends(OWNER, i.conn), |(port, peer)| {
-                    let mut bytes: VecDeque<u8> = peer.into_bytes().into();
+                io_crossed(io.ends(OWNER, i.conn), |ends| {
+                    let port = ends.port;
+                    let mut bytes: VecDeque<u8> = ends.peer.into_bytes().into();
                     let n = bytes.len().min(i.peer_cap);
                     put(i.peer_buf, &mut bytes, n);
                     o.peer_written = n as u64;
@@ -787,4 +835,277 @@ pub fn via() -> Via {
         door,
         io: super::hostio::process(),
     }
+}
+
+/// THE HOST'S AUTH SERVICE, doubled as the mechanism keeps it: a call runs ONCE per handle
+/// `(ticket, seq)` and stores its result; a not-ready call answers NOT_READY and its completion
+/// wakes the ticket; a re-issued handle reads the stored result; a NEW op on the ticket forgets the
+/// ticket's results (its handles count from 0 again), so only a resume reads them.
+#[derive(Default)]
+pub struct AuthHost {
+    /// `None` = running, `Some` = the stored answer.
+    pub stored: Mutex<HashMap<(Ticket, u32), Option<u64>>>,
+    /// How many times the auth itself ran.
+    pub real_calls: std::sync::atomic::AtomicUsize,
+    /// The waker the ticket's holder registered last.
+    pub waker: Mutex<Option<Waker>>,
+}
+
+impl AuthHost {
+    /// A new op starts on `t`: its stored results are forgotten.
+    pub fn new_op(&self, t: Ticket) {
+        self.stored.lock().unwrap().retain(|(k, _), _| *k != t);
+    }
+
+    /// `auth.call` on `(t, seq)`: `Some` = READY with the stored answer, `None` = NOT_READY.
+    pub fn call(&self, t: Ticket, seq: u32) -> Option<u64> {
+        let mut m = self.stored.lock().unwrap();
+        if let Some(r) = m.get(&(t, seq)) {
+            return *r;
+        }
+        self.real_calls.fetch_add(1, Ordering::SeqCst);
+        m.insert((t, seq), None);
+        None
+    }
+
+    /// The auth answers: every running call stores `answer`, and the ticket's wake fires.
+    pub fn complete(&self, answer: u64) {
+        for v in self.stored.lock().unwrap().values_mut() {
+            v.get_or_insert(answer);
+        }
+        if let Some(w) = self.waker.lock().unwrap().take() {
+            w.wake();
+        }
+    }
+
+    /// How many times the auth itself ran.
+    pub fn calls(&self) -> usize {
+        self.real_calls.load(Ordering::SeqCst)
+    }
+}
+
+/// A framing's ticket, its registered waker held by the auth double.
+pub struct AuthTicket {
+    /// The ticket.
+    pub ticket: Ticket,
+    /// The auth double whose completions wake it.
+    pub host: Arc<AuthHost>,
+}
+
+impl Side for AuthTicket {
+    fn ticket(&self) -> Ticket {
+        self.ticket
+    }
+
+    fn register(&self, waker: &Waker) {
+        *self.host.waker.lock().unwrap() = Some(waker.clone());
+    }
+}
+
+/// One `emit` crossing as a [`PendingDoor`] saw it first: its stream, the opening body length it
+/// carried (`EmitIn::body_len`) and whether that length is known (`EmitIn::body_len_known`).
+pub type EmitSeen = (u64, u64, u32);
+
+/// A TICKETED TEST ENTRY WHOSE AUTH MAY PEND: the test entry `inner`, its framings on tickets of
+/// their own (a new one each time the host asks). An `emit` on stream `pend` calls the auth
+/// (handle seq `0`) on its ticket: while the auth is not ready it has taken its bytes and answers
+/// PENDING; once the auth answers, the resumed emit hands those bytes to `inner`. Every other op
+/// is `inner`'s.
+pub struct PendingDoor {
+    /// The entry the ops land on.
+    pub inner: TestDoor,
+    /// The auth double.
+    pub host: Arc<AuthHost>,
+    /// The stream whose head emit calls the auth.
+    pub pend: u64,
+    next: AtomicU32,
+    taken: Mutex<HashMap<Ticket, Vec<u8>>>,
+    /// Every fresh `emit` crossing that carried bytes, in order.
+    pub emitted: Mutex<Vec<EmitSeen>>,
+    /// Every `begin` crossing's binding (`BeginIn::points`, `BeginIn::auth`), in order.
+    pub begun: Mutex<Vec<(u32, busbar_contract::abi::host::service::AuthRef)>>,
+    /// The ticket every crossing on a ticket ran on, with whether it was a resume, in order.
+    pub on: Mutex<Vec<(&'static str, Ticket, bool)>>,
+    /// Each ticket asked for an op of a framing ([`FramerDoor::framing_side_of`]) and that
+    /// framing's begin ticket, as the host ties them.
+    pub tied: Mutex<HashMap<Ticket, Ticket>>,
+}
+
+impl PendingDoor {
+    /// `inner`, its emits on stream `pend` calling the auth.
+    pub fn new(inner: TestDoor, pend: u64) -> Self {
+        Self {
+            inner,
+            host: Arc::new(AuthHost::default()),
+            pend,
+            next: AtomicU32::new(100),
+            taken: Mutex::new(HashMap::new()),
+            emitted: Mutex::new(Vec::new()),
+            begun: Mutex::new(Vec::new()),
+            on: Mutex::new(Vec::new()),
+            tied: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The framing an auth-handle call made on `t` names, as the host's loader names it: the
+    /// framing `t` is tied to, else `t`'s own.
+    pub fn named(&self, t: Ticket) -> u64 {
+        self.tied
+            .lock()
+            .unwrap()
+            .get(&t)
+            .copied()
+            .unwrap_or(t)
+            .framing()
+    }
+}
+
+impl FramerDoor for PendingDoor {
+    fn facts(&self) -> &DoorFacts {
+        self.inner.facts()
+    }
+
+    fn cross(&self, call: Call<'_>) -> Crossed {
+        self.inner.cross(call)
+    }
+
+    fn carry(&self, _side: &dyn Side, _resume: bool, _call: Carry<'_>) -> Crossed {
+        Crossed {
+            outcome: Outcome::Ready,
+            error: None,
+        }
+    }
+
+    fn framing_side(&self) -> Option<Box<dyn Side>> {
+        Some(Box::new(AuthTicket {
+            ticket: Ticket {
+                slot: self.next.fetch_add(1, Ordering::SeqCst),
+                generation: 1,
+            },
+            host: Arc::clone(&self.host),
+        }))
+    }
+
+    fn framing_side_of(&self, framing: Ticket) -> Option<Box<dyn Side>> {
+        let side = self.framing_side()?;
+        self.tied.lock().unwrap().insert(side.ticket(), framing);
+        Some(side)
+    }
+
+    fn cross_on(&self, side: &dyn Side, resume: bool, call: Call<'_>) -> Crossed {
+        let t = side.ticket();
+        let op = match &call {
+            Call::Begin(..) => "begin",
+            Call::Ingest(..) => "ingest",
+            Call::Emit(..) => "emit",
+            _ => "other",
+        };
+        self.on.lock().unwrap().push((op, t, resume));
+        match call {
+            Call::Begin(i, o) => {
+                self.begun.lock().unwrap().push((i.points, i.auth));
+                self.inner.cross(Call::Begin(i, o))
+            }
+            Call::Emit(i, o) => {
+                if !resume && i.len != 0 {
+                    self.emitted
+                        .lock()
+                        .unwrap()
+                        .push((i.stream, i.body_len, i.body_len_known));
+                }
+                if i.stream != self.pend {
+                    return self.inner.cross(Call::Emit(i, o));
+                }
+                if !resume {
+                    self.host.new_op(t);
+                    self.taken
+                        .lock()
+                        .unwrap()
+                        .insert(t, raw(i.bytes, i.len).to_vec());
+                }
+                if self.host.call(t, 0).is_none() {
+                    return Crossed {
+                        outcome: Outcome::Pending,
+                        error: None,
+                    };
+                }
+                let bytes = self.taken.lock().unwrap().remove(&t).unwrap_or_default();
+                i.bytes = bytes.as_ptr();
+                i.len = bytes.len();
+                i.end_of_frame = 1;
+                self.inner.cross(Call::Emit(i, o))
+            }
+            other => self.inner.cross(other),
+        }
+    }
+}
+
+/// The guest list a `begin` was lent (`BeginIn::lines`), read back into owned lines.
+fn lines_lent(i: &busbar_contract::abi::transport::BeginIn) -> Vec<GuestLine> {
+    if i.lines.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: the host's lent table of `lines_len` entries, valid for the call.
+    let lines = unsafe { std::slice::from_raw_parts(i.lines, i.lines_len) };
+    lines
+        .iter()
+        .map(|l| {
+            let r = &l.route;
+            let predicates = if r.fields.is_null() {
+                &[][..]
+            } else {
+                // SAFETY: the host's lent predicates, `fields_len` of them, valid for the call.
+                unsafe { std::slice::from_raw_parts(r.fields, r.fields_len) }
+            };
+            GuestLine {
+                line: l.line,
+                points: l.points,
+                auth: l.auth,
+                body_limit: l.body_limit,
+                methods: r.methods,
+                path_form: r.path_form,
+                path: String::from_utf8_lossy(raw(r.path.ptr, r.path.len)).into_owned(),
+                fields: predicates
+                    .iter()
+                    .map(|p| {
+                        (
+                            p.op,
+                            String::from_utf8_lossy(raw(p.name.ptr, p.name.len)).into_owned(),
+                            raw(p.value.ptr, p.value.len).to_vec(),
+                        )
+                    })
+                    .collect(),
+                rung: r.rung,
+            }
+        })
+        .collect()
+}
+
+/// The host's bytes an op lent (`ptr`, `len`), copied.
+pub fn lent(ptr: *const u8, len: usize) -> Vec<u8> {
+    raw(ptr, len).to_vec()
+}
+
+/// A MULTIPLEXING framer's answer: one piece per byte of `lane_bytes`, on the stream the byte names
+/// (`'1'` is stream `1`), its byte the piece's, each ending its frame.
+pub fn pieces_on_lanes(sink: &FramerSink, o: &mut FramerOut, lane_bytes: &[u8]) {
+    for (n, &b) in lane_bytes.iter().enumerate() {
+        // SAFETY: the host's buffers; a test's few pieces fit them.
+        unsafe {
+            sink.frame.add(n).write(b);
+            sink.pieces.add(n).write(FramePiece {
+                stream: u64::from(b - b'0'),
+                offset: n as u64,
+                len: 1,
+                code: 0,
+                status_class: 0,
+                flags: PIECE_END_OF_FRAME,
+                fault: 0,
+                retry_after_secs: 0,
+                declared_len: 0,
+            });
+        }
+    }
+    o.yielded.frame_len = lane_bytes.len() as u64;
+    o.yielded.pieces_len = lane_bytes.len() as u32;
 }

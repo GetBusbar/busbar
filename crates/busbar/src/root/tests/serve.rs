@@ -862,6 +862,308 @@ async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spell
     }
 }
 
+/// The plane instance the guest-line cells claim for.
+const LINES_PLANE: &str = "lines-plane";
+
+/// One claim of the guest-line cells' plane, over a carrier no linked row states (no upgrade, the
+/// unstated offer).
+fn lines_claim(
+    verb: &str,
+    target: &str,
+    flags: u32,
+) -> crate::root::loader::dispatch::kinds::plane::OwnedClaim {
+    crate::root::loader::dispatch::kinds::plane::OwnedClaim {
+        verb: verb.to_string(),
+        target: target.to_string(),
+        carrier: "lines-carrier".to_string(),
+        flags,
+        refusal_dialect: 0,
+        arrival_span: String::new(),
+    }
+}
+
+/// The guest-line cells' plane: an exact chat claim, an exact catalog claim, a subtree claim with
+/// a public route of its own under it.
+fn lines_snapshot() -> OwnedSnapshot {
+    OwnedSnapshot {
+        generation: 1,
+        claims: vec![
+            lines_claim("POST", "/v1/chat/completions", CLAIM_EXACT),
+            lines_claim("GET", "/v1/models", CLAIM_EXACT),
+            lines_claim("GET", "/files", 0),
+            lines_claim("POST", "/files", 0),
+        ],
+        admin_routes: vec![
+            crate::root::loader::dispatch::kinds::plane::OwnedAdminRoute {
+                verb: "GET".to_string(),
+                target: "/files/.well-known/document".to_string(),
+                flags: busbar_contract::abi::plane::ROUTE_PUBLIC,
+                audit_verb: String::new(),
+            },
+        ],
+        openapi: None,
+        audience: None,
+        resource_metadata: None,
+        resource_facts: None,
+        listed: Vec::new(),
+    }
+}
+
+/// The plugin routes the cells' data router mounts beside the kernel's own: the app's, and a scrape
+/// sink's two.
+fn lines_plugin_routes(app: &busbar_kernel::state::App) -> Vec<(String, RouteMethod)> {
+    let mut routes = busbar_kernel::base_data_plugin_lines(app);
+    for path in ["/metrics", "/metrics/hooks"] {
+        if !routes.iter().any(|(p, _)| p == path) {
+            routes.push((path.to_string(), RouteMethod::Get));
+        }
+    }
+    routes
+}
+
+/// The data listener's lines for the cells' plane, over `app`'s own data routes.
+fn lines_for(app: &busbar_kernel::state::App) -> DataLines {
+    let snapshot = lines_snapshot();
+    data_lines(
+        &[(LINES_PLANE, &snapshot)],
+        &[],
+        &busbar_kernel::base_data_core_lines(app),
+        &lines_plugin_routes(app),
+        &[],
+        &[],
+    )
+    .expect("the cells' lines seal")
+}
+
+/// Whether `line` is the residual line: every method on every path, the core's claimant running
+/// the chain itself.
+fn is_residual(line: &busbar_kernel::guest::Line) -> bool {
+    use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_CONTAINS};
+    line.route.methods == METHOD_ANY
+        && line.route.path_form == PATH_CONTAINS
+        && line.route.path == "/"
+        && line.claimant == busbar_kernel::guest::Claimant::Clean(CORE_CLAIMANT.to_string())
+        && line.auth == busbar_kernel::guest::LineAuth::Claimant
+}
+
+/// THE DATA LISTENER'S LINES ROUTE AS 1.5.5's ROUTER DID (row 192 D1; THE DESIGN §6 step 3,
+/// l.902-904; v1.5.5 `main.rs:3864-3874`, auth around the router and its fallback). `HEAD` rides
+/// `GET` on every `GET` line, a claim's and the kernel's own (axum's `get()`); the residual line,
+/// every method on every path with the core's claimant running the chain itself, is placed LAST;
+/// an `OPTIONS` on the chat claim, the `/api` prefix on a data listener and an unknown path each
+/// match the residual line, never a method miss or no route, so the router answers them with the
+/// bytes it answers today (the 401 of its auth, then its 404, 405 or 400).
+#[test]
+fn door_mounts_lines_route_like_1_5_5() {
+    use busbar_kernel::guest::{Claimant, Matched};
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let DataLines { guests, .. } = lines_for(&app);
+    let plane = Claimant::Plane(LINES_PLANE.to_string());
+    // HEAD rides GET: on a claim's line and on the kernel's own.
+    for (path, claimant) in [
+        ("/v1/models", plane.clone()),
+        ("/files/a/b", plane.clone()),
+        (
+            busbar_kernel::auth::HEALTHZ_PATH,
+            Claimant::Clean(CORE_CLAIMANT.to_string()),
+        ),
+    ] {
+        let Matched::Line(get) = guests.matched("GET", path, &[]) else {
+            panic!("GET {path} matches no line");
+        };
+        assert!(!is_residual(get), "GET {path} has a line of its own");
+        assert_eq!(get.claimant, claimant, "GET {path}");
+        assert_eq!(
+            guests.matched("HEAD", path, &[]),
+            Matched::Line(get),
+            "HEAD {path} rides the GET line, as the router serves it"
+        );
+    }
+    // The residual line is placed last.
+    let last = guests.lines().last().expect("a line");
+    assert!(is_residual(last), "the last line is the residual: {last:?}");
+    assert_eq!(
+        guests.lines().iter().filter(|l| is_residual(l)).count(),
+        1,
+        "one residual line"
+    );
+    // A method miss on a claim's path, the admin prefix and an unknown path reach the router.
+    for (method, path) in [
+        ("OPTIONS", "/v1/chat/completions"),
+        ("GET", "/v1/chat/completions"),
+        ("GET", "/api"),
+        ("GET", "/api/v1/admin/keys"),
+        ("POST", "/api/v1/admin/keys"),
+        ("GET", "/v1/unknown/suffix"),
+        ("PATCH", "/"),
+        ("TRACE", "/files/a"),
+    ] {
+        match guests.matched(method, path, &[]) {
+            Matched::Line(line) if is_residual(line) => {}
+            other => panic!("{method} {path} matched {other:?}, not the residual line"),
+        }
+    }
+}
+
+/// A route path as a concrete request path: each `{…}` segment one segment of its own.
+fn concrete(path: &str) -> String {
+    path.split('/')
+        .map(|s| if s.starts_with('{') { "seg" } else { s })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// EVERY ROUTE THE DATA ROUTER SERVES HAS A GUEST LINE (row 192 D1): a door claim's route matches
+/// its plane's line; each of the kernel's own data routes, each public route and each plugin route
+/// (`/metrics` among them) matches a line of its own at its own path, never a plane's subtree
+/// claim and never only the residual line; `HEAD` beside each `GET` matches the same line.
+#[test]
+fn every_data_router_route_has_a_guest_line() {
+    use busbar_kernel::guest::{Claimant, Matched};
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let DataLines { guests, doors, .. } = lines_for(&app);
+    let snapshot = lines_snapshot();
+    let core_claimant = Claimant::Clean(CORE_CLAIMANT.to_string());
+    let plane = Claimant::Plane(LINES_PLANE.to_string());
+    // The door claims as the router mounts them: an exact claim at its target, a subtree claim at
+    // its target and under it.
+    let mut routes: Vec<(String, RouteMethod, Claimant, bool)> = Vec::new();
+    for (line, method, _) in &doors {
+        let path = line.route.path.clone();
+        if let Some(target) = path.strip_suffix("/{*rest}") {
+            routes.push((target.to_string(), *method, plane.clone(), false));
+        }
+        routes.push((path, *method, plane.clone(), false));
+    }
+    assert_eq!(
+        doors.len(),
+        snapshot.claims.len(),
+        "every claim is a door line"
+    );
+    // The kernel's own data routes, the public routes and the plugin routes: each its own line.
+    for (path, method, _) in busbar_kernel::base_data_core_lines(&app) {
+        routes.push((path, method, core_claimant.clone(), true));
+    }
+    for r in &snapshot.admin_routes {
+        let method = METHODS
+            .into_iter()
+            .find(|m| m.as_str() == r.verb)
+            .expect("a mounted verb");
+        routes.push((r.target.clone(), method, core_claimant.clone(), true));
+    }
+    for (path, method) in lines_plugin_routes(&app) {
+        routes.push((path, method, core_claimant.clone(), true));
+    }
+    assert!(
+        routes.iter().any(|(p, ..)| p == "/metrics"),
+        "the plugin routes are among the router's"
+    );
+    for (path, method, claimant, own) in routes {
+        let at = concrete(&path);
+        let mut methods = vec![method.as_str()];
+        if method == RouteMethod::Get {
+            methods.push("HEAD");
+        }
+        for m in methods {
+            let Matched::Line(line) = guests.matched(m, &at, &[]) else {
+                panic!("{m} {at} (the router's {path}) matches no line");
+            };
+            assert_eq!(
+                line.claimant, claimant,
+                "{m} {at}: the line of the route's owner"
+            );
+            assert!(!is_residual(line), "{m} {at} rides only the residual line");
+            if own {
+                assert_eq!(line.route.path, path, "{m} {at} has a line at its own path");
+            }
+        }
+    }
+}
+
+/// A 1.5.5 golden cell (`testing/shadow-oracle/golden/1.5.5/cells`, read only).
+fn golden_cell(name: &str) -> serde_json::Value {
+    let path = format!(
+        "{}/../../testing/shadow-oracle/golden/1.5.5/cells/{name}.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    serde_json::from_str(&text).expect("a golden cell is JSON")
+}
+
+/// A DATA-PORT `/api` REQUEST ANSWERS 1.5.5's ADMIN REFUSAL (row 192 C; v1.5.5
+/// `config/mod.rs:2432-2439`, the admin API always on its own listener; `auth/mod.rs:32-38, :1250`,
+/// the `/api` root classified admin, fail-closed). The data listener's guest list carries no admin
+/// line: `/api` and `/api/...` match the residual line, and the kernel's router answers them, with
+/// no credential, byte for byte as the golden cells `http.crosscut|api|data` and
+/// `http.crosscut|api-prefix|data` pin: status, content-type, content-length and body.
+#[tokio::test]
+async fn a_data_port_api_request_answers_the_1_5_5_admin_refusal() {
+    use busbar_kernel::guest::{Claimant, Matched};
+    use tower::ServiceExt as _;
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let DataLines { guests, .. } = lines_for(&app);
+    for line in guests.lines() {
+        if let Claimant::Clean(key) = &line.claimant {
+            assert_eq!(
+                key, CORE_CLAIMANT,
+                "a cleanliness line on the data list: {line:?}"
+            );
+        }
+        let admin_root = busbar_kernel::auth::ADMIN_PATH;
+        assert!(
+            line.route.path != admin_root
+                && !line.route.path.starts_with(&format!("{admin_root}/")),
+            "an admin line on the data list: {line:?}"
+        );
+    }
+    let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
+        Arc::clone(&app),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        1 << 20,
+        0,
+        false,
+    );
+    for (path, cell) in [
+        ("/api", "http.crosscut__api__data"),
+        ("/api/v1/admin/keys", "http.crosscut__api-prefix__data"),
+    ] {
+        match guests.matched("GET", path, &[]) {
+            Matched::Line(line) if is_residual(line) => {}
+            other => panic!("GET {path} matched {other:?}, not the residual line"),
+        }
+        let golden = golden_cell(cell);
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(axum::body::Body::empty())
+            .expect("a request");
+        let response = router.clone().oneshot(request).await.expect("an answer");
+        assert_eq!(
+            Some(u64::from(response.status().as_u16())),
+            golden["status"].as_u64(),
+            "GET {path}: the status"
+        );
+        for name in ["content-type", "content-length"] {
+            assert_eq!(
+                response.headers().get(name).and_then(|v| v.to_str().ok()),
+                golden["headers"][name].as_str(),
+                "GET {path}: {name}"
+            );
+        }
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body");
+        let expected = serde_json::to_vec(&golden["body"]["json"]).expect("the golden body");
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            String::from_utf8_lossy(&expected),
+            "GET {path}: the body, byte for byte"
+        );
+    }
+}
+
 /// THE CLAIM DOORS' BINDS (row 132): a served plane's INBOUND need whose `target_from` block in its
 /// section states a `listen` is bound there, under the need's transport and its own index, and the
 /// setting is named as the operator spells it. An outbound need, a need with no `target_from`, a

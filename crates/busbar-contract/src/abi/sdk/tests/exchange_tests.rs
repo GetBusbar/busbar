@@ -55,6 +55,10 @@ struct Script {
     unframed: bool,
     /// The registration each ESTABLISH named, in order (`None` = an absent member).
     members: Vec<Option<Vec<u8>>>,
+    /// Streams established and not closed: the host's held streams.
+    held: i64,
+    /// A CLOSE ran.
+    closed: bool,
 }
 
 static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
@@ -142,6 +146,7 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         service::ESTABLISH => {
             // SAFETY: an `EstablishIn` (the SDK states its whole size).
             let i = unsafe { *input.cast::<crate::abi::host::conn::connector::EstablishIn>() };
+            s.held += 1;
             s.members.push((!i.member.ptr.is_null()).then(|| {
                 // SAFETY: the SDK's own string, live for the call.
                 unsafe { std::slice::from_raw_parts(i.member.ptr, i.member.len) }.to_vec()
@@ -172,6 +177,11 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
                 return answer(out, Outcome::Pending, 0, 0);
             }
             (0, play(io, piece))
+        }
+        service::CLOSE => {
+            s.held -= 1;
+            s.closed = true;
+            (0, 0)
         }
         _ => (0, 0),
     };
@@ -295,6 +305,12 @@ struct Run<T> {
     members: Vec<Option<Vec<u8>>>,
     /// The exchange's state once it completed.
     state: Exchange,
+    /// Streams the host still holds when the op answered.
+    held: i64,
+    /// How many reply pieces the host played.
+    reads: usize,
+    /// A CLOSE ran.
+    closed: bool,
 }
 
 /// Run the op to completion under `reply`: a fresh connector each entry, the same parked state.
@@ -332,6 +348,9 @@ fn run<T>(
         framed: s.framed,
         members: s.members,
         state,
+        held: s.held,
+        reads: s.reads,
+        closed: s.closed,
     }
 }
 
@@ -685,6 +704,112 @@ fn a_limit_above_reply_max_clamps() {
     assert_eq!(req().reply_limit(REPLY_MAX + 1).reply_ceiling, REPLY_MAX);
     assert_eq!(req().reply_limit(usize::MAX).reply_ceiling, REPLY_MAX);
     assert_eq!(req().reply_limit(7).reply_ceiling, 7);
+}
+
+/// RED (Q128, a send-once caller's leak): an exchange that FAILS after it established its stream
+/// closes the stream before it answers, as a whole one does, so a caller that sends once and moves
+/// on holds nothing per failed delivery. The far end answers no reply piece; a stream that is not
+/// framed refuses the request. Each answers its failure with the host holding no stream. RED
+/// before: the failed exchange answered with its stream still held.
+#[test]
+fn a_failed_exchange_closes_its_stream_before_it_answers() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let no_piece = run(
+        vec![piece(0, 0, b"", b"", b"")],
+        false,
+        Exchange::send(b"ping".to_vec()),
+        None,
+        |c, st| send_and_ack(c, st, 0, None),
+    );
+    assert!(no_piece.answered.is_err(), "{:?}", no_piece.answered);
+    assert_eq!(no_piece.held, 0, "a failed exchange left its stream held");
+    let refused = run(
+        http_reply(),
+        true,
+        Exchange::request(post()).unwrap(),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(refused.answered.is_err(), "{:?}", refused.answered);
+    assert_eq!(refused.held, 0, "a refused request left its stream held");
+    // A whole exchange closes its stream too.
+    let whole = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).unwrap(),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(whole.answered.is_ok(), "{:?}", whole.answered);
+    assert_eq!(whole.held, 0);
+}
+
+/// One READ_CHUNK of body: a reply that plays it without end passes [`REPLY_MAX`].
+static HUGE: [u8; READ_CHUNK] = [b'x'; READ_CHUNK];
+
+/// A 2xx head, then body pieces with no end: the scripted host plays the last piece on every read
+/// after the script, so the body runs on for as long as the exchange reads.
+fn head_then_endless_body() -> Vec<Scripted> {
+    vec![
+        piece(REPLY_HEAD, 200, b"OK", b"x-a: 1\r\n", b""),
+        piece(REPLY_BODY, 0, b"", b"", &HUGE),
+    ]
+}
+
+/// RED (Q128 ruling A; THE DESIGN: a port keeps 1.5.5's surface): a HEAD-ONLY exchange is
+/// judged on the reply's head. A 2xx head followed by a slow or huge body that never ends answers
+/// status 200 on the head read alone: no body is read or buffered, no `REPLY_OVER_BOUND`, and the
+/// stream is closed. Every entry after the head replays its read, and the replayed head ends the
+/// reads too; no service runs twice. An observing head-only exchange reads its facts before the
+/// close.
+#[test]
+fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        head_then_endless_body(),
+        false,
+        Exchange::request(post()).expect("a request").head_only(),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    let reply = r.answered.expect("the head judges the exchange");
+    assert_eq!(reply.status, 200);
+    assert_eq!(reply.reason.as_deref(), Some(&b"OK"[..]));
+    assert_eq!(reply.fields, vec![(b"x-a".to_vec(), b"1".to_vec())]);
+    assert!(reply.body.is_empty(), "no body is read");
+    assert_eq!(r.reads, 1, "the head is the only piece read");
+    assert!(r.closed, "the stream is closed");
+    // establish, head, body, end, one read, close: six services, each run once.
+    assert_eq!(r.runs.len(), 6, "{:?}", r.runs);
+    assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
+    assert_eq!(r.entries, 7);
+
+    let observed = run(
+        head_then_endless_body(),
+        false,
+        Exchange::request(post())
+            .expect("a request")
+            .observing()
+            .head_only(),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    assert_eq!(observed.answered.expect("the head judges it").status, 200);
+    let facts = observed.state.observed().expect("the facts were read");
+    assert_eq!(facts.peer_key_pin.as_deref(), Some(OBSERVED_PIN));
+    assert_eq!(observed.reads, 1);
+    assert!(observed.closed);
+    // establish, head, body, end, one read, facts, close.
+    assert_eq!(observed.runs.len(), 7, "{:?}", observed.runs);
+    assert!(
+        observed.runs.values().all(|&n| n == 1),
+        "{:?}",
+        observed.runs
+    );
 }
 
 /// A buffer whose TYPE wipes it on drop: the bound is the proof, checked at compile time.

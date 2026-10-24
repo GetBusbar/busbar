@@ -75,7 +75,7 @@ use axum::extract::{Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.
 //
@@ -118,8 +118,9 @@ pub(crate) async fn observe(
     // grants are inadmissible everywhere else.
     let path = req.uri().path();
     let plane = app.planes.mounted_plane_of(path);
-    // Resolved BEFORE the request is consumed, and both facts together, so the emit below needs no
-    // second decision: either this boundary can label the request or it cannot.
+    // Resolved BEFORE the request is consumed, both facts together: either this boundary can label
+    // the request or it passes straight through, untimed; `finish` reads the same facts off the
+    // same snapshot.
     //
     // The dialect comes off the CLAIM, not off the plane. A plane that speaks one dialect answers
     // the same either way; a plane that speaks several — once a second binding is armed — is
@@ -127,10 +128,10 @@ pub(crate) async fn observe(
     // for exactly those planes and silently stop counting them. Where several bindings share one
     // door the claim names the canonical one, which is also the binding `ingress::native` shapes a
     // door refusal's body in, so the label and the envelope agree about what was refused.
-    let labels = plane.zip(app.planes.wire_format_of(path));
-    let Some((plane, wire)) = labels else {
+    if plane.zip(app.planes.wire_format_of(path)).is_none() {
         return next.run(req).await;
-    };
+    }
+    let uri = req.uri().clone();
     let started = Instant::now();
     let resp = next.run(req).await;
     // THE HANDLER'S OWN LABEL WINS, and this is the only thing that keeps the two emits from
@@ -140,8 +141,26 @@ pub(crate) async fn observe(
     if resp.extensions().get::<Counted>().is_some() {
         return resp;
     }
+    finish(&app, uri.path(), resp.status().as_u16(), started.elapsed());
+    resp
+}
+
+/// ONE REQUEST'S FINISH AT THE INGRESS BOUNDARY (row 192 C: one source for `observe` and the
+/// accepted path): a request on `path` over `app` answered `status` after `elapsed` is emitted on
+/// the plane-labelled family when a mounted plane's claim labels the path (the plane off the mount
+/// table, the dialect off the claim), at the unresolved target, its outcome read off the status.
+/// A path no mounted plane labels emits nothing. Answers whether it emitted. A response a handler
+/// already labelled ([`Counted`]) is the caller's to pass over.
+pub fn finish(app: &crate::state::App, path: &str, status: u16, elapsed: Duration) -> bool {
+    let Some((plane, wire)) = app
+        .planes
+        .mounted_plane_of(path)
+        .zip(app.planes.wire_format_of(path))
+    else {
+        return false;
+    };
     crate::telemetry::request_finished(
-        &app,
+        app,
         plane,
         wire,
         // The plane's routing TARGET is not resolved at the door. On the fallback plane that
@@ -153,10 +172,10 @@ pub(crate) async fn observe(
         // memory-exhaustion DoS `pool_label` exists to close. Narrowing this to the configured
         // target's own name is the next step and it belongs where the target is resolved.
         crate::proxy::POOL_LABEL_UNRESOLVED,
-        crate::telemetry::outcome_of(resp.status().as_u16()),
-        started.elapsed().as_secs_f64(),
+        crate::telemetry::outcome_of(status),
+        elapsed.as_secs_f64(),
     );
-    resp
+    true
 }
 
 /// A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.

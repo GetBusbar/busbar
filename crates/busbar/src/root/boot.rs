@@ -1086,6 +1086,41 @@ pub fn no_record_slots(store: &str) -> String {
     )
 }
 
+/// THE REFUSAL OF A DATA LISTENER WITH NO FRAMER (row 192 C): no registered transport frames the
+/// requests the data listener's lines are for, so it is not bound at all. The hand-up serves no
+/// data listener in a framed build: nothing falls back to it.
+pub const DATA_LISTENER_UNFRAMED: &str = "listen: no registered transport frames the data \
+     listener's requests; the data listener is not bound (register the transport its lines' \
+     carriers name, compiled in or dropped into plugins.dir)";
+
+/// THE DATA LISTENER'S OWN FRAMER (`BUSBAR-1.6.0.md` l.475-484 and THE DESIGN §6 step 2: the
+/// connector owns the listener, bound to one transport): found BY FACTS, never by name, among the
+/// framers `framer_for` answers for `carriers` (the carriers the data listener's lines name, then
+/// every claim a registered transport states), in that order. The first that is a FRAMER, no
+/// datagram framer, and frames `carrier` as a request and its answer (the carrier is none of its
+/// duplex claims, which a stream rides after an upgrade) is the listener's.
+///
+/// # Errors
+///
+/// [`DATA_LISTENER_UNFRAMED`] when none is registered: boot refuses, naming `listen`, before any
+/// socket is bound, and never hands the listener up instead.
+pub fn data_door_framer<'c>(
+    carriers: impl IntoIterator<Item = &'c str>,
+    framer_for: impl Fn(&str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>>,
+) -> Result<Arc<dyn busbar_core_connector::framer::FramerDoor>, String> {
+    carriers
+        .into_iter()
+        .find_map(|carrier| {
+            framer_for(carrier).filter(|door| {
+                let facts = door.facts();
+                facts.role == busbar_contract::abi::transport::ROLE_FRAMER
+                    && !facts.datagram
+                    && !facts.duplex.iter().any(|d| *d == carrier)
+            })
+        })
+        .ok_or_else(|| DATA_LISTENER_UNFRAMED.to_string())
+}
+
 #[cfg(test)]
 #[path = "tests/boot.rs"]
 mod tests;

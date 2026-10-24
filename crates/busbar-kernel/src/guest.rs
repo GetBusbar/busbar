@@ -161,17 +161,23 @@ impl Route {
 pub enum LineAuth {
     /// Anyone (e.g. `/healthz`).
     None,
+    /// The claimant runs the chain itself (THE DESIGN §6 step 3, "a claimant may run the chain
+    /// itself"): the line needs no point, its transport hands the request in without a call, and
+    /// the claimant's own gate answers it (the data listener's residual line: the kernel's router,
+    /// its auth around its routes and its fallback, as 1.5.5 ran it).
+    Claimant,
     /// The resolved chain, tried in order by 1.5.5's chain rule, and the line's point set: the
     /// union of its auths' declared sets.
     Chain(Vec<String>, AuthPoints),
 }
 
 impl LineAuth {
-    /// The line's point set: the union of its auths' sets; empty for [`LineAuth::None`].
+    /// The line's point set: the union of its auths' sets; empty for [`LineAuth::None`] and
+    /// [`LineAuth::Claimant`].
     #[must_use]
     pub fn points(&self) -> AuthPoints {
         match self {
-            Self::None => AuthPoints::EMPTY,
+            Self::None | Self::Claimant => AuthPoints::EMPTY,
             Self::Chain(_, points) => *points,
         }
     }

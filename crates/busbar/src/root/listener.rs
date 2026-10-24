@@ -75,38 +75,11 @@ fn handshake_timeout() -> Duration {
 /// connection task, an FD, AND (critically) one of the finite `max_inbound_concurrent` (default 8192)
 /// permits indefinitely, starving real traffic. `DefaultBodyLimit` caps total SIZE, not TIME between
 /// frames, so it does not help. This wraps every inbound body in a [`TimeoutBody`] that trips when no
-/// frame arrives within this bound. Operator-tunable via `limits.request_body_read_timeout_secs`
-/// (default 30s), read per connection through the process-wide `crate::limits` install; falls back to
-/// the default when limits aren't installed (tests / pre-install).
+/// frame arrives within this bound. The bound, the throughput floor after its grace and the total
+/// deadline are the kernel's one body policy (`busbar_kernel::limits::body`), read here and on the
+/// accepted path alike; this page holds the IO (the timer and the frames).
 fn body_read_timeout() -> Duration {
-    Duration::from_secs(busbar_kernel::limits::request_body_read_timeout_secs())
-}
-
-/// MINIMUM sustained throughput a body read must maintain once the grace period has elapsed. The
-/// inter-frame timer (`body_read_timeout`) resets on ANY progress at all, so a client that dribbles
-/// exactly one byte per `body_read_timeout` interval holds a connection, an FD, and an
-/// inbound-concurrency permit indefinitely without ever tripping it. This floor catches that: it
-/// bounds RETENTION IN TIME, not size (`DefaultBodyLimit`/the per-request buffer cap already bound
-/// size) and not concurrency (`GlobalConcurrencyLimitLayer` already bounds that globally). Hardcoded
-/// rather than an operator knob (per owner decision): 1 KiB/s is far below any honest client's
-/// sustained rate and comfortably above "a client stalling one byte every ~30s".
-const MIN_BODY_THROUGHPUT_BYTES_PER_SEC: u64 = 1024;
-
-/// Grace period before the throughput floor is evaluated. Before it, `bytes / elapsed` is unstable
-/// (a client that pauses briefly before its first frame, or whose first frame is large relative to
-/// elapsed time, would false-positive). Hardcoded alongside the floor for the same reason.
-const BODY_THROUGHPUT_GRACE: Duration = Duration::from_secs(10);
-
-/// TOTAL wall-clock deadline for reading one inbound body — the backstop that bounds retention even
-/// for a client that stays JUST above the throughput floor forever. DERIVED from the configured body
-/// size cap and the throughput floor (`body_cap / floor`), NOT a bare constant: `request_body_max_bytes`
-/// is an operator knob with a 1 GiB ceiling, so a fixed total would silently demand an arbitrarily
-/// high sustained rate from an honest client uploading near that ceiling. Deriving it means the total
-/// always admits exactly "the whole cap, sustained at the floor," regardless of how the operator has
-/// configured the cap.
-fn total_body_deadline() -> Duration {
-    let cap_bytes = busbar_kernel::proxy::max_translate_body_bytes() as u64;
-    Duration::from_secs(cap_bytes / MIN_BODY_THROUGHPUT_BYTES_PER_SEC)
+    busbar_kernel::limits::body::read_timeout()
 }
 
 use std::future::Future;
@@ -116,6 +89,7 @@ use std::task::{Context, Poll};
 use axum::Router;
 use busbar_contract::transport::wire::{ConnectionSecurity, RawIo};
 use busbar_core_connector::listen::{Admits, Admitted};
+use busbar_kernel::limits::body::BodyBound;
 use bytes::Buf;
 use http_body::{Body, Frame, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -316,17 +290,9 @@ impl ConnBalancer {
     /// dropped by balancing.
     fn try_hand_off(&self, admitted: Admitted) -> Option<Admitted> {
         use std::sync::atomic::Ordering;
-        let mine = self.counts[self.me].0.load(Ordering::Relaxed);
-        let (min_idx, min_val) = self
-            .counts
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (i, c.0.load(Ordering::Relaxed)))
-            .min_by_key(|&(_, v)| v)
-            .expect("at least one worker");
-        if min_idx == self.me || mine < min_val.saturating_add(REBALANCE_MARGIN) {
+        let Some(min_idx) = self.least_loaded() else {
             return Some(admitted);
-        }
+        };
         // The admitted socket is on no worker's reactor yet, so it crosses the hand-off channel as
         // it is (each worker runs its own runtime).
         self.counts[min_idx].0.fetch_add(1, Ordering::Relaxed);
@@ -343,6 +309,80 @@ impl ConnBalancer {
                 }
             }
         }
+    }
+
+    /// The least-loaded worker a locally-accepted connection moves to, by the margin rule; `None`
+    /// = serve it here.
+    fn least_loaded(&self) -> Option<usize> {
+        use std::sync::atomic::Ordering;
+        let mine = self.counts[self.me].0.load(Ordering::Relaxed);
+        let (min_idx, min_val) = self
+            .counts
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, c.0.load(Ordering::Relaxed)))
+            .min_by_key(|&(_, v)| v)
+            .expect("at least one worker");
+        if min_idx == self.me || mine < min_val.saturating_add(REBALANCE_MARGIN) {
+            return None;
+        }
+        Some(min_idx)
+    }
+
+    /// PLACE ONE FRAMED CONNECTION (row 192 C, the accepted data door): admitted BARE, before any
+    /// handshake ([`busbar_core_connector::listen::Listening::poll_admit`]), it is served here, or
+    /// its socket is handed up off this worker's table and sent to the least-loaded worker, which
+    /// adopts it ([`busbar_core_connector::carrier::Carried::adopted`]) and composes it there. The
+    /// same rule, the same counts and the same channel as the hand-up's placement.
+    pub(crate) fn place_arrived(&self, arrived: busbar_core_connector::listen::Arrived) -> Placed {
+        use std::sync::atomic::Ordering;
+        let Some(idx) = self.least_loaded() else {
+            return Placed::Here(Box::new(arrived), self.place_local());
+        };
+        let busbar_core_connector::listen::Arrived {
+            carried,
+            peer,
+            slot,
+        } = arrived;
+        let Some(stream) = carried
+            .hand_up()
+            .filter(|s| s.set_nonblocking(true).is_ok())
+        else {
+            return Placed::Moved;
+        };
+        let admitted = Admitted {
+            stream,
+            peer,
+            hold: Some(Box::new(slot)),
+        };
+        self.counts[idx].0.fetch_add(1, Ordering::Relaxed);
+        match self.txs[idx].try_send(admitted) {
+            Ok(()) => Placed::Moved,
+            Err(e) => {
+                self.counts[idx].0.fetch_sub(1, Ordering::Relaxed);
+                match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(a)
+                    | tokio::sync::mpsc::error::TrySendError::Closed(a) => {
+                        Placed::Back(a, self.place_local())
+                    }
+                }
+            }
+        }
+    }
+
+    /// The next connection another worker placed here, its count already this worker's.
+    pub(crate) async fn handed(&mut self) -> Option<(Admitted, ConnCountGuard)> {
+        let a = self.rx.recv().await?;
+        Some((a, self.adopt()))
+    }
+
+    /// The connections placed here and not yet taken, at shutdown.
+    pub(crate) fn drain_handed(&mut self) -> Vec<(Admitted, ConnCountGuard)> {
+        let mut out = Vec::new();
+        while let Ok(a) = self.rx.try_recv() {
+            out.push((a, self.adopt()));
+        }
+        out
     }
 
     /// Count this worker's newly-placed local connection; the returned guard decrements on drop
@@ -366,8 +406,18 @@ impl ConnBalancer {
     }
 }
 
+/// WHERE ONE FRAMED CONNECTION WENT ([`ConnBalancer::place_arrived`]).
+pub(crate) enum Placed {
+    /// Served here, as admitted, its count held.
+    Here(Box<busbar_core_connector::listen::Arrived>, ConnCountGuard),
+    /// Handed to another worker (or lost with its socket when it could not be handed up).
+    Moved,
+    /// The hand-off failed after the socket was handed up: served here, adopted bare.
+    Back(Admitted, ConnCountGuard),
+}
+
 /// RAII live-connection count: decrements its worker's slot when the served connection ends.
-struct ConnCountGuard {
+pub(crate) struct ConnCountGuard {
     counts: Arc<[PaddedCount]>,
     idx: usize,
 }
@@ -524,57 +574,14 @@ impl<B> TimeoutBody<B> {
     }
 }
 
-/// The error a [`TimeoutBody`] yields when the inter-frame bound elapses. Boxed into the router's
-/// body-error type; the message is generic (no client bytes) so it is safe to surface.
-#[derive(Debug)]
-struct BodyReadTimeout;
-
-impl std::fmt::Display for BodyReadTimeout {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "inbound request body read timed out (slow-loris body bound)"
-        )
-    }
-}
-impl std::error::Error for BodyReadTimeout {}
-
-/// The error a [`TimeoutBody`] yields when the TOTAL body deadline or the MINIMUM-THROUGHPUT floor
-/// is exceeded - the retention-in-time bound `BodyReadTimeout`'s inter-frame check cannot catch,
-/// because a dribbling client that polls at least once per byte keeps resetting that timer forever.
-/// Same discipline as `BodyReadTimeout`: generic message, no client bytes.
-#[derive(Debug)]
-enum BodyBoundExceeded {
-    Total,
-    Throughput,
-}
-
-impl std::fmt::Display for BodyBoundExceeded {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Total => write!(f, "inbound request body exceeded its total read deadline"),
-            Self::Throughput => write!(
-                f,
-                "inbound request body fell below the minimum throughput floor"
-            ),
-        }
-    }
-}
-impl std::error::Error for BodyBoundExceeded {}
-
-/// Shared by both the `Ready` and `Pending` arms of `poll_frame`: evaluate the total deadline, then
-/// (after the grace period) the throughput floor. `None` means neither tripped.
-fn check_body_bounds(started: Instant, bytes: u64) -> Option<BodyBoundExceeded> {
-    let elapsed = started.elapsed();
-    if elapsed > total_body_deadline() {
-        return Some(BodyBoundExceeded::Total);
-    }
-    if elapsed > BODY_THROUGHPUT_GRACE
-        && bytes < MIN_BODY_THROUGHPUT_BYTES_PER_SEC * elapsed.as_secs()
-    {
-        return Some(BodyBoundExceeded::Throughput);
-    }
-    None
+/// The kernel's body policy judged at `started` with `bytes` delivered, under the total deadline
+/// installed now (`busbar_kernel::limits::body::bounds`). `None` means neither bound tripped.
+fn check_body_bounds(started: Instant, bytes: u64) -> Option<BodyBound> {
+    busbar_kernel::limits::body::bounds(
+        started.elapsed(),
+        bytes,
+        busbar_kernel::limits::body::total_deadline(),
+    )
 }
 
 impl<B> Body for TimeoutBody<B>
@@ -621,7 +628,7 @@ where
                     .sleep
                     .get_or_insert_with(|| Box::pin(tokio::time::sleep(timeout)));
                 match sleep.as_mut().poll(cx) {
-                    Poll::Ready(()) => Poll::Ready(Some(Err(Box::new(BodyReadTimeout)))),
+                    Poll::Ready(()) => Poll::Ready(Some(Err(Box::new(BodyBound::Idle)))),
                     Poll::Pending => Poll::Pending,
                 }
             }
@@ -646,13 +653,20 @@ where
 struct BodyTimeoutService {
     inner: TowerToHyperService<Router>,
     timeout: Duration,
+    /// The listener's scheme, stated on every request it serves.
+    scheme: busbar_kernel::plane_routes::ListenerScheme,
 }
 
 impl BodyTimeoutService {
-    fn new(router: Router, timeout: Duration) -> Self {
+    fn new(
+        router: Router,
+        timeout: Duration,
+        scheme: busbar_kernel::plane_routes::ListenerScheme,
+    ) -> Self {
         Self {
             inner: TowerToHyperService::new(router),
             timeout,
+            scheme,
         }
     }
 }
@@ -664,14 +678,52 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
     type Error = <TowerToHyperService<Router> as hyper::service::Service<
         hyper::Request<TimeoutBody<hyper::body::Incoming>>,
     >>::Error;
-    type Future = <TowerToHyperService<Router> as hyper::service::Service<
-        hyper::Request<TimeoutBody<hyper::body::Incoming>>,
-    >>::Future;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
 
     fn call(&self, req: hyper::Request<hyper::body::Incoming>) -> Self::Future {
         let timeout = self.timeout;
-        let req = req.map(|body| TimeoutBody::new(body, timeout));
-        self.inner.call(req)
+        let mut req = req.map(|body| TimeoutBody::new(body, timeout));
+        req.extensions_mut().insert(self.scheme);
+        let answered = self.inner.call(req);
+        Box::pin(async move {
+            answered
+                .await
+                .map(|resp| resp.map(|body| axum::body::Body::new(NoTrailers(body))))
+        })
+    }
+}
+
+/// AN ANSWER'S BODY WITH NO TRAILER FIELD (`BUSBAR-1.6.0.md` l.731-732, no trailer piece on the
+/// transport ABI; l.4794, the caller output drops trailers, as 1.5.5's did): a root listener writes
+/// the body's data and its end, and a trailer block a handler put after it (a framed claim's
+/// framer's closing block) never reaches the caller, on h1 or h2. Its size and its end are the
+/// body's own, so its framing is unchanged.
+struct NoTrailers(axum::body::Body);
+
+impl Body for NoTrailers {
+    type Data = bytes::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        loop {
+            match std::task::ready!(Pin::new(&mut this.0).poll_frame(cx)) {
+                Some(Ok(frame)) if frame.is_trailers() => continue,
+                other => return Poll::Ready(other),
+            }
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.0.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.0.size_hint()
     }
 }
 
@@ -722,6 +774,16 @@ struct Served {
     security: Option<Arc<dyn ConnectionSecurity>>,
     /// The scheme a log line names.
     scheme: &'static str,
+}
+
+/// The scheme a listener states on every request it serves: secure where the connector
+/// terminates connection security on it, plain where it serves the stream as it arrived.
+fn listener_scheme(secured: bool) -> busbar_kernel::plane_routes::ListenerScheme {
+    busbar_kernel::plane_routes::ListenerScheme(if secured {
+        busbar_contract::abi::host::service::SCHEME_SECURE
+    } else {
+        busbar_contract::abi::host::service::SCHEME_PLAIN
+    })
 }
 
 impl Served {
@@ -793,7 +855,11 @@ impl Served {
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
-        let service = BodyTimeoutService::new(self.router, body_read_timeout());
+        let service = BodyTimeoutService::new(
+            self.router,
+            body_read_timeout(),
+            listener_scheme(self.security.is_some()),
+        );
         let conn = self
             .builder
             .serve_connection_with_upgrades(TokioIo::new(io), service);

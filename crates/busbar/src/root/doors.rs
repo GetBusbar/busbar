@@ -280,6 +280,15 @@ impl Dispatched {
     }
 }
 
+/// THE INSTANCE IDENTITY OF THE OPENED DOOR `door` ([`FramerDoor::instance`]): the identity the
+/// loader verifies every ref its framings present for, the one a listener's guest list is installed
+/// under (THE DESIGN §6 step 2, `crate::root::inbound::serve_under`). `None` = no door the host
+/// opened.
+#[must_use]
+pub fn owner_of(door: &dyn FramerDoor) -> Option<u64> {
+    door.instance().filter(|owner| *owner != 0)
+}
+
 /// One crossing through the dispatcher: the host's `in`/`out` copied in, the answer copied back.
 fn go<I: InFrame, O: OutFrame>(p: &Plugin<TransportKind>, s: u32, i: &mut I, o: &mut O) -> Crossed {
     let mut f = Frame::new(*i, *o);
@@ -331,6 +340,10 @@ impl FramerDoor for Dispatched {
         &self.facts
     }
 
+    fn instance(&self) -> Option<u64> {
+        Some(self.plugin.instance().0)
+    }
+
     fn side(&self) -> Option<Box<dyn Side>> {
         if self.facts.role != busbar_contract::abi::transport::ROLE_CARRIER {
             return None;
@@ -369,6 +382,43 @@ impl FramerDoor for Dispatched {
             Call::Detach(i, o) => go(p, slot::DETACH, i, o),
             Call::Adopt(i, o) => go(p, slot::ADOPT, i, o),
             Call::Timer(i, o) => go(p, slot::TIMER, i, o),
+        }
+    }
+
+    /// A framer's framing runs its ticketed ops (`begin`, `ingest`, `emit`) on inline tickets of
+    /// the process's one dispatcher, as a carrier's side does: each may call the auth service,
+    /// which may pend, and its wake routes there. A new one each time the framing asks, so an op
+    /// parked on one stream's ticket holds that stream alone.
+    fn framing_side(&self) -> Option<Box<dyn Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
+            return None;
+        }
+        dispatcher()
+            .inline_ticket()
+            .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
+    }
+
+    /// A fresh ticket for an op of the framing whose begin ticket is `framing`, tied to it by
+    /// the dispatcher, so every auth-handle call made on it names that framing.
+    fn framing_side_of(
+        &self,
+        framing: busbar_contract::abi::mechanism::ticket::Ticket,
+    ) -> Option<Box<dyn Side>> {
+        if self.facts.role != busbar_contract::abi::transport::ROLE_FRAMER {
+            return None;
+        }
+        dispatcher()
+            .inline_ticket_of(framing)
+            .map(|t| Box::new(InlineSide(t)) as Box<dyn Side>)
+    }
+
+    fn cross_on(&self, side: &dyn Side, resume: bool, call: Call<'_>) -> Crossed {
+        let (p, t) = (&self.live.plugin, side.ticket());
+        match call {
+            Call::Begin(i, o) => go_inline(p, t, resume, slot::BEGIN, i, o),
+            Call::Ingest(i, o) => go_inline(p, t, resume, slot::INGEST, i, o),
+            Call::Emit(i, o) => go_inline(p, t, resume, slot::EMIT, i, o),
+            other => self.cross(other),
         }
     }
 }

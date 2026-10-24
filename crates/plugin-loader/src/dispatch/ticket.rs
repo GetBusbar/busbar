@@ -59,6 +59,18 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
+    /// The store a service's results are kept under, whether or not this route serves the host
+    /// services (the auth handle's slots run on it without them).
+    fn service_store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
+        self.services().map(|s| s.store)
+    }
+
+    /// The kernel's side of the host auth handle this route's instances are served from; `None` =
+    /// none, and every auth-handle service answers REFUSED past its checks.
+    fn auth_handle(&self) -> Option<std::sync::Arc<dyn super::auth_handle::AuthHandleHost>> {
+        None
+    }
+
     /// The seal the host lent this route's dispatcher (Part 2 #54); `None` = none, and a reveal of
     /// a `Secret` its instances' services would make is refused.
     fn seal(
@@ -71,6 +83,13 @@ pub(crate) trait WakeRoute: Send + Sync {
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         let _ = t;
         None
+    }
+
+    /// THE FRAMING an op on ticket `t` was made for, as every auth-handle call names it: the
+    /// framing a ticket minted for one of its ops works for (`super::inline::InlineTickets::
+    /// framing_of`), else `t`'s own reading.
+    fn framing_of(&self, t: Ticket) -> u64 {
+        t.framing()
     }
 
     /// The INLINE tickets of this route's dispatcher (`super::inline`); `None` = none.

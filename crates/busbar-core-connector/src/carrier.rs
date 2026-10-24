@@ -328,6 +328,39 @@ impl Carried {
         })
     }
 
+    /// THE CONNECTION A PLACED SOCKET BECOMES (row 192 C, the placement balancer): `stream` is a
+    /// socket a listener of the carrier `door` admitted and handed up bare ([`Carried::hand_up`])
+    /// so the balancer could move it to this worker; the carrier accepts it again here, off its
+    /// ADOPTION listener ([`crate::hostio::ADOPTION_BIND`], bound once per carrier and host), on
+    /// this worker's reactor. Every byte crosses the carrier as on the worker that admitted it.
+    /// `None` = the entry is no carrier the host drives, or it would not adopt the socket (which
+    /// is dropped, closed).
+    #[must_use]
+    pub fn adopted(
+        door: Arc<dyn FramerDoor>,
+        io: Arc<HostIo>,
+        stream: std::net::TcpStream,
+    ) -> Option<Self> {
+        let listener = adoption_listener(door.as_ref(), &io)?;
+        let mut side = Driven::of(door.as_ref())?;
+        let ticket = side.ticket();
+        io.offer(ticket, stream);
+        let mut peer = vec![0_u8; usize::try_from(MAX_ADDR).unwrap_or(256)];
+        let mut i: AcceptIn = blank_in();
+        i.listener = listener;
+        i.peer_buf = peer.as_mut_ptr();
+        i.peer_cap = peer.len();
+        let mut o: AcceptOut = blank_out();
+        let c = side.cross(door.as_ref(), Carry::Accept(&mut i, &mut o), None);
+        side.cancel(door.as_ref());
+        io.withdraw(ticket);
+        let (handle, _) = io.settle(ticket);
+        match c {
+            Some(c) if c.outcome == Outcome::Ready => Self::accepted(door, io, o.conn, handle),
+            _ => None,
+        }
+    }
+
     /// The carrier entry.
     #[must_use]
     pub fn door(&self) -> &Arc<dyn FramerDoor> {
@@ -488,6 +521,35 @@ impl Carried {
         // The carrier closes a handle the host no longer holds: nothing more.
         self.close();
         taken
+    }
+}
+
+/// The carrier `door`'s ADOPTION listener on `io`: bound once (the carrier's `listen` on
+/// [`crate::hostio::ADOPTION_BIND`], admitted as [`Admission::Adopt`]) and kept for the host's
+/// life, one per carrier. `None` = the carrier would not bind it.
+fn adoption_listener(door: &dyn FramerDoor, io: &HostIo) -> Option<u64> {
+    let key = std::ptr::from_ref(door).cast::<()>().addr();
+    let mut adopters = io.adopters();
+    if let Some(l) = adopters.get(&key) {
+        return Some(*l);
+    }
+    let mut side = Driven::of(door)?;
+    io.admit(side.ticket(), Admission::Adopt);
+    let bind = crate::hostio::ADOPTION_BIND;
+    let mut addr = vec![0_u8; usize::try_from(MAX_ADDR).unwrap_or(256)];
+    let mut i: ListenIn = blank_in();
+    i.bind = abi(bind.as_bytes());
+    i.addr_buf = addr.as_mut_ptr();
+    i.addr_cap = addr.len();
+    let mut o: ListenOut = blank_out();
+    let c = side.cross(door, Carry::Listen(&mut i, &mut o), None);
+    let _ = io.settle(side.ticket());
+    match c {
+        Some(c) if c.outcome == Outcome::Ready => {
+            adopters.insert(key, o.listener);
+            Some(o.listener)
+        }
+        _ => None,
     }
 }
 

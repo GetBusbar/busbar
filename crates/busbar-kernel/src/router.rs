@@ -21,7 +21,7 @@ pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
 /// (admin / health / early error). `server_timing_dur_ms` treats this as "report the full request
 /// time" rather than subtracting a nonexistent RTT. Only this exact u64::MAX meaning is replaced
 /// with the const; overflow/conversion fallbacks that happen to produce u64::MAX are NOT this.
-pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
+pub const NO_UPSTREAM_RTT: u64 = u64::MAX;
 
 /// Render a native ingress error envelope (`application/json`) for the fallback handlers, in the
 /// dialect the path is spoken in — attaching the `x-amzn-*` headers when that dialect is Bedrock,
@@ -82,6 +82,32 @@ pub(crate) fn kernel_refusal_response(
     kind: &str,
     message: &str,
 ) -> axum::response::Response {
+    kernel_refusal_by(
+        handle.door_refuser(),
+        planes,
+        reason,
+        path,
+        target,
+        status,
+        kind,
+        message,
+    )
+}
+
+/// [`kernel_refusal_response`] through the door planes' rendering `door` (the one an
+/// [`state::AppHandle`] binds), for a caller that holds the rendering and not the handle (the
+/// inbound handle's refusals).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn kernel_refusal_by(
+    door: Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    planes: &crate::plane::PlaneDispatch,
+    reason: busbar_contract::caps::ReasonCode,
+    path: &str,
+    target: &str,
+    status: axum::http::StatusCode,
+    kind: &str,
+    message: &str,
+) -> axum::response::Response {
     use crate::admin::gate::API_ROOT;
     let native_api = path == API_ROOT || path.starts_with(&format!("{API_ROOT}/"));
     if !native_api {
@@ -92,11 +118,31 @@ pub(crate) fn kernel_refusal_response(
             path,
             target,
         };
-        if let Some(rendered) = handle.door_refusal(&refusal) {
+        if let Some(rendered) = door.and_then(|refuse| refuse(&refusal)) {
             return rendered;
         }
     }
     fallback_error_response(planes, path, status, kind, message)
+}
+
+/// THE METHOD-MISS REFUSAL (`REFUSE_METHOD_MISS`) on `path` (requested as `target`), as the
+/// router's 405 handler renders it, through the door planes' rendering `door`.
+pub(crate) fn method_miss_refusal_by(
+    door: Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    planes: &crate::plane::PlaneDispatch,
+    path: &str,
+    target: &str,
+) -> axum::response::Response {
+    kernel_refusal_by(
+        door,
+        planes,
+        busbar_contract::caps::ReasonCode::MethodNotAllowed,
+        path,
+        target,
+        axum::http::StatusCode::METHOD_NOT_ALLOWED,
+        crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+        "method not allowed for this resource",
+    )
 }
 
 /// The request target of `uri` (path and query), as the plane reads its path rule off it.
@@ -115,15 +161,11 @@ pub(crate) async fn method_not_allowed_handler(
     axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
-    kernel_refusal_response(
-        &handle,
+    method_miss_refusal_by(
+        handle.door_refuser(),
         &handle.snapshot().planes,
-        busbar_contract::caps::ReasonCode::MethodNotAllowed,
         uri.path(),
         target_of(&uri),
-        axum::http::StatusCode::METHOD_NOT_ALLOWED,
-        crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
-        "method not allowed for this resource",
     )
 }
 
@@ -185,19 +227,46 @@ pub(crate) async fn reshape_body_limit_413(
     }
     // The snapshot is taken AFTER the inner stack runs, so a config apply mid-request shapes the
     // answer with the mount table that is live when the answer is written.
-    let render = || {
-        kernel_refusal_response(
-            &handle,
-            &handle.snapshot().planes,
-            busbar_contract::caps::ReasonCode::BodyTooLarge,
-            &path,
-            &target,
-            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
-            OVERSIZED_MESSAGE,
-        )
-    };
+    let render = || oversized_refusal(&handle, &path, &target);
     reshape_oversized_413_with(render, resp).await
+}
+
+/// THE OVER-GATE REFUSAL (`REFUSE_OVER_GATE`): the 413 a body past the size gate is answered with
+/// on `path` (requested as `target`), as the router's body-limit layer renders it.
+#[must_use]
+pub fn oversized_refusal(
+    handle: &state::AppHandle,
+    path: &str,
+    target: &str,
+) -> axum::response::Response {
+    oversized_refusal_by(
+        handle.door_refuser(),
+        &handle.snapshot().planes,
+        path,
+        target,
+    )
+}
+
+/// [`oversized_refusal`] through the door planes' rendering `door` (the one an
+/// [`state::AppHandle`] binds), for a caller that holds the rendering and not the handle: the
+/// inbound handle's `REFUSE_OVER_GATE`.
+#[must_use]
+pub fn oversized_refusal_by(
+    door: Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
+    planes: &crate::plane::PlaneDispatch,
+    path: &str,
+    target: &str,
+) -> axum::response::Response {
+    kernel_refusal_by(
+        door,
+        planes,
+        busbar_contract::caps::ReasonCode::BodyTooLarge,
+        path,
+        target,
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        crate::proxy::KIND_REQUEST_TOO_LARGE,
+        OVERSIZED_MESSAGE,
+    )
 }
 
 /// The words of an oversized-body refusal, the previous release's.
@@ -213,7 +282,7 @@ pub static REQUEST_ACTIVITY_TICKS: std::sync::atomic::AtomicU64 =
 /// time = total request wall-clock minus the upstream round-trip. `upstream_us == u64::MAX` means
 /// "no upstream hop" (admin/health/early error), so the full time is reported. Saturating, so clock
 /// skew (upstream measured slightly larger than total) can never underflow into a huge value.
-pub(crate) fn server_timing_dur_ms(total_us: u64, upstream_us: u64) -> f64 {
+pub fn server_timing_dur_ms(total_us: u64, upstream_us: u64) -> f64 {
     let internal_us = if upstream_us == NO_UPSTREAM_RTT {
         total_us
     } else {
@@ -232,8 +301,48 @@ pub(crate) async fn request_activity_tick(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    REQUEST_ACTIVITY_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    request_activity();
     next.run(req).await
+}
+
+/// ONE REQUEST'S ACTIVITY TICK (row 192 C): the idle-purge ticker ([`REQUEST_ACTIVITY_TICKS`])
+/// bumped once, for every request that enters, the router's layer and the accepted path alike.
+pub fn request_activity() {
+    REQUEST_ACTIVITY_TICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// THE `Server-Timing` VALUE for a request that took `total_us` with `upstream_us` of upstream
+/// round-trip ([`NO_UPSTREAM_RTT`] = none): `busbar;dur=<ms, 3 places>`, the gateway's own time
+/// ([`server_timing_dur_ms`]).
+#[must_use]
+pub fn server_timing_value(total_us: u64, upstream_us: u64) -> String {
+    let dur_ms = server_timing_dur_ms(total_us, upstream_us);
+    format!("busbar;dur={dur_ms:.3}")
+}
+
+/// THE `Server-Timing` FIELD for a request begun at `start` with `upstream_us` of upstream
+/// round-trip (row 192 C: one source for the router's layer and the accepted path): the field's
+/// name and [`server_timing_value`] over the time elapsed now; `None` when the value is no field
+/// value. Stamped only where `advanced.response_headers.server_timing` is on, as
+/// `apply_common_layers` composes the layer.
+#[must_use]
+pub fn server_timing_field(
+    start: std::time::Instant,
+    upstream_us: u64,
+) -> Option<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    axum::http::HeaderValue::from_str(&server_timing_value(total_us, upstream_us))
+        .ok()
+        .map(|v| (axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v))
+}
+
+/// Run `fut` with the upstream round-trip slot the forward path records into
+/// ([`proxy::UPSTREAM_RTT_US`]), and answer its output beside the round-trip it recorded
+/// ([`NO_UPSTREAM_RTT`] when no upstream was called).
+pub async fn with_upstream_rtt<F: std::future::Future>(fut: F) -> (F::Output, u64) {
+    let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT));
+    let out = proxy::UPSTREAM_RTT_US.scope(slot.clone(), fut).await;
+    (out, slot.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 /// Outermost middleware: stamps a standard `Server-Timing: busbar;dur=<ms>` response header
@@ -255,17 +364,10 @@ pub(crate) async fn server_timing(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    use std::sync::atomic::Ordering;
-    let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT));
     let start = std::time::Instant::now();
-    let mut resp = proxy::UPSTREAM_RTT_US
-        .scope(slot.clone(), next.run(req))
-        .await;
-    let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
-    let dur_ms = server_timing_dur_ms(total_us, slot.load(Ordering::Relaxed));
-    if let Ok(v) = axum::http::HeaderValue::from_str(&format!("busbar;dur={dur_ms:.3}")) {
-        resp.headers_mut()
-            .insert(axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v);
+    let (mut resp, upstream_us) = with_upstream_rtt(next.run(req)).await;
+    if let Some((name, value)) = server_timing_field(start, upstream_us) {
+        resp.headers_mut().insert(name, value);
     }
     resp
 }
@@ -669,6 +771,9 @@ fn mount_plane_route(
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
             // The plane never sees the caller's credential: the headers the gate consumed go here,
@@ -712,6 +817,10 @@ fn mount_plane_route(
                     engine,
                     host,
                     slot,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
                 };
                 handler(ctx).await
             }
@@ -752,6 +861,9 @@ fn mount_plane_session(
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap| {
             // As for a data route: the plane never sees the credential the gate consumed; it is
             // lent to a passthrough member only.
@@ -788,6 +900,10 @@ fn mount_plane_session(
                     host,
                     slot,
                     caller_credential,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
                 };
                 match handler(ctx).await {
                     busbar_kernel::plane_routes::SessionAnswer::Refused(response) => response,
@@ -979,42 +1095,13 @@ where
     }
 
     fn call(&mut self, req: axum::extract::Request) -> Self::Future {
-        use std::future::Future as _;
-        use std::panic::{catch_unwind, AssertUnwindSafe};
-        use std::task::Poll;
         // tower's clone-out-of-`self` idiom (see `InboundAdmissionService::call`).
         let mut inner = self.inner.clone();
         let handle = self.handle.clone();
         let uri = req.uri().clone();
         let method = req.method().clone();
         Box::pin(async move {
-            // `AssertUnwindSafe`: nothing observed across the boundary is reused after an unwind —
-            // the panicked future is never polled again and is dropped with this one.
-            // The scope lives INSIDE each `catch_unwind` closure: on an unwind it is dropped while
-            // the thread is still panicking (and so leaves the hook's record for this boundary);
-            // on a normal return it is dropped first and reports any panic an inner boundary
-            // caught.
-            let started = catch_unwind(AssertUnwindSafe(|| {
-                let _scope = RequestPanicScope::enter();
-                inner.call(req)
-            }));
-            let outcome = match started {
-                Err(payload) => Err(payload),
-                Ok(fut) => {
-                    let mut fut = std::pin::pin!(fut);
-                    std::future::poll_fn(|cx| {
-                        match catch_unwind(AssertUnwindSafe(|| {
-                            let _scope = RequestPanicScope::enter();
-                            fut.as_mut().poll(cx)
-                        })) {
-                            Ok(Poll::Ready(r)) => Poll::Ready(Ok(r)),
-                            Ok(Poll::Pending) => Poll::Pending,
-                            Err(payload) => Poll::Ready(Err(payload)),
-                        }
-                    })
-                    .await
-                }
-            };
+            let outcome = catch_request_panic(|| inner.call(req)).await;
             match outcome {
                 Ok(r) => r,
                 Err(payload) => Ok(request_panicked(&handle, &method, &uri, payload.as_ref())),
@@ -1023,8 +1110,51 @@ where
     }
 }
 
-/// Log the caught panic once, with its location, and shape the one request's `500`.
-fn request_panicked(
+/// THE PANIC BOUNDARY AROUND ONE REQUEST (row 192 C: one source for the router's
+/// [`CatchPanic`] and the accepted path): `start` called and the future it gives polled to its
+/// end, each inside `catch_unwind` with the panic-hook depth marker (`RequestPanicScope`) held
+/// for that call alone, so the hook records the panic's location for the boundary rather than
+/// printing it. A panic at the start or at any poll answers its payload, and the panicked future
+/// is never polled again; [`request_panicked`] shapes the request's `500`.
+///
+/// # Errors
+///
+/// The panic's payload.
+pub async fn catch_request_panic<F, M>(
+    start: M,
+) -> Result<F::Output, Box<dyn std::any::Any + Send + 'static>>
+where
+    M: FnOnce() -> F,
+    F: std::future::Future,
+{
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::task::Poll;
+    // `AssertUnwindSafe`: nothing observed across the boundary is reused after an unwind — the
+    // panicked future is never polled again and is dropped with this one. The scope lives INSIDE
+    // each `catch_unwind` closure: on an unwind it is dropped while the thread is still panicking
+    // (and so leaves the hook's record for this boundary); on a normal return it is dropped first
+    // and reports any panic an inner boundary caught.
+    let fut = catch_unwind(AssertUnwindSafe(|| {
+        let _scope = RequestPanicScope::enter();
+        start()
+    }))?;
+    let mut fut = std::pin::pin!(fut);
+    std::future::poll_fn(|cx| {
+        match catch_unwind(AssertUnwindSafe(|| {
+            let _scope = RequestPanicScope::enter();
+            fut.as_mut().poll(cx)
+        })) {
+            Ok(Poll::Ready(r)) => Poll::Ready(Ok(r)),
+            Ok(Poll::Pending) => Poll::Pending,
+            Err(payload) => Poll::Ready(Err(payload)),
+        }
+    })
+    .await
+}
+
+/// Log the caught panic once, with its location, and shape the one request's `500` (the kernel's
+/// refusal through the path's own envelope, `fallback_error_response` when no door renders it).
+pub fn request_panicked(
     handle: &std::sync::Arc<state::AppHandle>,
     method: &axum::http::Method,
     uri: &axum::http::Uri,
@@ -1125,7 +1255,7 @@ fn take_panic_seen() -> Option<PanicSeen> {
 /// itself, so the panic is reported once, as a structured `tracing` event, rather than once by the
 /// boundary and again as a bare stderr line by the default hook. Outside a request scope — every
 /// other thread and task — it defers to whatever hook was installed before it, unchanged.
-pub(crate) fn install_request_panic_hook() {
+pub fn install_request_panic_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let previous = std::panic::take_hook();
@@ -1234,6 +1364,51 @@ pub fn build_split_routers_serving_doors(
     max_inbound_concurrent: usize,
     server_timing_enabled: bool,
 ) -> (Router, Router, std::sync::Arc<state::AppHandle>) {
+    let routers = build_data_routers(
+        app,
+        doors,
+        sessions,
+        refusals,
+        request_body_max_bytes,
+        max_inbound_concurrent,
+        server_timing_enabled,
+    );
+    (routers.data, routers.admin, routers.handle)
+}
+
+/// THE ROUTERS ONE GENERATION HANDLE SERVES ([`build_data_routers`]): the data router as the
+/// hand-up's hyper loop serves it, the SAME data router with no inbound admission layer, the
+/// admin router, and the handle.
+pub struct DataRouters {
+    /// The data router, its outermost layer the inbound admission cap.
+    pub data: Router,
+    /// The same data router WITHOUT the inbound admission cap (row 192 C): what a listener whose
+    /// requests already took their slot at the kernel's inbound gate (`inbound::admission_gate`, a
+    /// unit's first kernel touch) calls in process, so a request holds ONE slot, as 1.5.5's did.
+    pub ungated: Router,
+    /// The admin router.
+    pub admin: Router,
+    /// The generation handle both data routers and the admin router read.
+    pub handle: std::sync::Arc<state::AppHandle>,
+}
+
+impl std::fmt::Debug for DataRouters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataRouters").finish_non_exhaustive()
+    }
+}
+
+/// [`build_split_routers_serving_doors`], answering the data router with and without its inbound
+/// admission cap ([`DataRouters`]).
+pub fn build_data_routers(
+    app: std::sync::Arc<state::App>,
+    doors: Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
+    sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
+    refusals: Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    request_body_max_bytes: usize,
+    max_inbound_concurrent: usize,
+    server_timing_enabled: bool,
+) -> DataRouters {
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
@@ -1255,6 +1430,7 @@ pub fn build_split_routers_serving_doors(
         request_body_max_bytes,
         server_timing_enabled,
     );
+    let ungated = data.clone();
     let data = apply_inbound_concurrency_limit(data, max_inbound_concurrent);
     // ADMIN plane: a liveness probe (unauthenticated, like the data plane's) + the admin surface +
     // the `admin`-auth plugin routes (confined to this listener exactly like `/api/v1/admin/*`).
@@ -1277,7 +1453,12 @@ pub fn build_split_routers_serving_doors(
         request_body_max_bytes,
         server_timing_enabled,
     );
-    (data, admin, handle)
+    DataRouters {
+        data,
+        ungated,
+        admin,
+        handle,
+    }
 }
 
 /// Project the resolved `auth:` block onto [`state::App::auth_scope_caps`] — the per-PROVIDER admin
@@ -1342,3 +1523,7 @@ mod router_door_tests;
 #[cfg(all(test, feature = "duplex-ws"))]
 #[path = "tests/router_session_tests.rs"]
 mod router_session_tests;
+
+#[cfg(test)]
+#[path = "tests/router_policy_tests.rs"]
+mod router_policy_tests;

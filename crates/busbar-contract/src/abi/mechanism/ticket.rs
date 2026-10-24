@@ -52,6 +52,16 @@ impl Ticket {
     pub const fn is_none(self) -> bool {
         self.generation == 0
     }
+
+    /// THE FRAMING THIS TICKET DRIVES, as one number: its slot and its generation, which no other
+    /// minting of the slot repeats. The host's identity of a connection side: the loader names a
+    /// framer op's framing by it on every auth-handle call (`framing_of`), and the connector names
+    /// the framing it lends a guest list to by it (`Framing::framing_id`), so the two are one
+    /// number. A host-side reading: a plugin never decodes a ticket.
+    #[must_use]
+    pub const fn framing(self) -> u64 {
+        ((self.slot as u64) << 32) | self.generation as u64
+    }
 }
 
 /// A pending host-service result: `(ticket, seq)`, `seq` counting the services one ticket issued.

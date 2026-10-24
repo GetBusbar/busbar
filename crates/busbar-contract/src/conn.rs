@@ -129,7 +129,10 @@ pub struct Piece {
 
 /// Why a connection operation did not answer with what was asked. The refusals carry the text an
 /// operator reads.
+///
+/// Not exhaustive: a new cause is a new variant, and a plugin's match on it keeps a wildcard arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ConnError {
     /// Nothing is ready yet. Interest is registered for the caller's [`Ticket`]; the host wakes the
     /// ticket when something is, and the caller asks again then. Never a block.
@@ -153,6 +156,14 @@ pub enum ConnError {
     /// nothing was presented and nothing was sent. A cause of its own so the plugin can tell a
     /// vanished secret from a refusal by the target, the egress rules or the far end.
     CredentialUnavailable,
+    /// The request's auth REFUSED it: the bound auth answered stop, so nothing was sent. An auth
+    /// outcome, never the destination failing: nothing is recorded against the destination, and
+    /// the walk moves on as it does for an auth that answers nothing.
+    AuthRefused,
+    /// The request's auth FAILED: the auth call itself could not complete (the auth plugin
+    /// faulted, refused the call or ran out of time), so nothing was sent. An auth outcome, never
+    /// the destination failing, as [`ConnError::AuthRefused`].
+    AuthFailed,
 }
 
 impl ConnError {
@@ -171,7 +182,16 @@ impl ConnError {
             Self::CredentialUnavailable => {
                 "the request's credential is unavailable; nothing was sent"
             }
+            Self::AuthRefused => "the request's auth refused it; nothing was sent",
+            Self::AuthFailed => "the request's auth call failed; nothing was sent",
         }
+    }
+
+    /// Whether this is an AUTH outcome ([`ConnError::AuthRefused`], [`ConnError::AuthFailed`]):
+    /// the auth's answer, never the destination failing, so nothing is recorded against it.
+    #[must_use]
+    pub const fn is_auth(self) -> bool {
+        matches!(self, Self::AuthRefused | Self::AuthFailed)
     }
 }
 
@@ -460,6 +480,17 @@ pub fn origin_of(url: &str) -> &str {
     url[after..].find('/').map_or(url, |at| &url[..after + at])
 }
 
+/// THE FRAMER'S OWN HEAD, located at a target ([`PollConns::head_defaults`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeadDefaults {
+    /// Its own head lines, `(name, value)`, in the framer's order.
+    pub lines: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Whether its head states the body's length (`LocateOut::states_length`): `content-length` is
+    /// the framer's OWN line, which the framer writes from the body length the host hands it,
+    /// before its auth call. The host never adds a line of that name.
+    pub states_length: bool,
+}
+
 /// THE CREDENTIAL A UNIT LENDS its passthrough member (the kernel's caller-credential lending): the
 /// caller's verified credential, by the unit it was verified for.
 pub trait LendCredential: Send + Sync {
@@ -716,6 +747,22 @@ pub trait PollConns: Conns {
         } else {
             Err(ConnError::Refused)
         }
+    }
+
+    /// THE FRAMER'S OWN HEAD on a request `owner`'s `need` opens to `target` (the transport ABI's
+    /// `LocateIn::defaults_buf` and `LocateOut::states_length`): the field lines its wire adds to a
+    /// head that does not state them, in the framer's order, and whether its head states the
+    /// body's length. The host's walk adds each line its request does not carry BEFORE the auth
+    /// kind signs the head, so nothing is added after the auth runs (THE DESIGN section 6, step 5);
+    /// the framer then writes the head as handed. The body's length is never one of those: where
+    /// the framer states it, `content-length` is the framer's own line, written by the framer from
+    /// the body length the host hands it, before its auth call, and the host adds no line of that
+    /// name.
+    /// Host-side only, never lowered. The default is none: a table whose framers state none, and a
+    /// framer that predates the fields, add theirs at encode as before.
+    fn head_defaults(&self, owner: InstanceId, need: NeedId, target: &str) -> HeadDefaults {
+        let _ = (owner, need, target);
+        HeadDefaults::default()
     }
 
     /// SEAL ONE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4k: keyed

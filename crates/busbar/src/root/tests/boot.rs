@@ -769,6 +769,99 @@ fn red_3g_deals_a_root_pool_named_after_a_knob_as_a_pool() {
     );
 }
 
+/// A framer door that states `facts` and frames nothing: what the data listener's framer is found
+/// among, by its facts alone.
+struct Stated(busbar_core_connector::framer::DoorFacts);
+
+impl busbar_core_connector::framer::FramerDoor for Stated {
+    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+        &self.0
+    }
+
+    fn cross(
+        &self,
+        _call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        busbar_core_connector::framer::Crossed {
+            outcome: busbar_contract::abi::mechanism::call::Outcome::Refused,
+            error: None,
+        }
+    }
+}
+
+/// A door named `name` of `role`, claiming `claim`; `duplex` = it frames `claim` only after an
+/// upgrade; `datagram` = it is a datagram framer.
+fn stated_door(
+    name: &str,
+    role: u32,
+    claim: &'static str,
+    duplex: bool,
+    datagram: bool,
+) -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
+    std::sync::Arc::new(Stated(busbar_core_connector::framer::DoorFacts {
+        name: name.to_string(),
+        claims: vec![claim],
+        role,
+        composes_over: Vec::new(),
+        ported: false,
+        status_rows: Vec::new(),
+        duplex: if duplex { vec![claim] } else { Vec::new() },
+        datagram,
+    }))
+}
+
+/// THE DATA LISTENER WITHOUT ITS FRAMER IS REFUSED, NEVER HANDED UP (status row 192 C;
+/// `BUSBAR-1.6.0.md` l.896-906: the connector owns every listener, each bound to one transport).
+/// The data listener's framer is found by FACTS among the framers its lines' carriers name: with
+/// no transport answering the carrier, or only a carrier, a datagram framer or a framer that rides
+/// the carrier after an upgrade, boot is refused naming `listen`, and the refusal says the listener
+/// is not bound (nothing falls back to the hand-up). The one that frames the carrier's requests is
+/// the listener's, whatever its place in the carriers' order.
+#[test]
+fn the_data_listener_without_its_framer_is_refused_never_handed_up() {
+    use busbar_contract::abi::transport::{ROLE_CARRIER, ROLE_FRAMER};
+    const CARRIER: &str = "door-carrier";
+    let refused = data_door_framer([CARRIER], |_| None)
+        .err()
+        .expect("no transport answers the lines' carrier: refused");
+    assert_eq!(refused, DATA_LISTENER_UNFRAMED);
+    assert!(
+        refused.starts_with("listen:"),
+        "the refusal names `listen`: {refused}"
+    );
+    assert!(
+        refused.contains("not bound"),
+        "the refusal says no listener is bound: {refused}"
+    );
+    for (what, door) in [
+        (
+            "a carrier",
+            stated_door("carried", ROLE_CARRIER, CARRIER, false, false),
+        ),
+        (
+            "a datagram framer",
+            stated_door("datagrams", ROLE_FRAMER, CARRIER, false, true),
+        ),
+        (
+            "a framer riding the carrier after an upgrade",
+            stated_door("upgraded", ROLE_FRAMER, CARRIER, true, false),
+        ),
+    ] {
+        let found = data_door_framer([CARRIER], |_| Some(std::sync::Arc::clone(&door)));
+        assert_eq!(
+            found.err().as_deref(),
+            Some(DATA_LISTENER_UNFRAMED),
+            "{what} does not frame the data listener's requests"
+        );
+    }
+    let framer = stated_door("requests", ROLE_FRAMER, CARRIER, false, false);
+    let found = data_door_framer(["elsewhere", CARRIER], |c| {
+        (c == CARRIER).then(|| std::sync::Arc::clone(&framer))
+    })
+    .expect("the framer of the carrier's requests is found");
+    assert_eq!(found.facts().name, "requests");
+}
+
 // ── THE DROPPED-IN SECRET ROWS ──
 
 /// The process's one secret axis (`root::linked::secret_rows`) is shared by every test here that

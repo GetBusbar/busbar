@@ -215,7 +215,14 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
 # SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
 # than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp", "auth-webhook-signature"]
+default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp", "auth-webhook-signature", "data-door-handup"]
+# THE DATA DOOR'S HAND-UP (status row 192 C), IN `default` until the flip: on, each data worker's
+# listener hands every accepted socket up to the kernel's hyper loop; off, the data listener is
+# bound to its own framer and the units its transport hands in are served by the accepted data
+# door (`root::accepted`). The source reads it in one place (`root::accepted::DATA_DOOR_FRAMED`)
+# and both paths compile in every build. A build switch, never an environment variable: the oracle
+# recorder strips the environment.
+data-door-handup = []
 # THE LLM PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
 # LLM. Dropping the feature is the deletion test's level-1 build. There is no per-DIALECT feature and
 # there must not be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini`
@@ -634,6 +641,10 @@ busbar-export-file-plugin = { workspace = true, features = ["dropped-in"] }
 # SAME pinned rev as the linked `busbar-transport-tcp` edge above, found in this target dir under
 # `deps/` (hashed) by the door it loads as. The wire's own both-doors conformance lives in its repo.
 busbar-transport-tcp-plugin = { workspace = true }
+# The accepted data door's both-ways proof (`root::accepted`'s `accepted_both_ways` cells): the
+# data listener's framer's own repo's cdylib crate at the SAME pinned rev as its linked edge above,
+# found in this target dir by the door it loads as (its facts, never its name).
+busbar-transport-http-plugin = { workspace = true }
 # The scrape role's first-party proof (`tests/export_scrape_is_first_party.rs`): the scrape sink's
 # repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-prometheus` edge above —
 # the library a tarball of the sink carries, found in this target dir by what it loads as. The

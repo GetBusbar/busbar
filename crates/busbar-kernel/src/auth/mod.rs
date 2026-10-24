@@ -40,12 +40,6 @@ pub const ADMIN_PATH: &str = "/api";
 /// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
 /// default and must explicitly carve out a weaker class if it ever wants one.
 const ADMIN_PATH_PREFIX: &str = "/api/";
-/// The fixed dummy secret `records.secret` answers for an unknown host-held credential
-/// ([`crate::governance::GovState::credential_secret`]): the verifying auth plugin still runs its
-/// full verification over it, so the timing is indistinguishable from a bad-signature rejection
-/// (no identifier-enumeration oracle).
-pub const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
-
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
 // crate::auth::UpstreamCreds caller is unchanged.
@@ -198,7 +192,7 @@ const AUTH_REPLAY: &str = "auth-replay";
 /// claim. FAIL-CLOSED: a claim already taken, a store that cannot answer, and no governance to
 /// claim in each refuse — a ledger that cannot say whether the message was seen must not be read
 /// as saying it was not. A sender's retry inside the window is a replay, refused alike.
-fn replay_claimed(
+pub(crate) fn replay_claimed(
     gov: Option<&crate::governance::GovState>,
     provider: &str,
     replay: &Replay,
@@ -971,6 +965,34 @@ impl AuthMiddleware {
         self.chain.iter().map(|e| e.name.clone()).collect()
     }
 
+    /// The opened instance a guest-list line's auth `provider` is called through by the inbound
+    /// handle ([`crate::inbound`]): the chain position's. `None` for any other name: `keys` is the
+    /// kernel's own arm there, as here, and a name the chain opened nothing for refuses, fail
+    /// closed.
+    #[must_use]
+    pub fn position_calls(&self, provider: &str) -> Option<std::sync::Arc<dyn AuthCalls>> {
+        self.chain
+            .iter()
+            .find(|e| e.provider == provider)
+            .map(|e| std::sync::Arc::clone(&e.calls))
+    }
+
+    /// THE HOST-HELD CREDENTIAL VERIFIER a signed request carries the lines of, with the credential
+    /// kinds it reads: the first such reader, and only when the chain names `keys` (1.5.5's gate
+    /// asked it ahead of the token path; the inbound handle does the same, [`crate::inbound`]).
+    pub(crate) fn signed_reader(
+        &self,
+        headers: &HeaderMap,
+    ) -> Option<(std::sync::Arc<dyn AuthCalls>, Vec<String>)> {
+        if !self.keys_in_chain {
+            return None;
+        }
+        self.readers
+            .iter()
+            .find(|r| r.carried(headers))
+            .map(|r| (std::sync::Arc::clone(&r.calls), r.kinds.clone()))
+    }
+
     /// THE POINT SET OF THE DATA CHAIN'S POSITION `provider` (THE DESIGN §6, "Auth points and
     /// guest lists"): the points its opened instance's `verify` is called at. A provider that is no
     /// boxed position (`keys`) is its host-held credentials' verifiers' union, `{Head}` with none.
@@ -1295,7 +1317,7 @@ async fn judge(
 ///   role-binding synth to be silently re-admitted (`verify_token` already filters non-enabled keys
 ///   to `None`, so this arm can only ever return `resolved: Some(enabled_key)` or a denial — it
 ///   never emits `Identified { resolved: None }`).
-fn keys_arm_verdict(
+pub(crate) fn keys_arm_verdict(
     gov: Option<&crate::governance::GovState>,
     candidate: Option<&str>,
     now: u64,
@@ -1328,7 +1350,7 @@ fn keys_arm_verdict(
 /// label, no roles (a vkey is a direct grant, not a group membership resolved through
 /// role_bindings). Shared by the bearer `keys` arm and the ingress-protocol AWS SigV4
 /// request-signing pre-step so both attach an identical principal.
-fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
+pub(crate) fn principal_from_vkey(key: &crate::governance::VirtualKey) -> Principal {
     Principal {
         id: key.id.clone(),
         name: Some(key.name.clone()),
@@ -1589,6 +1611,11 @@ async fn run_admin_chain(
             _ if operator => {
                 let operator = &app.admin_modules.operator;
                 let mut head = admin_head(method, target, headers, now);
+                if let busbar_kernel_identity::operator::OperatorCredential::Module(calls) =
+                    &**operator
+                {
+                    head.lines = admin_lines(head.lines, calls.as_ref(), operator.carriers());
+                }
                 // The candidate its own carriers yield, lent as the credential beside the lines the
                 // plugin reads its carriers from.
                 head.credential = candidate
@@ -1604,6 +1631,10 @@ async fn run_admin_chain(
                 // The external module is lent the request's head and the candidate 1.5.5 handed
                 // it (the Bearer, else the second admin line).
                 let mut request = admin_head(method, target, headers, now);
+                if let Some(module) = app.admin_modules.modules.get(other) {
+                    let style = app.admin_modules.operator.carriers();
+                    request.lines = admin_lines(request.lines, module.calls.as_ref(), style);
+                }
                 request.credential = candidate
                     .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
                 external_admin_module(app, other, request, probe).await
@@ -1767,6 +1798,27 @@ pub enum AdminDoor {
 /// lines as presented (lower-cased names, in order), stamped `now` (wall-clock seconds). The style
 /// names its credential lines; the kernel hands the lines through and names none (THE DESIGN, "Auth
 /// points and guest lists").
+/// THE LINES AN ADMIN MODULE IS LENT (1.5.5 handed an admin module the Bearer, else the admin line,
+/// and no other): of the request's `lines`, those named both by the module's own carriers and by
+/// the operator credential's `style` (its row's carriers): both sets are the styles' own words, and
+/// the kernel names no line. A module whose tail states it reads every header line
+/// ([`busbar_contract::abi::auth::FACT_INBOUND_ALL_HEADERS`]) is lent every line, as before.
+fn admin_lines(
+    lines: Vec<(String, busbar_contract::redacted::Secret<Vec<u8>>)>,
+    module: &dyn AuthCalls,
+    style: &[String],
+) -> Vec<(String, busbar_contract::redacted::Secret<Vec<u8>>)> {
+    if module.facts() & busbar_contract::abi::auth::FACT_INBOUND_ALL_HEADERS != 0 {
+        return lines;
+    }
+    let own = module.carriers();
+    let named = |words: &[String], name: &str| words.iter().any(|w| w.eq_ignore_ascii_case(name));
+    lines
+        .into_iter()
+        .filter(|(name, _)| named(&own, name) && named(style, name))
+        .collect()
+}
+
 fn admin_head(
     method: &str,
     target: &str,
@@ -2052,7 +2104,7 @@ fn rate_limited_response() -> Response {
 /// writer may override it to match that protocol's own genuine failure status (see
 /// `auth_failure_status_and_kind`). Hardcoding 401 made a tap watching an ingress denial on one of
 /// those overriding protocols contradict the response the client actually got.
-fn unauthorized_with_completion_taps(
+pub(crate) fn unauthorized_with_completion_taps(
     app: &std::sync::Arc<crate::state::App>,
     path: &str,
     door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
@@ -2109,7 +2161,7 @@ fn unauthorized_with_completion_taps(
 /// answered as the gateway answers any arrival it has no capacity for, the at-capacity 503 with
 /// `Retry-After: 1` the inbound cap sheds with, byte for byte. No new customer string, and never a
 /// bad credential's 401. The admin plane keeps its own answer.
-fn verifier_overloaded_response() -> Response {
+pub(crate) fn verifier_overloaded_response() -> Response {
     crate::limits::admission::inbound_overloaded_response()
 }
 
@@ -2246,16 +2298,7 @@ pub(crate) async fn auth_middleware(
                 Some(token)
             }
             dpop::SenderConstraint::Refused => {
-                return Err(match app.planes.admission_for(&path) {
-                    Some(adm) => challenge::refuse(
-                        challenge::ChallengeError::InvalidToken,
-                        &adm.resource_metadata,
-                        "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one \
-                         did not verify.",
-                        None,
-                    ),
-                    None => unauthorized_response(&app, &path, door.as_ref()),
-                });
+                return Err(sender_refusal(&app, &path, door.as_ref()));
             }
         }
     };
@@ -2547,28 +2590,8 @@ pub(crate) async fn auth_middleware(
         // has no shape for it — so core establishes the binding itself, BEFORE the chain runs, and
         // only ever to refuse. See `auth::audience`: a token that passes here still has to pass the
         // chain, so this can narrow what is admitted and can never widen it.
-        if let (Some(adm), Some(tok)) = (admission.as_ref(), client_token.as_deref()) {
-            match audience::inspect_bearer(tok, &adm.audience) {
-                // A busbar-signed token: the verifier below has the claims and the signature, and
-                // does the real check. Pre-judging it here would refuse every valid one.
-                audience::Binding::Deferred | audience::Binding::Bound => {}
-                audience::Binding::Mismatch => {
-                    return Err(challenge::refuse(
-                        challenge::ChallengeError::InvalidToken,
-                        &adm.resource_metadata,
-                        audience::MISMATCH_DESCRIPTION,
-                        None,
-                    ))
-                }
-                audience::Binding::Opaque => {
-                    return Err(challenge::refuse(
-                        challenge::ChallengeError::InvalidToken,
-                        &adm.resource_metadata,
-                        audience::OPAQUE_DESCRIPTION,
-                        None,
-                    ))
-                }
-            }
+        if let Some(refusal) = audience_refusal(admission.as_ref(), client_token.as_deref()) {
+            return Err(refusal);
         }
         let (judged, named) = AuthMiddleware::judge_chain_on_request_path_naming(
             &app.auth,
@@ -2605,50 +2628,106 @@ pub(crate) async fn auth_middleware(
             strike_named(&mut req, &mut consumed, &strips);
             req.extensions_mut().insert(consumed);
         }
-        Err(IdentityRefusal::Denied) => {
-            // On an audience-bound plane the refusal is an RFC 6750 challenge, not a protocol-shaped
-            // envelope: the caller is an OAuth client, and the `WWW-Authenticate` header is the only
-            // place the discovery loop's next step was ever going to come from. `Absent` (no
-            // credential at all) and `invalid_token` (one was presented and failed) are different
-            // signals and clients branch on the difference, so they are not collapsed.
-            if let Some(adm) = admission.as_ref() {
-                let kind = if client_token.is_none() {
-                    challenge::ChallengeError::Absent
-                } else {
-                    challenge::ChallengeError::InvalidToken
-                };
-                return Err(challenge::refuse(
-                    kind,
-                    &adm.resource_metadata,
-                    "Authentication is required for this resource.",
-                    None,
-                ));
-            }
-            return Err(unauthorized_with_completion_taps(
+        Err(refusal) => {
+            return Err(data_identity_refusal(
                 &app,
                 &path,
                 door.as_ref(),
-            ));
-        }
-        Err(IdentityRefusal::NoGrant) => {
-            if let Some(adm) = admission.as_ref() {
-                return Err(challenge::refuse(
-                    challenge::ChallengeError::InsufficientScope,
-                    &adm.resource_metadata,
-                    "The authenticated principal carries no grant on this resource.",
-                    None,
-                ));
-            }
-            return Err(unauthorized_with_completion_taps(
-                &app,
-                &path,
-                door.as_ref(),
-            ));
+                refusal,
+                client_token.is_some(),
+            ))
         }
     }
 
     drop(_mw.take());
     Ok(next.run(req).await)
+}
+
+/// THE DATA-PLANE GATE'S ANSWER TO A REFUSED SENDER (RFC 9449, [`dpop::SenderConstraint::Refused`])
+/// on `path`: the `invalid_token` challenge on an audience-bound plane, else the path's 401
+/// (rendered by the door route's plane when `door` names one). The auth middleware and the inbound
+/// handle's refusals answer through it.
+pub(crate) fn sender_refusal(
+    app: &App,
+    path: &str,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+) -> Response {
+    match app.planes.admission_for(path) {
+        Some(adm) => challenge::refuse(
+            challenge::ChallengeError::InvalidToken,
+            &adm.resource_metadata,
+            "A DPoP-bound access token needs its DPoP proof (RFC 9449), and this one \
+             did not verify.",
+            None,
+        ),
+        None => unauthorized_response(app, path, door),
+    }
+}
+
+/// THE AUDIENCE PRE-FILTER (RFC 8707), for credentials busbar did not mint: on an audience-bound
+/// plane (`admission`), a presented `token` that is opaque, or a JWT minted for another audience, is
+/// refused before any chain runs with the `invalid_token` challenge. The chain's plugin modules
+/// verify an operator IdP's signature and cannot be asked about RFC 8707, so core establishes the
+/// binding itself, and only ever to refuse (see `auth::audience`): a token that passes here still
+/// has to pass the chain. `None` = it goes on. The auth middleware and the inbound handle answer
+/// through it.
+pub(crate) fn audience_refusal(
+    admission: Option<&crate::plane::PlaneAdmission>,
+    token: Option<&str>,
+) -> Option<Response> {
+    let (adm, tok) = (admission?, token?);
+    let description = match audience::inspect_bearer(tok, &adm.audience) {
+        // A busbar-signed token: the verifier has the claims and the signature, and does the real
+        // check. Pre-judging it here would refuse every valid one.
+        audience::Binding::Deferred | audience::Binding::Bound => return None,
+        audience::Binding::Mismatch => audience::MISMATCH_DESCRIPTION,
+        audience::Binding::Opaque => audience::OPAQUE_DESCRIPTION,
+    };
+    Some(challenge::refuse(
+        challenge::ChallengeError::InvalidToken,
+        &adm.resource_metadata,
+        description,
+        None,
+    ))
+}
+
+/// THE DATA-PLANE GATE'S ANSWER to a chain verdict that resolved to `refusal` on `path` (`presented`:
+/// the request carried a client credential), the one the auth middleware answers with and the
+/// inbound handle's refusals render through (THE DESIGN §6 l.962, every refusal the kernel's).
+///
+/// On an audience-bound plane the refusal is an RFC 6750 challenge, not a protocol-shaped envelope:
+/// the caller is an OAuth client, and the `WWW-Authenticate` header is the only place the discovery
+/// loop's next step was ever going to come from. `Absent` (no credential at all) and
+/// `invalid_token` (one was presented and failed) are different signals and clients branch on the
+/// difference, so they are not collapsed; an identity holding no grant is `insufficient_scope`.
+/// Anywhere else it is the path's native 401, rendered by the door route's plane when `door`
+/// names one.
+pub(crate) fn data_identity_refusal(
+    app: &std::sync::Arc<crate::state::App>,
+    path: &str,
+    door: Option<&(busbar_kernel::plane_routes::PlaneRefuseFn, String)>,
+    refusal: IdentityRefusal,
+    presented: bool,
+) -> Response {
+    match (refusal, app.planes.admission_for(path)) {
+        (IdentityRefusal::Denied, Some(adm)) => challenge::refuse(
+            if presented {
+                challenge::ChallengeError::InvalidToken
+            } else {
+                challenge::ChallengeError::Absent
+            },
+            &adm.resource_metadata,
+            "Authentication is required for this resource.",
+            None,
+        ),
+        (IdentityRefusal::NoGrant, Some(adm)) => challenge::refuse(
+            challenge::ChallengeError::InsufficientScope,
+            &adm.resource_metadata,
+            "The authenticated principal carries no grant on this resource.",
+            None,
+        ),
+        (_, None) => unauthorized_with_completion_taps(app, path, door),
+    }
 }
 
 // IdentityRefusal (WHY a chain verdict did not resolve to an admitted identity) now lives in the
@@ -2817,6 +2896,29 @@ impl AuthMiddleware {
             carriers: test_inbound_style(),
             issued: None,
         }
+    }
+
+    /// TEST-ONLY: this chain naming `keys`, with `calls` as a host-held credentials' verifier that
+    /// reads `kinds` and whose credential sits on `carriers`.
+    #[must_use]
+    pub fn with_reader_for_test(
+        mut self,
+        calls: std::sync::Arc<dyn AuthCalls>,
+        kinds: Vec<String>,
+        carriers: &[&str],
+    ) -> Self {
+        self.keys_in_chain = true;
+        self.readers.push(CredentialReader {
+            name: "test-reader".to_string(),
+            kinds,
+            issued: None,
+            carriers: carriers
+                .iter()
+                .filter_map(|c| HeaderName::from_bytes(c.as_bytes()).ok())
+                .collect(),
+            calls,
+        });
+        self
     }
 }
 

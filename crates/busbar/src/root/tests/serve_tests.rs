@@ -1204,9 +1204,16 @@ pub(super) mod session_door {
         // upgrade lines and the offered auth points, as production composes both.
         let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
         let offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
-        let mounts =
-            crate::root::serve::door_mounts(served, || CARD.pin(), &[], &[], &upgrades, &offers)
-                .expect("its claims mount");
+        let mounts = crate::root::serve::door_mounts(
+            served,
+            || CARD.pin(),
+            &[],
+            &[],
+            &[],
+            &upgrades,
+            &offers,
+        )
+        .expect("its claims mount");
         let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
             Arc::clone(&app),
             mounts.routes,

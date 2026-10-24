@@ -55,6 +55,19 @@ pub struct AcceptLimits {
     pub handshake_timeout: Duration,
 }
 
+impl AcceptLimits {
+    /// NO CONNECTION CAP, the handshake bound the default: the root's own binds keep 1.5.5's
+    /// bound (`ROOT_BIND_LIMITS`, `BUSBAR-1.6.0.md` l.479: "the root binds uncapped"); the 1024
+    /// default is a plugin listener's.
+    #[must_use]
+    pub const fn uncapped() -> Self {
+        Self {
+            max_conns: usize::MAX,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+        }
+    }
+}
+
 impl Default for AcceptLimits {
     fn default() -> Self {
         Self {
@@ -71,6 +84,63 @@ pub struct Accepted {
     pub conn: Connection,
     /// The far end's address.
     pub peer: SocketAddr,
+}
+
+/// ONE CONNECTION A LISTENER ADMITTED, NOT YET COMPOSED ([`Listening::poll_admit`]): the
+/// carrier's connection, bare (nothing secured, nothing framed, so the placement balancer may move
+/// it: [`Carried::hand_up`] there, [`Carried::adopted`] where it lands), its far end, and the
+/// listener's slot for it.
+#[derive(Debug)]
+pub struct Arrived {
+    /// The carrier's connection.
+    pub carried: Carried,
+    /// The far end.
+    pub peer: SocketAddr,
+    /// The listener's slot, freed when dropped.
+    pub slot: Slot,
+}
+
+/// WHAT A LISTENER COMPOSES ITS CONNECTIONS WITH, to be carried to whichever worker a connection
+/// is placed on ([`Listening::composer`]): its framer and what its accept asks for (the server
+/// TLS, the framer's protocol offer, the handshake bound, the guest list it lends).
+#[derive(Clone)]
+pub struct Composer {
+    door: Option<Arc<dyn FramerDoor>>,
+    accept: Accept,
+    hands_up: bool,
+}
+
+impl std::fmt::Debug for Composer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Composer")
+            .field("entry", &self.door.as_ref().map(|d| d.facts().name.clone()))
+            .field("accept", &self.accept)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Composer {
+    /// COMPOSE an admitted connection where it now runs: `carrier -> [TLS] -> framer`, server
+    /// TLS first when the listener is secured, then the framing begun on `SIDE_ACCEPT`
+    /// ([`Connection::accepted`]). `slot` is the listener's hold, freed when the connection is
+    /// dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] for a stream listener's (it frames nothing); the connection could not
+    /// be composed.
+    pub fn compose(
+        &self,
+        carried: Carried,
+        peer: SocketAddr,
+        slot: Option<Slot>,
+    ) -> Result<Accepted, Failure> {
+        if self.hands_up {
+            return Err(Failure::Refused("a stream listener frames nothing".into()));
+        }
+        Connection::accepted(self.door.clone(), carried, &self.accept, slot)
+            .map(|conn| Accepted { conn, peer })
+    }
 }
 
 /// One socket a stream listener admitted ([`Listening::poll_accept_stream`]).
@@ -232,12 +302,49 @@ impl Listening {
                 tls,
                 alpn,
                 handshake_timeout: limits.handshake_timeout,
+                guests: None,
             },
             max_conns: limits.max_conns,
             live: Arc::new(AtomicUsize::new(0)),
             backoff: None,
             sleep: None,
         })
+    }
+
+    /// [`Listening::bind`] SECURED FROM CONFIG (`BUSBAR-1.6.0.md` THE DESIGN §6 step 2: TLS is the
+    /// listener's `tls:`; TLS is core-only): the operator's `tls:` block (`None` = in the clear),
+    /// its key material resolved through `secrets`, built into the server TLS here, so the caller
+    /// names no TLS library. `limits` bound the listener ([`AcceptLimits::uncapped`] for the
+    /// root's own binds).
+    ///
+    /// # Errors
+    ///
+    /// The key material did not resolve or parse (a [`crate::tls::FailClosed`], before anything
+    /// is bound: never a plaintext fallback); the carrier or the host would not bind the address.
+    pub fn bind_secured(
+        door: Option<Arc<dyn FramerDoor>>,
+        via: &Via,
+        bind: &str,
+        tls: Option<&busbar_kernel::config::sections::TlsCfg>,
+        secrets: &busbar_kernel::config::secret::SecretResolver,
+        alpn: Vec<Vec<u8>>,
+        limits: AcceptLimits,
+    ) -> std::io::Result<Self> {
+        let tls = match tls {
+            None => None,
+            Some(cfg) => {
+                // The process's one crypto backend, installed before the config is built.
+                let _ = crate::tls::installed_crypto();
+                let config = crate::tls::build_server_config(cfg, secrets).map_err(|reason| {
+                    std::io::Error::other(crate::tls::FailClosed::MaterialUnavailable {
+                        label: bind.to_owned(),
+                        reason,
+                    })
+                })?;
+                Some(Arc::new(config))
+            }
+        };
+        Self::bind(door, via, bind, tls, alpn, limits)
     }
 
     /// A STREAM LISTENER, for the root's own, NON-PLANE binds only (its data door and its admin
@@ -283,12 +390,26 @@ impl Listening {
                 tls: None,
                 alpn: Vec::new(),
                 handshake_timeout: limits.handshake_timeout,
+                guests: None,
             },
             max_conns: limits.max_conns,
             live: Arc::new(AtomicUsize::new(0)),
             backoff: None,
             sleep: None,
         })
+    }
+
+    /// THE SAME LISTENER, LENDING ITS GUEST LIST (`BUSBAR-1.6.0.md` THE DESIGN §6, "Auth points and
+    /// guest lists", steps 2 and 4: the connector owns the listener, bound to one transport, and
+    /// that transport matches each decoded head against the listener's guest list and calls the
+    /// line's auth): every connection accepted from here on is framed lent the list `book` reads
+    /// at its accept ([`Connection::accepted`], [`crate::framer::Framing::begin_lent`]), on the
+    /// framer's tickets. A listener that carries its carrier as itself, or hands its sockets up,
+    /// frames nothing and lends nothing.
+    #[must_use]
+    pub fn lending(mut self, book: crate::framer::GuestBook) -> Self {
+        self.accept.guests = Some(book);
+        self
     }
 
     /// The address bound.
@@ -310,25 +431,52 @@ impl Listening {
     ///
     /// The accepted connection could not be composed (it is dropped; the listener stays up).
     pub fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Result<Accepted, Failure>> {
-        let door = match &self.mode {
-            Mode::Framed(d) => Some(Arc::clone(d)),
-            Mode::Carried => None,
-            Mode::HandUp => {
-                return Poll::Ready(Err(Failure::Refused(
-                    "a stream listener frames nothing".into(),
-                )))
-            }
-        };
+        Poll::Ready(match std::task::ready!(self.poll_admit(cx)) {
+            Ok(a) => self.composer().compose(a.carried, a.peer, Some(a.slot)),
+            Err(f) => Err(f),
+        })
+    }
+
+    /// THE ACCEPT, SPLIT FOR PLACEMENT (row 192 C): the next admitted connection under the cap,
+    /// BARE: nothing secured and nothing framed yet, so the placement balancer may move it to
+    /// another worker before any handshake ([`Carried::hand_up`], then [`Carried::adopted`]
+    /// there); [`Composer::compose`] then secures and frames it where it runs. `Pending` with
+    /// `cx`'s waker on the carrier's accept (or the backoff's timer); one past the cap is accepted
+    /// and closed here, never answered.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] on a stream listener (it frames nothing).
+    pub fn poll_admit(&mut self, cx: &mut Context<'_>) -> Poll<Result<Arrived, Failure>> {
+        if matches!(self.mode, Mode::HandUp) {
+            return Poll::Ready(Err(Failure::Refused(
+                "a stream listener frames nothing".into(),
+            )));
+        }
         let (got, peer, slot) = std::task::ready!(self.poll_conn(cx));
         let Got::Carried(carried) = got else {
             return Poll::Ready(Err(Failure::Refused(
                 "a stream listener frames nothing".into(),
             )));
         };
-        Poll::Ready(
-            Connection::accepted(door, carried, &self.accept, Some(slot))
-                .map(|conn| Accepted { conn, peer }),
-        )
+        Poll::Ready(Ok(Arrived {
+            carried,
+            peer,
+            slot,
+        }))
+    }
+
+    /// What this listener composes its connections with, for whichever worker each is placed on.
+    #[must_use]
+    pub fn composer(&self) -> Composer {
+        Composer {
+            door: match &self.mode {
+                Mode::Framed(d) => Some(Arc::clone(d)),
+                Mode::Carried | Mode::HandUp => None,
+            },
+            accept: self.accept.clone(),
+            hands_up: matches!(self.mode, Mode::HandUp),
+        }
     }
 
     /// The next admitted socket of a STREAM listener ([`Listening::bind_stream`]), as it arrived:

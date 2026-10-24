@@ -186,6 +186,22 @@ fn load_client_roots(
 /// The listener's hyper builder serves both: it reads an `h2` connection's preface and serves HTTP/2.
 const ALPN_OFFER: [&[u8]; 2] = [ALPN_H2, b"http/1.1"];
 
+/// THE ALPN OFFER OF A SECURED ROOT LISTENER (OWNER RULING Q137, 2026-10-04; PB-69): the one list
+/// a configured `tls:` block's listener agrees to, in its order of preference, for a bind that
+/// states its offer per accept ([`crate::listen::Listening::bind_secured`]). Never one id alone.
+#[must_use]
+pub fn server_alpn() -> Vec<Vec<u8>> {
+    ALPN_OFFER.iter().map(|p| p.to_vec()).collect()
+}
+
+/// THE ENTRY OF [`server_alpn`] THAT CARRIES CONCURRENT STREAMS on one connection (RFC 9113): a
+/// connection whose framer states it agreed this one (`Connection::agreed`) multiplexes its
+/// requests, each stream ending on its own.
+#[must_use]
+pub fn multiplexed_alpn() -> &'static [u8] {
+    ALPN_H2
+}
+
 /// The ALPN id of HTTP/2 over TLS (RFC 9113 §3.3).
 const ALPN_H2: &[u8] = b"h2";
 

@@ -204,8 +204,9 @@ pub struct Connection {
     opening: Option<Opening>,
     /// Its head words.
     head_words: HeadWords,
-    /// Writes the caller made before the framing began, in order: `(stream, bytes, end)`.
-    early: Vec<(u64, Vec<u8>, bool, bool)>,
+    /// Writes held back, in order: those the caller made before the framing began, and those on a
+    /// stream an op parked on its ticket holds ([`Framing::holds`]).
+    early: Vec<Early>,
     /// Every byte the carrier has taken, for the life of the connection.
     flushed: u64,
     /// The far side ENDED its stream (a read answered end of file) and the framer was told, once.
@@ -233,14 +234,56 @@ pub struct Connection {
     /// THE PROXY TUNNEL a dial through a proxy asks for before anything else rides the socket
     /// ([`crate::proxy`]); `None` once the proxy answered, and on every direct connection.
     tunnel: Option<Tunnel>,
+    /// The framing's `begin` is parked on its ticket (an auth call it made is not ready): the
+    /// dial's first message and the early writes wait for it to complete.
+    opening_owed: bool,
+    /// What the carrier read while the framing's `begin` was parked, in order, for the framer
+    /// once it completes: `(bytes, end, end_of_frame)`.
+    unfed: VecDeque<(Vec<u8>, bool, bool)>,
     /// The protocols connection security offered (a dial) or agrees to (an accept), in the
     /// handshake's ProtocolNameList encoding: what the agreed protocol is judged against
     /// (`check_agreed`) before the framer is handed it. Empty = none offered.
     alpn_offer: Vec<u8>,
+    /// THE LISTENER'S GUEST LIST, read off its book when the connection was accepted, lent to
+    /// the framing's `begin` ([`Framing::begin_lent`]); `None` on a dial, and on a listener that
+    /// lends none.
+    lent: Option<Arc<crate::framer::GuestLines>>,
+    /// THE LISTENER'S PROTOCOL OFFER ([`Accept::alpn`], the framer's accepting offer), in order:
+    /// what the framer's stated agreed position names; empty on a dial.
+    offer: Vec<Vec<u8>>,
+    /// The 1-based position in `offer` the framer last stated it agreed (`FramerYield::agreed`);
+    /// `0` = not stated.
+    agreed: u32,
     /// A STREAM'S OWN BACKPRESSURE (`busbar_contract::abi::transport`): the streams whose last
     /// emit the framer answered `YIELD_STREAM_FULL`. Nothing more is emitted on one until the
     /// framer hands a writable piece for it, or its end or failure piece.
     full: std::collections::HashSet<u64>,
+}
+
+/// One write held back until the framing takes it: its stream, bytes, whether they end the
+/// stream's message, whether it is a text message, on a dialled request's head the length of the
+/// body it opens with where it is known, and on an accepted stream's answer head the answer's
+/// status (`0` = none).
+struct Early {
+    stream: u64,
+    bytes: Vec<u8>,
+    end: bool,
+    text: bool,
+    body_len: Option<u64>,
+    status: u32,
+}
+
+impl Early {
+    fn of(stream: u64, bytes: &[u8], end: bool, text: bool) -> Self {
+        Self {
+            stream,
+            bytes: bytes.to_vec(),
+            end,
+            text,
+            body_len: None,
+            status: 0,
+        }
+    }
 }
 
 /// A CONNECT exchange in flight: the request (until it is queued), the proxy's answer so far, and
@@ -298,6 +341,9 @@ pub struct Accept {
     pub alpn: Vec<Vec<u8>>,
     /// The bound on the handshake; the framer's own deadlines bound the rest.
     pub handshake_timeout: Duration,
+    /// Where the listener's guest list is read at each accept, lent to the framing's `begin`
+    /// ([`crate::framer::Framing::begin_lent`]); `None` = the listener lends none.
+    pub guests: Option<crate::framer::GuestBook>,
 }
 
 impl std::fmt::Debug for Accept {
@@ -305,6 +351,7 @@ impl std::fmt::Debug for Accept {
         f.debug_struct("Accept")
             .field("tls", &self.tls.is_some())
             .field("handshake_timeout", &self.handshake_timeout)
+            .field("guests", &self.guests.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -420,6 +467,7 @@ pub fn carried_at(claim: &str, target: &str) -> Result<framer::Located, Failure>
         secure: false,
         offer: Vec::new(),
         defaults: Vec::new(),
+        states_length: false,
     })
 }
 
@@ -701,6 +749,7 @@ impl Connection {
         let established = Established {
             offered_name,
             agreed_protocol: prior,
+            scheme: Established::scheme_of(tls.is_some()),
             claim: door
                 .as_ref()
                 .unwrap_or(carried.door())
@@ -740,8 +789,13 @@ impl Connection {
             presented,
             security_error: None,
             cause: None,
+            opening_owed: false,
+            unfed: VecDeque::new(),
             tunnel: None,
             alpn_offer: Vec::new(),
+            lent: None,
+            offer: Vec::new(),
+            agreed: 0,
             full: std::collections::HashSet::new(),
         })
     }
@@ -782,6 +836,7 @@ impl Connection {
         )
         .map_err(dial_failure)?;
         let established = Established {
+            scheme: Established::scheme_of(false),
             client_identity: false,
             peer_key_pin: None,
             offered_name: None,
@@ -796,8 +851,13 @@ impl Connection {
         let mut conn = Self {
             framer_error: None,
             cause: None,
+            opening_owed: false,
+            unfed: VecDeque::new(),
             tunnel: None,
             alpn_offer: Vec::new(),
+            lent: None,
+            offer: Vec::new(),
+            agreed: 0,
             full: std::collections::HashSet::new(),
             security_error: None,
             key_pin: None,
@@ -865,7 +925,7 @@ impl Connection {
             Phase::Open => self.put(EXCHANGE_STREAM, bytes, true, false)?,
             Phase::Connecting | Phase::Handshaking => {
                 self.early
-                    .push((EXCHANGE_STREAM, bytes.to_vec(), true, false));
+                    .push(Early::of(EXCHANGE_STREAM, bytes, true, false));
             }
         }
         if let Err(f) = self.drive(cx) {
@@ -915,6 +975,7 @@ impl Connection {
         let established = Established {
             offered_name: None,
             agreed_protocol: None,
+            scheme: Established::scheme_of(tls.is_some()),
             claim: door
                 .as_ref()
                 .unwrap_or(carried.door())
@@ -953,8 +1014,13 @@ impl Connection {
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             security_error: None,
             cause: None,
+            opening_owed: false,
+            unfed: VecDeque::new(),
             tunnel: None,
             alpn_offer,
+            lent: accept.guests.as_ref().and_then(|book| book()),
+            offer: accept.alpn.clone(),
+            agreed: 0,
             full: std::collections::HashSet::new(),
         };
         if conn.tls.is_none() {
@@ -966,7 +1032,31 @@ impl Connection {
     /// Whether the connection is past its handshake and framing.
     #[must_use]
     pub fn is_open(&self) -> bool {
-        matches!(self.phase, Phase::Open)
+        matches!(self.phase, Phase::Open) && !self.opening_owed
+    }
+
+    /// THE FRAMING'S IDENTITY ([`Framing::framing_id`]): the number the loader names this
+    /// connection's framing by on every auth-handle call its framer makes (`framing_of` the op's
+    /// ticket), so an admitted request pairs with its unit by (owner, framing, stream). `None`
+    /// before the framing begins, for a carrier carried as itself, and for a ticket-less framing.
+    #[must_use]
+    pub fn framing_id(&self) -> Option<u64> {
+        self.framing.as_ref().and_then(Framing::framing_id)
+    }
+
+    /// THE PROTOCOL THE CONNECTION AGREED, as its framer last stated it on an accepted connection
+    /// (`FramerYield::agreed`, a position in its accepting offer), resolved against the offer the
+    /// listener made: the protocol's bytes, opaque to the host. `None` = not stated (and on every
+    /// dial).
+    #[must_use]
+    pub fn agreed(&self) -> Option<&[u8]> {
+        let at = usize::try_from(self.agreed).ok()?.checked_sub(1)?;
+        self.offer.get(at).map(Vec::as_slice)
+    }
+
+    /// Whether an op is parked on the framing's ticket, waiting for its wake.
+    fn parked(&self) -> bool {
+        self.framing.as_ref().is_some_and(Framing::parked)
     }
 
     /// Whether this connection was dialled (its exchanges are the caller's requests), not accepted.
@@ -1006,6 +1096,8 @@ impl Connection {
             && !self.read_end
             && self.inbox.is_empty()
             && self.early.is_empty()
+            && !self.parked()
+            && self.unfed.is_empty()
     }
 
     /// Take in whatever the far end sent while the connection sat idle (its goodbye, a closed
@@ -1046,12 +1138,16 @@ impl Connection {
             Phase::Ended => return Err(Failure::Closed),
             _ => {}
         }
+        let body_len = self.opening_body_len(opening.as_ref());
         let Some(message) = self.encode_opening(opening, head_words)? else {
             return Ok(());
         };
         match self.phase {
-            Phase::Open => self.put(stream, &message, true, false)?,
-            _ => self.early.push((stream, message, true, false)),
+            Phase::Open => self.put_opening(stream, &message, true, false, body_len)?,
+            _ => self.early.push(Early {
+                body_len,
+                ..Early::of(stream, &message, true, false)
+            }),
         }
         if let Err(f) = self.drive(cx) {
             self.phase = Phase::Failed(f.clone());
@@ -1091,12 +1187,55 @@ impl Connection {
             .map_err(|e| Failure::Refused(e.to_string()))
     }
 
+    /// The length of the body a DIALLED request opens with, for the framer's emit of its head
+    /// ([`Framing::emit_opening`]): the host holds an opening's body whole, so it is known.
+    /// `None` on an accepting side and on a carrier carried as itself (no framer, no head).
+    fn opening_body_len(&self, opening: Option<&Opening>) -> Option<u64> {
+        let (_, body) = opening?;
+        (self.side == SIDE_DIAL && self.door.is_some()).then_some(body.len() as u64)
+    }
+
     /// Hand `bytes` on `stream` to the wire: through the framing (`emit`); or, for a carrier carried
     /// as itself, queued for the carrier as they are, `end` marking the end of a frame of its wire
     /// (through connection security when the stream was secured mid-way).
     fn put(&mut self, stream: u64, bytes: &[u8], end: bool, text: bool) -> Result<(), Failure> {
+        self.put_opening(stream, bytes, end, text, None)
+    }
+
+    /// [`Self::put`], with the opening body's length on a dialled request's head emit.
+    fn put_opening(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        end: bool,
+        text: bool,
+        body_len: Option<u64>,
+    ) -> Result<(), Failure> {
+        self.put_early_one(Early {
+            body_len,
+            ..Early::of(stream, bytes, end, text)
+        })
+    }
+
+    /// Hand one write to the wire, or hold it back behind its stream's.
+    fn put_early_one(&mut self, e: Early) -> Result<(), Failure> {
+        let (stream, end, text, body_len, status) = (e.stream, e.end, e.text, e.body_len, e.status);
+        // A PENDING ANSWER PARKS ONLY ITS OWN STREAM: a write on a stream an op parked on its
+        // ticket holds (or one whose earlier writes still wait) waits, in order, for that op to
+        // complete; every other stream's write goes now.
+        if let Some(framing) = self.framing.as_ref() {
+            if framing.holds(stream) || self.early.iter().any(|e| e.stream == stream) {
+                self.early.push(e);
+                return Ok(());
+            }
+        }
         if let Some(framing) = self.framing.as_mut() {
-            let y = framing.emit(stream, bytes, end, text).map_err(failed)?;
+            let y = if status == 0 {
+                framing.emit_opening(stream, &e.bytes, end, text, body_len)
+            } else {
+                framing.emit_head(stream, &e.bytes, end, status)
+            }
+            .map_err(failed)?;
             if y.full {
                 self.full.insert(stream);
             }
@@ -1107,10 +1246,10 @@ impl Connection {
         }
         match self.tls.as_mut() {
             Some(tls) => {
-                tls.writer().write_all(bytes).map_err(failed)?;
+                tls.writer().write_all(&e.bytes).map_err(failed)?;
                 self.tls_out()?;
             }
-            None => self.queue(bytes, end),
+            None => self.queue(&e.bytes, end),
         }
         Ok(())
     }
@@ -1200,6 +1339,7 @@ impl Connection {
             self.tls = Some(rustls::Connection::Client(client));
             self.upgraded = true;
             self.established.offered_name = Some(name.to_owned());
+            self.established.scheme = Established::scheme_of(true);
             self.open_deadline = Some(Instant::now() + timeout);
             if !matches!(self.phase, Phase::Connecting) {
                 if let Err(f) = self.tls_out() {
@@ -1212,7 +1352,9 @@ impl Connection {
             match &self.phase {
                 Phase::Failed(f) => return Poll::Ready(Err(f.clone())),
                 Phase::Ended => return Poll::Ready(Err(Failure::Closed)),
-                Phase::Open if !self.handshaking() => return Poll::Ready(Ok(())),
+                Phase::Open if !self.handshaking() && !self.opening_owed => {
+                    return Poll::Ready(Ok(()))
+                }
                 _ => {}
             }
             match self.drive(cx) {
@@ -1333,7 +1475,7 @@ impl Connection {
 
     /// The bytes held for the socket: early writes and framed bytes it has not taken.
     fn buffered(&self) -> usize {
-        self.out.len() + self.early.iter().map(|(_, b, _, _)| b.len()).sum::<usize>()
+        self.out.len() + self.early.iter().map(|e| e.bytes.len()).sum::<usize>()
     }
 
     /// Offer `bytes` on the connection's exchange (`end` = the caller's message is complete, `text` =
@@ -1405,7 +1547,7 @@ impl Connection {
             Phase::Ended if self.framing.is_none() => return Err(Failure::Closed),
             Phase::Open | Phase::Ended => self.put(stream, bytes, end, text)?,
             Phase::Connecting | Phase::Handshaking => {
-                self.early.push((stream, bytes.to_vec(), end, text));
+                self.early.push(Early::of(stream, bytes, end, text));
             }
         }
         if let Err(f) = self.drive(cx) {
@@ -1413,6 +1555,178 @@ impl Connection {
             return Err(f);
         }
         Ok(take)
+    }
+
+    /// THE ANSWER'S HEAD AND ITS STATUS IN ONE EMIT (INBOUND-LISTEN; `BUSBAR-1.6.0.md` l.5038,
+    /// [`EmitIn::status`](busbar_contract::abi::transport::EmitIn::status), a tail field: no ABI
+    /// change): `fields` is the head as the entry's `encode` rendered it, `status` the answer's
+    /// status in the numbering of the claim `stream` arrived on, `end` = the answer ends with its
+    /// head. The head goes WHOLE OR NOT AT ALL (it is never cut, so its status rides the emit that
+    /// carries all of it), now if the framing has begun, else once it does, and behind any write
+    /// its stream still holds back; how many bytes were taken is answered as [`Self::emit`]
+    /// answers it. A FULL stream (A STREAM'S OWN BACKPRESSURE: the framer answered its last emit
+    /// `YIELD_STREAM_FULL`) takes none, `Ok(0)`, `cx` parked on the socket whose bytes bring the
+    /// framer's writable piece, and so does a write buffer without room for the head while it
+    /// holds anything; call again once it is writable.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] on a dialled connection or one with no framer (no answer head is its
+    /// to state), or a status of `0`; the connection is closed or failed, or the framer refused
+    /// the head.
+    pub fn emit_head(
+        &mut self,
+        stream: u64,
+        status: u32,
+        fields: &[u8],
+        end: bool,
+        cx: &mut Context<'_>,
+    ) -> Result<usize, Failure> {
+        if self.side != SIDE_ACCEPT || self.door.is_none() {
+            return Err(Failure::Refused(
+                "an answer head is stated on an accepted, framed connection only".into(),
+            ));
+        }
+        if status == 0 {
+            return Err(Failure::Refused("an answer head states its status".into()));
+        }
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended if self.framing.is_none() => return Err(Failure::Closed),
+            _ => {}
+        }
+        // Let the socket take what it can (and the framer's writable piece arrive) first.
+        if let Err(f) = self.drive(cx) {
+            self.fail(f.clone());
+            return Err(f);
+        }
+        if self.full.contains(&stream) && !fields.is_empty() {
+            return Ok(0);
+        }
+        let buffered = self.buffered();
+        if buffered > 0 && fields.len() > WRITE_BUFFER_BYTES.saturating_sub(buffered) {
+            return Ok(0);
+        }
+        match &self.phase {
+            Phase::Failed(f) => return Err(f.clone()),
+            Phase::Ended if self.framing.is_none() => return Err(Failure::Closed),
+            _ => {}
+        }
+        let head = Early {
+            status,
+            ..Early::of(stream, fields, end, false)
+        };
+        match self.phase {
+            Phase::Open | Phase::Ended => self.put_early_one(head)?,
+            _ => self.early.push(head),
+        }
+        if let Err(f) = self.drive(cx) {
+            self.fail(f.clone());
+            return Err(f);
+        }
+        Ok(fields.len())
+    }
+
+    /// REFUSE ONE STREAM of this connection: the framer's `refuse` ([`Framing::refuse`]) renders
+    /// `bytes` as the refusal on its wire, with its neutral `status` (`0` = none stated);
+    /// `head_sent` = the stream's answer head already went, so the refusal is its closing lines
+    /// only. What it renders is queued for the far end; the connection's next poll writes it.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`] on a connection with no framer; the connection is closed or failed, an
+    /// op parked on the stream holds it, or the framer refused to render the refusal.
+    pub fn refuse_stream(
+        &mut self,
+        stream: u64,
+        bytes: &[u8],
+        status: u32,
+        head_sent: bool,
+    ) -> Result<(), Failure> {
+        if self.door.is_none() {
+            return Err(Failure::Refused(
+                "a carrier carried as itself has no framer to refuse a stream".into(),
+            ));
+        }
+        if let Phase::Failed(f) = &self.phase {
+            return Err(f.clone());
+        }
+        let Some(framing) = self.framing.as_mut() else {
+            return Err(Failure::Closed);
+        };
+        let y = framing
+            .refuse(Some(stream), bytes, status, head_sent)
+            .map_err(failed)?;
+        self.absorb(y)
+    }
+
+    /// SWITCH THE CONNECTION TO ANOTHER FRAMER (an upgrade answered on `stream`): the framing it
+    /// has DETACHES ([`Framing::detach`]), handing back the bytes it took and did not answer (the
+    /// upgrade request itself, unanswered, and whatever followed it), and `door` ADOPTS the
+    /// connection on the accepting side ([`Framing::adopt`], `SIDE_ACCEPT`) with those bytes
+    /// first; the adopting framer writes its own answer to the upgrade. Pieces the old framing
+    /// handed up on `stream` and not yet taken are dropped: their bytes ride the hand-over. The
+    /// adopting framing carries the connection's security and facts on, under `door`'s claim.
+    ///
+    /// # Errors
+    ///
+    /// [`Failure::Refused`]: the connection is dialled, has no framing, holds writes back or an
+    /// op parked, or holds an untaken piece of another stream; the old framer would not let the
+    /// connection go, or `door` would not adopt it (the connection fails with it).
+    pub fn switch(&mut self, stream: u64, door: Arc<dyn FramerDoor>) -> Result<(), Failure> {
+        if let Phase::Failed(f) = &self.phase {
+            return Err(f.clone());
+        }
+        if self.side != SIDE_ACCEPT {
+            return Err(Failure::Refused(
+                "a switch is the answer to an accepted connection's upgrade".into(),
+            ));
+        }
+        if self.framing.is_none() || !matches!(self.phase, Phase::Open | Phase::Ended) {
+            return Err(Failure::Refused(
+                "a switch needs the framing the connection has begun".into(),
+            ));
+        }
+        if self.parked() || !self.early.is_empty() || !self.unfed.is_empty() {
+            return Err(Failure::Refused(
+                "a switch waits for the writes and ops the framing still holds".into(),
+            ));
+        }
+        if self.inbox.iter().any(|p| p.stream != stream) {
+            return Err(Failure::Refused(
+                "a switch would drop another stream's untaken piece".into(),
+            ));
+        }
+        let Some(old) = self.framing.take() else {
+            return Err(Failure::Closed);
+        };
+        let leftover = match old.detach() {
+            Ok(left) => left,
+            Err(e) => {
+                let f = Failure::Refused(e.to_string());
+                self.fail(f.clone());
+                return Err(f);
+            }
+        };
+        self.inbox.clear();
+        // The old framing's backpressure was its own: the adopting framer states its own.
+        self.full.clear();
+        self.framer_deadline = None;
+        self.established.claim = door.facts().claims.first().map(|c| (*c).to_owned());
+        let (framing, y) =
+            match Framing::adopt(Arc::clone(&door), SIDE_ACCEPT, &leftover, &self.established) {
+                Ok(adopted) => adopted,
+                Err(e) => {
+                    self.framer_error = Some(e.error.clone());
+                    let f = Failure::Refused(e.to_string());
+                    self.fail(f.clone());
+                    return Err(f);
+                }
+            };
+        self.door = Some(door);
+        self.framing = Some(framing);
+        self.phase = Phase::Open;
+        self.absorb(y)
     }
 
     /// One pass: connect, handshake, flush, read, and keep the deadlines. `Ok(true)` = something
@@ -1446,12 +1760,17 @@ impl Connection {
             }
         }
         if !matches!(self.phase, Phase::Connecting) {
+            moved |= self.resume(cx)?;
             moved |= self.flush(cx)?;
             // At the receive cap the socket waits for the holder to take what was read; past the
             // write side's room (a caller's writes fill at most WRITE_BUFFER_BYTES of it, the rest
             // is what the framer answered on its own) it waits for the far end to take what it is
             // owed, so a far end that sends and never reads is held back.
-            if self.unread_bytes() < RECEIVE_BUFFER_BYTES && self.out.len() < 2 * WRITE_BUFFER_BYTES
+            // A parked `begin` holds the framer: nothing is read for it until the begin completes.
+            // An op parked on one stream holds that stream alone: the far end's bytes keep coming.
+            if !self.begin_parked()
+                && self.unread_bytes() < RECEIVE_BUFFER_BYTES
+                && self.out.len() < 2 * WRITE_BUFFER_BYTES
             {
                 moved |= self.read(cx)?;
             }
@@ -1600,7 +1919,10 @@ impl Connection {
             self.open_deadline = None;
         }
         let mut moved = false;
-        if self.framer_deadline.is_some_and(|at| at <= now) {
+        // The framer's own deadline waits while its `begin` is parked (no other op crosses the
+        // framing until that one completes); an op parked on one stream holds no deadline.
+        let framer_deadline = self.framer_deadline.filter(|_| !self.begin_parked());
+        if framer_deadline.is_some_and(|at| at <= now) {
             self.framer_deadline = None;
             if let Some(framing) = self.framing.as_mut() {
                 let y = framing.timer().map_err(|e| match e.outcome {
@@ -1611,7 +1933,8 @@ impl Connection {
                 moved = true;
             }
         }
-        let next = match (self.open_deadline, self.framer_deadline) {
+        let framer_deadline = self.framer_deadline.filter(|_| !self.begin_parked());
+        let next = match (self.open_deadline, framer_deadline) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
@@ -1638,6 +1961,54 @@ impl Connection {
         Ok(moved)
     }
 
+    /// RE-DRIVE THE OPS PARKED on the framing's tickets (`cx`'s waker registered on each ticket):
+    /// once one completes, what it yielded is taken, then what waited for it goes, in order: the
+    /// dial's first message (a parked `begin`), the writes held back on the streams no op holds
+    /// any more, and what the carrier read while the `begin` was parked. `Ok(true)` = an op
+    /// completed.
+    fn resume(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+        let Some(framing) = self.framing.as_mut().filter(|f| f.parked()) else {
+            return Ok(false);
+        };
+        let y = match framing.poll_parked(cx) {
+            Poll::Pending => return Ok(false),
+            Poll::Ready(Ok(y)) => y,
+            Poll::Ready(Err(e)) => {
+                self.framer_error = Some(e.error.clone());
+                return Err(failed(e));
+            }
+        };
+        self.absorb(y)?;
+        if self.begin_parked() {
+            return Ok(true);
+        }
+        if std::mem::take(&mut self.opening_owed) {
+            self.send_opening()?;
+        }
+        self.put_early()?;
+        while !self.begin_parked() {
+            let Some((bytes, end, end_of_frame)) = self.unfed.pop_front() else {
+                break;
+            };
+            self.ingest(&bytes, end, end_of_frame)?;
+        }
+        Ok(true)
+    }
+
+    /// Hand the writes held back to the framing, in order; a write on a stream still held waits
+    /// again, and so does every later write on that stream.
+    fn put_early(&mut self) -> Result<(), Failure> {
+        for e in std::mem::take(&mut self.early) {
+            self.put_early_one(e)?;
+        }
+        Ok(())
+    }
+
+    /// Whether the framing's `begin` is parked on its ticket.
+    fn begin_parked(&self) -> bool {
+        self.framing.as_ref().is_some_and(Framing::begin_parked)
+    }
+
     /// Begin the framing over what the open established, then send the first message and any
     /// early writes.
     fn begin(&mut self) -> Result<(), Failure> {
@@ -1649,38 +2020,61 @@ impl Connection {
         };
         // A carrier carried as itself has no framing to begin: it is open.
         if let Some(door) = self.door.as_ref() {
-            let (framing, y) = Framing::begin_with(
-                Arc::clone(door),
-                self.side,
-                &self.target,
-                &self.established,
-                opening,
-            )
-            .map_err(|e| Failure::Refused(e.to_string()))?;
+            // An accepted connection is framed under its listener's guest list, on tickets: the
+            // listener's transport calls a line's auth, which may pend (THE DESIGN §6 step 4).
+            let begun = if self.side == SIDE_DIAL {
+                Framing::begin_ticketed(
+                    Arc::clone(door),
+                    self.side,
+                    &self.target,
+                    &self.established,
+                    opening,
+                )
+            } else {
+                Framing::begin_lent(
+                    Arc::clone(door),
+                    self.side,
+                    &self.target,
+                    &self.established,
+                    self.lent.clone(),
+                )
+            };
+            let (framing, y) = begun.map_err(|e| Failure::Refused(e.to_string()))?;
+            let parked = framing.parked();
             self.framing = Some(framing);
             self.phase = Phase::Open;
             self.absorb(y)?;
+            if parked {
+                // The begin waits on its ticket: the opening and the early writes go once it
+                // completes ([`Self::resume`]).
+                self.opening_owed = true;
+                return Ok(());
+            }
         } else {
             self.phase = Phase::Open;
         }
         self.send_opening()?;
-        for (stream, bytes, end, text) in std::mem::take(&mut self.early) {
-            self.put(stream, &bytes, end, text)?;
-        }
-        Ok(())
+        self.put_early()
     }
 
     /// Send the dial's first message, if one is held, on [`EXCHANGE_STREAM`].
     fn send_opening(&mut self) -> Result<(), Failure> {
         let opening = self.opening.take();
         let words = std::mem::take(&mut self.head_words);
+        let body_len = self.opening_body_len(opening.as_ref());
         // A wire whose envelope renders nothing of an opening (its fields rode the framing's
         // begin) sends no opening message.
         if let Some(message) = self
             .encode_opening(opening, words)?
             .filter(|m| !m.is_empty())
         {
-            self.put(EXCHANGE_STREAM, &message, true, false)?;
+            // THE OPENING GOES FIRST: the writes held back for the framing's begin wait behind it.
+            // Held where they are, a write on the exchange stream would queue the opening after
+            // itself (a stream with writes waiting takes every later write behind them).
+            let held = std::mem::take(&mut self.early);
+            let sent = self.put_opening(EXCHANGE_STREAM, &message, true, false, body_len);
+            self.early.extend(held);
+            sent?;
         }
         Ok(())
     }
@@ -1770,6 +2164,10 @@ impl Connection {
     }
 
     fn ingest(&mut self, bytes: &[u8], end: bool, end_of_frame: bool) -> Result<(), Failure> {
+        if self.begin_parked() {
+            self.unfed.push_back((bytes.to_vec(), end, end_of_frame));
+            return Ok(());
+        }
         let Some(framing) = self.framing.as_mut() else {
             if self.door.is_some() || !matches!(self.phase, Phase::Open) {
                 return if end { Err(Failure::Closed) } else { Ok(()) };
@@ -1821,6 +2219,20 @@ impl Connection {
                 }
                 None => self.queue(&y.wire, false),
             }
+        }
+        if y.agreed != 0 {
+            // A position past the listener's offer (or any on a dial) is the framer's fault.
+            busbar_contract::abi::transport::check::check_agreed_position(
+                y.agreed,
+                self.offer.len() as u64,
+            )
+            .map_err(|f| {
+                Failure::Failed(format!(
+                    "the framer's agreed protocol breaks {:?} at {}",
+                    f.rule, f.field
+                ))
+            })?;
+            self.agreed = y.agreed;
         }
         // A stream the framer says is writable again, or whose last piece arrived, is held no
         // more.

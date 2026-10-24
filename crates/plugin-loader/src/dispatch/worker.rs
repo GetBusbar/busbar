@@ -237,6 +237,10 @@ pub(crate) struct Env {
     /// THE HOST'S I/O (`io.*`) the instances of this dispatcher are served from; unset = none, and
     /// every `io` slot answers REFUSED.
     pub(crate) io: std::sync::OnceLock<Arc<dyn busbar_contract::io_host::IoHost>>,
+    /// THE KERNEL'S SIDE OF THE HOST AUTH HANDLE the instances of this dispatcher are served from
+    /// ([`Dispatcher::install_auth_handle`]); unset = none, and every auth-handle slot answers
+    /// REFUSED past its checks (fail closed).
+    pub(crate) auth: std::sync::OnceLock<Arc<dyn super::auth_handle::AuthHandleHost>>,
     /// The tickets of ops driven inline on the calling thread (a carrier's connection sides).
     pub(crate) inline: Arc<super::inline::InlineTickets>,
     /// THE HOST'S OBSERVABILITY of every door this dispatcher binds: the observer and the series
@@ -902,12 +906,24 @@ impl WakeRoute for Pool {
         self.env.io.get().cloned()
     }
 
+    fn service_store(&self) -> Option<Arc<ServiceStore>> {
+        Some(Arc::clone(&self.env.services))
+    }
+
+    fn auth_handle(&self) -> Option<Arc<dyn super::auth_handle::AuthHandleHost>> {
+        self.env.auth.get().cloned()
+    }
+
     fn seal(&self) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
         self.env.seal.get().cloned()
     }
 
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         self.env.inline.waker_of(t)
+    }
+
+    fn framing_of(&self, t: Ticket) -> u64 {
+        self.env.inline.framing_of(t)
     }
 
     fn inline(&self) -> Option<Arc<super::inline::InlineTickets>> {
@@ -1999,6 +2015,7 @@ impl Dispatcher {
             provider,
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
+            auth: std::sync::OnceLock::new(),
             observing: Arc::default(),
             ticket_key,
             latch: std::sync::OnceLock::new(),
@@ -2080,11 +2097,29 @@ impl Dispatcher {
         self.pool.env.io.set(io).is_ok()
     }
 
+    /// Serve every instance of this dispatcher the KERNEL'S SIDE OF THE HOST AUTH HANDLE
+    /// (`auth.call`, `unit.hand_in`, `unit.refuse`; THE DESIGN §6, "Auth points and guest lists",
+    /// step 4) from `host`; the first install stands. `false` when one was installed already. With
+    /// none installed each of the three answers REFUSED past its checks.
+    pub fn install_auth_handle(&self, host: Arc<dyn super::auth_handle::AuthHandleHost>) -> bool {
+        // The inline tickets (one per side of a carried connection) tell it when a framing ends.
+        self.pool.env.inline.tell_ended(Arc::clone(&host));
+        self.pool.env.auth.set(host).is_ok()
+    }
+
     /// A ticket for ops driven INLINE on the calling thread ([`super::inline`]): one per side of a
     /// carrier's connection. `None` when every inline slot is held.
     #[must_use]
     pub fn inline_ticket(&self) -> Option<super::inline::InlineTicket> {
         self.pool.env.inline.mint()
+    }
+
+    /// A ticket for an op of the framing whose begin ticket is `framing`, taken while another of
+    /// its ops is parked on its own ([`super::inline::InlineTickets::mint_of`]): every auth-handle
+    /// call made on it names that framing. `None` when every inline slot is held.
+    #[must_use]
+    pub fn inline_ticket_of(&self, framing: Ticket) -> Option<super::inline::InlineTicket> {
+        self.pool.env.inline.mint_of(framing)
     }
 
     /// The handle a [`super::Bind`] carries to be adopted by this dispatcher at bind.
@@ -2380,6 +2415,16 @@ impl Dispatcher {
             return Reply::settled(Outcome::Refused, frame);
         }
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
+            return Reply::settled(o, frame);
+        }
+        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance).
+        let owner = super::handle::instance_id(inst.ctx()).0;
+        if let Some(o) = K::admit(
+            s,
+            std::ptr::addr_of!(frame.input).cast(),
+            size_of::<I>(),
+            owner,
+        ) {
             return Reply::settled(o, frame);
         }
         let lifecycle = is_lifecycle(s);

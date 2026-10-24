@@ -414,3 +414,34 @@ fn a_line_no_request_can_match_is_refused_at_seal() {
         "route.field.name"
     );
 }
+
+/// Row 192 D1 (THE DESIGN §6 step 3, "a claimant may run the chain itself"): a line whose
+/// claimant runs the chain itself needs no point, so its transport hands its requests in without a
+/// call, and it is neutral to the `Peer` rule as a `none` line is; every method on every path
+/// (`PATH_CONTAINS` `/`) is tried after every other form, a whole-tree pattern among them, and
+/// takes a method the path's own lines leave.
+#[test]
+fn a_claimant_line_needs_no_point_and_the_whole_tree_line_is_tried_last() {
+    use busbar_contract::abi::transport::route::{METHOD_ANY, PATH_CONTAINS};
+    let residual = Line {
+        auth: LineAuth::Claimant,
+        ..line("rest", route(METHOD_ANY, PATH_CONTAINS, "/"))
+    };
+    assert_eq!(residual.auth.points(), AuthPoints::EMPTY);
+    let list = GuestList::seal(vec![
+        residual.clone(),
+        line("tree", route(METHOD_GET, PATH_PATTERN, "/{*rest}")),
+        line("chat", route(METHOD_POST, PATH_EXACT, "/v1/chat")),
+        authed("peer", "/peer", AuthPoints::PEER),
+    ])
+    .expect("a claimant line is neutral to the Peer rule");
+    assert_eq!(list.lines().last(), Some(&residual));
+    let Matched::Line(l) = list.matched("OPTIONS", "/v1/chat", &[]) else {
+        panic!("the whole-tree line takes the method the path's line leaves");
+    };
+    assert_eq!(l, &residual);
+    let Matched::Line(l) = list.matched("GET", "/v1/chat", &[]) else {
+        panic!("a GET under the tree");
+    };
+    assert_eq!(l.claimant, Claimant::Plane("tree".into()));
+}

@@ -45,8 +45,7 @@ use axum::Router;
 // checks without booting, and the last two are the config/providers path precedence the scanners
 // there answer for boot AND for every command.
 use busbar_kernel::{
-    build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
-    ENV_CONFIG,
+    build_app_from_config, build_data_routers, load_config_from_disk, LoadedConfig, ENV_CONFIG,
 };
 use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
 // The root's own binds listen through the connector's listener (the one listener source).
@@ -1055,15 +1054,29 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             (provider, points)
         })
         .collect();
+    // THE CARRIERS THE DATA LISTENER'S LINES NAME, then every claim a registered transport
+    // states: what its own framer is found among, by facts (`root::boot::data_door_framer`).
+    let door_carriers: Vec<String> = root::serve::line_carriers(&served)
+        .into_iter()
+        .chain(
+            root::serve::transport_claims(LINKED.transports, dropped_doors)
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .collect();
     let (doors, sessions, refusals, refuse_by_path) = root::serve::data_mounts(
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
+        &busbar_kernel::base_data_plugin_lines(&app),
         &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
         &root::serve::transport_offers(LINKED.transports, dropped_doors),
     )
     .unwrap_or_else(|e| die(e));
-    let (data_router, admin_router, app_handle) = build_split_routers_serving_doors(
+    // The data router twice over one handle: as the hand-up's hyper loop serves it (its outermost
+    // layer the inbound admission cap), and without that cap for the framed data door, whose
+    // requests took their one slot at the kernel's inbound gate (1.5.5 held one slot a request).
+    let routers = build_data_routers(
         app,
         doors,
         sessions,
@@ -1072,6 +1085,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    let (data_router, ungated_data_router, admin_router, app_handle) =
+        (routers.data, routers.ungated, routers.admin, routers.handle);
     // The kernel-shaped refusals render through the door that owns the path (ARCHITECT ruling
     // 2026-10-16, 3b B).
     if let Some(refuse) = refuse_by_path {
@@ -1079,6 +1094,15 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    // THE INBOUND AUTH HANDLE'S TABLES (THE DESIGN §6, "Auth points and guest lists", steps 4 and
+    // 8): the data listener's list at the boot generation, and a new generation at each apply.
+    // A transport calls its line's auth through the host auth handle on the transport doors'
+    // dispatcher: the kernel's inbound side serves it.
+    let _ = root::inbound::install(root::doors::dispatcher());
+    let _ = root::inbound::publish(&app_handle.load());
+    app_handle.on_apply(Box::new(|app| {
+        let _ = root::inbound::publish(app);
+    }));
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)
@@ -1384,6 +1408,25 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         };
         let data_at = bound_at("listen", &listen);
         let admin_at = bound_at("admin_listen", &admin_listen);
+        // THE DATA DOOR'S PATH (`root::accepted::DATA_DOOR_FRAMED`, the one reading of the build
+        // switch). Framed: the data listener is bound to its own framer, found by facts among the
+        // registered transports; with none registered the boot is refused here, naming `listen`,
+        // before any socket is bound, and the hand-up is never its fallback.
+        let framed = root::accepted::DATA_DOOR_FRAMED.then(|| {
+            let framer =
+                root::boot::data_door_framer(door_carriers.iter().map(String::as_str), |c| {
+                    root::connector::the().framer_for(c)
+                })
+                .unwrap_or_else(|e| die(e));
+            root::accepted::framed_door(
+                framer,
+                ungated_data_router.clone(),
+                std::sync::Arc::clone(&app_handle),
+                tls_cfg.is_some(),
+                response_headers_cfg.server_timing,
+            )
+            .unwrap_or_else(|e| die(e))
+        });
         let data_handles = serve_thread_per_core(
             data_workers,
             listen.clone(),
@@ -1393,6 +1436,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             tls_secret_resolver.clone(),
             &shutdown_tx,
             worker_shutdown_rx,
+            framed,
         );
         // The root's own binds listen through the process's address carrier (TRANSPORT-STACK (2):
         // the accept loop is the carrier's); each accepted stream is handed up to the kernel.
@@ -1431,6 +1475,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(not(unix))]
     {
         let _ = data_workers; // sized the runtime in main(); no per-worker listeners here
+
+        // The framed data door binds per data worker, a unix topology; this platform serves the
+        // data door through its own socket listener.
+        let _ = (
+            &door_carriers,
+            &ungated_data_router,
+            root::accepted::DATA_DOOR_FRAMED,
+        );
         let data_listener = root::listener::SocketAdmits::new(bind_listener(&listen).await);
         let admin_listener = root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
         tokio::join!(
@@ -1505,7 +1557,7 @@ async fn recv_shutdown(mut rx: tokio::sync::broadcast::Receiver<()>) {
 /// handles; the caller awaits shutdown (the broadcast fans out to every per-worker `recv_shutdown`)
 /// and then joins them. Unix-only (SO_REUSEPORT); see the call site.
 #[cfg(unix)]
-#[allow(clippy::too_many_arguments)] // the seven it had, plus the wire under the door.
+#[allow(clippy::too_many_arguments)] // the seven it had, the wire under the door, the framed door.
 fn serve_thread_per_core(
     n: usize,
     addr: String,
@@ -1516,6 +1568,9 @@ fn serve_thread_per_core(
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
+    // The framed data door every worker binds (`root::accepted::DATA_DOOR_FRAMED`); `None` = each
+    // worker hands its sockets up to the kernel's hyper loop.
+    framed: Option<root::accepted::FramedDoor>,
 ) -> Vec<std::thread::JoinHandle<()>> {
     // Distinct cores to pin the n workers to, when the platform exposes them. Fewer ids than
     // workers (or none) just means the tail runs unpinned — advisory, never a boot failure.
@@ -1563,6 +1618,7 @@ fn serve_thread_per_core(
         let worker_shutdown = worker_shutdown.clone();
         let balancer = balancers[i].take();
         let bind_at = bind_at.clone();
+        let framed = framed.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("busbar-core-{i}"))
             .spawn(move || {
@@ -1592,6 +1648,25 @@ fn serve_thread_per_core(
                         die(format!("failed to build per-core data runtime {i}: {e}"))
                     });
                 rt.block_on(async move {
+                    if let Some(framed) = framed {
+                        serve_framed_worker(
+                            framed,
+                            &listen,
+                            &bind_at,
+                            tls.as_ref(),
+                            &resolver,
+                            recv_shutdown(shutdown_rx),
+                            balancer,
+                            i == 0,
+                        )
+                        .await;
+                        let _ = tokio::time::timeout(
+                            busbar_kernel::detached::DETACHED_DRAIN_GRACE,
+                            detached.drained(),
+                        )
+                        .await;
+                        return;
+                    }
                     // This worker's own SO_REUSEPORT listener, the connector's (the one listener
                     // source, ARCHITECT ruling 2026-09-30). Each socket it admits is handed up
                     // pre-TLS so the balancer can place it on another worker; the TLS handshake
@@ -1638,6 +1713,70 @@ fn serve_thread_per_core(
         handles.push(spawned);
     }
     handles
+}
+
+/// ONE DATA WORKER'S FRAMED DOOR (row 192 C; `BUSBAR-1.6.0.md` l.475-484): this worker's own
+/// listener on the data address, bound through the connector's address carrier to the data
+/// listener's framer, secured from the `tls:` block where it is set (its ALPN offer the one the
+/// secured root listener has always made, never one id alone), uncapped as the root's binds are,
+/// lending the guest list its framer's instance owns; each connection served by the accepted data
+/// door until `shutdown`. One "busbar listening" line per listener, as 1.5.5 logged it.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+async fn serve_framed_worker(
+    framed: root::accepted::FramedDoor,
+    label: &str,
+    bind_at: &str,
+    tls: Option<&busbar_kernel::config::sections::TlsCfg>,
+    secret_resolver: &busbar_kernel::config::secret::SecretResolver,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+    balancer: Option<root::listener::ConnBalancer>,
+    log_at_info: bool,
+) {
+    let via = crate::root::connector::the()
+        .address_via()
+        .unwrap_or_else(|| {
+            die(format!(
+                "cannot bind listen address '{label}': no carrier serves it"
+            ))
+        });
+    let limits = AcceptLimits {
+        handshake_timeout: std::time::Duration::from_secs(
+            busbar_kernel::limits::tls_handshake_timeout_secs(),
+        ),
+        ..ROOT_BIND_LIMITS
+    };
+    // The root listener's one offer: agreed in the handshake under `tls:`, and in the clear the list
+    // the framer states its agreed protocol by (a prior-knowledge connection's), never offered in
+    // any handshake there.
+    let alpn = busbar_core_connector::tls::server_alpn();
+    let listener = Listening::bind_secured(
+        Some(std::sync::Arc::clone(&framed.framer)),
+        &via,
+        bind_at,
+        tls,
+        secret_resolver,
+        alpn,
+        limits,
+    )
+    .map(|l| l.lending(root::inbound::book(framed.owner)))
+    .unwrap_or_else(|e| die(format!("cannot bind listen address '{label}': {e}")));
+    tracing::debug!(
+        listen = %label,
+        carrier = %crate::root::connector::carrier_name(Some(&via)),
+        "data door listening through the connector"
+    );
+    match tls {
+        None if log_at_info => tracing::info!(listen = %label, "busbar listening"),
+        None => tracing::debug!(listen = %label, "busbar listening"),
+        Some(t) if log_at_info => {
+            tracing::info!(listen = %label, mtls = t.client_ca.is_some(), "busbar listening (TLS)");
+        }
+        Some(t) => {
+            tracing::debug!(listen = %label, mtls = t.client_ca.is_some(), "busbar listening (TLS)");
+        }
+    }
+    root::accepted::serve_door(listener, Some(via), framed.door, shutdown, balancer).await;
 }
 
 /// Serve one listener (data OR admin plane) to graceful shutdown. Picks plain-HTTP vs native TLS/mTLS

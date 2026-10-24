@@ -296,6 +296,25 @@ pub fn transport_cdylib_under(keys: &[&str]) -> Option<(Vec<u8>, &'static str)> 
     })
 }
 
+/// THE DROPPED-IN TWIN OF A LINKED FRAMER: the path of a transport door `cdylib` beside the binary
+/// that is a FRAMER whose own claim (its tail's first) is `key`, found by its KIND and its facts,
+/// never by its name, so a proof names no wire. `None` when none is built; a proof whose subject it
+/// is fails through [`missing`].
+pub fn framer_cdylib_claiming(key: &str) -> Option<PathBuf> {
+    let neutral = plugin_library_filename("neutral_frame_door");
+    libraries().into_iter().find(|p| {
+        if p.file_name().is_some_and(|n| n == neutral.as_str()) {
+            return false;
+        }
+        transport_door(p).is_some_and(|(plugin, own)| {
+            own == key
+                && plugin
+                    .context::<TransportFacts>()
+                    .is_some_and(|facts| facts.role == busbar_contract::abi::transport::ROLE_FRAMER)
+        })
+    })
+}
+
 /// The neutral frame door's library bytes ([`neutral_frame_door`]), for a proof that drops it in.
 pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
     let file = plugin_library_filename("neutral_frame_door");

@@ -35,7 +35,7 @@ use std::time::Duration;
 use busbar_contract::abi::host::io::{DIR_BOTH, DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::Program;
-use busbar_contract::io_host::{IoHost, IoRefusal, IoResult, Spawn};
+use busbar_contract::io_host::{Ends, IoHost, IoRefusal, IoResult, Spawn};
 
 use crate::compose::{DEFAULT_OPEN_TIMEOUT, MAX_PENDING_LOOKUPS};
 use crate::io::{self as reactor, Direction, Registered};
@@ -51,7 +51,15 @@ pub enum Admission {
     Bind(String),
     /// `spawn` of exactly this program, its environment references as config time resolved them.
     Spawn(Program, crate::spawn_env::HeldEnv),
+    /// `listen` on [`ADOPTION_BIND`]: the carrier's ADOPTION listener, which binds no address and
+    /// accepts only the sockets the host offers it ([`HostIo::offer`]), one per accept's ticket.
+    Adopt,
 }
+
+/// The bind a carrier's ADOPTION listener is asked for ([`Admission::Adopt`]): no address. A
+/// socket the placement balancer moved to another worker is accepted again off it there, so the
+/// carrier carries it on that worker's reactor.
+pub const ADOPTION_BIND: &str = "host:adopted";
 
 /// Why an `open` failed, as the connector's own dial reported it: refused (no one listens), or
 /// failed (the socket could not be made), with the system's text.
@@ -84,6 +92,8 @@ enum Kind {
         connecting: AtomicBool,
     },
     Listener(Registered<TcpListener>),
+    /// A carrier's adoption listener ([`Admission::Adopt`]): no socket of its own.
+    Adopting,
     /// Boxed: a program is spawned once per member, its pipes are larger than a socket.
     Program(Box<Pipes>),
 }
@@ -99,6 +109,10 @@ pub struct HostIo {
     handles: RwLock<HashMap<u64, Arc<Entry>>>,
     admitted: Mutex<HashMap<Ticket, Admitted>>,
     next: AtomicU64,
+    /// The sockets offered for adoption, each to the accept on its ticket.
+    offered: Mutex<HashMap<Ticket, TcpStream>>,
+    /// Each carrier's adoption listener, by its entry: the carrier's listener token.
+    adopters: Mutex<HashMap<usize, u64>>,
 }
 
 impl std::fmt::Debug for HostIo {
@@ -181,6 +195,56 @@ impl HostIo {
             .and_then(|a| a.made)
     }
 
+    /// OFFER `stream` (a socket placement moved here, off any reactor) to the accept about to run
+    /// on `ticket` against a carrier's adoption listener: that accept takes it, on the calling
+    /// worker's reactor. [`HostIo::withdraw`] takes back one no accept took.
+    pub fn offer(&self, ticket: Ticket, stream: TcpStream) {
+        self.offered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(ticket, stream);
+    }
+
+    /// The socket offered on `ticket` and not taken, dropped.
+    pub fn withdraw(&self, ticket: Ticket) {
+        self.offered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&ticket);
+    }
+
+    /// An accept off an adoption listener: the socket offered on `ticket`, on the calling
+    /// worker's reactor, as a stream handle of `owner`'s, and its far end.
+    fn adopt(&self, owner: u64, ticket: Ticket) -> IoResult<(u64, String)> {
+        let stream = self
+            .offered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&ticket)
+            .ok_or_else(|| IoRefusal::Refused("no socket was offered to this accept".into()))?;
+        let peer = stream
+            .peer_addr()
+            .map(|p| p.to_string())
+            .unwrap_or_default();
+        stream.set_nonblocking(true).map_err(|e| failed(&e))?;
+        let _ = stream.set_nodelay(true);
+        let sock = reactor::register(Sock::Tcp(stream)).map_err(|e| failed(&e))?;
+        let id = self.hold(
+            owner,
+            Kind::Stream {
+                sock,
+                connecting: AtomicBool::new(false),
+            },
+        );
+        self.record(ticket, Some(id), None);
+        Ok((id, peer))
+    }
+
+    /// The adoption listeners: each carrier's (by its entry's key), held for the host's life.
+    pub(crate) fn adopters(&self) -> std::sync::MutexGuard<'_, HashMap<usize, u64>> {
+        self.adopters.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn admits(&self, ticket: Ticket, check: impl FnOnce(&Admission) -> bool) -> IoResult<()> {
         let held = self.admitted.lock().unwrap_or_else(PoisonError::into_inner);
         match held.get(&ticket).and_then(|a| a.what.as_ref()) {
@@ -258,7 +322,7 @@ impl HostIo {
                     .unwrap_or_else(PoisonError::into_inner)
                     .take();
             }
-            Kind::Listener(_) => {}
+            Kind::Listener(_) | Kind::Adopting => {}
         }
     }
 
@@ -423,6 +487,15 @@ impl IoHost for HostIo {
     }
 
     fn listen(&self, owner: u64, ticket: Ticket, bind: &str) -> IoResult<(u64, String)> {
+        if bind == ADOPTION_BIND
+            && self
+                .admits(ticket, |a| matches!(a, Admission::Adopt))
+                .is_ok()
+        {
+            let id = self.hold(owner, Kind::Adopting);
+            self.record(ticket, Some(id), None);
+            return Ok((id, "0.0.0.0:0".into()));
+        }
         self.admits(ticket, |a| matches!(a, Admission::Bind(b) if b == bind))?;
         let l = socket::listen(bind).map_err(|e| failed(&e))?;
         let local = l.local_addr().map_err(|e| failed(&e))?;
@@ -443,8 +516,10 @@ impl IoHost for HostIo {
             Ok(e) => e,
             Err(r) => return Poll::Ready(Err(r)),
         };
-        let Kind::Listener(l) = &e.kind else {
-            return Poll::Ready(Err(IoRefusal::unknown()));
+        let l = match &e.kind {
+            Kind::Listener(l) => l,
+            Kind::Adopting => return Poll::Ready(self.adopt(owner, ticket)),
+            _ => return Poll::Ready(Err(IoRefusal::unknown())),
         };
         let mut cx = Context::from_waker(waker);
         loop {
@@ -500,7 +575,7 @@ impl IoHost for HostIo {
                     other => return Poll::Ready(other.map_err(|err| failed(&err))),
                 }
             },
-            Kind::Listener(_) => Poll::Ready(Err(IoRefusal::unknown())),
+            Kind::Listener(_) | Kind::Adopting => Poll::Ready(Err(IoRefusal::unknown())),
         }
     }
 
@@ -529,7 +604,7 @@ impl IoHost for HostIo {
                     }
                 }
             }
-            Kind::Listener(_) => Poll::Ready(Err(IoRefusal::unknown())),
+            Kind::Listener(_) | Kind::Adopting => Poll::Ready(Err(IoRefusal::unknown())),
         }
     }
 
@@ -560,7 +635,7 @@ impl IoHost for HostIo {
                     .map(|r| r.map(|_| ()).map_err(|err| failed(&err)))
             }
             // A program's pipes are open from the spawn.
-            Kind::Program(_) | Kind::Listener(_) => Poll::Ready(Ok(())),
+            Kind::Program(_) | Kind::Listener(_) | Kind::Adopting => Poll::Ready(Ok(())),
         }
     }
 
@@ -580,7 +655,7 @@ impl IoHost for HostIo {
                 }
                 Ok(())
             }
-            Kind::Listener(_) => Ok(()),
+            Kind::Listener(_) | Kind::Adopting => Ok(()),
         }
     }
 
@@ -667,23 +742,45 @@ impl IoHost for HostIo {
         Ok(id)
     }
 
-    fn ends(&self, owner: u64, id: u64) -> IoResult<(u16, String)> {
+    fn ends(&self, owner: u64, id: u64) -> IoResult<Ends> {
         let e = self.entry(owner, id)?;
         match &e.kind {
             Kind::Stream { sock, .. } => match sock.get_ref() {
-                Sock::Tcp(s) => {
-                    let local = s.local_addr().map_err(|err| failed(&err))?.port();
-                    let peer = s.peer_addr().map_err(|err| failed(&err))?.to_string();
-                    Ok((local, peer))
-                }
-                Sock::Unix(_) => Ok((0, String::new())),
+                Sock::Tcp(s) => Ok(Ends {
+                    port: s.local_addr().map_err(|err| failed(&err))?.port(),
+                    peer: s.peer_addr().map_err(|err| failed(&err))?.to_string(),
+                    exit: None,
+                }),
+                Sock::Unix(_) => Ok(Ends::default()),
             },
-            Kind::Listener(l) => Ok((
-                l.get_ref().local_addr().map_err(|err| failed(&err))?.port(),
-                String::new(),
-            )),
-            Kind::Program(_) => Ok((0, String::new())),
+            Kind::Listener(l) => Ok(Ends {
+                port: l.get_ref().local_addr().map_err(|err| failed(&err))?.port(),
+                ..Ends::default()
+            }),
+            Kind::Adopting => Ok(Ends::default()),
+            // The program ITSELF, without waiting: a descendant still holding its output keeps the
+            // pipe open, so its exit is read here, never from the pipe's end.
+            Kind::Program(p) => Ok(Ends {
+                exit: p
+                    .child
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .try_wait()
+                    .map_err(|err| failed(&err))?
+                    .map(exit_code),
+                ..Ends::default()
+            }),
         }
+    }
+}
+
+/// A program's exit as `io.ends` answers it: its code, or `128` plus the signal that ended it.
+fn exit_code(status: std::process::ExitStatus) -> u32 {
+    use std::os::unix::process::ExitStatusExt;
+    match (status.code(), status.signal()) {
+        (Some(code), _) => code as u32,
+        (None, Some(signal)) => 128 + signal as u32,
+        (None, None) => 0,
     }
 }
 

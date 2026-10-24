@@ -2478,16 +2478,17 @@ impl GovState {
 
     /// THE CREDENTIAL READ (`records.secret`, AUTH-DOOR Q2): the secret of `(kind, public_id)` and
     /// whether it may authenticate now (the credential live, its key enabled and not revoked). An
-    /// unknown pair, or a secret in an unrecognized envelope, answers the fixed dummy secret, not
-    /// live, through the SAME steps (the lookup, the copy, the revocation check), so the reply's
-    /// cost does not say whether the pair exists. The one place this rule lives.
+    /// unknown pair, or a secret in an unrecognized envelope, answers an EMPTY secret, not live,
+    /// through the SAME steps (the lookup, the copy, the revocation check), so the reply's cost
+    /// does not say whether the pair exists. The verifying auth swaps in its own dummy secret when
+    /// the answer is not live and runs its full verification over it, so a reject costs what a bad
+    /// signature costs (no identifier-enumeration oracle). The one place this rule lives.
     pub fn credential_secret(
         &self,
         kind: &str,
         public_id: &str,
         now: u64,
     ) -> (busbar_contract::redacted::Secret<String>, bool) {
-        let dummy = crate::auth::DUMMY_SECRET;
         // Owned copies, out of the cache lock before the revocation check takes its own: two
         // allocations on either path.
         let (key, plain, enabled) = match self.lookup_credential(kind, public_id) {
@@ -2495,11 +2496,11 @@ impl GovState {
                 let plain = cred.plaintext().filter(|_| cred.meta.is_live(now));
                 (key.id.clone(), plain.map(str::to_string), key.enabled)
             }
-            None => (dummy.to_string(), None, false),
+            None => (String::new(), None, false),
         };
         let revoked = self.is_revoked_at(&key, now);
         let live = enabled && plain.is_some() && !revoked;
-        let secret = plain.unwrap_or_else(|| dummy.to_string());
+        let secret = plain.unwrap_or_default();
         (busbar_contract::redacted::Secret::new(secret), live)
     }
 

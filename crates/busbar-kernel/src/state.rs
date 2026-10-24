@@ -859,6 +859,11 @@ impl AppHandle {
         let _first = self.door_refuser.set(refuser);
     }
 
+    /// The door planes' rendering bound here ([`Self::bind_door_refuser`]); `None` before it is.
+    pub fn door_refuser(&self) -> Option<&busbar_kernel::plane_routes::PlaneRefuseByPathFn> {
+        self.door_refuser.get()
+    }
+
     /// The door plane's rendering of `refusal`, or `None` when no door owns its path or the render
     /// failed.
     pub fn door_refusal(

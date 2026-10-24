@@ -61,6 +61,7 @@
 // It comes off with the last plane switch, when `main()` calls into this module.
 #![allow(dead_code)]
 
+pub mod accepted;
 pub mod adapters;
 pub mod auth_bindings;
 pub mod boot;
@@ -76,6 +77,10 @@ pub mod exports;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
 pub mod hooks;
+pub mod inbound;
+#[cfg(all(test, linked_every_plane))]
+#[path = "tests/inbound.rs"]
+mod inbound_tests;
 pub mod kernel;
 pub mod keyset;
 pub mod ledger_identity;

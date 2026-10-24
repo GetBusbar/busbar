@@ -22,8 +22,9 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 /// and returned automatically when the returned permit is dropped. `name` identifies the gate on the
 /// shared `busbar_admission_denied_total{gate="..."}` counter — pick a short, stable, non-request-derived
 /// string (a compile-time constant, or an export sink's gate name fixed at boot, so the label space is
-/// fixed once the node serves).
-pub(crate) struct AdmissionGate {
+/// fixed once the node serves). Public as a type alone: the inbound handle's listener holds the data
+/// listener's gate ([`crate::inbound::Listener::admission`], built by [`crate::inbound::admission_gate`]).
+pub struct AdmissionGate {
     sem: Arc<Semaphore>,
     name: metrics::SharedString,
 }
