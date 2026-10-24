@@ -142,7 +142,6 @@ pub fn ledger() -> Vec<LedgerRow> {
         s("Dialect", &["a2a", "streaming"], "Unrelated: a2a's Dialect is the push-config verb spelling (V03 or V10); streaming's is its voice dialect roster (OpenAI Realtime, Gemini Live, Twilio Media Streams, one-shot transcribe and tts)."),
         s("Held", &["mcp", "streaming"], "Unrelated: mcp's Held is one generation's catalogue, tools section and pools; streaming's is a one-request door unit's state (its RequestUnit, what it owes, a short answer)."),
         s("Reply", &["mcp", "streaming"], "Unrelated: mcp's Reply is a caller's answer to one of busbar's own asks (answered or failed); streaming's is the caller's HTTP answer (status, fields, body, the rtc call id)."),
-        s("Session", &["mcp", "streaming"], "Unrelated: mcp's Session is the carrier session's state (streams, buffered events, revision, owner); streaming's is the Realtime or Gemini enum over a codec's SessionUnit."),
         s("Unit", &["decisions", "streaming"], "Unrelated: decisions' Unit is one unit's attempt, reading and owed bytes in its plane door; streaming's is the Realtime or Gemini codec enum its session door dispatches over."),
         s("arrive", &["mcp", "decisions", "streaming"], "Each plane's body for the arrive slot: mcp reads a carrier line, decisions classifies verb and target through its ops table, streaming maps a claim index to a door. The slot is the ABI's; what an arrival means is the plane's."),
         s("open", &["mcp", "streaming"], "Unrelated: mcp's door_listen open starts a subscriptions/listen subscription and its tool_claims open builds a claim with no credential scheme; streaming's constructs a live Session for a door."),
@@ -151,6 +150,10 @@ pub fn ledger() -> Vec<LedgerRow> {
         s("read_settings", &["decisions", "streaming"], "Each plane judges its own settings blob by its own grammar and answers its own section for an empty one: DecisionsSection for decisions, StreamsCfg for streaming. The grammar is the plane's."),
         s("refusal_body", &["decisions", "streaming"], "Each plane renders the kernel's refusal in its own wire's error shape: jev's error code and message for decisions, the OpenAI REST error envelope for streaming. The status and text are the kernel's; the shape is the dialect's."),
         d("config.rs", "The parse ORDER these two files shared is gone: config::plane_sections::split_section owns the reserved-key refusals, the two typed lifts and the sequence they run in, and all THREE plane sections are read through it. What is left in each file is that plane's GRAMMAR and nothing else — they share no type, no field, no value rule, no sentence and no caller. What they share is a filename, which on every plane says the same true and un-actionable thing: this is where that section's grammar is written."),
+        // STRUCK at row 159 (busbar-plane-streaming#36): `Session`. The streaming door holds each
+        // live session as its `Live` and no longer builds the `sessions::Session` enum; that module
+        // is the crate's test driver alone (`#[cfg(test)]`), so `Session` is declared in one plane
+        // and `plane-dup:stale-ledger` names the row.
         // STRUCK at P3 DEL-MCP (ARCHITECT 2026-10-05: busbar-mcp deleted, the mcp plane is served
         // through its door crate alone): `transport.rs`, `judge`, `revalidate`, `observed_pin`,
         // `contains`, `get`, `list`, `openapi_schemas`, `reresolve_gates`, `metadata_route` and
