@@ -1173,6 +1173,139 @@ fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared_schem
     assert_eq!(e.hash, busbar_contract::redacted::sha256_hex(&sealed));
 }
 
+// ── Q128 arch u26 #2: GET /audit recomputes by the PUBLISHED recipe ─────────────────────────────
+
+/// The recipe `AuditEntry.hash` publishes (its doc, which the served OpenAPI document carries),
+/// rebuilt here from the served JSON alone: no kernel framing or digest code is called, so a drift
+/// between what the node seals and what the contract states turns this red. Scheme 1 is the 1.5.5
+/// pipe join; scheme 2 is `prev_hash|seq`, a zero byte, then each field as an 8-byte big-endian
+/// length and its bytes (`ts` as its 8-byte big-endian value).
+fn hash_by_the_published_recipe(served: &serde_json::Value) -> String {
+    use sha2::{Digest as _, Sha256};
+    let text = |k: &str| served[k].as_str().expect("a served text field").to_string();
+    let num = |k: &str| served[k].as_u64().expect("a served integer field");
+    let mut preimage = Vec::new();
+    match num("scheme") {
+        1 => preimage.extend_from_slice(
+            format!(
+                "{}|{}|{}|{}|{}|{}|{}",
+                text("prev_hash"),
+                num("seq"),
+                num("ts"),
+                text("action"),
+                text("resource"),
+                text("outcome"),
+                text("principal")
+            )
+            .as_bytes(),
+        ),
+        2 => {
+            preimage.extend_from_slice(format!("{}|{}", text("prev_hash"), num("seq")).as_bytes());
+            preimage.push(0x00);
+            preimage.extend_from_slice(&8u64.to_be_bytes());
+            preimage.extend_from_slice(&num("ts").to_be_bytes());
+            for k in ["action", "resource", "outcome", "principal"] {
+                let field = text(k);
+                preimage.extend_from_slice(&(field.len() as u64).to_be_bytes());
+                preimage.extend_from_slice(field.as_bytes());
+            }
+        }
+        other => panic!("a served record declares scheme {other}, which no recipe publishes"),
+    }
+    hex::encode(Sha256::digest(&preimage))
+}
+
+/// EVERY RECORD `GET /audit` SERVES RECOMPUTES BY THE PUBLISHED RECIPE, under the scheme it declares,
+/// and the node's own verifier agrees with that recipe. The records cover both schemes: a `|` in
+/// each of `action`, `resource` and `outcome` (scheme 2), a `|` only in `principal` (scheme 1, the
+/// last field reads back), empty and non-ASCII fields.
+///
+/// RED on dev before p12#1: every record declared scheme 2 while the node's `digest` framed scheme 2
+/// as one length-prefixed buffer over all seven fields, so `digest(entry)` disagreed with the served
+/// `hash`, and a record with no `|` anywhere was not served under 1.5.5's formula (scheme 1).
+#[test]
+fn every_served_audit_record_recomputes_by_the_published_recipe() {
+    ensure_global_audit_stream_registered();
+    let tag = "q128b-u26-2:";
+    let cases: [(&str, String, &str, &str); 6] = [
+        ("test.write", format!("{tag}plain"), "applied", "admin"),
+        ("test.write", format!("{tag}res|bar"), "applied", "admin"),
+        (
+            "test|write",
+            format!("{tag}action-bar"),
+            "rejected",
+            "admin",
+        ),
+        (
+            "test.write",
+            format!("{tag}outcome-bar"),
+            "app|lied",
+            "admin",
+        ),
+        (
+            "test.write",
+            format!("{tag}principal-bar"),
+            "applied",
+            "iss|sübject",
+        ),
+        ("test.write", format!("{tag}empty-principal"), "applied", ""),
+    ];
+    for (i, (action, resource, outcome, principal)) in cases.iter().enumerate() {
+        emit_admin_hostless(
+            1_700_001_000 + i as u64,
+            action,
+            resource,
+            outcome,
+            principal,
+        );
+    }
+    // What the `GET /audit` handler serializes: the read model's entries, as JSON.
+    let served = serde_json::to_value(AUDIT_LOG.list_filtered(
+        0,
+        crate::audit_ring::MAX_AUDIT_ENTRIES,
+        None,
+        None,
+    ))
+    .expect("the served page serializes");
+    let mine: Vec<&serde_json::Value> = served
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter(|e| e["resource"].as_str().is_some_and(|r| r.starts_with(tag)))
+        .collect();
+    assert_eq!(mine.len(), cases.len(), "every emitted record is served");
+    let schemes: std::collections::BTreeSet<u64> =
+        mine.iter().filter_map(|e| e["scheme"].as_u64()).collect();
+    assert_eq!(
+        schemes,
+        [1, 2].into_iter().collect(),
+        "the cases reach both published schemes"
+    );
+    for e in mine {
+        let published = hash_by_the_published_recipe(e);
+        assert_eq!(
+            e["hash"].as_str(),
+            Some(published.as_str()),
+            "the served hash is the published recipe's: {e}"
+        );
+        let entry: AuditEntry =
+            serde_json::from_value(e.clone()).expect("a served entry reads back");
+        assert_eq!(
+            digest(&entry),
+            published,
+            "the node's verifier agrees with the published recipe: {e}"
+        );
+        let bar_before_last = ["action", "resource", "outcome"]
+            .iter()
+            .any(|k| e[*k].as_str().is_some_and(|v| v.contains('|')));
+        assert_eq!(
+            e["scheme"].as_u64(),
+            Some(if bar_before_last { 2 } else { 1 }),
+            "scheme 1 exactly when the pipe join reads back: {e}"
+        );
+    }
+}
+
 // ── Q128 p12#2: a failed boot restore does not fork the chain ───────────────────────────────────
 
 /// A store that answers every read with an error: the boot restore's read failing.

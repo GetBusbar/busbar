@@ -84,6 +84,22 @@ fn the_ci_build_is_the_default_rows_closure_and_the_cfgs_its_rows_emit() {
     assert_eq!(b.eval("all(test"), Tri::Unknown, "unbalanced");
 }
 
+/// `linked_every_auth` (build.rs `AUTH_AXIS`, `auths`): on only while every row on that axis is
+/// enabled. A cell under it once read UNKNOWN, refusing a cited test CI's build does run.
+#[test]
+fn every_auth_is_on_only_while_every_auths_row_is_enabled() {
+    let manifest = |default: &str| {
+        format!(
+            "[features]\ndefault = [{default}]\nauth-a = []\nauth-b = []\n\n\
+             [package.metadata.busbar.linked-axes]\nauth-a = \"auths\"\nauth-b = \"auths\"\n"
+        )
+    };
+    let all = CiBuild::of_manifest(&manifest("\"auth-a\", \"auth-b\"")).expect("a default row");
+    assert_eq!(all.eval("all(test,linked_every_auth)"), Tri::Yes);
+    let one = CiBuild::of_manifest(&manifest("\"auth-a\"")).expect("a default row");
+    assert_eq!(one.eval("linked_every_auth"), Tri::No, "auth-b is off");
+}
+
 #[test]
 fn a_manifest_with_no_default_row_is_refused() {
     assert!(CiBuild::of_manifest("[features]\nx = []\n").is_err());
@@ -151,4 +167,28 @@ fn a_cited_cell_runs_only_under_cfgs_ci_enables_with_a_test_attribute_and_no_ign
     assert!(maybe.contains("cfg_attr(miri,ignore)"), "{maybe}");
     let unix = verdict("c/src/root/tests/serve.rs", "a_unix_cell").expect_err("unknown cfg");
     assert!(unix.contains("cannot show"), "{unix}");
+}
+
+/// ANOTHER WORKSPACE MEMBER'S BUILD (status row 178): `cfg(test)`, its `default` closure and its
+/// self dev-dependency's features are ON; a feature outside them is UNKNOWN (cargo unifies a
+/// member's features across the `--workspace` run), never OFF; no `linked_*` cfg is set.
+#[test]
+fn a_member_build_is_its_default_and_self_dev_closure_and_other_features_are_unknown() {
+    let b = CiBuild::of_member_manifest(
+        "[package]\nname = \"k\"\n\n[features]\ndefault = [\"a\"]\na = [\"b\", \"dep:x\"]\nb = []\n\
+         ts = [\"c\"]\nc = []\nfar = []\n\n[dev-dependencies]\n\
+         k = { path = \".\", default-features = false, features = [\"ts\"] }\n\
+         other = { path = \"../other\", features = [\"far\"] }\n",
+    );
+    for on in ["a", "b", "ts", "c"] {
+        assert_eq!(b.eval(&format!("feature=\"{on}\"")), Tri::Yes, "{on}");
+    }
+    assert_eq!(b.eval("feature=\"far\""), Tri::Unknown);
+    assert_eq!(b.eval("not(feature=\"far\")"), Tri::Unknown);
+    assert_eq!(b.eval("test"), Tri::Yes);
+    assert_eq!(b.eval("linked_axis_node"), Tri::No);
+    assert_eq!(b.eval("loom"), Tri::Unknown);
+    let none = CiBuild::of_member_manifest("[package]\nname = \"n\"\n");
+    assert_eq!(none.eval("feature=\"x\""), Tri::Unknown);
+    assert_eq!(none.eval("all(test,not(linked_driver_proofs))"), Tri::Yes);
 }

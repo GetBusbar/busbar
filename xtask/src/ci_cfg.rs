@@ -19,7 +19,7 @@
 //! `linked-axes` row carries (build.rs emits only declared axes, but a cfg it does not declare is an
 //! `unexpected_cfgs` error under CI's `-D warnings`, so no compiled code can name one);
 //! `linked_section_<section>`; `linked_driver_proofs`; `linked_every_plane`;
-//! `linked_every_plane_door`; `linked_operator_auth`. Anything else (`unix`, `miri`,
+//! `linked_every_plane_door`; `linked_every_auth`; `linked_operator_auth`. Anything else (`unix`, `miri`,
 //! `target_os = ..`, a `linked_*` family not listed here) is UNKNOWN, and an unknown cfg on a cited
 //! cell's way is a refusal naming it: a cell CI is not shown to run is not evidence. The fix for a
 //! refusal that should pass is to teach this module the cfg, never to drop the check.
@@ -39,6 +39,7 @@ const DERIVED_FLAGS: &[&str] = &[
     "linked_driver_proofs",
     "linked_every_plane",
     "linked_every_plane_door",
+    "linked_every_auth",
     "linked_operator_auth",
 ];
 
@@ -55,6 +56,11 @@ pub enum Tri {
 pub struct CiBuild {
     pub features: BTreeSet<String>,
     pub cfgs: BTreeSet<String>,
+    /// `features` is a FLOOR, not the whole set: a feature outside it may still be on. Another
+    /// workspace member's tests are built in the same `--workspace` run, where cargo unifies a
+    /// crate's features across every member that depends on it, so only its own `default` closure
+    /// (and its self dev-dependency's) is known ON; any other feature is unknown, never OFF.
+    pub open_features: bool,
 }
 
 impl CiBuild {
@@ -126,6 +132,10 @@ impl CiBuild {
         if every("plane-door") {
             cfgs.insert("linked_every_plane_door".to_string());
         }
+        // build.rs `AUTH_AXIS`: every linked row on the `auths` axis is enabled.
+        if every("auths") {
+            cfgs.insert("linked_every_auth".to_string());
+        }
         if doc
             .table("package.metadata.busbar.operator-auth")
             .get_one("row")
@@ -133,7 +143,59 @@ impl CiBuild {
         {
             cfgs.insert("linked_operator_auth".to_string());
         }
-        Ok(CiBuild { features: on, cfgs })
+        Ok(CiBuild {
+            features: on,
+            cfgs,
+            open_features: false,
+        })
+    }
+
+    /// The build the `test` check compiles ANOTHER workspace member's own tests in (its lib's unit
+    /// tests, its integration-test targets), read off that member's manifest text: `cfg(test)`,
+    /// and, as a floor ([`Self::open_features`]), the closure of its `default` row and of the
+    /// features its self dev-dependency (`<name> = { path = ".", features = [..] }`) asks for. No
+    /// `linked_*` cfg: only the composition root's build script emits those.
+    #[must_use]
+    pub fn of_member_manifest(text: &str) -> CiBuild {
+        let doc = crate::toml_lite::parse_text(text);
+        let features = doc.table("features");
+        let name = doc
+            .table("package")
+            .get_one("name")
+            .unwrap_or_default()
+            .to_string();
+        let mut todo = features.get_list("default");
+        for (key, raw) in &doc.table("dev-dependencies").entries {
+            let Some(fields) = crate::toml_lite::inline_table(raw) else {
+                continue;
+            };
+            let field = |k: &str| fields.iter().find(|(f, _)| f == k).map(|(_, v)| v.clone());
+            let own = key.trim_matches('"') == name
+                && field("path").is_some_and(|p| {
+                    matches!(crate::toml_lite::string_value(&p).as_str(), "." | "./")
+                });
+            if own {
+                todo.extend(
+                    field("features")
+                        .and_then(|f| crate::toml_lite::array_items(&f))
+                        .unwrap_or_default(),
+                );
+            }
+        }
+        let mut on: BTreeSet<String> = BTreeSet::new();
+        while let Some(f) = todo.pop() {
+            if f.starts_with("dep:") || f.contains('/') {
+                continue;
+            }
+            if on.insert(f.clone()) {
+                todo.extend(features.get_list(&f));
+            }
+        }
+        CiBuild {
+            features: on,
+            cfgs: std::iter::once("test".to_string()).collect(),
+            open_features: true,
+        }
     }
 
     /// The value of one cfg predicate (as [`crate::libtest_path`] spells it: `all(test,x)`,
@@ -208,6 +270,8 @@ impl CiBuild {
                 if name == "feature" {
                     if self.features.contains(&value) {
                         Tri::Yes
+                    } else if self.open_features {
+                        Tri::Unknown
                     } else {
                         Tri::No
                     }
