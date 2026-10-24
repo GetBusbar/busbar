@@ -43,6 +43,9 @@ usage:
   cargo xtask plugin-gates cdeps <metadata.json> <deps.toml> [--tree <shipped-tree.txt>]
   (--tree: `cargo tree -e normal,build --target all --prefix none -f '{p}|{f}'` per workspace member,
    concatenated; the closure and features are then the shipped build's, not the dev-unified resolve's)
+  cargo xtask plugin-gates devfeatures --tree <shipped-tree.txt>
+  (busbar-contract's dev-only features, alloc-counter, test-seal and services-double, are on
+   nowhere in the shipped build)
   cargo xtask plugin-gates imports <undefined-symbols.txt> <needed-libs.txt> <deps.toml> <repo>
   cargo xtask plugin-gates gitsources <deps.toml>
   (every [git-sources] row admits one repository under https://github.com/GetBusbar/, at a 40-hex rev,
@@ -56,6 +59,8 @@ usage:
   cargo xtask plugin-gates plane <busbar-root> <plugin repo dir> <logic package>
   (a plane repo's change, judged at its busbar pin by busbar's plane gates: no row that passes over
    busbar's pinned plane may fail with the change laid in its place)
+  cargo xtask plugin-gates zero-spread <busbar-root> <plugin repo dir>
+  (every non-test literal of a contract struct that states a `ZERO` carries a base: `T { .., ..T::ZERO }`)
   cargo xtask plugin-gates selftest";
 
 type Res<T> = Result<T, String>;
@@ -371,6 +376,44 @@ pub fn depwall(meta: &Value, shipped: Option<&Shipped>, repo: &str) -> Res<Vec<S
         }
     }
     Ok(out)
+}
+
+/// busbar-contract's features a plugin may turn on from `[dev-dependencies]` only: the test-only
+/// counting allocator (`alloc-counter`, ARCHITECT ruling 2026-10-21), the test seal that
+/// implements the sealed `KernelSeal` (`test-seal`, #65) and the shared host-services test double
+/// (`services-double`). busbar's own workspace holds the same line in
+/// `crates/busbar-contract/tests/test_seal_is_dev_only.rs`.
+const DEV_ONLY_CONTRACT_FEATURES: [&str; 3] = ["alloc-counter", "test-seal", "services-double"];
+
+/// No dev-only busbar-contract feature is on in the SHIPPED build: the release graph `cargo tree`
+/// resolves over normal and build edges (`--tree`), so a feature a dev-dependency turns on is not
+/// seen and one a `[dependencies]` row, a `[features]` entry or a `default` turns on is. A tree
+/// that names no busbar-contract is RED too: the gate would be judging nothing.
+pub fn devfeatures(shipped: &Shipped) -> Vec<String> {
+    let mut contract: Vec<(&String, &BTreeSet<String>)> = shipped
+        .0
+        .iter()
+        .filter(|((name, _), _)| name == "busbar-contract")
+        .map(|((_, version), features)| (version, features))
+        .collect();
+    contract.sort();
+    if contract.is_empty() {
+        return vec![
+            "DEVFEATURE no busbar-contract in the shipped tree: nothing was judged".to_string(),
+        ];
+    }
+    let mut out = Vec::new();
+    for (version, features) in contract {
+        for f in DEV_ONLY_CONTRACT_FEATURES {
+            if features.contains(f) {
+                out.push(format!(
+                    "DEVFEATURE busbar-contract {version} has `{f}` on in the shipped build \
+                     (a [dev-dependencies]-only feature)"
+                ));
+            }
+        }
+    }
+    out
 }
 
 fn str_list(v: &Json) -> Vec<String> {
@@ -1814,11 +1857,107 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
         true,
     ));
     v.push(("gitsources committed", gitsources(&committed), false));
+    for (name, src, red) in ZERO_SPREAD_PLANTS {
+        v.push((name, zero_spread_plant(src), *red));
+    }
+    let tree = |contract: &str| {
+        Shipped::parse(&format!(
+            "busbar-transport-x v1.0.0 (/w/transport-x)|\n\
+             busbar-contract v1.6.0 (https://github.com/GetBusbar/busbar?rev={FORTY_HEX}#{FORTY_HEX})|{contract}\n\
+             serde v1.0.0|default,std\n"
+        ))
+    };
+    v.push((
+        "devfeatures green",
+        Ok(devfeatures(&tree("dispatch,runtime"))),
+        false,
+    ));
+    v.push((
+        "devfeatures alloc-counter shipped",
+        Ok(devfeatures(&tree("alloc-counter,dispatch"))),
+        true,
+    ));
+    v.push((
+        "devfeatures test-seal shipped",
+        Ok(devfeatures(&tree("dispatch,test-seal"))),
+        true,
+    ));
+    v.push((
+        "devfeatures services-double shipped",
+        Ok(devfeatures(&tree("services-double"))),
+        true,
+    ));
+    v.push((
+        "devfeatures no contract",
+        Ok(devfeatures(&Shipped::parse("serde v1.0.0|default,std\n"))),
+        true,
+    ));
     v
 }
 
 /// A full commit sha, for the `[git-sources]` plants.
 const FORTY_HEX: &str = "a142c64e1fafc5cca029adda1507a51064f81902";
+
+/// The contract the zero-spread plants are judged against: `Tail` states a `ZERO`; `Route` has two
+/// structs of its name, only one of which does.
+const ZERO_CONTRACT: &str = "\
+pub struct Tail { pub size: u32, pub flags: u32 }
+impl Tail { pub const ZERO: Self = Self { size: 0, flags: 0 }; }
+pub mod a { pub struct Route { pub path: u32, pub auth: u32, pub _reserved: u32 }
+impl Route { pub const ZERO: Self = Self { path: 0, auth: 0, _reserved: 0 }; } }
+pub mod b { pub struct Route { pub path: u32, pub auth: u32 } }
+";
+
+/// `(case, plugin src/lib.rs, RED)`.
+const ZERO_SPREAD_PLANTS: &[(&str, &str, bool)] = &[
+    (
+        "zero-spread spread",
+        "const T: Tail = Tail { size: 8, ..Tail::ZERO };",
+        false,
+    ),
+    (
+        "zero-spread every field named",
+        "const T: Tail = Tail { size: 8, flags: 0 };",
+        true,
+    ),
+    ("zero-spread a module's literal", "mod m;", true),
+    (
+        "zero-spread test-only literal",
+        "#[cfg(test)] mod t { const T: Tail = Tail { size: 8, flags: 0 }; }",
+        false,
+    ),
+    (
+        "zero-spread shared name, one without ZERO",
+        "const R: Route = Route { path: 1, auth: 2 };",
+        false,
+    ),
+    (
+        "zero-spread shared name, only the ZERO one fits",
+        "const R: Route = Route { path: 1, auth: 2, _reserved: 0 };",
+        true,
+    ),
+];
+
+/// One zero-spread plant: a busbar checkout holding [`ZERO_CONTRACT`] and a plugin repo whose one
+/// crate's `src/lib.rs` is `lib` (and whose `src/m.rs` names every field of a `Tail`).
+fn zero_spread_plant(lib: &str) -> Res<Vec<String>> {
+    let tmp = TempDir::new();
+    let contract = tmp.0.join("busbar").join(super::zero_spread::CONTRACT_SRC);
+    let krate = tmp.0.join("plugin").join("p");
+    let w = |p: PathBuf, s: &str| -> Res<()> {
+        std::fs::create_dir_all(p.parent().expect("a parent"))
+            .and_then(|()| std::fs::write(&p, s))
+            .map_err(|e| format!("{}: {e}", p.display()))
+    };
+    w(contract.join("lib.rs"), ZERO_CONTRACT)?;
+    w(krate.join("Cargo.toml"), "[package]\nname = \"p\"\n")?;
+    w(krate.join("src/lib.rs"), lib)?;
+    w(
+        krate.join("src/m.rs"),
+        "pub const T: Tail = Tail { size: 8, flags: 0 };",
+    )?;
+    super::zero_spread::zero_spread(&tmp.0.join("busbar"), &tmp.0.join("plugin"))
+}
 
 /// The selftest's failure lines (without the `SELFTEST ` prefix).
 fn selftest_failures() -> Vec<String> {
@@ -1985,6 +2124,9 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
         "depwall" => depwall(&load_json(a(0)?)?, sh, a(1)?),
         "netban" => netban(&load_json(a(0)?)?, sh, &load_toml(a(1)?)?, a(2)?),
         "cdeps" => cdeps(&load_json(a(0)?)?, sh, &load_toml(a(1)?)?),
+        "devfeatures" => Ok(devfeatures(sh.ok_or_else(|| {
+            format!("plugin-gates: `devfeatures` needs `--tree <shipped-tree.txt>`\n{USAGE}")
+        })?)),
         "imports" => {
             let (u, n) = (read(a(0)?)?, read(a(1)?)?);
             imports(&splitlines(&u), &splitlines(&n), &load_toml(a(2)?)?, a(3)?)
@@ -2011,6 +2153,7 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
         "gitsources" => gitsources(&load_toml(a(0)?)?),
         "plane" => plane(Path::new(a(0)?), Path::new(a(1)?), a(2)?),
         "declares" => declares(Path::new(a(0)?), a(1)?, &read(a(2)?)?),
+        "zero-spread" => super::zero_spread::zero_spread(Path::new(a(0)?), Path::new(a(1)?)),
         "former-names" => {
             let mut rest = args[1..].iter();
             let (mut repo, mut declared) = (None, None);
@@ -2078,6 +2221,11 @@ mod tests {
 
     case_tests! {
         depwall_green => "depwall green",
+        devfeatures_green => "devfeatures green",
+        devfeatures_alloc_counter_shipped => "devfeatures alloc-counter shipped",
+        devfeatures_test_seal_shipped => "devfeatures test-seal shipped",
+        devfeatures_services_double_shipped => "devfeatures services-double shipped",
+        devfeatures_no_contract => "devfeatures no contract",
         depwall_kernel => "depwall kernel",
         netban_dev_only => "netban dev-only",
         netban_rustls => "netban rustls",
@@ -2114,6 +2262,12 @@ mod tests {
         former_names_release_signs_it => "former-names release signs it",
         former_names_release_drops_it => "former-names release drops it",
         former_names_stray_frozen_row => "former-names stray frozen row",
+        zero_spread_spread => "zero-spread spread",
+        zero_spread_every_field_named => "zero-spread every field named",
+        zero_spread_a_modules_literal => "zero-spread a module's literal",
+        zero_spread_test_only_literal => "zero-spread test-only literal",
+        zero_spread_shared_name => "zero-spread shared name, one without ZERO",
+        zero_spread_shared_name_only_zero_fits => "zero-spread shared name, only the ZERO one fits",
     }
 
     /// The committed plugins.yaml: every entry declares its repo's frozen 1.5.5 manifest name (the
@@ -2203,13 +2357,14 @@ mod tests {
             .any(|f| f.starts_with("GITSRC x:")));
     }
 
-    /// The committed rows are the H2 forks, each admitted for busbar-transport-webrtc only.
+    /// The committed rows are the webrtc framer's H2 zeroize forks, each admitted for
+    /// busbar-transport-webrtc only.
     #[test]
     fn the_committed_git_sources_are_the_h2_forks_for_webrtc_only() {
         let committed = parse_toml(COMMITTED_POLICY).unwrap();
         assert_eq!(gitsources(&committed).unwrap(), Vec::<String>::new());
         let rows = committed.get("git-sources").as_object().unwrap();
-        assert_eq!(rows.keys().collect::<Vec<_>>(), ["str0m", "dimpl"]);
+        assert_eq!(rows.keys().collect::<Vec<_>>(), ["str0m", "dimpl", "ring"]);
         for (_, row) in rows.iter() {
             assert_eq!(str_list(row.get("repos")), ["busbar-transport-webrtc"]);
         }

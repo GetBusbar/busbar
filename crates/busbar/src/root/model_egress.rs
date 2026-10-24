@@ -161,13 +161,13 @@ impl ModelPools {
                     busbar_kernel::probe::ProbeCfg::resolve(
                         match health.mode {
                             busbar_kernel::config::HealthMode::None => {
-                                busbar_kernel::plane_host::HealthModeInput::None
+                                busbar_kernel::plane_driver::route_input::HealthModeInput::None
                             }
                             busbar_kernel::config::HealthMode::Dead => {
-                                busbar_kernel::plane_host::HealthModeInput::Dead
+                                busbar_kernel::plane_driver::route_input::HealthModeInput::Dead
                             }
                             busbar_kernel::config::HealthMode::Active => {
-                                busbar_kernel::plane_host::HealthModeInput::Active
+                                busbar_kernel::plane_driver::route_input::HealthModeInput::Active
                             }
                         },
                         health.interval_secs,
@@ -447,7 +447,7 @@ impl Breaker for DirectCells {
         destination: DestinationId,
         outcome: Outcome,
         reason: Option<&str>,
-        _now: u64,
+        now: u64,
         _token: &Pass<Route>,
     ) -> bool {
         let cell = self.cell(pool);
@@ -463,15 +463,19 @@ impl Breaker for DirectCells {
             return false;
         };
         match outcome {
+            // At the walk's `now`, the instant its admission and its shed read: the outcome a
+            // success or a failure pushes into the error-rate window, the cooldown a failure arms
+            // and the wait a shed advertises are one clock's, as 1.5.5's record took its
+            // `now_time`.
             Outcome::Success => {
-                store.record_success_in(cell, lane);
+                store.record_success_in(cell, lane, now);
                 false
             }
             Outcome::Transient { retry_after } => {
-                store.record_transient_in(cell, lane, "transient", cfg, retry_after)
+                store.record_transient_in_at(cell, lane, now, cfg, retry_after)
             }
             Outcome::HardDown => {
-                store.record_hard_down_all_cells(lane, reason.unwrap_or("hard_down"))
+                store.record_hard_down_all_cells(lane, reason.unwrap_or("hard_down"), now)
             }
             // Counted as the caller's fault above.
             Outcome::RecordNothing => false,
@@ -521,24 +525,34 @@ impl Breaker for DirectCells {
     /// A health probe's answer, recorded as 1.5.5's prober recorded it (`engine/health.rs`): a
     /// success recovers the lane in every cell, then joins every cell's window; a transient failure
     /// joins every cell's window under its own pool's ladder; a hard-down parks the lane in every
-    /// cell; a client fault records nothing.
+    /// cell; a client fault records nothing. Every write is at the walk's `now`, the one clock the
+    /// walk's own records and reads take (BUSBAR-1.6.0.md l.161).
     fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, _token: &Pass<Route>) {
         let (app, lane) = ((self.app)(), lane_of(destination));
         let store = &app.store;
         match outcome {
             Outcome::Success => {
                 if store.lane_needs_probe(lane, now) {
-                    store.recover_lane(lane);
+                    store.recover_lane(lane, now);
                 }
-                store.record_probe_success_all_cells(lane);
+                store.record_probe_success_all_cells(lane, now);
             }
             Outcome::Transient { retry_after } => {
                 let resolve = |pool: &str| self.records.get(pool).cloned().unwrap_or_default();
-                store.record_probe_failure_all_cells(lane, "health-probe", &resolve, retry_after);
+                store.record_probe_failure_all_cells(
+                    lane,
+                    "health-probe",
+                    &resolve,
+                    retry_after,
+                    now,
+                );
             }
             Outcome::HardDown => {
-                let _ =
-                    store.record_hard_down_all_cells(lane, "health-probe hard-down (auth/billing)");
+                let _ = store.record_hard_down_all_cells(
+                    lane,
+                    "health-probe hard-down (auth/billing)",
+                    now,
+                );
             }
             Outcome::RecordNothing => {}
         }
@@ -621,8 +635,11 @@ impl busbar_kernel_egress::ports::Telemetry for ModelTelemetry {
 /// THE EGRESS OF THE PLANE SERVING THE `pools` MAP (module doc): one member per sealed entry (its
 /// destination the model's lane index, its name the model's), a pool per configured pool with its
 /// own bounds and terminal, a pool per model a route may name directly, the kernel's breaker cells
-/// under each pool's ladder, each model's concurrency cap, the node's clock and counters, and
-/// `journal`.
+/// under each pool's ladder, each model's concurrency cap, the node's counters, `journal` and
+/// `clock`, the walk's clock the plane was composed on (the node's,
+/// [`crate::root::egress_ports::NodeClock`]): the cooldown a failure
+/// arms is recorded at the walk's reading of it, so the wait a shed advertises is measured on the
+/// same clock.
 ///
 /// # Errors
 ///
@@ -636,6 +653,7 @@ pub fn compose(
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
+    clock: Arc<dyn busbar_kernel_egress::ports::Clock>,
     stream_ceiling_secs: u64,
 ) -> Result<(busbar_kernel::plane_driver::Egress, ModelShown), String> {
     let plan = &serving.pools;
@@ -737,7 +755,7 @@ pub fn compose(
             conns,
             breaker: Arc::new(breaker),
             capacity: permits,
-            clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
+            clock,
             journal,
             telemetry: Arc::new(ModelTelemetry {
                 app: Arc::clone(&serving.app),

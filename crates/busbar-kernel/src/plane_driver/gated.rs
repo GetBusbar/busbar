@@ -69,7 +69,7 @@ pub struct GatedHooks {
 }
 
 /// The CURRENT generation's engine host, read per unit (a config apply replaces it).
-pub type GenerationHost = Arc<dyn Fn() -> Arc<dyn crate::plane_host::EngineHost> + Send + Sync>;
+pub type GenerationHost = Arc<dyn Fn() -> Arc<dyn crate::plane_driver::EngineHost> + Send + Sync>;
 
 /// A governance key lookup by the principal the kernel verified.
 pub type PrincipalKeys =
@@ -129,7 +129,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// THE GATE-FIRST REQUEST STAGE (module doc): the entry's gates over the projection, then its
     /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more.
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
-        let mut view: Projection = self.project(None)?;
+        let first = self.project(None, false);
         let (principal, recorded, route) = {
             let st = self.lock();
             (
@@ -137,6 +137,41 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 st.decoded.as_ref().and_then(|d| d.pool.clone()),
                 st.decoded.as_ref().map_or(0, |d| d.route),
             )
+        };
+        let mut view: Projection = match first {
+            Ok(view) => view,
+            // The plane answered FAULT to the unit's first `project`: where the entry the kernel
+            // recorded has a rewrite hook configured, v1.5.5 materialized the document before any
+            // hook ran (`proxy/engine/mod.rs:728`, `:749`) and answered the shared 500, no hook
+            // invoked. Anywhere else 1.5.5's gates judged a Null body and the request proceeded
+            // (`:957-961`): the entry's gates judge a view with no body, and the unit goes on.
+            Err(Stopped::Unparseable { marked }) => {
+                // The entry the kernel recorded at decode; a unit that recorded none, or one that
+                // is not UTF-8, binds the empty entry, as `bound_entry` reads an unnamed one.
+                let entry = std::str::from_utf8(recorded.as_deref().unwrap_or_default())
+                    .unwrap_or_default()
+                    .to_string();
+                let hooks = binder.bind_gated(&entry, principal.as_deref());
+                // A configured rewrite: the shared 500 for every FAULT, marked or not (v1.5.5
+                // `:728`, `:749`), no hook invoked.
+                if hooks.as_ref().is_some_and(|h| !h.rewrites.is_empty()) {
+                    return Err(super::fault_veto());
+                }
+                // An unmarked FAULT is a broken plane, never 1.5.5's Null body: unreadable.
+                if !marked {
+                    return Err(Stopped::Unreadable);
+                }
+                let Some(hooks) = hooks else {
+                    return Ok(());
+                };
+                let null = Projection {
+                    pool: entry,
+                    dialect: binder.dialect(self.lock().decoded.as_ref().map_or(0, |d| d.dialect)),
+                    ..Projection::default()
+                };
+                return self.screen_gates(&hooks, &null).await;
+            }
+            Err(other) => return Err(other),
         };
         // THE ENTRY THE KERNEL RECORDED at decode, never the plane's later word: a projection naming
         // another entry is refused before any entry's gates are bound.
@@ -152,37 +187,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         span.record("request_id", hooks.request_id);
 
         // 1. THE DECISION GATES, over the projected invocation, keyed on the view's session.
-        if !hooks.gates.is_empty() {
-            let projected = view.projected.clone().unwrap_or_default();
-            let now_ms = crate::store::now_ms();
-            let door = DoorSubject {
-                projected: &projected,
-                container: &view.pool,
-                dialect: &view.dialect,
-                request_id: hooks.request_id,
-                key: hooks.key.as_deref(),
-                session: view.session.as_deref(),
-                scan: hooks.scan.as_ref().map(|s| ScanSubstrate {
-                    store: &s.store,
-                    generation: s.generation,
-                    now_ms,
-                }),
-            };
-            if let GateVerdict::Reject {
-                status,
-                message,
-                hook,
-            } = decide_door(&hooks.gates, &door).await
-            {
-                tracing::info!(
-                    entry = %view.pool,
-                    hook = %hook,
-                    status,
-                    "a unit refused by a hook gate"
-                );
-                return Err(veto_by(status, message, hook));
-            }
-        }
+        self.screen_gates(&hooks, &view).await?;
 
         // 2. THE ENTRY'S REWRITE CHAIN, each rewrite applied by the plane and projected again.
         for (timeout, hook) in &hooks.rewrites {
@@ -200,7 +205,19 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
-                    let next = self.project(Some(&bytes))?;
+                    let next = match self.project(Some(&bytes), true) {
+                        Ok(next) => next,
+                        // A FAULT project: the shared 500, never the hook's `on_error`.
+                        Err(fault @ Stopped::Veto(_)) => return Err(fault),
+                        Err(_) => {
+                            // The plane refused the rewrite: the hook's failure, by its
+                            // `on_error`.
+                            if let Some((status, message)) = refused_rewrite(&**hook, &view.pool) {
+                                return Err(veto_by(status, message, hook.name()));
+                            }
+                            continue;
+                        }
+                    };
                     // The re-projection is held to the same bound entry.
                     if next.pool != entry {
                         return Err(Stopped::Unreadable);
@@ -223,6 +240,50 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                         "rewrite hook could not answer; proceeding with the original body"
                     );
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// THE ENTRY'S DECISION GATES over `view`, the projected invocation, keyed on the view's
+    /// session: the first rejecting gate refuses the unit.
+    async fn screen_gates(&self, hooks: &GatedHooks, view: &Projection) -> Result<(), Stopped> {
+        if !hooks.gates.is_empty() {
+            let now_ms = crate::store::now_ms();
+            let door = DoorSubject {
+                // The plane's own body, or none: a gate granted the content never screens an
+                // absent body as empty content (`decide_door`, audit Q128 p15#3).
+                projected: view.projected.as_deref(),
+                container: &view.pool,
+                dialect: &view.dialect,
+                request_id: hooks.request_id,
+                key: hooks.key.as_deref(),
+                session: view.session.as_deref(),
+                scan: hooks.scan.as_ref().map(|s| ScanSubstrate {
+                    store: &s.store,
+                    generation: s.generation,
+                    now_ms,
+                }),
+                // THE DESIGN Appendix B.9 l.5436-5437: the hook view's plane-derived fields.
+                plane: crate::hooks::gate::DoorShape {
+                    max_tokens: view.max_tokens,
+                    stream: view.stream,
+                    end_user: view.end_user.as_deref(),
+                },
+            };
+            if let GateVerdict::Reject {
+                status,
+                message,
+                hook,
+            } = decide_door(&hooks.gates, &door).await
+            {
+                tracing::info!(
+                    entry = %view.pool,
+                    hook = %hook,
+                    status,
+                    "a unit refused by a hook gate"
+                );
+                return Err(veto_by(status, message, hook));
             }
         }
         Ok(())
@@ -267,6 +328,40 @@ fn bound_entry<'v>(
     std::str::from_utf8(recorded)
         .map(Some)
         .map_err(|_| Stopped::Unreadable)
+}
+
+/// A REWRITE THE PLANE REFUSED TO APPLY (one naming a model other than the routed one, say): the
+/// rewriting hook's failure, never the unit's, answered by that hook's own `on_error` (coordinator
+/// ruling, row 159). A load-bearing hook (`on_error: reject`) refuses the unit with the refusal a
+/// failed call of the same hook answers, [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words
+/// (`Some`); any other disposition proceeds with the body and view the unit had before that rewrite
+/// (`None`), as 1.5.5 left a request it could not rewrite unmodified. Never a silent switch to what
+/// the rewrite named.
+///
+/// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`]: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
+pub(super) fn refused_rewrite(
+    hook: &dyn busbar_contract::hooks::RoutingPolicy,
+    entry: &str,
+) -> Option<(u16, String)> {
+    use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
+    if hook.refuses_failed_rewrite() {
+        tracing::warn!(
+            hook = hook.name(),
+            entry = %entry,
+            "the plane refused a rewrite hook's rewrite and the hook is declared load-bearing \
+             (on_error: reject); refusing the request"
+        );
+        return Some(rewrite_refusal(
+            REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+        ));
+    }
+    tracing::warn!(
+        hook = hook.name(),
+        entry = %entry,
+        "the plane refused a rewrite hook's rewrite; proceeding with the request unmodified"
+    );
+    None
 }
 
 /// A REWRITE'S REFUSAL, as the caller is answered (SEAM-L(q), predev parity): a status the hook
