@@ -1,4 +1,0 @@
-data: {"candidates":[{"content":{"parts":[{"text":"oracle-marker"}],"role":"model"},"finishReason":"STOP","index":0}],"modelVersion":"m-gemini"}
-
-data: {"error":{"code":500,"message":"oracle: upstream failed mid-stream","status":"INTERNAL"}}
-

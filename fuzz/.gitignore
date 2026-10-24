@@ -1,5 +1,0 @@
-# cargo-fuzz build + run artifacts — never committed.
-/target
-/corpus
-/artifacts
-/coverage
