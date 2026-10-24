@@ -393,6 +393,7 @@ pub(crate) unsafe fn serve(
         store,
         route,
         head,
+        req,
         |stored| unsafe { deliver(stored, into) },
         body,
     )
@@ -405,6 +406,7 @@ pub(crate) fn serve_with(
     store: &Arc<ServiceStore>,
     route: &Waking,
     head: &ServiceHead,
+    req: u64,
     put: impl FnOnce(&Stored) -> Result<Answered, Answered>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
@@ -426,8 +428,7 @@ pub(crate) fn serve_with(
         return Answered::fault();
     }
     let bound = Bound { op: head.op, req };
-    // SAFETY: the caller's contract.
-    let a = unsafe { serve_kept(store, route, h, bound, into, body) };
+    let a = serve_kept(store, route, h, bound, put, body);
     store.held.answered(h, a.outcome == Outcome::Pending);
     a
 }
@@ -435,15 +436,12 @@ pub(crate) fn serve_with(
 /// [`serve`] under the ticketed handle `h`, bound at its first use to `bound` (the service and the
 /// request's fingerprint): run once, stored, redeemed on the handle; a call naming another `bound`
 /// is [`rebound`].
-///
-/// # Safety
-/// As [`deliver`].
-unsafe fn serve_kept(
+fn serve_kept(
     store: &Arc<ServiceStore>,
     route: &Waking,
     h: CompletionHandle,
     bound: Bound,
-    into: Option<&ServiceBufs>,
+    put: impl FnOnce(&Stored) -> Result<Answered, Answered>,
     body: impl FnOnce(Option<Completer>) -> Ran,
 ) -> Answered {
     // The epoch of the op on the ticket: the one its first result minted, or a fresh one; `None`
@@ -569,25 +567,6 @@ fn served(ctx: HostCtx) -> Option<(Served, Waking)> {
     let waking = Waking::of(wake)?;
     let served = waking.route.upgrade()?.services()?;
     Some((served, waking))
-}
-
-/// A NEW OP starts on `ticket` (an inline ticket's op that is not a resume): the results the
-/// ticket's earlier op stored are forgotten, ending their epoch, so the new op's handles (counted
-/// from 0 again) never read them and a late completion of the old op stores into nothing. A
-/// resume keeps them: the re-issued handle reads its stored result.
-///
-/// THE HOST'S OWN BOOKKEEPING, read off the instance's own handle-table entry (`wake`), never a
-/// context judged as if a plugin had handed it: the op may be crossed NESTED inside another
-/// instance's crossing (a framer's `begin` on its inline ticket, driven by a plane's connection
-/// service on the plane's thread), where resolving the framer's context would read as "another
-/// instance's handle inside a crossing" and quarantine the plane, which no plugin forged.
-pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket) {
-    let served = Waking::of(wake)
-        .and_then(|w| w.route.upgrade())
-        .and_then(|route| route.services());
-    if let Some(served) = served {
-        served.store.forget(ticket);
-    }
 }
 
 /// The caller an instance's context names; `None` before bind stated one.
@@ -1768,10 +1747,21 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 deadline: op_remaining(),
                 framing: framing_of(&route, head.handle.ticket),
             };
+            // The request a handle is bound to: the line or binding, the unit, the point and the
+            // connection and stream it is made on. Never the buffers, which a short answer's
+            // re-call may change.
+            let req = Fp::of(&[
+                &i.auth.id.to_le_bytes(),
+                &i.unit.id.to_le_bytes(),
+                &i.point.to_le_bytes(),
+                &i.conn.to_le_bytes(),
+                &i.stream.to_le_bytes(),
+            ]);
             serve_with(
                 &store,
                 &route,
                 &head,
+                req,
                 // SAFETY: `i`'s buffers and slot checked by `check_auth_call_in` above.
                 |stored| unsafe { put_auth(stored, &i) },
                 |completer| {
