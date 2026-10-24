@@ -465,11 +465,14 @@ dependencies = [
  "jsonschema",
  "libc",
  "memchr",
+ "proc-macro2",
+ "quote",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "sha2",
  "smallvec",
+ "syn 2.0.117",
  "tracing",
  "tracing-core",
  "tracing-log",
@@ -4335,23 +4338,6 @@ dependencies = [
  "rusticata-macros",
  "thiserror",
  "time",
-]
-
-[[package]]
-name = "xtask"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "libc",
- "proc-macro2",
- "rcgen",
- "ring",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "syn 2.0.117",
 ]
 
 [[package]]
