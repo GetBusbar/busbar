@@ -706,6 +706,65 @@ fn a_plugin_named_need_to_the_metadata_address_is_refused() {
     });
 }
 
+/// RED (Q128 arch u22 HIGH 2; THE DESIGN §5 egress table, `provider`: "allow-list +
+/// `allow_metadata_hosts`", and the DESTINATION GUARD, checked in ONE place): a provider need whose
+/// 1.5.5 carve-out (`allow_metadata_hosts: ["169.254.169.254"]`, as 1.5.5 documented it for IMDS)
+/// names a metadata address is DIALLED there: the guard admits it and the connector dials the
+/// address the judgement pinned (here the loopback far end standing in for the metadata service).
+/// The same open from a need in another class, and to a metadata address no carve-out names, is
+/// refused by the same guard. RED on the endpoint check that refused every metadata host ahead of
+/// the guard, so its carve-outs reached no dial.
+#[test]
+fn a_provider_carve_out_reaches_its_metadata_address_on_the_dial() {
+    worker().block_on(async {
+        let (_listening, far) = far_end().await;
+        let stand_in: std::net::SocketAddr = far.parse().unwrap();
+        let guard = crate::guard::Guard::from_config(&busbar_kernel::config::Destinations {
+            block_private_addresses: true,
+            legacy_allow: vec!["169.254.169.254".to_owned()],
+            ..busbar_kernel::config::Destinations::default()
+        })
+        .expect("the carve-out");
+        let judge = move |dest: &str, class: u32, _: crate::Judged| {
+            let at = crate::socket::address_of(dest)?;
+            Some(
+                guard
+                    .judge_answer(&at.ip().to_string(), &[at.ip()], class)
+                    .map(|()| stand_in)
+                    .map_err(|r| r.verdict),
+            )
+        };
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_, _| {}));
+        c.declare_need(
+            OWNER,
+            NeedId(0),
+            "bytes",
+            busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
+        )
+        .expect("a provider need declares");
+        c.declare_need(OWNER, NeedId(1), "bytes", crate::DEFAULT_CLASS)
+            .expect("a default-class need declares");
+        let id = open_in(&c, 0, "169.254.169.254:80")
+            .expect("the provider's carve-out reaches its metadata address");
+        c.close(OWNER, id).unwrap();
+        assert_eq!(
+            open_in(&c, 1, "169.254.169.254:80"),
+            Err(ConnError::Refused),
+            "no carve-out speaks for another class"
+        );
+        assert_eq!(
+            open_in(&c, 0, "100.100.100.200:80"),
+            Err(ConnError::Refused),
+            "a carve-out admits only what it names"
+        );
+    });
+}
+
 /// RED (ARCHITECT rule 15.3: ports `execute_hop_does_not_follow_redirect`, deleted with the
 /// core-run login hop): THE CONNECTOR NEVER FOLLOWS AN ANSWER. A far end answering a `302` whose
 /// `Location` names another listener hands that answer to the need's owner through the table, byte
@@ -2255,6 +2314,169 @@ mod transport_pin {
         });
     }
 
+    /// Every per-instance record `c` still holds for `owner`, by name.
+    fn records_of(c: &Connector, owner: InstanceId) -> Vec<&'static str> {
+        let mut held = Vec::new();
+        if c.over.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("needs");
+        }
+        if c.declared.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("declarations");
+        }
+        if c.slab.check_need(owner, NeedId(0)).is_ok() {
+            held.push("table needs");
+        }
+        if c.anchored
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("sealed destinations");
+        }
+        if c.member_anchored
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("sealed registrations");
+        }
+        if c.registered
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("registrations at a destination");
+        }
+        if c.reaching
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("private reaches");
+        }
+        if c.auths
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _, _)| *o == owner)
+        {
+            held.push("auth bindings");
+        }
+        if c.authority_held.lock().unwrap().contains(&owner) {
+            held.push("held authority");
+        }
+        if c.listeners.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("listeners");
+        }
+        held
+    }
+
+    /// RED (audit row 159, connector HIGH 5: "every per-instance record grows with each reload"):
+    /// a reload replaces an instance with one under a new id and the gone one is forgotten. Over
+    /// every replace cycle nothing a gone instance declared, sealed, bound or held stays on the
+    /// connector. GREEN twins: the instance that replaced it, and a neighbour never replaced, keep
+    /// every record and still exchange; a forgotten id declared again works.
+    #[test]
+    fn a_forgotten_instance_leaves_no_record_however_many_reloads() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let served = pki.leaf("localhost");
+            let far = keeping_tls_far_end(&served).await;
+            let c = pooled_trusting(&pki);
+            let pinned = Anchors {
+                key_pin: Some(served.pin.clone()),
+                client_identity: None,
+                private_reach: false,
+            };
+            let hold = |owner: InstanceId| {
+                c.declare_over(owner, NeedId(0), "sec").expect("declared");
+                c.hold_authority(owner);
+                c.anchor(owner, NeedId(0), "", &far, &pinned)
+                    .expect("the destination sealed");
+                c.anchor(owner, NeedId(0), "planner", &far, &pinned)
+                    .expect("the registration sealed");
+                c.seal_reach(owner, NeedId(0), "planner", &far, true)
+                    .expect("the reach sealed");
+                c.bind_auth(
+                    owner,
+                    NeedId(0),
+                    "planner",
+                    "https://vendor.example",
+                    bound_as(1),
+                );
+            };
+            let every = vec![
+                "needs",
+                "declarations",
+                "table needs",
+                "sealed destinations",
+                "sealed registrations",
+                "registrations at a destination",
+                "private reaches",
+                "auth bindings",
+                "held authority",
+            ];
+            let whole = (b"x".to_vec(), true, None);
+            hold(OWNER);
+            let mut live = InstanceId(10);
+            hold(live);
+            assert_eq!(
+                records_of(&c, live),
+                every,
+                "a live instance holds its records"
+            );
+            assert_eq!(
+                pooled_exchange(&c, (live, 0), &far, b"first", true).await,
+                whole
+            );
+            let mut gone = Vec::new();
+            for cycle in 11..15 {
+                let next = InstanceId(cycle);
+                hold(next);
+                c.forget(live);
+                gone.push(live);
+                live = next;
+                for g in &gone {
+                    assert_eq!(
+                        records_of(&c, *g),
+                        Vec::<&str>::new(),
+                        "a forgotten instance holds no record (reload {cycle})"
+                    );
+                }
+                assert_eq!(
+                    records_of(&c, live),
+                    every,
+                    "the instance that replaced it holds its own"
+                );
+                assert_eq!(
+                    pooled_exchange(&c, (live, 0), &far, b"first", true).await,
+                    whole,
+                    "the instance that replaced it exchanges"
+                );
+            }
+            assert_eq!(
+                records_of(&c, OWNER),
+                every,
+                "a neighbour's records are untouched"
+            );
+            assert_eq!(
+                pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
+                whole,
+                "a neighbour still exchanges"
+            );
+            hold(gone[0]);
+            assert_eq!(
+                pooled_exchange(&c, (gone[0], 0), &far, b"first", true).await,
+                whole,
+                "a forgotten id declared again exchanges"
+            );
+        });
+    }
+
     /// RED (`PollConns::anchor`: "an open naming it, to its own target's authority, is held to its
     /// anchors alone (none, where they are empty)"): a registration holding NO anchors, sealed
     /// BEFORE another registration at the same authority that holds a client identity, still
@@ -2338,6 +2560,171 @@ mod transport_pin {
                 Some(ConnError::Refused),
                 "two registrations disagree: an open naming neither is refused"
             );
+        });
+    }
+
+    /// A TLS far end on loopback serving `leaf`, answering `answer` once it read five bytes: its
+    /// address, and, per connection once it is done, every byte it read (empty: the dialler left, or
+    /// failed its handshake, before writing any).
+    async fn reporting_tls_far_end(
+        leaf: &Leaf,
+    ) -> (String, tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) {
+        crate::tls::install_crypto_provider();
+        let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
+        let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let (l, far) = far_end().await;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((s, _)) = l.accept().await {
+                let (acceptor, tx) = (acceptor.clone(), tx.clone());
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(s).await else {
+                        let _ = tx.send(Vec::new());
+                        return;
+                    };
+                    let mut got = Vec::new();
+                    let mut buf = [0_u8; 64];
+                    while got.len() < 5 {
+                        match tls.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => got.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    if got.len() >= 5 {
+                        let _ = tls.write_all(b"answer").await;
+                        let _ = tls.shutdown().await;
+                    }
+                    let _ = tx.send(got);
+                });
+            }
+        });
+        (far, rx)
+    }
+
+    /// Open need 0 at `far` with a five-byte opening body and read to its first answer, waking on
+    /// the connection's own readiness: the connection, and the read's answer.
+    async fn exchange_awaited(c: &Connector, far: &str) -> (ConnId, Result<Vec<u8>, ConnError>) {
+        let desc = OpenDesc {
+            target: far,
+            body: b"first",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            std::future::poll_fn(|cx| c.poll_read(OWNER, id, cx, &mut buf)),
+        )
+        .await
+        .expect("the connector answers");
+        (id, read.map(|p| buf[..p.len].to_vec()))
+    }
+
+    /// What the far end read on the connection it finished next.
+    async fn far_read(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<u8> {
+        tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect("the far end reports the connection")
+            .expect("the far end runs")
+    }
+
+    /// RED (the operator docs: a pin is written `sha256/<base64>`): a pin written in
+    /// the DOCUMENTED spelling is the served key's and reaches it, and so does its plain base64
+    /// alias; a pin of another key is refused in either spelling, after the handshake and before
+    /// any request byte reaches the far end. Compared as written, the documented spelling never
+    /// matched the observed key (plain base64), so every documented pin refused its own far end.
+    /// The facts report the observed key in the canonical spelling either way.
+    #[test]
+    fn a_pin_in_either_spelling_reaches_its_key_and_refuses_another_before_any_request_byte() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let served = pki.leaf("localhost");
+            let other = pki.leaf("localhost");
+            let (far, mut rx) = reporting_tls_far_end(&served).await;
+            let c = trusting(&pki);
+            let plain = |pin: &str| {
+                pin.strip_prefix(busbar_contract::transport::trust::KEY_PIN_TAG)
+                    .expect("the canonical spelling is tagged")
+                    .to_owned()
+            };
+            assert!(served.pin.starts_with("sha256/"), "{}", served.pin);
+            for written in [served.pin.clone(), plain(&served.pin)] {
+                let anchors = Anchors {
+                    key_pin: Some(written.clone()),
+                    client_identity: None,
+                    private_reach: false,
+                };
+                c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                    .expect("sealed");
+                let (id, got) = exchange_awaited(&c, &far).await;
+                assert_eq!(got.as_deref(), Ok(&b"answer"[..]), "{written}");
+                let facts = c.facts(OWNER, id).expect("facts");
+                assert_eq!(
+                    facts.peer_key_pin.as_deref(),
+                    Some(served.pin.as_str()),
+                    "the facts report the observed key canonically, whatever the pin's spelling"
+                );
+                c.close(OWNER, id).expect("closed");
+                assert_eq!(far_read(&mut rx).await, b"first", "{written}");
+            }
+            for written in [other.pin.clone(), plain(&other.pin)] {
+                let anchors = Anchors {
+                    key_pin: Some(written.clone()),
+                    client_identity: None,
+                    private_reach: false,
+                };
+                c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                    .expect("sealed");
+                let (id, got) = exchange_awaited(&c, &far).await;
+                assert_eq!(got, Err(ConnError::Refused), "{written}");
+                let facts = c.facts(OWNER, id).expect("facts after the refusal");
+                assert_eq!(
+                    facts.peer_key_pin.as_deref(),
+                    Some(served.pin.as_str()),
+                    "the refusal names the key served, canonically"
+                );
+                c.close(OWNER, id).expect("closed");
+                assert!(
+                    far_read(&mut rx).await.is_empty(),
+                    "no request byte reached the far end ({written})"
+                );
+            }
+        });
+    }
+
+    /// A pin that names no SHA-256 digest (a stand-in such as `sha256/BASE=`, another tag, a digest
+    /// of another length) refuses the seal: it is never held as a string no key can match.
+    #[test]
+    fn a_pin_that_names_no_digest_refuses_the_seal() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let leaf = pki.leaf("localhost");
+            let (_listening, far) = far_end().await;
+            let c = trusting(&pki);
+            for bad in ["sha256/BASE=", "sha1/AAAA", "not a pin", "sha256/"] {
+                let anchors = Anchors {
+                    key_pin: Some(bad.to_owned()),
+                    client_identity: None,
+                    private_reach: false,
+                };
+                assert_eq!(
+                    c.anchor(OWNER, NeedId(0), "", &far, &anchors),
+                    Err(ConnError::Refused),
+                    "{bad}"
+                );
+            }
+            let good = Anchors {
+                key_pin: Some(leaf.pin.clone()),
+                client_identity: None,
+                private_reach: false,
+            };
+            assert_eq!(c.anchor(OWNER, NeedId(0), "", &far, &good), Ok(()));
         });
     }
 }
@@ -2844,6 +3231,68 @@ fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
             accepted.load(Ordering::SeqCst),
             3,
             "control: the need's own next open rides its kept line"
+        );
+    });
+}
+
+/// RED (audit row 159, connector HIGH 5: "every per-instance record grows with each reload"): a
+/// forgotten instance's lines and listener go with it. The idle line its exchange finished on is
+/// closed at once, never left on the pool for the idle reaper, and its listener leaves the table.
+/// GREEN twin: a neighbour's kept line stays open and is lent to its next open.
+#[test]
+fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_kept() {
+    worker().block_on(async {
+        let (far, accepted, ended) = keeping_far_end().await;
+        let c = pooled_messages(std::time::Duration::from_secs(60));
+        for owner in [OWNER, OTHER] {
+            c.declare_over(owner, NeedId(0), "messages")
+                .expect("a served scheme declares");
+        }
+        c.listen(
+            OTHER,
+            NeedId(0),
+            "127.0.0.1:0",
+            None,
+            crate::listen::AcceptLimits::default(),
+        )
+        .expect("listens");
+        let whole = (b"x".to_vec(), true, None);
+        assert_eq!(
+            pooled_exchange(&c, (OWNER, 0), &far, b"ask", true).await,
+            whole
+        );
+        assert_eq!(
+            pooled_exchange(&c, (OTHER, 0), &far, b"ask", true).await,
+            whole
+        );
+        assert_eq!(accepted.load(Ordering::SeqCst), 2, "each kept its own line");
+        c.forget(OTHER);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ended.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            ended.load(Ordering::SeqCst),
+            1,
+            "the forgotten instance's idle line is closed at once"
+        );
+        assert!(
+            !c.listeners.lock().unwrap().keys().any(|(o, _)| *o == OTHER),
+            "the forgotten instance's listener leaves the table"
+        );
+        let again = pooled_exchange(&c, (OWNER, 0), &far, b"ask", false).await;
+        assert_eq!(
+            again.0,
+            b"x".to_vec(),
+            "the neighbour's next open is answered"
+        );
+        assert_eq!(
+            (
+                accepted.load(Ordering::SeqCst),
+                ended.load(Ordering::SeqCst)
+            ),
+            (2, 1),
+            "the neighbour's next open rides its kept line, still open"
         );
     });
 }

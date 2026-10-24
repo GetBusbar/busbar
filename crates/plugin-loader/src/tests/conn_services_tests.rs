@@ -53,6 +53,8 @@ struct Recording {
     /// Every instance whose authority the host was asked to hold, and how many of its needs had
     /// been declared by then.
     held: Mutex<Vec<(InstanceId, usize)>>,
+    /// Every instance the table was told is gone ([`DeclaredConns::forget`]), in order.
+    forgotten: Mutex<Vec<InstanceId>>,
 }
 
 /// One member-program declaration as it reached the table.
@@ -63,6 +65,9 @@ type MemberDeclared = (
 );
 
 impl DeclaredConns for Recording {
+    fn forget(&self, owner: InstanceId) {
+        self.forgotten.lock().unwrap().push(owner);
+    }
     fn hold_authority(&self, owner: InstanceId) {
         let before = self
             .declared
@@ -1762,12 +1767,12 @@ const MEMBER_NEEDS: [Need; 1] = [Need {
     ..NEEDS[0]
 }];
 
-/// RED (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): a need whose `target_from` is the
-/// member-program path is declared with ONE program per registration that names a `command` —
+/// RED (ARCHITECT round 5, the member-program upstream ruling (A)): a need whose `target_from` is
+/// the member-program path is declared with ONE program per registration that names a `command` —
 /// its `command`, `args` and `env`, every other key ignored, an `env` secret reference kept as the
 /// reference (the host resolves it at the spawn, never at the declare) — at `open` and again at
-/// every `refresh` (so the table can retire a changed or removed member); a
-/// registration naming no program is no member, and one whose program does not read is left out.
+/// every `refresh` (so the table can retire a changed or removed member); a registration naming no
+/// program is no member, and one whose program does not read is left out.
 #[test]
 fn a_member_program_need_is_declared_with_each_registrations_program() {
     use busbar_contract::conn::Program;
@@ -1776,11 +1781,11 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
     assert_eq!(
         open_with(
             &p,
-            br#"{"one":{"transport":"stdio","command":"/usr/bin/one","args":["--serve"],
+            br#"{"one":{"transport":"piped","command":"/usr/bin/one","args":["--serve"],
                  "env":{"PLAIN":"v","KEY":{"env":"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}},
                  "pin":{"mechanism":"unpinned"},"tools_allow":["a"]},
                 "web":{"url":"https://upstream.example/rpc","pin":{"mechanism":"unpinned"}},
-                "bad":{"transport":"stdio","command":"relative"},
+                "bad":{"transport":"piped","command":"relative"},
                 "pools":{"p":{"members":["one"]}}}"#
         ),
         Outcome::Ready
@@ -2239,6 +2244,42 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
     let mut fresh = [0_u8; 64];
     let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
+}
+
+/// RED (audit row 159, connector HIGH 5: "a replaced instance's member programs keep running"):
+/// an instance that is let go (closed, or replaced by a reload) is forgotten on the host's
+/// connection table under its own id, once, so the table drops its needs and kills its member
+/// programs. GREEN twin: a neighbour bound over the same table, still live, is never forgotten.
+#[test]
+fn a_dropped_instance_is_forgotten_on_the_table_and_a_live_neighbour_is_not() {
+    let table = Arc::new(Recording::default());
+    let gone = bound(Box::leak(Box::new(NEEDS)), &table);
+    let neighbour = bound(Box::leak(Box::new(NEEDS)), &table);
+    for p in [&gone, &neighbour] {
+        assert_eq!(
+            open_with(p, br#"{"upstream":"127.0.0.1:9"}"#),
+            Outcome::Ready
+        );
+    }
+    let (id, kept) = (gone.instance(), neighbour.instance());
+    assert_ne!(id, kept);
+    assert!(
+        table.forgotten.lock().unwrap().is_empty(),
+        "no live instance is forgotten"
+    );
+    drop(gone);
+    assert_eq!(
+        *table.forgotten.lock().unwrap(),
+        vec![id],
+        "the dropped instance is forgotten on the table, once"
+    );
+    assert_eq!(
+        establish(&neighbour, 0, "127.0.0.1:9").outcome,
+        RawOutcome::of(Outcome::Ready),
+        "the live neighbour still reaches its need"
+    );
+    drop(neighbour);
+    assert_eq!(*table.forgotten.lock().unwrap(), vec![id, kept]);
 }
 
 /// The connector's `RANDOM` slot is RETIRED and served by no host: `random.fill`, a host service,
