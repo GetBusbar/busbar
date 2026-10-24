@@ -44,7 +44,11 @@ pub const NEEDLES: &[&str] = &[
 /// path, a method reference): `busbar_contract::redacted::Secret::expose` is the one way to reach
 /// the value inside a `Secret` (Part 2 #54), sealed by a `KernelSeal`. Each must be defined in the
 /// tree ([`undefined_names`]).
-pub const EXPOSERS: &[&str] = &["expose"];
+///
+/// `headers_for` and `prebuild_auth` are the kernel helpers that turn a resolved credential into
+/// request headers: the plaintext reaches a plane through them without ever passing an accessor
+/// named `expose`, so they are on the row by name too.
+pub const EXPOSERS: &[&str] = &["expose", "headers_for", "prebuild_auth"];
 
 pub const SPEC: Spec = Spec {
     gate: "plane-secret-blindness",
@@ -89,7 +93,18 @@ pub fn undefined_names(cx: &Ctx, names: &[&str]) -> Result<Vec<String>, String> 
                 .min_files(1),
         )
         .map_err(|e| format!("crates: {e:?}"))?;
-    let mut missing: Vec<&str> = names.to_vec();
+    // Each name with the spellings that define it, written once rather than once per line.
+    let mut missing: Vec<(&str, Vec<String>)> = names
+        .iter()
+        .map(|n| {
+            let mut defs: Vec<String> = ["fn", "struct", "trait", "enum", "type"]
+                .iter()
+                .map(|kw| format!("{kw} {n}"))
+                .collect();
+            defs.push(format!("pub {n}:"));
+            (*n, defs)
+        })
+        .collect();
     for f in &files {
         if missing.is_empty() {
             break;
@@ -97,16 +112,16 @@ pub fn undefined_names(cx: &Ctx, names: &[&str]) -> Result<Vec<String>, String> 
         if !f.rel_str().contains("/src/") {
             continue;
         }
+        // A file whose text holds none of the names still missing defines none of them: every
+        // definition spelling carries the name verbatim, so the file is not lexed at all.
+        if !missing.iter().any(|(n, _)| f.text.contains(n)) {
+            continue;
+        }
         for sl in one_abi::production(&f.text) {
-            missing.retain(|n| {
-                !["fn", "struct", "trait", "enum", "type"]
-                    .iter()
-                    .any(|kw| one_abi::has_word(&sl.counted, &format!("{kw} {n}")))
-                    && !one_abi::has_word(&sl.counted, &format!("pub {n}:"))
-            });
+            missing.retain(|(_, defs)| !defs.iter().any(|d| one_abi::has_word(&sl.counted, d)));
         }
     }
-    Ok(missing.into_iter().map(str::to_string).collect())
+    Ok(missing.into_iter().map(|(n, _)| n.to_string()).collect())
 }
 
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {

@@ -172,7 +172,10 @@ fn scan_floor(cx: &Ctx) -> usize {
 }
 
 mod auth_words;
+mod carriers;
+mod config_words;
 mod external;
+mod frozen;
 mod instances;
 mod os_words;
 mod vendors;
@@ -275,7 +278,8 @@ fn alias_of(a: &str, b: &str) -> bool {
 ///   identity, decisions, …]`), a frozen wire word the kernel's export projection and the contract's
 ///   export ABI spell as the stream's own name. Counting it would report the export stream as the
 ///   plane, which is the collision `plane-purity` and `plane-abi-neutrality` exempt for the same
-///   plane.
+///   plane. Its sibling 1.5.x config word `streams` (the export key) is exempt only where a
+///   customer's config spells it ([`config_words`], architect ruling 2026-10-23 (R-3), L0-1).
 const BARE_WORD_COLLISIONS: &[&str] = &["decisions"];
 
 /// EVERY KIND'S VOCABULARY, READ OFF THE CENSUS.
@@ -813,6 +817,10 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
     // file reads (the same answer whoever fills it), shared under a lock.
     let wire_locks: std::sync::Mutex<BTreeMap<String, BTreeSet<String>>> =
         std::sync::Mutex::new(BTreeMap::new());
+    // FROZEN 1.5.5 CUSTOMER-OBSERVABLE BYTES IN PLACE (ARCHITECT ruling 2026-10-21, [`frozen`]): on
+    // the same line a named artifact carried at the pinned v1.5.5, unchanged, a JSON document's hit
+    // is that release's wire, and so is a Rust artifact's hit INSIDE A STRING LITERAL; nothing else.
+    let frozen_lines = frozen::load(cx);
     let scanned = crate::par::par_map(&files, |(rel, text)| {
         // OWNER 2026-10-03: "Cargo.toml is ignored blanketly from this check" (see the module doc).
         if is_cargo_manifest(rel) {
@@ -837,6 +845,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         }
         let auth = auth_words::scope(c.kind, &dir, rel).filter(|_| auth_decision);
         let plane = c.kind == Some("plane");
+        let loader = c.name == carriers::LOADER_PACKAGE;
         // The two plane-crate masks read the tree beside the file: whether it is a dialect module,
         // and the wire lock a dialect mapping file names. Both are read here, for the key.
         let dialect_module = plane && in_dialect_module(cx, &dir, rel);
@@ -864,6 +873,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
             plane.hash(&mut h);
             dialect_module.hash(&mut h);
             wire.hash(&mut h);
+            loader.hash(&mut h);
             h.finish()
         };
         let memo = MASKED_MEMO.get_or_init(Default::default);
@@ -887,6 +897,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
                     auth,
                     dialect_module,
                     wire: wire.as_ref(),
+                    loader,
                 }));
                 if walk == Walk::Memoised {
                     memo.lock()
@@ -896,6 +907,12 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
                 m
             }
         };
+        // A RUST ARTIFACT'S FROZEN LINES ARE READ WITHOUT THEIR LITERALS: the identifiers, comments,
+        // doc comments and locals on them count as anywhere else ([`frozen::literals_struck`]).
+        let masked = match frozen::literals_struck(&frozen_lines, rel, text, &masked) {
+            Some(struck) => std::sync::Arc::new(struck),
+            None => masked,
+        };
         let hits = match walk {
             Walk::Memoised => scan_file(per_kind, &dir, rel, &masked),
             Walk::Full => scan_fresh(per_kind, &dir, rel, &masked),
@@ -904,6 +921,7 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         // hit's line is looked up in the file's line list, read once, rather than by walking the
         // text from its start once per hit — and only when the witness grant can excuse a hit of
         // this crate at all.
+        let frozen_mask = frozen::exempt_lines(&frozen_lines, rel, text);
         let lines: Vec<&str> = if hits
             .iter()
             .any(|h| super::witness_may_apply(&granted, c, h.kind))
@@ -915,6 +933,14 @@ fn measure_with(cx: &Ctx, crates: &[CrateInfo], walk: Walk) -> Result<Measured, 
         let kept: Vec<bool> = hits
             .iter()
             .map(|h| {
+                if frozen_mask.as_ref().is_some_and(|m| frozen::at(m, h.line)) {
+                    return false;
+                }
+                // THE CONNECTOR'S CARRIER NAMES (architect ruling 2026-10-23 (R-3), L0-3): the
+                // bare `tcp`/`stdio` in the connector and in the loader's need-service files.
+                if carriers::exempt_hit(&c.name, &dir, rel, h.kind, &h.word) {
+                    return false;
+                }
                 if !super::witness_may_apply(&granted, c, h.kind) {
                     return true;
                 }
@@ -970,6 +996,8 @@ struct MaskInputs<'a> {
     auth: Option<bool>,
     dialect_module: bool,
     wire: Option<&'a BTreeSet<String>>,
+    /// The file is the loader's: its two loader-wide carrier positions are masked ([`carriers`]).
+    loader: bool,
 }
 
 /// THE MASK CHAIN, in its order, over one file: a pure function of [`MaskInputs`], which is what
@@ -984,6 +1012,7 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
         auth,
         dialect_module,
         wire,
+        loader,
     } = m;
     // The contract's own identifiers are masked everywhere EXCEPT in the contract, whose
     // vocabulary is its own row's to measure (see [`contract_identifiers`]).
@@ -998,8 +1027,15 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
     let masked = external::mask_kernel_facade(rel, &masked);
     // English words that are also instance names are not counted as English prose.
     let masked = mask_english_prose(rel, &masked);
-    // An export entry's frozen 1.5.x `streams: [` key is the export projection, not the plane.
-    let masked = match mask_export_streams_key(&masked) {
+    // The 1.5.x customer config words, where a customer's config spells them, are not the plane
+    // (architect ruling 2026-10-23 (R-3), L0-1; [`config_words`]).
+    let masked = match config_words::mask(&masked) {
+        Some(owned) => std::borrow::Cow::Owned(owned),
+        None => masked,
+    };
+    // The loader names the need service and a need's carrier by THE DESIGN §5's carrier words
+    // (architect ruling 2026-10-23 (R-3), L0-3; [`carriers`]).
+    let masked = match loader.then(|| carriers::mask_loader(&masked)).flatten() {
         Some(owned) => std::borrow::Cow::Owned(owned),
         None => masked,
     };
@@ -1384,51 +1420,6 @@ fn mask_english_prose<'a>(rel: &str, text: &'a str) -> std::borrow::Cow<'a, str>
         out.push_str(&mask_prose_words(prose));
     }
     std::borrow::Cow::Owned(out)
-}
-
-/// THE FROZEN 1.5.x EXPORT KEY (ARCHITECT ruling, Law 0 root lane: a gate exemption only for frozen
-/// 1.5.x bytes, modelled on [`BARE_WORD_COLLISIONS`]). `streams` is the streaming plane's section-key
-/// alias, and it is also the key of an `export:` entry's projection list — `streams: [logs,
-/// identity, decisions, …]` (v1.5.5 crates/busbar/src/config/migrate_export.rs:17, :178), frozen
-/// operator config text every export entry carries. The two are told apart by the value the key
-/// takes: an export entry's `streams:` is a flow LIST, and a plane's section is a mapping. So a
-/// `streams` standing on its own (not joined to a neighbouring name by `-`, `_`, `.` or a letter),
-/// followed by `:` (not `::`) and then, past spaces, by `[`, is masked before the scanners read the
-/// line; in every other position — a section key over a mapping, an identifier, a literal of its
-/// own — it still counts.
-const EXPORT_STREAMS_KEY: &str = "streams";
-
-/// `text` with every export entry's `streams: [` key masked (same-length filler, so lines and
-/// columns hold), or `None` when it holds none; see [`EXPORT_STREAMS_KEY`].
-fn mask_export_streams_key(text: &str) -> Option<String> {
-    if !text.contains(EXPORT_STREAMS_KEY) {
-        return None;
-    }
-    let b = text.as_bytes();
-    let joins = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.');
-    let mut out = b.to_vec();
-    let mut changed = false;
-    let mut from = 0;
-    while let Some(off) = text[from..].find(EXPORT_STREAMS_KEY) {
-        let i = from + off;
-        let j = i + EXPORT_STREAMS_KEY.len();
-        from = j;
-        if i > 0 && joins(b[i - 1]) {
-            continue;
-        }
-        if b.get(j) != Some(&b':') || b.get(j + 1) == Some(&b':') {
-            continue;
-        }
-        let mut k = j + 1;
-        while matches!(b.get(k), Some(b' ' | b'\t')) {
-            k += 1;
-        }
-        if b.get(k) == Some(&b'[') {
-            out[i..j].fill(b'x');
-            changed = true;
-        }
-    }
-    changed.then(|| String::from_utf8(out).expect("ascii-for-ascii"))
 }
 
 /// The byte offset of a `//` comment on `line` that is not inside a `"…"` string literal.
@@ -3107,10 +3098,9 @@ fn law0_off(now: usize, ceiling: Option<usize>) -> usize {
 ///   neutral ceiling is 0, ARMED, and no ratchet row raises it).
 /// * A cell that fell is not this row's subject: a drain is never red here. (Giving the row back
 ///   is [`ROW_LAW0`]'s business, as #725 made it.)
-/// * The one thing that covers a rise is a `[[law0]]` row THIS branch raised over the base's own
-///   row: an approved delta (a hit moved from one ratcheting axis to another under a ruling lowers
-///   one row and raises the other), written in the diff a reviewer reads. A row minted on this
-///   branch, and slack the base already carried, cover nothing.
+/// * NOTHING covers a rise. Every row is its own ceiling, per crate pair (Law 9; coordinator ruling
+///   on #1133): a row this branch raised over the base's own, a row it lowered elsewhere, a row
+///   minted on this branch and slack the base already carried all cover nothing.
 pub const ROW_LAW0_BASE: &str = "kind-isolation:law0-base";
 
 /// The merge-base's Law 0 reading: its per-cell counts (THIS tree's code over the base's bytes) and
@@ -3120,6 +3110,11 @@ pub struct Law0Base {
     pub commit: String,
     pub counts: Law0Counts,
     pub rows: BTreeMap<(String, String), usize>,
+    /// The base ledger's `[[shape-word]]` rows, as [`shape_key`] spells them.
+    pub shape_words: BTreeSet<String>,
+    /// The matrix's PRESENCE findings at the base, as [`presence_key`] spells them (row 159,
+    /// XC2#5): what [`presence_row`] holds this tree's against.
+    pub presence: BTreeSet<String>,
     /// What the base's cells were measured over, in words (Law 8): its file denominator and whose
     /// vocabulary. Printed in the row's detail, pass or fail.
     pub how: String,
@@ -3247,7 +3242,7 @@ fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Ba
         );
     }
     let mut law0 = None;
-    let (row, _) = measured_row(
+    let (row, reading) = measured_row(
         &bcx,
         &crates,
         vocab_reg.as_ref().unwrap_or(&base_reg),
@@ -3268,6 +3263,20 @@ fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Ba
             .iter()
             .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
             .collect(),
+        shape_words: base_reg
+            .shape_words
+            .iter()
+            .map(|r| shape_key(&r.word, &r.file, &r.holder))
+            .collect(),
+        presence: reading
+            .map(|r| {
+                r.presence
+                    .iter()
+                    .map(String::as_str)
+                    .map(presence_key)
+                    .collect()
+            })
+            .unwrap_or_default(),
         how,
     })
 }
@@ -3414,8 +3423,12 @@ pub fn rule_law0_base(
         here.entry((r.krate.clone(), r.axis.clone()))
             .or_insert(r.count);
     }
+    // EVERY ROW IS ITS OWN CEILING, PER CRATE PAIR (BUSBAR-1.6.0.md Law 9; coordinator ruling on
+    // #1133). A cell that grew over the merge-base is a finding whatever any other row did: a row
+    // this branch raised covers nothing, and a drain in one row never pays for a raise in another.
+    // A raised row's cell is `law0-row-raised`; any other grown cell is `law0-grown`.
     let keys: BTreeSet<&(String, String)> = now.keys().chain(base.counts.keys()).collect();
-    let (mut grown_total, mut drained, mut moved) = (0usize, 0usize, 0usize);
+    let (mut grown_total, mut drained) = (0usize, 0usize);
     let mut findings = Vec::new();
     for key in keys {
         let n = now.get(key).copied().unwrap_or(0);
@@ -3424,31 +3437,64 @@ pub fn rule_law0_base(
             drained += was - n;
             continue;
         }
-        // THE ONE COVER: a row this branch RAISED over the base's own row. Slack the base carried
-        // (its row above its measure) and a row minted here are no cover at all.
+        // A row this branch RAISED over the base's own row covers nothing; neither does slack the
+        // base carried (its row above its measure) nor a row minted here.
         let raised = match (here.get(key), base.rows.get(key)) {
             (Some(h), Some(b)) => h.saturating_sub(*b),
             _ => 0,
         };
-        let grown = n - was;
-        let uncovered = grown.saturating_sub(raised);
-        moved += grown - uncovered;
-        if uncovered == 0 {
-            continue;
-        }
+        let uncovered = n - was;
         grown_total += uncovered;
         let row = base.rows.get(key).map_or_else(
             || "no `[[law0]]` row".to_string(),
             |c| format!("its `[[law0]]` row {c}"),
         );
+        if raised > 0 {
+            findings.push(format!(
+                "law0-row-raised\t{} \u{d7} {}\t{was} -> {n} hit(s) over the same cell at the \
+                 merge-base {short} ({row} there), and this branch raised that row by {raised}: \
+                 {uncovered} hit(s) covered only by a ceiling the branch wrote itself. A ceiling \
+                 only falls (BUSBAR-1.6.0.md Law 9: \"refuses every rise from that moment\"), per \
+                 row and per crate pair: a row lowered elsewhere pays for nothing here",
+                key.0, key.1
+            ));
+            continue;
+        }
         findings.push(format!(
             "law0-grown\t{} \u{d7} {}\t{was} -> {n} hit(s) over the same cell at the merge-base \
              {short} ({row} there): this branch wrote {uncovered} instance-vocabulary hit(s) into a \
              neutral crate. Slack under a row licenses nothing (BUSBAR-1.6.0.md: ceiling 0, ARMED; \
-             no ratchet row raises it). Drain them; only a row this branch raises over the base's \
-             own, as an approved delta, covers a moved hit",
+             no ratchet row raises it). Drain them: no row covers a hit this branch wrote",
             key.0, key.1
         ));
+    }
+    // A `[[shape-word]]` ROW SWALLOWS ONE LITERAL HIT BEFORE ANY CELL COUNTS IT, so a row this
+    // branch wrote beside the literal it reserves leaves every cell flat on both rows. A row the
+    // merge-base ledger does not carry is refused unless as many base rows were struck.
+    let shapes: Vec<String> = registry
+        .shape_words
+        .iter()
+        .map(|r| shape_key(&r.word, &r.file, &r.holder))
+        .collect();
+    let minted: Vec<&String> = shapes
+        .iter()
+        .filter(|k| !base.shape_words.contains(*k))
+        .collect();
+    let struck = base
+        .shape_words
+        .iter()
+        .filter(|k| !shapes.contains(k))
+        .count();
+    if minted.len() > struck {
+        grown_total += minted.len() - struck;
+        for k in minted {
+            findings.push(format!(
+                "shape-word-minted\t{k}\tthis `[[shape-word]]` row is in no copy of {LEDGER} at \
+                 the merge-base {short}, and {struck} base row(s) were struck: a reservation the \
+                 branch wrote for a literal it wrote is a Law 0 hit nobody counts. Delete the \
+                 literal, or land the row in a commit whose message says why the shape needs it"
+            ));
+        }
     }
     if findings.is_empty() {
         return Row::pass(
@@ -3456,7 +3502,7 @@ pub fn rule_law0_base(
             "no neutral Law 0 cell grew over the merge-base",
             format!(
                 "against {short}: {} cell(s), {} hit(s) here and {} cell(s), {} hit(s) at the \
-                 base; {drained} drained, {moved} moved under a row this branch raised. The base \
+                 base; {drained} drained. The base \
                  was measured over {}",
                 now.len(),
                 now.values().sum::<usize>(),
@@ -3500,7 +3546,7 @@ pub fn rule_matrix(
     gating: bool,
 ) -> Row {
     let mut law0 = None;
-    matrix_row(cx, crates, reg, ship, gating, &mut law0)
+    matrix_row(cx, crates, reg, ship, gating, &mut law0).0
 }
 
 /// THE MATRIX ROW AND THE LAW 0 ROW, from ONE scan. The matrix stays report-only (owner
@@ -3515,7 +3561,7 @@ pub fn rule_matrix_rows(
     let mut law0 = None;
     // THE MERGE-BASE IS READ BESIDE THE TREE: an independent second scan of the same code over the
     // base's bytes, so it costs the wall time of the slower of the two, not their sum.
-    let (matrix_row, base) = std::thread::scope(|scope| {
+    let ((matrix_row, presence), base) = std::thread::scope(|scope| {
         let base = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn_scoped(scope, || law0_base(cx))
@@ -3527,6 +3573,12 @@ pub fn rule_matrix_rows(
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
         )
     });
+    // The self-test's subject gates every finding already; a registered gate gates presence.
+    let matrix_row = if gating {
+        matrix_row
+    } else {
+        presence_row(matrix_row, presence.as_deref(), base.as_deref())
+    };
     vec![
         matrix_row,
         rule_law0(crates, reg, law0.as_ref()),
@@ -3541,9 +3593,10 @@ fn matrix_row(
     ship: bool,
     gating: bool,
     law0: &mut Option<Law0Counts>,
-) -> Row {
+) -> (Row, Option<Vec<String>>) {
     let (row, reading) = measured_row(cx, crates, reg, ship, law0);
-    match reading {
+    let presence = reading.as_ref().map(|r| r.presence.clone());
+    let row = match reading {
         Some(r) if !gating => {
             let verdict = if row.status == crate::ledger::Status::Fail {
                 "findings"
@@ -3564,7 +3617,102 @@ fn matrix_row(
             )
         }
         _ => row,
+    };
+    (row, presence)
+}
+
+/// The finding codes that are PRESENCE — a crate naming a kind, a plugin's instances, a vendor or
+/// a homoglyph where it did not before, or a ledger row this branch minted — as against a count,
+/// a dead row or a duplicate (row 159, XC2#5).
+const PRESENCE_CODES: &[&str] = &[
+    "unlisted-cell",
+    "unlisted-edge",
+    "minted-row",
+    "unlisted-instance",
+    "confusable",
+    "vendor-name",
+    "vendor-frozen-wire",
+];
+
+/// A presence finding's identity, without its line numbers or prose: the code and its subject
+/// (`unlisted-cell\tcrate × kind`), the vendor word for a vendor name, the file for a pragma and
+/// the token and file for a homoglyph. A finding the merge-base carried under the same key is the
+/// base's; one it did not is this branch's.
+fn presence_key(finding: &str) -> String {
+    let f: Vec<&str> = finding.split('\t').collect();
+    let at = |i: usize| f.get(i).copied().unwrap_or("");
+    let strip_line = |s: &str| -> String {
+        match s.rsplit_once(':') {
+            Some((path, n)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+                path.to_string()
+            }
+            _ => s.to_string(),
+        }
+    };
+    match at(0) {
+        "vendor-name" => format!("{}\t{}\t{}", at(0), at(1), at(4)),
+        "vendor-frozen-wire" => format!("{}\t{}\t{}", at(0), at(1), strip_line(at(2))),
+        "confusable" => format!("{}\t{}\t{}\t{}", at(0), at(1), at(2), strip_line(at(3))),
+        _ => format!("{}\t{}", at(0), at(1)),
     }
+}
+
+/// A `[[shape-word]]` row's identity: its word, file and holder.
+fn shape_key(word: &str, file: &str, holder: &str) -> String {
+    format!("{word} in {file} at {holder}")
+}
+
+/// THE MATRIX ROW ON A REGISTERED GATE: report-only in its COUNTS, gating in its PRESENCE (row
+/// 159, XC2#5; BUSBAR-1.6.0.md: "kind-isolation EDGES — a new cross-kind dependency edge, or a
+/// crate newly naming another kind's vocabulary, is still DENIED").
+///
+/// Every presence finding the tree carries today is debt the merge-base carried too, so the row
+/// is judged against the base: a presence finding whose key the base's own reading did not have
+/// ([`Law0Base::presence`]) is this branch's, and it FAILS the row, on both registrations and for
+/// every crate — a transport or a store newly naming another plane, another plugin's instances or
+/// a vendor included, which no Law 0 row reads. A count that grew inside a cell the base already
+/// had stays in the report-only detail. A base that cannot be read is RED, as on
+/// [`ROW_LAW0_BASE`].
+fn presence_row(row: Row, presence: Option<&[String]>, base: Result<&Law0Base, &String>) -> Row {
+    let Some(presence) = presence else {
+        return row;
+    };
+    let base = match base {
+        Ok(b) => b,
+        Err(why) => {
+            return Row::fail(
+                ROW_MATRIX,
+                "the merge-base's presence findings could not be read",
+                format!(
+                    "no-base\t{why}. A crate newly naming another kind is judged against the \
+                     merge-base, and a base that cannot be established is RED, never a silent pass"
+                ),
+            )
+        }
+    };
+    let short = &base.commit[..8.min(base.commit.len())];
+    let mut new: Vec<&str> = presence
+        .iter()
+        .filter(|f| !base.presence.contains(&presence_key(f)))
+        .map(String::as_str)
+        .collect();
+    new.sort_unstable();
+    new.dedup();
+    if new.is_empty() {
+        return row;
+    }
+    Row::fail(
+        ROW_MATRIX,
+        "a crate newly names another kind's vocabulary (presence, against the merge-base)",
+        format!(
+            "{} new presence finding(s) over the merge-base {short}, which carried {} presence \
+             key(s): {}. A new cross-kind edge, or a crate newly naming another kind's vocabulary, \
+             is DENIED (BUSBAR-1.6.0.md); the counts stay report-only",
+            new.len(),
+            base.presence.len(),
+            new.join(" | ")
+        ),
+    )
 }
 
 /// What the report-only detail opens with, so a caller (and the self-test) reads the number back.
@@ -3584,11 +3732,13 @@ fn measured_total(row: &Row) -> Option<usize> {
 struct Reading {
     total: usize,
     cells: usize,
+    /// Every PRESENCE finding of this reading ([`PRESENCE_CODES`]), whatever the twin.
+    presence: Vec<String>,
     /// The ten heaviest cells, `crate x kind = n (heaviest file)`.
     top: String,
 }
 
-fn reading_of(matrix: &Matrix, total: usize) -> Reading {
+fn reading_of(matrix: &Matrix, total: usize, presence: &[String]) -> Reading {
     let mut cells: Vec<(&(String, &'static str), &Cell)> = matrix.iter().collect();
     cells.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(a.0.cmp(b.0)));
     let top = cells
@@ -3619,6 +3769,7 @@ fn reading_of(matrix: &Matrix, total: usize) -> Reading {
     Reading {
         total,
         cells: matrix.len(),
+        presence: presence.to_vec(),
         top,
     }
 }
@@ -3649,7 +3800,14 @@ fn measured_row(
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, || vendors::offenders(cx, crates, &files))
                     .expect("spawn the vendor-name scan thread");
-                let inst = instances::measure_reserved(crates, &files, &ivocab, &reg.shape_words);
+                let frozen_lines = frozen::load(cx);
+                let inst = instances::measure_reserved(
+                    crates,
+                    &files,
+                    &ivocab,
+                    &reg.shape_words,
+                    &frozen_lines,
+                );
                 (
                     inst,
                     vendor
@@ -3727,6 +3885,28 @@ fn measured_row(
         crates,
     ));
 
+    // THE PRESENCE FINDINGS, READ ON BOTH TWINS (row 159, XC2#5). The ship twin's row below does
+    // not consult the ledger, but a registered gate judges presence against the merge-base
+    // ([`presence_row`]) on both registrations, so both readings carry it.
+    let listed = read_ledger(reg);
+    let kind_of: BTreeMap<&str, &'static str> = crates
+        .iter()
+        .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
+        .collect();
+    let minted = minted_rows(cx);
+    let inst_found = instances::offenders(&inst, &ivocab, reg);
+    let unlisted = unlisted_cells(&matrix, &listed, &kind_of);
+    let confused = confusables(&matrix);
+    let presence: Vec<String> = minted
+        .iter()
+        .chain(&inst_found)
+        .chain(&unlisted)
+        .chain(&confused)
+        .chain(&vendor)
+        .filter(|f| PRESENCE_CODES.contains(&f.split('\t').next().unwrap_or("")))
+        .cloned()
+        .collect();
+
     // THE SHIP TWIN OWES ZERO EVERYWHERE, and owes it without consulting the ledger.
     if ship {
         if total == 0 && inst_total == 0 && ivocab.unattributed.is_empty() && vendor.is_empty() {
@@ -3736,7 +3916,7 @@ fn measured_row(
                     "no crate names another kind's vocabulary anywhere",
                     format!("{scanned} file(s) scanned, every cell of the matrix is 0"),
                 ),
-                Some(reading_of(&matrix, total)),
+                Some(reading_of(&matrix, total, &presence)),
             );
         }
         let worst: Vec<String> = matrix
@@ -3764,15 +3944,13 @@ fn measured_row(
                     }
                 ),
             ),
-            Some(reading_of(&matrix, total)),
+            Some(reading_of(&matrix, total, &presence)),
         );
     }
 
-    let listed = read_ledger(reg);
-
     let mut offenders: Vec<String> = duplicates(reg);
-    offenders.extend(minted_rows(cx));
-    offenders.extend(instances::offenders(&inst, &ivocab, reg));
+    offenders.extend(minted);
+    offenders.extend(inst_found);
     offenders.extend(unreserved);
     offenders.extend(instances::law0(&inst, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
     if let Some(measured) = law0.as_ref() {
@@ -3780,46 +3958,8 @@ fn measured_row(
     }
     // Law 1 is armed at 0 on the everyday gate too: no ledger row exists that could raise it.
     offenders.extend(vendor.iter().cloned());
-    let kind_of: BTreeMap<&str, &'static str> = crates
-        .iter()
-        .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
-        .collect();
 
-    // PRESENCE, NOT SIZE (owner 2026-10-02: size is not a CI check). A cell above zero is a
-    // crate-level cross-kind EDGE, and the only question asked of it is whether a row says it may
-    // exist. No finding here carries a hit count: a count in the text would make every extra hit
-    // inside an already-listed (or already-standing) cell read as a new or larger finding, which is
-    // the line counter the ruling deleted. The numbers stay in `--report`.
-    for ((krate, kind), cell) in &matrix {
-        if cell.count == 0 {
-            continue;
-        }
-        let src = kind_of.get(krate.as_str()).copied().unwrap_or("?");
-        let edge = (src.to_string(), (*kind).to_string());
-        // A CLASS PART 0 ALLOWS IN SOURCE IS LISTED BY THE SPEC ([`super::spec_allows_source`]):
-        // neither a missing `[[edge]]` nor a missing `[[cell]]` is a finding. A row that exists is
-        // still compared below.
-        let spec_allowed = super::spec_allows_source(src, kind);
-        if !spec_allowed && !listed.edges.contains_key(&edge) {
-            offenders.push(format!(
-                "unlisted-edge\t{src} -> {kind}\t{krate} names {kind} vocabulary and there is no \
-                 `[[edge]] from = \"{src}\", to = \"{kind}\"` in {LEDGER}. An edge nobody wrote \
-                 down is an edge nobody reviewed: add the class with its ARCHITECTURE citation and \
-                 the line that deletes it, or delete the hits."
-            ));
-        }
-        if !listed.cells.contains(&(krate.clone(), (*kind).to_string())) {
-            if spec_allowed {
-                continue;
-            }
-            offenders.push(format!(
-                "unlisted-cell\t{krate} \u{d7} {kind}\tno `[[cell]] crate = \"{krate}\", kind = \
-                 \"{kind}\"` in {LEDGER}: this is a NEW crate-level cross-kind edge. Delete the \
-                 hits (`--report` lists them, file:line), or add the row in a commit that says why \
-                 the tree now needs the edge."
-            ));
-        }
-    }
+    offenders.extend(unlisted);
 
     // A ROW WHOSE CELL IS GONE IS A DEAD ALLOWANCE. The exemption cannot outlive the coupling.
     for (krate, kind) in &listed.cells {
@@ -3867,22 +4007,7 @@ fn measured_row(
         }
     }
 
-    // A HOMOGLYPH IS NEVER A SPELLING ANYBODY MEANT, AND ITS CEILING IS ZERO.
-    //
-    // Every other cell in this row is held to a `[[cell]]` row, because every other hit is a word
-    // somebody wrote on purpose and the question is whether the edge it makes was reviewed. This
-    // one is different in kind: a token whose ASCII fold is a plane's name and whose raw bytes are
-    // not is a token that reads as that name to the reviewer and to nothing else. There is no row
-    // that allows it — the ceiling is zero, exactly, and it is measured at zero on this tree today.
-    for ((krate, kind), cell) in &matrix {
-        for c in &cell.confusables {
-            offenders.push(format!(
-                "confusable\t{krate} \u{d7} {kind}\t{c}\ta token whose ASCII fold is this \
-                 kind's vocabulary and whose raw bytes are not — a homoglyph reads as the name to \
-                 every reviewer and to no scanner. The ceiling is 0 and no `[[cell]]` row raises it."
-            ));
-        }
-    }
+    offenders.extend(confused);
 
     // LAW 0/1, EVERYDAY BRANCH: armed unconditionally of the `[[cell]]` ledger, but BLOCKING
     // only for the crates [`LAW0_ENFORCED_NEUTRAL_CRATES`] has caught up to — the readiness
@@ -3958,7 +4083,7 @@ fn measured_row(
                     offenders.join(" | ")
                 ),
             ),
-            Some(reading_of(&matrix, total)),
+            Some(reading_of(&matrix, total, &presence)),
         );
     }
 
@@ -3968,8 +4093,76 @@ fn measured_row(
             "every crate's naming of every other kind is a listed edge",
             format!("every non-zero cell has its {LEDGER} row; {headline}"),
         ),
-        Some(reading_of(&matrix, total)),
+        Some(reading_of(&matrix, total, &presence)),
     )
+}
+
+/// Every cell above zero that no `[[cell]]` row, `[[edge]]` class or Part 0 grant allows: the
+/// `unlisted-edge` and `unlisted-cell` presence findings.
+fn unlisted_cells(
+    matrix: &Matrix,
+    listed: &Ledger,
+    kind_of: &BTreeMap<&str, &'static str>,
+) -> Vec<String> {
+    let mut offenders = Vec::new();
+    // PRESENCE, NOT SIZE (owner 2026-10-02: size is not a CI check). A cell above zero is a
+    // crate-level cross-kind EDGE, and the only question asked of it is whether a row says it may
+    // exist. No finding here carries a hit count: a count in the text would make every extra hit
+    // inside an already-listed (or already-standing) cell read as a new or larger finding, which is
+    // the line counter the ruling deleted. The numbers stay in `--report`.
+    for ((krate, kind), cell) in matrix {
+        if cell.count == 0 {
+            continue;
+        }
+        let src = kind_of.get(krate.as_str()).copied().unwrap_or("?");
+        let edge = (src.to_string(), (*kind).to_string());
+        // A CLASS PART 0 ALLOWS IN SOURCE IS LISTED BY THE SPEC ([`super::spec_allows_source`]):
+        // neither a missing `[[edge]]` nor a missing `[[cell]]` is a finding. A row that exists is
+        // still compared below.
+        let spec_allowed = super::spec_allows_source(src, kind);
+        if !spec_allowed && !listed.edges.contains_key(&edge) {
+            offenders.push(format!(
+                "unlisted-edge\t{src} -> {kind}\t{krate} names {kind} vocabulary and there is no \
+                 `[[edge]] from = \"{src}\", to = \"{kind}\"` in {LEDGER}. An edge nobody wrote \
+                 down is an edge nobody reviewed: add the class with its ARCHITECTURE citation and \
+                 the line that deletes it, or delete the hits."
+            ));
+        }
+        if !listed.cells.contains(&(krate.clone(), (*kind).to_string())) {
+            if spec_allowed {
+                continue;
+            }
+            offenders.push(format!(
+                "unlisted-cell\t{krate} \u{d7} {kind}\tno `[[cell]] crate = \"{krate}\", kind = \
+                 \"{kind}\"` in {LEDGER}: this is a NEW crate-level cross-kind edge. Delete the \
+                 hits (`--report` lists them, file:line), or add the row in a commit that says why \
+                 the tree now needs the edge."
+            ));
+        }
+    }
+    offenders
+}
+
+/// Every homoglyph the scan read: the `confusable` presence findings.
+fn confusables(matrix: &Matrix) -> Vec<String> {
+    let mut offenders = Vec::new();
+    // A HOMOGLYPH IS NEVER A SPELLING ANYBODY MEANT, AND ITS CEILING IS ZERO.
+    //
+    // Every other cell in this row is held to a `[[cell]]` row, because every other hit is a word
+    // somebody wrote on purpose and the question is whether the edge it makes was reviewed. This
+    // one is different in kind: a token whose ASCII fold is a plane's name and whose raw bytes are
+    // not is a token that reads as that name to the reviewer and to nothing else. There is no row
+    // that allows it — the ceiling is zero, exactly, and it is measured at zero on this tree today.
+    for ((krate, kind), cell) in matrix {
+        for c in &cell.confusables {
+            offenders.push(format!(
+                "confusable\t{krate} \u{d7} {kind}\t{c}\ta token whose ASCII fold is this \
+                 kind's vocabulary and whose raw bytes are not — a homoglyph reads as the name to \
+                 every reviewer and to no scanner. The ceiling is 0 and no `[[cell]]` row raises it."
+            ));
+        }
+    }
+    offenders
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -4266,6 +4459,136 @@ fn wire_plant(cx: &Ctx, tail: &str, body: &str) -> crate::ctx::Overlay {
     ov
 }
 
+/// The store crate the presence case plants with its manifest: a plugin kind no Law 0 row reads.
+const PRESENCE_PLANT: &str = "busbar-store-presenceplant";
+
+/// THE LEDGER WITH ONE `[[law0]]` CEILING RAISED BY `by`: the first row on `axis` whose crate is a
+/// core-neutral crate of the census with its manifest on the tree, as `(crate dir, overlay)`. The
+/// row is read off the file and rewritten in place, so a ledger that moved under the case makes it
+/// unplantable rather than inert.
+fn law0_row_raised(
+    cx: &Ctx,
+    axis: &str,
+    by: usize,
+) -> Result<(String, crate::ctx::Overlay), String> {
+    let crates = super::census(cx)?;
+    let reg = super::load_registry(cx)?;
+    let (row, dir) = reg
+        .law0
+        .iter()
+        .filter(|r| r.axis == axis)
+        .find_map(|r| {
+            let c = crates
+                .iter()
+                .find(|c| c.name == r.krate && is_core_neutral(c))?;
+            cx.exists(format!("{}/Cargo.toml", c.dir))
+                .then(|| (r, c.dir.clone()))
+        })
+        .ok_or_else(|| {
+            format!("no `[[law0]]` row on `{axis}` names a core-neutral crate on this tree")
+        })?;
+    let text = cx.read(LEDGER)?;
+    let mut out = String::with_capacity(text.len() + 8);
+    let (mut in_law0, mut krate_ok, mut axis_ok, mut done) = (false, false, false, false);
+    for line in text.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with("[[") {
+            in_law0 = t == "[[law0]]";
+            krate_ok = false;
+            axis_ok = false;
+        } else if in_law0 {
+            if let Some((k, v)) = t.split_once('=') {
+                let v = v.trim().trim_matches('"');
+                match k.trim() {
+                    "crate" => krate_ok = v == row.krate,
+                    "axis" => axis_ok = v == row.axis,
+                    "count" if krate_ok && axis_ok && !done => {
+                        out.push_str(&format!("count = \"{}\"\n", row.count + by));
+                        done = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.push_str(line);
+    }
+    if !done {
+        return Err(format!(
+            "the `[[law0]]` row {} \u{d7} {} is not in {LEDGER} in the shape this case rewrites",
+            row.krate, row.axis
+        ));
+    }
+    Ok((dir, plant(cx, LEDGER, &out)))
+}
+
+/// THE LEDGER WITH ONE `[[law0]]` ROW ON `axis` RAISED BY ONE AND ANOTHER ROW (a different crate
+/// pair, a count of at least one) LOWERED BY ONE: a drain in one row offered as cover for a raise
+/// in another. Answers the raised row's crate directory and the planted ledger.
+fn law0_row_moved(cx: &Ctx, axis: &str) -> Result<(String, crate::ctx::Overlay), String> {
+    let crates = super::census(cx)?;
+    let reg = super::load_registry(cx)?;
+    let (raised, dir) = reg
+        .law0
+        .iter()
+        .filter(|r| r.axis == axis)
+        .find_map(|r| {
+            let c = crates
+                .iter()
+                .find(|c| c.name == r.krate && is_core_neutral(c))?;
+            cx.exists(format!("{}/Cargo.toml", c.dir))
+                .then(|| (r, c.dir.clone()))
+        })
+        .ok_or_else(|| {
+            format!("no `[[law0]]` row on `{axis}` names a core-neutral crate on this tree")
+        })?;
+    let lowered = reg
+        .law0
+        .iter()
+        .find(|r| r.count >= 1 && (r.krate != raised.krate || r.axis != raised.axis))
+        .ok_or_else(|| "no second `[[law0]]` row with a count to lower".to_string())?;
+    let text = cx.read(LEDGER)?;
+    let mut out = String::with_capacity(text.len() + 8);
+    let (mut in_law0, mut krate, mut ax) = (false, String::new(), String::new());
+    let (mut up, mut down) = (false, false);
+    for line in text.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with("[[") {
+            in_law0 = t == "[[law0]]";
+            krate.clear();
+            ax.clear();
+        } else if in_law0 {
+            if let Some((k, v)) = t.split_once('=') {
+                let v = v.trim().trim_matches('"');
+                match k.trim() {
+                    "crate" => krate = v.to_string(),
+                    "axis" => ax = v.to_string(),
+                    "count" if !up && krate == raised.krate && ax == raised.axis => {
+                        out.push_str(&format!("count = \"{}\"\n", raised.count + 1));
+                        up = true;
+                        continue;
+                    }
+                    "count" if !down && krate == lowered.krate && ax == lowered.axis => {
+                        out.push_str(&format!("count = \"{}\"\n", lowered.count - 1));
+                        down = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.push_str(line);
+    }
+    if !(up && down) {
+        return Err(format!(
+            "the `[[law0]]` rows {} \u{d7} {} and {} \u{d7} {} are not in {LEDGER} in the shape \
+             this case rewrites",
+            raised.krate, raised.axis, lowered.krate, lowered.axis
+        ));
+    }
+    Ok((dir, plant(cx, LEDGER, &out)))
+}
+
 fn plant_ledger<'a>(
     cx: &'a Ctx,
     gate: &'a dyn crate::gates::Gate,
@@ -4337,19 +4660,21 @@ pub(super) fn cell_subst(
 /// names which half did not hold.
 fn report_only_total_rises<'a>(
     cx: &Ctx,
-    registered: &'a dyn crate::gates::Gate,
+    registered: &'a super::KindIsolationGate,
+    pin: &'a super::debt_free::HeadPinned<'a>,
     name: &str,
     overlay: crate::ctx::Overlay,
 ) -> crate::gates::CasePlan<'a> {
-    use crate::gates::{execute, Case, CasePlan, Expect};
+    use crate::gates::{Case, CasePlan, Expect};
     use crate::ledger::Status;
     let name = name.to_string();
     let cx = cx.clone();
     CasePlan::new(move || {
+        // ONLY THE MATRIX ROW, as the registered gate emits it, over the HEAD-pinned base: the
+        // other rules of the gate say nothing about this total.
         let reading = |cx: &Ctx| -> Result<usize, String> {
-            let verdict = execute(registered, cx);
-            let row = verdict
-                .rows
+            let rows = registered.matrix_rows(&pin.pinned_cx(cx))?;
+            let row = rows
                 .iter()
                 .find(|r| r.id == ROW_MATRIX)
                 .ok_or_else(|| "the gate emitted no matrix row".to_string())?;
@@ -4379,7 +4704,7 @@ fn report_only_total_rises<'a>(
 pub fn selftest<'a>(
     cx: &'a Ctx,
     gate: &'a dyn crate::gates::Gate,
-    registered: &'a dyn crate::gates::Gate,
+    registered_gate: &'a super::KindIsolationGate,
     ship: bool,
     report: &mut crate::gates::Report<'a>,
 ) {
@@ -4387,19 +4712,31 @@ pub fn selftest<'a>(
     // The subject of every GREEN case planted into the fixture crate: the bare fixture's own
     // findings out of view, so the control is the tree with the fixture in it ([`OverFixture`]).
     let over_fixture: &'a dyn crate::gates::Gate = OverFixture::leak(cx, gate);
+    // The cases that read the gate AS REGISTERED read it against the same HEAD-pinned base the
+    // subject runs on ([`super::debt_free::HeadPinned`]): on a checkout with no derivable merge-base
+    // they were red before any plant.
+    let pin: &'a super::debt_free::HeadPinned<'a> =
+        super::debt_free::HeadPinned::leak(cx, registered_gate);
+    let registered: &'a dyn crate::gates::Gate = pin;
 
     // THE ROW IS REPORT-ONLY, AND ITS NUMBER STILL COUNTS (owner 2026-10-03: "the matrix is a
     // measured to-do list, not a gate"). `gate` (the subject below) runs the rule with its findings
     // as FAIL rows so a planted case can observe a red; `registered` is the gate as it is
     // registered, and this case reads what it reports: the row does not fail over a planted plane
     // name in a `.rs` file, and the measured total it carries RISES by it.
+    //
+    // The name lands in a cell the merge-base already has (`busbar-kernel × plane`): a cell that
+    // is NEW is presence, and presence gates on the registered gate too (row 159, XC2#5, the case
+    // below). What stays report-only is the count inside a cell that already existed.
     report.push(report_only_total_rises(
         cx,
-        registered,
-        "REPORT-ONLY: a plane named in a .rs file raises the measured total and does not fail the row",
-        wire_plant(
+        registered_gate,
+        pin,
+        "REPORT-ONLY: a plane named in a .rs file of a cell the base already has raises the \
+         measured total and does not fail the row",
+        plant(
             cx,
-            "src/names_a_plane.rs",
+            "crates/busbar-kernel/src/names_a_plane.rs",
             "pub const P: &str = \"busbar-plane-mcp\";\n",
         ),
     ));
@@ -4438,6 +4775,90 @@ pub fn selftest<'a>(
             &["law0-grown", "busbar-core-oauth2 \u{d7} plane"],
         ));
     }
+    // A RAISED `[[law0]]` ROW COVERS NOTHING THE BRANCH DID NOT PAY FOR (row 159, XC2#1). The same
+    // plane hit, written into a neutral crate whose `[[law0]]` row this branch raises in the same
+    // diff, with no row lowered anywhere: the ceiling rose, so the merge-base row refuses it.
+    let name = "a `[[law0]]` row raised in the same diff as the hit it covers is refused, and no \
+                fall elsewhere pays for it (kind-isolation:law0-base)";
+    let naming = ["law0-row-raised", "plane"];
+    match law0_row_raised(cx, "plane", 50) {
+        Ok((dir, mut ov)) => {
+            ov.set(
+                format!("{dir}/src/planted_law0_raise.rs"),
+                "pub fn mcp_tools_listed() -> usize { 0 }\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                name,
+                &[ROW_LAW0_BASE],
+                ov,
+                &naming,
+            ));
+        }
+        Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+            name,
+            &[ROW_LAW0_BASE],
+            &naming,
+            why,
+        ))),
+    }
+    // A DRAIN IN ONE ROW NEVER PAYS FOR A RAISE IN ANOTHER (BUSBAR-1.6.0.md Law 9; coordinator
+    // ruling on #1133: the budget is per row, per crate pair). One hit written into a neutral crate
+    // whose `[[law0]]` row this branch raises by one, while it lowers a DIFFERENT row by one: the
+    // raised row still covers nothing.
+    let name = "a `[[law0]]` row raised beside a different row lowered by as much is still \
+                refused: a drain in one row never pays for a raise in another \
+                (kind-isolation:law0-base)";
+    let naming = ["law0-row-raised", "plane"];
+    match law0_row_moved(cx, "plane") {
+        Ok((dir, mut ov)) => {
+            ov.set(
+                format!("{dir}/src/planted_law0_moved.rs"),
+                "pub fn mcp_tools_listed() -> usize { 0 }\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                name,
+                &[ROW_LAW0_BASE],
+                ov,
+                &naming,
+            ));
+        }
+        Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+            name,
+            &[ROW_LAW0_BASE],
+            &naming,
+            why,
+        ))),
+    }
+    // A CRATE NEWLY NAMING ANOTHER KIND IS DENIED ON THE REGISTERED GATE (row 159, XC2#5;
+    // BUSBAR-1.6.0.md: "a new cross-kind dependency edge, or a crate newly naming another kind's
+    // vocabulary, is still DENIED"). The counts stay report-only; a cell the merge-base did not
+    // have is a presence finding, and presence gates. The subject is a STORE crate (a plugin kind,
+    // outside every Law 0 row) planted with its manifest, so its plane cell is new by construction.
+    {
+        let dir = format!("crates/{PRESENCE_PLANT}");
+        let mut ov = plant(
+            cx,
+            &format!("{dir}/Cargo.toml"),
+            &format!("[package]\nname = \"{PRESENCE_PLANT}\"\nversion = \"0.0.0\"\n"),
+        );
+        ov.set(
+            format!("{dir}/src/lib.rs"),
+            "//! The llm plane's frames are stored here.\n".to_string(),
+        );
+        report.push(prove_rows_red(
+            cx,
+            registered,
+            "a store crate newly naming the plane kind is DENIED by the registered gate, against \
+             the merge-base",
+            &[ROW_MATRIX],
+            ov,
+            &["unlisted-cell", &format!("{PRESENCE_PLANT} \u{d7} plane")],
+        ));
+    }
     if ship {
         report.push(prove_rows_red(
             cx,
@@ -4457,6 +4878,418 @@ pub fn selftest<'a>(
 
     // THE FIVE INSTANCE AXES (item 118) — every one planted in core, plus the listed/unlisted pair.
     instances::selftest(cx, gate, over_fixture, false, report);
+
+    // FROZEN 1.5.5 BYTES ARE EXEMPT ONLY IN PLACE ([`frozen`], ARCHITECT ruling 2026-10-21). Each
+    // named artifact gets one line 1.6.0 never shipped in 1.5.5 (a plane package name in the two
+    // JSON documents, an instance name of a different axis in each Rust artifact) and every one of
+    // those cells GROWS over the merge-base: the exemption reaches the release's bytes and nothing
+    // written beside them.
+    match instances::one_name_per_axis(cx) {
+        Ok(names) => {
+            let name = |k: &str| {
+                names
+                    .iter()
+                    .find(|(axis, _)| *axis == k)
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_default()
+            };
+            let grown: [(&str, String); 5] = [
+                (
+                    "crates/busbar-core-admin/src/v1/json/openapi.json",
+                    "\"x-planted\": \"busbar-plane-mcp\"\n".to_string(),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/config-schema.snapshot.json",
+                    "\"x-planted\": \"busbar-plane-llm\"\n".to_string(),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/migrate.rs",
+                    format!("pub const PLANTED_EXPORT: &str = \"{}\";\n", name("export")),
+                ),
+                (
+                    "crates/busbar-kernel/src/config/migrate_export.rs",
+                    format!("pub const PLANTED_STORE: &str = \"{}\";\n", name("store")),
+                ),
+                (
+                    "crates/busbar-contract/src/secret_ref.rs",
+                    format!("pub const PLANTED_SECRET: &str = \"{}\";\n", name("secret")),
+                ),
+            ];
+            let mut ov = crate::ctx::Overlay::new();
+            for (rel, line) in &grown {
+                let was = cx.read(rel).unwrap_or_default();
+                ov.set(*rel, format!("{}\n{line}", was.trim_end()));
+            }
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "a line 1.6.0 wrote into a frozen 1.5.5 artifact still grows its cell",
+                &[ROW_LAW0_BASE],
+                ov,
+                &[
+                    "law0-grown",
+                    "busbar-core-admin \u{d7} plane",
+                    "busbar-kernel \u{d7} plane",
+                    "busbar-kernel \u{d7} instance:export",
+                    "busbar-kernel \u{d7} instance:store",
+                    "busbar-contract \u{d7} instance:secret",
+                ],
+            ));
+        }
+        Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+            "an instance name per axis to plant into the frozen artifacts",
+            &[ROW_LAW0_BASE],
+            &["law0-grown"],
+            why,
+        ))),
+    }
+
+    // THE EXEMPTION IS POSITIONAL AND READS ONLY CUSTOMER-OBSERVABLE BYTES ([`frozen`], ARCHITECT
+    // ruling 2026-10-21 as amended). Both sides are planted: the artifact's bytes at the pinned
+    // release with the planted lines appended ([`frozen::show_key`]), and the artifact in this tree.
+    // GREEN: a JSON line and a Rust string literal standing unchanged where the release had them. RED,
+    // each its own case: the line EDITED in place, MOVED to the top, or COPIED to a new position (the
+    // 1.6.0 `"streams"` key of the schema snapshot, whose text was a 1.5.5 line elsewhere); an
+    // IDENTIFIER and a COMMENT on an unchanged Rust line; a line of migrate_tests.rs, test code no
+    // customer observes; and a release read through anything but the pinned tag (a branch named
+    // v1.5.5, a moved tag). Each grows its cell over the merge-base.
+    {
+        // The test file the release shipped beside migrate.rs: no artifact, whatever its bytes.
+        const TESTS_HERE: &str = "crates/busbar-kernel/src/config/tests/migrate_tests.rs";
+        // qa-names: crates/busbar/src/config/tests/migrate_tests.rs -- xtask/src/gates/kind_isolation/matrix.rs -- v1.5.5 path read via git show at the pinned tag
+        const TESTS_RELEASED: &str = "crates/busbar/src/config/tests/migrate_tests.rs";
+        let rust = frozen::artifact("crates/busbar-kernel/src/config/migrate.rs");
+        let json = frozen::artifact("crates/busbar-kernel/src/config/config-schema.snapshot.json");
+        // (path here, the release's overlay key, its path at the release, its bytes there, here)
+        type Sides = (&'static str, String, &'static str, String, String);
+        let sides = |a: Option<&'static frozen::Artifact>| -> Result<Sides, String> {
+            let a = a.ok_or("the artifact is not in frozen::ARTIFACTS")?;
+            let then = frozen::released_bytes(cx, a)?;
+            let now = cx.read(a.path)?;
+            Ok((a.path, frozen::show_key(a), a.released, then, now))
+        };
+        let tests = || -> Result<Sides, String> {
+            let commit = frozen::release_commit(cx)?;
+            Ok((
+                TESTS_HERE,
+                format!("git-show:{commit}:{TESTS_RELEASED}"),
+                TESTS_RELEASED,
+                cx.git_show(commit, TESTS_RELEASED)?,
+                cx.read(TESTS_HERE)?,
+            ))
+        };
+        match (
+            instances::one_name_per_axis(cx),
+            sides(rust),
+            sides(json),
+            tests(),
+        ) {
+            (Ok(names), Ok(rs), Ok(js), Ok(ts)) => {
+                let export = names
+                    .iter()
+                    .find(|(axis, _)| *axis == "export")
+                    .map(|(_, n)| n.clone())
+                    .unwrap_or_default();
+                let line = format!("pub const PLANTED_EXPORT: &str = \"{export}\";");
+                let edited = format!("pub const PLANTED_EXPORT_EDITED: &str = \"{export}\";");
+                let key = "\"x-planted\": \"busbar-plane-llm\",".to_string();
+                // A plane's bare id in each of a Rust line's three readings: the literal (exempt on
+                // a frozen line), an identifier and a comment (never exempt).
+                let in_literal = "pub const PLANTED_ROUTE: &str = \"mcp\";".to_string();
+                let in_ident = "pub const PLANTED_MCP_ROUTE: &str = \"route\";".to_string();
+                let in_comment = "// PLANTED: the mcp route.".to_string();
+                // One file's two sides: its release bytes with `released` appended, and `now`.
+                let both = |side: &Sides, released: &str, now: String| {
+                    let (path, show, _, then, _) = side;
+                    let mut ov = crate::ctx::Overlay::new();
+                    ov.set_command(show.clone(), format!("{}\n{released}\n", then.trim_end()));
+                    ov.set(*path, now);
+                    ov
+                };
+                let rs_now = rs.4.trim_end().to_string();
+                let js_now = js.4.trim_end().to_string();
+                let ts_now = ts.4.trim_end().to_string();
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a frozen 1.5.5 line that stands unchanged where the release had it is exempt",
+                    &[ROW_LAW0_BASE],
+                    both(&rs, &line, format!("{rs_now}\n{line}\n")).layered(&both(
+                        &js,
+                        &key,
+                        format!("{js_now}\n{key}\n"),
+                    )),
+                ));
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a plane's id inside a string literal on an unchanged 1.5.5 Rust line is exempt",
+                    &[ROW_LAW0_BASE],
+                    both(&rs, &in_literal, format!("{rs_now}\n{in_literal}\n")),
+                ));
+                let rust_red = [
+                    (
+                        "a frozen 1.5.5 line EDITED in place counts",
+                        both(&rs, &line, format!("{rs_now}\n{edited}\n")),
+                        "busbar-kernel \u{d7} instance:export",
+                    ),
+                    (
+                        "a frozen 1.5.5 line MOVED to a new position counts",
+                        both(&rs, &line, format!("{line}\n{rs_now}\n")),
+                        "busbar-kernel \u{d7} instance:export",
+                    ),
+                    (
+                        "a 1.5.5 line COPIED to a new position counts there, beside the original \
+                         in place",
+                        both(&js, &key, format!("{key}\n{js_now}\n{key}\n")),
+                        "busbar-kernel \u{d7} plane",
+                    ),
+                    (
+                        "an IDENTIFIER on an unchanged 1.5.5 Rust line counts: only literals are \
+                         customer bytes",
+                        both(&rs, &in_ident, format!("{rs_now}\n{in_ident}\n")),
+                        "busbar-kernel \u{d7} plane",
+                    ),
+                    (
+                        "a COMMENT on an unchanged 1.5.5 Rust line counts: only literals are \
+                         customer bytes",
+                        both(&rs, &in_comment, format!("{rs_now}\n{in_comment}\n")),
+                        "busbar-kernel \u{d7} plane",
+                    ),
+                    (
+                        "a line of migrate_tests.rs counts though 1.5.5 shipped it: test code is \
+                         no customer-observable artifact",
+                        both(&ts, &line, format!("{ts_now}\n{line}\n")),
+                        "busbar-kernel \u{d7} instance:export",
+                    ),
+                ];
+                for (how, ov, cell) in rust_red {
+                    report.push(prove_rows_red(
+                        cx,
+                        gate,
+                        how,
+                        &[ROW_LAW0_BASE],
+                        ov,
+                        &["law0-grown", cell],
+                    ));
+                }
+                // THE RELEASE IS READ THROUGH THE PINNED TAG AND NOTHING ELSE. Each plant carries
+                // the release's bytes with the planted line under every name a resolver could take
+                // (`v1.5.5:<path>`, which a branch answers when the tag is gone, and the pinned
+                // commit's), and the tree carries the same line: a resolver that read any of them
+                // would exempt it. The strict one refuses the release and the line counts.
+                let (_, show, released, then, _) = &rs;
+                let with_line = format!("{}\n{line}\n", then.trim_end());
+                let shadowed = |tag: &str| {
+                    let mut ov = crate::ctx::Overlay::new();
+                    ov.set_command(frozen::rev_parse_key(frozen::RELEASE_TAG_REF), tag);
+                    ov.set_command(
+                        frozen::rev_parse_key(&format!("refs/heads/{}", frozen::RELEASE)),
+                        frozen::RELEASE_COMMIT,
+                    );
+                    ov.set_command(
+                        format!("git-show:{}:{released}", frozen::RELEASE),
+                        with_line.clone(),
+                    );
+                    ov.set_command(show.clone(), with_line.clone());
+                    ov.set(rs.0, format!("{rs_now}\n{line}\n"));
+                    ov
+                };
+                for (how, tag) in [
+                    (
+                        "a BRANCH named v1.5.5 is refused: the release is read only through \
+                         refs/tags/v1.5.5",
+                        String::new(),
+                    ),
+                    (
+                        "a MOVED v1.5.5 tag is refused: the tag must be the pinned tag object",
+                        "0".repeat(40),
+                    ),
+                ] {
+                    report.push(prove_rows_red(
+                        cx,
+                        gate,
+                        how,
+                        &[ROW_LAW0_BASE],
+                        shadowed(&tag),
+                        &["law0-grown", "busbar-kernel \u{d7} instance:export"],
+                    ));
+                }
+            }
+            (n, r, j, t) => {
+                let why = [n.err(), r.err(), j.err(), t.err()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                report.push(crate::gates::CasePlan::from(super::unplantable(
+                    "a frozen artifact's 1.5.5 bytes and an export instance name to plant",
+                    &[ROW_LAW0_BASE],
+                    &["law0-grown"],
+                    why,
+                )));
+            }
+        }
+    }
+
+    // THE CONNECTOR'S CARRIER NAMES ARE EXEMPT ONLY IN THE CONNECTOR AND THE LOADER'S NEED SERVICES
+    // (architect ruling 2026-10-23 (R-3), L0-3; [`carriers`]). GREEN: the bare `tcp`/`stdio` in a
+    // connector file and in a loader need-service file, the need service's name and a need's carrier
+    // literal elsewhere in the loader; no cell grows over the merge-base. RED, each its own case and
+    // each a cell grown over the merge-base: a transport plugin's package name in the connector, a
+    // framer's id in the connector, and a carrier word as an identifier in a loader file that is no
+    // need service.
+    {
+        let connector = "crates/busbar-core-connector/src/planted_carrier.rs";
+        let loader = "crates/plugin-loader/src/planted_need.rs";
+        let need_service = format!("crates/plugin-loader/{}", carriers::NEED_SERVICE_FILES[0]);
+        match cx.read(&need_service) {
+            Ok(was) => {
+                let mut ov = crate::ctx::Overlay::new();
+                ov.set(
+                    connector,
+                    "//! Dials the tcp carrier and spawns the stdio carrier.\n\
+                     pub enum PlantedCarrier { Tcp, Stdio }\n\
+                     pub fn planted_dial_tcp() -> &'static str { \"tcp\" }\n",
+                );
+                ov.set(
+                    loader,
+                    "pub use crate::tcp_conns::TcpConns as PlantedTable;\n\
+                     pub const PLANTED_NEED: &str = \"stdio\";\n",
+                );
+                ov.set(
+                    need_service.as_str(),
+                    format!(
+                        "{}\n// PLANTED: a stdio carrier served beside the tcp one.\n\
+                         pub fn planted_stdio_need() {{}}\n",
+                        was.trim_end()
+                    ),
+                );
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a carrier name in the connector and in the loader's need services is not a \
+                     transport instance",
+                    &[ROW_LAW0_BASE],
+                    ov,
+                ));
+            }
+            Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+                "the loader's need-service file to plant a carrier name into",
+                &[ROW_LAW0_BASE],
+                &["law0-grown"],
+                why,
+            ))),
+        }
+        for (how, rel, body, cell) in [
+            (
+                "a transport plugin's package name in the connector still counts",
+                connector,
+                "use busbar_transport_tcp::Dial;\n",
+                "busbar-core-connector \u{d7} transport",
+            ),
+            (
+                "a framer's id in the connector still counts",
+                connector,
+                "pub fn planted_grpc_frames() -> usize { 0 }\n",
+                "busbar-core-connector \u{d7} transport",
+            ),
+            (
+                "a carrier word as an identifier in a loader file that is no need service still \
+                 counts",
+                loader,
+                "pub fn planted_tcp_route() -> usize { 0 }\n",
+                "busbar-plugin-loader \u{d7} transport",
+            ),
+        ] {
+            let mut ov = crate::ctx::Overlay::new();
+            ov.set(rel, body);
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                how,
+                &[ROW_LAW0_BASE],
+                ov,
+                &["law0-grown", cell],
+            ));
+        }
+    }
+
+    // A 1.5.x CONFIG WORD THE MIGRATOR WRITES IS EXEMPT ONLY AT ITS ONE DECLARATION (architect
+    // ruling 2026-10-23, addition to R-3; [`config_words::FROZEN_CONFIG_LITERALS`]). GREEN: the
+    // declaration standing in its file under a new doc line (a position, not a line number). RED,
+    // each a cell grown over the merge-base: the same store-instance literal in another kernel
+    // file, the same declaration copied into another kernel file, and the declaration edited.
+    for f in config_words::FROZEN_CONFIG_LITERALS {
+        match cx.read(f.file) {
+            Ok(was) if was.lines().any(|l| l.trim() == f.declaration()) => {
+                let decl = f.declaration();
+                let cell = "busbar-kernel \u{d7} instance:store";
+                let mut ov = crate::ctx::Overlay::new();
+                ov.set(
+                    f.file,
+                    was.replacen(
+                        &decl,
+                        &format!("/// PLANTED: a doc line above it.\n{decl}"),
+                        1,
+                    ),
+                );
+                report.push(prove_rows_green(
+                    cx,
+                    gate,
+                    "a frozen config literal at its declaration is not a store instance",
+                    &[ROW_LAW0_BASE],
+                    ov,
+                ));
+                let elsewhere = "crates/busbar-kernel/src/planted_frozen_literal.rs";
+                for (how, rel, body) in [
+                    (
+                        "the frozen config literal's word in another kernel literal still counts",
+                        elsewhere,
+                        format!("pub const PLANTED_STORE: &str = \"{}\";\n", f.word),
+                    ),
+                    (
+                        "the frozen config literal's declaration copied into another file still \
+                         counts",
+                        elsewhere,
+                        format!("{decl}\n"),
+                    ),
+                    (
+                        "an edited declaration of the frozen config literal counts",
+                        f.file,
+                        was.replacen(
+                            &decl,
+                            &format!("pub const {}_EDITED: &str = \"{}\";", f.holder, f.word),
+                            1,
+                        ),
+                    ),
+                ] {
+                    let mut ov = crate::ctx::Overlay::new();
+                    ov.set(rel, body);
+                    report.push(prove_rows_red(
+                        cx,
+                        gate,
+                        how,
+                        &[ROW_LAW0_BASE],
+                        ov,
+                        &["law0-grown", cell],
+                    ));
+                }
+            }
+            Ok(_) => report.push(crate::gates::CasePlan::from(super::unplantable(
+                "a frozen config literal's declaration to plant beside",
+                &[ROW_LAW0_BASE],
+                &["law0-grown"],
+                format!("{} no longer declares `{}`", f.file, f.declaration()),
+            ))),
+            Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+                "a frozen config literal's declaration to plant beside",
+                &[ROW_LAW0_BASE],
+                &["law0-grown"],
+                why,
+            ))),
+        }
+    }
 
     // THE DIALECT WIRE-KEY SPAN (ARCHITECT ruling 2026-10-02, DF-MAP) is a COUNT property inside a
     // listed cell (`busbar-plane-llm × plane`), which presence cannot observe; it is proven on the
@@ -4888,19 +5721,27 @@ pub fn selftest<'a>(
         &["unlisted-cell", &fixture_subject("plane")],
     ));
 
-    // AN EXPORT ENTRY'S FROZEN 1.5.x `streams: [` KEY IS THE EXPORT PROJECTION, NOT THE PLANE
-    // ([`EXPORT_STREAMS_KEY`]). The fixture holds only export entries, in a YAML document and in a
-    // Rust string, and no row: the plane cell stays at zero (GREEN). The same word keying a mapping
-    // — the plane's section — beside them is a hit, and the cell becomes an edge nobody listed (RED).
+    // THE 1.5.x CUSTOMER CONFIG WORDS ARE EXEMPT ONLY WHERE A CUSTOMER'S CONFIG SPELLS THEM
+    // (architect ruling 2026-10-23 (R-3), L0-1; [`config_words`]). The fixture holds the export key
+    // `streams` in each of its positions (keying a flow list in a YAML document and in a Rust
+    // string, addressed by its `export.<entry>.streams` path, read through an `"export"`-rooted key
+    // path, and declared as the deserialized token list) and the stream token `decisions` in a
+    // list, and no row: the plane cell stays at zero (GREEN). Each RED adds one non-exempt
+    // occurrence beside them, and the cell becomes an edge nobody listed: the word keying a mapping
+    // (the 1.6.0 plane's section), the plane section's dotted path, the word as an identifier, and
+    // the decisions plane's own spelling inside a stream list.
     let export_fixture = |extra: Option<(&'static str, &'static str)>| {
         let mut files = vec![
             (
                 "export.yaml",
-                "export:\n  sink: { module: tail, streams: [logs, costs] }\n  other:\n    streams:  [metrics]\n",
+                "export:\n  sink: { module: tail, streams: [logs, costs] }\n  other:\n    streams:  [metrics, decisions]\n",
             ),
             (
                 "export.rs",
-                "pub const E: &str = \"  tp: { module: x, streams: [metrics] }\";\n",
+                "pub const E: &str = \"  tp: { module: x, streams: [metrics] }\";\n\
+                 pub const EMPTY: &str = \"export.{name}.streams: is EMPTY\";\n\
+                 pub fn at<'a>(doc: &'a Doc, name: &str) -> Option<&'a Doc> { dig(doc, &[\"export\", name, \"streams\"]) }\n\
+                 pub struct Def { pub streams: Option<Vec<String>>, }\n",
             ),
         ];
         files.extend(extra);
@@ -4909,18 +5750,47 @@ pub fn selftest<'a>(
     report.push(prove_rows_green(
         cx,
         over_fixture,
-        "an export entry's frozen 1.5.x `streams: [` key is not the plane",
+        "the 1.5.x export key `streams` and stream token `decisions`, where a customer's config \
+         spells them, are not the plane",
         &[ROW_MATRIX],
         export_fixture(None),
     ));
-    report.push(prove_rows_red(
-        cx,
-        gate,
-        "`streams:` keying a mapping beside the export entries still counts",
-        &[ROW_MATRIX],
-        export_fixture(Some(("section.yaml", "streams:\n  gw: {}\n"))),
-        &["unlisted-cell", &fixture_subject("plane")],
-    ));
+    for (how, file) in [
+        (
+            "`streams:` keying a mapping beside the export entries still counts",
+            ("section.yaml", "streams:\n  gw: {}\n"),
+        ),
+        (
+            "a plane section's dotted path `streams.<key>` beside the export entries still counts",
+            (
+                "section_path.rs",
+                "pub const P: &str = \"streams.fees.per_request\";\n",
+            ),
+        ),
+        (
+            "`streams` as an identifier beside the export entries still counts",
+            (
+                "projection.rs",
+                "pub fn from_parts(streams: &[u8]) -> usize { streams.len() }\n",
+            ),
+        ),
+        (
+            "the decisions plane's own spelling inside a stream list still counts",
+            (
+                "plane_list.yaml",
+                "export:\n  sink: { streams: [logs, plane-decisions] }\n",
+            ),
+        ),
+    ] {
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            how,
+            &[ROW_MATRIX],
+            export_fixture(Some(file)),
+            &["unlisted-cell", &fixture_subject("plane")],
+        ));
+    }
 
     // AN INSTANCE ID THAT IS ALSO A CRATE'S OR AN ABBREVIATION'S NAME COUNTS ONLY AS A REFERENCE
     // ([`COLLIDING_INSTANCE_WORDS`]). The fixture holds only the non-references and no row: the
@@ -6100,6 +6970,8 @@ mod tests {
                 .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
                 .collect(),
             how: "the planted base's files; its own vocabulary".to_string(),
+            shape_words: BTreeSet::new(),
+            presence: BTreeSet::new(),
         }
     }
 
@@ -6227,12 +7099,13 @@ mod tests {
         );
     }
 
-    /// RED ARM 3: a hit moved from one ratcheting axis to another under a ruling (`transport` row
-    /// lowered by one, `auth` row raised by one in the same diff) is judged as it was: the #725
-    /// figure is unchanged, and the per-cell row covers the moved hit by the raise THIS branch
-    /// wrote. The base's own slack and a row minted here cover nothing.
+    /// RED ARM 3: a hit moved from one ratcheting axis to another (`transport` row lowered by one,
+    /// `auth` row raised by one in the same diff) leaves the #725 figure unchanged, but every row is
+    /// its own ceiling, per crate pair (Law 9; coordinator ruling on #1133): the raised `auth` row
+    /// covers nothing and the lowered `transport` row pays for nothing, so the grown cell is
+    /// `law0-row-raised`. The base's own slack and a row minted here cover nothing either.
     #[test]
-    fn a_ruled_move_between_axes_is_unchanged() {
+    fn a_move_between_axes_is_refused_per_row() {
         let crates = vec![neutral_kernel("busbar-kernel")];
         let at_rows: &[(&str, &str, usize)] = &[
             ("busbar-kernel", "plane", 12),
@@ -6256,11 +7129,17 @@ mod tests {
         let judged = rule_law0_base(&ruled, Some(&moved_cells), Ok(&base));
         assert_eq!(
             judged.status,
-            crate::ledger::Status::Pass,
+            crate::ledger::Status::Fail,
             "{}",
             judged.detail
         );
-        assert!(judged.detail.contains("1 moved"), "{}", judged.detail);
+        assert!(
+            judged
+                .detail
+                .contains("law0-row-raised\tbusbar-kernel \u{d7} auth\t3 -> 4"),
+            "{}",
+            judged.detail
+        );
 
         // The same move with NO raise written: the grown cell is red.
         let unruled = rule_law0_base(&law0_reg(at_rows), Some(&moved_cells), Ok(&base));
@@ -6379,6 +7258,8 @@ mod tests {
                 .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
                 .collect(),
             how: ONE_FIVE_FIVE_HOW.to_string(),
+            shape_words: BTreeSet::new(),
+            presence: BTreeSet::new(),
         };
         let head = law0_counts_of(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
         let reg = law0_reg(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
@@ -6421,6 +7302,8 @@ mod tests {
             counts: law0_counts_of(&[("busbar", "plane", 820), ("busbar", "transport", 300)]),
             rows: BTreeMap::new(),
             how: ONE_FIVE_FIVE_HOW.to_string(),
+            shape_words: BTreeSet::new(),
+            presence: BTreeSet::new(),
         };
         let head = law0_counts_of(&[("busbar", "plane", 824), ("busbar", "transport", 208)]);
         let reg = law0_reg(&[("busbar", "plane", 824), ("busbar", "transport", 208)]);
