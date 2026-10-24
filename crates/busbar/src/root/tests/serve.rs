@@ -746,22 +746,23 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
 /// door's pools survive the apply, and the plane is handed it with the core-owned `work:` struck.
 #[test]
 fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
-    let key = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     let written: serde_yaml::Value =
         serde_yaml::from_str("fs: { url: \"http://fs\" }\nwork: { max_live: 4 }\n")
             .expect("a section");
-    let pool = busbar_kernel::failover::CandidatePoolCfg {
+    let pool = busbar_kernel::config::pools::CandidatePoolCfg {
         members: vec!["fs".to_string()],
         ..Default::default()
     };
-    let pools = door_pools(
-        &BTreeMap::from([("files".to_string(), pool)]),
-        &BTreeMap::new(),
-    );
+    let pools = door_pools(&BTreeMap::from([(
+        key,
+        BTreeMap::from([("files".to_string(), pool)]),
+    )]));
 
     let applied = section_with_pools(key, &written, &pools);
     assert_eq!(
         crate::root::door_steps::DoorPools::of(&applied)
+            .expect("the pools")
             .pools()
             .get("files")
             .cloned(),
@@ -783,7 +784,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
 /// AN OPEN CLAIM'S LINE TAKES NO AUTH, WHATEVER THE CHAIN (ARCHITECT, FLIP-A2A): a plane's
 /// discovery documents answer a caller who holds no credential yet, with the operator's data chain
 /// configured exactly as without one.
-#[cfg(linked_axis_node)]
+#[cfg(linked_section_pools)]
 #[test]
 fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
     use busbar_contract::abi::auth::AuthPoints;
@@ -800,7 +801,7 @@ fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
 
 /// THE RED ARM: a claim that is NOT open owes the operator's chain, configured or empty — the open
 /// exception never widens to a line a credential is owed on.
-#[cfg(linked_axis_node)]
+#[cfg(linked_section_pools)]
 #[test]
 fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
     use busbar_contract::abi::auth::AuthPoints;
@@ -814,5 +815,102 @@ fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
         line_auth(CLAIM_EXACT, &[]),
         LineAuth::Chain(Vec::new(), AuthPoints(0)),
         "an empty chain admits none on a credentialed line; it never opens it"
+    );
+}
+
+/// THE SERVE PATH NAMES NO STREAM MEDIA TYPE OF ITS OWN (audit R1#4; Law 1, BUSBAR-1.6.0.md l.1895
+/// "Dialects are internal to their plane"): whether an answer that states its length still goes out
+/// piece by piece is read off the declared rows — the event stream the contract names, and the
+/// stream `Content-Type` each declared protocol states on its `ProtocolDecl` row — never off a
+/// dialect's media type spelled here. Every one of them goes out piece by piece, byte for byte as
+/// written. RED before: the root spelled a vendor framing's media type beside the event stream.
+#[tokio::test]
+async fn every_declared_stream_type_goes_piece_by_piece_and_the_serve_path_spells_none() {
+    use http_body::Body as _;
+    let source = include_str!("../serve.rs");
+    assert!(
+        !source.contains("application/vnd."),
+        "the serve path spells a dialect's stream media type: it must read the declared rows"
+    );
+    let declared = std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
+        .chain(declared_stream_media().iter().copied());
+    for media in declared {
+        let fields: HeadFields = vec![
+            (b"content-type".to_vec(), media.as_bytes().to_vec()),
+            (b"content-length".to_vec(), b"11".to_vec()),
+        ];
+        let (caller, reply) = IngressCaller::new();
+        let caller = Arc::new(caller);
+        let writer = Arc::clone(&caller);
+        let unit: DrivenUnit = Box::pin(async move {
+            writer.head(200, fields);
+            assert!(writer.write(b"hello ").await);
+            assert!(writer.write(b"world").await);
+            None
+        });
+        drop(caller);
+        let response = reply.answer(unit).await;
+        assert_eq!(
+            response.body().size_hint().exact(),
+            None,
+            "a `{media}` answer goes out piece by piece"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body");
+        assert_eq!(&body[..], b"hello world", "the bytes as written");
+    }
+}
+
+/// THE CLAIM DOORS' BINDS (row 132): a served plane's INBOUND need whose `target_from` block in its
+/// section states a `listen` is bound there, under the need's transport and its own index, and the
+/// setting is named as the operator spells it. An outbound need, a need with no `target_from`, a
+/// block that states no `listen` and a plane whose section is absent bind nothing; an address that
+/// is not `ip:port` refuses the composition, naming the setting.
+#[test]
+fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
+    use crate::root::loader::boot::BindOwner;
+    use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        section: "a-section",
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+            (DIRECTION_INBOUND, "none"),
+        ],
+        need_targets: vec!["far", "media", "", "quiet"],
+        need_transports: vec!["out-t", "in-t", "bare-t", "quiet-t"],
+        ..Default::default()
+    };
+    let doc = |yaml: &str| -> BTreeMap<&'static str, serde_yaml::Value> {
+        BTreeMap::from([("a-section", serde_yaml::from_str(yaml).expect("yaml"))])
+    };
+    let sections =
+        doc("far: {listen: \"127.0.0.1:7000\"}\nmedia: {listen: \"127.0.0.1:7001\"}\nquiet: {}\n");
+    let binds = super::need_binds("inst", &facts, &sections).expect("binds");
+    assert_eq!(
+        binds.len(),
+        1,
+        "only the inbound need whose block states a listen"
+    );
+    let b = &binds[0];
+    assert_eq!(b.transport, "in-t");
+    assert_eq!(b.at, "a-section.media");
+    assert_eq!(b.listen_setting(), "a-section.media.listen");
+    assert_eq!(b.listen, "127.0.0.1:7001".parse().unwrap());
+    assert!(matches!(
+        &b.owner,
+        BindOwner::Need { instance, need: 1, .. } if instance == "inst"
+    ));
+    assert!(
+        super::need_binds("inst", &facts, &BTreeMap::new())
+            .expect("no section")
+            .is_empty(),
+        "a plane whose section is absent binds nothing"
+    );
+    assert_eq!(
+        super::need_binds("inst", &facts, &doc("media: {listen: \"nowhere\"}\n")).unwrap_err(),
+        "a-section.media.listen: `nowhere` is not an ip:port address"
     );
 }

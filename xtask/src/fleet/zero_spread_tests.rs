@@ -22,9 +22,7 @@ fn the_contract_index_names_the_zero_bearing_structs() {
         "PlaneTail",
         "StoreTail",
         "FramePiece",
-        "ConnFacts",
         "Need",
-        "Claim",
         "AbiStr",
         "Blob",
     ] {
@@ -40,6 +38,32 @@ fn the_contract_index_names_the_zero_bearing_structs() {
         .map(String::from)
         .into();
     assert!(idx.judged("Tail", &export_tail));
+    // `ConnFacts` is a shared name too: the ABI struct states a `ZERO`, the transport stack's
+    // Rust-side facts (derive `Default`, no ZERO) do not. The abi literal's fields pick the ABI one.
+    let abi_facts: BTreeSet<String> = ["size", "offered_name", "agreed_protocol", "claim"]
+        .map(String::from)
+        .into();
+    assert!(idx.judged("ConnFacts", &abi_facts));
+    let stack_facts: BTreeSet<String> = ["sni", "alpn", "peer_cert"].map(String::from).into();
+    assert!(!idx.judged("ConnFacts", &stack_facts));
+    // `Claim` is shared four ways: the transport and plane ABI rows state a `ZERO`; the grammar's
+    // claim and the transport stack's Rust-side claim do not. Each ABI literal's fields pick its
+    // own row; the Rust-side ones, and a field set the stack's claim also fits, are never judged.
+    assert!(!idx.zero_names().contains(&"Claim"));
+    let abi_transport_claim: BTreeSet<String> = ["selector_forms", "facts", "facts_len", "session"]
+        .map(String::from)
+        .into();
+    assert!(idx.judged("Claim", &abi_transport_claim));
+    let abi_plane_claim: BTreeSet<String> = ["verb", "target", "carrier", "flags"]
+        .map(String::from)
+        .into();
+    assert!(idx.judged("Claim", &abi_plane_claim));
+    let grammar_claim: BTreeSet<String> = ["transport", "selector"].map(String::from).into();
+    assert!(!idx.judged("Claim", &grammar_claim));
+    let stack_claim: BTreeSet<String> = ["key", "transport_facts"].map(String::from).into();
+    assert!(!idx.judged("Claim", &stack_claim));
+    let both: BTreeSet<String> = ["session", "session_bound"].map(String::from).into();
+    assert!(!idx.judged("Claim", &both));
 }
 
 /// THE IN-TREE PLUGINS build every ZERO-bearing contract struct with a base: each fixture plugin

@@ -18,18 +18,28 @@
 //! rides it as its next stream (ARCHITECT ruling Q-L18-MUX, 1.5.5's pooled h2 client). An HTTP/1.1
 //! connection carries one exchange at a time and is lent again only once idle.
 //!
-//! A pooled connection is keyed by everything its dial was judged and secured for: the entry, the
-//! authority, the security and the name offered, and the egress class it was judged under. A dial
+//! A pooled connection is keyed by everything its dial was judged and secured for: the instance and
+//! the need that dialled it (THE DESIGN §5, a connection belongs to the instance that opened it; §8,
+//! the connector holds each need's trust), the entry, the authority, the security and the name
+//! offered, the egress class it was judged under, and the very seal of trust anchors it was held to
+//! (a destination sealed again is dialled afresh under its new seal). A dial
 //! stated `within` an address set is never pooled (its landing rule is per open). An idle
 //! connection is lent only after it has read what the far end sent while it sat idle, so one the far
 //! end closed or said goodbye on is closed here, never handed out.
+//!
+//! An idle connection whose time ran out is closed the next time the pool is used, whatever place
+//! that use is for: every shard is swept once the earliest idle deadline has passed (hyper-util's
+//! idle reaper, which 1.5.5's pool ran on an interval).
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use busbar_contract::conn::{InstanceId, NeedId};
+
 use crate::line::Line;
+use crate::tls::client::Sealed;
 
 /// The deployment's pool posture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +68,10 @@ impl Default for PoolPosture {
 /// What a pooled connection was dialled for; an open reuses it only for the same.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PoolKey {
+    /// The instance whose open dialled it: a line is never lent to another instance.
+    pub(crate) owner: InstanceId,
+    /// The need it was dialled on, under that need's own trust: never lent to another need.
+    pub(crate) need: NeedId,
     /// The entry (its table's address: one per loaded entry for the process).
     pub(crate) door: usize,
     /// The authority dialled, lower-cased.
@@ -79,6 +93,28 @@ pub(crate) struct PoolKey {
     /// handle is never lent to another binding's exchange, nor across a generation (the handle's
     /// mac is the generation's). `None` = begun with no auth.
     pub(crate) binding: Option<(u64, u64)>,
+    /// The seal of trust anchors the dial was held to (`None`: none): a line verified under one
+    /// seal is never lent to an open held to another, even of the same destination sealed again.
+    pub(crate) sealed: Option<SealRef>,
+}
+
+/// One seal of trust anchors, by identity: two seals are the same only when they are one seal. The
+/// key holds the seal, so its address is never reused while a line keyed by it is pooled.
+#[derive(Debug, Clone)]
+pub(crate) struct SealRef(pub(crate) Arc<Sealed>);
+
+impl PartialEq for SealRef {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for SealRef {}
+
+impl std::hash::Hash for SealRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
 }
 
 /// One pooled line: in use (`idle` = `None`), or idle since the instant named.
@@ -94,6 +130,11 @@ pub(crate) struct Pools {
     posture: PoolPosture,
     per_shard: usize,
     shards: Box<[Shard]>,
+    /// The instant the pools were made: what [`Self::reap_due`] counts from.
+    epoch: Instant,
+    /// When the earliest idle line's time runs out, in nanoseconds since [`Self::epoch`]
+    /// (`u64::MAX`: no line is idle): the next use of the pool at or past it sweeps every shard.
+    reap_due: AtomicU64,
 }
 
 impl std::fmt::Debug for Pools {
@@ -126,6 +167,69 @@ impl Pools {
             posture,
             per_shard,
             shards: (0..count).map(|_| Mutex::new(HashMap::new())).collect(),
+            epoch: Instant::now(),
+            reap_due: AtomicU64::new(u64::MAX),
+        }
+    }
+
+    /// `at`, in nanoseconds since the pools were made.
+    fn since_epoch(&self, at: Instant) -> u64 {
+        u64::try_from(at.saturating_duration_since(self.epoch).as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    /// A line went idle at `now`: the sweep is due by the time its idle time runs out.
+    fn idled(&self, now: Instant) {
+        let due = now
+            .checked_add(self.posture.idle_timeout)
+            .map_or(u64::MAX, |ends| self.since_epoch(ends));
+        self.reap_due.fetch_min(due, Ordering::AcqRel);
+    }
+
+    /// THE IDLE REAPER: once the earliest idle deadline has passed, every shard is swept and each
+    /// idle line whose time ran out is dropped from the pool and closed (when nobody holds it),
+    /// whatever place the use that found it due is for. Called holding no shard.
+    fn reap_if_due(&self, now: Instant) {
+        let at = self.since_epoch(now);
+        let due = self.reap_due.load(Ordering::Acquire);
+        if due > at
+            || self
+                .reap_due
+                .compare_exchange(due, u64::MAX, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            // Not due yet, or another use is sweeping (or a line idled since): its time stands.
+            return;
+        }
+        let timeout = self.posture.idle_timeout;
+        let mut spent = Vec::new();
+        let mut next: Option<Instant> = None;
+        for shard in &*self.shards {
+            let mut map = shard.lock().expect("pool");
+            map.retain(|_, entries| {
+                entries.retain(|e| match e.idle {
+                    Some(since) if now.duration_since(since) >= timeout => {
+                        spent.push(Arc::clone(&e.line));
+                        false
+                    }
+                    Some(since) => {
+                        if let Some(ends) = since.checked_add(timeout) {
+                            next = Some(next.map_or(ends, |n| n.min(ends)));
+                        }
+                        true
+                    }
+                    None => true,
+                });
+                !entries.is_empty()
+            });
+        }
+        if let Some(next) = next {
+            self.reap_due
+                .fetch_min(self.since_epoch(next), Ordering::AcqRel);
+        }
+        for line in spent {
+            if line.users() == 0 {
+                line.close();
+            }
         }
     }
 
@@ -170,6 +274,7 @@ impl Pools {
             return None;
         }
         let now = Instant::now();
+        self.reap_if_due(now);
         let mut spent = Vec::new();
         let lent = {
             let mut map = self.shards[shard].lock().expect("pool");
@@ -232,11 +337,17 @@ impl Pools {
             }
             let keep = line.reusable();
             match (at, keep) {
-                (Some(i), true) => entries[i].idle = Some(now),
-                (None, true) => entries.push(Entry {
-                    line: Arc::clone(line),
-                    idle: Some(now),
-                }),
+                (Some(i), true) => {
+                    entries[i].idle = Some(now);
+                    self.idled(now);
+                }
+                (None, true) => {
+                    entries.push(Entry {
+                        line: Arc::clone(line),
+                        idle: Some(now),
+                    });
+                    self.idled(now);
+                }
                 (Some(i), false) => spent.push(entries.remove(i).line),
                 (None, false) => spent.push(Arc::clone(line)),
             }
@@ -276,6 +387,7 @@ impl Pools {
                 line.close();
             }
         }
+        self.reap_if_due(now);
     }
 
     /// Drop `line` from the pool for `key` on `shard` (it failed its exchange's open); closed when

@@ -40,8 +40,6 @@
 //! them.
 
 use std::collections::{BTreeMap, HashMap};
-use std::mem::size_of;
-use std::ptr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use busbar_contract::abi::hook::{REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM};
@@ -49,12 +47,10 @@ use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_ALL_EXCEPT_DENIED,
 };
 use busbar_contract::abi::host::service::{ClockReading, MAX_RANDOM_FILL};
-use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS,
-};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, OutHead, Outcome, Span};
 use busbar_contract::abi::mechanism::door::SECTION_REQUIRED;
 use busbar_contract::abi::mechanism::door::{
-    KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
+    Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{
@@ -73,13 +69,16 @@ use busbar_contract::abi::plane::{
     SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
     VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
+use busbar_contract::abi::plane::{CatalogIn, CatalogOut, CLAIM_CATALOG, DIALECT_PROVIDER};
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
+use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
 use busbar_contract::abi::sdk::{
     open_failed, Generations, HostBuf, Instance, Lent, Out, Safe, SafeSlot, Services,
+    StaticServices,
 };
 use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::ids::{MeterClassDecl, OpClassId};
@@ -98,6 +97,12 @@ use crate::exchange::{handler_of, probe, project, refuse};
 use crate::meta::PROVIDER_KEYS;
 use crate::LlmPlane;
 
+/// THE PROTOCOL AXIS of the door's linked row: the plane's own six dialect declarations, in the
+/// order an operator sees, as contract data (`busbar_contract::protocol::ProtocolDecl`). A
+/// composition root that links this door seeds the kernel's protocol registry from them, so the
+/// kernel names no dialect (ARCHITECT 2026-10-16 ruling 3).
+pub use crate::codec::DECLS as PROTOCOLS;
+
 // ── the Statement ────────────────────────────────────────────────────────────────────────────────
 
 /// The version the Statement names: the crate's (a test pins the two equal).
@@ -113,9 +118,6 @@ const POOL_NOUN: &str = "pool";
 
 /// The transport claim a far end is reached over.
 const TRANSPORT: &str = "http";
-
-/// An absent string.
-const NONE: AbiStr = AbiStr::ZERO;
 
 const fn section(name: &'static str, flags: u32) -> Section {
     Section {
@@ -275,23 +277,23 @@ const _: () = assert!(
     "EGRESS_STYLES names every dialect's default style, each once"
 );
 
+/// THE TAIL'S PER-DIALECT FLAGS (ARCHITECT ruling 2026-10-16, item 3): a provider's `protocol`
+/// may name every dialect this plane speaks ([`DIALECT_PROVIDER`]); the kernel reads it as declared
+/// data.
+const DIALECT_FLAG: u32 = DIALECT_PROVIDER;
+
 const fn dialect_auth(i: usize) -> DialectAuth {
     let params = DIALECTS[i].egress_params.as_bytes();
     DialectAuth {
         dialect: i as u32,
+        flags: DIALECT_FLAG,
         style: abi_str(DIALECTS[i].egress_style),
         // The default style's parameters (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
         params: if params.is_empty() {
             Blob::ABSENT
         } else {
-            Blob {
-                ptr: params.as_ptr(),
-                len: params.len(),
-                fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
-                ..Blob::ZERO
-            }
+            Blob::json(params)
         },
-        ..DialectAuth::ZERO
     }
 }
 
@@ -336,22 +338,13 @@ const DENIED: &[AbiStr] = &[
 ];
 
 const fn need(auth: &'static str) -> Need {
-    Need {
-        direction: DIRECTION_OUTBOUND,
-        egress_class: EGRESS_PROVIDER,
-        transport: abi_str(TRANSPORT),
-        auth: abi_str(auth),
-        target_from: NONE,
-        trust_from: NONE,
-        details: Blob {
-            fmt: BLOB_ABSENT,
-            ..Blob::ZERO
-        },
-        keep_mode: KEEP_ALL_EXCEPT_DENIED,
-        deny_response_headers: DENIED.as_ptr(),
-        deny_response_headers_len: DENIED.len(),
-        ..Need::ZERO
-    }
+    let mut n = Need::EMPTY.with_deny_response_headers(DENIED);
+    n.direction = DIRECTION_OUTBOUND;
+    n.egress_class = EGRESS_PROVIDER;
+    n.transport = abi_str(TRANSPORT);
+    n.auth = abi_str(auth);
+    n.keep_mode = KEEP_ALL_EXCEPT_DENIED;
+    n
 }
 
 /// THE PLANE'S NEEDS: outbound to a configured provider over the claim's transport, one per
@@ -371,45 +364,32 @@ pub const NEEDS: &[Need] = &[
 const SCOPE_KINDS: &[AbiStr] = &[abi_str("pool")];
 
 /// THE STATEMENT TAIL: the plane's static facts.
-pub const TAIL: &PlaneTail = &PlaneTail {
-    head: KindTailHead {
-        size: size_of::<PlaneTail>() as u32,
-        ..KindTailHead::ZERO
-    },
-    flags: TAIL_FALLBACK | TAIL_PROBES,
-    ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM,
+const TAIL_ROW: PlaneTail = {
+    let mut t = PlaneTail::EMPTY
+        .with_dialects(DIALECT_NAMES)
+        .with_dialect_auth(DIALECT_AUTH)
+        .with_scope_kinds(SCOPE_KINDS)
+        .with_op_classes(OP_CLASSES)
+        .with_billable_classes(BILLABLE_CLASSES)
+        .with_fee_units(FEE_UNITS)
+        .with_refusal_statuses(&crate::refusal::REFUSAL_STATUSES);
+    t.flags = TAIL_FALLBACK | TAIL_PROBES;
+    t.ingress = INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM;
     // The kernel pushes the caller's body and the far end's answer piece by piece.
-    dispatch_shape: SHAPE_PIECEWISE,
+    t.dispatch_shape = SHAPE_PIECEWISE;
     // The layout this plane writes its answers in: the contract's it was built against.
-    answer_layout: ANSWER_LAYOUT,
-    scope: abi_str(sections::POOLS),
-    label: abi_str(LABEL),
+    t.answer_layout = ANSWER_LAYOUT;
+    t.scope = abi_str(sections::POOLS);
+    t.label = abi_str(LABEL);
     // What one registration of the `pools:` map is called, in a refusal naming it ("a pool may not
     // be named `hooks`") and in the admin surface, as the previous release's declaration named it.
-    subject_noun: abi_str(POOL_NOUN),
-    admin_noun: abi_str(POOL_NOUN),
-    audit_kind: NONE,
-    signing_domain: NONE,
-    signing_kid_prefix: NONE,
-    cli_help: NONE,
-    dialects: DIALECT_NAMES.as_ptr(),
-    dialects_len: DIALECT_NAMES.len(),
-    dialect_auth: DIALECT_AUTH.as_ptr(),
-    dialect_auth_len: DIALECT_AUTH.len(),
-    scope_kinds: SCOPE_KINDS.as_ptr(),
-    scope_kinds_len: SCOPE_KINDS.len(),
-    op_classes: OP_CLASSES.as_ptr(),
-    op_classes_len: OP_CLASSES.len(),
-    billable_classes: BILLABLE_CLASSES.as_ptr(),
-    billable_classes_len: BILLABLE_CLASSES.len(),
-    fee_units: FEE_UNITS.as_ptr(),
-    fee_units_len: FEE_UNITS.len(),
-    refusal_statuses: crate::refusal::REFUSAL_STATUSES.as_ptr(),
-    refusal_statuses_len: crate::refusal::REFUSAL_STATUSES.len(),
-    caller_credential_refusal: NONE,
-    admin_openapi: Blob::ABSENT,
-    ..PlaneTail::ZERO
+    t.subject_noun = abi_str(POOL_NOUN);
+    t.admin_noun = abi_str(POOL_NOUN);
+    t.cli_help = abi_str(crate::meta::CLI_HELP_TEXT);
+    t
 };
+/// THE STATEMENT TAIL, as the Statement points at it.
+pub const TAIL: &PlaneTail = &TAIL_ROW;
 
 /// The Statement's extensions: the plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) under the
 /// contract's one key for them, built at compile time.
@@ -418,19 +398,13 @@ const EXTENSIONS: &[u8] = &extensions::entry::<
 >(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes());
 
 /// THE STATEMENT: the plane's key and version, its sections, its needs, its tail and its extensions.
-pub const STATEMENT: Statement = Statement {
-    kind_tail: ptr::from_ref(TAIL).cast::<KindTailHead>(),
-    extensions: Blob {
-        ptr: EXTENSIONS.as_ptr(),
-        len: EXTENSIONS.len(),
-        fmt: BLOB_OCTETS,
-        ..Blob::ZERO
-    },
-    sections: SECTIONS.as_ptr(),
-    sections_len: SECTIONS.len(),
-    needs: NEEDS.as_ptr(),
-    needs_len: NEEDS.len(),
-    ..statement(<LlmPlane as PlaneMeta>::KEY, VERSION, MAX_INFLIGHT)
+pub const STATEMENT: Statement = {
+    let mut s = statement(<LlmPlane as PlaneMeta>::KEY, VERSION, MAX_INFLIGHT)
+        .with_kind_tail(TAIL)
+        .with_sections(SECTIONS)
+        .with_needs(NEEDS);
+    s.extensions = Blob::of(EXTENSIONS);
+    s
 };
 
 // ── the settings ─────────────────────────────────────────────────────────────────────────────────
@@ -574,14 +548,83 @@ impl UnitState {
     }
 }
 
+/// THE DOOR'S UNIT BOOK: each unit the door holds, by the kernel's key, from its `arrive` to its
+/// end, and the ticket its pieces last came on (the key a `cancel` names it by). Every way a unit
+/// ends leaves NOTHING of it here, its ticket binding included (THE DESIGN section 2: what a plugin
+/// keeps is bounded by its units), so neither map grows with the units the instance has served.
+#[derive(Debug)]
+pub struct UnitBook<S> {
+    units: HashMap<u64, S>,
+    tickets: HashMap<Ticket, u64>,
+    ticket_of: HashMap<u64, Ticket>,
+}
+
+impl<S> Default for UnitBook<S> {
+    fn default() -> Self {
+        UnitBook {
+            units: HashMap::new(),
+            tickets: HashMap::new(),
+            ticket_of: HashMap::new(),
+        }
+    }
+}
+
+impl<S> UnitBook<S> {
+    /// The unit is held under `unit` (its `arrive`, or its state put back after a call).
+    pub fn hold(&mut self, unit: u64, state: S) {
+        self.units.insert(unit, state);
+    }
+
+    /// The unit leaves the map for a call; its ticket binding stays until it [`UnitBook::ends`].
+    pub fn take(&mut self, unit: u64) -> Option<S> {
+        self.units.remove(&unit)
+    }
+
+    /// The held unit, in place.
+    pub fn get_mut(&mut self, unit: u64) -> Option<&mut S> {
+        self.units.get_mut(&unit)
+    }
+
+    /// The unit's pieces come on `ticket`: a `cancel` on it finds the unit. A ticket the unit came
+    /// on before is unbound.
+    pub fn bind(&mut self, ticket: Ticket, unit: u64) {
+        if let Some(old) = self.ticket_of.insert(unit, ticket) {
+            if old != ticket {
+                self.tickets.remove(&old);
+            }
+        }
+        self.tickets.insert(ticket, unit);
+    }
+
+    /// The unit ended (its reply complete, or refused): its ticket binding goes with it.
+    pub fn ends(&mut self, unit: u64) {
+        self.units.remove(&unit);
+        if let Some(ticket) = self.ticket_of.remove(&unit) {
+            self.tickets.remove(&ticket);
+        }
+    }
+
+    /// A `cancel` on `ticket`: the unit it names leaves the book, and its state is handed back.
+    pub fn cancel(&mut self, ticket: Ticket) -> Option<S> {
+        let unit = self.tickets.remove(&ticket)?;
+        self.ticket_of.remove(&unit);
+        self.units.remove(&unit)
+    }
+
+    /// What the book holds: `(units, ticket bindings)`.
+    #[must_use]
+    pub fn held(&self) -> (usize, usize) {
+        (self.units.len(), self.tickets.len())
+    }
+}
+
 /// One instance: every live generation's snapshot and tables, the units in flight, and the host's
 /// clock.
 pub struct LlmDoor {
     generations: Generations<PlaneSnapshot>,
     shapings: Mutex<BTreeMap<u64, Arc<Shaping>>>,
-    units: Mutex<HashMap<u64, UnitState>>,
-    tickets: Mutex<HashMap<Ticket, u64>>,
-    services: Option<Services>,
+    units: Mutex<UnitBook<UnitState>>,
+    services: Option<StaticServices>,
     /// The receivers the `webhooks:` section switched on at open.
     webhooks: Webhooks,
 }
@@ -623,7 +666,7 @@ const UNTICKETED: CompletionHandle = CompletionHandle {
 /// several) and the host's wall clock (`clock.now`, whole seconds). A host that serves neither
 /// answers each one's failure path: no entropy, no clock.
 #[derive(Clone, Copy)]
-struct DoorHost(Option<Services>);
+struct DoorHost(Option<StaticServices>);
 
 impl busbar_contract::codec::CodecHost for DoorHost {
     fn fill_entropy(&self, out: &mut [u8]) -> bool {
@@ -639,6 +682,12 @@ impl busbar_contract::codec::CodecHost for DoorHost {
         self.0
             .and_then(|s| s.clock_now(UNTICKETED).ok())
             .map(|reading| reading.wall_ns / 1_000_000_000)
+    }
+
+    fn monotonic_ns(&self) -> Option<u64> {
+        self.0
+            .and_then(|s| s.clock_now(UNTICKETED).ok())
+            .map(|reading| reading.mono_ns)
     }
 }
 
@@ -665,26 +714,63 @@ const DIALECT_CLAIMS: [ClaimRow; 7] = [
     ("POST", "/v1/models", false, "openai"),
 ];
 
-/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], then the previous release's fallback, a prefix claim on
-/// `/` per verb wearing the residual default dialect. The fallback reaches every path at any depth
-/// no more specific claim or kernel route takes (CG-62); the router has no plane-shaped branch.
+/// THE SIGNED PATHS (ARCHITECT rulings 2026-10-16, 3b A, and 2026-10-17): the request shapes whose
+/// callers sign each request (the bedrock dialect's converse surfaces), claimed as raw affixes
+/// flagged `CLAIM_SIGNED_INGRESS`. The kernel matches each against the raw path as the previous
+/// release did (`starts_with("/model/")` and `ends_with` the surface), odd paths included, an
+/// unencoded inference-profile ARN's raw `/` and an encoded one alike, whatever the verb. They mount
+/// no route: the `/model` subtree claim serves the dialect's paths, and its other surfaces
+/// (`/model/{id}/invoke`) sign nothing.
+const SIGNED_CLAIMS: [&str; 2] = ["/model/*/converse", "/model/*/converse-stream"];
+
+/// THE LIST-MODELS CATALOG ROUTES (ARCHITECT ruling 2026-10-16, 3b C): `GET` on each listing path,
+/// exact, answered with no unit by [`CatalogSlot`] over the names the kernel lists for the caller.
+const CATALOG_PATHS: [&str; 2] = [
+    crate::exchange::catalog::PATH,
+    crate::exchange::catalog::BETA_PATH,
+];
+
+/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], the [`SIGNED_CLAIMS`], the [`CATALOG_PATHS`], then the
+/// previous release's
+/// fallback, a prefix claim on `/` per verb wearing the residual default dialect. The fallback
+/// reaches every path at any depth no more specific claim or kernel route takes (CG-62); the router
+/// has no plane-shaped branch.
 #[must_use]
 pub fn claims() -> Vec<ClaimSpec> {
     let fallback = crate::exchange::arrive::envelope_for("/");
+    let catalogs = CATALOG_PATHS.iter().map(|&path| {
+        let mut claim = ClaimSpec::new("GET", path, TRANSPORT, CLAIM_EXACT | CLAIM_CATALOG);
+        claim.refusal_dialect =
+            u16::try_from(dialect_index(crate::exchange::arrive::envelope_for(path))).unwrap_or(0);
+        claim
+    });
     DIALECT_CLAIMS
         .iter()
         .copied()
-        .chain(
-            FALLBACK_VERBS
-                .iter()
-                .map(|&verb| (verb, "/", false, fallback)),
-        )
         .map(|(verb, target, exact, dialect)| {
             let flags = if exact { CLAIM_EXACT } else { 0 };
             let mut claim = ClaimSpec::new(verb, target, TRANSPORT, flags);
             claim.refusal_dialect = u16::try_from(dialect_index(dialect)).unwrap_or(0);
             claim
         })
+        .chain(SIGNED_CLAIMS.iter().map(|&target| {
+            let mut claim = ClaimSpec::new(
+                "POST",
+                target,
+                TRANSPORT,
+                CLAIM_RAW_AFFIX | CLAIM_SIGNED_INGRESS,
+            );
+            claim.refusal_dialect =
+                u16::try_from(dialect_index(crate::exchange::arrive::envelope_for(target)))
+                    .unwrap_or(0);
+            claim
+        }))
+        .chain(catalogs)
+        .chain(FALLBACK_VERBS.iter().map(|&verb| {
+            let mut claim = ClaimSpec::new(verb, "/", TRANSPORT, 0);
+            claim.refusal_dialect = u16::try_from(dialect_index(fallback)).unwrap_or(0);
+            claim
+        }))
         .collect()
 }
 
@@ -744,8 +830,13 @@ pub fn route_of<'a>(shaping: &Shaping, model: &'a str) -> (u8, &'a str) {
 }
 
 fn op_class_index(arrived: &Arrived) -> u32 {
+    op_class_of(arrived.operation)
+}
+
+/// The index of an operation's class in the tail's op-class list (`0` when it names none).
+fn op_class_of(operation: busbar_contract::operation::OpVerb) -> u32 {
     OPS.iter()
-        .position(|op| op.as_str() == arrived.operation.name())
+        .position(|op| op.as_str() == operation.name())
         .and_then(|i| u32::try_from(i).ok())
         .unwrap_or(0)
 }
@@ -1281,7 +1372,7 @@ macro_rules! slot {
 slot!(
     /// `validate`: the settings read as the plane's tables, or refused in the reader's words.
     Validate, ValidateIn, OutHead, |_, input, mut out| {
-        match read_settings(input.field(|i| &i.settings).bytes()) {
+        match read_settings(input.settings().bytes()) {
             Ok(_) => Outcome::Ready,
             Err(words) => out.fail(Refusal::refused(words)),
         }
@@ -1291,25 +1382,24 @@ slot!(
 slot!(
     /// `open`: the instance, its host clock, and the first generation's tables and snapshot.
     Open, PlaneOpenIn, PlaneOpenOut, |instance, input, mut out| {
-        let open = input.field(|i| &i.open);
-        let shaping = match read_settings(open.field(|o| &o.settings).bytes()) {
+        let open = input.open();
+        let shaping = match read_settings(open.settings().bytes()) {
             Ok(shaping) => shaping,
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
-        let webhooks = match webhook::from_owned(input.field(|i| &i.owned).bytes()) {
+        let webhooks = match webhook::from_owned(input.owned().bytes()) {
             Ok(webhooks) => webhooks,
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
         let door = LlmDoor {
             generations: Generations::new(),
-            shapings: Mutex::new(BTreeMap::from([(open.generation, Arc::new(shaping))])),
-            units: Mutex::new(HashMap::new()),
-            tickets: Mutex::new(HashMap::new()),
+            shapings: Mutex::new(BTreeMap::from([(open.generation(), Arc::new(shaping))])),
+            units: Mutex::new(UnitBook::default()),
             services: open.host().and_then(|h| Services::of(&h)),
             webhooks,
         };
         let snapshot = snapshot(door.webhooks);
-        out.publish(|o| &o.snapshot, &door.generations, open.generation, &snapshot);
+        out.publish(|o| &o.snapshot, &door.generations, open.generation(), &snapshot);
         instance.open(door);
         Outcome::Ready
     }
@@ -1321,13 +1411,13 @@ slot!(
         let Some(door) = instance.get() else {
             return Outcome::Failed;
         };
-        let shaping = match read_settings(input.field(|i| &i.settings).bytes()) {
+        let shaping = match read_settings(input.settings().bytes()) {
             Ok(shaping) => shaping,
             Err(words) => return out.fail(Refusal::refused(words)),
         };
-        guard(&door.shapings).insert(input.generation, Arc::new(shaping));
+        guard(&door.shapings).insert(input.generation(), Arc::new(shaping));
         let snapshot = snapshot(door.webhooks);
-        out.publish(|o| &o.snapshot, &door.generations, input.generation, &snapshot);
+        out.publish(|o| &o.snapshot, &door.generations, input.generation(), &snapshot);
         Outcome::Ready
     }
 );
@@ -1337,8 +1427,8 @@ slot!(
     /// keeps its own hold until it ends.
     Retire, GenIn, OutHead, |instance, input, _| {
         if let Some(door) = instance.get() {
-            door.generations.retire(input.generation);
-            guard(&door.shapings).remove(&input.generation);
+            door.generations.retire(input.generation());
+            guard(&door.shapings).remove(&input.generation());
         }
         Outcome::Ready
     }
@@ -1362,11 +1452,9 @@ slot!(
     Cancel, PlaneCancelIn, PlaneCancelOut, |instance, input, mut out| {
         let mut partial = false;
         if let Some(door) = instance.get() {
-            if let Some(unit) = guard(&door.tickets).remove(&input.cancel.ticket) {
-                partial = guard(&door.units)
-                    .remove(&unit)
-                    .is_some_and(|u| u.reply.as_ref().is_some_and(Reply::partial));
-            }
+            partial = guard(&door.units)
+                .cancel(input.cancel().ticket())
+                .is_some_and(|u| u.reply.as_ref().is_some_and(Reply::partial));
         }
         // A caller that left a usable part of the answer leaves a PARTIAL unit: the units the
         // answer stated so far bill (1.5.5's drop arm; a same-dialect whole body states none while
@@ -1400,27 +1488,26 @@ slot!(
         let Some(shaping) = door.current() else {
             return Outcome::Failed;
         };
-        let given = input.get();
         let mut unit = UnitState::new(shaping);
         unit.caller = input
             .fields()
             .iter()
             .map(|f| {
                 (
-                    f.field(|f| &f.name).bytes().to_vec(),
-                    f.field(|f| &f.value).bytes().to_vec(),
+                    f.name().bytes().to_vec(),
+                    f.value().bytes().to_vec(),
                 )
             })
             .collect();
-        if given.claim == CLAIM_PROBE {
+        if input.claim() == CLAIM_PROBE {
             unit.probe = true;
             out.set(|o| &o.principal_need, PRINCIPAL_NONE);
-            guard(&door.units).insert(given.unit, unit);
+            guard(&door.units).hold(input.unit(), unit);
             return Outcome::Ready;
         }
-        let method = String::from_utf8_lossy(input.field(|i| &i.method).bytes()).into_owned();
-        let target = String::from_utf8_lossy(input.field(|i| &i.target).bytes()).into_owned();
-        let body = input.field(|i| &i.body).bytes();
+        let method = String::from_utf8_lossy(input.method().bytes()).into_owned();
+        let target = String::from_utf8_lossy(input.target().bytes()).into_owned();
+        let body = input.body().bytes();
         // A WEBHOOK DELIVERY the `webhooks:` section switched on: the plane answers it itself, after
         // the kernel verified its sender (the line's auth); a body that does not read is refused.
         let path = target.split_once('?').map_or(target.as_str(), |(p, _)| p);
@@ -1433,7 +1520,7 @@ slot!(
                     out.local();
                     unit.local = true;
                     unit.ack = Some(webhook::ack(&event));
-                    guard(&door.units).insert(given.unit, unit);
+                    guard(&door.units).hold(input.unit(), unit);
                     Outcome::Ready
                 }
                 Err(message) => {
@@ -1443,11 +1530,12 @@ slot!(
                         envelope: RESPONSES,
                         kind: busbar_contract::protocol::KIND_INVALID_REQUEST,
                         message: message.into(),
+                        entry: None,
                     };
                     out.set(|o| &o.refusal, declined.why.code());
                     out.set(|o| &o.refusal_status, u32::from(declined.status));
                     unit.declined = Some(declined);
-                    guard(&door.units).insert(given.unit, unit);
+                    guard(&door.units).hold(input.unit(), unit);
                     out.fail(Refusal::bare())
                 }
             };
@@ -1477,7 +1565,7 @@ slot!(
                     }
                 }
                 unit.arrived = Some(arrived);
-                guard(&door.units).insert(given.unit, unit);
+                guard(&door.units).hold(input.unit(), unit);
                 Outcome::Ready
             }
             Err(declined) => {
@@ -1488,8 +1576,18 @@ slot!(
                 if declined.why.unsupported_action() {
                     out.set(|o| &o.refusal_flags, REFUSED_UNSUPPORTED_ACTION);
                 }
+                // A REFUSAL ABOUT AN ENTRY (abi/plane "A refused arrival", rule 6): it names the
+                // entry, its op class and its dialect, so the kernel holds it behind the caller's
+                // identity and grant over that entry (1.5.5 judged the ad-hoc route's governance
+                // before it answered a misnamed provider).
+                if let Some(entry) = &declined.entry {
+                    out.set(|o| &o.op_class, op_class_of(busbar_contract::operation::OpVerb::CHAT));
+                    out.set(|o| &o.dialect, dialect_index(declined.envelope));
+                    out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
+                    out.route(ROUTE_DIRECT, entry);
+                }
                 unit.declined = Some(declined);
-                guard(&door.units).insert(given.unit, unit);
+                guard(&door.units).hold(input.unit(), unit);
                 out.fail(Refusal::bare())
             }
         }
@@ -1503,38 +1601,37 @@ slot!(
         let Some(door) = instance.get() else {
             return Outcome::Failed;
         };
-        let given = input.get();
-        let key = given.unit;
+        let key = input.unit();
         // A piece whose flags the contract refuses (a cut or a final mark off the far end's own
         // piece) is a FAULT before anything of the unit moves.
-        if check_piece_in(given.from, given.flags).is_err() {
+        if check_piece_in(input.from(), input.flags()).is_err() {
             return Outcome::Fault;
         }
         // The unit leaves the map for the call, so its answer is computed with no lock held.
-        let Some(mut unit) = guard(&door.units).remove(&key) else {
+        let Some(mut unit) = guard(&door.units).take(key) else {
             return Outcome::Fault;
         };
-        guard(&door.tickets).insert(given.head.ticket, key);
+        guard(&door.units).bind(input.head().ticket(), key);
         if unit.pending.is_none() {
-            if given.from == FROM_FAR_END && given.flags & PIECE_FINAL != 0 {
+            if input.from() == FROM_FAR_END && input.flags() & PIECE_FINAL != 0 {
                 unit.final_answer = true;
             }
             let piece = PieceIn {
-                last: given.flags & PIECE_LAST != 0,
-                cut: given.from == FROM_FAR_END && given.flags & PIECE_CUT != 0,
-                status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
+                last: input.flags() & PIECE_LAST != 0,
+                cut: input.from() == FROM_FAR_END && input.flags() & PIECE_CUT != 0,
+                status: (input.flags() & PIECE_HAS_STATUS != 0).then_some(input.status_code()),
                 fields: input
                     .head_fields()
                     .iter()
-                    .map(|f| (f.field(|f| &f.name).bytes(), f.field(|f| &f.value).bytes()))
+                    .map(|f| (f.name().bytes(), f.value().bytes()))
                     .collect(),
-                bytes: input.field(|i| &i.bytes).bytes(),
-                member: input.field(|i| &i.member).bytes(),
-                pool: input.field(|i| &i.pool).bytes(),
-                passthrough: given.passthrough != 0,
-                clock: if given.from == FROM_CALLER { None } else { door.clock() },
+                bytes: input.bytes().bytes(),
+                member: input.member().bytes(),
+                pool: input.pool().bytes(),
+                passthrough: input.passthrough() != 0,
+                clock: if input.from() == FROM_CALLER { None } else { door.clock() },
             };
-            let mut answer = answer(&door.host(), &mut unit, given.from, &piece);
+            let mut answer = answer(&door.host(), &mut unit, input.from(), &piece);
             fee_unit(&mut unit, &mut answer);
             unit.pending = Some(Pending {
                 answer,
@@ -1544,9 +1641,9 @@ slot!(
         }
         let (outcome, ended) = deliver(&mut unit, input, &mut out);
         if ended {
-            guard(&door.tickets).remove(&given.head.ticket);
+            guard(&door.units).ends(key);
         } else {
-            guard(&door.units).insert(key, unit);
+            guard(&door.units).hold(key, unit);
         }
         outcome
     }
@@ -1559,20 +1656,19 @@ slot!(
         let Some(door) = instance.get() else {
             return Outcome::Failed;
         };
-        let given = input.get();
-        let held = guard(&door.units).remove(&given.unit);
+        let held = guard(&door.units).take(input.unit());
         let host = door.host();
         let rendered = match &held {
             Some(UnitState {
                 declined: Some(d), ..
-            }) if given.plane_code != 0 => refuse::declined(&host, d),
+            }) if input.plane_code() != 0 => refuse::declined(&host, d),
             _ => {
                 let arrived = held.as_ref().and_then(|u| u.arrived.as_ref());
                 let envelope = match arrived {
                     Some(a) => a.dialect,
                     None => {
                         let target =
-                            String::from_utf8_lossy(input.field(|i| &i.target).bytes()).into_owned();
+                            String::from_utf8_lossy(input.target().bytes()).into_owned();
                         let path = target.split_once('?').map_or(target.as_str(), |(p, _)| p);
                         envelope_for(path)
                     }
@@ -1581,7 +1677,7 @@ slot!(
                 // sentence, which names the model the caller asked for; every other refusal reads
                 // the kernel's own text.
                 let text = match arrived {
-                    Some(a) if given.reason == crate::refusal::reason::NO_DESTINATION => {
+                    Some(a) if input.reason() == crate::refusal::reason::NO_DESTINATION => {
                         refuse::model_not_found(
                             &a.model,
                             a.path_model
@@ -1589,19 +1685,19 @@ slot!(
                                 .and_then(|p| p.model_not_found_message.as_deref()),
                         )
                     }
-                    _ => String::from_utf8_lossy(input.field(|i| &i.text).bytes()).into_owned(),
+                    _ => String::from_utf8_lossy(input.text().bytes()).into_owned(),
                 };
-                let status = u16::try_from(given.status).unwrap_or(500);
-                if given.cause == REFUSAL_GATE {
+                let status = u16::try_from(input.status()).unwrap_or(500);
+                if input.cause() == REFUSAL_GATE {
                     refuse::gate_refusal(&host, envelope, status, &text)
                 } else {
                     refuse::kernel_refusal(
                         &host,
                         envelope,
-                        given.reason,
+                        input.reason(),
                         status,
                         &text,
-                        given.retry_after_s,
+                        input.retry_after_s(),
                     )
                 }
             }
@@ -1628,10 +1724,12 @@ slot!(
         if short {
             // The driver re-calls once with the buffers this named: the unit stays for it.
             if let Some(unit) = held {
-                guard(&door.units).insert(given.unit, unit);
+                guard(&door.units).hold(input.unit(), unit);
             }
             Outcome::Failed
         } else {
+            // The unit ends here: nothing of it stays, the ticket its attempt came on included.
+            guard(&door.units).ends(input.unit());
             Outcome::Ready
         }
     }
@@ -1663,13 +1761,12 @@ slot!(
         let Some(door) = instance.get() else {
             return Outcome::Failed;
         };
-        let given = input.get();
         let mut units = guard(&door.units);
         // A unit that never arrived (or arrived declined, or as a probe) has nothing to project.
-        let Some(arrived) = units.get_mut(&given.unit).and_then(|u| u.arrived.as_mut()) else {
+        let Some(arrived) = units.get_mut(input.unit()).and_then(|u| u.arrived.as_mut()) else {
             return Outcome::Refused;
         };
-        let rewrite = input.field(|i| &i.rewrite).bytes();
+        let rewrite = input.rewrite().bytes();
         let rewritten = if rewrite.is_empty() {
             None
         } else {
@@ -1740,6 +1837,56 @@ slot!(
     }
 );
 
+slot!(
+    /// `catalog`: a list-models catalog route's listing of the names the kernel hands it, in the
+    /// envelope of the dialect the request names (`exchange::catalog`). Pure, and no unit exists.
+    CatalogSlot, CatalogIn, CatalogOut, |_instance, input, mut out| {
+        let target = String::from_utf8_lossy(input.target().bytes()).into_owned();
+        let path = target.split_once('?').map_or(target.as_str(), |(p, _)| p);
+        let head: Vec<(Vec<u8>, Vec<u8>)> = input
+            .fields()
+            .iter()
+            .map(|f| {
+                (
+                    f.name().bytes().to_vec(),
+                    f.value().bytes().to_vec(),
+                )
+            })
+            .collect();
+        let names: Vec<String> = input
+            .names()
+            .iter()
+            .map(|n| String::from_utf8_lossy(n.bytes()).into_owned())
+            .collect();
+        let rendered = crate::exchange::catalog::render_listing(path, &head, &names);
+        let (mut reply, mut fields, mut arena) =
+            (input.reply_buf(), input.fields_buf(), input.arena_buf());
+        reply.extend(&rendered.body);
+        for (name, value) in &rendered.fields {
+            fields.push(OutField {
+                name: arena.span(name.as_bytes()),
+                value: arena.span(value),
+            });
+        }
+        let short = !(reply.fits() && fields.fits() && arena.fits());
+        let (rw, rnd) = reply.settle(short);
+        let (fw, fnd) = fields.settle(short);
+        let (aw, and) = arena.settle(short);
+        out.set(|o| &o.reply_written, rw as u64);
+        out.set(|o| &o.reply_needed, rnd as u64);
+        out.set(|o| &o.fields_written, fw as u32);
+        out.set(|o| &o.fields_needed, fnd as u32);
+        out.set(|o| &o.arena_written, aw as u64);
+        out.set(|o| &o.arena_needed, and as u64);
+        out.set(|o| &o.status, u32::from(rendered.status));
+        if short {
+            Outcome::Failed
+        } else {
+            Outcome::Ready
+        }
+    }
+);
+
 busbar_contract::plugin_door! {
     ops: busbar_contract::abi::plane::Ops,
     statement: STATEMENT,
@@ -1751,5 +1898,6 @@ busbar_contract::plugin_door! {
     kind_ops: {
         arrive: Safe<Arrive>, on_piece: Safe<OnPiece>, refusal: Safe<RefusalSlot>,
         serve: Safe<Serve>, hydrate: Safe<Hydrate>, start: Safe<Start>, project: Safe<Project>,
+        catalog: Safe<CatalogSlot>,
     },
 }

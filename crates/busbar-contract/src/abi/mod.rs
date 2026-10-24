@@ -2,40 +2,29 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! **THE busbar plugin interface** — the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, the plugin ABI:
-//! plugins speak the memory ABI only) over the shared mechanism, one folder per kind, and the HOT
-//! lane's shapes, which the legacy planes' host still names until it is deleted.
+//! plugins speak the memory ABI only) over the shared mechanism, one folder per kind.
 //!
 //! * [`mechanism`] and `abi/<kind>/` — the ONE memory ABI: one door, one call shape, one
 //!   lifecycle, and each kind's own operations, shapes and version.
-//! * [`hot`] — the HOT lane (was `busbar-plane-abi`). A `#[repr(C)]` fn-pointer vtable no plugin
-//!   image loads through any more: every plane and transport loads through its door (row 84). Its
-//!   shapes stay while the legacy planes' host names them, and go with it.
-//! * The COLD/JSON lane, which THE DESIGN's plugin ABI abolished, is deleted, with the handshake
-//!   (`busbar_abi`, `busbar_plugin_kind`) the HOT lane shared with it. A 1.5.5 JSON-contract plugin
-//!   is refused at boot naming the rebuild against the 1.6.0 SDK (the plugin ABI's "no legacy
-//!   loading").
+//! * The HOT lane (`abi::hot`, a `#[repr(C)]` fn-pointer vtable) and the COLD/JSON lane, which THE
+//!   DESIGN's plugin ABI abolished, are deleted (status row 84), with the handshake (`busbar_abi`,
+//!   `busbar_plugin_kind`) they shared. A 1.5.5 JSON-contract plugin is refused at boot naming the
+//!   rebuild against the 1.6.0 SDK (the plugin ABI's "no legacy loading").
 //!
 //! # The shared root (this module)
 //!
-//! The HOT lane obeys this cross-boundary discipline, hoisted here so there is one definition:
+//! The cross-boundary discipline, hoisted here so there is one definition:
 //!
 //! 1. **The airlock preamble** ([`AbiPreamble`], [`check_preamble`]) — a `#[repr(C)]` header FROZEN
 //!    FOR ALL TIME. Its three fields (`magic`, `abi_major`, `abi_minor`) may NEVER be reordered,
 //!    resized, or removed. A major mismatch or a magic mismatch is fail-closed (the seam refuses),
 //!    so an incompatible peer can never be reached across the boundary.
-//! 2. **Sized-struct / append-only discipline** — every cross-boundary POD struct LEADS with a
-//!    `size`/`version` and a receiver reads a field only when `size` proves the sender wrote it (see
+//! 2. **Sized-struct / append-only discipline** — a cross-boundary POD struct that LEADS with a
+//!    `size` is read field by field only where `size` proves the sender wrote it (see
 //!    [`field_present`] / [`read_sized_field`]). New fields may ONLY be appended; a peer that
 //!    predates a field simply never reads it. Reorder/resize/insert = a MAJOR airlock bump.
 //! 3. **The out-param write discipline** ([`write_out`]) — the init-only-on-Ok rule a callee uses to
 //!    publish a large POD result into a caller slot without a `Vec` return.
-//!
-//! # Neutrality
-//!
-//! The HOT lane's capability surface was DERIVED from a primitive taxonomy, not ENUMERATED from any
-//! one protocol plane: no type, function, variant, or carrier name under [`hot`] may contain a
-//! protocol/role noun. A CI witness (`scripts/plane-abi-neutrality.sh`) greps the [`hot`] tree for
-//! the banned set and asserts zero.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -84,8 +73,102 @@ macro_rules! slot_table {
     };
 }
 
+/// THE LIST FIELDS OF ONE ABI STRUCT, written and read through methods (status row 194): a list
+/// is a pointer and a length, which these set together, to items that live for the program. The
+/// fields themselves stay pub until row 194 makes them private (#1471); these methods are the
+/// surface a plugin moves to first. Per list `name, name_len: T => name_ptr, with_name,
+/// with_raw_name;` it states, in the struct's `impl`:
+///
+/// * `with_name(&'static [T])` — the safe setter, `const`: the pointer and the length together;
+/// * `with_raw_name(ptr, len)` — `unsafe`: a list stated unchecked, as a host's own test states
+///   what a foreign plugin could, for the host's checks to judge;
+/// * `name()` — the items, `unsafe` while the fields are pub (safe code could state any pointer by
+///   hand); #1471 makes the fields private and this reader safe;
+/// * `name_ptr()` / `name_len()` — the raw pointer and length, which a host reads a foreign
+///   struct by, under its own checks.
+macro_rules! abi_lists {
+    ($($list:ident, $len:ident: $t:ty => $ptr:ident, $with:ident, $raw:ident;)+) => {$(
+        #[doc = concat!(
+            "Set `", stringify!($list), "` to `items`, which live for the program: its pointer ",
+            "and its length together (status row 194)."
+        )]
+        #[must_use]
+        pub const fn $with(mut self, items: &'static [$t]) -> Self {
+            self.$list = items.as_ptr();
+            self.$len = items.len();
+            self
+        }
+
+        #[doc = concat!(
+            "Set `", stringify!($list), "` to `len` items at `ptr`, unchecked: a host's own test ",
+            "stating a list as a foreign plugin could, for the host's checks to judge."
+        )]
+        ///
+        /// # Safety
+        ///
+        #[doc = concat!(
+            "Every read of the list as items finds `len` initialised items at `ptr`, alive and ",
+            "unwritten for as long as that read. A list nothing reads that way (one only a host's ",
+            "checks read, through [`Self::", stringify!($ptr), "`]) may be anything."
+        )]
+        #[must_use]
+        pub const unsafe fn $raw(mut self, ptr: *const $t, len: usize) -> Self {
+            self.$list = ptr;
+            self.$len = len;
+            self
+        }
+
+        #[doc = concat!(
+            "The `", stringify!($list), "` items: a list set by [`Self::", stringify!($with),
+            "`] lives for the program."
+        )]
+        ///
+        /// # Safety
+        ///
+        #[doc = concat!(
+            "The list's pointer and length name `len` initialised items, alive and unwritten for ",
+            "the borrow of `self`: true of a list set by [`Self::", stringify!($with), "`] (items ",
+            "that live for the program) and not since written through the pub pointer and length ",
+            "fields, which this tree's code honours. #1471 makes those fields private and this ",
+            "reader safe; a plugin calls it as `unsafe { x.", stringify!($list), "() }` under ",
+            "`#[allow(unused_unsafe)]`, and the same line compiles before and after."
+        )]
+        #[must_use]
+        pub unsafe fn $list(&self) -> &[$t] {
+            // SAFETY: the caller's contract.
+            unsafe { crate::abi::abi_slice(self.$list, self.$len) }
+        }
+
+        #[doc = concat!("The raw pointer of `", stringify!($list), "` (NULL = none).")]
+        #[must_use]
+        pub const fn $ptr(&self) -> *const $t {
+            self.$list
+        }
+
+        #[doc = concat!("How many items `", stringify!($list), "` states.")]
+        #[must_use]
+        pub const fn $len(&self) -> usize {
+            self.$len
+        }
+    )+};
+}
+
+/// `len` items at `p`, or none for a NULL `p` or a zero `len`: the one place the lists and strings
+/// of the ABI are read as slices by their `unsafe` readers (status row 194).
+///
+/// # Safety
+///
+/// A non-NULL `p` with a non-zero `len` names `len` initialised, aligned `T`s, alive and unwritten
+/// for `'a`.
+pub(crate) unsafe fn abi_slice<'a, T>(p: *const T, len: usize) -> &'a [T] {
+    if p.is_null() || len == 0 {
+        return &[];
+    }
+    // SAFETY: the caller's contract.
+    unsafe { std::slice::from_raw_parts(p, len) }
+}
+
 pub mod host;
-pub mod hot;
 pub mod sdk;
 
 // THE ONE MEMORY ABI (the design's locked plugin ABI: one place for every shape): the shared
@@ -96,14 +179,14 @@ pub mod hook;
 pub mod mechanism;
 pub mod plane;
 pub mod secret;
-/// The shapes the memory ABI's connection table carries that the condemned HOT lane named first.
+/// The shapes the memory ABI's connection table carries that the retired HOT lane named first.
 pub mod shared;
 pub mod store;
 pub mod transport;
 
-// The two `#[macro_export]` sized-read macros, named at this module's path too, so a caller writes
+// The `#[macro_export]` sized-read macro, named at this module's path too, so a caller writes
 // `busbar_contract::abi::read_sized_field!` exactly where it wrote `busbar_plugin::read_sized_field!`.
-pub use crate::{host_slot, read_sized_field};
+pub use crate::read_sized_field;
 
 // THE KERNEL SEAL'S ONE CROSSING (#65, ARCHITECT ruling 2026-10-14): declared here, DEFINED only
 // by `busbar-kernel` (`crates/busbar-kernel/src/seal.rs`). It lives in `abi` because calling it is
@@ -127,7 +210,7 @@ pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::An
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 1. The airlock preamble — FROZEN FOR ALL TIME. Shared by both lanes.
+// 1. The airlock preamble — FROZEN FOR ALL TIME.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// The magic value every plugin-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the
@@ -327,7 +410,7 @@ pub fn check_preamble(peer: &AbiPreamble) -> Result<(), PreambleError> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 2. Sized-struct discipline — the append-only field-read guard. Shared by both lanes.
+// 2. Sized-struct discipline — the append-only field-read guard.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// True iff a sender who advertised `advertised_size` bytes definitely WROTE the field that ends at
@@ -357,9 +440,8 @@ pub const fn field_present(advertised_size: u32, field_end: usize) -> bool {
 ///
 /// It does NOT rescue a peer that stamps an over-large `size` over a struct SHORTER than this
 /// build's — no clamp can, because nothing on this side can measure the peer's real extent. That
-/// residual is why the analogous claim on the host vtable is REFUSED outright rather than clamped
-/// (see `hot::host::PlaneHostVtable::check`): a wrong POD field is bad data, a wrong vtable slot is a
-/// fn-pointer this side then CALLS.
+/// residual is why the analogous claim on a slot table is REFUSED outright rather than clamped: a
+/// wrong POD field is bad data, a wrong slot is a fn-pointer this side then CALLS.
 #[inline]
 #[must_use]
 pub const fn honoured_size(advertised_size: u32, struct_size: usize) -> u32 {
@@ -402,10 +484,18 @@ pub const fn pointee_size<T>(_p: *const T) -> usize {
 /// the guard takes a pointer.
 ///
 /// ```
-/// use busbar_contract::abi::{read_sized_field, hot::Facts};
-/// let g = Facts::new(10, 100, 1, 0, 0, b"pool");
-/// // `tokens` lives within every non-truncated `Facts`, so it reads as `Some`.
-/// assert_eq!(read_sized_field!(&*g, g.size, Facts, tokens), Some(10));
+/// use busbar_contract::abi::read_sized_field;
+/// #[repr(C)]
+/// struct Shape {
+///     size: u32,
+///     tokens: u64,
+/// }
+/// let whole = Shape { size: core::mem::size_of::<Shape>() as u32, tokens: 10 };
+/// // `tokens` lies within a whole `Shape`, so it reads as `Some`.
+/// assert_eq!(read_sized_field!(&whole, whole.size, Shape, tokens), Some(10));
+/// // A sender whose `size` stops before `tokens` never wrote it: `None`.
+/// let short = Shape { size: 4, tokens: 10 };
+/// assert_eq!(read_sized_field!(&short, short.size, Shape, tokens), None);
 /// ```
 #[macro_export]
 macro_rules! read_sized_field {
@@ -439,10 +529,10 @@ macro_rules! read_sized_field {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// 3. The out-param write discipline — init-only-on-Ok. Shared by both lanes.
+// 3. The out-param write discipline — init-only-on-Ok.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// Write `value` into a caller-provided `&mut MaybeUninit<T>` out-slot, the ONLY way a hot host-call
+/// Write `value` into a caller-provided `&mut MaybeUninit<T>` out-slot, the ONLY way a host call
 /// returns a large POD without a `Vec`. Mirrors `plugin-sdk/boundary.rs`: the callee fully writes the
 /// slot INSIDE its `catch_unwind` and marks it initialized ONLY on the Ok path — so a caller that
 /// sees a non-`Ok` status must treat the slot as still uninitialized and never read it. A null `out`
@@ -461,77 +551,6 @@ pub unsafe fn write_out<T>(out: *mut MaybeUninit<T>, value: T) {
     // SAFETY: the caller guarantees `out` is a writable, aligned `MaybeUninit<T>` per the contract.
     unsafe { (*out).write(value) };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// Test-only instrument: a per-thread counting allocator, THE ALLOC-GATE PROOF.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// A `System` wrapper that counts every allocation THIS THREAD makes, for THIS CRATE'S OWN TESTS
-/// only. Ported from the deleted `plane-abi-spike` (`git show 527bdbf96^:crates/plane-abi-spike/src/lib.rs`)
-/// verbatim in idiom (see also `busbar-llm`'s `CountingJemalloc` /
-/// `engine/tests/alloc_gate_tests.rs`, the same "counting allocator, exact count asserted" pattern
-/// applied to jemalloc instead of `System`): a `#[global_allocator]` in a LIBRARY is inherited by
-/// every binary that links it, so this is declared `#[cfg(test)]` ONLY — a dependent never gets it
-/// handed to it uninvited.
-///
-/// PER-THREAD, not process-global: `cargo test` runs this crate's tests concurrently, so a single
-/// shared atomic would let another test thread's allocations inflate the measured thread's count and
-/// flap an exact-equality gate under load. A `const`-initialized thread-local isolates each thread's
-/// count — no lazy init, no destructor, no heap — so `.with()` is a plain TLS read/write, safe to call
-/// from inside `GlobalAlloc` (`System.*` never re-enters this allocator).
-#[cfg(test)]
-pub(crate) struct CountingAlloc;
-
-#[cfg(test)]
-thread_local! {
-    static ALLOC_COUNT: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-impl CountingAlloc {
-    /// Allocations observed on THIS thread since process start (or last [`reset`](Self::reset)).
-    pub(crate) fn count() -> u64 {
-        ALLOC_COUNT.with(|c| c.get())
-    }
-    /// Reset this thread's counter to zero and return the previous value.
-    pub(crate) fn reset() -> u64 {
-        ALLOC_COUNT.with(|c| c.replace(0))
-    }
-}
-
-#[cfg(test)]
-// SAFETY: every method forwards straight to `System`, only adding a per-thread counter increment
-// before the call — it changes no allocation behaviour, only observes it.
-unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
-    #[inline]
-    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-        ALLOC_COUNT.with(|c| c.set(c.get() + 1));
-        // SAFETY: forwarded verbatim; the caller's obligations on `layout` are unchanged.
-        unsafe { std::alloc::System.alloc(layout) }
-    }
-    #[inline]
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
-        // SAFETY: forwarded verbatim; the caller's obligations on `ptr`/`layout` are unchanged.
-        unsafe { std::alloc::System.dealloc(ptr, layout) }
-    }
-    #[inline]
-    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
-        ALLOC_COUNT.with(|c| c.set(c.get() + 1));
-        // SAFETY: forwarded verbatim; the caller's obligations on `layout` are unchanged.
-        unsafe { std::alloc::System.alloc_zeroed(layout) }
-    }
-    #[inline]
-    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
-        ALLOC_COUNT.with(|c| c.set(c.get() + 1));
-        // SAFETY: forwarded verbatim; the caller's obligations on `ptr`/`layout`/`new_size` are
-        // unchanged.
-        unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
-    }
-}
-
-#[cfg(test)]
-#[global_allocator]
-static ALLOC: CountingAlloc = CountingAlloc;
 
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]

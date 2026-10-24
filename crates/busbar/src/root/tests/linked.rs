@@ -123,7 +123,7 @@ fn the_host_series_catalog_holds_every_series_the_host_defines() {
     let sources = [
         "busbar-kernel/src/snapshot/mod.rs",
         "busbar-kernel/src/telemetry.rs",
-        "busbar-kernel/src/proxy/proxy_vocab.rs",
+        "busbar-kernel/src/hooks/taps.rs",
     ];
     let mut defined = Vec::new();
     for file in sources {
@@ -368,6 +368,7 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
     };
     let hooks = busbar_kernel::plane::registry::PlaneHooks {
         wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
+        provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,
@@ -428,8 +429,8 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
 /// row. The legacy row's engine (its fallback flag, the runtime it builds, the view, the provider
 /// merge, `on_swap`) yields with the plane axis: the fallback flag is the door's own tail's
 /// (`TAIL_FALLBACK`), and the core's readers walk the kernel's own tables
-/// (`busbar_kernel::plane_host::ConfigTables`, pinned equal to the engine's view on the same config
-/// by busbar-llm's `view_parity_tests`). RED while the door's row carried the legacy engine: its
+/// (`busbar_kernel::plane_driver::route_tables::ConfigTables`, pinned equal to the engine's view on the same config
+/// by the retired engine crate's `view_parity_tests`). RED while the door's row carried the legacy engine: its
 /// `build_runtime` and `viewer` were the legacy row's, so the core read the engine's tables.
 #[test]
 fn a_door_taking_the_fallback_planes_key_serves_it_with_its_own_row() {
@@ -440,7 +441,7 @@ fn a_door_taking_the_fallback_planes_key_serves_it_with_its_own_row() {
             ..base.declaration
         },
         build_runtime: Some(|_, _| Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>),
-        viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
+        viewer: Some(|_| &busbar_kernel::plane_driver::route_tables::EMPTY_VIEW),
         ..*base
     }));
     let door: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {

@@ -59,11 +59,10 @@ pub enum Author {
         /// The policy epoch the configuration that produced it belonged to.
         policy_epoch: u64,
     },
-    /// The signed amendment verb. Effective from an instant the operator named, which is in the
-    /// past — that is what makes it an amendment rather than a configuration write.
+    /// The amendment verb. Effective from an instant the operator named, which is in the past —
+    /// that is what makes it an amendment rather than a configuration write. It names no signer:
+    /// no admin verb carries an operator signature (#77(9), BUSBAR-1.6.0.md l.2279).
     Amend {
-        /// Who signed it.
-        operator_fingerprint: String,
         /// The digest of the stated reason. The reason itself is free text and is not the record;
         /// its hash is, so the record is fixed-width and the text cannot be edited under it.
         reason_hash: [u8; 32],
@@ -221,15 +220,17 @@ impl History {
         let count = self.entries.partition_point(|e| e.seq <= at);
         HistoryView {
             entries: &self.entries[..count],
-            at,
+            at: Some(at),
         }
     }
 
-    /// The whole history as it stands. Equivalent to snapshotting at the head.
+    /// The whole history as it stands. Equivalent to snapshotting at the head, and naming no
+    /// snapshot at all for a history nothing has been appended to: [`History::head`] answers `None`
+    /// there for the reason it gives, and a view of it must not answer zero in its place.
     pub fn current(&self) -> HistoryView<'_> {
         HistoryView {
             entries: &self.entries,
-            at: self.head().unwrap_or(HistorySeq::OPENING),
+            at: self.head(),
         }
     }
 
@@ -261,7 +262,7 @@ impl History {
 #[derive(Clone, Copy, Debug)]
 pub struct HistoryView<'a> {
     entries: &'a [CardEntry],
-    at: HistorySeq,
+    at: Option<HistorySeq>,
 }
 
 impl HistoryView<'_> {
@@ -356,8 +357,9 @@ impl HistoryView<'_> {
         (stored_cut(until) || (from <= after && after < until)).then_some(until)
     }
 
-    /// The snapshot this view is.
-    pub fn seq(&self) -> HistorySeq {
+    /// The snapshot this view is: the seq it was taken at, or `None` for the current view of a
+    /// history nothing has been appended to, which has no snapshot to name.
+    pub fn seq(&self) -> Option<HistorySeq> {
         self.at
     }
 

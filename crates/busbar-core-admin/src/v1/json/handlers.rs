@@ -2071,26 +2071,19 @@ pub(crate) async fn put_auth(
                 )));
             }
         }
-        if req.admin_auth.is_empty() {
-            // FAIL-CLOSED: opening the admin API to the anonymous, full-authority dev posture is a
-            // config.yaml + restart decision (which fires the loud boot banner), NOT a thing the
-            // live admin API flips on. Applying `[]` here would swing the door open to the whole
-            // network on this one call — and the dry-run lock-out guard below can no longer catch it
-            // for us (an empty chain now truthfully earns THIS caller no full grant, so it would
-            // 409 with a misleading "would lock you out" message). Refuse it here with the honest
-            // reason and route the operator to the explicit, boot-warned opt-in.
+        let empty = req.admin_auth.is_empty();
+        if empty {
+            // PENDING OWNER (SECURITY), Q128 core-admin u19: 1.5.5 applied an empty chain live (the
+            // open, anonymous full-authority posture) with a warning, and so does this build until
+            // the owner signs the fail-closed refusal; signing it is `EMPTY_CHAIN_REFUSED_LIVE = true`.
+            if EMPTY_CHAIN_REFUSED_LIVE {
+                return Err(empty_chain_refusal(operator));
+            }
             diag_warn!(
                 ADMIN_AUTH_CHAIN_EMPTY,
-                "PUT /api/v1/admin/admin-auth REFUSED an EMPTY admin_auth chain: the open \
-                 (anonymous, full-authority) dev posture must be set in config.yaml and applied at \
-                 restart, not through the live admin API"
+                "PUT /api/v1/admin/admin-auth applied an EMPTY admin_auth chain — the admin API is \
+                 now the open (anonymous, full-authority) dev posture"
             );
-            return Err(AdminError::Validation(format!(
-                "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
-                 cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
-                 and restart to opt in. Otherwise name at least one admin module (e.g. \
-                 `{operator}`)"
-            )));
         }
         // Candidate app with the new chain, built off the FRESH post-lock snapshot — so a config
         // mutation that landed while this request was parsing cannot be clobbered by a candidate
@@ -2099,8 +2092,11 @@ pub(crate) async fn put_auth(
         next.config_version = current.config_version.wrapping_add(1);
         next.admin_chain = req.admin_auth;
         // DRY-RUN GUARD: this very request's credential, evaluated under the CANDIDATE chain.
-        let survives = busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
-            .contains(crate::v1::contract::Scope::Full);
+        // 1.5.5's guard read the open posture as full scope for the caller (an empty chain is
+        // `Open`), so an applied empty chain never answered "would lock you out".
+        let survives = empty
+            || busbar_kernel::auth::dry_run_admin_scope(&next, &headers)
+                .contains(crate::v1::contract::Scope::Full);
         if !survives {
             return Err(AdminError::Conflict(
                 "the new admin_auth chain would not grant THIS caller full scope — refusing to lock \
@@ -2311,13 +2307,16 @@ pub(crate) async fn reload_config(
                 &actor,
             );
             installed.record_version(&actor, "config.reload (from disk)");
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({ "reloaded": true, "config_version": installed.config_version }),
-                ),
-                installed.config_version,
-            )
+            let mut body = json!({ "reloaded": true, "config_version": installed.config_version });
+            // RESTART-TO-APPLY: the plane sections the reloaded config writes whose plane the
+            // process did not open at boot. Omitted when none, so the ordinary body is unchanged.
+            if let Some(note) =
+                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
+            {
+                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
+                body["note"] = json!(note);
+            }
+            with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
         Err(e) => {
             audit::AUDIT.record_by(
@@ -2415,11 +2414,11 @@ pub(crate) async fn restart(
 ///
 /// `config` is carried as a raw [`serde_json::Value`] and parsed by the SAME pre-pass boot runs
 /// (`busbar_kernel::config::deploy_from_deserializer`), exactly as [`ValidateConfigReq`] is: the
-/// plane sections (`tools`/`agents`/`streams`/…) are lifted before the frozen `deny_unknown_fields`
-/// `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused every plane section as
-/// an unknown field, so a config that boots could not be applied (ARCHITECT, FLIP-A2A: apply accepts
-/// exactly the boot config shape, plane sections included, and they flow to each plane's refresh
-/// with no restart).
+/// plane sections (each linked plane's declared section key) are lifted before the frozen
+/// `deny_unknown_fields` `DeployCfg` parses the remainder. A plain-derived `DeployCfg` here refused
+/// every plane section as an unknown field, so a config that boots could not be applied (ARCHITECT,
+/// agent-plane flip: apply accepts exactly the boot config shape, plane sections included, and they
+/// flow to each plane's refresh with no restart).
 #[derive(serde::Deserialize)]
 pub(crate) struct ApplyConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape), pre-lift.
@@ -2559,18 +2558,25 @@ pub(crate) async fn apply_config(
                 &actor,
             );
             installed.record_version(&actor, "config.apply (request body)");
-            with_config_etag(
-                ok_json(
-                    StatusCode::OK,
-                    &json!({
-                        "applied": true,
-                        "config_version": installed.config_version,
-                        "note": "live until the next reload/restart returns to disk truth; persist \
-                                 by updating config.yaml",
-                    }),
-                ),
-                installed.config_version,
-            )
+            let mut body = json!({
+                "applied": true,
+                "config_version": installed.config_version,
+                "note": "live until the next reload/restart returns to disk truth; persist \
+                         by updating config.yaml",
+            });
+            // RESTART-TO-APPLY: the plane sections the applied config writes whose plane the
+            // process did not open at boot, named and appended to the note. Omitted when none, so
+            // the ordinary body is unchanged.
+            if let Some(pending) =
+                super::named_map::restart_note(&[], &installed.planes_awaiting_restart)
+            {
+                body["reload_to_apply"] = json!(installed.planes_awaiting_restart);
+                body["note"] = json!(format!(
+                    "live until the next reload/restart returns to disk truth; persist by \
+                     updating config.yaml; {pending}"
+                ));
+            }
+            with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
         Err(e) => {
             audit::AUDIT.record_by(
@@ -4419,20 +4425,16 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
                     "A PAST UTC-day bucket start epoch (default: current bucket). The response is always ONE bucket; spend_micros is a read-time estimate; bill from the raw token split, never store spend_micros as a ledger charge",
                     false,
                 ),
-            // OWED: the `as_of` query parameter this endpoint now accepts is NOT listed here yet,
-            // and it must be. `openapi.json` is GENERATED from this table and the committed copy is
-            // byte-checked against it (`openapi_json_matches_committed_file`), so adding the row
-            // without regenerating hands the next reader a red test — and the regeneration cannot
-            // run today: the `openapi-schema` feature build is broken at HEAD for an unrelated
-            // reason (`PlaneDecl.openapi_schemas` is missing from the linked plane crates). The row
-            // to add, once that compiles again, is:
-            //
-            //   ("as_of", "A rate-card history sequence number to price against (default: the \
-            //    history as it stands). Each row is priced at the card in force at the row's own \
-            //    instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by \
-            //    asking for it again. A seq above the head is refused, never clamped to it. \
-            //    Distinct from the `as_of` FIELD in the response, which is the instant the read \
-            //    was taken", false),
+                (
+                    "as_of",
+                    "A rate-card history sequence number to price against (default: the \
+                     history as it stands). Each row is priced at the card in force at the row's own \
+                     instant UNDER THIS SNAPSHOT, so an invoice cut at a snapshot is re-derived by \
+                     asking for it again. A seq above the head is refused, never clamped to it. \
+                     Distinct from the `as_of` FIELD in the response, which is the instant the read \
+                     was taken",
+                    false,
+                ),
             ],
         ),
         (
@@ -5382,6 +5384,28 @@ pub(crate) async fn validate_config(
             .validate_config(deploy, req.providers)
             .await,
     )
+}
+
+/// Whether a live `PUT /api/v1/admin/admin-auth` REFUSES an empty chain (PENDING OWNER, SECURITY,
+/// Q128 core-admin u19). `false` is 1.5.5: the chain is applied (the open dev posture) with a warning.
+/// `true` is the fail-closed refusal proposed for the owner's signature: the open posture becomes a
+/// config.yaml + restart opt-in only. Flipping it is the whole change.
+const EMPTY_CHAIN_REFUSED_LIVE: bool = false;
+
+/// The fail-closed refusal of a live empty admin chain ([`EMPTY_CHAIN_REFUSED_LIVE`]).
+fn empty_chain_refusal(operator: impl std::fmt::Display) -> AdminError {
+    diag_warn!(
+        ADMIN_AUTH_CHAIN_EMPTY,
+        "PUT /api/v1/admin/admin-auth REFUSED an EMPTY admin_auth chain: the open \
+         (anonymous, full-authority) dev posture must be set in config.yaml and applied at \
+         restart, not through the live admin API"
+    );
+    AdminError::Validation(format!(
+        "an empty admin_auth chain is the open (anonymous, full-authority) dev posture and \
+         cannot be applied through the live admin API — set `admin_auth: []` in config.yaml \
+         and restart to opt in. Otherwise name at least one admin module (e.g. \
+         `{operator}`)"
+    ))
 }
 
 #[cfg(test)]

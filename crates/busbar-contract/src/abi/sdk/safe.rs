@@ -45,12 +45,15 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::size_of;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::abi::mechanism::call::{InHead, OutHead, Outcome, FLAG_RESUME};
 use crate::abi::mechanism::lifecycle::{slot, CancelIn, OpenIn, OpenOut, ValidateIn};
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::door::{AbiIn, AbiOut, Entry};
+use crate::abi::sdk::generation::Gen;
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::out::{holders_live, Holders, Kept, Out, Reason, Reporting};
 
@@ -63,16 +66,62 @@ type Parked = HashMap<Ticket, Box<dyn Any + Send + Sync>>;
 struct Head {
     tag: TypeId,
     parked: Mutex<Parked>,
+    /// How many tickets `parked` holds, written under its lock as the guard drops and read without
+    /// it, so an entry on an instance with nothing parked never takes the lock every worker shares.
+    parked_len: AtomicUsize,
     kept: Kept,
 }
 
+/// The parked table, locked; dropping it states the table's length in [`Head::parked_len`].
+struct ParkedGuard<'a> {
+    table: MutexGuard<'a, Parked>,
+    len: &'a AtomicUsize,
+}
+
+impl Deref for ParkedGuard<'_> {
+    type Target = Parked;
+    fn deref(&self) -> &Parked {
+        &self.table
+    }
+}
+
+impl DerefMut for ParkedGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Parked {
+        &mut self.table
+    }
+}
+
+impl Drop for ParkedGuard<'_> {
+    fn drop(&mut self) {
+        self.len.store(self.table.len(), Ordering::Release);
+    }
+}
+
 impl Head {
-    fn parked(&self) -> MutexGuard<'_, Parked> {
-        self.parked.lock().unwrap_or_else(PoisonError::into_inner)
+    fn new(tag: TypeId, parked: Parked) -> Self {
+        Self {
+            tag,
+            parked_len: AtomicUsize::new(parked.len()),
+            parked: Mutex::new(parked),
+            kept: Kept::default(),
+        }
     }
 
-    /// Drop what `ticket` parked, outside the lock.
+    fn parked(&self) -> ParkedGuard<'_> {
+        ParkedGuard {
+            table: self.parked.lock().unwrap_or_else(PoisonError::into_inner),
+            len: &self.parked_len,
+        }
+    }
+
+    /// Drop what `ticket` parked, outside the lock. Nothing parked on the instance means nothing
+    /// parked on `ticket`: the lock is not taken. What this ticket parked was parked by an earlier
+    /// entry of the same op, which the host's next entry on the ticket follows, so its length is
+    /// seen here.
     fn forget(&self, ticket: Ticket) {
+        if self.parked_len.load(Ordering::Acquire) == 0 {
+            return;
+        }
         let gone = self.parked().remove(&ticket);
         drop(gone);
     }
@@ -104,6 +153,10 @@ pub struct Instance<'call, T> {
     ticket: Ticket,
     resuming: bool,
     opened: &'call Cell<Option<Box<Tagged<T>>>>,
+    /// INVARIANT in `'call` (status row 194): an instance cannot be shortened to a local's
+    /// lifetime, so the generation borrow it lends ([`Instance::generation`]) holds only what the
+    /// instance state lives for.
+    _call: PhantomData<fn(&'call ()) -> &'call ()>,
 }
 
 impl<T> std::fmt::Debug for Instance<'_, T> {
@@ -148,11 +201,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             "Instance::open: the state is installed in `open` only"
         );
         self.opened.set(Some(Box::new(Tagged {
-            head: Head {
-                tag: TypeId::of::<T>(),
-                parked: Mutex::new(HashMap::new()),
-                kept: Kept::default(),
-            },
+            head: Head::new(TypeId::of::<T>(), HashMap::new()),
             state,
         })));
     }
@@ -173,13 +222,48 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             map.insert(self.ticket, Box::new(parked));
         }
         self.opened.set(Some(Box::new(Tagged {
-            head: Head {
-                tag: TypeId::of::<T>(),
-                parked: Mutex::new(map),
-                kept: Kept::default(),
-            },
+            head: Head::new(TypeId::of::<T>(), map),
             state,
         })));
+    }
+
+    /// THE GENERATION BORROW this op is lent (status row 194): a string or payload borrowed for
+    /// `'call` (the instance state [`Instance::get`] answers, or the program's memory) lives at
+    /// least until the instance's next refresh generation, so the runtime writers
+    /// ([`AbiStr::lent`](crate::abi::mechanism::call::AbiStr::lent),
+    /// [`Out::lent_str`](super::Out::lent_str)) take it as their proof. A local of the body, or a
+    /// string the host lent the call, is refused at compile time.
+    ///
+    /// ```
+    /// use busbar_contract::abi::mechanism::call::{AbiStr, OutHead, Outcome};
+    /// use busbar_contract::abi::sdk::{Instance, Out};
+    /// struct State {
+    ///     name: String,
+    /// }
+    /// fn answer(instance: Instance<'_, State>, mut out: Out<'_, OutHead>) -> Outcome {
+    ///     let gen = instance.generation();
+    ///     if let Some(state) = instance.get() {
+    ///         let _named: AbiStr = AbiStr::lent(&state.name, &gen);
+    ///         out.error_lent(&state.name, &gen);
+    ///     }
+    ///     Outcome::Failed
+    /// }
+    /// ```
+    #[must_use]
+    pub fn generation(&self) -> Gen<'call> {
+        // `close` frees the state its borrow names before the host reads the `out`; the
+        // trampoline clears what `close` named (above), and a `close` has no use for it.
+        debug_assert_ne!(
+            self.index,
+            slot::CLOSE,
+            "Instance::generation: close frees the state the borrow names"
+        );
+        // SAFETY: `'call` is the instance's lifetime, which nothing but the instance state
+        // (`get`) and the program's memory is borrowed for: the body's own locals and what the
+        // host lent the call live for shorter, unrelated lifetimes, and `Instance` is invariant in
+        // `'call`, so it is never shortened to theirs. The state lives until `close` answers
+        // READY, after every other call of the instance, so past its next refresh generation.
+        unsafe { Gen::assume() }
     }
 
     fn head(&self) -> Option<&'call Head> {
@@ -374,6 +458,7 @@ impl<S: SafeSlot> Entry for Safe<S> {
             ticket: call.ticket,
             resuming,
             opened: &opened,
+            _call: PhantomData,
         };
         // What the body reports is built here and handed to the instance when it returns.
         let reporting: Reporting = Cell::new(None);
@@ -456,10 +541,15 @@ impl<S: SafeSlot> Entry for Safe<S> {
                     // Not this state's box: leave it rather than free it as another type.
                     return Outcome::Fault;
                 }
+                // SAFETY: every `out` leads with its `OutHead` (`AbiOut`); `out` is live.
+                let head = unsafe { &mut *std::ptr::from_mut(out).cast::<OutHead>() };
+                // Whatever `close` named in its `out` may live in the box that goes now (a reason
+                // leased from the state's table, a string the generation borrow named): the host
+                // reads the `out` after this call, so it names none of it (status row 194).
+                head.error = crate::abi::mechanism::call::AbiStr::ABSENT;
+                head.extensions = crate::abi::mechanism::call::Blob::ABSENT;
                 if kept_report {
                     // What `close` reported lives in the box that goes now: it is not reported.
-                    // SAFETY: every `out` leads with its `OutHead` (`AbiOut`); `out` is live.
-                    let head = unsafe { &mut *std::ptr::from_mut(out).cast::<OutHead>() };
                     head.envelope.metrics = std::ptr::null();
                     head.envelope.metrics_len = 0;
                     head.envelope.diags = std::ptr::null();

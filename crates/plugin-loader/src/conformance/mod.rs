@@ -11,8 +11,8 @@
 //!
 //! ```ignore
 //! busbar_plugin_loader::conformance_suite! {
-//!     door: busbar_secret_env::door::door,          // the LINKED door (its logic crate's)
-//!     cdylib: "busbar_secret_env_plugin",           // the crate whose cdylib is the DROPPED door
+//!     door: <logic crate>::door::door,              // the LINKED door (its logic crate's)
+//!     cdylib: "<logic crate>_plugin",               // the crate whose cdylib is the DROPPED door
 //!     inputs: include_str!("conformance.json"),     // what the kind's script drives
 //! }
 //! ```
@@ -159,6 +159,10 @@ pub struct Subject {
     /// THE PER-FOLD NAMESPACE HOOKS (`conformance_suite! { …, namespace: (create, drop) }`):
     /// `create` makes a fold's namespace before its open, `drop` removes it after the fold.
     pub namespace: Option<(NamespaceHook, NamespaceHook)>,
+    /// THE PLUGIN'S DECLARES (`conformance_suite!` reads its declares file, [`Subject::declared_in`]):
+    /// what the suite judges a kind's script against when the plugin states a fact about itself
+    /// (a hook's `hook.orders`). `None`: nothing stated, every fact at its default.
+    pub declares: Option<crate::sign::Declares>,
 }
 
 /// A per-fold namespace hook: called with the fold's namespace (what [`FOLD`] was filled with) and
@@ -240,9 +244,40 @@ impl Subject {
             host: None,
             anchors: None,
             namespace: None,
+            declares: None,
         };
         s.apply_env();
         s
+    }
+
+    /// [`Subject::new`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows 159
+    /// and 194). #1469 makes `new` take the `MacroDoor` alone and keeps this name beside it, so
+    /// `Subject::of_macro(plugin::MACRO_DOOR, ..)` compiles before and after.
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_macro(
+        door: busbar_contract::abi::sdk::door::MacroDoor,
+        cdylib_crate: &'static str,
+        inputs: &str,
+    ) -> Self {
+        Self::new(door.door_fn(), cdylib_crate, inputs)
+    }
+
+    /// [`Subject::new`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows 159 and
+    /// 194): a `MacroDoor`'s, or a door a crate that exports its `door` function alone restates
+    /// (`unsafe { LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_loaded(
+        door: crate::dispatch::LoadedDoor,
+        cdylib_crate: &'static str,
+        inputs: &str,
+    ) -> Self {
+        Self::new(door.door, cdylib_crate, inputs)
     }
 
     /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
@@ -251,6 +286,41 @@ impl Subject {
     pub fn with_namespace(mut self, create: NamespaceHook, drop: NamespaceHook) -> Self {
         self.namespace = Some((create, drop));
         self
+    }
+
+    /// This subject's declares are `declares`: the facts a plugin states about itself, which its
+    /// kind's script judges it against.
+    #[must_use]
+    pub fn with_declares(mut self, declares: crate::sign::Declares) -> Self {
+        self.declares = Some(declares);
+        self
+    }
+
+    /// This subject's declares are the plugin crate's own declares file ([`declares_file`] of
+    /// `manifest_dir`), read through [`crate::sign::Declares::from_declares_json`]. A crate with no
+    /// declares file states nothing here (`the_declared_needs_are_the_statements` fails it).
+    ///
+    /// # Panics
+    /// The declares file does not read.
+    #[must_use]
+    pub fn declared_in(self, manifest_dir: &str) -> Self {
+        let Some(file) = declares_file(manifest_dir) else {
+            return self;
+        };
+        let text = std::fs::read(&file)
+            .unwrap_or_else(|e| panic!("{} does not read: {e}", file.display()));
+        let declares = crate::sign::Declares::from_declares_json(&text)
+            .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+        self.with_declares(declares)
+    }
+
+    /// Whether the plugin's hook may answer an order (`declares.hook.orders`; `true` when it
+    /// states none).
+    #[must_use]
+    pub fn hook_orders(&self) -> bool {
+        self.declares
+            .as_ref()
+            .is_none_or(crate::sign::Declares::hook_orders)
     }
 
     /// One fold's settings, tagged `tag` (its leg, or the RED arm that opens): [`FOLD`] filled with
@@ -348,15 +418,49 @@ impl Subject {
     /// ([`crate::https_conns::HttpsConns`]): each `{ "url", "cert_pem", "status", "body" }` is served
     /// at its exact URL, to a need trusting `cert_pem` (its `trust_from`), or to any need when
     /// `cert_pem` is `null` (a far end chaining to the public roots); every other URL is refused as
-    /// unreachable. `None` when the inputs name none (the instance is handed no table).
+    /// unreachable. `None` when the inputs name no far end (the instance is handed no table).
     ///
     /// # Panics
-    /// When a far end names no `url`.
+    /// When a far end names no `url`, or `inputs.unreached_schemes` is named (the plane suite's
+    /// alone: [`Subject::far_table`]).
     #[must_use]
     pub fn far_ends(&self) -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
+        assert!(
+            self.inputs.get("unreached_schemes").is_none(),
+            "conformance.json: unreached_schemes is read by the plane suite only, which asserts \
+             after its fold that no open touched one"
+        );
+        self.far_table()
+            .map(|t| t as Arc<dyn busbar_contract::conn::DeclaredConns>)
+    }
+
+    /// [`Subject::far_ends`]' table, kept whole: with every scheme `inputs.unreached_schemes`
+    /// names ([`crate::https_conns::judge_unreached`]: named, reasoned, covered by a cited test
+    /// cell of the plugin's own repo, and named by a declared need) answering the load's scheme
+    /// match ([`HttpsConns::unreached`](crate::https_conns::HttpsConns::unreached)), and every open
+    /// on one counted, so the fold can assert none was made.
+    ///
+    /// # Panics
+    /// When a far end names no `url`, or an unreached scheme is refused.
+    #[must_use]
+    pub fn far_table(&self) -> Option<Arc<crate::https_conns::HttpsConns>> {
         let ends = self.inputs.get("far_ends")?.as_array()?;
-        let table =
-            crate::https_conns::HttpsConns::framing(crate::stand_in::FramedFacts::stand_in());
+        let facts = crate::stand_in::FramedFacts::stand_in();
+        let unreached = match self.inputs.get("unreached_schemes") {
+            None => Vec::new(),
+            Some(value) => {
+                let transports: Vec<String> =
+                    self.needs().into_iter().map(|n| n.transport).collect();
+                crate::https_conns::judge_unreached(
+                    value,
+                    &facts.transport,
+                    &transports,
+                    &repo_root(),
+                )
+                .unwrap_or_else(|why| panic!("conformance.json: {why}"))
+            }
+        };
+        let table = crate::https_conns::HttpsConns::framing(facts).unreached(unreached);
         for e in ends {
             let url = e["url"]
                 .as_str()
@@ -792,6 +896,17 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
         sink: Arc::new(NoSink),
         dispatcher: d.adopter(),
         conns: ConnTable::NoNeeds,
+    }
+}
+
+/// The plugin repo's root, a cited cell's path is read under: the crate's directory
+/// (`CARGO_MANIFEST_DIR` at test run) when the workspace is the crate, otherwise its parent (the
+/// workspace a plugin's `-plugin` crate sits in).
+fn repo_root() -> PathBuf {
+    let dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
+    match dir.parent() {
+        Some(parent) if parent.join("Cargo.toml").is_file() => parent.to_path_buf(),
+        _ => dir,
     }
 }
 
@@ -1957,6 +2072,54 @@ pub fn profile(debug: bool) {
     );
 }
 
+/// THE DOOR A SUITE NAMES, as either form a plugin states it (status rows 159 and 194): its
+/// `door` function, or the `MACRO_DOOR` `plugin_door!` expands beside it. #1469 makes the suite take the `MacroDoor` alone; a plugin moves to `door:
+/// plugin::MACRO_DOOR` first, and the same line compiles before and after.
+///
+/// The two forms are told apart by method resolution: a `MacroDoor` answers its door function by
+/// value (`MacroDoorArg`); any other value (a door function) answers itself through a reference
+/// (`DoorFnArg`), and the caller's `DoorFn` annotation coerces the function item.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __conformance_door {
+    ($door:path) => {{
+        #[allow(unused_imports)]
+        use $crate::conformance::{DoorFnArg as _, MacroDoorArg as _};
+        let door: $crate::conformance::ConformanceDoorFn = (&$door).door_arg();
+        door
+    }};
+}
+
+/// The door function type a suite runs over, named where `__conformance_door!` expands.
+#[doc(hidden)]
+pub type ConformanceDoorFn = DoorFn;
+
+/// `__conformance_door!`'s arm for a `MacroDoor`.
+#[doc(hidden)]
+pub trait MacroDoorArg {
+    /// The door function the macro door names.
+    fn door_arg(&self) -> DoorFn;
+}
+
+impl MacroDoorArg for busbar_contract::abi::sdk::door::MacroDoor {
+    fn door_arg(&self) -> DoorFn {
+        self.door_fn()
+    }
+}
+
+/// `__conformance_door!`'s arm for a door function: the value itself, coerced by the caller.
+#[doc(hidden)]
+pub trait DoorFnArg<F> {
+    /// The door function, as given.
+    fn door_arg(&self) -> F;
+}
+
+impl<F: Copy> DoorFnArg<F> for &F {
+    fn door_arg(&self) -> F {
+        **self
+    }
+}
+
 /// **THE SUITE, IN A PLUGIN REPO'S `tests/conformance.rs`.** Emits the suite's tests over the
 /// plugin's linked door, its cdylib and its inputs; `plugin-ci.yml` runs them under `--release`
 /// and requires every one to RUN. The names are the contract the CI step reads.
@@ -1973,13 +2136,40 @@ macro_rules! conformance_suite {
     ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
             #[allow(unused_mut)]
-            let mut s = $crate::conformance::Subject::new($door, $cdylib, $inputs);
+            let mut s = $crate::conformance::Subject::new(
+                $crate::__conformance_door!($door),
+                $cdylib,
+                $inputs,
+            );
+            $(s = s.with_host($host);)?
+            $(s = s.with_anchors($tls);)?
+            $(s = s.with_namespace($create, $drop);)?
+            s.declared_in(env!("CARGO_MANIFEST_DIR"))
+        }
+        $crate::conformance_suite!(@tests);
+    };
+    // A door named by a `LoadedDoor` (a crate that exports its `door` function alone restates it:
+    // `loaded: unsafe { LoadedDoor::from_raw(plugin::door) }`), the name #1469 keeps.
+    (
+        loaded: $loaded:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+        $(,)?
+    ) => {
+        fn __busbar_conformance_subject() -> $crate::conformance::Subject {
+            #[allow(unused_mut)]
+            let mut s = $crate::conformance::Subject::of_loaded($loaded, $cdylib, $inputs);
             $(s = s.with_host($host);)?
             $(s = s.with_anchors($tls);)?
             $(s = s.with_namespace($create, $drop);)?
             s
         }
-
+        $crate::conformance_suite!(@tests);
+    };
+    (@tests) => {
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.
         #[test]
         fn the_linked_and_the_dropped_in_door_are_one_plugin() {

@@ -54,6 +54,29 @@ pub type PlaneRouteFn = Arc<dyn Fn(PlaneReqCtx) -> PlaneRouteFuture + Send + Syn
 pub type PlaneRefuseFn =
     Arc<dyn Fn(busbar_contract::caps::ReasonCode, &str) -> PlaneResponse + Send + Sync>;
 
+/// A KERNEL-SHAPED REFUSAL (ARCHITECT ruling 2026-10-16, 3b B): what the kernel decided, outside the
+/// auth chain and before any unit, for a request at `path` — the reason, the status and the words —
+/// handed to the plane whose door owns the path to render the body.
+#[derive(Clone, Copy, Debug)]
+pub struct KernelRefusal<'a> {
+    /// Why.
+    pub reason: busbar_contract::caps::ReasonCode,
+    /// The status the kernel answers.
+    pub status: u16,
+    /// The kernel's words.
+    pub text: &'a str,
+    /// The request path, as received (raw).
+    pub path: &'a str,
+    /// The request target the plane reads its path rule off (path and query).
+    pub target: &'a str,
+}
+
+/// THE DOOR PLANES' RENDERING OF A KERNEL-SHAPED REFUSAL, by path: the plane whose door owns the
+/// path (the guest list's own reading of it, whatever the verb) renders the refusal; `None` when no
+/// door owns the path or its render failed, and the kernel answers its own generic refusal.
+pub type PlaneRefuseByPathFn =
+    Arc<dyn Fn(&KernelRefusal<'_>) -> Option<PlaneResponse> + Send + Sync>;
+
 /// THE ROUTE IDENTITY a door route and its unit-less refusal share: the route's axum path pattern,
 /// as mounted, and its method. One key for both, so the two cannot name different routes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -73,6 +96,12 @@ pub struct PlaneRefusalSpec {
     pub route: DoorRouteId,
     /// Its plane's rendering.
     pub refuse: PlaneRefuseFn,
+    /// THE SIGNED PATHS of its plane (ARCHITECT ruling 2026-10-16, 3b A): the raw-affix target
+    /// (`<prefix>*<suffix>`, `abi::plane::CLAIM_RAW_AFFIX`, ARCHITECT ruling 2026-10-17) of every
+    /// claim the plane flags `abi::plane::CLAIM_SIGNED_INGRESS`, whatever this route's own path and
+    /// verb. The auth middleware puts a request to a path one of them matches through the
+    /// signed-request pre-step, by path and whatever its verb.
+    pub signed_ingress: Arc<[String]>,
 }
 
 impl std::fmt::Debug for PlaneRefusalSpec {
@@ -215,7 +244,7 @@ pub struct PlaneReqCtx {
     /// by calling typed methods on it rather than naming `busbar_kernel::plane_host::*_over`. Carried
     /// alongside `engine` during the transition: `engine` is the residual downcast the per-subsystem
     /// App-sever removes, `host` is the durable seam that replaces it.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` fn
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,

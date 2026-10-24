@@ -131,6 +131,8 @@ pub struct AuthMiddleware {
 /// ONE HOST-HELD CREDENTIAL'S VERIFIER: the opened instance, the credential kinds it reads through
 /// `records.secret` (opaque words), and the carrier lines its credential sits on (its own words).
 struct CredentialReader {
+    /// The `kind: auth` plugin this verifier is (the name its replay claims are made under).
+    name: String,
     calls: std::sync::Arc<dyn AuthCalls>,
     kinds: Vec<String>,
     carriers: Vec<HeaderName>,
@@ -207,6 +209,22 @@ fn replay_claimed(
     gov.store()
         .redeem_plane_token(AUTH_REPLAY, &token, expires_at, now)
         .unwrap_or(false)
+}
+
+/// THE SIGNED INGRESS'S REPLAY CLAIM (THE DESIGN §6 "Inbound verify", l.845-846: "a verified
+/// identity may carry a replay_key and replay_ttl_secs, and the verify caller claims the record
+/// (auth-replay, plugin/key, ttl) ... already TAKEN is 401"): the claim `id` asks for, made under
+/// the verifier `reader` exactly as the data chain and the admin door make theirs. `true` when the
+/// identity asks for none, or when this call won the claim.
+fn signed_replay_claimed(
+    gov: Option<&crate::governance::GovState>,
+    reader: &str,
+    id: &busbar_contract::auth_calls::VerifiedIdentity,
+    now: u64,
+) -> bool {
+    id.replay
+        .as_deref()
+        .is_none_or(|replay| replay_claimed(gov, reader, replay, now))
 }
 
 /// THE LINES THE CHAIN'S AUTHS NAMED, struck before any plane sees the request (THE DESIGN §6.4:
@@ -869,6 +887,7 @@ impl AuthMiddleware {
                     })?;
                 if let Some(calls) = calls {
                     readers.push(CredentialReader {
+                        name: module.to_string(),
                         kinds: calls.credential_kinds(),
                         issued: calls.issued_shape(),
                         carriers: calls
@@ -892,10 +911,21 @@ impl AuthMiddleware {
                 .unwrap_or_default(),
         };
 
-        let issued = readers.iter().find_map(|r| {
-            let kind = r.kinds.first()?.clone();
-            r.issued.clone().map(|shape| (kind, shape))
-        });
+        // THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the build's fact, read from the
+        // linked rows' Statements whatever the chain names (status row 186: 1.5.5 minted the
+        // `issue_aws_credential` pair on the flag alone, `auth.chain` or not). An opened verifier
+        // states the same shape its Statement does, so with `keys` in the chain it answers first.
+        let issued = readers
+            .iter()
+            .find_map(|r| {
+                let kind = r.kinds.first()?.clone();
+                r.issued.clone().map(|shape| (kind, shape))
+            })
+            .or_else(|| match &axis {
+                Some(axis) => axis.issued_credential(),
+                None => crate::preflight::auth_axis(registry.clone())
+                    .and_then(|axis| axis.issued_credential()),
+            });
         Ok(Self {
             keys_in_chain,
             chain,
@@ -1187,8 +1217,9 @@ impl AuthMiddleware {
 
     /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key (the admin `POST /keys` second
     /// credential, 1.5.5's `issue_aws_credential`): the first host-held credentials' verifier whose
-    /// Statement states an issued shape, as its first credential kind and that shape. `None` when no
-    /// verifier states one: the host then issues none. Kind and shape are the verifier's words.
+    /// Statement states an issued shape, as its first credential kind and that shape, whether or not
+    /// `auth.chain` names `keys` (a linked row's fact, not the chain's). `None` when no linked row
+    /// states one: the host then issues none. Kind and shape are the verifier's words.
     pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
         self.issued.clone()
     }
@@ -1699,7 +1730,7 @@ pub fn dry_run_admin_scope(
     // A DRY RUN claims no replay: it asks what the caller WOULD earn, and the live door already
     // claimed this request's.
     match probe_admin_door(app, "GET", "/", headers, false) {
-        AdminDoor::Identified(_, grants) => grants,
+        AdminDoor::Identified(_, grants) | AdminDoor::Listed(_, grants, _) => grants,
         // `Open` is unreachable past the early return above, and is no earned grant if reached.
         AdminDoor::Open | AdminDoor::Denied => busbar_contract::authz::Grants::default(),
     }
@@ -1716,6 +1747,11 @@ pub enum AdminDoor {
     /// Identified: who the chain identified, and the grants it earns (empty = authenticated, not
     /// authorized).
     Identified(Principal, busbar_contract::authz::Grants),
+    /// Identified, and holding admin verbs BY NAME (`role_bindings.<provider>.<role>.verbs: [ … ]`,
+    /// #77(9) l.2279): the grants are every rung the principal reaches — the two-rung matrix the
+    /// gate compares first — and the allow-list is what the verb itself must then be on. A
+    /// principal whose bindings name no verb is [`AdminDoor::Identified`], the 1.5.5 grant.
+    Listed(Principal, busbar_contract::authz::Grants, VerbAllowList),
     /// Refused, a module error (fail-closed `Reject`) included: 1.5.5 had no other verdict.
     Denied,
 }
@@ -1788,7 +1824,17 @@ async fn judge_admin_door(
             module, principal, ..
         } => {
             let grants = admin_scope_for(app, Some(&module), Some(&principal));
-            AdminDoor::Identified(principal, cap.map_or(grants, |c| grants.capped_by(c)))
+            let rungs = cap.map_or(grants, |c| grants.capped_by(c));
+            let named = admin_verbs_named(app, &module, &principal, cap);
+            if named.is_empty() {
+                return AdminDoor::Identified(principal, rungs);
+            }
+            // Every rung a named verb needs joins the matrix the gate compares first; the list
+            // then narrows what that reach admits (`VerbAllowList::admits`).
+            let reach = (named.iter())
+                .filter_map(|verb| crate::admin::seam::admin_verb_rung(verb.as_str()))
+                .fold(rungs, busbar_contract::authz::Grants::with);
+            AdminDoor::Listed(principal, reach, VerbAllowList { rungs, named })
         }
     }
 }
@@ -1870,12 +1916,71 @@ fn admin_scope_for(
     let Some(table) = module.and_then(|m| app.role_bindings.get(m)) else {
         return Grants::default();
     };
+    // `verbs: "*"` is exactly `admin_scope: full` (#77(9) l.2279); a NAMED list is not a rung and
+    // is read by [`admin_verbs_named`].
+    let all = |b: &crate::config::RoleBindingCfg| {
+        matches!(b.verb_grant(), Some(Ok(crate::config::VerbGrant::All))).then_some(Scope::Full)
+    };
     p.roles
         .iter()
         .filter_map(|role| table.get(role))
-        .filter_map(|b| b.admin_scope.as_deref())
-        .filter_map(Scope::parse)
+        .flat_map(|b| [b.admin_scope.as_deref().and_then(Scope::parse), all(b)])
+        .flatten()
         .fold(Grants::default(), Grants::with)
+}
+
+/// THE PER-VERB ALLOW-LIST an identified admin principal holds beside its rung grants (#77(9),
+/// OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279: "Each verb is a plain scoped verb authorized
+/// by the per-verb allow-list on the admin token (`verbs: [ … ]` or `verbs: "*"`; `read-only` and
+/// `full` stay the 1.5.5 shorthands)"). Built only for a principal some bound role grants verbs BY
+/// NAME; every other principal is judged on its rungs alone, as 1.5.5 judged it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct VerbAllowList {
+    /// The rungs held WHOLE — `admin_scope:` (the 1.5.5 shorthands) or `verbs: "*"`, capped by the
+    /// identifying provider's `max_admin_scope:`: every verb such a rung reaches is admitted.
+    pub rungs: busbar_contract::authz::Grants,
+    /// The verbs held BY NAME (`verbs: [ … ]`), each admitted whatever rung it needs; a name above
+    /// the provider's ceiling, or one the closed table does not declare, is never here.
+    pub named: std::collections::BTreeSet<String>,
+}
+
+impl VerbAllowList {
+    /// Whether this allow-list admits the verb `verb` (`None` = the request names no verb of the
+    /// closed table), which requires the rung `needed`: a rung held whole reaches it, or the verb
+    /// is held by name.
+    #[must_use]
+    pub fn admits(&self, verb: Option<&str>, needed: busbar_contract::authz::Scope) -> bool {
+        self.rungs.allows(needed) || verb.is_some_and(|v| self.named.contains(v))
+    }
+}
+
+/// The verbs a role principal holds BY NAME: the union of the `verbs: [ … ]` lists its bound roles
+/// grant under `role_bindings.<module>` (nested by module, an unbound role granting nothing, as
+/// [`admin_scope_for`] reads `admin_scope`). The operator credential and a roleless principal hold
+/// none. A name the closed table does not declare is dropped (fail closed), and so is one whose
+/// rung the identifying provider's ceiling (`cap`) does not reach: `max_admin_scope:` caps a named
+/// verb exactly as it caps an `admin_scope`.
+fn admin_verbs_named(
+    app: &crate::state::App,
+    module: &str,
+    principal: &Principal,
+    cap: Option<busbar_contract::authz::Scope>,
+) -> std::collections::BTreeSet<String> {
+    let Some(table) = app.role_bindings.get(module) else {
+        return std::collections::BTreeSet::new();
+    };
+    (principal.roles.iter())
+        .filter_map(|role| table.get(role))
+        .filter_map(|b| match b.verb_grant() {
+            Some(Ok(crate::config::VerbGrant::Named(names))) => Some(names),
+            _ => None,
+        })
+        .flatten()
+        .filter(|verb| {
+            crate::admin::seam::admin_verb_rung(verb.as_str())
+                .is_some_and(|rung| cap.is_none_or(|c| c.allows(rung)))
+        })
+        .collect()
 }
 
 /// A 403 in the frozen admin error envelope (`{"error":{"code":"forbidden","message":…}}`),
@@ -1962,17 +2067,16 @@ fn unauthorized_with_completion_taps(
         // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
         // `operation: None` capture to exactly this before any IR read), so core names no
         // plane reader here.
-        let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
+        let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = auth_failure_status_and_kind(proto).0.as_u16();
-        // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
-        // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
-        // taps (a single cap, byte-identical `busbar_tap_notifications_dropped_total` +
-        // `busbar_admission_denied_total{gate="tap"}` on saturation) — core's own `fire_stage_taps`/
-        // `spawn_bounded_tap` are retired with this move so the cap is never split into two gates. The
-        // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
-        // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
-        let host = crate::plane_host::engine_host_value(app);
-        busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
+        // Fired through the hook kind's one stage-tap fan-out, so this synthetic auth-denial tap shares
+        // the ONE 1024-permit bounded-spawn gate with every other stage tap (one cap, one
+        // `busbar_tap_notifications_dropped_total` + `busbar_admission_denied_total{gate="tap"}` on
+        // saturation). The host is minted over `app` (an alloc-free `engine_host_value`); the
+        // group-scope walk folds `&app.groups_registry` in host-side.
+        let host = crate::plane_driver::engine_host_value(app);
+        let host: &dyn crate::plane_driver::EngineHost = &host;
+        crate::hooks::taps::fire_stage_taps_where(
             &app.tap_hooks_response,
             &shape,
             busbar_contract::hook_wire::HookStageProjection {
@@ -1988,8 +2092,7 @@ fn unauthorized_with_completion_taps(
             Default::default(),
             // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
             // group-scoped taps do not (a groupless caller matches only an unscoped hook).
-            None,
-            &host,
+            &|groups: &[String]| host.caller_in_hook_groups(None, groups),
         );
     }
     unauthorized_response(app, path, door)
@@ -2198,18 +2301,28 @@ pub(crate) async fn auth_middleware(
         // the operator token; `role_bindings:` for group-carrying principals, unmapped groups grant
         // nothing), CAPPED by the identifying module's `max_admin_scope:` ceiling. An identified
         // principal with NO grant is 403, never 401 — authenticated but not authorized.
-        let (principal, scope) = match door {
-            AdminDoor::Identified(principal, grants) => (Some(principal), grants),
+        let (principal, scope, listed) = match door {
+            AdminDoor::Identified(principal, grants) => (Some(principal), grants, None),
+            AdminDoor::Listed(principal, grants, list) => (Some(principal), grants, Some(list)),
             // The explicit `admin_auth: []` OPEN posture (dev): anonymous, full authority —
             // symmetric with the data plane's empty chain. The default config never lands here.
-            AdminDoor::Open => (None, admin_scope_for(&app, None, None)),
+            AdminDoor::Open => (None, admin_scope_for(&app, None, None), None),
             // The ADMIN plane 401 speaks the frozen v1 envelope ({error:{code:"unauthorized"}})
             // — tooling branches on the SAME `code` seam as every other admin error, never a
             // protocol-shaped body (that shaping is for the DATA plane, whose SDKs parse it).
             AdminDoor::Denied => return Err(admin_unauthorized_response()),
         };
         let required = crate::admin::gate::required_scope(req.method(), &path);
-        if !scope.allows(required) {
+        // A principal holding verbs BY NAME is admitted only to a verb its allow-list reaches
+        // (#77(9) l.2279), refused in the same envelope as a rung it does not hold. A path the
+        // closed verb table does not declare is no verb, so only a rung held whole reaches it.
+        let verb_listed = listed.as_ref().is_none_or(|list| {
+            list.admits(
+                crate::admin::seam::admin_verb_at(req.method().as_str(), &path),
+                required,
+            )
+        });
+        if !scope.allows(required) || !verb_listed {
             // Denied authorization is AUDITED (a credential probing beyond its scope is exactly what
             // an operator wants to see) — but at most once per (principal, window). The durable
             // write-through is a blocking store round-trip under a process-global lock, and this path
@@ -2337,12 +2450,11 @@ pub(crate) async fn auth_middleware(
     // running chain names `keys` AND the ingress dialect declares a signed ingress AND the request
     // carries one of the verifier's own carrier lines (the kernel names no credential line). Gating
     // on `keys_in_chain` keeps an OPEN `chain:[]` open. A credential that is not the verifier's
-    // (it PASSes) takes the unchanged token path below. The "which dialect signs" decision is a
-    // DECLARED protocol fact (`ProtocolDecl::ingress_auth`), never a name-branch.
-    let ingress_signed = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
-        ingress_for_path(&app, &path),
-    ))
-    .is_some_and(|d| d.uses_sigv4_ingress_auth());
+    // (it PASSes) takes the unchanged token path below. Which paths are signed is a DECLARED plane
+    // fact, never a name-branch and never a path-shape guess: a door plane states its signed paths
+    // on raw-affix claims (`CLAIM_SIGNED_INGRESS` on `CLAIM_RAW_AFFIX`, ARCHITECT rulings 2026-10-16,
+    // 3b A and B, and 2026-10-17), looked up by the raw path whatever the verb.
+    let ingress_signed = core_routes.signed_ingress(&path);
     // The lines the chain's positions named for the transport, struck once the request is admitted.
     let mut strips = Vec::new();
     // The pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An audience-bound
@@ -2388,6 +2500,14 @@ pub(crate) async fn auth_middleware(
                                 .then(|| (*key).clone())
                         })
                     });
+                    // THE REPLAY CLAIM, won before admitting exactly as every other verify
+                    // caller wins it: a key the identity asks to be admitted once is claimed under
+                    // this verifier; a claim already taken is the same opaque refusal.
+                    if key.is_some()
+                        && !signed_replay_claimed(app.governance.as_deref(), &reader.name, &id, now)
+                    {
+                        return Err(unauthorized_response(&app, &path, door.as_ref()));
+                    }
                     match key {
                         Some(key) => Some(ChainVerdict::Identified {
                             module: crate::config::KEYS_MODULE.to_string(),
@@ -2540,15 +2660,11 @@ pub use busbar_contract::auth::IdentityRefusal;
 ///   a group-carrying principal is re-keyed through `role_bindings` via
 ///   [`crate::governance::synthesize_principal_key`]. A DISABLED vkey never reaches here as
 ///   `Identified` (the keys arm denies it), so it can never be re-admitted through synth.
-/// - FAIL-CLOSED for ANY identified principal that earned NO enforcement key — whatever roles it
-///   carries and whether or not its module has a `role_bindings` table. `key: None` downstream means
-///   no pool ACL, no budget, and spend booked to the `anonymous` actor rather than to the principal
-///   that spent it, so an identified caller admitted without a key is both an authorization
-///   fail-open and a mis-attributed book. The guard is the one condition — no key, refuse — and
-///   nothing narrows it: 1.5.5 (and this function until 1.6.0 item 144) also required the principal
-///   to carry roles AND its module to have a bindings table, which admitted a ROLELESS principal, or
-///   any principal under an unbound module, ungoverned. `Open` (the explicit `chain: []` posture)
-///   is the only anonymous admission. Pinned by `auth::tests::a_principal_without_a_governance_key_is_refused`.
+/// - An identified principal that earned NO enforcement key is judged by [`admits_ungoverned`]:
+///   as 1.5.5 judged it, a principal carrying roles under a module that HAS a `role_bindings`
+///   table is refused `NoGrant` (its roles were to define its access and defined none), and a
+///   ROLELESS principal, or any principal of a module with no table, is admitted ungoverned
+///   (`key: None`). Pinned by `auth::tests::an_ungoverned_principal_is_judged_as_1_5_5_judged_it`.
 pub fn resolve_data_plane_identity(
     app: &crate::state::App,
     verdict: ChainVerdict,
@@ -2567,6 +2683,12 @@ pub fn resolve_data_plane_identity(
                 crate::governance::synthesize_bound_key(&module, &principal, &app.role_bindings)
             });
             let Some(key) = gov_key else {
+                if admits_ungoverned(&module, &principal, &app.role_bindings) {
+                    return Ok((
+                        AuthPrincipal(Some(principal)),
+                        crate::governance::GovCtx { key: None },
+                    ));
+                }
                 return Err(IdentityRefusal::NoGrant);
             };
             Ok((
@@ -2575,6 +2697,43 @@ pub fn resolve_data_plane_identity(
             ))
         }
     }
+}
+
+/// Whether an identified principal that earned NO governance key is refused whatever its roles and
+/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None` such a principal
+/// meets no pool ACL and no budget, and its spend is booked to the `anonymous` actor. `false` is
+/// 1.5.5's behaviour, which this build keeps until the owner signs the change (Q128 u27): the
+/// three-part guard of v1.5.5 crates/busbar/src/auth/mod.rs:1543. The owner's signature flips this
+/// one line.
+pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = false;
+
+/// Whether `principal`, identified by `module` and earning no governance key, is admitted ungoverned
+/// under [`REFUSE_EVERY_UNGOVERNED_PRINCIPAL`].
+fn admits_ungoverned(
+    module: &str,
+    principal: &busbar_contract::auth::Principal,
+    role_bindings: &crate::config::RoleBindings,
+) -> bool {
+    admits_ungoverned_under(
+        REFUSE_EVERY_UNGOVERNED_PRINCIPAL,
+        module,
+        principal,
+        role_bindings,
+    )
+}
+
+/// [`admits_ungoverned`] under a stated `refuse_every`. Without it, 1.5.5's guard (v1.5.5
+/// crates/busbar/src/auth/mod.rs:1543, `gov_key.is_none() && !principal.roles.is_empty() &&
+/// bindings.is_some()` refuses): a ROLELESS principal, or any principal of a module with no
+/// `role_bindings` table, is admitted; a principal with roles under a module that has a table is
+/// refused. With it, no keyless principal is admitted.
+fn admits_ungoverned_under(
+    refuse_every: bool,
+    module: &str,
+    principal: &busbar_contract::auth::Principal,
+    role_bindings: &crate::config::RoleBindings,
+) -> bool {
+    !refuse_every && (principal.roles.is_empty() || !role_bindings.contains_key(module))
 }
 
 /// The one `verify` request for a signed ingress, at `HeadBody`: every field line as presented, the
@@ -2655,6 +2814,8 @@ impl AuthMiddleware {
     }
 }
 
+/// A session's admission outside an HTTP request: the chain and the one verdict resolution.
+pub mod admit;
 /// What the gate holds of the caller: every credential carrier it reads (stripped from every plane's
 /// request) and the caller's credential as a ref only the host presents upstream.
 pub mod caller_credential;
@@ -2683,11 +2844,11 @@ pub mod self_keys;
 /// the [`self_keys`] seam).
 pub mod exchange;
 
-/// The `GET /auth/token` hosted browser-login page (1.5.2): the chooser / begin / callback
-/// sub-states, PKCE + state + nonce, the plugin's `complete_login` (the plugin redeems the code
-/// itself, with the client secret it was lent at `open`), and the render of the key-issued page —
-/// all issuing through the SAME [`self_keys`] seam as the headless `POST`.
-pub mod token;
+/// The hosted login's identity side (row 159, K3#2): the login methods, one login step on a
+/// plugin's door, and the self-serve key a verified identity is issued through the SAME
+/// [`self_keys`] seam as the headless `POST`. The flow itself (pages, cookie, PKCE) is
+/// `busbar-core-oauth2`'s, reached through [`login::seam`].
+pub mod login;
 
 /// TEST STAND-INS ONLY: an in-process module as a chain position.
 #[cfg(any(test, feature = "test-support"))]

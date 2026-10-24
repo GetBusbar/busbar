@@ -25,13 +25,13 @@ use crate::store::{HealthState, LaneData};
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
-    durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
-    oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit,
-    snapshot, state, store, telemetry, tls, transport, trust,
+    durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, oauth_as,
+    observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit, snapshot,
+    state, store, telemetry, tls, transport, trust,
 };
-use busbar_kernel::plane_host::{
-    AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
-    HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
+use busbar_kernel::plane_driver::route_input::{
+    AffinityInput, AuthStyleInput, FailoverInput, HealthInput, HealthModeInput, LaneInput,
+    OnExhaustedInput, PoolInput, PoolMemberInput,
 };
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
@@ -131,18 +131,16 @@ pub fn inert_durable_keys_banner(
 /// in-flight TASK state lives only in the resolved store, so on the RAM store it is dropped on
 /// restart and any task that was mid-flight breaks on its next request. This returns a sharper warn
 /// NAMING that consequence — but ONLY when the RAM store is resolved AND a stateful plane is actually
-/// configured (`tools_stateful` = a `tools:` server or tool-pool is present; `agents_stateful` = an
-/// `agents:` agent or agent-pool is present — the config sections, named here rather than the planes
-/// they feed). A deployment with no container plane configured is STATELESS — a restart costs it
+/// configured (`stateful` = a registration in a plane's declared section, or a plane pool, is
+/// present). A deployment with no container plane configured is STATELESS — a restart costs it
 /// nothing — so it gets only the generic notice: a sharper warn there would be noise that trains
 /// operators to ignore warnings. This is a WARN, never a boot-block: a durable store is opt-in and
 /// RAM is the convenience default, so busbar does not refuse to start.
 pub fn stateful_plane_ephemeral_store_warn(
     store_is_memory: bool,
-    tools_stateful: bool,
-    agents_stateful: bool,
+    stateful: bool,
 ) -> Option<&'static str> {
-    if store_is_memory && (tools_stateful || agents_stateful) {
+    if store_is_memory && stateful {
         Some(
             "Stateful plane task state will NOT survive a restart — in-flight tasks will break on the next \
              request. Configure a durable store plugin.",
@@ -466,22 +464,22 @@ pub fn load_config_from_disk(
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
-/// The process-wide operational limits a build installed, still PROVISIONAL.
+/// The operational limits a build resolved, still PROVISIONAL: nothing has published them.
 ///
-/// `build_app_from_config` has to install the candidate limits before it starts (the build reads
-/// them through the deep-call-stack accessors), and every step of the build itself is fallible — the
-/// `InstallGuard` inside covers that, rolling them back on any `return Err`/`?`. What it did NOT
-/// cover is everything the CALLER still has to do: an admin apply persists the desired state to the
-/// overlay AFTER the build returns, and a persist failure aborts the transaction with "nothing was
-/// changed (the running engine is unaffected)". Committing the guard at the end of the build made
-/// that message false for exactly the values a rejected config should never get to set — the old
-/// `App` keeps serving, but under the rejected config's body caps.
+/// `build_app_from_config` reads its candidate's limits through a build-scoped view
+/// (`config::limits::BuildScope`) that no other thread sees, so the build itself never puts them in
+/// force. What remains is everything the CALLER still has to do: an admin apply persists the
+/// desired state to the overlay AFTER the build returns, and a persist failure aborts the
+/// transaction with "nothing was changed (the running engine is unaffected)" — which holds only if
+/// the limits are published no earlier than the generation goes live.
 ///
-/// So the commit is now the CALLER's, and it is the same shape as the governance-credential
-/// rotation beside it: the build hands back an uncommitted handle, and the one place that knows the
-/// transaction actually landed (persist AND swap both `Ok`) calls [`InstalledLimits::keep`]. Dropped
-/// unkept — a persist failure, an early return, a caller that simply lets it fall out of scope — the
-/// previous limits are restored.
+/// So the publication is the CALLER's, and it is the same shape as the governance-credential
+/// rotation beside it: the build hands back an unpublished handle, the swap that installs the
+/// generation publishes its limits (`AppHandle::swap`, so the generation's first reader already
+/// sees them), and the one place that knows the transaction landed calls [`InstalledLimits::keep`]
+/// (the boot generation, which no swap installs, is published there). Dropped unkept — a persist
+/// failure, an early return, a caller that simply lets it drop — nothing was published
+/// and the running generation's limits stand.
 ///
 /// **THE RATE APPLY RIDES THE SAME COMMIT.** The build resolves this configuration's rates, but the
 /// rate-apply seam ([`crate::rate_apply::rates_applied`]) is raised HERE, at `keep`, and not
@@ -490,9 +488,11 @@ pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 /// apply whose persist then failed kept serving the old `App` while the history and the journal
 /// said its rates were in force — a price the operator was told was never applied, dated as if it
 /// had been. Dropped unkept, the resolved rates are dropped with it and nothing was raised.
-#[must_use = "an unkept InstalledLimits rolls the process-wide limits back when dropped"]
+#[must_use = "an unkept InstalledLimits never publishes the generation's limits"]
 pub struct InstalledLimits {
-    guard: limits::InstallGuard,
+    /// This generation's operational limits, published process-wide at [`InstalledLimits::keep`]
+    /// (and by the swap that puts the generation live); never published by a build that is refused.
+    limits: config::LimitsResolved,
     rates: ResolvedRates,
     /// The rates this build STAGED with the holder (made durable before the caller persists):
     /// withdrawn if this handle is dropped unkept, published by [`InstalledLimits::keep`].
@@ -545,12 +545,12 @@ impl InstalledLimits {
     /// configuration they came from is the one in force.
     pub fn keep(self) {
         let InstalledLimits {
-            guard,
+            limits,
             rates,
             mut staged,
             destinations,
         } = self;
-        guard.commit();
+        busbar_kernel::config::limits::publish(&limits);
         crate::egress::trust::destinations_applied(&destinations);
         staged.armed = false;
         crate::rate_apply::rates_applied(&rates.raw());
@@ -560,15 +560,9 @@ impl InstalledLimits {
 /// WHAT THE COMPOSITION ROOT KEEPS OF A RESOLVED CONFIGURATION beside the generation built from it
 /// (spec Part 1 line 569: a door plane is handed one validated `{section: value}` object per
 /// `open`/`refresh`): the root projects the sections, providers and pool bounds its door planes are
-/// sealed over, and reads the projection back when the generation is swapped in.
+/// sealed over, and reads the projection back when the generation is swapped in. The root hands it
+/// in on its install record ([`crate::preflight::RootInstall::config_projection`]).
 pub type ConfigProjection = fn(&config::RootCfg) -> std::sync::Arc<dyn std::any::Any + Send + Sync>;
-
-static CONFIG_PROJECTION: std::sync::OnceLock<ConfigProjection> = std::sync::OnceLock::new();
-
-/// Bind the composition root's [`ConfigProjection`], once, before the first build.
-pub fn set_config_projection(project: ConfigProjection) {
-    let _ = CONFIG_PROJECTION.set(project);
-}
 
 /// THE COMPOSITION ROOT'S RULES OF A RESOLVED CONFIGURATION: the rules only the root can state
 /// (ones over what the planes it composed declare, and the deployment facts it alone reads), judged
@@ -584,6 +578,17 @@ pub trait RootRules: Send + Sync {
     ///
     /// The refusal, in the words the operator reads.
     fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
+
+    /// THE PLANES `cfg` WRITES THAT THIS PROCESS CANNOT SERVE UNTIL IT RESTARTS: the declaring
+    /// sections `cfg` writes whose plane the composition root did not open at boot. A door plane is
+    /// opened, driven and ticked once, at boot (Law 7 selection, BUSBAR-1.6.0.md l.547), so an
+    /// apply that first writes its section is stored and validated but RESTART-TO-APPLY: the 1.5.5
+    /// precedent for what is mounted once at boot (`plugin_routes::paths_awaiting_restart`). The
+    /// build gives such a plane no slot this generation (it claims, admits and lists nothing), and
+    /// the apply's answer names its section. Sorted. Default: none.
+    fn planes_awaiting_restart(&self, _cfg: &config::RootCfg) -> Vec<&'static str> {
+        Vec::new()
+    }
 }
 
 /// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it
@@ -613,36 +618,39 @@ pub fn build_app_from_config(
     // The root's rules of this configuration, before any part of it is built or installed: a
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
+    // The planes this configuration writes that the process did not open at boot: restart-to-apply,
+    // so each builds no slot below and is reported by the caller, never half-served.
+    let planes_awaiting_restart = rules.planes_awaiting_restart(&cfg);
     // The root's projection of this configuration, taken before any part of it is consumed.
-    let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
-    // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
-    // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
-    // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
-    // (translate-body cap, metrics gauge limit, webhook timeout, governance sqlite/sweep, health
-    // probe fallbacks, routing policy timeout) read the installed values.
-    //
-    // …THROUGH A GUARD, because everything below this line is fallible. The install has to come
-    // first (the build itself reads these values), but a build that goes on to FAIL must not leave
-    // the rejected config's limits installed under the old `App` that keeps serving. The guard
-    // restores the previous values on drop unless it is COMMITTED — and the commit is the CALLER's
-    // (see `InstalledLimits`), not this function's, because the apply is not over when the build
-    // returns: the admin paths still have to persist. So "an invalid apply changes nothing" holds
-    // for process-wide limits the same way it holds for everything else, including when it is the
-    // PERSIST that refused.
-    let limits_guard = limits::InstallGuard::install(&cfg.limits);
+    let config_projection = crate::preflight::root_rows()
+        .config_projection
+        .map(|project| project(&cfg));
     let destinations = cfg.destinations();
     // The config version this App will carry — computed ONCE up front because hook-transport
     // resolution stamps it into every socket configure preamble (the preamble's
     // settings_version must be the REAL version of the settings it delivers, not a hardcoded 0).
     let app_config_version = prior.map_or(0, |p| p.config_version.wrapping_add(1));
     // Semantic validation — the same gate boot has always had, now on the ONE construction path
-    // so an apply/reload validates identically and an invalid config changes nothing.
+    // so an apply/reload validates identically and an invalid config changes nothing. It runs
+    // BEFORE this configuration's limits are visible to anything (BUSBAR-1.6.0.md §3: "A validation
+    // refusal keeps the running generation").
     if let Err(validation_errors) = config_validate::validate(&cfg) {
         return Err(format!(
             "config validation failed:\n  - {}",
             validation_errors.join("\n  - ")
         ));
     }
+    // THE CANDIDATE'S OPERATIONAL LIMITS, VISIBLE TO THIS BUILD ONLY. The values threaded
+    // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites the
+    // build reaches (the routing policy timeout, the probe fallbacks, the upstream body cap a binding
+    // is sealed with) read them through `config::limits::installed()`, which answers the candidate on
+    // this thread for as long as the scope is held. Every other thread — the live traffic the running
+    // generation serves — keeps the published limits until this generation goes live
+    // (`AppHandle::swap` / `InstalledLimits::keep` publish them). BUSBAR-1.6.0.md THE DESIGN §6 item
+    // 8: a reload "swaps them in atomically ... and is refused, leaving the running generation
+    // serving, if any check fails" — so a build refused at ANY subsequent step (plugin fetch, pre-flight,
+    // secret refs, store open, the root's persist) never had its limits in force anywhere.
+    let _limits_scope = busbar_kernel::config::limits::BuildScope::enter(&cfg.limits);
     // The resolved `export:` block drives the built-in exporters' plugin-route table below. Captured
     // before `cfg`'s fields are consumed by the `App` struct literal.
     let cfg_export = cfg.export.clone();
@@ -705,6 +713,11 @@ pub fn build_app_from_config(
         &plugins_cfg,
         &cfg.export,
     )?);
+    // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
+    // secret axis here, never in the registry build `--validate` and every dry run share.
+    if let Some(admit) = crate::preflight::root_rows().secret_admit {
+        admit(&plugin_registry)?;
+    }
 
     // Every SECRET REFERENCE whose module is not a built-in (`env`/`file`) must resolve to a loaded
     // `kind: secret` plugin — the deferred half of the check `config_validate::validate` cannot do
@@ -909,21 +922,26 @@ pub fn build_app_from_config(
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
         let facts = &lane_model_facts[idx];
-        let legacy = crate::plane_host::LegacyLaneKeys::of(provider_cfg);
+        let legacy = crate::plane_driver::route_input::LegacyLaneKeys::of(provider_cfg);
         // The provider entry's lane-capability keys, carried unread in its table and resolved
         // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
         let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
-        let Some(protocol) = crate::proto::lane_protocol_name(provider_cfg.dialect()) else {
-            // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
-            // hand-maintained literal: the codec dialects are whatever the linked plane crates
-            // registered, so a build with the fallback plane compiled out names only what it actually
-            // serves (and a build with a new dialect names it) — the deletion-test property at the
-            // vocabulary level. Empty roster is a real answer.
+        // The "supported:" roster is the planes' DECLARED provider dialects
+        // (`plane::provider_dialects`, ARCHITECT ruling 2026-10-16 item 3), not a hand-maintained
+        // literal and not a codec list: a build with the plane that declares them compiled out names
+        // only what it actually serves, and a build with a new dialect names it. Empty roster is a
+        // real answer.
+        let providers = crate::plane::provider_dialects();
+        let Some(protocol) = providers
+            .iter()
+            .copied()
+            .find(|d| *d == provider_cfg.dialect())
+        else {
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.route,
                 provider_cfg.dialect(),
-                crate::proto::known_protocols().join(", ")
+                providers.join(", ")
             ));
         };
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as
@@ -1101,7 +1119,7 @@ pub fn build_app_from_config(
     // unresolvable method — or a `browser_login` method backed by a pre-v2 plugin (capability gate)
     // — aborts the build rather than surfacing a 500 at request time.
     let login_methods = Arc::new(
-        crate::auth::token::LoginMethods::build(&auth_cfg, &plugin_registry, &secret_resolver)
+        crate::auth::login::LoginMethods::build(&auth_cfg, &plugin_registry, &secret_resolver)
             .map_err(|e| format!("auth.methods (hosted login) construction failed: {e}"))?,
     );
     // Thread the operator-configured hard-down cooldown + honored-Retry-After ceiling into the store
@@ -1122,51 +1140,25 @@ pub fn build_app_from_config(
         )),
     };
 
-    // The global default failover config, the fallback-pool routing table, and the upstream HTTP
-    // client (with its warm-pool carry-over) are all part of the fallback plane's runtime bundle now —
-    // rebuilt IN-PLANE by that plane's `build_runtime` from the neutral `PlaneBuildInput` carrier
-    // (1.6.0 money-path Phase 3-4 C). Core no longer names the plane's own failover-config/
-    // upstream-clients types or the moved egress-client builders here; it carries only the neutral
-    // client-affecting scalars below.
-
-    // The client-affecting subset of the resolved limits (timeout, pool sizing, protocol posture).
-    // Carried onto `App` so the NEXT apply can compare; the `redirect: none` SSRF posture and every
-    // other builder input is a compile-time constant, so this snapshot is exhaustive over what the
-    // client build reads from config. The plane's `build_runtime` reuses the prior warm client iff
-    // its own copy of these scalars is unchanged.
-    // The upstream protocol posture comes from `advanced.upstream_h2_prior_knowledge` /
-    // `advanced.upstream_http1_only` in config.yaml (carried on `cfg.limits`). The deprecated
-    // `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` / `BUSBAR_UPSTREAM_HTTP1_ONLY` env vars still override
-    // those values so an existing pin keeps working across the upgrade; each is read here, at
-    // client-build time, and the deprecation warning fires once, on the first build (a reload that
-    // reuses the warm client does not repeat it). If both are set, http1-only wins because the
-    // plane's client builder applies it last.
-    let h2_env = std::env::var_os(ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE);
-    if h2_env.is_some() && prior.is_none() {
+    // The deprecated `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` / `BUSBAR_UPSTREAM_HTTP1_ONLY` env vars
+    // (migrated to `advanced.upstream_h2_prior_knowledge` / `advanced.upstream_http1_only`): the
+    // deprecation warning fires once, on the first build, exactly as it always has. The client the
+    // posture configured is the plane's own, built behind its door from its sections; the kernel
+    // hands no runtime build a client posture any more (status row 82).
+    if std::env::var_os(ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE).is_some() && prior.is_none() {
         diag_warn!(
             DEPRECATED_ENV_VAR_HONORED,
             "{ENV_UPSTREAM_H2_PRIOR_KNOWLEDGE} is DEPRECATED; set \
              `advanced.upstream_h2_prior_knowledge` in config.yaml (honored for now)."
         );
     }
-    let h2_prior_knowledge =
-        upstream_bool_env_override(h2_env, cfg.limits.upstream_h2_prior_knowledge);
-    let http1_env = std::env::var_os(ENV_UPSTREAM_HTTP1_ONLY);
-    if http1_env.is_some() && prior.is_none() {
+    if std::env::var_os(ENV_UPSTREAM_HTTP1_ONLY).is_some() && prior.is_none() {
         diag_warn!(
             DEPRECATED_ENV_VAR_HONORED,
             "{ENV_UPSTREAM_HTTP1_ONLY} is DEPRECATED; set `advanced.upstream_http1_only` in \
              config.yaml (honored for now)."
         );
     }
-    let http1_only = upstream_bool_env_override(http1_env, cfg.limits.upstream_http1_only);
-    let fallback_client_settings = ClientSettingsInput {
-        upstream_request_timeout_secs: cfg.limits.upstream_request_timeout_secs,
-        pool_max_idle_per_host: cfg.limits.pool_max_idle_per_host,
-        pool_idle_timeout_secs: cfg.limits.pool_idle_timeout_secs,
-        http1_only,
-        h2_prior_knowledge,
-    };
 
     // The hook plugin-resolution environment: the validated registry and the root's hook axis over
     // it. Every hook `plugin:` ref opens through the axis. Built once and cloned into each resolver
@@ -1305,17 +1297,13 @@ pub fn build_app_from_config(
         // validation above refused an absent block.
         let g = cfg.store.clone().ok_or_else(config::store_required)?;
         // Is a STATEFUL container plane actually configured? Those planes carry per-task state that
-        // the RAM store drops on restart. "Configured" = any `tools:` server / `agents:` agent OR any
-        // tool-pool / agent-pool; the pool maps are always typed (present regardless of which planes
-        // are compiled in), while the def sections are only typed when their plane is compiled
-        // in. A bare `tools:`/`agents:` entry (the common case, no failover pool) is just as stateful
-        // as a pooled one, so both are checked. Computed here so the sharper warn below can fire only
-        // for a stateful deployment — never for a deployment with no container plane configured.
-        // Data-driven: `tool_defs`/`agent_defs` are always the neutral `Box<dyn PlaneCfg>`; with the
-        // owning plane compiled out the section is the raw carrier whose `def_names()` is empty, so
-        // these read identically to the former per-feature branches without naming a plane feature.
-        let tools_stateful = !cfg.tool_defs.def_names().is_empty() || !cfg.tool_pools.is_empty();
-        let agents_stateful = !cfg.agent_defs.def_names().is_empty() || !cfg.agent_pools.is_empty();
+        // the RAM store drops on restart. "Configured" = any registration in a plane's declared
+        // section OR any plane pool. A bare registration (the common case, no failover pool) is just
+        // as stateful as a pooled one, so both are checked. Computed here so the sharper warn below
+        // can fire only for a stateful deployment — never for a deployment with no container plane
+        // configured.
+        let stateful = cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
+            || cfg.plane_pools.values().any(|p| !p.is_empty());
         // The configured store, resolved and opened on the store AXIS whichever door its row came
         // in by (DECISIONS #2 rule (1)). A row that states itself ephemeral keeps nothing across a
         // restart, which the operator is told before it opens.
@@ -1332,9 +1320,7 @@ pub fn build_app_from_config(
             // (naming the consequence) ONLY when a stateful plane is configured — a deploy with no
             // container plane configured keeps just the generic notice. Additive to, not a
             // replacement for, the notice above.
-            if let Some(msg) =
-                stateful_plane_ephemeral_store_warn(true, tools_stateful, agents_stateful)
-            {
+            if let Some(msg) = stateful_plane_ephemeral_store_warn(true, stateful) {
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
         }
@@ -1531,63 +1517,43 @@ pub fn build_app_from_config(
     //
     // Empty on every deployment that attaches nothing, which is every deployment that does not
     // spell the key — so the dispatch paths' lookups cost one hash probe against an empty map.
-    // The `tools:` per-container gates read the typed `tools:` registry, which exists only when
-    // the owning plane is compiled in. With that plane compiled out there is no registry, so the
-    // map is empty. Data-driven: `container_gates()` is a neutral `PlaneCfg` method; with the owning plane compiled
-    // out the section is the raw carrier that answers empty containers/section-hooks, so `resolve_
-    // container_gates` yields the same empty map the former `#[cfg(not)]` branch built by hand — no
-    // plane feature named.
-    let tools_gates = {
-        let g = cfg.tool_defs.container_gates();
-        hooks::resolve_container_gates(
+    // Each plane's per-container gates and rewrite chains, read off its declared section through the
+    // neutral `container_gates` seam and keyed by the plane's own decl key, so this composition names
+    // no plane. A section the document does not write contributes nothing; reading its key finds
+    // nothing, which is the same answer an empty map gives.
+    let mut plane_gates = std::collections::BTreeMap::new();
+    let mut plane_rewrites = std::collections::BTreeMap::new();
+    for (section, defs) in &cfg.plane_defs {
+        let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) else {
+            continue;
+        };
+        let g = defs.container_gates();
+        let containers = || {
             g.containers
                 .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
-            &g.section_hooks,
-            &cfg.hooks,
-            &hook_env,
-            app_config_version,
-        )
-    };
-    let agents_gates = {
-        let g = cfg.agent_defs.container_gates();
-        hooks::resolve_container_gates(
-            g.containers
-                .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
-            &g.section_hooks,
-            &cfg.hooks,
-            &hook_env,
-            app_config_version,
-        )
-    };
-    // THE TAP/TRANSFORM twins of the two gate maps above: each plane's per-container `prompt: rw`
-    // rewrite chains, resolved once per generation exactly like the gates. Empty on every deployment
-    // that attaches no rewrite hook, so the transform firing sites stay zero-cost / byte-identical.
-    let tools_rewrites = {
-        let g = cfg.tool_defs.container_gates();
-        hooks::resolve_container_rewrites(
-            g.containers
-                .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
-            &g.section_hooks,
-            &cfg.hooks,
-            &hook_env,
-            app_config_version,
-        )
-    };
-    let agents_rewrites = {
-        let g = cfg.agent_defs.container_gates();
-        hooks::resolve_container_rewrites(
-            g.containers
-                .iter()
-                .map(|(name, hooks)| (name.as_str(), hooks.as_slice())),
-            &g.section_hooks,
-            &cfg.hooks,
-            &hook_env,
-            app_config_version,
-        )
-    };
+                .map(|(name, hooks)| (name.as_str(), hooks.as_slice()))
+        };
+        plane_gates.insert(
+            decl.key,
+            hooks::resolve_container_gates(
+                containers(),
+                &g.section_hooks,
+                &cfg.hooks,
+                &hook_env,
+                app_config_version,
+            ),
+        );
+        plane_rewrites.insert(
+            decl.key,
+            hooks::resolve_container_rewrites(
+                containers(),
+                &g.section_hooks,
+                &cfg.hooks,
+                &hook_env,
+                app_config_version,
+            ),
+        );
+    }
 
     // EVERY fallible step of THIS build has now succeeded, so `rotate_gov_credentials` (if any) is
     // ready to run. It is NOT invoked here, though: `GovState` is a process-lifetime `Arc` shared
@@ -1640,7 +1606,7 @@ pub fn build_app_from_config(
     // from-config constructor used to be called directly — it is still lowered ONCE, now through the
     // decl instead of by name, and read from `plane_slots` everywhere below (the dispatch table's
     // admission facts and the registry the re-verification job sweeps).
-    let mut plane_slots: std::collections::BTreeMap<
+    let plane_slots: std::collections::BTreeMap<
         &'static str,
         Arc<dyn std::any::Any + Send + Sync>,
     > = {
@@ -1648,6 +1614,7 @@ pub fn build_app_from_config(
         crate::plane::registry::plane_decls()
             .iter()
             .filter(|decl| decl.fallback || cfg.plane_sections.contains(decl.config_section))
+            .filter(|decl| decl.fallback || !planes_awaiting_restart.contains(&decl.config_section))
             .filter_map(|decl| {
                 let ctx = crate::plane::registry::BuildCtx {
                     // THIS plane's own section-keyed resource, ALREADY validated and TYPE-ERASED by
@@ -1656,16 +1623,15 @@ pub fn build_app_from_config(
                     // "one lowering, one Arc" holds), or a raw-carried plane's `(section, value)`.
                     // `None` when the plane's section carries none. Names no plane resource type.
                     endpoint_slot: cfg.endpoint_resources.get(decl.config_section).cloned(),
-                    // The neutral registry section, erased as `&dyn Any` via `PlaneCfg::as_any` so
-                    // `BuildCtx` names no plane-owned config type; the `agents:` container plane's
-                    // `build` closure downcasts it back to its own typed config.
-                    agent_defs: cfg.agent_defs.as_any(),
-                    tool_defs: cfg.tool_defs.as_any(),
+                    // Every declared section this document writes, by config section, behind the
+                    // neutral `PlaneCfg` seam: a plane's `build` reads its own and names no
+                    // plane-owned config type.
+                    plane_defs: &cfg.plane_defs,
                     public_url: cfg.public_url.as_deref(),
                     // THE PRIOR GENERATION'S SLOTS, so a plane's `build` can CARRY accumulated
                     // coordination off its own prior runtime object across this apply — the same
                     // neutral `&dyn PlaneSlots` a container plane's `build_runtime` receives below.
-                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
+                    prior: prior.map(|p| p as &dyn busbar_kernel::plane_driver::slots::PlaneSlots),
                     // The resolved providers: a door plane's probe is handed its referenced ones.
                     providers: Some(&cfg.providers),
                 };
@@ -1674,49 +1640,9 @@ pub fn build_app_from_config(
             .collect()
     };
 
-    // THE `tools:` CONTAINER PLANE'S PER-GENERATION RUNTIME, carried in `plane_slots` under its
-    // ALWAYS-PRESENT companion key (`runtime_slot_key(<its decl key>)`), distinct from the plane's decl
-    // key, whose slot is config-conditional and drives the dispatch door. Built ONCE through the
-    // plane's own type-erasing `build_runtime` seam (from the neutral `tool_defs` section, erased via
-    // `PlaneCfg::as_any`) so this composition names no plane-owned runtime type. It bundles the
-    // catalogue snapshot (which takes the next PIN GENERATION on construction, so every config apply —
-    // even one that changes nothing about `tools:` — moves the generation and a call admitted under the
-    // previous one is refused at dispatch), the `tools:` registry, the fresh connection pool, the
-    // CARRIED-ACROSS-APPLY sightings / roots-epochs / sampling-spend and the verify-on-call coalescer
-    // (all accumulated evidence, not intent — see that plane's own `build` fn). Composing it beside the
-    // `App` keeps the swap atomic: the whole `Arc<App>` is replaced under one lock, so the catalogue and
-    // the config that produced it never disagree. With that plane compiled out there is no built-in
-    // decl, so no slot is inserted and nothing downcasts it (no accessor exists then).
-    if let Some((slot_key, runtime_slot)) = crate::plane::registry::plane_decl_for_config_section(
-        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-    )
-    .and_then(|d| {
-        d.build_runtime
-            .map(|f| (crate::state::runtime_slot_key(d.key), f))
-    })
-    .map(|(slot_key, f)| {
-        (
-            slot_key,
-            f(
-                cfg.tool_defs.as_any(),
-                prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
-            ),
-        )
-    }) {
-        plane_slots.insert(slot_key, runtime_slot);
-    }
-
-    // THE FALLBACK PLANE'S RUNTIME for this config generation — the pool/lane/failover/egress bundle,
-    // carried in `plane_slots` under its ALWAYS-PRESENT companion key (`runtime_slot_key(<fallback
-    // plane key>)`), the SAME opaque slot the container planes ride, now composed through the fallback
-    // plane's OWN type-erasing `build_runtime` seam (1.6.0 money-path Phase 3-4 C — THE PIVOT): core
-    // populates the neutral `PlaneBuildInput` carrier from the resolved config and hands it across the
-    // `&dyn Any` seam; the plane rebuilds its own lane/pool/runtime tables IN-PLANE. Core names no
-    // plane runtime type here, exactly as it composes a container plane's runtime above.
-    //
     // NEUTRAL telemetry label projections (money-path Phase 3-4 B): pool→member-idx list, the
     // direct-model index, and a lane-idx→model resolver — banked into `AppSlots::build` from the neutral
-    // carrier's `lane_inputs`/`pool_inputs`/`by_model`, so core's label bank names no plane-owned lane
+    // rows `lane_inputs`/`pool_inputs`/`by_model`, so core's label bank names no plane-owned lane
     // or pool type.
     let ts_pools: Vec<(&str, Vec<usize>)> = pool_inputs
         .iter()
@@ -1738,65 +1664,19 @@ pub fn build_app_from_config(
         crate::plane::fallback_key(),
     ));
 
-    // Populate the NEUTRAL carrier field-by-field from the already-resolved config (pre-resolved secret
-    // plaintexts + rate-card-derived costs + resolved context/tokens are in `lane_inputs`/`pool_inputs`).
-    // THE KERNEL'S OWN TABLES over the same resolved sections, for the read seam when no plane
-    // contributes a runtime of its own.
-    let config_tables = Arc::new(busbar_kernel::plane_host::ConfigTables::of(
+    // THE KERNEL'S OWN TABLES over the resolved sections, for the read seam (no plane contributes a
+    // runtime of its own).
+    let config_tables = Arc::new(busbar_kernel::plane_driver::route_tables::ConfigTables::of(
         &lane_inputs,
         &pool_inputs,
         &by_model,
         cfg.upstream_credentials,
     ));
-    let fallback_build_input = PlaneBuildInput {
-        lanes: lane_inputs,
-        pools: pool_inputs,
-        upstream_credentials: cfg.upstream_credentials,
-        allow_metadata_hosts: cfg.allow_metadata_hosts.clone(),
-        allow_all_metadata: cfg.allow_all_metadata,
-        blocked_metadata_hosts: cfg.blocked_metadata_hosts.clone(),
-        client_settings: fallback_client_settings,
-        // The cross-protocol translation seam's GLOBAL fallback max-output-tokens and effort→budget
-        // table — fallback-plane vocabulary, carried through the neutral carrier so the plane's
-        // `build_runtime` stamps them onto its own runtime object (they no longer live on `App`).
-        global_default_max_tokens: cfg.limits.default_max_tokens,
-        reasoning_budgets: {
-            let b = cfg.limits.reasoning_effort_budgets;
-            [b.minimal, b.low, b.medium, b.high]
-        },
-        // The FIXED global-default failover (production has no operator knob for it) — carried so the
-        // plane's `build_runtime` sets its own runtime object's failover config identically to the
-        // pre-pivot inline lowering, and so the test fixture can override the whole-App deadline.
-        default_failover: Some(busbar_kernel::plane_host::FailoverInput {
-            timeout_secs: crate::config::DEFAULT_FAILOVER_DEADLINE_SECS,
-            exclusions: None,
-            max_hops: crate::config::DEFAULT_FAILOVER_CAP,
-        }),
-        // THE BUILD'S AUTH AXIS over the SAME validated registry the inbound chain opened its
-        // positions on: each lane's credential is bound by the auth plugin serving its style.
-        auths: crate::preflight::auth_axis(plugin_registry.clone())
-            .map(busbar_kernel::plane_host::AuthReach),
-    };
-
-    // Compose the fallback plane's runtime slot through that plane's OWN `build_runtime` fn-pointer,
-    // exactly as a container plane's runtime is composed above — passing the neutral carrier erased to
-    // `&dyn Any` and the prior generation's snapshot through the neutral `PlaneSlots` seam (for the
-    // warm-client / probe-schedule carry-over the plane now owns). The slot KEY and the `build_runtime`
-    // come from ONE resolved decl ([`crate::plane::fallback_decl`]): keying off `fallback_key()` would
-    // degrade to the FIRST registered plane's key when no plane flags itself fallback, and the key and
-    // the runtime read from two registry snapshots could name two different planes — the runtime then
-    // lands under a sibling's key and clobbers that sibling's own runtime. With no fallback plane the
-    // key names no plane (no slot is inserted under it) and `App::llm_runtime` reads the empty
-    // default — byte-identical to the featureless zero-plane boot.
+    // The fallback plane's runtime slot KEY (`runtime_slot_key(<fallback plane key>)`): with no
+    // registry plane building a runtime of its own (every plane is a door plane), no slot is
+    // inserted under it and the read seam walks the kernel's own tables above.
     let fallback = crate::plane::fallback_decl();
     let fallback_runtime_key = crate::state::runtime_slot_key(fallback.map_or("", |d| d.key));
-    if let Some(f) = fallback.and_then(|d| d.build_runtime) {
-        let slot = f(
-            &fallback_build_input as &dyn std::any::Any,
-            prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
-        );
-        plane_slots.insert(fallback_runtime_key, slot);
-    }
 
     // THE AUTHORIZATION SERVER, built once per generation, and only when the operator asked for
     // one. Everything
@@ -1839,10 +1719,10 @@ pub fn build_app_from_config(
             // deployment protects no such audience).
             let protected_resources: Vec<String> = cfg
                 .endpoint_resources
-                .get(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2])
+                .get(crate::config::plane_sections::EndpointSection::OWNER)
                 .and_then(|slot| {
                     crate::plane::registry::plane_decl_for_config_section(
-                        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                        crate::config::plane_sections::EndpointSection::OWNER,
                     )
                     .and_then(|d| (d.admission)(slot.as_ref()))
                 })
@@ -1852,10 +1732,10 @@ pub fn build_app_from_config(
             // Built through the seam (`crate::oauth_as::seam`), not `crate::oauth_as::plane::AsPlane`
             // directly: the concrete plane type lives in the sibling `busbar-core-oauth2` crate, which
             // core cannot name (the one-way dependency runs the other direction). The seam's `build`
-            // also spawns the plane's own expired-record sweeper — the same "how do I come alive"
-            // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
-            // that reclaims anything in `oauth-as`, and it runs when it is called and never
-            // otherwise; spawned once per generation).
+            // also hands the plane's expired-record sweep to the kernel's one clock — the same "how
+            // do I come alive" act this call site used to perform inline (`Storage::sweep_expired`
+            // is the only thing that reclaims anything in `oauth-as`, and it runs when it is called
+            // and never otherwise; registered once per generation, beaten by `crate::tick::beat`).
             // The PRIOR generation's server goes in with it: what the server holds carries across
             // the swap, so a reload does not void its tokens, clients, sessions and replay ledgers.
             // The deployment's store, when one is configured: the server keeps its records there,
@@ -1871,11 +1751,15 @@ pub fn build_app_from_config(
         }
     };
 
-    // The generation's hook CONTENT ceiling rides the limits guard installed above
-    // (`limits::mirror_derived_caps`): live for this build, put back if the build is refused, and
-    // read on the hook seam with a single relaxed load.
+    // The generation's hook CONTENT ceiling rides the limits this generation publishes when it goes
+    // live (`config::limits::publish` mirrors it), read on the hook seam with a single relaxed load.
+    // A refused build never publishes it.
+    let limits_resolved = cfg.limits.clone();
 
     let app = App {
+        // The limits this generation goes live with: `AppHandle::swap` publishes them before any
+        // reader of the new generation runs, and carries them onto the plane breaker store.
+        limits: Some(limits_resolved.clone()),
         root_rules: std::sync::Arc::clone(rules),
         config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
@@ -1884,10 +1768,9 @@ pub fn build_app_from_config(
         // `&lanes`/`&pools`/`&by_model` borrows ran first). Identical label sets across applies re-intern to the same
         // slots, so hot-path counters accumulate monotonically across config generations.
         tslots,
-        // THE FALLBACK PLANE'S RUNTIME SLOT KEY (R3/R4 sub-phase B): the bundle itself was composed
-        // above into `plane_slots` under this interned key through that plane's `build_runtime`
-        // seam; the snapshot names only the `&'static str` key, and `App::llm_runtime` downcasts the
-        // slot on the money path. Absent slot (featureless build) reads the empty default.
+        // THE FALLBACK PLANE'S RUNTIME SLOT KEY (R3/R4 sub-phase B): the snapshot names only the
+        // `&'static str` key; no slot is composed under it (every plane is a door plane), so its
+        // read answers the empty default and the read seam walks `config_tables`.
         fallback_runtime_key,
         config_tables,
         store,
@@ -1896,7 +1779,7 @@ pub fn build_app_from_config(
         // dead tool server or agent. Boot starts fresh (reliability is never persisted; the
         // store-or-RAM rule).
         // "What is not configured must not be loaded": a config with NO plane content — no mounted
-        // plane slot, no `tools:`/`agents:` registration, no `tool_pools:`/`agent_pools:` — gets the
+        // plane slot, no registration in a declared section, no plane pool — gets the
         // INERT handle (empty lane table; see `PlaneBreakers::new_inert` for the ~130 KiB the 8
         // placeholder cells' preallocated windows/stripes otherwise cost every planeless idle
         // process). A PROVISIONED prior is always reused (learned reliability survives every apply,
@@ -1909,15 +1792,19 @@ pub fn build_app_from_config(
             let planes_configured = crate::plane::registry::plane_decls()
                 .iter()
                 .any(|d| plane_slots.contains_key(d.key))
-                || !cfg.tool_defs.def_names().is_empty()
-                || !cfg.agent_defs.def_names().is_empty()
-                || !cfg.tool_pools.is_empty()
-                || !cfg.agent_pools.is_empty();
+                || cfg.plane_defs.values().any(|d| !d.def_names().is_empty())
+                || cfg.plane_pools.values().any(|p| !p.is_empty());
             match prior {
                 Some(p) if p.plane_breakers.is_provisioned() || !planes_configured => {
                     Arc::clone(&p.plane_breakers)
                 }
-                _ if planes_configured => Arc::new(crate::store::PlaneBreakers::new()),
+                // Built under THIS generation's limits (THE DESIGN §1: every plane honours the
+                // operator's `limits.*`); a reused prior takes them at the swap
+                // (`App::publish_limits`), never during the build.
+                _ if planes_configured => Arc::new(crate::store::PlaneBreakers::new_with_limits(
+                    cfg.limits.hard_down_cooldown_secs,
+                    cfg.limits.max_honored_retry_after_secs,
+                )),
                 _ => Arc::new(crate::store::PlaneBreakers::new_inert()),
             }
         },
@@ -1940,24 +1827,16 @@ pub fn build_app_from_config(
         incremental_scan: std::env::var_os("BUSBAR_INCREMENTAL_SCAN")
             .is_some_and(|v| !v.is_empty() && v != "0"),
         // The failover pools, resolved-verbatim per generation (the CELLS above are process-
-        // lifetime; the pool DECLARATIONS are config like any other).
-        tool_pools: cfg.tool_pools.clone(),
-        // The GENERIC per-plane failover pool map, keyed by each plane's stable decl key (the
-        // `agents:` container plane's `agent_pools:` set; the `tools:` container plane's
-        // `tool_pools:` set keeps its own dedicated field above).
-        plane_pools: {
-            // Keyed by the DECL KEY of the plane that owns the `agents:` section — resolved from the
-            // registry, never spelled as a literal — so this composition names no plane. A compiled-out
-            // plane has no decl for its section, so nothing is inserted; the pool read treats an absent
-            // key identically to the former empty-value entry.
-            let mut m = std::collections::BTreeMap::new();
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            ) {
-                m.insert(decl.key, cfg.agent_pools.clone());
-            }
-            m
-        },
+        // lifetime; the pool DECLARATIONS are config like any other): each plane's pools, keyed by
+        // its stable decl key, resolved from the registry so this composition names no plane.
+        plane_pools: cfg
+            .plane_pools
+            .iter()
+            .filter_map(|(section, pools)| {
+                crate::plane::registry::plane_decl_for_config_section(section)
+                    .map(|decl| (decl.key, pools.clone()))
+            })
+            .collect(),
         auth: auth_mw.clone(),
         rewrite_hooks,
         tap_hooks,
@@ -1970,43 +1849,10 @@ pub fn build_app_from_config(
         pool_orderings,
         pool_decision_gates,
         pool_rewrite_chains,
-        // The GENERIC per-plane per-container submission-gate map, keyed by each plane's stable decl
-        // key — in place of the former per-plane `tools_gates`/`agents_gates` fields. Each
-        // plane's resolved gate map (built above, empty when its feature is off) goes under its key.
-        plane_gates: {
-            // Keyed by each owning plane's DECL KEY, resolved from the registry rather than named as a
-            // literal: the `tools:` section's plane takes `tools_gates`, the `agents:` section's
-            // plane takes `agents_gates`. A compiled-out plane has no decl for its section, so its
-            // (empty) gate map is simply not inserted — byte-identical to the former empty-value entry.
-            let mut m = std::collections::BTreeMap::new();
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            ) {
-                m.insert(decl.key, tools_gates);
-            }
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            ) {
-                m.insert(decl.key, agents_gates);
-            }
-            m
-        },
-        // THE TAP twin of `plane_gates`, built identically: each plane's rewrite-chain map under its
-        // decl key, empty (hence not inserted) for a compiled-out plane.
-        plane_rewrites: {
-            let mut m = std::collections::BTreeMap::new();
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-            ) {
-                m.insert(decl.key, tools_rewrites);
-            }
-            if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
-            ) {
-                m.insert(decl.key, agents_rewrites);
-            }
-            m
-        },
+        // The GENERIC per-plane per-container submission-gate map and its rewrite-chain twin, keyed by
+        // each plane's stable decl key (built above).
+        plane_gates,
+        plane_rewrites,
         hook_env: hook_env.clone(),
         hook_registry: cfg.hooks.clone(),
         requested_signals: hooks::requested_signals(&cfg.hooks),
@@ -2019,10 +1865,6 @@ pub fn build_app_from_config(
         // resolved config (the EFFECTIVE base+overlay shape).
         identity_providers: cfg.identity_providers.clone(),
         export_defs: cfg.export_defs.clone(),
-        // TYPE-ERASED into `App` so it names no plane-owned config type — the SAME resolved object
-        // (a clone, not a reparse), so the admin view and gates are byte-identical. The `agents:`
-        // container plane downcasts it back inside its own module.
-        agent_defs: cfg.agent_defs.clone_arc_any(),
         // THE `agents:` CONTAINER PLANE, built only when `agents:` defines one, is NOT mirrored into a
         // typed `App` field any more: it lives solely in its `plane_slots` entry (built once by
         // `PlaneDecl::build`), and every reader reaches it through that plane's own runtime accessors,
@@ -2090,18 +1932,11 @@ pub fn build_app_from_config(
         // runtime accessor, which downcasts that slot inside the plane.
         plane_slots,
         oauth_as: oauth_as_plane.clone(),
-        // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
-        // approval already spent is evidence, not intent, and a config apply that forgot it would
-        // hand every outstanding confirmation back to whoever still holds it.
-        spent_token_ledger: prior.map_or_else(
-            || Arc::new(crate::plane::approvals::SpentTokenLedger::new()),
-            |p| p.spent_token_ledger.clone(),
-        ),
         // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
         // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
         // silently detach it and every later quarantine would stop being written down.
         demotion_record: prior.map_or_else(
-            || Arc::new(crate::plane::quarantine::DemotionRecord::new()),
+            || Arc::new(crate::trust::demotion::DemotionRecord::new()),
             |p| p.demotion_record.clone(),
         ),
         auth_scope_caps: cfg
@@ -2156,6 +1991,10 @@ pub fn build_app_from_config(
         ),
         plugin_routes,
         boot_route_paths,
+        planes_awaiting_restart: planes_awaiting_restart
+            .iter()
+            .map(|section| (*section).to_string())
+            .collect(),
     };
     // PRUNE the verify-on-call gates to the subjects THIS generation still fronts. `flights` and
     // `drift_latch` are per-subject coordination CARRIED across every apply (above); without a prune
@@ -2193,7 +2032,7 @@ pub fn build_app_from_config(
         app,
         rotate_gov_credentials,
         InstalledLimits {
-            guard: limits_guard,
+            limits: limits_resolved,
             rates: resolved_rates,
             staged,
             destinations,

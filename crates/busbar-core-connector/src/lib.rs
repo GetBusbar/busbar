@@ -11,10 +11,12 @@
 //!   then writes, reads, waits and closes it. Ownership is the shared book
 //!   ([`busbar_contract::conn::ConnSlab`]): a connection another instance owns, a closed one and a
 //!   need nobody declared are refused.
-//! * [`endpoint`] is the pure check an open's target passes before any dial: a cloud metadata host,
-//!   in any spelling, is refused by name.
-//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any outbound
-//!   connection may be dialled at (private refused unless allowlisted, metadata always).
+//! * [`endpoint`] is the pure check an open's target passes before any dial: it names a host. A
+//!   dial no judge judges also refuses a cloud metadata or link-local host there, by name.
+//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any judged
+//!   outbound connection may be dialled at (private refused unless allowlisted; cloud metadata and
+//!   link-local refused unless an IP or CIDR allowlist entry, or a provider's 1.5.5 carve-out,
+//!   names them).
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
 //! * [`dtls`] is its datagram sibling — the DTLS engine a media association runs on (the RFC 7983
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
@@ -34,16 +36,18 @@
 //!   connection as carrier -> \[TLS\] -> framer; [`pool`] keeps a dialled connection whose exchange
 //!   finished whole for the next open to the same place; [`listen`] has the carrier listen for each
 //!   inbound need and composes each accepted connection the same way, begun on the accept side;
-//!   [`registry`] is the view of which entry serves which scheme; [`wire`] presents an entry over
-//!   carried connections to the kernel's transport seam.
+//!   [`registry`] is the view of which entry serves which scheme; [`wire`] is the boot fold's
+//!   admission of an entry (its key, and no layer it composes over).
 //! * [`process`] builds the process's one connector for the root: the deployment's one destination
 //!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
 //! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
 //! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
 //!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
 //!
-//! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
-//! raw pointers as a plugin does.
+//! No `unsafe` is written here outside two places: the reactor registration in [`io::register`],
+//! one call to tokio's `AsyncFd::register_with_interest` on a descriptor the registration owns
+//! (RUSTSEC-2026-0386), and the tests' framer entry, which writes a host sink through its raw
+//! pointers as a plugin does.
 //!
 //! No thread is started per connection: every socket's readiness is the registering worker's
 //! reactor's, and every wait is not-ready with a wake. The threads that are started: a name lookup
@@ -114,7 +118,7 @@ use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
-use crate::pool::{PoolKey, PoolPosture, Pools};
+use crate::pool::{PoolKey, PoolPosture, Pools, SealRef};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
@@ -328,6 +332,57 @@ type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 /// The trust anchors sealed per destination (the transport pin, ARCHITECT 2026-10-03), by the need's owner, the need and
 /// the destination's authority (lower-case, `host:port`).
 type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
+
+/// THE REGISTRATIONS' SEALS AT ONE DESTINATION: each registration's seal at its authority, by name
+/// (`None`: it holds no anchors), in name order. An open naming no registration sealed there is held
+/// to the one answer they and the destination's own seal all give, and refused where they disagree:
+/// a pin nobody enforces is refused, never dropped, and no registration's anchors are erased by
+/// another's.
+#[derive(Default)]
+struct Registered {
+    members: std::collections::BTreeMap<String, Option<Arc<tls::client::Sealed>>>,
+}
+
+impl Registered {
+    /// What an open naming no registration is held to, with the destination's `own` seal: the one
+    /// answer every seal gives (the destination's own first, then the registrations' in name order,
+    /// so the same seal answers every open), or `Err` where two disagree.
+    fn held(
+        &self,
+        own: Option<&Arc<tls::client::Sealed>>,
+    ) -> Result<Option<Arc<tls::client::Sealed>>, ConnError> {
+        let mut seals = own
+            .into_iter()
+            .map(Some)
+            .chain(self.members.values().map(Option::as_ref));
+        let Some(first) = seals.next() else {
+            return Ok(None);
+        };
+        if seals.all(|other| same_anchors(first, other)) {
+            Ok(first.cloned())
+        } else {
+            Err(ConnError::Refused)
+        }
+    }
+}
+
+/// Whether two seals hold a connection to the same: the same key pin and the same client identity
+/// (its certificate chain), `None` and a seal holding nothing alike.
+fn same_anchors(
+    a: Option<&Arc<tls::client::Sealed>>,
+    b: Option<&Arc<tls::client::Sealed>>,
+) -> bool {
+    let pins = a.and_then(|s| s.key_pin.as_deref()) == b.and_then(|s| s.key_pin.as_deref());
+    let identities = match (
+        a.and_then(|s| s.identity.as_deref()),
+        b.and_then(|s| s.identity.as_deref()),
+    ) {
+        (None, None) => true,
+        (Some(x), Some(y)) => x.cert == y.cert,
+        _ => false,
+    };
+    pins && identities
+}
 
 /// The trust anchors sealed per REGISTRATION, by the need's owner, the need and the registration's
 /// name: the authority (lower-case, `host:port`) of its own target and what it is held to there
@@ -552,6 +607,10 @@ pub struct Connector {
     /// The trust anchors each sealed REGISTRATION's own connections are held to: two registrations
     /// at one authority each present their own client identity and hold their own pin.
     member_anchored: MemberAnchored,
+    /// The registrations' seals at each destination, by the need's owner, the need and the
+    /// authority (lower-case, `host:port`): what an open naming none is held to with the
+    /// destination's own.
+    registered: Mutex<HashMap<(InstanceId, NeedId, String), Registered>>,
     /// The REGISTRATIONS holding a PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`), by the need's
     /// owner, the need and the registration's name, each with the authority (lower-case,
     /// `host:port`) of its own target ([`PollConns::seal_reach`]).
@@ -575,6 +634,11 @@ pub struct Connector {
     /// WHERE EACH DIAL'S BINDING COMES FROM ([`framer::BindingRefs`]): the composition root's;
     /// `None` = every dial begins with no auth.
     bindings: RwLock<Option<Arc<dyn framer::BindingRefs>>>,
+    /// HOW A PROGRAM'S ENVIRONMENT REFERENCES RESOLVE ([`spawn_env`]): the resolver the composition
+    /// root handed this connector ([`Connector::resolving_spawn_secrets`]), handed on to every
+    /// environment a declaration loads. `None` = no reference resolves, and a program that states
+    /// one is not spawned (fail-closed).
+    spawn_secrets: Option<spawn_env::SpawnSecretFn>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -597,6 +661,7 @@ impl Default for Connector {
             pools: Pools::new(PoolPosture::NONE),
             anchored: Mutex::new(HashMap::new()),
             member_anchored: Mutex::new(HashMap::new()),
+            registered: Mutex::new(HashMap::new()),
             reaching: Mutex::new(HashMap::new()),
             auths: Mutex::new(HashMap::new()),
             authority_held: Mutex::new(HashSet::new()),
@@ -604,6 +669,7 @@ impl Default for Connector {
             proxy: None,
             pairs: Mutex::new(HashMap::new()),
             bindings: RwLock::new(None),
+            spawn_secrets: None,
         }
     }
 }
@@ -674,6 +740,15 @@ impl Connector {
     #[must_use]
     pub fn with_io(mut self, io: Arc<HostIo>) -> Self {
         self.io = io;
+        self
+    }
+
+    /// The same connector resolving its programs' environment references through `secrets`, at
+    /// config time: the need's declaration and the refresher's lease, never a spawn
+    /// ([`spawn_env`]).
+    #[must_use]
+    pub fn resolving_spawn_secrets(mut self, secrets: spawn_env::SpawnSecretFn) -> Self {
+        self.spawn_secrets = Some(secrets);
         self
     }
 
@@ -946,9 +1021,9 @@ impl Connector {
             .get(&(owner, need))
             .map(|n| Arc::clone(&n.door))
             .ok_or(ConnError::Refused)?;
-        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
-        endpoint::check(&located.authority).map_err(|_| ConnError::Refused)?;
+        endpoint::named(&located.authority).map_err(|_| ConnError::Refused)?;
         if !scheme_admits(egress_class, located.secure) {
             return Err(ConnError::Refused);
         }
@@ -1060,7 +1135,7 @@ impl Connector {
                 let member = kept.unwrap_or_else(|| {
                     Arc::new(program::Member::new(
                         p.clone(),
-                        spawn_env::HeldEnv::load(&p.env_refs, scope),
+                        spawn_env::HeldEnv::load(&p.env_refs, self.spawn_secrets, scope),
                         Via {
                             door: Arc::clone(&door),
                             io: Arc::clone(&self.io),
@@ -1130,7 +1205,7 @@ impl Connector {
                 tls: None,
                 program: Some((
                     program.clone(),
-                    spawn_env::HeldEnv::load(&program.env_refs, scope),
+                    spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope),
                 )),
                 members: None,
             }),
@@ -1140,7 +1215,8 @@ impl Connector {
 
     /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
     /// the need was declared over, secured by `tls` where set (the protocols agreed off the offer
-    /// the entry states for an ACCEPTING listener, [`framer::accept_offer`]), bounded by `limits`.
+    /// the entry states for an ACCEPTING listener, [`framer::accept_offer`], else off the
+    /// transport's registered list), bounded by `limits`.
     /// Answers the address bound. Called on a worker.
     ///
     /// # Errors
@@ -1157,16 +1233,33 @@ impl Connector {
     ) -> Result<SocketAddr, ConnError> {
         self.slab.check_need(owner, need)?;
         // A need declared without a transport binds nothing.
-        let door = self
+        let (door, registered) = self
             .over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .map(|d| Arc::clone(&d.door))
+            .map(|d| (Arc::clone(&d.door), d.alpn.clone()))
             .ok_or(ConnError::Refused)?;
         // The listener's offer is the entry's own for its ACCEPTING side, never its dial offer;
-        // an entry that states none (it refuses the question) makes no offer.
-        let alpn = framer::accept_offer(door.as_ref()).unwrap_or_default();
+        // the transport's registered list stands only for an entry that states none (it answers
+        // no offer, or refuses the question), as it stands for a dial whose `locate` answers none
+        // (`compose`). A TLS listener never goes out with no protocol to agree where its
+        // transport registered one. An entry that refuses the question is logged: its listener
+        // binds without an offer of its own.
+        let alpn = match framer::accept_offer(door.as_ref()) {
+            Ok(offer) if !offer.is_empty() => offer,
+            Ok(_) => registered,
+            Err(refused) => {
+                tracing::warn!(
+                    owner = owner.0,
+                    need = need.0,
+                    error = %refused,
+                    "inbound listener: the entry's locate refused the accepting-side protocol \
+                     offer; the listener binds with the transport's registered protocol list"
+                );
+                registered
+            }
+        };
         let mut listeners = self.listeners.lock().expect("listeners");
         if listeners.contains_key(&(owner, need)) {
             return Err(ConnError::Refused);
@@ -1707,21 +1800,11 @@ fn settings_derived(target_from: &str) -> bool {
 /// everything else as written. `None` when no userinfo is found to leave out. The text left out is
 /// never kept, returned or repeated.
 fn without_userinfo(target: &str) -> Option<String> {
-    let start = match target.split_once("://") {
-        Some((scheme, _))
-            if !scheme.is_empty()
-                && scheme
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) =>
-        {
-            scheme.len() + 3
-        }
-        _ => 0,
-    };
-    let rest = &target[start..];
-    let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
-    let at = rest[..end].rfind('@')?;
-    Some(format!("{}{}", &target[..start], &rest[at + 1..]))
+    // The authority the one split reads ([`busbar_contract::net::url_authority`]).
+    let parts = busbar_contract::net::url_authority(target);
+    parts.userinfo?;
+    let scheme = parts.scheme.map(|s| format!("{s}://")).unwrap_or_default();
+    Some(format!("{scheme}{}{}", parts.host_port, parts.tail))
 }
 
 impl DeclaredConns for Connector {
@@ -2160,7 +2243,7 @@ impl Connector {
         ),
         poolable: bool,
     ) -> Result<Held, ConnError> {
-        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        endpoint::named(target).map_err(|_| ConnError::Refused)?;
         // THE MEMBER'S BINDING (THE DESIGN §6, "Auth points and guest lists", item 5): an open
         // naming a registration begins its framing with that registration's auth handle, minted
         // for this entry; the framer calls the auth itself at the binding's points.
@@ -2205,15 +2288,22 @@ impl Connector {
         // The registration whose own anchors the dial is held to, if any: a pooled line is lent
         // only to an open held to the same.
         let anchored_as = own.is_some().then(|| desc.member.to_owned());
+        // Naming none, the open is held to the destination's anchors: the one answer every seal at
+        // its authority gives, and refused where they disagree.
         let anchors = match own {
             Some(sealed) => sealed,
-            None => self
-                .anchored
-                .lock()
-                .expect("anchors")
-                .get(&(caller, need, authority))
-                .cloned(),
+            None => {
+                let at = (caller, need, authority);
+                let anchored = self.anchored.lock().expect("anchors");
+                let own = anchored.get(&at);
+                match self.registered.lock().expect("anchors").get(&at) {
+                    Some(registered) => registered.held(own)?,
+                    None => own.cloned(),
+                }
+            }
         };
+        // The very seal the dial is held to: a pooled line is lent only to an open held to it.
+        let sealed = anchors.clone().map(SealRef);
         if anchors
             .as_ref()
             .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
@@ -2232,9 +2322,10 @@ impl Connector {
                 .get(&(caller, need, desc.member.to_owned()))
                 .is_some_and(|at| at.eq_ignore_ascii_case(planned.authority()));
         // A TARGET THE NEED'S CONFIG NAMES IS THE OPERATOR'S OWN (THE DESIGN §5 egress-class
-        // table, owner-signed 2026-09-27): in a request-data class its address is judged as
-        // operator infrastructure. A provider need keeps its class: it is refused a private
-        // address unless allowlisted (ARCHITECT ruling CRATES-14, `guard::judged_class`).
+        // table, owner-signed 2026-09-27) in the egress default class only: its address is judged
+        // as operator infrastructure. An open-web need keeps its class (public https only, Q128
+        // ruling 14), and a provider need is refused a private address unless allowlisted
+        // (ARCHITECT ruling CRATES-14, `guard::judged_class`).
         let judged_class = guard::judged_class(egress_class, declared_target.is_some());
         // THE DECLARED TARGET (1.5.5's per-module target guarantee, on every need): a need whose
         // config names its target dials that target and no other.
@@ -2260,6 +2351,8 @@ impl Connector {
             (
                 self.pools.shard(),
                 PoolKey {
+                    owner: caller,
+                    need,
                     door: Arc::as_ptr(&door).cast::<()>() as usize,
                     authority: planned.authority().to_ascii_lowercase(),
                     secure: planned.secure(),
@@ -2268,6 +2361,7 @@ impl Connector {
                     reach,
                     anchored_as,
                     binding: binding.map(|b| (b.auth.id, b.auth.mac)),
+                    sealed,
                 },
             )
         });
@@ -2669,30 +2763,48 @@ impl PollConns for Connector {
         // A REGISTRATION'S anchors are kept under its name too: an open naming it, at its own
         // authority, is held to what it holds there (or to nothing, where it holds nothing), apart
         // from every other registration at that `host:port`.
-        if !member.is_empty() {
-            let key = (owner, need, member.to_owned());
-            let mut by_member = self.member_anchored.lock().expect("anchors");
-            match &at {
-                Some((_, _, authority)) => {
-                    by_member.insert(key, (authority.clone(), sealed.clone()));
+        // The destination's seals are kept apart too: its own (sealed naming no registration), and
+        // each registration's among those at its authority (leaving the ones at any authority it
+        // was sealed at before); an open naming none is held to what they all agree on. No seal
+        // ever drops or overwrites another's.
+        if member.is_empty() {
+            let Some(at) = at else {
+                return Ok(());
+            };
+            let mut anchored = self.anchored.lock().expect("anchors");
+            match sealed {
+                Some(sealed) => {
+                    anchored.insert(at, sealed);
                 }
+                // Nothing to hold: the destination's own earlier seal is dropped.
                 None => {
-                    by_member.remove(&key);
+                    anchored.remove(&at);
+                }
+            }
+            return Ok(());
+        }
+        let key = (owner, need, member.to_owned());
+        let mut by_member = self.member_anchored.lock().expect("anchors");
+        let mut registered = self.registered.lock().expect("anchors");
+        let before = match &at {
+            Some((_, _, authority)) => by_member.insert(key, (authority.clone(), sealed.clone())),
+            None => by_member.remove(&key),
+        };
+        if let Some((was, _)) = before {
+            let was = (owner, need, was);
+            if let Some(at_was) = registered.get_mut(&was) {
+                at_was.members.remove(member);
+                if at_was.members.is_empty() {
+                    registered.remove(&was);
                 }
             }
         }
-        let Some(at) = at else {
-            return Ok(());
-        };
-        let mut anchored = self.anchored.lock().expect("anchors");
-        match sealed {
-            Some(sealed) => {
-                anchored.insert(at, sealed);
-            }
-            // Nothing to hold: any earlier seal for the destination is dropped.
-            None => {
-                anchored.remove(&at);
-            }
+        if let Some(at) = at {
+            registered
+                .entry(at)
+                .or_default()
+                .members
+                .insert(member.to_owned(), sealed);
         }
         Ok(())
     }

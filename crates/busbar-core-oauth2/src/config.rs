@@ -207,19 +207,18 @@ impl std::fmt::Display for AsCfgError {
 
 /// The VALIDATED authorization server: every endpoint derived, every refusal already taken.
 ///
-/// Holds no key and no server object — those are runtime state and live on `busbar_core_oauth2::plane::AsPlane`
-/// (the sibling crate the plane's runtime moved to in 1.6.0). This is the config half, so it can be
-/// compared, logged and swapped without touching a secret.
+/// Holds no key and no server object — those are runtime state and live on
+/// `crate::plane::AsPlane`. This is the config half, so it can be compared, logged and swapped
+/// without touching a secret.
 ///
-/// The fields are `pub` for TWO reasons now, not one. The original reason still holds:
-/// `config_validate::secret_refs` must be able to DESTRUCTURE it exhaustively — that walker's whole
-/// design is that a newly added secret-bearing field is a COMPILE error rather than an oversight,
-/// and a walk through an accessor cannot deliver that (`identity.signing_key()` keeps compiling the
-/// day somebody adds a second `SecretRef` here, and the new secret is then one `--validate` reports
-/// as fine and the process fails on at runtime). The second reason is the 1.6.0 plane split:
-/// `busbar-core-oauth2`'s own gating proof (`tests::mount_tests::inventory`) destructures this the SAME
-/// exhaustive way, from OUTSIDE this crate — so the field visibility widened from `pub(crate)` to
-/// `pub` to cross that boundary; the exhaustive-destructure discipline itself is unchanged.
+/// The fields are named, not hidden behind accessors, because this crate's `config::secret_refs`
+/// (the walk the kernel's `--validate` and boot are handed through the seam's `check`; the kernel
+/// itself treats the block as opaque) DESTRUCTURES it exhaustively: a newly added secret-bearing
+/// field is then a COMPILE error rather than an oversight, which a walk through an accessor cannot
+/// deliver (`identity.signing_key()` keeps compiling the day somebody adds a second `SecretRef`
+/// here, and the new secret is then one `--validate` reports as fine and the process fails on at
+/// runtime). The mount's gating proof (`tests::mount_tests::inventory`) destructures it the same
+/// exhaustive way.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AsIdentity {
     pub issuer: String,
@@ -250,9 +249,10 @@ pub struct AsIdentity {
     /// The operator's `signing_key:` reference, carried VERBATIM and unresolved.
     ///
     /// It lives on the validated identity rather than being consumed at `resolve` time because
-    /// `config_validate::secret_refs` walks `RootCfg` and must be able to SEE it: a secret the
-    /// walker cannot reach is a secret nothing checks, and that walker's whole design is that
-    /// omission is a compile error rather than an oversight.
+    /// `config::secret_refs` walks the identity and must be able to SEE it, so the kernel can
+    /// resolve it at `--validate` and at boot: a secret the walker cannot reach is a secret nothing
+    /// checks, and that walker's whole design is that omission is a compile error rather than an
+    /// oversight.
     pub signing_key: Option<SecretRef>,
 }
 
@@ -517,14 +517,20 @@ fn validate_public_jwk(key: &StaticClientJwk) -> Result<(), &'static str> {
 /// for one shape, and a permissive general-purpose parser is the wrong tool for a value whose whole
 /// job is to be compared for exact equality. A lenient parse that normalised `HTTPS://Host:443/as`
 /// would hand back a string that no longer equals the `iss` a client recorded.
+///
+/// The authority is read by the one split ([`busbar_contract::net::url_authority`]), where every
+/// browser and HTTP client ends it. A URL those readers would split elsewhere than this text reads
+/// is not the one shape: one with a `\` (a dialling stack reads it as `/`, so
+/// `https://as.example\@evil.example` is `as.example`'s path) or with an empty host is refused.
 fn split_absolute(uri: &str) -> Option<(&str, &str)> {
     let rest = uri
         .strip_prefix("https://")
         .or_else(|| uri.strip_prefix("http://"))?;
-    let authority_len = rest.find('/').unwrap_or(rest.len());
-    if authority_len == 0 {
+    let parts = busbar_contract::net::url_authority(uri);
+    if parts.host_port.is_empty() || uri.contains('\\') {
         return None;
     }
+    let authority_len = rest.len() - parts.tail.len();
     let split = uri.len() - rest.len() + authority_len;
     Some((&uri[..split], &uri[split..]))
 }

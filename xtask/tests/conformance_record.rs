@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use xtask::conformance_record::{
-    decide_legs, decide_llm, decide_voice, decide_webrtc, decide_ws, head_commit, render_verdict,
-    rig_for, write_verdict, LlmRun, Outcome, Status, VoiceRun, WebrtcRun, WsRun, LLM_DIALECTS,
-    WEBRTC_SUITE,
+    decide_legs, decide_llm, decide_voice, decide_webrtc, decide_ws, head_commit,
+    recording_for_subject, render_verdict, rig_for, write_verdict, LlmRun, Outcome, Status,
+    VoiceRun, WebrtcRun, WsRun, LLM_DIALECTS, WEBRTC_SUITE,
 };
 use xtask::gates::conformance_sync::render::{Suite, Tier};
 
@@ -85,7 +85,6 @@ fn suite(id: &str) -> Suite {
         label: id.to_string(),
         verdict: format!("conformance-verdict-{id}"),
         public: true,
-        not_run_reason: None,
         plane: None,
     }
 }
@@ -557,6 +556,61 @@ fn a_suite_with_no_registry_entry_is_an_argument_error() {
     );
 }
 
+/// `conformance check --selftest` is the RED/GREEN battery of the MUST gate the predev move runs;
+/// it runs here so `test` holds it, its `--musts` cases included (a manifest that drops a registered
+/// suite, or carries one the registry does not name, is refused).
+#[test]
+fn the_conformance_check_selftest_proves_it_can_admit_and_deny() {
+    assert_eq!(run(&["conformance", "check", "--selftest"]), 0);
+}
+
+// ── the llm rig judges a recording of THIS checkout's build ────────────────────────────────────
+
+fn recording(tag: &str, ledger: &str, meta: Option<&str>) -> PathBuf {
+    let d = tmpdir(tag);
+    std::fs::write(d.join("ledger.tsv"), ledger).unwrap();
+    if let Some(m) = meta {
+        std::fs::write(d.join("meta.json"), m).unwrap();
+    }
+    d
+}
+
+const BUILT: &str = "61b54c946a580409a9c6641bce3072087ffbc978df1687eca850f7e190a2ea1c";
+const OTHER_BUILD: &str = "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7";
+
+#[test]
+fn a_recording_of_another_build_is_never_judged_under_head() {
+    let rows = "cell\tPASS\n";
+    let meta = |sha: &str| {
+        format!(
+            "{{\"binary\":\"/x/busbar\",\"binary_sha256\":\"{sha}\",\"version\":\"candidate\"}}"
+        )
+    };
+
+    let same = recording("rec-same", rows, Some(&meta(BUILT)));
+    assert_eq!(recording_for_subject(&same, BUILT), Ok(()));
+
+    let other = recording("rec-other", rows, Some(&meta(OTHER_BUILD)));
+    let why = recording_for_subject(&other, BUILT).expect_err("another build's recording");
+    assert!(why.contains(OTHER_BUILD) && why.contains(BUILT), "{why}");
+
+    let bare = recording("rec-bare", rows, None);
+    let why = recording_for_subject(&bare, BUILT).expect_err("a recording with no provenance");
+    assert!(why.contains("meta.json"), "{why}");
+
+    let unnamed = recording("rec-unnamed", rows, Some("{\"version\":\"candidate\"}"));
+    let why = recording_for_subject(&unnamed, BUILT).expect_err("a recording naming no binary");
+    assert!(why.contains("binary_sha256"), "{why}");
+
+    let empty = recording("rec-empty", "", Some(&meta(BUILT)));
+    let why = recording_for_subject(&empty, BUILT).expect_err("a recording with no rows");
+    assert!(why.contains("no ledger rows"), "{why}");
+
+    for d in [same, other, bare, unnamed, empty] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
 // ── the producer reconciles the manifest from the verdicts it wrote ────────────────────────────
 
 /// `conformance:manifest-drift` over `repo` as the gate judges it (no write): PASS only when
@@ -585,6 +639,14 @@ fn the_verdicts_the_producer_writes_rebuild_the_manifest_in_process() {
     std::fs::create_dir_all(roster.parent().unwrap()).unwrap();
     std::fs::copy(repo_root().join("qa/construction.toml"), &roster)
         .expect("the tree's plane roster copies into the fixture");
+    // Every verdict is held to the verdict schema before it is read.
+    let schema = repo.join("conformance/verdicts/verdict.schema.json");
+    std::fs::create_dir_all(schema.parent().unwrap()).unwrap();
+    std::fs::copy(
+        repo_root().join("conformance/verdicts/verdict.schema.json"),
+        &schema,
+    )
+    .expect("the tree's verdict schema copies into the fixture");
     let suites = xtask::gates::conformance_sync::render::parse_registry(
         &xtask::ctx::Ctx::new(&repo).expect("a context over the fixture"),
     )

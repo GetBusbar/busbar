@@ -26,7 +26,7 @@ const PROBE_RETRY_FLOOR_MS: u64 = 250;
 /// Advisory recovery floor for an inbound-shed request (`limits.max_inbound_concurrent`). Advisory
 /// like the probe floor above.
 ///
-/// `pub(crate)` so the inbound-admission `Retry-After` DERIVES its whole-second value from this one
+/// `pub` so the inbound-admission `Retry-After` DERIVES its whole-second value from this one
 /// source rather than hardcoding a bare `"1"` beside it — the same coupling
 /// [`AT_CAPACITY_RECOVERY_FLOOR_MS`] gives the proxy's at-capacity `Retry-After`. The store must not
 /// depend on `limits`, so the derivation lives at the consumer (`limits::admission`), reading this
@@ -116,10 +116,7 @@ pub enum BreakerState {
 /// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `tool:` so a
 /// registration keyed this way can never collide with a bare-name key another caller uses directly,
 /// nor with a key built under a different fixed prefix (e.g. [`agent_key`]'s `agent:`). The id is
-/// the caller's own registration id, which is what every refusal names. Lives here (not only on
-/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
-/// core's `PlaneBreakers::tool_key` delegates to it so the ONE spelling of the prefix stays
-/// single-sourced.
+/// the caller's own registration id, which is what every refusal names.
 pub fn tool_key(server: &str) -> String {
     format!("tool:{server}")
 }
@@ -127,10 +124,7 @@ pub fn tool_key(server: &str) -> String {
 /// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `agent:` so a
 /// registration keyed this way can never collide with a bare-name key another caller uses directly,
 /// nor with a key built under a different fixed prefix (e.g. [`tool_key`]'s `tool:`). The id is
-/// the caller's own registration id, which is what every refusal names. Lives here (not only on
-/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
-/// core's `PlaneBreakers::agent_key` delegates to it so the ONE spelling of the prefix stays
-/// single-sourced.
+/// the caller's own registration id, which is what every refusal names.
 pub fn agent_key(agent: &str) -> String {
     format!("agent:{agent}")
 }
@@ -264,16 +258,20 @@ impl BreakerCfg {
     /// `build_runtime` reconstructs from (money-path Phase 3-4 C). Lossless over every field the FSM
     /// reads. `honor_retry_after`/`bench_below_trip_threshold` are always `true` on the LLM path,
     /// carried anyway so a future divergence cannot silently drop.
-    pub fn to_breaker_input(&self) -> crate::plane_host::BreakerInput {
-        crate::plane_host::BreakerInput {
+    pub fn to_breaker_input(&self) -> crate::plane_driver::route_input::BreakerInput {
+        crate::plane_driver::route_input::BreakerInput {
             base_cooldown_secs: self.base_cooldown_secs,
             max_cooldown_secs: self.max_cooldown_secs,
             honor_retry_after: self.honor_retry_after,
             bench_below_trip_threshold: self.bench_below_trip_threshold,
-            trip: crate::plane_host::TripInput {
+            trip: crate::plane_driver::route_input::TripInput {
                 mode: match self.trip.mode {
-                    TripMode::ErrorRate => crate::plane_host::TripModeInput::ErrorRate,
-                    TripMode::Consecutive => crate::plane_host::TripModeInput::Consecutive,
+                    TripMode::ErrorRate => {
+                        crate::plane_driver::route_input::TripModeInput::ErrorRate
+                    }
+                    TripMode::Consecutive => {
+                        crate::plane_driver::route_input::TripModeInput::Consecutive
+                    }
                 },
                 window_s: self.trip.window_s,
                 threshold: self.trip.threshold,
@@ -288,7 +286,7 @@ impl BreakerCfg {
     /// names only this pub constructor and the neutral input type).
     ///
     /// [`to_breaker_input`]: Self::to_breaker_input
-    pub fn from_breaker_input(i: &crate::plane_host::BreakerInput) -> Self {
+    pub fn from_breaker_input(i: &crate::plane_driver::route_input::BreakerInput) -> Self {
         Self {
             base_cooldown_secs: i.base_cooldown_secs,
             max_cooldown_secs: i.max_cooldown_secs,
@@ -296,8 +294,12 @@ impl BreakerCfg {
             bench_below_trip_threshold: i.bench_below_trip_threshold,
             trip: TripConfig {
                 mode: match i.trip.mode {
-                    crate::plane_host::TripModeInput::ErrorRate => TripMode::ErrorRate,
-                    crate::plane_host::TripModeInput::Consecutive => TripMode::Consecutive,
+                    crate::plane_driver::route_input::TripModeInput::ErrorRate => {
+                        TripMode::ErrorRate
+                    }
+                    crate::plane_driver::route_input::TripModeInput::Consecutive => {
+                        TripMode::Consecutive
+                    }
                 },
                 window_s: i.trip.window_s,
                 threshold: i.trip.threshold,
@@ -396,8 +398,6 @@ pub struct LaneSnapshot {
 /// an in-flight probe records into the OLD store snapshot it was dispatched under), SWRR fairness
 /// counters (positional by nature; reset is harmless), and the rolling outcome windows (strictly
 /// time-windowed — they refill within seconds and carrying them would import stale samples).
-// Bin-target consumer is the config-apply core (next slice); tests exercise it now.
-#[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LaneHealthSnapshot {
     /// The member the lane serves ([`LaneSnapshot::member`]).
@@ -430,7 +430,6 @@ pub struct LaneHealthSnapshot {
 }
 
 /// One per-pool breaker cell's portable state (the FSM triple; windows/probe/SWRR stay ephemeral).
-#[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PoolCellHealthSnapshot {
     pub pool: String,
@@ -664,9 +663,13 @@ pub trait LaneRuntime: Send + Sync + 'static {
     // `#[cfg(test)]`-gated out of the release binary.
     #[cfg(any(test, feature = "test-support"))]
     fn record_success(&self, lane: usize) {
-        self.record_success_in("", lane);
+        self.record_success_in("", lane, super::HealthState::now_secs());
     }
-    fn record_success_in(&self, pool: &str, lane: usize);
+    /// Record a success on the `(pool, lane)` cell at the caller's `now` (whole seconds), never a
+    /// clock this store reads: a walk records an attempt's success at the instant its failures, its
+    /// admission and its shed read, so the error-rate window a later failure trips on holds every
+    /// outcome on one clock ([`Self::record_transient_in_at`], [`Self::record_rate_limit_in`]).
+    fn record_success_in(&self, pool: &str, lane: usize, now: u64);
     /// A SUCCESSFUL (2xx) out-of-band health probe: push a success outcome into the sliding
     /// error-rate window of EVERY cell for the lane (the default/direct-route cell AND every existing
     /// per-pool cell), mirroring the all-cells iteration of `record_probe_failure_all_cells`. The
@@ -689,7 +692,9 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// SWRR accumulator — the matching `reset_swrr_for` bumps the cell's stripe generation so every
     /// worker's stripe rejoins from 0, holding the per-stripe `Σ == 0` invariant. Gating the reset
     /// on the recovered-bool mirrors `record_success_for`/`recover_lane`.
-    fn record_probe_success_all_cells(&self, lane: usize);
+    ///
+    /// At the caller's `now`, as every write below: the prober and the walk record on one clock.
+    fn record_probe_success_all_cells(&self, lane: usize, now: u64);
     fn record_client_fault(&self, lane: usize);
     /// Record a transient upstream failure. `cfg` is the routing pool's resolved breaker config,
     /// which drives the trip decision (error-rate vs consecutive thresholds) and cooldown backoff.
@@ -710,6 +715,18 @@ pub trait LaneRuntime: Send + Sync + 'static {
         pool: &str,
         lane: usize,
         what: &str,
+        cfg: &BreakerCfg,
+        retry_after: Option<u64>,
+    ) -> bool;
+    /// [`Self::record_transient_in`] at the caller's `now` (whole seconds), not the store's own
+    /// clock read: a walk records an attempt's failure at the instant its admission and its shed
+    /// read, so the cooldown it arms and the wait a shed then advertises are measured on one clock.
+    /// 1.5.5's store took the record's `now_time` the same way (`availability.rs:500-513`).
+    fn record_transient_in_at(
+        &self,
+        pool: &str,
+        lane: usize,
+        now: u64,
         cfg: &BreakerCfg,
         retry_after: Option<u64>,
     ) -> bool;
@@ -751,10 +768,12 @@ pub trait LaneRuntime: Send + Sync + 'static {
     /// Trips every cell for `lane` hard-down. Returns `true` iff this was a genuine fresh trip of the
     /// default cell (it was `ST_CLOSED` before) — so callers can gate `BREAKER_TRIPS_TOTAL` on a
     /// LOGICAL Closed→Open trip and not re-count a persistently-dead lane on every recovery-probe.
-    fn record_hard_down_all_cells(&self, lane: usize, reason: &str) -> bool;
+    /// The sticky cooldown is armed from the caller's `now`.
+    fn record_hard_down_all_cells(&self, lane: usize, reason: &str, now: u64) -> bool;
     /// A successful out-of-band health probe: recover the lane to Closed in EVERY cell (default and
-    /// all pools), since the probe tests the shared upstream. No-op on cells already Closed.
-    fn recover_lane(&self, lane: usize);
+    /// all pools), since the probe tests the shared upstream. No-op on cells already Closed. A
+    /// cooldown is judged elapsed at the caller's `now`.
+    fn recover_lane(&self, lane: usize, now: u64);
     /// A FAILED out-of-band health probe: record a transient failure against EVERY cell for the
     /// lane (the default cell AND every existing per-pool cell), mirroring `recover_lane`'s
     /// all-cells iteration. The probe tests the shared upstream, and organic traffic routes against
@@ -774,6 +793,7 @@ pub trait LaneRuntime: Send + Sync + 'static {
         what: &str,
         resolve_cfg: &dyn Fn(&str) -> BreakerCfg,
         retry_after: Option<u64>,
+        now: u64,
     );
 
     // concurrency + budget — lane-global (shared across every pool fronting the lane).

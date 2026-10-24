@@ -11,7 +11,7 @@
 //! nothing persisted, nothing swapped — and a change that stages and then never commits withdraws
 //! what it staged.
 //!
-//! A test BINARY of its own, because the rate holder is a process-wide `OnceLock` this file installs.
+//! A test BINARY of its own, because the rate holder this file hands in is process-wide.
 //!
 //! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
 //! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
@@ -24,7 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_kernel::config::transaction::{config_transaction, Outcome, TxnError};
-use busbar_kernel::rate_apply::{install_rate_apply, RateApply, RawRates};
+use busbar_kernel::rate_apply::{RateApply, RawRates};
+use busbar_kernel::test_support::rate_holders::install_rate_apply;
 
 /// The flat figure whose card the holder's journal refuses.
 const REFUSED: i64 = 666_001;

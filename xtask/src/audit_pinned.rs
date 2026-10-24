@@ -8,16 +8,20 @@
 //! a pin moved to different content reads `stale`, as any moved tree does.
 //!
 //! HOW: the file listing the ledger hashes over at a busbar commit `R` is the tracked files at `R`
-//! PLUS, for every pinned plugin package `P` of `R`'s default distribution that has no
+//! PLUS, for every pinned plugin package `P` of `R`'s `Cargo.lock` that has no
 //! `crates/<P>` in `R`'s tree, a VIRTUAL entry `crates/<P>/<rel>` -> blob oid for every file `<rel>`
 //! of `P`'s crate directory in the plugin repo at the pinned commit. Scope ids and paths do not
 //! change, and the blob oid of a byte-identical file is the same oid in any repository, so a scope
 //! over byte-identical code hashes identically whichever repository holds it.
 //!
-//! WHICH PACKAGES ([`pins_for`]): a `git+` package of `R`'s `Cargo.lock` whose name resolves to one
-//! of the seven plugin kinds (the kind-isolation table, [`crate::gates::kind_isolation::plugin_kind`]),
-//! that is not the `-plugin` cdylib twin, and that the DEFAULT DISTRIBUTION compiles in
-//! ([`default_distribution`]). A plugin only a test links is out of this ledger.
+//! WHICH PACKAGES ([`pins_for`]): EVERY `git+` package of `R`'s `Cargo.lock` whose name resolves to
+//! one of the seven plugin kinds (the kind-isolation table, [`crate::gates::kind_isolation::plugin_kind`])
+//! and that is not the `-plugin` cdylib twin. The lock is cargo's resolution of every workspace
+//! manifest over every feature, so this is the workspace's whole pin table: a plugin the `default`
+//! feature compiles in, one behind a feature `default` leaves off, and one only a proof links are all
+//! mounted, and a record about any of them re-hashes against its pinned bytes. A PLANE's cdylib
+//! twin (`<package>-plugin`, the logic crate's `export_door!` image) is mounted beside it from the
+//! same repository and commit, at `crates/<package>-plugin` ([`TWINNED_KIND`]).
 //!
 //! WHERE THE BYTES COME FROM ([`PinStore`]): cargo's own git database (`$CARGO_HOME/git/db/*`,
 //! bare repositories cargo fills when it resolves the workspace — every `cargo xtask` run has
@@ -25,16 +29,13 @@
 //! bare repo under `target/ledger-pins/`. A pin neither can produce is an ERROR naming the package
 //! and the commit: the ledger fails closed, it never skips a pin it cannot read.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// The suffix of a plugin repo's cdylib twin (`busbar-transport-tcp-plugin`). The twin packages the
 /// logic crate; the logic crate is the scope.
 pub const CDYLIB_SUFFIX: &str = "-plugin";
-
-/// The crate whose default features ARE the default distribution.
-pub const ROOT_CRATE_DIR: &str = "crates/busbar";
 
 /// One pinned plugin package: its name and the commit of the repo it is pinned at.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -194,201 +195,28 @@ pub fn is_plugin_package(name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------------------------
-// the default distribution
+// which pins
 // ---------------------------------------------------------------------------------------------
 
-/// One dependency declaration of a manifest.
-#[derive(Debug, Clone, Default)]
-struct Dep {
-    key: String,
-    package: Option<String>,
-    path: Option<String>,
-    git: bool,
-    workspace: bool,
-    optional: bool,
-}
-
-fn dep_from_pairs(key: &str, pairs: &[(String, String)]) -> Dep {
-    let mut d = Dep {
-        key: key.to_string(),
-        ..Dep::default()
-    };
-    for (k, v) in pairs {
-        let sv = crate::toml_lite::string_value(v);
-        match k.as_str() {
-            "package" => d.package = Some(sv),
-            "path" => d.path = Some(sv),
-            "git" => d.git = true,
-            "workspace" => d.workspace = sv == "true",
-            "optional" => d.optional = sv == "true",
-            _ => {}
-        }
-    }
-    d
-}
-
-/// The NORMAL dependencies a manifest declares — `[dependencies]`, `[dependencies.<x>]` and every
-/// `[target.<cfg>.dependencies]` — never `dev-` or `build-` dependencies, which no shipped binary
-/// links.
-fn normal_deps(doc: &crate::toml_lite::Document) -> Vec<Dep> {
-    deps_under(doc, |table| {
-        table == "dependencies"
-            || (table.starts_with("target.") && table.ends_with(".dependencies"))
-    })
-}
-
-fn deps_under(doc: &crate::toml_lite::Document, is_deps_table: impl Fn(&str) -> bool) -> Vec<Dep> {
-    let mut out = Vec::new();
-    for (path, table) in &doc.tables {
-        if is_deps_table(path) {
-            for (key, raw) in &table.entries {
-                let pairs = crate::toml_lite::inline_table(raw).unwrap_or_default();
-                out.push(dep_from_pairs(key, &pairs));
-            }
-            continue;
-        }
-        // `[dependencies.<key>]` — the sub-table spelling of one dependency.
-        if let Some((parent, key)) = path.rsplit_once('.') {
-            if is_deps_table(parent) {
-                let pairs: Vec<(String, String)> = table.entries.clone();
-                out.push(dep_from_pairs(key.trim_matches('"'), &pairs));
-            }
-        }
-    }
-    out
-}
-
-/// `a/b/../c` -> `a/c`, `a/./b` -> `a/b`.
-fn normalise(path: &str) -> String {
-    let mut out: Vec<&str> = Vec::new();
-    for seg in path.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                out.pop();
-            }
-            s => out.push(s),
-        }
-    }
-    out.join("/")
-}
-
-/// The optional dependencies the root crate's `default` feature enables, through its own feature
-/// table: `dep:x`, `x/feature` (which enables `x`), and a feature that names an optional dependency
-/// with no explicit feature of its own. `x?/feature` enables nothing by itself.
-fn default_enabled(doc: &crate::toml_lite::Document) -> BTreeSet<String> {
-    let features = doc.table("features").values;
-    let mut on = BTreeSet::new();
-    let mut seen = BTreeSet::new();
-    let mut stack = vec!["default".to_string()];
-    while let Some(f) = stack.pop() {
-        if !seen.insert(f.clone()) {
-            continue;
-        }
-        for item in features.get(&f).cloned().unwrap_or_default() {
-            if let Some(dep) = item.strip_prefix("dep:") {
-                on.insert(dep.to_string());
-            } else if let Some((dep, _)) = item.split_once('/') {
-                if !dep.ends_with('?') {
-                    on.insert(dep.to_string());
-                }
-            } else if features.contains_key(&item) {
-                stack.push(item);
-            } else {
-                on.insert(item);
-            }
-        }
-    }
-    on
-}
-
-/// THE DEFAULT DISTRIBUTION'S GIT PACKAGES: every `git+` package the root crate links with its
-/// default features, followed through the workspace path crates it links and through the lock
-/// graph of the git packages themselves (a cdylib twin reaches its logic crate that way).
-///
-/// The ROOT's optional dependencies are read through its `default` feature exactly. A workspace
-/// path crate the root links is read OVER-INCLUSIVELY — every normal dependency, optional or not —
-/// because deciding which of its features the root forwards is a feature resolver, and when this
-/// instrument must choose it counts a plugin in rather than out. Dev- and build-dependencies are
-/// never counted.
-///
-/// `read` answers a tracked file's text at the commit being read.
-pub fn default_distribution(
-    read: &dyn Fn(&str) -> Option<String>,
-    lock: &[LockPackage],
-) -> Result<BTreeSet<String>, String> {
-    let ws_text =
-        read("Cargo.toml").ok_or("the workspace manifest Cargo.toml is not in the tree")?;
-    let ws = crate::toml_lite::parse_text(&ws_text);
-    let ws_deps: BTreeMap<String, Dep> = deps_under(&ws, |t| t == "workspace.dependencies")
-        .into_iter()
-        .map(|d| (d.key.clone(), d))
-        .collect();
-
-    let mut reached: BTreeSet<String> = BTreeSet::new();
-    let mut visited: BTreeSet<String> = BTreeSet::new();
-    let mut queue: Vec<String> = vec![ROOT_CRATE_DIR.to_string()];
-    while let Some(dir) = queue.pop() {
-        if !visited.insert(dir.clone()) {
-            continue;
-        }
-        let manifest = format!("{dir}/Cargo.toml");
-        let text = read(&manifest).ok_or_else(|| {
-            format!("{manifest} is not in the tree, so the default distribution cannot be read")
-        })?;
-        let doc = crate::toml_lite::parse_text(&text);
-        let is_root = dir == ROOT_CRATE_DIR;
-        let enabled = if is_root {
-            default_enabled(&doc)
-        } else {
-            BTreeSet::new()
-        };
-        for d in normal_deps(&doc) {
-            if is_root && d.optional && !enabled.contains(&d.key) {
-                continue;
-            }
-            if let Some(p) = &d.path {
-                queue.push(normalise(&format!("{dir}/{p}")));
-            } else if d.git {
-                reached.insert(d.package.clone().unwrap_or_else(|| d.key.clone()));
-            } else if d.workspace {
-                let Some(w) = ws_deps.get(&d.key) else {
-                    continue;
-                };
-                if let Some(p) = &w.path {
-                    queue.push(normalise(p));
-                } else if w.git {
-                    reached.insert(w.package.clone().unwrap_or_else(|| w.key.clone()));
-                }
-            }
-        }
-    }
-
-    // THROUGH THE LOCK GRAPH. A git package's own dev-dependencies are never in a lock, so every
-    // edge here is one the package links.
-    let git_pkgs: BTreeMap<&str, Vec<&LockPackage>> = lock
-        .iter()
-        .filter(|p| p.source.starts_with("git+"))
-        .fold(BTreeMap::new(), |mut m, p| {
-            m.entry(p.name.as_str()).or_insert_with(Vec::new).push(p);
-            m
-        });
-    let mut stack: Vec<String> = reached.iter().cloned().collect();
-    while let Some(name) = stack.pop() {
-        for p in git_pkgs.get(name.as_str()).into_iter().flatten() {
-            for dep in &p.deps {
-                if git_pkgs.contains_key(dep.as_str()) && reached.insert(dep.clone()) {
-                    stack.push(dep.clone());
-                }
-            }
-        }
-    }
-    Ok(reached)
-}
-
-/// THE PINS TO MOUNT over a tree: every pinned plugin package of the default distribution whose
+/// THE PINS TO MOUNT over a tree: EVERY pinned plugin package of the tree's `Cargo.lock` whose
 /// `crates/<package>` the tree does not hold (THE TREE WINS — a crate still on disk is read from
 /// disk). `tracked` is the tree's path -> oid listing; `read` answers a tracked file's text.
+///
+/// THE LOCK IS THE PIN TABLE. `Cargo.lock` is cargo's own resolution of every workspace manifest
+/// over EVERY feature and EVERY target, so its `git+` plugin packages are exactly the plugin crates
+/// the workspace pins — the ones the root's `default` feature turns on, the ones behind a feature it
+/// leaves off (`transport-webrtc`), and the ones only a proof links (`busbar-auth-oidc`). Each of
+/// them is a real plugin the binary can link or a deployment can drop in, so each of their scopes is
+/// auditable, and a record about one must re-hash against the pinned bytes.
+///
+/// THIS USED TO READ THE DEFAULT DISTRIBUTION ONLY, and that made a correct record unverifiable. It
+/// followed the root's `default` feature by hand, so a pin behind a non-default feature or a
+/// dev-dependency was never mounted: its scope owned no file at any commit, its tree hash computed
+/// to `None`, and `--check` listed every record about it as a hash that "is not the tree at the
+/// commit they claim" — measured at 4bfe019df1, all six of that list were `busbar-transport-webrtc`
+/// (behind `transport-webrtc`) and `busbar-auth-oidc` (a dev-dependency) records whose digests are
+/// the sha256 of exactly the pinned `path<TAB>blob` lines. A hand-written feature resolver deciding
+/// which pins count is a second answer to a question the lock already answers.
 pub fn pins_for(
     tracked: &BTreeMap<String, String>,
     read: &dyn Fn(&str) -> Option<String>,
@@ -408,15 +236,8 @@ pub fn pins_for(
         .iter()
         .filter(|p| p.source.starts_with("git+") && is_plugin_package(&p.name) && !in_tree(&p.name))
         .collect();
-    if candidates.is_empty() {
-        return Ok(Vec::new());
-    }
-    let reached = default_distribution(read, &lock)?;
     let mut pins: Vec<Pin> = Vec::new();
     for p in candidates {
-        if !reached.contains(&p.name) {
-            continue;
-        }
         let pin = Pin::from_source(&p.name, &p.source).ok_or_else(|| {
             format!(
                 "pinned plugin {}: Cargo.lock source `{}` names no commit",
@@ -431,9 +252,28 @@ pub fn pins_for(
         }
         pins.push(pin);
     }
+    // THE PLANE'S CDYLIB TWIN IS MOUNTED BESIDE IT (ARCHITECT ruling on #1269: the twin's production
+    // code — the `export_door!` image a signed tarball carries — is audited by this ledger, never by
+    // nobody). It is not in the lock (busbar links the logic crate), so it is read from the same
+    // repository at the same commit as its logic crate, at `crates/<package>-plugin`. A twin the
+    // pinned commit does not carry is an error naming it, as any unproducible pin is.
+    let twins: Vec<Pin> = pins
+        .iter()
+        .filter(|p| crate::gates::kind_isolation::plugin_kind(&p.package) == Some(TWINNED_KIND))
+        .map(|p| Pin {
+            package: format!("{}{CDYLIB_SUFFIX}", p.package),
+            url: p.url.clone(),
+            sha: p.sha.clone(),
+        })
+        .filter(|t| !in_tree(&t.package))
+        .collect();
+    pins.extend(twins);
     pins.sort();
     Ok(pins)
 }
+
+/// The plugin kind whose cdylib twin [`pins_for`] mounts beside its logic crate.
+pub const TWINNED_KIND: &str = "plane";
 
 // ---------------------------------------------------------------------------------------------
 // reading a pinned checkout

@@ -191,8 +191,9 @@ use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, KEEP_NAMED};
 use crate::abi::mechanism::call::Blob;
 use crate::abi::mechanism::door::{
     MarkWord, Rewrite, Section, MARK_BLOCKS, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE,
-    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR, SECTION_CONSUMED,
-    SECTION_DECLARING,
+    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR,
+    REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN, SECTION_CONSUMED,
+    SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
 };
 use crate::abi::sdk::door::{abi_str, statement};
 
@@ -275,9 +276,38 @@ fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
     ];
     assert_eq!(check_rewrites(&ok), Ok(()));
     assert_eq!(
-        check_rewrites(&[rewrite(4, "x", NONE)]),
+        check_rewrites(&[rewrite(7, "x", abi_str("y"))]),
         Err(fault(Rule::UnknownCode, "rewrite.class"))
     );
+    assert_eq!(
+        check_rewrites(&[rewrite(0, "x", NONE)]),
+        Err(fault(Rule::UnknownCode, "rewrite.class"))
+    );
+}
+
+/// The secret-sugar rewrites a later contract reads (the sugar's settings key, its shown
+/// placeholder, what its value names, its core role) are ACCEPTED by this one and grant nothing:
+/// each names its `from` and its `to`, and a sugar may state the settings key it lands under, so a
+/// plugin built for the later contract loads here unchanged (the two-step lockstep cure).
+#[test]
+fn the_later_sugar_rewrites_are_accepted_and_each_names_its_target() {
+    let ok = [
+        rewrite(REWRITE_SUGAR, "word", abi_str("key")),
+        rewrite(REWRITE_SUGAR_SHOWN, "word", abi_str("PLACEHOLDER")),
+        rewrite(REWRITE_SUGAR_NAMES, "word", abi_str("the thing it names")),
+        rewrite(REWRITE_SUGAR_ROLE, "word", abi_str("fill")),
+    ];
+    assert_eq!(check_rewrites(&ok), Ok(()));
+    for class in [REWRITE_SUGAR_SHOWN, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE] {
+        assert_eq!(
+            check_rewrites(&[rewrite(class, "word", NONE)]),
+            Err(fault(Rule::Missing, "rewrite.to"))
+        );
+        assert_eq!(
+            check_rewrites(&[rewrite(class, "", abi_str("x"))]),
+            Err(fault(Rule::Missing, "rewrite.from"))
+        );
+    }
     assert_eq!(
         check_rewrites(&[rewrite(REWRITE_ALIAS, "", NONE)]),
         Err(fault(Rule::Missing, "rewrite.from"))
@@ -385,6 +415,52 @@ fn a_statement_of_another_kind_stating_claims_is_refused() {
         Err(fault(Rule::Contradiction, "statement.claims"))
     );
     st.kind = crate::abi::mechanism::KindCode::Transport as u32;
+    // SAFETY: as above.
+    assert_eq!(unsafe { check_statement(&st) }, Ok(()));
+}
+
+/// THE SELECTING SECTION (Law 7): a section whose presence uses the plane is a known bit beside
+/// `SECTION_CONSUMED` and `SECTION_REQUIRED`, and redundant beside `SECTION_DECLARING` (a verb
+/// selects its plane already). RED: before the bit was known, a consumed, required, selecting
+/// section was refused as an unknown code.
+#[test]
+fn a_selecting_section_is_known_and_never_beside_the_declaring_one() {
+    assert_eq!(
+        check_statement_sections(&[
+            section("pools", SECTION_DECLARING),
+            section(
+                "models",
+                SECTION_CONSUMED | SECTION_REQUIRED | SECTION_SELECTS
+            ),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        check_statement_sections(&[section("pools", SECTION_DECLARING | SECTION_SELECTS)]),
+        Err(fault(Rule::Contradiction, "section.flags"))
+    );
+}
+
+/// A SELECTING SECTION IS A PLANE'S FACT: a Statement of any other kind stating one is refused at
+/// admit, never silently ignored. RED: a store Statement with a selecting section is refused; the
+/// same section on a plane Statement passes.
+#[test]
+fn a_statement_of_another_kind_stating_a_selecting_section_is_refused() {
+    const SECTIONS: &[Section] = &[Section {
+        name: abi_str("models"),
+        flags: SECTION_SELECTS,
+        _reserved: 0,
+    }];
+    let mut st = statement("p", "1.0.0", 1);
+    st.sections = SECTIONS.as_ptr();
+    st.sections_len = SECTIONS.len();
+    st.kind = crate::abi::mechanism::KindCode::Store as u32;
+    // SAFETY: the sections list is a `'static` array of its stated count.
+    assert_eq!(
+        unsafe { check_statement(&st) },
+        Err(fault(Rule::Contradiction, "statement.sections"))
+    );
+    st.kind = crate::abi::mechanism::KindCode::Plane as u32;
     // SAFETY: as above.
     assert_eq!(unsafe { check_statement(&st) }, Ok(()));
 }

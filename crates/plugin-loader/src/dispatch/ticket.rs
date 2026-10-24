@@ -48,11 +48,12 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
-    /// The store this route's instances' ticketed service results are held in, whether or not
-    /// the route serves the kernel's services: the host auth handle (`auth.call`) answers from it
-    /// on a route that serves no other (a transport's). `None` = none.
-    fn service_store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
-        self.services().map(|s| s.store)
+    /// The store of this route's dispatcher, whether or not the route serves the kernel's
+    /// services: the services' kept results, the driver tickets' held exchanges (`super::held`),
+    /// and the host auth handle's `auth.call` answers on a route that serves no other (a
+    /// transport's). `None` = none.
+    fn store(&self) -> Option<std::sync::Arc<super::services::ServiceStore>> {
+        None
     }
 
     /// The outbound server this route's instances' `auth.call` on an outbound binding's ref is
@@ -69,6 +70,11 @@ pub(crate) trait WakeRoute: Send + Sync {
     /// The waker of an INLINE ticket's task (`super::inline`); `None` for any other ticket.
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         let _ = t;
+        None
+    }
+
+    /// The INLINE tickets of this route's dispatcher (`super::inline`); `None` = none.
+    fn inline(&self) -> Option<std::sync::Arc<super::inline::InlineTickets>> {
         None
     }
 }
@@ -93,6 +99,10 @@ pub(crate) struct InstanceWake {
     /// The settings keys the instance's manifest declares DESTINATIONS (granted once, by the
     /// opener that read the manifest): `disk.append` serves this instance those only.
     pub(crate) destinations: OnceLock<Vec<String>>,
+    /// How many archives the manifest declares each granted destination keeps when the host rolls
+    /// it over (`declares.keep`), granted with the destinations; a key not named takes
+    /// [`busbar_contract::services::DISK_ROTATE_UNDECLARED`].
+    pub(crate) keep: OnceLock<std::collections::BTreeMap<String, u32>>,
     /// Each granted key bound to the file the instance's settings give it, re-bound by every
     /// `open` and `refresh` (`disk.append` maps a key through it).
     pub(crate) bound: std::sync::RwLock<Vec<busbar_contract::services::DiskDest>>,

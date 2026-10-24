@@ -40,8 +40,9 @@ pub const METHOD_ANY: u32 = (1 << 9) - 1;
 
 /// The whole path equals the route's path.
 pub const PATH_EXACT: u32 = 1;
-/// A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a last
-/// `{*name}` segment matches everything that remains, including nothing.
+/// A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a
+/// `{name+}` segment one or more (at most one per pattern), a last `{*name}` segment everything that
+/// remains, including nothing.
 pub const PATH_PATTERN: u32 = 2;
 /// Exactly one segment under the route's path (`/a` admits `/a/b`, never `/a`, `/ab` or `/a/b/c`).
 pub const PATH_PREFIX: u32 = 3;
@@ -115,6 +116,25 @@ pub struct LineEntry {
     pub route: RouteMatch,
 }
 
+/// HOW THE ROUTE ROW IS MADE (status row 194): from [`RouteMatch::EMPTY`], its plain fields set
+/// directly and each list by its setter, to items that live for the program.
+impl RouteMatch {
+    /// Nothing stated: every string absent, every list empty, every number zero.
+    pub const EMPTY: RouteMatch = RouteMatch {
+        methods: 0,
+        path_form: 0,
+        path: AbiStr::ABSENT,
+        fields: std::ptr::null(),
+        fields_len: 0,
+        rung: 0,
+        _reserved: 0,
+    };
+
+    abi_lists! {
+        fields, fields_len: FieldPredicate => fields_ptr, with_fields, with_raw_fields;
+    }
+}
+
 /// A [`RouteMatch`] read into Rust: what the kernel orders and matches, and what
 /// [`crate::abi::transport::check::check_route_view`] judges.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,18 +187,26 @@ pub fn method_bit(method: &str) -> u32 {
 }
 
 /// A `PATH_PATTERN` spelling as segments borrowed from it; `None` when it breaks the syntax (a `{`
-/// segment that is not whole, an empty name, or a `{*name}` that is not last).
+/// segment that is not whole, an empty name, a `{*name}` that is not last, or a second `{name+}`).
 #[must_use]
 pub fn pattern_segments(pattern: &str) -> Option<Vec<SegRef<'_>>> {
     let segs: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
     let mut out = Vec::with_capacity(segs.len());
     for (i, s) in segs.iter().enumerate() {
         let seg = match s.strip_prefix('{').and_then(|r| r.strip_suffix('}')) {
-            Some(name) => match name.strip_prefix('*') {
-                Some(rest) if !rest.is_empty() && i + 1 == segs.len() => SegRef::Tail,
-                Some(_) => return None,
-                None if !name.is_empty() && !name.contains(['{', '}']) => SegRef::Var,
-                None => return None,
+            Some(name) => match (name.strip_prefix('*'), name.strip_suffix('+')) {
+                (Some(rest), _) if !rest.is_empty() && i + 1 == segs.len() => SegRef::Tail,
+                (Some(_), _) => return None,
+                (None, Some(rest))
+                    if !rest.is_empty()
+                        && !rest.contains(['{', '}', '+'])
+                        && !out.contains(&SegRef::Plus) =>
+                {
+                    SegRef::Plus
+                }
+                (None, Some(_)) => return None,
+                (None, None) if !name.is_empty() && !name.contains(['{', '}']) => SegRef::Var,
+                (None, None) => return None,
             },
             None if s.contains(['{', '}']) => return None,
             None => SegRef::Lit(s),
@@ -227,6 +255,7 @@ impl Interner {
                 SegRef::Lit(l) => PathSeg::Lit(self.intern(l)),
                 SegRef::Var => PathSeg::Var,
                 SegRef::Tail => PathSeg::Tail,
+                SegRef::Plus => PathSeg::Plus,
             });
         }
         let segs: &'static [PathSeg] = Vec::leak(segs);

@@ -639,17 +639,40 @@ fn the_usage_read_answers_with_the_process_history() {
     );
 }
 
-/// **THE WIRING WITNESS.** The boot install raises BOTH halves of the rate seam, and the binary
-/// calls it.
+/// **THE WIRING WITNESS.** The root's install record carries BOTH halves of the rate seam, the
+/// binary installs that record, and the boot arms the repricer's journal.
 ///
 /// The apply half without the read half is precisely the defect this seam rules out: a node that dates its
 /// prices and then reports them off the newest card anyway. The date half without the other two
 /// stamps an instant nothing reads. And any of them without a caller is dead code that looks live.
-/// So the body of `install_card_repricer` is read for all three names, and the root unit, `main.rs`
-/// and the manifest's root-unit table are read for the call — four facts that have to hold together for the seam to be reachable in the shipped
-/// binary, and no one of which implies the others.
+/// So the root's install record is read for both halves, `main.rs` for its install, the body of
+/// `install_card_repricer` for the journal it arms, and the root unit, `main.rs` and the manifest's
+/// root-unit table for the call — facts that have to hold together for the seam to be reachable in
+/// the shipped binary, and no one of which implies the others.
 #[test]
 fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
+    let linked = include_str!("../linked.rs");
+    let record = linked
+        .split("pub fn register_stores(linked: &Linked) {")
+        .nth(1)
+        .expect("register_stores is declared")
+        .split("\n}")
+        .next()
+        .expect("its body closes");
+    assert!(
+        record.contains("rate_apply: Some(&crate::root::kernel::CardRepricer)"),
+        "the root's install record stopped carrying the APPLY half: {record}"
+    );
+    assert!(
+        record.contains("rate_epoch: Some(&crate::root::kernel::CardRepricer)"),
+        "the root's install record stopped carrying the DATE half — a metering cell would carry no \
+         instant finer than its UTC day and a mid-day card edit would reprice the whole day (#79): \
+         {record}"
+    );
+    assert!(
+        include_str!("../../main.rs").contains("root::linked::register_stores(&LINKED);"),
+        "main.rs no longer installs the root's install record, so neither half is ever raised"
+    );
     let kernel = include_str!("../kernel.rs");
     let body = kernel
         .split("pub fn install_card_repricer() {")
@@ -659,13 +682,8 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
         .next()
         .expect("its body closes");
     assert!(
-        body.contains("install_rate_apply"),
-        "the boot install stopped raising the APPLY half: {body}"
-    );
-    assert!(
-        body.contains("install_rate_epoch"),
-        "the boot install stopped raising the DATE half — a metering cell would carry no instant \
-         finer than its UTC day and a mid-day card edit would reprice the whole day (#79): {body}"
+        body.contains("ROOT_CARD.arm_journal()"),
+        "the boot step stopped arming the repricer's journal before the boot resolution: {body}"
     );
     // The READ half rides the date half: the dater's `history` is what the usage read and the
     // budget book price through (`rate_apply::dated_history`).
@@ -688,8 +706,8 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
     let main = include_str!("../../main.rs");
     assert!(
         main.contains("ROOT_UNITS.iter().filter_map(|u| u.on_config)"),
-        "main.rs no longer runs the root units' configuration steps, so the boot install is never \
-         called"
+        "main.rs no longer runs the root units' configuration steps, so the repricer's journal is \
+         never armed"
     );
     let manifest = include_str!("../../../Cargo.toml");
     let callers: Vec<String> = root_unit_modules(manifest)
@@ -703,9 +721,9 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
         .collect();
     assert!(
         !callers.is_empty(),
-        "no root unit the manifest lists has a configuration step that calls the boot install, so \
-         neither half is ever raised (or the unit that does is not a root unit the manifest lists, \
-         so no build's table carries it)"
+        "no root unit the manifest lists has a configuration step that arms the repricer, so the \
+         boot resolution's opening entry is never held for the book (or the unit that does is not \
+         a root unit the manifest lists, so no build's table carries it)"
     );
 }
 
@@ -1946,7 +1964,6 @@ fn a_back_dated_correction_survives_a_restart() {
                     effective_until: Some(CORRECTED.1),
                     appended_at: SIGNED_AT,
                     author: busbar_kernel_ledger::cost::Author::Amend {
-                        operator_fingerprint: "op".to_string(),
                         reason_hash: [9; 32],
                     },
                     cells: vec![(
@@ -1998,7 +2015,7 @@ fn a_back_dated_correction_survives_a_restart() {
     );
     assert!(matches!(
         entry.author(),
-        busbar_kernel_ledger::cost::Author::Amend { operator_fingerprint, .. } if operator_fingerprint == "op"
+        busbar_kernel_ledger::cost::Author::Amend { .. }
     ));
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
@@ -2029,7 +2046,6 @@ fn seal_correction(
                 effective_until: Some(window.1),
                 appended_at: signed_at,
                 author: busbar_kernel_ledger::cost::Author::Amend {
-                    operator_fingerprint: "op".to_string(),
                     reason_hash: [9; 32],
                 },
                 cells: vec![(
@@ -2348,7 +2364,6 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
                     effective_until: Some(CORRECTED.1),
                     appended_at: SIGNED_AT,
                     author: busbar_kernel_ledger::cost::Author::Amend {
-                        operator_fingerprint: "op".to_string(),
                         reason_hash: [9; 32],
                     },
                     cells: vec![(

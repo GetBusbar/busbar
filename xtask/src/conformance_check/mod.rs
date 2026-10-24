@@ -2,7 +2,7 @@
 //!
 //! This is the one command the pipeline shells to: ModernCI's `conformance` check on the
 //! `dev` -> `qa` move (`.ci/dev.yaml`) runs it over a busbar checkout, as a local subprocess, never
-//! a GitHub check-run (`CONFORMANCE-GATES-PLAN.md` §1.3). It answers exactly one question
+//! a GitHub check-run. It answers exactly one question
 //! per invocation — "is this suite a fresh green, right now, on this commit" — and answers it
 //! deny-safe: every error path (missing manifest, unparseable manifest, unregistered suite id,
 //! missing/absent verdict commit, a non-pass status, a stale pass) is a REFUSAL, never a silent 0.
@@ -17,21 +17,24 @@
 //!
 //! `--musts` (and its alias `--suite all`) is the single call the `conformance` check makes to fold
 //! every registered suite into one admit/deny fact. The MUST set is not a new registry field: the
-//! owner's final, superseding ruling is that **every suite in the registry is a dev-green MUST** —
-//! `CONFORMANCE-MATRIX-RULING.md` lines 107-116 ("OWNER RE-SCOPE ... Supersedes all earlier
-//! 'post-G / gates-at-promotion' framing ... Dev-green now REQUIRES: ALL MUST suites GREEN: MCP,
-//! A2A (already), + WebSocket/Autobahn, HTTP2/h2spec, TLS/testssl, SLSA-verifier, OIDF OAuth2
-//! self-hosted run, FAPI2 suite green, jev suite. LLM x6 + voice x2 already green."), which
-//! enumerates exactly the 17 suites `conformance/registry.toml` carries today (a2a, mcp, the 6 llm-*
-//! planes, the 2 voice-* planes, fapi2, h2, jev, oidf-oauth2, slsa-verifier, tls, ws). So `--musts`
-//! is "every suite the manifest carries", not a filtered subset, and it has a FLOOR derived from
-//! the build: every plane `qa/construction.toml` `[gate.plugin_kinds].plane` ships owes at least one
-//! registered suite (`plane = "<key>"`), and a registry that leaves one uncovered denies `--musts`
-//! outright. Adding a suite to the registry auto-adds it to the MUST set, exactly the P4 "sixth
-//! platform auto-owes six rows" shape (`CONFORMANCE-SYNC-DESIGN.md` §7) the sibling gate already
-//! relies on.
+//! owner's final, superseding ruling is that **every suite in the registry is a dev-green MUST**
+//! (the owner's conformance-matrix re-scope: dev-green requires every MUST suite green, naming MCP,
+//! A2A, WebSocket/Autobahn, HTTP2/h2spec, TLS/testssl, SLSA-verifier, the self-hosted OIDF OAuth2
+//! run, FAPI2, jev and the language-model and voice suites), which enumerates the suites
+//! `conformance/registry.toml` carries (a2a, mcp, the 6 llm-* suites, the 2 voice-* suites, fapi2,
+//! h2, jev, oidf-oauth2, slsa-verifier, tls, ws, and the suites added since).
+//! So `--musts` is "every suite the REGISTRY carries", not a filtered subset and not whatever the
+//! manifest happens to hold: the registry is the denominator, a registered suite missing from the
+//! manifest is refused and a manifest row the registry does not name is refused (Law 8: "An
+//! instrument declares the set it measures over"). It has two FLOORS, both read through
+//! [`crate::gates::conformance_sync::render::parse_registry`], and a registry that breaks either
+//! denies `--musts` outright: every plane `qa/construction.toml` `[gate.plugin_kinds].plane` ships
+//! owes at least one registered suite (`plane = "<key>"`), and the registered ids are exactly the
+//! armed set (`SUITE_FLOOR`, Law 9: a floor only rises), so deleting any suite's block, one that
+//! judges no plane included, cannot shrink the MUST set. Adding a suite to the registry adds it to
+//! the MUST set, and arms it in the same commit.
 //!
-//! ## Freshness (`CONFORMANCE-SYNC-DESIGN.md` §5.2)
+//! ## Freshness
 //!
 //! A suite is admitted iff its manifest row is `status:"pass"` AND its `commit` equals the
 //! candidate sha — `--sha`, defaulting to `git rev-parse HEAD` of this checkout. A pass whose
@@ -61,8 +64,9 @@ usage:
   cargo xtask conformance record --suite <id>|--all [--recording <dir>] [--out <dir>]";
 
 /// One resolved manifest row, as this command reads it. Deliberately narrower than
-/// [`crate::gates::conformance_sync::render::Suite`] — this command does not touch the registry,
-/// tier ceilings or claim strings; it only asks "pass, and about this commit".
+/// [`crate::gates::conformance_sync::render::Suite`] — this command reads only the registry's suite
+/// ids (the `--musts` denominator), never tier ceilings or claim strings; per row it only asks
+/// "pass, and about this commit".
 #[derive(Debug, Clone)]
 struct SuiteEntry {
     suite: String,
@@ -261,8 +265,8 @@ fn admit(entry: &SuiteEntry, sha: &str) -> Row {
             format!("suite `{}` pass is STALE", entry.suite),
             format!(
                 "verdict commit {} does not equal the candidate sha {} — a pass carried over from \
-                 an older sha is refused (CONFORMANCE-SYNC-DESIGN.md §5.2: 'a pass is honoured only \
-                 if its commit == the release sha'). Re-run the suite on this sha.",
+                 an older sha is refused: a pass is honoured only if its commit is the candidate \
+                 sha. Re-run the suite on this sha.",
                 short(c),
                 short(sha)
             ),
@@ -302,19 +306,24 @@ fn check_one_suite(cx: &Ctx, manifest_path: &str, id: &str, sha: &str) -> Row {
     }
 }
 
-/// The `--musts` arm: every suite the manifest carries is a MUST (see module docs). One row per
-/// suite so a caller can see exactly which MUST suite(s) are not fresh-pass. The registry is read
-/// first: a registry that leaves a shipped plane with no suite (the derived floor,
-/// [`crate::gates::conformance_sync::render::plane_roster`]) denies the whole set, so the MUST set
-/// can never be made smaller than the planes the build ships.
+/// The `--musts` arm: every suite the REGISTRY carries is a MUST (see module docs), and the
+/// registry, not the manifest, is the denominator. One row per registered suite so a caller can see
+/// exactly which MUST suite(s) are not fresh-pass: a registered suite the manifest does not carry is
+/// a refusal, never a smaller set, and a manifest row the registry does not name is refused rather
+/// than counted. The registry is read first: a registry that leaves a shipped plane with no suite
+/// (the derived floor, [`crate::gates::conformance_sync::render::plane_roster`]) or drops an armed
+/// suite (`SUITE_FLOOR`) denies the whole set, so the MUST set can never be made smaller.
 fn check_musts(cx: &Ctx, manifest_path: &str, sha: &str) -> Vec<Row> {
-    if let Err(why) = gates::conformance_sync::render::parse_registry(cx) {
-        return vec![Row::fail(
-            "conformance-check:registry",
-            "the MUST set could not be derived from the registry",
-            why,
-        )];
-    }
+    let registered: Vec<String> = match gates::conformance_sync::render::parse_registry(cx) {
+        Ok(suites) => suites.into_iter().map(|s| s.id).collect(),
+        Err(why) => {
+            return vec![Row::fail(
+                "conformance-check:registry",
+                "the MUST set could not be derived from the registry",
+                why,
+            )]
+        }
+    };
     let entries = match load_manifest(cx, manifest_path) {
         Ok(e) => e,
         Err(why) => {
@@ -325,5 +334,40 @@ fn check_musts(cx: &Ctx, manifest_path: &str, sha: &str) -> Vec<Row> {
             )]
         }
     };
-    entries.iter().map(|e| admit(e, sha)).collect()
+    let mut rows: Vec<Row> = registered
+        .iter()
+        .map(|id| match entries.iter().find(|e| &e.suite == id) {
+            Some(e) => admit(e, sha),
+            None => Row::fail(
+                format!("conformance-check:{id}"),
+                format!("MUST suite `{id}` is absent from the manifest"),
+                format!(
+                    "{} registers `{id}`, and every registered suite is a MUST; {manifest_path} \
+                     carries no row for it, so it cannot be admitted. A manifest with a suite \
+                     dropped admits nothing on the rest.",
+                    gates::conformance_sync::render::REGISTRY_PATH
+                ),
+            ),
+        })
+        .collect();
+    rows.extend(
+        entries
+            .iter()
+            .filter(|e| !registered.contains(&e.suite))
+            .map(|e| {
+                Row::fail(
+                    format!("conformance-check:{}", e.suite),
+                    format!("`{}` is not a registered suite", e.suite),
+                    format!(
+                        "{manifest_path} carries `{}`, which {} does not register: a row nobody \
+                         owes is refused rather than counted toward the MUST set. Registered \
+                         suites: {}",
+                        e.suite,
+                        gates::conformance_sync::render::REGISTRY_PATH,
+                        registered.join(", ")
+                    ),
+                )
+            }),
+    );
+    rows
 }

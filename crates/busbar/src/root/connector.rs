@@ -111,8 +111,8 @@ pub fn entries(
 
 /// THE CONNECTOR'S ENTRIES IN DECLARED ORDER (ARCHITECT, p2-transport-carrier): the build's linked
 /// rows in the order the build declares them, then every door dropped into `plugins.dir` in the
-/// directory's sorted order (the loader's plugin file listing), each the one instance the
-/// legacy seam serves too. The order is the declaration's, never the order things loaded in, so the
+/// directory's sorted order (the loader's plugin file listing), each the one instance the boot
+/// opened for it. The order is the declaration's, never the order things loaded in, so the
 /// ADDRESS carrier (`Transports::address_carrier`: the first carrier whose claim serves a port) is
 /// the same carrier on every boot of one deployment.
 ///
@@ -128,13 +128,6 @@ pub fn declared(
         alpn: Vec::new(),
     }));
     Ok(linked)
-}
-
-/// WHERE THE ROOT'S WIRES FIND THEIR CARRIER: the process's one connector's address carrier, asked at
-/// each dial (none before the connector is built, or when it serves no carrier).
-#[must_use]
-pub fn address_carrier() -> busbar_core_connector::carrier::AddressCarrier {
-    Arc::new(|| ONE.get().and_then(|c| c.address_via()).map(|via| via.door))
 }
 
 /// The claim of the carrier a root listener accepts through, for its boot line; `host` when the
@@ -191,6 +184,14 @@ pub fn pool_posture(settings: &TransportSettings) -> PoolPosture {
     }
 }
 
+/// THE CONNECTOR'S SECRET RESOLVER, the one the boot hands `process::build_with_secrets`: a member
+/// program's `env` secret references resolve through the linked secret plugins at config time and
+/// are held for the spawns. A door's root cells build their connector with this same resolver.
+#[must_use]
+pub fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretFn {
+    busbar_kernel::config::secret::resolve_linked_string_at_config
+}
+
 /// THE BOOT PATH'S STEP: build the one Connector over every linked transport door, each opened
 /// with the deployment's `settings`, its dials judged by `dest` (the deployment's one guard) with
 /// the node's own ports read off its `listens`, its dialled connections pooled per worker under
@@ -213,7 +214,7 @@ pub fn boot(
     // here and never taken from a submitter: the first submit is made on the control runtime,
     // whose thread then waits synchronously on worker ops (the boot's `ready`).
     crate::root::dispatch::dispatcher().install_runtime(io_reactor());
-    let built = process::build(
+    let built = process::build_with_secrets(
         || {
             declared(
                 entries(doors, settings)?,
@@ -228,6 +229,12 @@ pub fn boot(
         // opened on.
         crate::root::dispatch::dispatcher().conn_waker(),
         pool_posture(settings),
+        // A member program's `env` secret references resolve through the linked secret plugins
+        // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at
+        // a plane's load or a config apply, and the connector's refresher — and are held for the
+        // spawns, which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a
+        // request).
+        spawn_secret_resolver(),
     );
     let connector = built.unwrap_or_else(|refusal| {
         eprintln!("busbar: the connector did not build: {refusal}");

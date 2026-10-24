@@ -188,10 +188,9 @@ fn registry(name: &str, hook: HookCfg) -> HashMap<String, HookCfg> {
 }
 
 /// Each native `policy:` strategy resolves to a constructed `Policy` whose name round-trips the
-/// native registry name. (No gate; empty hook registry.) Requires the removable `hooks-ranking`
-/// plugin — under `--no-default-features` a non-weighted native policy is a boot error, not a
-/// resolvable policy, so this behavior test only applies when the plugin is compiled in.
-#[cfg(feature = "hooks-ranking")]
+/// native registry name. (No gate; empty hook registry.) Runs in every build: a test build's
+/// stand-in hook rows always link the kernel's ranking double (THE DESIGN l.1443: no
+/// `hooks-ranking` kernel feature; audit Q128 p15#6).
 #[test]
 fn native_policy_resolves_constructed_policy() {
     for (policy, name) in [
@@ -445,7 +444,6 @@ fn on_error_chain_resolves_gates_and_terminals() {
 }
 
 /// `on_error: <ranking strategy>` appends one infallible link and terminates at weighted.
-#[cfg(feature = "hooks-ranking")]
 #[test]
 fn on_error_chain_strategy_terminates() {
     let env = test_env();
@@ -1133,8 +1131,7 @@ fn from_ranked_empty_is_abstain() {
 }
 
 /// A native `policy:` FORCES the payload projections off at resolve (no native policy reads them).
-/// Requires the `hooks-ranking` plugin (a native non-weighted policy exists only when compiled in).
-#[cfg(feature = "hooks-ranking")]
+/// Runs in every build: the stand-in hook rows always link the ranking double (THE DESIGN l.1443).
 #[test]
 fn native_resolve_forces_opt_in_flags_off() {
     match resolve_policy(&pool_policy(PoolPolicy::Cheapest)) {
@@ -2256,7 +2253,7 @@ fn hook_with_plugin_secret() -> HookCfg {
     hook
 }
 
-/// See `auth::token::token_tests::assert_runtime_still_polls` for why this waits on WALL CLOCK and
+/// See `busbar-core-oauth2`'s `hosted_login_tests::assert_runtime_still_polls` for why this waits on WALL CLOCK and
 /// never on a Tokio timer: when every worker is parked in FFI the time driver is parked too, so a
 /// `tokio::time::timeout` does not fire — it returns late and its assertion passes against a runtime
 /// that was dead for the whole window.

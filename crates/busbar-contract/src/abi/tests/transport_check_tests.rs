@@ -686,7 +686,7 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     t.claim_rows_len = MAX_CLAIMS as usize + 1;
     assert_eq!(check_tail(&t), f(Rule::OverMax, "tail.claim_rows"));
     let mut t = tail();
-    t.facts = 4;
+    t.facts = 64;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.facts"));
     // RED: the retired signs-nothing-after-auth bit (1) is no fact a tail may state.
     t.facts = 1;
@@ -694,6 +694,25 @@ fn a_tail_without_claims_or_with_unknown_codes_is_fault() {
     let mut t = tail();
     t.framing = 2;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.framing"));
+}
+
+/// The ops a transport declares (accept, dial, detach, adopt) are facts its tail states; each is
+/// accepted alone and together, and a tail stating none declares no op (a zero declares nothing).
+#[test]
+fn a_tail_states_the_ops_it_declares() {
+    for op in [FACT_ACCEPTS, FACT_DIALS, FACT_DETACHES, FACT_ADOPTS] {
+        let mut t = tail();
+        t.facts = op;
+        assert_eq!(check_tail(&t), Ok(()), "op fact {op}");
+    }
+    let mut t = tail();
+    t.facts = FACT_DECODES_PAYLOAD | FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS;
+    assert_eq!(check_tail(&t), Ok(()));
+    assert_eq!(
+        tail().facts & (FACT_ACCEPTS | FACT_DIALS | FACT_DETACHES | FACT_ADOPTS),
+        0,
+        "a zero declares no op"
+    );
 }
 
 fn claim() -> Claim {
@@ -934,6 +953,38 @@ fn a_route_content_is_checked() {
             vec![(FIELD_VALUE_PREFIX, "authorization", b"")]
         )),
         f(Rule::Contradiction, "route.field.value")
+    );
+}
+
+/// RED (audit contract-src #11): a read route no request can match by its method set or its path
+/// form is refused by the content check the kernel runs on every line it seals: no method, a bit
+/// outside the vocabulary, or a path form outside the five.
+#[test]
+fn a_route_view_with_no_method_or_no_known_form_is_refused() {
+    use route::*;
+    let v = |methods, path_form| RouteView {
+        methods,
+        path_form,
+        path: "/v1/messages",
+        fields: vec![],
+        rung: 0,
+    };
+    assert_eq!(check_route_view(&v(METHOD_ANY, PATH_CONTAINS)), Ok(()));
+    assert_eq!(
+        check_route_view(&v(0, PATH_EXACT)),
+        f(Rule::Missing, "route.methods")
+    );
+    assert_eq!(
+        check_route_view(&v(METHOD_ANY + 1, PATH_EXACT)),
+        f(Rule::UnknownCode, "route.methods")
+    );
+    assert_eq!(
+        check_route_view(&v(METHOD_POST, 0)),
+        f(Rule::UnknownCode, "route.path_form")
+    );
+    assert_eq!(
+        check_route_view(&v(METHOD_POST, PATH_CONTAINS + 1)),
+        f(Rule::UnknownCode, "route.path_form")
     );
 }
 

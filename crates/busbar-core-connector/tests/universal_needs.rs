@@ -271,13 +271,7 @@ fn the_connector_drives_a_dropped_in_socket_framer_against_a_real_far_end() {
     use busbar_core_connector::compose::{Connection, Dial};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let Some(door) = socket_framer_door() else {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "the neutral frame door is built beside the test binary under CI"
-        );
-        return;
-    };
+    let door = socket_framer_door().expect("a socket-framing door is built beside the test");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
