@@ -373,7 +373,7 @@ fn op_enter<'a, B: StoreSlots>(
     instance: &Instance<'_, Held<Served<B>>>,
     s: &'a Held<Served<B>>,
 ) -> Option<Op<'a>> {
-    let parked = instance.resume::<Parked>().map(|b| *b);
+    let parked = instance.resume_value::<Parked>();
     if instance.resuming() && parked.is_none() {
         return None;
     }
@@ -827,7 +827,7 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
             let Some(held) = instance.get() else {
                 return Outcome::Fault;
             };
-            let Some(parked) = instance.resume::<Parked>().map(|b| *b) else {
+            let Some(parked) = instance.resume_value::<Parked>() else {
                 return Outcome::Fault;
             };
             let mut cx = Op::enter(ticket, host.as_ref(), Some(parked), None);
