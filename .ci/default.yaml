@@ -16,8 +16,10 @@ on:
   # deny is on demand only until ModernCI 0.9.1 is live (2026-10-24): every PR's deny shares one
   # result key, and on 0.8.16 the jobs waiting for that one run each hold a machine while its first
   # cargo-vet build is killed at a stale 60 s limit (26 of 40 machines idle). Back on move after.
-  move: [fmt, clippy, test, oracle]
-  manual: [deny]
+  # oracle and deny are on demand only until ModernCI 0.9.1 is live (2026-10-24): 0.8.16 cannot give
+  # the oracle its judge, and its infra exits were counted as machine faults (the backend went down).
+  move: [fmt, clippy, test]
+  manual: [deny, oracle]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
