@@ -2626,23 +2626,22 @@ pub const CONFIG_RATE_CARD_ALL_ZERO: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A provider `error_map` entry names a status class busbar does not recognize; the mapping is
-/// ignored and classification falls through to the upstream status.
-pub const CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED: Diagnostic = Diagnostic {
-    code: 3022,
+/// A metadata host-list entry names no host the guard judges; it boots, matches nothing and is dropped.
+pub const CONFIG_METADATA_ENTRY_NAMES_NO_HOST: Diagnostic = Diagnostic {
+    code: 3024,
     class: Class::Config,
-    slug: "config-error-map-class-unrecognized",
-    title: "error_map maps an error to an unrecognized status class (the mapping is ignored)",
+    slug: "config-metadata-entry-names-no-host",
+    title: "A metadata host-list entry names no host (it matches nothing and is dropped)",
     severity: Severity::Actionable,
-    summary: "A provider's `error_map` maps an upstream error code or structured type to a string \
-              that is not one of busbar's status classes (rate_limit, overloaded, server_error, \
-              timeout, network, auth, billing, client_error, context_length). The mapping is \
-              IGNORED and the error is classified from its upstream status instead, so a typo'd entry \
-              (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized \
-              value for the life of the process, on the first error that reaches it — never at \
-              boot, so a deployment whose providers never fail never sees this line.",
-    action: "Correct the named `error_map` value to one of the nine status classes, or remove the \
-             entry if the built-in status classification is what you want.",
+    summary: "An entry in `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` or a \
+              provider's `allow_metadata_hosts` names no host a URL client would dial: UTS #46 \
+              refuses it, it holds a `%` escape outside an IPv6 zone id, or its last label reads as \
+              a number but it is no IPv4 address (`1.2.3.4.5`, `999.1.1.1`). It could never match a \
+              destination, so it is dropped from matching and the configuration boots, as it did on \
+              1.5.5. The built-in cloud-metadata denylist still blocks every real target. Emitted \
+              once per entry at config load, naming the key and the entry.",
+    action: "Fix the named entry as the line says (write the host in ASCII or punycode, decoded, or \
+             as a dotted-quad address), or remove it. Nothing else changes until you do.",
     since: "1.6.0",
     retired: false,
 };
@@ -2889,7 +2888,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &CONFIG_FIRSTPARTY_FLOOR_INVALID,
     &CONFIG_POOL_HETEROGENEOUS,
     &CONFIG_RATE_CARD_ALL_ZERO,
-    &CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED,
+    &CONFIG_METADATA_ENTRY_NAMES_NO_HOST,
     &CONFIG_AUTH_CHAIN_FULL_SCOPE,
     &CONFIG_OPEN_ADMIN_MINT,
     &CONFIG_PASSTHROUGH_UNUSED_APIKEY,

@@ -951,16 +951,6 @@ impl Default for TestApp {
     }
 }
 
-/// THE ROOT'S `register_seams`, IN A TEST BINARY: the parse-time section list (the test fold,
-/// [`crate::config::plane_sections::default_plane_sections`]), first-wins. A plane's test-kit calls this where
-/// the composition root would have bound it, so a plane test that drives a wire leg without building
-/// a [`TestApp`] runs on the same binding a shipped binary does.
-pub fn install_root_seams() {
-    crate::config::plane_sections::install_plane_sections(
-        crate::config::plane_sections::default_plane_sections,
-    );
-}
-
 impl TestApp {
     /// LAW 7: build the App with exactly these plane sections configured (`[]` = a 1.5.5 config).
     pub fn plane_sections(mut self, sections: &[&'static str]) -> Self {

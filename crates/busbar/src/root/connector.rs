@@ -22,7 +22,6 @@ use busbar_core_connector::pool::PoolPosture;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
 use busbar_kernel::config::{Destinations, RootCfg};
-use busbar_kernel::egress::trust::{install_egress_trust_host, GuardedEgressTrust};
 use busbar_kernel::host_services::DestJudge;
 
 use crate::root::loader::dispatch::{
@@ -134,8 +133,8 @@ pub fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'stat
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built at boot from
-/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Once [`install_egress_trust`] puts
-/// it behind the egress-trust capability it hears every config commit: its metadata lists
+/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Held by the root's rules
+/// (`root::door_steps::Rules::hearing`), it hears every config commit: its metadata lists
 /// (`security.*`, `providers.<p>.allow_metadata_hosts`) are re-read at each one, as 1.5.5 re-read
 /// them at every reload. An allowlist entry the guard cannot read refuses the boot, naming it.
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
@@ -152,14 +151,6 @@ pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
 /// An `advanced.allow_destinations` entry the guard cannot read.
 pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
     process::dest_judge(d)
-}
-
-/// Install the deployment's one destination guard behind the kernel's destinations seam (ARCHITECT
-/// ruling (C), DEST-GUARD), once, at boot, before the boot build commits: every config commit is
-/// raised to it there. The kernel dials nothing, so the seam carries no TLS wrap and no resolver
-/// (THE DESIGN §5 and §8: TLS, the pools and every dial are the connector's; status row 130).
-pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
-    install_egress_trust_host(Arc::new(GuardedEgressTrust(dest)));
 }
 
 /// The connector's pool posture off the deployment's transport settings: 1.5.5's

@@ -7,12 +7,12 @@
 //! transport"; status row 130): every outbound connection is the connector's
 //! (`busbar-core-connector`), which alone holds TLS, the per-worker pools, ALPN, the CONNECT proxy
 //! and busbar's mTLS identity (THE DESIGN §8). What stays here is the protocol-blind return
-//! vocabulary of one buffered/streamed hop (`Response`, `StreamHead`, `ChunkFlow`) and the seam that
-//! raises a destinations commit to the connector's one guard ([`trust`]).
+//! vocabulary of one buffered/streamed hop (`Response`, `StreamHead`, `ChunkFlow`). A destinations
+//! commit reaches the connector's one guard through the root's rules
+//! (`appbuild::RootRules::destinations_applied`).
 
 // THE DESTINATIONS SEAM: a config commit raised to the deployment's one destination guard (the
 // connector's), installed by the composition root.
-pub mod trust;
 
 /// One buffered outbound round trip, reduced to what a caller reads back.
 ///
