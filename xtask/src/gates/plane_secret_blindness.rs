@@ -241,7 +241,7 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                 continue;
             }
             for (rule, n, no) in hits_in(&f.text).iter() {
-                findings.push(Finding::new(*rule, &rel, *n, *no));
+                findings.push(Finding::new(rule, &rel, *n, *no));
             }
         }
     }
