@@ -692,23 +692,27 @@ impl LedgerView for NodeLedger {
         ))
     }
 
-    /// Re-derived from this node's chain under the lock a seal takes, so the held set the walk
-    /// reads is the one the ring holds ([`Durability::each_held_checkpoint`]).
+    /// Re-derived from this node's chain as of one hold of the lock a seal takes, so the held set
+    /// the walk reads is the one the ring holds ([`Durability::held_walk`]); the walk itself, which
+    /// reads the store, runs without it.
     ///
-    /// [`Durability::each_held_checkpoint`]: crate::root::durability::Durability::each_held_checkpoint
+    /// [`Durability::held_walk`]: crate::root::durability::Durability::held_walk
     fn each_checkpoint(
         &self,
         each: &mut dyn FnMut(&Checkpoint),
     ) -> Result<(), CheckpointUnreadable> {
-        self.lock().each_held_checkpoint(each)
+        let walk = self.lock().held_walk();
+        walk.each(each)
     }
 
     fn checkpoint_keys(&self) -> AuditKeySet {
         crate::root::durability::keyset_of(&self.lock().record)
     }
 
+    /// The chain as of one hold of the lock, read without it: the read scans the store.
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
-        self.lock().migration_marker()
+        let chain = self.lock().chain_at();
+        chain.migration_marker()
     }
 
     /// The deployment's dated history, pinned — a relay and no more.
@@ -747,17 +751,23 @@ impl LedgerView for NodeLedger {
         self.lock().refused_balances()
     }
 
-    /// Read off this node's own journal, under the same lock every other read takes.
+    /// Read off this node's own journal as of one hold of the lock every other read takes, and
+    /// without it: the read scans the store.
     fn recorded_counts(&self, amends: &str) -> Option<RecordedCounts> {
-        adjust::recorded_in(&self.lock(), amends)
+        let chain = self.lock().chain_at();
+        adjust::recorded_in(chain, amends)
     }
 
-    /// Both halves under ONE hold of the lock a settlement takes.
+    /// Both halves as of ONE hold of the lock a settlement takes: the book and the chain taken
+    /// under it, the walk of the chain, which reads the store, after it.
     fn verify_snapshot(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
-        let durability = self.lock();
+        let (walk, book) = {
+            let durability = self.lock();
+            (durability.held_walk(), durability.ledger.book().snapshot())
+        };
         VerifySnapshot {
-            read: durability.each_held_checkpoint(each),
-            book: Some(durability.ledger.book().snapshot()),
+            read: walk.each(each),
+            book: Some(book),
             anchored: None,
         }
     }
@@ -782,14 +792,21 @@ impl LedgerView for NodeLedger {
         crate::root::durability::walk_stored_chains(&lane, own, &keys).findings
     }
 
-    /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads
-    /// cannot read as a head that differs.
+    /// All three as of ONE hold of the lock a seal takes, so a checkpoint sealed between reads
+    /// cannot read as a head that differs; the walk of the chain, which reads the store, after it.
     fn verify_snapshot_anchored(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
-        let durability = self.lock();
+        let (walk, book, anchored) = {
+            let durability = self.lock();
+            (
+                durability.held_walk(),
+                durability.ledger.book().snapshot(),
+                durability.anchored_head(),
+            )
+        };
         VerifySnapshot {
-            read: durability.each_held_checkpoint(each),
-            book: Some(durability.ledger.book().snapshot()),
-            anchored: durability.anchored_head(),
+            read: walk.each(each),
+            book: Some(book),
+            anchored,
         }
     }
 }
@@ -953,17 +970,45 @@ impl AuditView for NodeAudit {
         take(&durability.record, Some(&durability.audit_records));
     }
 
+    /// A window the cache covers is answered under one hold of the lock. An older one is read off
+    /// the chain as of one hold and WITHOUT the lock — the read scans the store, and every unit's
+    /// settle waits on this lock (THE DESIGN §11.2) — then answered under a second hold, with what
+    /// was sealed in between added from the cache so the records and the chain's head are still of
+    /// one moment ([`Durability::audit_window_since`]).
+    ///
+    /// [`Durability::audit_window_since`]: crate::root::durability::Durability::audit_window_since
     fn read_window(
         &self,
         from: u64,
         to: u64,
         take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
     ) {
-        let durability = self.lock();
-        // A window the journal would not read back is not answered at all, which the range read
-        // renders as the store failure it is; never as an empty window.
-        if let Some(records) = durability.audit_window(from, to) {
-            take(&durability.record, Some(&records));
+        use crate::root::durability::AuditWindowAt;
+        loop {
+            let (chain, sealed_before) = {
+                let durability = self.lock();
+                match durability.audit_window_at(from, to) {
+                    AuditWindowAt::Cached(records) => {
+                        take(&durability.record, Some(&records));
+                        return;
+                    }
+                    AuditWindowAt::OnChain {
+                        chain,
+                        sealed_before,
+                    } => (chain, sealed_before),
+                }
+            };
+            // A window the journal would not read back is not answered at all, which the range
+            // read renders as the store failure it is; never as an empty window.
+            let Some(mut records) = chain.audit_window(from, to) else {
+                return;
+            };
+            let durability = self.lock();
+            if durability.audit_window_since(&mut records, sealed_before, from, to) {
+                take(&durability.record, Some(&records));
+                return;
+            }
+            // More was sealed while the chain was read than the cache still holds: read it again.
         }
     }
 

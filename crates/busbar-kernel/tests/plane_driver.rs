@@ -30,15 +30,16 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::hook::{MessageView, RequestView};
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE,
-    ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS,
+    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
+    REFUSAL_ARRIVE, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
 use busbar_contract::caps::OpClassId;
@@ -143,6 +144,9 @@ struct Unit {
     short: bool,
     /// The last answer was `more = 1` from this source: the next piece is its re-call.
     more_from: Option<u32>,
+    /// The answer's first piece carried `PIECE_FINAL`: a retry verdict on it does not keep the
+    /// unit.
+    final_answer: bool,
 }
 
 /// One answer, held until it is due. The `out` carries plane pointers; the host reads it only
@@ -494,6 +498,11 @@ impl Double {
         if i.from == FROM_FAR_END && (!piece.is_empty() || i.flags != 0) {
             u.far_answered = true;
             u.far_pieces += 1;
+            // The answer's head (its status, not a trailer's) carries the final mark; a new attempt
+            // starts with none (the ATTEMPT piece resets the unit above).
+            if i.flags & PIECE_HAS_STATUS != 0 && i.flags & PIECE_FIELDS == 0 {
+                u.final_answer = i.flags & PIECE_FINAL != 0;
+            }
             u.saw_last |= i.flags & PIECE_LAST != 0;
             match u.mode.as_slice() {
                 b"fault" => return (ready(Outcome::Fault), Hold::No),
@@ -506,6 +515,12 @@ impl Double {
                     u.pended = true;
                     self.count(stat::HOST_CALLS);
                     hold = Hold::For(Duration::from_millis(30));
+                }
+                // An answer whose last window (its reply done) comes LATE (mode `done-late`): the
+                // second far-end piece's answer is held, so a deadline, a drain or the caller
+                // going away reaches the op before its own done answer does.
+                b"done-late" | b"retry-done-late" if u.far_pieces == 2 => {
+                    hold = Hold::For(DONE_LATE);
                 }
                 b"retry" => {
                     o.verdict = VERDICT_RETRY;
@@ -606,6 +621,11 @@ impl Double {
         if u.saw_last && u.pending.is_empty() {
             o.flags = EMIT_DONE;
             o.verdict = 0;
+            // A done answer with a retry verdict (mode `retry-done-late`): an answer not marked
+            // final keeps the unit for the attempt the retry asks for.
+            if u.mode == b"retry-done-late" {
+                o.verdict = VERDICT_RETRY;
+            }
         }
         // A plane whose emitted messages are text (mode `text`): each whole message says so.
         if u.mode == b"text" && o.emitted > 0 && o.more == 0 {
@@ -672,6 +692,9 @@ enum Hold {
     /// what the driver lent it.
     Wedge,
 }
+
+/// How long a `done-late` unit's last answer is held.
+pub(crate) const DONE_LATE: Duration = Duration::from_millis(120);
 
 /// How long a wedged crossing runs on after its FAULT answer.
 pub(crate) const WEDGE: Duration = Duration::from_millis(300);
@@ -937,7 +960,12 @@ impl PlaneCalls for Double {
     /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project, and
     /// `/refuses-rewrite` refuses to project with a rewrite (one naming a model other than the
     /// routed one, say) while it projects the caller's own request; `/faults-rewrite` answers FAULT
-    /// to a project with a rewrite (a redaction the plane cannot apply). The
+    /// to a project with a rewrite (a redaction the plane cannot apply), and `/unparseable` to every
+    /// project (a body whose document does not parse), marked `PROJECT_FAULT_UNPARSEABLE`;
+    /// `/fault-unmarked` answers FAULT without the mark, `/panics` as a panicking slot's door does,
+    /// `/no-crossing` as the host does for a refused frame or a quarantined instance, and
+    /// `/broken-answer` is a FAULT the host minted over a READY answer that broke the kind's rule.
+    /// The
     /// view names the entry its `arrive` recorded (none) and states the unit's body: a projection
     /// with no body would leave a gate-first unit nothing to screen, and the kernel would bind no
     /// gate for it.
@@ -955,7 +983,35 @@ impl PlaneCalls for Double {
             .unwrap()
             .push((body.clone(), rewrite.clone()));
         if (target == b"/faults-rewrite" && !rewrite.is_empty()) || target == b"/unparseable" {
+            // The plane's own FAULT over a body it could not parse: its door mirrors the outcome
+            // into the `out` head, and the plane marks the body unparseable.
+            out.head.outcome = RawOutcome::of(Outcome::Fault);
+            out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
             return Outcome::Fault;
+        }
+        match target.as_slice() {
+            // A FAULT the plane answered without the mark.
+            b"/fault-unmarked" => {
+                out.head.outcome = RawOutcome::of(Outcome::Fault);
+                return Outcome::Fault;
+            }
+            // A slot that panicked: the door's catcher writes nothing but `outcome = FAULT`.
+            b"/panics" => {
+                out.head.outcome = RawOutcome::of(Outcome::Fault);
+                return Outcome::Fault;
+            }
+            // A frame refused before the crossing, or a quarantined instance: the host answers
+            // FAULT and the `out` is as the host lent it.
+            b"/no-crossing" => return Outcome::Fault,
+            // The plane answered READY (the mark's bit set among its view flags, even) and the
+            // loader's check of that answer against its kind's rule refused it: a FAULT the host
+            // minted.
+            b"/broken-answer" => {
+                out.head.outcome = RawOutcome::of(Outcome::Ready);
+                out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
+                return Outcome::Fault;
+            }
+            _ => {}
         }
         if target == b"/unprojectable" || (target == b"/refuses-rewrite" && !rewrite.is_empty()) {
             return Outcome::Refused;
@@ -1201,11 +1257,15 @@ impl PlaneCalls for Double {
         })));
         // SAFETY: the driver's `in`, whose buffers outlive the answer.
         let (answer, hold) = unsafe { self.piece(ticket, &input, &mut out) };
-        // A done answer with a retry verdict keeps the unit for the kernel's next attempt.
+        // A done answer with a retry verdict keeps the unit for the kernel's next attempt, unless
+        // its answer was marked final (`PIECE_FINAL`).
+        let final_answer = (self.units.lock().unwrap())
+            .get(&input.unit)
+            .is_some_and(|u| u.final_answer);
         if answer.outcome == Outcome::Ready
             && out.flags & EMIT_DONE != 0
             && out.more == 0
-            && out.verdict != VERDICT_RETRY
+            && (out.verdict != VERDICT_RETRY || final_answer)
             && input.flags & PIECE_REFUSED == 0
         {
             self.closed(input.unit);

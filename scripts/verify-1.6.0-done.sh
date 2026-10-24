@@ -421,6 +421,64 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
   printf '%s test(s) passed, exactly the expected set.\n' "$got"
 }
 
+# A PLANE THAT LEFT FOR ITS OWN REPO IS TESTED IN ITS PINNED CHECKOUT. busbar-plane-{mcp,a2a,
+# streaming,decisions} are git rows in the root Cargo.toml, so they are no workspace member and
+# `cargo test -p busbar-plane-a2a` here is "did not match any packages" / "not a member of the
+# workspace": a P-item pin that lives in one of them cannot be reached from this workspace at all.
+# Its tests run where they now live, the plane repo's own workspace, at exactly the rev this tree's
+# Cargo.lock pins: cargo metadata names the checkout cargo fetched for that rev, and the run uses that
+# checkout's own Cargo.lock (--locked), into a target dir of this tree. A pinned plane cargo does not
+# resolve is RED, naming it, never a skip.
+pinned_plane_workspace() {  # $1 = the pinned package (busbar-plane-<key>) → its checkout's workspace manifest
+  local manifest
+  manifest="$(cargo metadata --format-version 1 --locked 2>/dev/null | python3 -I -c '
+import json, sys
+for p in json.load(sys.stdin)["packages"]:
+    if p["name"] == sys.argv[1] and (p.get("source") or "").startswith("git+"):
+        print(p["manifest_path"]); break
+' "$1")" || true
+  if [ -z "$manifest" ]; then
+    printf 'PINNED PLANE UNRESOLVED: %s is not a pinned git package cargo metadata resolves\n' "$1" >&2
+    return 1
+  fi
+  cargo locate-project --workspace --message-format plain --manifest-path "$manifest"
+}
+
+# `pinned_plane_cargo_test cargo test -p <pinned package> [--with-twin] <args…>`: the cargo argv as
+# it would read in this workspace, run in that package's pinned checkout. The `-p` names the pinned
+# git row (a package this tree's Cargo.lock resolves, so the package-selectors gate reads every
+# pinned selector as live) and selects the same package there. `--with-twin` adds the plane's cdylib
+# twin, `<package>-plugin`, for a pin that lives in it (mcp's door witness is in
+# busbar-plane-mcp-plugin); the twin is selected only where a pin is, so a twin's own suite never
+# decides a step about the plane.
+pinned_plane_cargo_test() {
+  if [ "${1:-}" != cargo ] || [ "${2:-}" != test ] || [ "${3:-}" != -p ] || [ -z "${4:-}" ]; then
+    printf 'pinned_plane_cargo_test: expected `cargo test -p <pinned package> …`, got: %s\n' "$*" >&2
+    return 2
+  fi
+  local pkg="$4" ws sel; shift 4
+  sel=(-p "$pkg")
+  if [ "${1:-}" = --with-twin ]; then sel+=(-p "$pkg-plugin"); shift; fi
+  ws="$(pinned_plane_workspace "$pkg")" || return 1
+  cargo test --manifest-path "$ws" "${sel[@]}" --locked --target-dir target/pinned-planes "$@"
+}
+
+# Several cargo test runs as ONE filtered step: every run's output in order, the first failure's
+# exit code. `filtered_cargo_test` sums every `test result: ok. N passed` line, so a P-item whose pins
+# sit in this workspace AND in pinned planes keeps one declared count over all of them.
+cargo_test_runs() {  # args: runs separated by a lone `::`
+  local rc=0 run=() a
+  for a in "$@" ::; do
+    if [ "$a" = "::" ]; then
+      [ "${#run[@]}" -gt 0 ] && { "${run[@]}" 2>&1 || { rc=$?; break; }; }
+      run=()
+    else
+      run+=("$a")
+    fi
+  done
+  return "$rc"
+}
+
 # Assert the money-path bless/regen env vars are EMPTY — otherwise a byte-identity "check" silently
 # REGENERATES the golden instead of comparing against it (a green that proves nothing).
 #
@@ -872,7 +930,7 @@ PY
 parity_resolve_judge() {  # $1 = the pinned busbar-release ref
   local ref="${1:-}"
   [ -n "$ref" ] || { echo "testing/shadow-oracle/oracle-rust.pin names no release_ref — there is no judge to build"; return 1; }
-  if ./bin/oracle tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
+  if "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
   tail -6 /tmp/done-parity-judge.$$; rm -f /tmp/done-parity-judge.$$
   echo "the judge could not be fetched or built. busbar-release is private: give the run a token"
   echo "(BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN; bin/oracle never stores it). On Linux the"
@@ -893,7 +951,7 @@ parity_install_golden() {  # $1 = committed golden dir ; $2 = destination
 assert_never_rerecords_golden() {  # $1 = file to scan
   local hits
   [ -f "${1:-}" ] || { echo "nothing to scan at ${1:-<empty>} — refusing"; return 1; }
-  hits="$(grep -nE '^[^#]*oracle[[:space:]]+record([[:space:]]|$)' "$1" \
+  hits="$(grep -nE '^[^#]*oracle[}"]*[[:space:]]+record([[:space:]]|$)' "$1" \
           | grep -iE -- '--out[[:space:]]+"?[^[:space:]]*golden|busbar-oracle/[^[:space:]]*/busbar|PARITY_BASELINE_VERSION/busbar' || true)"
   if [ -n "$hits" ]; then
     echo "this run would RE-RECORD its own reference on the machine under test:"
@@ -1095,8 +1153,11 @@ if [ "$SELFTEST" -eq 1 ]; then
   # The planted line goes through %s so it is not itself a record line the real scan finds.
   printf '  step x ./bin/oracle %s --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"\n' record > "$st_tmp/rerecord.sh"
   printf '  step x ./bin/oracle %s --bin "$PARITY_BIN" --plane all --out "$CAND"\n' record > "$st_tmp/candidate-only.sh"
+  # The trusted shim's spelling (ModernCI's BUSBAR_ORACLE_SHIM) is scanned the same way.
+  printf '  step x "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" %s --out "$GOLDEN"\n' record > "$st_tmp/rerecord-shim.sh"
   st_expect refuse "a DONE run that re-records its own golden on the machine under test" assert_never_rerecords_golden "$st_tmp/rerecord.sh"
   st_expect accept "a DONE run that records only the candidate"                          assert_never_rerecords_golden "$st_tmp/candidate-only.sh"
+  st_expect refuse "a re-record of the golden through the trusted shim's spelling"       assert_never_rerecords_golden "$st_tmp/rerecord-shim.sh"
   st_expect accept "THIS file never re-records the golden"                               assert_never_rerecords_golden "$SELF"
   mkdir -p "$st_tmp/g-whole/cells" "$st_tmp/g-short/cells" "$st_tmp/g-empty/cells" "$st_tmp/g-nocell/cells"
   for st_g in g-whole g-short g-nocell; do
@@ -1185,6 +1246,16 @@ if [ "$SELFTEST" -eq 1 ]; then
   printf 'step x cargo xtask gate %s --selftest\n' no-such-gate-planted > "$st_tmp/plant.sh"
   st_expect refuse "a planted unregistered gate name is caught"                   xtask_gates_invoked_are_registered "$st_tmp/plant.sh"
   st_expect accept "every gate name THIS file invokes is in cargo xtask gate --list" xtask_gates_invoked_are_registered "$SELF"
+
+  # ── P-ITEMS: a pin in a pinned plane is reached in that plane's checkout, or the step is RED ───
+  # The P-ITEMS leg once ran `cargo test -p busbar-plane-a2a` here, where no plane is a member: every
+  # step died on "did not match any packages" before one pin ran. Each refusal is planted through the
+  # REAL helpers the steps call, beside the clean case each must accept.
+  st_expect refuse "a pinned plane cargo does not resolve is RED, never a skip"        pinned_plane_workspace busbar-plane-no-such-planted
+  st_expect accept "a pinned plane resolves to its pinned checkout's workspace"        pinned_plane_workspace busbar-plane-a2a
+  st_expect refuse "a pinned-plane run that is not \`cargo test -p <package>\` is refused" pinned_plane_cargo_test cargo build -p busbar-plane-a2a
+  st_expect refuse "one failing run fails the whole multi-run step"                     cargo_test_runs true :: false :: true
+  st_expect accept "every run passing passes the multi-run step"                        cargo_test_runs true :: true
 
   # ── --help shows the FLAGS contract (item 551) ────────────────────────────────────────────────
   st_help() { local h; h="$(bash "$SELF" --help 2>&1)" || return 1
@@ -1583,7 +1654,7 @@ if ! assert_bless_env_empty >/tmp/done-parity-env.$$ 2>&1; then
   sed 's/^/          /' /tmp/done-parity-env.$$
   rm -f /tmp/done-parity-env.$$
   CUR_RED=1; CUR_FIRST_NOTE="bless/repoint env not empty (parity)"
-elif [ -x bin/oracle ]; then
+elif [ -x "${BUSBAR_ORACLE_SHIM:-bin/oracle}" ]; then
   rm -f /tmp/done-parity-env.$$
   printf '  \033[32m[ok]\033[0m   bless/repoint env is empty — the golden is the pinned 1.5.5 recording, not an operator-chosen path\n'
   # THE JUDGE FIRST, ONCE. Every oracle step below runs the engine bin/oracle builds from its pinned
@@ -1593,13 +1664,13 @@ elif [ -x bin/oracle ]; then
   PARITY_JUDGE_REF="$(awk -F= '$1=="release_ref"{print $2; exit}' testing/shadow-oracle/oracle-rust.pin 2>/dev/null)"
   step "the pinned judge (busbar-release ${PARITY_JUDGE_REF:-<no pin>}) is fetched at the pin's sha256" \
     parity_resolve_judge "$PARITY_JUDGE_REF"
-  step "replay-selftest (the differ can see a diff)" ./bin/oracle replay-selftest
+  step "replay-selftest (the differ can see a diff)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" replay-selftest
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
   # --write for, would make this whole group measure a cell set that was never reviewed.
-  step "enumerate-cells --check (cells.json is what the generator derives)" ./bin/oracle cells --check
+  step "enumerate-cells --check (cells.json is what the generator derives)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" cells --check
   # THE PUBLISHED BINARY, fetched by pinned digest (idempotent: a verified cache is a no-op).
-  step "fetch-golden (the published $PARITY_BASELINE_VERSION binary, by pinned digest)" ./bin/oracle fetch-golden
+  step "fetch-golden (the published $PARITY_BASELINE_VERSION binary, by pinned digest)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" fetch-golden
   ORACLE_DIR="target/oracle"
   GOLDEN="$ORACLE_DIR/recordings/golden"
   # THE REFERENCE: the committed recording, copied in fresh and checked whole — never re-recorded on
@@ -1661,14 +1732,14 @@ elif [ -x bin/oracle ]; then
     fi
     PARITY_LEG_SHAS="$PARITY_LEG_SHAS $PARITY_LEG=$PARITY_SHA"
     if [ "$PARITY_SUBJECT_OK" -eq 1 ]; then
-      step "[$PARITY_LEG] record the candidate (the artefact cargo named)" ./bin/oracle record --bin "$PARITY_BIN" --plane all --out "$CAND"
+      step "[$PARITY_LEG] record the candidate (the artefact cargo named)" "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" record --bin "$PARITY_BIN" --plane all --out "$CAND"
       step "[$PARITY_LEG] the recording names the binary this run built" \
         assert_recorded_subject "$CAND" "$PARITY_SHA" "the $PARITY_LEG candidate recording"
       # `--strict` IS WHAT MAKES THE EXIT CODE THE VERDICT. Without it the differ prints its rows and
       # exits 0 whatever they say — including when the selection matched nothing.
       #
       step "[$PARITY_LEG] replay: candidate vs golden (strict)" \
-        ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --strict
+        "${BUSBAR_ORACLE_SHIM:-./bin/oracle}" replay --golden "$GOLDEN" --candidate "$CAND" --out "$REPORT" --strict
       # ...and the same two facts re-derived from the report the differ wrote, so the claim does not
       # rest on one flag in one pinned engine. A green is a statement about the OWED cells only.
       step "[$PARITY_LEG] the report's own numbers: cells were compared, and none diverged" \
@@ -1983,11 +2054,18 @@ begin_group "P-ITEMS — every P-item behaviour matches 1.5.5, each pinned by na
 # signed." Each P-item is a set of tests named `p_item_<item>_*`, and each test's doc cites the 1.5.5
 # behaviour it holds. Every step declares its exact count, so a pin renamed, deleted or filtered
 # away is RED (VACUITY), never a green that ran nothing.
-step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo test -p busbar-contract -p busbar-plane-a2a -p busbar-plane-mcp -p busbar-plane-streaming -p busbar-plane-llm -p xtask --quiet p_item_refusal_reason_collapse
-step "unary/empty terminality"                               filtered_cargo_test 1  cargo test -p busbar-plane-a2a --quiet p_item_unary_empty_terminality
-step "empty reply"                                           filtered_cargo_test 1  cargo test -p busbar-plane-mcp --quiet p_item_empty_reply
-step "wrong-provider attribution"                            filtered_cargo_test 1  cargo test -p busbar-plane-streaming --quiet p_item_wrong_provider_attribution
-step "voice tool-args"                                       filtered_cargo_test 2  cargo test -p busbar-plane-streaming --quiet p_item_voice_tool_args
+# The mcp, a2a and streaming planes are pinned git rows (see pinned_plane_cargo_test): their pins
+# run in the plane's pinned checkout. The refusal-collapse count is 8 here (contract 4, plane-llm 1,
+# xtask 3) plus one per pinned plane (mcp's door witness, a2a, streaming).
+step "refusal-reason collapse (one classification; 11 pins)" filtered_cargo_test 11 cargo_test_runs \
+  cargo test -p busbar-contract -p busbar-plane-llm -p xtask --quiet p_item_refusal_reason_collapse :: \
+  pinned_plane_cargo_test cargo test -p busbar-plane-mcp --with-twin --quiet p_item_refusal_reason_collapse :: \
+  pinned_plane_cargo_test cargo test -p busbar-plane-a2a       --quiet p_item_refusal_reason_collapse :: \
+  pinned_plane_cargo_test cargo test -p busbar-plane-streaming --quiet p_item_refusal_reason_collapse
+step "unary/empty terminality"                               filtered_cargo_test 1  pinned_plane_cargo_test cargo test -p busbar-plane-a2a       --quiet p_item_unary_empty_terminality
+step "empty reply"                                           filtered_cargo_test 1  pinned_plane_cargo_test cargo test -p busbar-plane-mcp       --quiet p_item_empty_reply
+step "wrong-provider attribution"                            filtered_cargo_test 1  pinned_plane_cargo_test cargo test -p busbar-plane-streaming --quiet p_item_wrong_provider_attribution
+step "voice tool-args"                                       filtered_cargo_test 2  pinned_plane_cargo_test cargo test -p busbar-plane-streaming --quiet p_item_voice_tool_args
 end_group
 
 # ── THE ONE VERDICT ─────────────────────────────────────────────────────────────────────────────

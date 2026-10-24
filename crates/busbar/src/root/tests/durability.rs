@@ -3265,6 +3265,71 @@ fn a_full_lane_refuses_new_money_and_drops_no_record() {
     );
 }
 
+/// **A LONG OUTAGE DOES NOT WEDGE THE BOOK** (audit root r4 B-3; ARCHITECT 2026-10-07 H3 ruling,
+/// the `durability` module docs: a full lane fails closed "until the store takes what waits" and "no
+/// record is dropped"; BUSBAR-1.6.0.md THE DESIGN §7 l.991-998). With the store refusing, the journal
+/// keeps appending past the lane's bound — what a fail-closed node still writes (admin units, the
+/// checkpoint cadence, accruals) — so the batch it retains grows past the bound too. Once the store
+/// recovers and the lane drains, the next append's re-offer is taken whole: every record reaches the
+/// store and the book admits money again.
+///
+/// RED before the fix: the lane took a batch only if it fit beside what waits, so the retained
+/// batch, over the bound, was turned away even by an empty lane on every re-offer: the book refused
+/// new money-bearing work until a restart, and the retained records, only in memory, were lost by
+/// it.
+#[test]
+fn a_retained_batch_past_the_lanes_bound_drains_once_the_store_recovers() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let mut durability = store_book_bounded(&slots, 15, 4);
+    drained(&durability);
+    slots.refuse(true);
+    // Past the lane's bound and then some: the lane holds four, the journal retains six.
+    for _ in 0..10 {
+        let _ = durability.journal.append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(RecordClass::Load, Vec::new())],
+        );
+    }
+    assert!(
+        durability.journal.buffered() > 4,
+        "the journal retains more than the lane's bound"
+    );
+    assert!(
+        durability.refuses_money().is_some(),
+        "the node fails closed"
+    );
+    assert_eq!(
+        durability.journal.dropped_total(),
+        0,
+        "no record is dropped"
+    );
+    let written = durability.journal.next_seq() - 1;
+
+    slots.refuse(false);
+    drained(&durability);
+    durability
+        .journal
+        .append(
+            &token(),
+            StepName::Meter,
+            &[busbar_kernel_wal::Entry::new(RecordClass::Load, Vec::new())],
+        )
+        .expect("the empty lane takes the retained batch and the new record");
+    drained(&durability);
+    assert_eq!(durability.journal.buffered(), 0, "the journal owes nothing");
+    assert!(
+        durability.refuses_money().is_none(),
+        "the node admits again"
+    );
+    let kept = read_chain(slots.calls().as_ref(), 15).expect("reads back");
+    assert_eq!(
+        kept.len() as u64,
+        written + 1,
+        "every record the journal sealed is in the store, once"
+    );
+}
+
 /// **A CHAIN READ WHILE THE LANE IS BETWEEN TWO PARTS OF A RECORD IS NOT A TORN RECORD.** A slot
 /// carries 510 bytes of a record, so a journal record past that (a 160-byte header and its body)
 /// crosses to the store as two or more puts, and the lane's worker runs beside the book. A chain read

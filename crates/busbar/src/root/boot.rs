@@ -1014,12 +1014,21 @@ pub fn book(
     super::durability::boot_recovery(&durability, calls.as_ref(), store, adapter.recovery_epoch())?;
     // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
     // material derives it from the deployment keyset just bound, so no verified principal is lent
-    // an empty reference and two principals never share one.
+    // an empty reference and two principals never share one. A node with neither keeps this
+    // boot's random key, so its references differ from every other node's and from its own after
+    // a restart: a deployment that meant to bind a keyset reads that here. DEBUG, not INFO: the
+    // INFO+ boot lines are pinned by `tests/boot_lines_neutrality.rs`.
     if let Some(material) = durability
         .record
         .derived_secret(super::keyset::CALLER_REF_MATERIAL)
     {
         gov.bind_deployment_caller_ref(material);
+    } else {
+        tracing::debug!(
+            node = mig.node,
+            "no deployment keyset is bound: caller references are keyed by this boot's random key \
+             unless the node keeps signing material, so they differ per node and per restart"
+        );
     }
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
     // boot log's INFO+ line set is part of what "one plane alone ≡ 1.5.5" means — it is pinned

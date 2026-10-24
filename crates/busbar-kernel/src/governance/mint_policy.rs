@@ -4,7 +4,7 @@
 //! The RESOLVED runtime mint policy (`auth.policy:`) — CORE governance/config infrastructure.
 //!
 //! RELOCATED out of `admin` (1.6.0 de-alias, stage 2a): this is read on the hot mint path
-//! (`state.rs`'s `App::mint_policy`, `auth/exchange.rs`, `auth/token.rs`'s `mint_policy.self_mint`)
+//! (`state.rs`'s `App::mint_policy`, `auth/exchange.rs`, `auth/login.rs`'s `mint_policy.self_mint`)
 //! and built once at boot (`appbuild.rs`'s `MintPolicy::from_auth`) — none of that is admin-API
 //! surface, so the type does not belong under the `admin::` namespace. Byte-identical move: every
 //! value, decision and error message this module produces is unchanged: only the module path moved.
