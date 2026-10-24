@@ -733,11 +733,12 @@ fn bracketed_zoned_and_ascii_hosts_are_judged_as_before() {
     let g = Guard::default();
     for (host, want) in [
         ("[::1]", Err((DEST_INTERNAL, Some(ip("::1"))))),
+        // An IPv6 link-local address is refused as metadata on every need (ARCHITECT PB-100).
         (
             "[fe80::1%25eth0]",
-            Err((DEST_INTERNAL, Some(ip("fe80::1")))),
+            Err((DEST_METADATA, Some(ip("fe80::1")))),
         ),
-        ("fe80::1%eth0", Err((DEST_INTERNAL, Some(ip("fe80::1"))))),
+        ("fe80::1%eth0", Err((DEST_METADATA, Some(ip("fe80::1"))))),
         (
             "[::ffff:169.254.169.254]",
             Err((DEST_METADATA, Some(ip("::ffff:169.254.169.254")))),
@@ -797,7 +798,7 @@ fn a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable() {
     for zoned in ["[fe80::1%25eth0]", "fe80::1%eth0"] {
         assert_eq!(
             judged(g.judge_name(zoned, C)),
-            Err((DEST_INTERNAL, Some(ip("fe80::1")))),
+            Err((DEST_METADATA, Some(ip("fe80::1")))),
             "{zoned}"
         );
     }
