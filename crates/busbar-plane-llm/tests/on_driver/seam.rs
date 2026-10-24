@@ -129,7 +129,7 @@ fn enforce_restricts_reapplies_compliance_tags_across_pools() {
         restricts: vec![Restrict {
             tags_any: vec![tag.to_string()],
             on_empty,
-            name,
+            name: name.into(),
         }],
         ..Constraint::default()
     };

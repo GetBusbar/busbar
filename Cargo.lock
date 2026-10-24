@@ -340,6 +340,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-pki-types",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "sha2",
@@ -488,7 +489,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "flate2",
- "hex",
  "http-body-util",
  "reqwest",
  "schemars",
@@ -505,21 +505,17 @@ name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
  "arc-swap",
- "axum",
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
  "busbar-plugin-loader",
  "busbar-transport-tcp-plugin",
- "bytes",
  "crc32fast",
  "dimpl",
  "futures",
- "http-body-util",
  "libc",
  "rcgen",
- "reqwest",
  "ring",
  "rustls",
  "rustls-pki-types",
@@ -671,7 +667,6 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-scope",
  "busbar-kernel-wal",
- "busbar-plugin-loader",
  "bytes",
  "crc32fast",
  "criterion",
@@ -728,7 +723,6 @@ name = "busbar-kernel-breaker"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "httpdate",
 ]
 
 [[package]]
@@ -736,7 +730,6 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-kernel-breaker",
  "bytes",
  "futures",
 ]
@@ -780,7 +773,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=0565fcf1fa040ed986e0abcc8528e1b336e2e83c#0565fcf1fa040ed986e0abcc8528e1b336e2e83c"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=fafb021f9f5ff4f109da47a9ea711353a003d26e#fafb021f9f5ff4f109da47a9ea711353a003d26e"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -927,10 +920,11 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=f1b5d4d75f5cdaa46eff23cfef44e0a675d2fbb4#f1b5d4d75f5cdaa46eff23cfef44e0a675d2fbb4"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=2531ef131e492385788b6714687346e48d864d44#2531ef131e492385788b6714687346e48d864d44"
 dependencies = [
  "busbar-contract",
  "bytes",
+ "h2",
  "http",
  "http-body",
  "hyper",
