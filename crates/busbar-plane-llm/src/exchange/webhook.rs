@@ -13,8 +13,8 @@
 //!   `openai_responses: true`. A config without the key answers on that path exactly what 1.5.5's
 //!   default build answered there.
 //! - THE SIGNATURE is the auth kind's (D4, and the design's "Auth points and guest lists"): the
-//!   operator's `auth.chain` names a `busbar-auth-webhook-signature` instance (variant
-//!   `standard-webhooks`), which verifies the HMAC over the body and refuses a replayed
+//!   operator's `auth.chain` names an auth step of the webhook-signature kind (the Standard Webhooks
+//!   scheme), which verifies the HMAC over the body and refuses a replayed
 //!   `webhook-id` through the claim record. A request carrying none of its headers is all-PASS, so
 //!   401 end to end. This plane never sees the signing secret, and its unit requires a principal.
 //! - THE UNIT is the plane's own to answer (`ROUTE_LOCAL`): no walk, no far end, nothing billed.
