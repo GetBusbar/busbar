@@ -225,8 +225,8 @@ fn crate_manifest_name(raw: &str, dir_name: &str) -> String {
     let mut in_package = false;
     for line in raw.lines() {
         let t = line.trim();
-        if t.starts_with('[') {
-            in_package = t == "[package]";
+        if let Some(is_package) = crate::manifest::package_header(t) {
+            in_package = is_package;
             continue;
         }
         if in_package {
@@ -1552,4 +1552,18 @@ pub fn print_report(report: &Report) -> bool {
         );
     }
     false
+}
+
+#[cfg(test)]
+mod package_header_tests {
+    /// `[ package ]` IS `[package]`: a header spelled with spaces names its crate, rather than the
+    /// directory standing in for a name `cargo metadata` does not know. RED before the shared header
+    /// reading: the directory name came back.
+    #[test]
+    fn a_spaced_package_header_names_its_crate() {
+        assert_eq!(
+            super::crate_manifest_name("[ package ]\nname = \"busbar-auth-spaced\"\n", "spaced"),
+            "busbar-auth-spaced"
+        );
+    }
 }

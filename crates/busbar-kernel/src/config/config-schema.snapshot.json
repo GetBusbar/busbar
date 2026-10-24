@@ -308,6 +308,10 @@
     "CandidatePoolCfg": {
       "deny_unknown_fields": true,
       "fields": {
+        "breaker": {
+          "optional": true,
+          "type": "BreakerCfg"
+        },
         "members": {
           "optional": true,
           "type": "Vec<String>"
@@ -1088,6 +1092,10 @@
         "resources_allow": {
           "optional": true,
           "type": "indexmap::IndexMap<String, ResourceAllowCfg>"
+        },
+        "sampling_bounds": {
+          "optional": true,
+          "type": "SamplingBoundsCfg"
         },
         "timeout": {
           "optional": true,
@@ -2206,6 +2214,41 @@
         "default_policy_timeout_ms": {
           "optional": true,
           "type": "u64"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
+    "SamplingBoundsCfg": {
+      "deny_unknown_fields": true,
+      "fields": {
+        "max_input_response_bytes": {
+          "optional": false,
+          "type": "u32"
+        },
+        "max_messages": {
+          "optional": false,
+          "type": "u32"
+        },
+        "max_prompt_bytes": {
+          "optional": false,
+          "type": "u32"
+        },
+        "max_stop_sequence_bytes": {
+          "optional": false,
+          "type": "u32"
+        },
+        "max_stop_sequences": {
+          "optional": false,
+          "type": "u32"
+        },
+        "temperature_max_milli": {
+          "optional": false,
+          "type": "u32"
+        },
+        "temperature_min_milli": {
+          "optional": false,
+          "type": "u32"
         }
       },
       "kind": "struct",
