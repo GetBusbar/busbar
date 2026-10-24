@@ -355,7 +355,7 @@ impl Drop for Restore {
 /// the mark is set: a call into plugin code is either a crossing of an instance or explicitly none.
 /// The instance and the unit are stated, and restored, in one step.
 #[inline(always)]
-pub(crate) fn with_crossing<R>(
+pub(crate) fn with_crossing_serving<R>(
     inst: Option<&Instance>,
     unit: Option<u64>,
     f: impl FnOnce() -> R,
@@ -384,21 +384,28 @@ pub(crate) fn serving_unit() -> Option<u64> {
     CROSSING.with(|c| c.get().unit)
 }
 
+/// `f` run as the crossing of `inst` on this thread (`None`: as no crossing), the unit it serves
+/// kept: [`with_crossing_serving`] for the mark alone.
+#[cfg(test)]
+pub(crate) fn with_crossing<R>(inst: Option<&Instance>, f: impl FnOnce() -> R) -> R {
+    with_crossing_serving(inst, serving_unit(), f)
+}
+
 /// `f` run with the mark nulled, so nothing it hands the host is taken for the crossing it happens
-/// to be nested in (the unit it serves kept). With the HOT plane and transport load paths deleted
-/// (row 84), every call into plugin code is a mechanism crossing ([`Instance::cross`] binds it with
-/// [`with_crossing`]); this stays the explicit "no crossing" the #74 RED test nests inside one.
+/// to be nested in. With the HOT plane and transport load paths deleted (row 84), every call into
+/// plugin code is a mechanism crossing ([`Instance::cross`] binds it with
+/// [`with_crossing_serving`]); this stays the explicit "no crossing" the #74 RED test nests inside
+/// one.
 #[cfg(test)]
 pub(crate) fn without_crossing<R>(f: impl FnOnce() -> R) -> R {
-    let unit = serving_unit();
-    with_crossing(None, unit, f)
+    with_crossing(None, f)
 }
 
 /// The handle table entry of the instance crossing on this thread; `None` outside a crossing.
 pub(crate) fn crossing_wake() -> Option<&'static InstanceWake> {
     let p = CROSSING.with(|c| c.get().inst);
-    // SAFETY: `CROSSING` is non-null only inside `with_crossing(Some(&*p), ..)`, which borrows the
-    // instance for the whole span; its `wake` entry is leaked (`'static`).
+    // SAFETY: `CROSSING` is non-null only inside `with_crossing_serving(Some(&*p), ..)`, which
+    // borrows the instance for the whole span; its `wake` entry is leaked (`'static`).
     (!p.is_null()).then(|| unsafe { (*p).wake })
 }
 
@@ -412,8 +419,8 @@ pub(crate) fn quarantine_crossing() -> bool {
     if p.is_null() {
         return false;
     }
-    // SAFETY: `CROSSING` is non-null only inside `with_crossing(Some(&*p), ..)`, which borrows the
-    // instance for the whole span.
+    // SAFETY: `CROSSING` is non-null only inside `with_crossing_serving(Some(&*p), ..)`, which
+    // borrows the instance for the whole span.
     let inst = unsafe { &*p };
     inst.revoke();
     if let Some((id, table)) = inst.wake.conn.get() {
@@ -1322,7 +1329,7 @@ impl Instance {
             let routed = crate::ffi_thread::on_plugin_thread(|| {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
-                with_crossing(Some(self), unit, || {
+                with_crossing_serving(Some(self), unit, || {
                     enter_lifecycle((self.op_name)(s), op, instance, input, output)
                 })
             });
@@ -1333,7 +1340,7 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
-            with_crossing(Some(self), unit, || {
+            with_crossing_serving(Some(self), unit, || {
                 op(instance, input.cast_const().cast(), out.cast())
             })
         };
