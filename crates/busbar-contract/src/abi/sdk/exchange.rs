@@ -137,10 +137,17 @@ pub struct Exchange {
     slot: Box<ReplyPiece>,
     reply: Zeroizing<ExchangeResponse>,
     code: u32,
+    /// The reply's head (or the transport's ack) was received: `code` is its status
+    /// ([`Exchange::head_status`]).
+    head_seen: bool,
     /// How many of this op's services' results are already applied to `reply`.
     applied: u32,
     /// The handle of the read that answered the terminal piece, once one has.
     ended: Option<u32>,
+    /// The handle of the read whose piece the exchange refused, and why: a replay of that read
+    /// refuses again, so the entry that re-issues the close a failure pended on answers the same
+    /// failure (a replayed piece is not applied again, so it cannot refuse on its own).
+    refused_at: Option<(u32, &'static str)>,
     /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
     within: String,
     /// The registration the exchange reaches ([`Exchange::as_member`]); `None` = none.
@@ -181,8 +188,10 @@ impl Exchange {
             slot: Box::default(),
             reply: Zeroizing::default(),
             code: 0,
+            head_seen: false,
             applied: 0,
             ended: None,
+            refused_at: None,
             within: String::new(),
             member: None,
             observe: false,
@@ -236,6 +245,26 @@ impl Exchange {
     #[must_use]
     pub fn observed(&self) -> Option<&Observed> {
         self.observed.as_ref()
+    }
+
+    /// WHETHER THE REPLY'S HEAD WAS RECEIVED: `true` once a head (or a pure-send transport's ack)
+    /// was read, whatever the exchange answered after it. When a failed exchange answers `true`,
+    /// it failed while reading the body (a reset, a stalled body, [`REPLY_OVER_BOUND`]). When it
+    /// answers `false`, it failed before any reply arrived (the dial, the send, the far end's
+    /// silence).
+    #[must_use]
+    pub const fn head_seen(&self) -> bool {
+        self.head_seen
+    }
+
+    /// The status the reply's head carried ([`ExchangeResponse::status`], read as [`exchange`]
+    /// reads it), once [`Exchange::head_seen`]; `None` before. Answered on a failed exchange too,
+    /// so a driver judges the status before the body as an HTTP client does: a reply past
+    /// [`REPLY_OVER_BOUND`] still says what status it came with.
+    #[must_use]
+    pub fn head_status(&self) -> Option<u16> {
+        self.head_seen
+            .then(|| u16::try_from(self.code).unwrap_or(0))
     }
 
     /// Land this exchange's dial only on an address of `within`, the set the plugin's
@@ -478,7 +507,10 @@ fn exchange_once(
             state.applied = this + 1;
         }
         let p = got.piece;
-        let applied = apply(state, p, got.len, fresh);
+        let applied = match state.refused_at {
+            Some((at, text)) if at == this => Err(text),
+            _ => apply(state, p, got.len, fresh),
+        };
         // A fresh piece's bytes are in the reply now: the read buffer keeps no copy of them into
         // the next read. A replayed read's are not touched: the buffer may still hold the bytes of
         // the read this entry has yet to apply (the one that pended on the last entry).
@@ -488,6 +520,7 @@ fn exchange_once(
             }
         }
         if let Err(text) = applied {
+            state.refused_at = Some((this, text));
             return failed(text);
         }
         // The terminal piece ends the reads, on the entry that first saw it and on every replay
@@ -523,6 +556,7 @@ fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result
         REPLY_HEAD | REPLY_ACK if fresh => {
             let bytes = &state.buf[..len];
             state.code = p.code;
+            state.head_seen = true;
             let reason = spanned(bytes, p.reason);
             state.reply.reason.zeroize();
             state.reply.reason = (!reason.is_empty()).then(|| reason.to_vec());
