@@ -525,7 +525,7 @@ fn pick_reads_the_scalar_the_field_holds() {
         out.pick(|o| &o.next_tick_ns),
         out.pick(|o| &o.head.wake_at_ns),
     );
-    drop(out);
+    // `Out` has no drop glue: its borrow of `o` ends at its last use above.
     assert_eq!((tick, wake), (o.next_tick_ns, o.head.wake_at_ns));
     assert_eq!((tick, wake), (42, 7));
 }
