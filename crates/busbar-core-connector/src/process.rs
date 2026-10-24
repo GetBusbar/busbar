@@ -25,7 +25,7 @@ use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
 use crate::guard::{is_loopback, names_loopback, Guard, Resolve, SystemResolver};
 use crate::pool::PoolPosture;
 use crate::registry::{Entry, Transports};
-use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
+use crate::{Connector, DialJudge, Judged, JudgedAll, Verdict, WakeTicket};
 
 /// THE PROCESS'S CONNECTOR over the framer entries `entries` yields, judging every dial through
 /// `dest` ([`judge`], the node's `own_ports` refused to a loopback-allowed need), dialling a framed
@@ -326,11 +326,33 @@ impl OneJudge {
         done: Judged,
         judging: impl FnOnce(Box<dyn FnOnce(Admitted) + Send>) -> Option<Admitted>,
     ) -> Option<Result<SocketAddr, Verdict>> {
+        let done: JudgedAll = Box::new(move |v, _| done(v));
+        self.pinned_all(class, done, judging)
+    }
+
+    /// [`Self::pinned`], the pended answer naming the name's other admitted addresses on the same
+    /// port, each held off the node as the pin is.
+    fn pinned_all(
+        &self,
+        class: u32,
+        done: JudgedAll,
+        judging: impl FnOnce(Box<dyn FnOnce(Admitted) + Send>) -> Option<Admitted>,
+    ) -> Option<Result<SocketAddr, Verdict>> {
         let later = Arc::clone(&self.own);
-        let pin = |v: Admitted| v.map(|(at, _)| at).map_err(|r| r.verdict);
-        let pended: Box<dyn FnOnce(Admitted) + Send> =
-            Box::new(move |v| done(not_the_node(class, &later, pin(v))));
-        judging(pended).map(|v| not_the_node(class, &self.own, pin(v)))
+        let pin = |v: &Admitted| v.as_ref().map(|(at, _)| *at).map_err(|r| r.verdict);
+        let pended: Box<dyn FnOnce(Admitted) + Send> = Box::new(move |v| {
+            let also = match &v {
+                Ok((at, addrs)) => addrs
+                    .iter()
+                    .map(|ip| SocketAddr::new(*ip, at.port()))
+                    .filter(|a| a != at)
+                    .filter(|a| not_the_node(class, &later, Ok(*a)).is_ok())
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            done(not_the_node(class, &later, pin(&v)), also);
+        });
+        judging(pended).map(|v| not_the_node(class, &self.own, pin(&v)))
     }
 }
 
@@ -354,6 +376,22 @@ impl DialJudge for OneJudge {
     ) -> Option<Result<SocketAddr, Verdict>> {
         self.pinned(class, done, |pended| {
             self.dest.judge_reaching(dest, class, pended)
+        })
+    }
+
+    fn judge_dial_all(
+        &self,
+        dest: &str,
+        class: u32,
+        reach: bool,
+        done: JudgedAll,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.pinned_all(class, done, |pended| {
+            if reach {
+                self.dest.judge_reaching(dest, class, pended)
+            } else {
+                self.dest.judge(dest, class, false, pended)
+            }
         })
     }
 

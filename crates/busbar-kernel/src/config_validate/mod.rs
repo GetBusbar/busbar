@@ -2488,7 +2488,10 @@ fn validate_providers_with(
             }) {
                 Ok(json) => String::from_utf8(json).unwrap_or_default(),
                 Err(e) => {
-                    errors.push(format!("provider '{provider_name}' (jwt-bearer auth): {e}"));
+                    errors.push(format!(
+                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
+                        provider_cfg.api_key.describe()
+                    ));
                     String::new()
                 }
             };

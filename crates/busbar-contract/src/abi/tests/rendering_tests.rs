@@ -12,6 +12,7 @@ use crate::abi::mechanism::door::{
     KindTailHead, FAMILY_COUNTER, MARK_ONE_INSTANCE, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY,
     SECTION_DECLARING,
 };
+use crate::abi::mechanism::KindCode;
 use crate::abi::sdk::door::{abi_str, statement};
 
 const NONE: AbiStr = AbiStr {
@@ -219,6 +220,10 @@ fn a_rendering_reads_back_to_every_fact_it_carries() {
     assert_eq!(r.families[0].label_keys, vec!["reason".to_string()]);
     assert_eq!(r.diag_ids, vec!["golden.note".to_string()]);
     assert_eq!(r.kind_tail_size, 8);
+    assert!(
+        r.kind_tail.is_empty(),
+        "a secret Statement states no tail facts"
+    );
     assert_eq!(r.extensions.bytes, b"ext");
     assert_eq!(r.secret_refs, vec!["password".to_string()]);
     assert_eq!(r.settings_schema.fmt, BLOB_JSON);
@@ -259,3 +264,323 @@ fn a_truncated_padded_or_foreign_rendering_is_unreadable() {
     huge.extend_from_slice(&u32::MAX.to_le_bytes());
     assert!(read(&huge).is_err());
 }
+
+// ── THE KIND TAIL, RENDERED WHOLE (ARCHITECT ruling 2026-10-20, audit root#7 and loader#9) ───────
+
+const STYLES: &[crate::abi::auth::StyleDecl] = &[
+    crate::abi::auth::StyleDecl {
+        name: abi_str("golden-style"),
+        flags: 0,
+        points: 1,
+    },
+    crate::abi::auth::StyleDecl {
+        name: abi_str("second-style"),
+        flags: crate::abi::auth::STYLE_NEEDS_HEADERS,
+        points: 2,
+    },
+];
+const CREDENTIAL_KINDS: &[AbiStr] = &[abi_str("golden-kind")];
+
+/// An auth tail stating every field.
+fn auth_tail() -> crate::abi::auth::AuthTail {
+    use crate::abi::auth::{
+        AuthTail, CAP_INBOUND, CAP_OUTBOUND, FACT_OPERATOR, FACT_READS_CREDENTIALS,
+    };
+    AuthTail {
+        head: KindTailHead {
+            size: core::mem::size_of::<AuthTail>() as u32,
+            _reserved: 0,
+        },
+        caps: CAP_INBOUND | CAP_OUTBOUND,
+        facts: FACT_OPERATOR | FACT_READS_CREDENTIALS,
+        login_kind: 0,
+        inbound_points: 1,
+        styles: STYLES.as_ptr(),
+        styles_len: STYLES.len(),
+        operator_principal: abi_str("golden-operator"),
+        credential_kinds: CREDENTIAL_KINDS.as_ptr(),
+        credential_kinds_len: CREDENTIAL_KINDS.len(),
+    }
+}
+
+/// The rendering of a Statement of `kind` whose tail is `t`.
+fn with_tail<T>(kind: KindCode, t: &T) -> Result<Vec<u8>, RenderError> {
+    let st = Statement {
+        kind: kind as u32,
+        kind_abi: kind.abi_version(),
+        kind_tail: core::ptr::from_ref(t).cast::<KindTailHead>(),
+        ..statement("tail-plugin", "1.0.0", 1)
+    };
+    // SAFETY: every list the Statement and `t` state is a `'static` array of its stated count, or
+    // NULL with none (a NULL list with a count is bounded before it is read).
+    unsafe { render(&st) }
+}
+
+/// A tail of `T`, all zero but its head, which states the whole of `T`.
+fn zeroed_tail<T: Copy>() -> T {
+    // SAFETY: every kind tail is `#[repr(C)]` plain data: all-zero bytes are a valid `T`.
+    let mut t: T = unsafe { core::mem::zeroed() };
+    // SAFETY: every kind tail leads with its `KindTailHead`.
+    unsafe {
+        core::ptr::from_mut(&mut t)
+            .cast::<KindTailHead>()
+            .write(KindTailHead {
+                size: core::mem::size_of::<T>() as u32,
+                _reserved: 0,
+            });
+    }
+    t
+}
+
+#[test]
+fn an_auth_tail_renders_whole_and_reads_back_with_no_library() {
+    let b = with_tail(KindCode::Auth, &auth_tail()).expect("renders");
+    let r = read(&b).expect("reads back");
+    assert_eq!(
+        r.kind_tail_size as usize,
+        core::mem::size_of::<crate::abi::auth::AuthTail>()
+    );
+    let t = read_auth_tail(&r.kind_tail).expect("the auth tail reads back");
+    assert_eq!(
+        t,
+        ReadAuthTail {
+            caps: crate::abi::auth::CAP_INBOUND | crate::abi::auth::CAP_OUTBOUND,
+            facts: crate::abi::auth::FACT_OPERATOR | crate::abi::auth::FACT_READS_CREDENTIALS,
+            login_kind: 0,
+            inbound_points: 1,
+            styles: vec![
+                ReadStyle {
+                    name: "golden-style".into(),
+                    flags: 0,
+                    points: 1,
+                },
+                ReadStyle {
+                    name: "second-style".into(),
+                    flags: crate::abi::auth::STYLE_NEEDS_HEADERS,
+                    points: 2,
+                },
+            ],
+            operator_principal: "golden-operator".into(),
+            credential_kinds: vec!["golden-kind".into()],
+        }
+    );
+    // A truncated or padded tail is refused, never read short.
+    assert!(read_auth_tail(&r.kind_tail[..r.kind_tail.len() - 1]).is_err());
+    let mut padded = r.kind_tail.clone();
+    padded.push(0);
+    assert_eq!(read_auth_tail(&padded).unwrap_err().what, "the end");
+}
+
+#[test]
+fn every_auth_tail_field_changes_the_bytes() {
+    let base = with_tail(KindCode::Auth, &auth_tail()).expect("renders");
+    let renamed: &[crate::abi::auth::StyleDecl] = &[
+        crate::abi::auth::StyleDecl {
+            name: abi_str("golden-stylf"),
+            ..STYLES[0]
+        },
+        STYLES[1],
+    ];
+    let reflagged: &[crate::abi::auth::StyleDecl] = &[
+        crate::abi::auth::StyleDecl {
+            flags: crate::abi::auth::STYLE_CALLER_CREDENTIAL,
+            ..STYLES[0]
+        },
+        STYLES[1],
+    ];
+    let repointed: &[crate::abi::auth::StyleDecl] = &[
+        crate::abi::auth::StyleDecl {
+            points: 3,
+            ..STYLES[0]
+        },
+        STYLES[1],
+    ];
+    let other_kinds: &[AbiStr] = &[abi_str("golden-kinc")];
+    let mut edits: Vec<(&str, crate::abi::auth::AuthTail)> = Vec::new();
+    let mut push = |name: &'static str, f: &dyn Fn(&mut crate::abi::auth::AuthTail)| {
+        let mut t = auth_tail();
+        f(&mut t);
+        edits.push((name, t));
+    };
+    push("caps", &|t| t.caps = crate::abi::auth::CAP_INBOUND);
+    push("facts", &|t| {
+        t.facts = crate::abi::auth::FACT_READS_CREDENTIALS
+    });
+    push("login_kind", &|t| t.login_kind = 1);
+    push("inbound_points", &|t| t.inbound_points = 2);
+    push("a style dropped", &|t| t.styles_len = 1);
+    push("a style's name", &|t| t.styles = renamed.as_ptr());
+    push("a style's flags", &|t| t.styles = reflagged.as_ptr());
+    push("a style's points", &|t| t.styles = repointed.as_ptr());
+    push("operator_principal", &|t| {
+        t.operator_principal = abi_str("golden-operatos")
+    });
+    push("credential_kinds", &|t| {
+        t.credential_kinds = other_kinds.as_ptr()
+    });
+    push("credential_kinds dropped", &|t| t.credential_kinds_len = 0);
+    for (name, t) in &edits {
+        let b = with_tail(KindCode::Auth, t).expect("renders");
+        assert_ne!(b, base, "{name} did not change the rendering");
+    }
+}
+
+#[test]
+fn a_tail_renders_by_the_growth_rule() {
+    // A plugin built when the auth tail froze states its frozen size: the fields appended after it
+    // render absent, whatever bytes follow in its memory.
+    let mut old = auth_tail();
+    old.head.size = crate::abi::auth::AUTH_TAIL_FROZEN as u32;
+    let b = with_tail(KindCode::Auth, &old).expect("renders");
+    let t = read_auth_tail(&read(&b).expect("reads back").kind_tail).expect("reads back");
+    assert_eq!(t.operator_principal, "");
+    assert!(t.credential_kinds.is_empty());
+    assert_eq!(t.styles.len(), 2, "the frozen fields render whole");
+}
+
+#[test]
+fn a_tail_list_or_string_out_of_bounds_is_refused_before_it_is_read() {
+    use crate::abi::mechanism::check::{fault, Rule, STATEMENT_LIST_MAX};
+    let mut t = auth_tail();
+    t.styles = core::ptr::null();
+    assert_eq!(
+        with_tail(KindCode::Auth, &t),
+        Err(RenderError::Tail(fault(Rule::NullWithCount, "auth.styles")))
+    );
+    let mut t = auth_tail();
+    t.credential_kinds_len = STATEMENT_LIST_MAX + 1;
+    assert_eq!(
+        with_tail(KindCode::Auth, &t),
+        Err(RenderError::Tail(fault(
+            Rule::OverMax,
+            "auth.credential_kinds"
+        )))
+    );
+    let mut t = auth_tail();
+    t.operator_principal = AbiStr {
+        ptr: core::ptr::null(),
+        len: 4,
+    };
+    assert_eq!(
+        with_tail(KindCode::Auth, &t),
+        Err(RenderError::Tail(fault(
+            Rule::NullWithCount,
+            "auth.operator_principal"
+        )))
+    );
+}
+
+#[test]
+fn every_kind_renders_its_tail_facts_not_only_its_size() {
+    use crate::abi::{export, hook, plane, store, transport};
+    let differs = |kind: KindCode,
+                   a: &dyn Fn() -> Result<Vec<u8>, RenderError>,
+                   b: &dyn Fn() -> Result<Vec<u8>, RenderError>| {
+        let (a, b) = (a().expect("renders"), b().expect("renders"));
+        assert_ne!(a, b, "{kind:?}: a tail fact did not change the rendering");
+    };
+    let s0: store::StoreTail = zeroed_tail();
+    let s1 = store::StoreTail {
+        fork_refusal: 1,
+        ..s0
+    };
+    differs(
+        KindCode::Store,
+        &|| with_tail(KindCode::Store, &s0),
+        &|| with_tail(KindCode::Store, &s1),
+    );
+    let h0: hook::Tail = zeroed_tail();
+    let h1 = hook::Tail {
+        infallible: 1,
+        ..h0
+    };
+    differs(KindCode::Hook, &|| with_tail(KindCode::Hook, &h0), &|| {
+        with_tail(KindCode::Hook, &h1)
+    });
+    let streams: &[u8] = &[1, 2];
+    let e0: export::Tail = zeroed_tail();
+    let e1 = export::Tail {
+        streams: streams.as_ptr(),
+        streams_len: streams.len(),
+        ..e0
+    };
+    differs(
+        KindCode::Export,
+        &|| with_tail(KindCode::Export, &e0),
+        &|| with_tail(KindCode::Export, &e1),
+    );
+    let p0: plane::PlaneTail = zeroed_tail();
+    let p1 = plane::PlaneTail {
+        label: abi_str("golden label"),
+        ..p0
+    };
+    differs(
+        KindCode::Plane,
+        &|| with_tail(KindCode::Plane, &p0),
+        &|| with_tail(KindCode::Plane, &p1),
+    );
+    let t0: transport::TransportTail = zeroed_tail();
+    let t1 = transport::TransportTail {
+        frame_piece_size: 1,
+        ..t0
+    };
+    differs(
+        KindCode::Transport,
+        &|| with_tail(KindCode::Transport, &t0),
+        &|| with_tail(KindCode::Transport, &t1),
+    );
+}
+
+/// A PLANE'S COMMAND-LINE HELP READS BACK FROM ITS RENDERING, with no library (audit busbar-src r4
+/// S-2; BUSBAR-1.6.0.md l.2179, Part 2 #2: compiled in or dropped in, one loading path). The host
+/// reads a dropped-in plane's `busbar --help` rows, its line-serve flag among them, off the signed
+/// manifest before any configuration is served, as it reads a linked door's off its tail. Every
+/// tail field rendered before the help is stated, so a reader that skipped one reads another field
+/// as the help.
+#[test]
+fn a_plane_tails_cli_help_reads_back_with_no_library() {
+    use crate::abi::plane::PlaneTail;
+    const HELP: &str = "    --golden-serve      serve the golden plane on stdin/stdout";
+    let p0: PlaneTail = zeroed_tail();
+    let p = PlaneTail {
+        flags: 1,
+        ingress: 2,
+        dispatch_shape: 3,
+        answer_layout: 4,
+        scope: abi_str("golden-scope"),
+        label: abi_str("golden label"),
+        subject_noun: abi_str("golden route"),
+        admin_noun: abi_str("golden"),
+        audit_kind: abi_str("golden_kind"),
+        signing_domain: abi_str("golden-domain/v1"),
+        signing_kid_prefix: abi_str("golden-kid-"),
+        cli_help: abi_str(HELP),
+        dialects: DIALECTS.as_ptr(),
+        dialects_len: DIALECTS.len(),
+        ..p0
+    };
+    let r = read(&with_tail(KindCode::Plane, &p).expect("renders")).expect("reads back");
+    assert_eq!(
+        read_plane_cli_help(&r.kind_tail).expect("the help reads back"),
+        HELP
+    );
+    let r0 = read(&with_tail(KindCode::Plane, &p0).expect("renders")).expect("reads back");
+    assert_eq!(
+        read_plane_cli_help(&r0.kind_tail).expect("an absent help reads back"),
+        "",
+        "a plane that states no help reads back as none"
+    );
+    let end = r
+        .kind_tail
+        .windows(HELP.len())
+        .position(|w| w == HELP.as_bytes())
+        .expect("the help is in the tail's facts")
+        + HELP.len();
+    assert!(
+        read_plane_cli_help(&r.kind_tail[..end - 1]).is_err(),
+        "a tail cut inside its help is unreadable"
+    );
+    assert!(read_plane_cli_help(&[]).is_err(), "no tail states no help");
+}
+
+const DIALECTS: &[AbiStr] = &[abi_str("golden-dialect")];

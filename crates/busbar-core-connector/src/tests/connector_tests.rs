@@ -1859,6 +1859,8 @@ mod transport_pin {
     /// A test root and the leaves it issues.
     struct Pki {
         ca_der: Vec<u8>,
+        /// The root as PEM: what a need's `trust_from` resolves to.
+        ca_pem: String,
         issuer: Issuer<'static, KeyPair>,
     }
 
@@ -1878,6 +1880,7 @@ mod transport_pin {
             let ca = params.self_signed(&kp).unwrap();
             Self {
                 ca_der: ca.der().to_vec(),
+                ca_pem: ca.pem(),
                 issuer: Issuer::new(params, kp),
             }
         }
@@ -2310,6 +2313,161 @@ mod transport_pin {
                 (got, failed),
                 (Vec::new(), Some(ConnError::Refused)),
                 "the open is held to the new pin, never lent the line the old seal verified"
+            );
+        });
+    }
+
+    /// [`keeping_tls_far_end`], counting the connections it accepted: its address and the count.
+    async fn counting_tls_far_end(leaf: &Leaf) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        crate::tls::install_crypto_provider();
+        let chain = vec![rustls_pki_types::CertificateDer::from(leaf.der.clone())];
+        let key = rustls_pki_types::PrivateKeyDer::try_from(leaf.key.clone()).unwrap();
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let (l, far) = far_end().await;
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&accepted);
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((s, _)) = l.accept().await {
+                count.fetch_add(1, Ordering::SeqCst);
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(s).await else {
+                        return;
+                    };
+                    let mut buf = [0_u8; 5];
+                    while tls.read_exact(&mut buf).await.is_ok() {
+                        if tls.write_all(b"xe").await.is_err() || tls.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        (far, accepted)
+    }
+
+    /// A connector whose own trust is the public roots alone, its secure entry (riding the plain
+    /// address carrier, as [`pooled_trusting`]'s does) answering the scripted messages, keeping
+    /// every line an exchange finished on: a far end under a private root is reached only through
+    /// a need whose `trust_from` names that root.
+    fn pooled_public_roots() -> Connector {
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::identity("plain")),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "sec",
+                    &["sec"],
+                    &[],
+                    crate::support::Knobs {
+                        secure_name: Some("localhost"),
+                        messages: Some(crate::compose::EXCHANGE_STREAM),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let tls = crate::tls::client::build_client_config(&EgressTrust::default()).unwrap();
+        Connector::serving(
+            view,
+            loopback_literals(),
+            Some(Arc::new(tls)),
+            Arc::new(|_, _| {}),
+        )
+        .pooling(crate::pool::PoolPosture {
+            max_idle_per_host: 8,
+            idle_timeout: std::time::Duration::from_secs(60),
+        })
+    }
+
+    /// Declare `OWNER`'s need 0 over the secure entry, its `trust_from` resolved to `pem`.
+    fn declare_operator_ca(c: &Connector, pem: &str) -> Result<(), ConnError> {
+        let need = ReadNeed {
+            direction: DIRECTION_OUTBOUND,
+            egress_class: crate::DEFAULT_CLASS,
+            transport: "sec".to_owned(),
+            auth: String::new(),
+            target_from: String::new(),
+            trust_from: "settings.ca".to_owned(),
+            details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+                fmt: 0,
+                flags: 0,
+                bytes: Vec::new(),
+            },
+            timeout_ms: 0,
+        };
+        DeclaredConns::declare(c, OWNER, NeedId(0), &need, None, Some(pem))
+    }
+
+    /// RED (THE DESIGN §5, the host connector: a need's `trust_from` is "an extra trusted root
+    /// added on top of the public roots"; §8, the connector holds each need's trust): a line
+    /// verified under a need's operator CA is never lent once the need is declared again with
+    /// another CA. The next open dials afresh and its handshake is refused, as the far end's root is
+    /// no longer trusted; keyed without the need's client config, it rode the line the old CA
+    /// verified and the new trust was never checked.
+    #[test]
+    fn a_pooled_line_is_never_lent_once_its_need_trusts_another_operator_ca() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let other = Pki::new();
+            let (far, accepted) = counting_tls_far_end(&pki.leaf("localhost")).await;
+            let c = pooled_public_roots();
+            declare_operator_ca(&c, &pki.ca_pem).expect("declared under its CA");
+            assert_eq!(
+                pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
+                (b"x".to_vec(), true, None),
+                "under the CA that signed the far end, the exchange finishes whole and its line is kept"
+            );
+            declare_operator_ca(&c, &other.ca_pem).expect("declared again under another CA");
+            let (got, _, failed) = pooled_exchange(&c, (OWNER, 0), &far, b"again", false).await;
+            assert_eq!(
+                (got, failed),
+                (Vec::new(), Some(ConnError::Refused)),
+                "the open is held to the need's new CA, never lent the line the old CA verified"
+            );
+            assert_eq!(
+                accepted.load(Ordering::SeqCst),
+                2,
+                "the open under the new CA dialled afresh"
+            );
+        });
+    }
+
+    /// GREEN twin: a need declared once under its operator CA keeps pooling: its next open rides
+    /// the line its first exchange finished on, and the far end accepts one connection only. (The
+    /// scripted framer answers on its one stream, so an exchange over a lent line is read to its
+    /// first byte, as `a_pooled_line_is_never_lent_to_another_need_or_instance`'s is.)
+    #[test]
+    fn a_need_under_its_operator_ca_rides_its_own_pooled_line() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let (far, accepted) = counting_tls_far_end(&pki.leaf("localhost")).await;
+            let c = pooled_public_roots();
+            declare_operator_ca(&c, &pki.ca_pem).expect("declared under its CA");
+            assert_eq!(
+                pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
+                (b"x".to_vec(), true, None),
+                "under the need's CA, the exchange finishes whole and its line is kept"
+            );
+            let (got, _, failed) = pooled_exchange(&c, (OWNER, 0), &far, b"again", false).await;
+            assert_eq!(
+                (got, failed),
+                (b"x".to_vec(), None),
+                "the need's next open is answered under its CA"
+            );
+            assert_eq!(
+                accepted.load(Ordering::SeqCst),
+                1,
+                "the need's next open rode its kept line"
             );
         });
     }
