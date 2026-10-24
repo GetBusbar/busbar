@@ -2921,25 +2921,28 @@ pub(crate) fn open_door() -> AdminDoorFn {
     Arc::new(|_: &AdminRequest| busbar_kernel::auth::AdminDoor::Open)
 }
 
-/// A test's door over an identity chain, judged on the presented credential by the rule the
-/// kernel's scope resolution applies to a roleless principal: the operator's id holds the full
-/// tier, any other identity earns no grant (authenticated, not authorized).
+/// A test's identification: the principal id the presented credential is, or `None` for one it
+/// does not identify.
 #[cfg(test)]
-pub(crate) fn door_of_chain(chain: busbar_kernel_identity::AuthChain) -> AdminDoorFn {
+pub(crate) type Identify = fn(Option<&str>) -> Option<&'static str>;
+
+/// A test's CLOSED door over an identification, judged on the presented credential by the rule the
+/// kernel's scope resolution applies to a roleless principal: the operator's id holds the full
+/// tier, any other identity earns no grant (authenticated, not authorized), and a credential
+/// `identify` does not identify is denied.
+#[cfg(test)]
+pub(crate) fn door_of(identify: Identify) -> AdminDoorFn {
     use busbar_kernel::auth::AdminDoor;
-    use busbar_kernel_identity::chain::ChainVerdict;
     Arc::new(
-        move |request: &AdminRequest| match chain.run_chain(request.credential.as_deref()) {
-            ChainVerdict::Open => AdminDoor::Open,
-            ChainVerdict::Denied => AdminDoor::Denied,
-            ChainVerdict::Identified { principal, .. } => {
-                let grants = if principal.id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
+        move |request: &AdminRequest| match identify(request.credential.as_deref()) {
+            None => AdminDoor::Denied,
+            Some(id) => {
+                let grants = if id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
                     busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full)
                 } else {
                     busbar_contract::authz::Grants::default()
                 };
-                let principal = busbar_contract::auth::Principal::from_id(principal.id);
-                AdminDoor::Identified(principal, grants)
+                AdminDoor::Identified(busbar_contract::auth::Principal::from_id(id), grants)
             }
         },
     )

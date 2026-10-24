@@ -113,14 +113,16 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         auth_modules
             .iter()
             .any(|m| m == busbar_kernel::config::operator_provider()),
-        busbar_kernel::preflight::linked_auth_names()
-            .contains(&busbar_kernel::config::operator_provider()),
+        busbar_kernel::preflight::linked_auth_names(
+            &busbar_kernel::test_support::operator_double::RECORD,
+        )
+        .contains(&busbar_kernel::config::operator_provider()),
         "auth_modules must contain the operator credential iff its row is linked: {auth_modules:?}"
     );
     // RED with a hook name spelled here rather than read off the root's install record (Law 1).
     assert_eq!(
         body["build"]["hook_plugins"],
-        serde_json::json!(busbar_kernel::preflight::root_rows().hook_names),
+        serde_json::json!(busbar_kernel::preflight::RootInstall::STAND_IN.hook_names),
         "hook_plugins must be exactly the linked hook rows the root's install record carries"
     );
     // Topology keys are present and numeric (exact counts depend on the TestApp fixture).
@@ -961,7 +963,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "store": {"module": migrated_store_module()},
+            "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {
                 "m0": {"provider": "test-provider", "max_concurrent": 4},
@@ -996,7 +998,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"0\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": migrated_store_module()}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1009,7 +1011,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"not-a-version\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": migrated_store_module()}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1921,7 +1923,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "store": {"module": migrated_store_module()},
+            "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
             "pools": {"p": {"members": [{"model": "m0"}]}}
@@ -3693,7 +3695,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": migrated_store_module()}}}).to_string())
+        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())}}}).to_string())
         .send()
         .await
         .unwrap();
@@ -4162,8 +4164,10 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         .find(|p| p["name"] == busbar_kernel::config::operator_provider());
     assert_eq!(
         admin_tokens.is_some(),
-        busbar_kernel::preflight::linked_auth_names()
-            .contains(&busbar_kernel::config::operator_provider()),
+        busbar_kernel::preflight::linked_auth_names(
+            &busbar_kernel::test_support::operator_double::RECORD,
+        )
+        .contains(&busbar_kernel::config::operator_provider()),
         "the operator credential is listed iff linked"
     );
     if let Some(admin_tokens) = admin_tokens {
@@ -4178,7 +4182,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
     assert!(h_items
         .iter()
         .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in"));
-    for linked in busbar_kernel::preflight::root_rows().hook_names {
+    for linked in busbar_kernel::preflight::RootInstall::STAND_IN.hook_names {
         assert!(
             h_items
                 .iter()
@@ -4302,7 +4306,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     let proposed = serde_json::json!({
         "config": {
             "providers": { "acme": { "api_key": { "env": "ACME_KEY" } } },
-            "store": {"module": migrated_store_module()},
+            "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())},
             "models": {}
         },
         "providers": {}
@@ -4337,7 +4341,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         "config": {
             "secrets": { "acme-vault": { "settings": {} } },
             "providers": {},
-            "store": {"module": migrated_store_module()},
+            "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())},
             "models": {}
         },
         "providers": {}
@@ -4390,7 +4394,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
         "config": {
             "oauth_as": null,
             "providers": {},
-            "store": {"module": migrated_store_module()},
+            "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())},
             "models": {}
         },
         "providers": {}
@@ -4443,7 +4447,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let lifted = apply(serde_json::json!({
         "oauth_as": null,
         "providers": {},
-        "store": {"module": migrated_store_module()},
+        "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())},
         "models": {}
     }))
     .await
@@ -4455,7 +4459,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let unknown = apply(serde_json::json!({
         "not_a_config_key": true,
         "providers": {},
-        "store": {"module": migrated_store_module()},
+        "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())},
         "models": {}
     }))
     .await
@@ -7255,7 +7259,10 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         .await
         .unwrap();
     let items = list["items"].as_array().unwrap();
-    assert_eq!(items[0]["name"], migrated_store_module());
+    assert_eq!(
+        items[0]["name"],
+        migrated_store_module(busbar_kernel::config::Legacy::stand_in())
+    );
     let dyn_row = items
         .iter()
         .find(|p| p["loader"] == "dynamic-library")
@@ -7442,7 +7449,9 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
         .map(|p| p["name"].as_str().unwrap())
         .collect();
     assert!(
-        store_names.contains(&migrated_store_module()) && store_names.contains(&"acme-store-junk"),
+        store_names.contains(&migrated_store_module(
+            busbar_kernel::config::Legacy::stand_in()
+        )) && store_names.contains(&"acme-store-junk"),
         "type=store still lists the compiled-in default + the store plugin: {store_list}"
     );
     assert!(
@@ -7511,6 +7520,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     };
     let registry = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
     let hook_env = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )
@@ -7558,7 +7568,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|p| p["name"] == migrated_store_module())
+        .find(|p| p["name"] == migrated_store_module(busbar_kernel::config::Legacy::stand_in()))
         .expect("compiled-in memory row present");
     assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
 
@@ -7659,6 +7669,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     };
     let registry = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
     let hook_env = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )
@@ -7732,7 +7743,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 
     let memory_row = items
         .iter()
-        .find(|p| p["name"] == migrated_store_module())
+        .find(|p| p["name"] == migrated_store_module(busbar_kernel::config::Legacy::stand_in()))
         .expect("compiled-in memory row present");
     assert_eq!(
         memory_row["file"],
@@ -7909,6 +7920,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     };
     let registry = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
     let hook_env = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )
@@ -7945,6 +7957,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     std::fs::write(dir.join("acme-store-junk.tar.gz"), &no_schema_tarball).unwrap();
     let registry2 = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
     let hook_env2 = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(registry2),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )
@@ -8018,6 +8031,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let bad_registry =
         busbar_kernel::plugin_admission::scan_and_validate(&bad_dir, &policy).unwrap();
     let bad_hook_env = busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         std::sync::Arc::new(bad_registry),
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
     )
@@ -10092,6 +10106,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             Some(&providers_path),
             false,
             busbar_kernel::config::EnvSubst::Strict,
+            busbar_kernel::config::Legacy::stand_in(),
         )
         .expect("disk reload");
         // Simulate the env-derived overlay read (boot reads it via BUSBAR_CONFIG_OVERLAY).
@@ -10101,7 +10116,12 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
             "base config.yaml has no fee (the override lives only in the overlay)"
         );
         if let Some(doc) = loaded.overlay_doc.as_ref() {
-            busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+            busbar_kernel::config::overlay::apply_root_to_deploy(
+                &mut loaded.deploy,
+                doc,
+                &busbar_kernel::preflight::RootInstall::STAND_IN,
+                busbar_kernel::config::Legacy::stand_in(),
+            );
         }
         assert_eq!(
             loaded.deploy.per_request_fee, 7,
@@ -10180,6 +10200,7 @@ async fn test_admin_v1_config_settings_survives_a_real_boot_reload_at_default_ov
         Some(&providers_path),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("fresh boot disk-load");
     assert_eq!(
@@ -10216,8 +10237,8 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         .body(
             serde_json::json!({
                 "listen": "127.0.0.1:0",
-                "store": {"module": migrated_store_module()},
-                "store": { "module": migrated_store_module() },
+                "store": {"module": migrated_store_module(busbar_kernel::config::Legacy::stand_in())},
+                "store": { "module": migrated_store_module(busbar_kernel::config::Legacy::stand_in()) },
                 "per_request_fee": 3
             })
             .to_string(),
@@ -10422,7 +10443,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": migrated_store_module(), "settings": { "licenseKey": { "env": var } } }
+                "store": { "module": migrated_store_module(busbar_kernel::config::Legacy::stand_in()), "settings": { "licenseKey": { "env": var } } }
             })
             .to_string(),
         )
@@ -11713,7 +11734,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         .body(
             serde_json::json!({
                 "store": {
-                    "module": migrated_store_module(),
+                    "module": migrated_store_module(busbar_kernel::config::Legacy::stand_in()),
                     "settings": { "url": "rediss://:hunter2-store@ledger.internal:6379" }
                 }
             })
@@ -11739,7 +11760,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let store = &json["settings"]["store"];
     assert_eq!(
         store["module"],
-        migrated_store_module(),
+        migrated_store_module(busbar_kernel::config::Legacy::stand_in()),
         "the non-secret shape still introspects: {json}"
     );
     assert_eq!(

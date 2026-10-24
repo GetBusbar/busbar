@@ -1418,7 +1418,7 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
     const PUSHED_ROW: &str = include_str!("../../tests/fixtures/pushed_plane_linked_row.txt");
     assert!(MANIFEST.contains(PUSHED_ROW.trim_end()));
     let register_planes = &MAIN[MAIN
-        .find("\nfn register_planes() {")
+        .find("\nfn register_planes() -> busbar_kernel::preflight::RootInstall {")
         .expect("register_planes")..];
     let register_planes = &register_planes[..register_planes.find("\n}\n").expect("it closes")];
     assert!(register_planes.contains("root::linked::register_planes(&LINKED);"));

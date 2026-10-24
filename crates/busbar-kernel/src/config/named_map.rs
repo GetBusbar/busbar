@@ -21,7 +21,7 @@
 //! own richer surface (health/schema/status probes, grant immutability, the configure-ack settings
 //! push), and `store:` is singular — there is no map to name into.
 
-use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg};
+use super::{DeployCfg, ExportDefCfg, IdentityProviderCfg, Legacy};
 use busbar_contract::plugin::Kind;
 
 /// One 1.5.3 named-DEFINITION map section. The variant set is the ONLY thing a new section adds.
@@ -185,8 +185,11 @@ impl NamedMapSection {
         deploy: &mut DeployCfg,
         name: &str,
         def: &serde_json::Value,
+        root: &crate::preflight::RootInstall,
+        legacy: Legacy,
     ) -> Result<(), String> {
-        self.parse_def(name, def)?.install(deploy, name)
+        self.parse_def(name, def, root, legacy)?
+            .install(deploy, name)
     }
 
     /// THE ONE typed parse of a raw definition document — `deny_unknown_fields`, so a typo'd or
@@ -204,7 +207,17 @@ impl NamedMapSection {
     /// including tokens `config_validate` refuses to boot. So the VALUE-level rules that boot
     /// enforces run here too, through the same functions boot calls — see the `max_admin_scope`
     /// check below ([`parse_ceiling`](crate::config::parse::parse_ceiling)).
-    pub fn parse_def(self, name: &str, def: &serde_json::Value) -> Result<NamedDef, String> {
+    ///
+    /// `root` is the install record and `legacy` the root legacy table the composition root lent:
+    /// the operator credential's provider and linked rows `root` lends, and the former names
+    /// `legacy` gives it, are read by the token-placement rule exactly as `resolve` reads them.
+    pub fn parse_def(
+        self,
+        name: &str,
+        def: &serde_json::Value,
+        root: &crate::preflight::RootInstall,
+        legacy: Legacy,
+    ) -> Result<NamedDef, String> {
         match self {
             NamedMapSection::IdentityProviders => serde_json::from_value(def.clone())
                 .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
@@ -222,7 +235,13 @@ impl NamedMapSection {
                     // A MISPLACED SECRET, by the rule `resolve_auth` applies — which only ever sees
                     // providers already REFERENCED from a chain, so a definition written through the
                     // API and not yet referenced slipped past it.
-                    super::validate_token_placement(name, cfg.module.trim(), cfg.token.is_some())?;
+                    super::validate_token_placement(
+                        name,
+                        cfg.module.trim(),
+                        cfg.token.is_some(),
+                        root,
+                        legacy,
+                    )?;
                     Ok(NamedDef::IdentityProvider(cfg))
                 }),
             NamedMapSection::Export => serde_json::from_value(def.clone())
@@ -253,8 +272,14 @@ impl NamedMapSection {
 
     /// `Ok(())` iff `def` parses into this section's typed config — the write-path validation twin of
     /// [`NamedMapSection::parse_def`], which it delegates to so there is only ever one grammar.
-    pub fn validate_def(self, name: &str, def: &serde_json::Value) -> Result<(), String> {
-        self.parse_def(name, def).map(|_| ())
+    pub fn validate_def(
+        self,
+        name: &str,
+        def: &serde_json::Value,
+        root: &crate::preflight::RootInstall,
+        legacy: Legacy,
+    ) -> Result<(), String> {
+        self.parse_def(name, def, root, legacy).map(|_| ())
     }
 
     /// Every OTHER config site that still references `name` BY BARE NAME, as human path strings.
@@ -264,8 +289,14 @@ impl NamedMapSection {
     ///
     /// `export:` names are referenced from nowhere in 1.5.3 (an exporter is a leaf), so it returns
     /// empty — the check is not skipped for it, it simply has nothing to find. A plane section that
-    /// gains its own reference sites will add them here.
-    pub fn referents(self, deploy: &DeployCfg, name: &str) -> Vec<String> {
+    /// gains its own reference sites will add them here. An absent `auth.admin_auth:` references the
+    /// operator credential's provider the install record `root` lends, as `resolve` reads it.
+    pub fn referents(
+        self,
+        deploy: &DeployCfg,
+        root: &crate::preflight::RootInstall,
+        name: &str,
+    ) -> Vec<String> {
         let mut out = Vec::new();
         match self {
             NamedMapSection::IdentityProviders => {
@@ -275,7 +306,11 @@ impl NamedMapSection {
                 if auth.chain.iter().any(|n| n == name) {
                     out.push("auth.chain".to_string());
                 }
-                if auth.admin_auth.iter().any(|n| n == name) {
+                let admin_auth = auth
+                    .admin_auth
+                    .clone()
+                    .unwrap_or_else(|| crate::config::default_admin_auth_names(root));
+                if admin_auth.iter().any(|n| n == name) {
                     out.push("auth.admin_auth".to_string());
                 }
                 if auth.role_bindings.contains_key(name) {

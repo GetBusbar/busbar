@@ -58,8 +58,11 @@ use std::sync::Arc;
 /// restart is required ([`crate::plugin_routes::paths_awaiting_restart`]). The apply is still a no-op
 /// for the route itself — genuinely hot-mounting one is a router rebuild, not done here — but it is no
 /// longer a SILENT one.
-pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
-    plugin::route_decls(cfg)
+pub(crate) fn route_decls(
+    exports: crate::preflight::LinkedExports,
+    cfg: &ExportCfg,
+) -> Vec<RouteDecl> {
+    plugin::route_decls(exports, cfg)
 }
 
 /// The raw per-request facts the `logs` stream is built FROM — everything core knows at

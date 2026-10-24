@@ -5,12 +5,12 @@
 //! how the sink that module opens is fed (item 141; #2 rule (1): compiled in or dropped in, same
 //! contract, same loading path).
 //!
-//! The axis is the contract's [`ExportAxis`]: every `kind: export` row the composition root
-//! admitted, compiled in or dropped in through one registration, opened on the export kind's
-//! memory ABI through the process's one dispatcher. The composition root installs it through its
-//! root rows ([`crate::preflight::RootInstall`]); the kernel names no module and no export crate,
-//! holds each opened instance as a contract [`ExportCalls`] handle, and never asks which door a row
-//! came in by.
+//! The axis is the contract's [`ExportAxis`](busbar_contract::export_calls::ExportAxis): every
+//! `kind: export` row the composition root admitted, compiled in or dropped in through one
+//! registration, opened on the export kind's memory ABI through the process's one dispatcher. The
+//! composition root lends it on its install record ([`crate::preflight::RootInstall`]); the kernel
+//! names no module and no export crate, holds each opened instance as a contract [`ExportCalls`]
+//! handle, and never asks which door a row came in by.
 //!
 //! From there an instance is an ordinary sink: `resolve_export` accepts its `module:` because the
 //! axis holds it, [`open`] opens it once at boot (restart-to-apply, the posture every built-in PUSH
@@ -25,10 +25,11 @@ use super::PayloadCache;
 use crate::config::ExportCfg;
 use crate::limits::admission::AdmissionGate;
 use crate::plugin_routes::{PluginHttpDispatch, RouteDecl, RouteKind};
+use crate::preflight::LinkedExports;
 use busbar_contract::abi::export::{CheckPhase, ExportStream};
 use busbar_contract::abi::mechanism::endpoint::*;
 use busbar_contract::abi::mechanism::route::Route;
-use busbar_contract::export_calls::{Delivered, ExportAxis, ExportCalls, ServeRequest};
+use busbar_contract::export_calls::{Delivered, ExportCalls, ServeRequest};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
@@ -36,25 +37,23 @@ use std::sync::{Arc, OnceLock};
 /// gate and on the sink's declared shed counter — never queued.
 const MAX_INFLIGHT_PLUGIN_DELIVERIES: usize = 64;
 
-/// The export axis the composition root installed through its root rows
-/// ([`crate::preflight::RootInstall`]), before the configuration is resolved. Absent (no plugins
-/// directory, nothing linked) ⇒ no export module resolves.
-pub(super) fn axis() -> Option<&'static dyn ExportAxis> {
-    crate::preflight::root_rows().export_axis
-}
-
 /// What the axis says of `module` for instance `name` (what `resolve_export` asks of a module that
 /// is not a built-in): `None` when no `kind: export` row names it; else the streams its sink
 /// declares (none when it will not open here) — the projection is resolved against them at
 /// configuration time, as a built-in's is — and the sink's own VALIDATION of the instance's
 /// `settings` (K9a S2), rendered under the instance, so a plugin sink's settings errors surface at
 /// the same moment and in the same words a built-in's do.
+///
+/// Every fn here reads the export axis the composition root lends on its install record
+/// ([`crate::preflight::RootInstall::export_axis`], `exports`). Absent (no plugins directory,
+/// nothing linked) ⇒ no export module resolves.
 pub(crate) fn probe(
+    exports: LinkedExports,
     name: &str,
     module: &str,
     cfg: &Value,
 ) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
-    let (streams, problems) = axis()?.probe(module, name, cfg)?;
+    let (streams, problems) = exports?.probe(module, name, cfg)?;
     let streams = streams.map(|b| streams_of(&b));
     Some((streams, problems))
 }
@@ -68,26 +67,32 @@ fn streams_of(bytes: &[u8]) -> Vec<ExportStream> {
 }
 
 /// The `module:` words of the export rows this build links, in the composition root's order.
-pub(crate) fn linked_modules() -> Vec<String> {
-    axis().map(|axis| axis.linked_modules()).unwrap_or_default()
+pub(crate) fn linked_modules(exports: LinkedExports) -> Vec<String> {
+    exports
+        .map(|axis| axis.linked_modules())
+        .unwrap_or_default()
 }
 
 /// Whether `module` names a row the host grants FIRST-PARTY — linked, or dropped in signed by the
 /// release key: the only kind of sink busbar's own `/metrics` is rendered by (#65).
-pub(crate) fn first_party(module: &str) -> bool {
-    axis().is_some_and(|axis| axis.first_party(module))
+pub(crate) fn first_party(exports: LinkedExports, module: &str) -> bool {
+    exports.is_some_and(|axis| axis.first_party(module))
 }
 
 /// Whether `module`'s row states the `one_instance` mark (at most one instance may be configured).
-pub(crate) fn one_instance(module: &str) -> bool {
-    axis().is_some_and(|axis| axis.one_instance(module))
+pub(crate) fn one_instance(exports: LinkedExports, module: &str) -> bool {
+    exports.is_some_and(|axis| axis.one_instance(module))
 }
 
 /// `module`'s own check across `instances` at the LIMITS phase, its findings verbatim — asked while
 /// the configuration is resolved, for a `one_instance` module configured more than once: the
 /// plugin words its own refusal.
-pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) -> Vec<String> {
-    axis()
+pub(crate) fn check_one_instance(
+    exports: LinkedExports,
+    module: &str,
+    instances: &[(String, Value)],
+) -> Vec<String> {
+    exports
         .and_then(|axis| {
             axis.check(
                 module,
@@ -101,8 +106,13 @@ pub(crate) fn check_one_instance(module: &str, instances: &[(String, Value)]) ->
 /// The sinks' own checks across every instance of each axis module `cfg` configures, in
 /// configuration order (export ABI minors 8, 9) — run while the configuration is validated, at
 /// `phase` (among its limits' checks, or after them); each line joins `errors` verbatim.
-pub(crate) fn check(cfg: &ExportCfg, phase: CheckPhase, errors: &mut Vec<String>) {
-    let Some(axis) = axis() else {
+pub(crate) fn check(
+    exports: LinkedExports,
+    cfg: &ExportCfg,
+    phase: CheckPhase,
+    errors: &mut Vec<String>,
+) {
+    let Some(axis) = exports else {
         return;
     };
     let phase = match phase {
@@ -186,9 +196,9 @@ pub(super) fn sinks() -> impl Iterator<Item = &'static PluginSink> {
 /// Open every export-axis instance `cfg` names, once, before the first app is built (so its routes
 /// are in the boot route table). Every failure is collected and returned: a sink that will not
 /// open, or an instance subscribing to a stream its sink does not carry, refuses the boot.
-pub fn open(cfg: &ExportCfg) -> Result<(), String> {
+pub fn open(exports: LinkedExports, cfg: &ExportCfg) -> Result<(), String> {
     // No axis ⇒ no instance resolved through it, so there is nothing to open.
-    let Some(axis) = axis() else {
+    let Some(axis) = exports else {
         return Ok(());
     };
     let (mut errors, mut opened) = (Vec::new(), Vec::new());
@@ -293,7 +303,7 @@ pub(crate) fn status() {
 /// answering for the process's life: it is the BOOT's scrape sink's, declared whether or not a
 /// configuration apply still names that instance (ARCHITECT 2026-10-05, Q-U2-4 follow-up), while
 /// `/metrics` follows the configuration, as 1.5.5's plugin route did (removed: `404`).
-pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
+pub(crate) fn route_decls(exports: LinkedExports, cfg: &ExportCfg) -> Vec<RouteDecl> {
     let (scrape, rest): (Vec<_>, Vec<_>) = cfg.plugins.iter().partition(|p| p.scrape);
     let mut out = Vec::new();
     for p in scrape.into_iter().chain(rest) {
@@ -322,7 +332,7 @@ pub(crate) fn route_decls(cfg: &ExportCfg) -> Vec<RouteDecl> {
                 (s.sink.routes().to_vec(), dispatch)
             }
             None if p.scrape => {
-                let routes = axis().map_or_else(Vec::new, |a| a.routes(module));
+                let routes = exports.map_or_else(Vec::new, |a| a.routes(module));
                 (routes, Arc::new(Unopened))
             }
             None => continue,

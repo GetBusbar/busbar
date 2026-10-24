@@ -25,7 +25,7 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
         &[],
         Arc::new(|_, _| {}),
         PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_kernel::test_support::resolve_stand_in_secret_at_config,
     );
     let built = built.expect("the linked doors build a connector");
     let installed = install(Arc::clone(&built)).expect("the first install is the one");
@@ -37,7 +37,7 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
         &[],
         Arc::new(|_, _| {}),
         PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_kernel::test_support::resolve_stand_in_secret_at_config,
     )
     .expect("a second one builds");
     assert!(install(second).is_err(), "a second connector is refused");
@@ -91,7 +91,8 @@ fn deployment(providers: &[(&str, &str, &[&str])], security: &str) -> RootCfg {
     }
     yaml.push_str(security);
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
-    busbar_kernel::config::resolve(&deploy, &defs).expect("resolves")
+    busbar_kernel::config::resolve_under(&deploy, &defs, crate::root::legacy::table())
+        .expect("resolves")
 }
 
 fn imds() -> Vec<std::net::IpAddr> {
@@ -328,7 +329,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             &[],
             Arc::new(|_, _| {}),
             PoolPosture::NONE,
-            busbar_kernel::config::secret::resolve_linked_string_at_config,
+            busbar_kernel::test_support::resolve_stand_in_secret_at_config,
         )
         .expect("the linked doors build a connector");
         let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({

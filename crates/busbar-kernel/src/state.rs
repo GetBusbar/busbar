@@ -86,6 +86,11 @@ pub struct App {
     /// ([`crate::appbuild::RootRules`]): every build after it (an apply, a rebuild, a
     /// dry run) is judged by them.
     pub root_rules: Arc<dyn crate::appbuild::RootRules>,
+    /// THE ROOT LEGACY TABLE this generation's configuration was resolved under
+    /// ([`crate::config::RootCfg::legacy`]): the composition root lent it to the config load, and
+    /// what this generation reads of it (the login page's button brands) and every apply, rebuild
+    /// and dry run after it (which load and resolve the next configuration) read the same table.
+    pub legacy: crate::config::Legacy,
     /// The composition root's projection of the configuration this generation was built from
     /// ([`crate::appbuild::ConfigProjection`]); `None` when the root bound none.
     pub config_projection: Option<Arc<dyn std::any::Any + Send + Sync>>,
@@ -425,6 +430,12 @@ pub struct App {
     /// (catalog, install, inspect, rollback) resolves `plugins_cfg` through it and through nothing
     /// else, so the operator surface reports the verdict boot reaches. `None` = no root installed one.
     pub plugin_trust: Option<crate::preflight::TrustPolicyBuild>,
+    /// THE INSTALL RECORD THE COMPOSITION ROOT LENT the configuration this snapshot was built from
+    /// ([`crate::config::RootCfg::root`]): what the operator surface reads the linked rows off (the
+    /// store catalog's `stores`, the compiled-in `hook_names`, the registry link a plugin install
+    /// is judged against), and what a configuration rebuilt off this snapshot is resolved under.
+    /// The compose owns it; the kernel holds no copy of its own.
+    pub root: crate::preflight::RootInstall,
     // The cross-protocol translation seam's global fallback max-output-tokens and effort→budget table
     // no longer live on `App`: they are plane-specific vocabulary and now ride that plane's own
     // per-generation runtime object, populated from the neutral `PlaneBuildInput` carrier `appbuild`

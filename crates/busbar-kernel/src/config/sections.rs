@@ -103,22 +103,23 @@ pub struct StoreCfg {
 /// root legacy table's `store_1_5_default` row (frozen 1.5.5 text the composition root hands in), so
 /// the kernel spells no store instance (BUSBAR-1.6.0.md l.4205-4211).
 #[must_use]
-pub fn migrated_store_module() -> &'static str {
-    crate::config::legacy::text("store_1_5_default")
+pub fn migrated_store_module(legacy: crate::config::Legacy) -> &'static str {
+    legacy.text("store_1_5_default")
 }
 
 /// THE REFUSAL of a config with no `store:` block (Q-STORE = (B)): one `--validate` / boot error line
 /// in the 1.5.5 shape — the empty-`store.module` refusal's words for the choice
 /// (v1.5.5:crates/busbar/src/config_validate/mod.rs:1655) and the 1.x-config refusal's command
-/// (v1.5.5:crates/busbar/src/config/migrate.rs:44).
-pub fn store_required() -> String {
+/// (v1.5.5:crates/busbar/src/config/migrate.rs:44). The store examples are the root legacy table's
+/// `module_examples` row, read off the table the composition root lent (`legacy`).
+pub fn store_required(legacy: super::Legacy) -> String {
     format!(
         "store is required; add a `store:` block, e.g. `store: {{module: {m}}}` (the compiled-in \
          RAM store, what a 1.5.x config without one ran on) or a store plugin name/alias ({} | \
          <third-party>), or run `busbar --migrate-config <config.yaml>`, which inserts \
          `store: {{module: {m}}}`",
-        crate::config::migrate::legacy_store_text("module_examples"),
-        m = migrated_store_module(),
+        crate::config::migrate::legacy_store_text(legacy, "module_examples"),
+        m = migrated_store_module(legacy),
     )
 }
 

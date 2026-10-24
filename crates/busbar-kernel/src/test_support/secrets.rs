@@ -37,7 +37,7 @@ use busbar_contract::secret_ref::{
     SECRET_MODULE_FILE,
 };
 
-/// The stand-in secret axis a test build installs in place of the root's (`preflight::STAND_IN`).
+/// The stand-in secret axis a test build lends in place of the root's (`RootInstall::STAND_IN`).
 pub struct SecretsStandIn;
 
 /// Which of the two sources a reference names.

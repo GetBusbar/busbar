@@ -491,11 +491,15 @@ fn install_strict_posture_rejects_unsigned() {
 /// The build's linked store, as `(canonical name, key, the version it states, its Statement)`: what
 /// a copy of it dropped in must carry to be the same plugin at the same version.
 pub(crate) fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
-    let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
+    let &(key, _, _, canonical) = busbar_kernel::preflight::RootInstall::STAND_IN
         .stores
         .first()
         .expect("the build links a store");
-    let reg = busbar_kernel::preflight::linked().expect("the linked rows register");
+    let reg = busbar_kernel::preflight::linked(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        busbar_kernel::config::Legacy::stand_in(),
+    )
+    .expect("the linked rows register");
     let row = reg
         .resolve(canonical)
         .expect("the linked store answers its canonical name");
@@ -635,7 +639,10 @@ fn install_catalog_remove_roundtrip() {
 
     // Catalog: the memory head + our dynamic plugin.
     let cat = svc.store_plugin_catalog();
-    assert_eq!(cat[0].name, migrated_store_module());
+    assert_eq!(
+        cat[0].name,
+        migrated_store_module(busbar_kernel::config::Legacy::stand_in())
+    );
     let dyn_row = cat
         .iter()
         .find(|p| p.loader == "dynamic-library")
@@ -799,7 +806,10 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         "the panic fallback must be exactly the one compiled-in `memory` row: {:?}",
         page.items
     );
-    assert_eq!(page.items[0].name, migrated_store_module());
+    assert_eq!(
+        page.items[0].name,
+        migrated_store_module(busbar_kernel::config::Legacy::stand_in())
+    );
     assert_eq!(page.items[0].loader, "compiled-in");
 }
 
@@ -4479,7 +4489,7 @@ mod plane_fees_on_admin_usage {
 #[test]
 fn the_store_catalog_heads_with_the_linked_store_rows() {
     let svc = svc_with(tmp_plugins_dir("linked-head"), unsigned_ok_posture());
-    let stores = busbar_kernel::preflight::root_rows().stores;
+    let stores = busbar_kernel::preflight::RootInstall::STAND_IN.stores;
     let linked: Vec<&str> = stores.iter().map(|s| s.0).collect();
     assert!(!linked.is_empty(), "the build links a store row");
     let cat = svc.store_plugin_catalog();

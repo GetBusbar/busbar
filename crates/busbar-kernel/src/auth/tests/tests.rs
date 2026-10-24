@@ -1772,9 +1772,24 @@ fn the_operator_credential_opens_from_the_axis() {
     use crate::auth::{open_operator, OperatorCredential};
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
     // This crate's test binary links no auth row, so its linked registry has none to open.
-    let linked = std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
+    let linked = std::sync::Arc::new(
+        crate::preflight::linked(
+            &crate::preflight::RootInstall::STAND_IN,
+            crate::config::Legacy::stand_in(),
+        )
+        .expect("the linked registry"),
+    );
     let none = Default::default();
-    let open = |digest| open_operator(&linked, digest, &none).expect("opens");
+    let open = |digest| {
+        open_operator(
+            &linked,
+            digest,
+            &none,
+            &crate::test_support::lent_stand_in(),
+            crate::config::Legacy::stand_in(),
+        )
+        .expect("opens")
+    };
     assert!(matches!(
         *open(Some(digest)),
         OperatorCredential::Unanswered
@@ -1882,7 +1897,13 @@ pub(super) fn operator_app(
     let operator = Operator::open(
         op,
         std::iter::empty(),
-        &|m: &str| crate::config::names_operator(m),
+        &|m: &str| {
+            crate::config::names_operator(
+                m,
+                &crate::test_support::lent_stand_in(),
+                crate::config::Legacy::stand_in(),
+            )
+        },
         true,
         Some("digest".to_string()),
         |_| Ok(std::sync::Arc::new(OperatorDouble(verified))),
@@ -3543,7 +3564,8 @@ fn other_style_chain() -> AuthMiddleware {
             "other-style",
             other_style::door,
         )])
-        .expect("the fixture links");
+        .expect("the fixture links")
+        .with_auth_axis(crate::preflight::RootInstall::STAND_IN.auth_axis);
     AuthMiddleware::new(
         &chain_cfg(&["keys"]),
         &std::sync::Arc::new(registry),

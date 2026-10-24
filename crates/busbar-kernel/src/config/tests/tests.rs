@@ -100,8 +100,10 @@ pub(crate) fn base_deploy() -> DeployCfg {
 // parse.
 #[test]
 fn augment_config_error_adds_auth_mode_migration_hint() {
-    let augmented =
-        crate::config::augment_config_error("unknown field `mode`, expected one of `chain`");
+    let augmented = crate::config::augment_config_error(
+        "unknown field `mode`, expected one of `chain`",
+        crate::config::Legacy::stand_in(),
+    );
     assert!(
         augmented.contains("auth.mode:"),
         "hint names the removed key: {augmented}"
@@ -116,13 +118,16 @@ fn augment_config_error_adds_auth_mode_migration_hint() {
     );
     // Unrelated errors are returned unchanged.
     assert_eq!(
-        crate::config::augment_config_error("some other yaml error"),
+        crate::config::augment_config_error(
+            "some other yaml error",
+            crate::config::Legacy::stand_in()
+        ),
         "some other yaml error"
     );
     // End-to-end: a legacy `auth.mode:` config surfaces the hint through the parse path.
     let legacy = "providers: {}\nauth:\n  mode: none\n";
     let err = serde_yaml::from_str::<crate::config::DeployCfg>(legacy)
-        .map_err(crate::config::augment_config_error)
+        .map_err(|e| crate::config::augment_config_error(e, crate::config::Legacy::stand_in()))
         .expect_err("legacy auth.mode must fail to parse");
     assert!(
         err.contains("auth.chain:"),
@@ -142,9 +147,12 @@ fn augment_config_error_adds_hook_stage_rename_hint() {
         ("completion", "response"),
     ] {
         // The synthetic serde message an unknown enum variant produces.
-        let augmented = crate::config::augment_config_error(format!(
+        let augmented = crate::config::augment_config_error(
+            format!(
             "unknown variant `{old}`, expected one of `request`, `candidate`, `routing`, `response`"
-        ));
+        ),
+            crate::config::Legacy::stand_in(),
+        );
         assert!(
             augmented.contains(&format!("`{old}`")) && augmented.contains(&format!("`{new}`")),
             "hint must name the old AND new stage value: {augmented}"
@@ -160,7 +168,7 @@ fn augment_config_error_adds_hook_stage_rename_hint() {
     // only reaches the parser through `phase:`.)
     let legacy = "kind: tap\nmodule: p\nphase: [completion]\n";
     let err = serde_yaml::from_str::<HookCfg>(legacy)
-        .map_err(crate::config::augment_config_error)
+        .map_err(|e| crate::config::augment_config_error(e, crate::config::Legacy::stand_in()))
         .expect_err(
             "an old-form `completion` stage value must fail to parse (HARD rename, no alias)",
         );
@@ -343,7 +351,11 @@ fn test_otlp_folds_into_an_export_instance() {
     )
     .expect("an otlp export instance parses");
     let mut errors = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errors);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(errors.is_empty(), "{errors:?}");
     let otlp: Vec<_> = export
         .plugins
@@ -379,7 +391,7 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
         "observability:\n  request_log_webhook_url: \"https://x.example.com/l\"\nproviders: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("the retired observability block must be rejected");
-    let hint = crate::config::augment_config_error(err);
+    let hint = crate::config::augment_config_error(err, crate::config::Legacy::stand_in());
     assert!(
         hint.contains("observability")
             && hint.contains("request-log-webhook")
@@ -391,7 +403,7 @@ fn test_retired_observability_export_keys_loud_fail_with_hint() {
         "metrics:\n  buffer_seconds: 60\nproviders: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("the retired metrics block must be rejected");
-    let hint = crate::config::augment_config_error(err);
+    let hint = crate::config::augment_config_error(err, crate::config::Legacy::stand_in());
     assert!(
         hint.contains("export.prometheus") && hint.contains("--migrate-config"),
         "the retired metrics block must point at export.prometheus + the migrator; got: {hint}"
@@ -581,7 +593,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
         "admin_insecure: true\nproviders: {}\nmodels: {}\npools: {}\n",
     )
     .expect_err("the retired admin_insecure key must be rejected at parse");
-    let hint = crate::config::augment_config_error(err);
+    let hint = crate::config::augment_config_error(err, crate::config::Legacy::stand_in());
     assert!(
         hint.contains("admin_insecure")
             && hint.contains("admin_require_mtls")
@@ -1711,7 +1723,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
     let auth = crate::config::AuthDeployCfg {
         signing_key: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
         chain: vec![KEYS_MODULE.to_string()],
-        admin_auth: vec![crate::config::operator_provider().to_string()],
+        admin_auth: Some(vec![crate::config::operator_provider().to_string()]),
         role_bindings: RoleBindings::new(),
         key_ttl: None,
         policy: Default::default(),
@@ -1773,7 +1785,11 @@ models:
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
-        &crate::config::resolve_export(&deploy.export, &mut Vec::new()),
+        &crate::config::resolve_export(
+            crate::preflight::RootInstall::STAND_IN.export_axis,
+            &deploy.export,
+            &mut Vec::new(),
+        ),
         &deploy.health,
         &deploy.routing,
     );
@@ -1889,7 +1905,11 @@ routing:
     let l = LimitsResolved::from_sections(
         &deploy.limits,
         &deploy.advanced,
-        &crate::config::resolve_export(&deploy.export, &mut Vec::new()),
+        &crate::config::resolve_export(
+            crate::preflight::RootInstall::STAND_IN.export_axis,
+            &deploy.export,
+            &mut Vec::new(),
+        ),
         &deploy.health,
         &deploy.routing,
     );
@@ -2063,7 +2083,10 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
         SecretResolver::builtins_only().resolve(&sref).unwrap(),
         b"file-secret\n".to_vec()
     );
-    assert_eq!(resolve_linked_string(&sref).unwrap(), "file-secret");
+    assert_eq!(
+        resolve_linked_string(crate::preflight::RootInstall::STAND_IN.secret_axis, &sref).unwrap(),
+        "file-secret"
+    );
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.
@@ -2113,6 +2136,8 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
 
@@ -2163,6 +2188,8 @@ fn test_max_admin_scope_default_is_most_restrictive_except_the_operator_credenti
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(
@@ -2190,6 +2217,8 @@ fn test_dangling_identity_provider_reference_is_an_error() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
     );
     assert!(
         errors
@@ -2240,6 +2269,8 @@ fn test_token_on_a_non_operator_provider_is_an_error() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
     );
     assert!(
         errors
@@ -2382,8 +2413,10 @@ role_bindings:
     assert_eq!(ad["contractors"].allowed_pools, Some(vec![]));
     assert_eq!(ad["everyone"].allowed_pools, None, "omitted = ALL pools");
 
-    // The serde default for admin_auth is the operator credential's bare provider NAME.
-    assert_eq!(auth.admin_auth, [crate::config::operator_provider()]);
+    // An omitted admin_auth parses as absent; `resolve` reads it as the operator credential's bare
+    // provider NAME under the record it is lent (`test_resolve_projects_admin_auth_names` pins
+    // the resolved default).
+    assert_eq!(auth.admin_auth, None);
 }
 
 // ── groups / limits ──────────────────────────────────────────────────────────────────────────────
@@ -2854,7 +2887,10 @@ fn test_resolve_projects_admin_auth_names() {
     assert_eq!(
         cfg.auth
             .as_ref()
-            .and_then(|a| a.admin_token_ref())
+            .and_then(|a| a.admin_token_ref(
+                &crate::test_support::lent_stand_in(),
+                crate::config::Legacy::stand_in()
+            ))
             .and_then(|t| t.env_var()),
         Some("BUSBAR_ADMIN_TOKEN")
     );
@@ -2917,6 +2953,8 @@ test-idp-double:
         &serde_yaml::from_str("chain: [test-idp-double]\n").expect("auth parses"),
         &providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
     let method = auth
@@ -3199,7 +3237,10 @@ fn reserved_hook_names_are_frozen() {
     // (d) The operator credential's provider — the word the root hands in (this build's double) —
     //     is reserved on the same path, without the kernel spelling it.
     let operator = crate::config::operator_provider();
-    assert!(crate::config::is_reserved_hook_name(operator));
+    assert!(crate::config::is_reserved_hook_name(
+        operator,
+        &crate::test_support::lent_stand_in()
+    ));
     let mut deploy = base_deploy();
     deploy.hooks.insert(
         operator.to_string(),
@@ -3477,7 +3518,11 @@ fn export_named_map_allows_two_instances_of_one_module() {
     )
     .expect("two instances of one module parse");
     let mut errors = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errors);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(export.plugins.len(), 2);
     assert_eq!(export.plugins[0].name, "req-log");
@@ -3504,7 +3549,11 @@ fn export_named_map_allows_two_instances_of_one_module() {
     )
     .expect("parses");
     let mut errors = Vec::new();
-    let export = crate::config::resolve_export(&defs, &mut errors);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert_eq!(
         errors,
         vec!["export.two: the scrape double takes one instance, and 'one' is it".to_string()],
@@ -3523,7 +3572,11 @@ fn export_named_map_allows_two_instances_of_one_module() {
     let defs: crate::config::ExportDefs =
         serde_yaml::from_str("x: { module: nope }\n").expect("parses");
     let mut errors = Vec::new();
-    let _ = crate::config::resolve_export(&defs, &mut errors);
+    let _ = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(
         errors.iter().any(|e| e.starts_with(
             "export.x.module: unknown exporter 'nope'; the built-in export modules are "
@@ -3683,6 +3736,8 @@ fn test_auth_policy_block_parses_and_resolves() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
 
@@ -3730,6 +3785,8 @@ fn test_auth_policy_absent_is_default() {
         deploy.auth.as_ref().expect("auth block"),
         &deploy.identity_providers,
         &mut errors,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
     );
     assert!(errors.is_empty(), "{errors:?}");
     let p = &auth.policy;

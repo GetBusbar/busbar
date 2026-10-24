@@ -81,14 +81,18 @@ pub fn build(
     wake: WakeTicket,
     pool: PoolPosture,
 ) -> Result<Arc<Connector>, String> {
-    build_with_secrets(
-        entries,
-        dest,
-        own_ports,
-        wake,
-        pool,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    )
+    build_with_secrets(entries, dest, own_ports, wake, pool, lent_no_secrets)
+}
+
+// FINAL-REPIN: delete with `build`.
+/// The resolver [`build`] hands its connector: the bridge is lent no install record, so no linked
+/// secret plugin answers and every program environment reference is refused (fail-closed).
+#[cfg(feature = "test-support")]
+fn lent_no_secrets(
+    secret: &busbar_kernel::config::SecretRef,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<String, String> {
+    busbar_kernel::config::secret::resolve_linked_string_at_config(None, secret, scope)
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.

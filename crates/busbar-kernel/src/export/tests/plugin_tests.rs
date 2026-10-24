@@ -27,7 +27,11 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
         let mut defs = ExportDefs::new();
         defs.insert("audit-tail".to_string(), def(module));
         let mut errors = Vec::new();
-        let cfg = resolve_export(&defs, &mut errors);
+        let cfg = resolve_export(
+            crate::preflight::RootInstall::STAND_IN.export_axis,
+            &defs,
+            &mut errors,
+        );
         assert!(errors.is_empty(), "{module}: {errors:?}");
         assert_eq!(cfg.plugins.len(), 1, "{module}");
         assert_eq!(cfg.plugins[0].name, "audit-tail");
@@ -39,7 +43,11 @@ fn a_module_on_the_axis_resolves_and_an_unregistered_one_is_refused_as_before() 
     let mut defs = ExportDefs::new();
     defs.insert("audit-tail".to_string(), def("k9-never-registered"));
     let mut errors = Vec::new();
-    let cfg = resolve_export(&defs, &mut errors);
+    let cfg = resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(cfg.plugins.is_empty());
     assert_eq!(
         errors,
@@ -62,9 +70,14 @@ fn a_sink_that_will_not_open_refuses_naming_the_instance() {
     let mut defs = ExportDefs::new();
     defs.insert("tail".to_string(), def("k9-axis-sink"));
     let mut errors = Vec::new();
-    let cfg = resolve_export(&defs, &mut errors);
+    let cfg = resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(errors.is_empty(), "{errors:?}");
-    let refusal = open(&cfg).expect_err("bytes that are not a library do not open");
+    let refusal = open(crate::preflight::RootInstall::STAND_IN.export_axis, &cfg)
+        .expect_err("bytes that are not a library do not open");
     assert!(refusal.starts_with("export.tail: "), "{refusal}");
 }
 

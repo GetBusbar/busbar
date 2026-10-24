@@ -29,17 +29,21 @@ use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
 
-/// The producer, when an export axis is installed: a SPAN at or under `floor` (the level the span
-/// exporter has always taken — `observability::log_levels`), while some opened sink subscribes to
-/// `traces`. The answer is per CALLSITE and cached, so the axis re-asks once its sinks are open.
-pub fn layer<S: Subscriber + for<'a> LookupSpan<'a>>(floor: LevelFilter) -> Option<impl Layer<S>> {
+/// The producer, when the composition root lends an export axis (`exports`): a SPAN at or under
+/// `floor` (the level the span exporter has always taken — `observability::log_levels`), while some
+/// opened sink subscribes to `traces`. The answer is per CALLSITE and cached, so the axis re-asks
+/// once its sinks are open.
+pub fn layer<S: Subscriber + for<'a> LookupSpan<'a>>(
+    floor: LevelFilter,
+    exports: crate::preflight::LinkedExports,
+) -> Option<impl Layer<S>> {
     let wanted = move |m: &tracing::Metadata<'_>| {
         let subscribed = |s: &super::plugin::PluginSink| s.projection.wants_stream(Traces);
         m.is_span() && *m.level() <= floor && super::plugin::sinks().any(subscribed)
     };
     let filter = tracing_subscriber::filter::filter_fn(wanted).with_max_level_hint(floor);
     let producer = Producer(deliver).with_filter(filter);
-    super::plugin::axis().map(|_| producer)
+    exports.map(|_| producer)
 }
 
 /// Hand one closed span's record to every opened sink subscribed to `traces`, built to that sink's

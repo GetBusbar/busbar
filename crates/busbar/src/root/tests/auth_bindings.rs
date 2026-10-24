@@ -3,29 +3,14 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_kernel_identity::module::AuthOutcome;
-use std::sync::Mutex;
 
-/// A directory a test can state the whole truth of in four lines.
+/// A directory a test can state the whole truth of in one line.
 #[derive(Default)]
 struct Directory {
-    keys: Vec<(String, KeyFacts)>,
     revoked: Vec<String>,
-    asked: Mutex<Vec<String>>,
 }
 
 impl VirtualKeyDirectory for Directory {
-    fn verify(&self, credential: &str, _now: u64, _expected_aud: Option<&str>) -> Option<KeyFacts> {
-        self.asked
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(credential.to_string());
-        self.keys
-            .iter()
-            .find(|(c, _)| c == credential)
-            .map(|(_, f)| f.clone())
-    }
-
     fn revoked(&self, credential: &str) -> bool {
         self.revoked.iter().any(|r| r == credential)
     }
@@ -33,100 +18,11 @@ impl VirtualKeyDirectory for Directory {
 
 fn a_directory() -> Arc<Directory> {
     Arc::new(Directory {
-        keys: vec![(
-            "tok-live".to_string(),
-            KeyFacts {
-                id: "vk_1".to_string(),
-                name: "the operator's key".to_string(),
-            },
-        )],
         revoked: vec!["vk_gone".to_string()],
-        asked: Mutex::new(Vec::new()),
     })
 }
 
-/// NO SECOND CREDENTIAL CACHE (item 249): the bindings hand the chain none, so a verdict the
-/// operator's flush was meant to kill is never served from a cache the flush cannot reach.
-///
-/// The root used to build its own cache here, a port of the kernel's, while the admin flush
-/// endpoint reaches only the kernel's. Driven through the chain with a CACHEABLE module that
-/// identifies a credential and is then told the credential is revoked: with a cache held here the
-/// second run answered the first verdict out of it; with none, the module is asked again and its
-/// refusal stands.
-#[test]
-fn a_revoked_credential_is_never_answered_from_a_cache_no_flush_reaches() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    struct Revocable(Arc<AtomicBool>);
-    impl busbar_kernel_identity::module::AuthModule for Revocable {
-        fn name(&self) -> &'static str {
-            "revocable"
-        }
-        fn authenticate(&self, candidate: Option<&str>) -> AuthOutcome {
-            match candidate {
-                Some(_) if self.0.load(Ordering::SeqCst) => AuthOutcome::Reject,
-                Some(id) => {
-                    AuthOutcome::Identify(busbar_kernel_identity::principal::Principal::from_id(id))
-                }
-                None => AuthOutcome::Pass,
-            }
-        }
-        fn cacheable(&self) -> bool {
-            true
-        }
-    }
-
-    for bindings in [
-        AuthBindings::without_directory(),
-        AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>),
-    ] {
-        let revoked = Arc::new(AtomicBool::new(false));
-        let chain = busbar_kernel_identity::AuthChain::new(
-            vec![busbar_kernel_identity::chain::ChainEntry {
-                provider: "revocable".to_string(),
-                module: Box::new(Revocable(Arc::clone(&revoked))),
-            }],
-            false,
-        );
-        let first = chain.run_chain_with(Some("vk_live"), bindings.keys(), 10, None);
-        assert!(matches!(
-            first,
-            busbar_kernel_identity::chain::ChainVerdict::Identified { .. }
-        ));
-        revoked.store(true, Ordering::SeqCst);
-        let second = chain.run_chain_with(Some("vk_live"), bindings.keys(), 11, None);
-        assert!(
-            matches!(second, busbar_kernel_identity::chain::ChainVerdict::Denied),
-            "the revoked credential was answered out of a cache: {second:?}"
-        );
-    }
-}
-
-/// The verifier the root binds resolves through the directory and hands back the unit's own
-/// shape, so the chain's signed-key arm has something to identify with.
-#[test]
-fn the_bound_verifier_resolves_through_the_directory() {
-    let directory = a_directory();
-    let bindings = AuthBindings::new(directory.clone() as Arc<dyn VirtualKeyDirectory>);
-
-    let keys = bindings.keys().expect("a bound directory is a verifier");
-    assert_eq!(
-        keys.verify_token("tok-live", 10, None),
-        Some(ResolvedKey {
-            id: "vk_1".to_string(),
-            name: "the operator's key".to_string(),
-        })
-    );
-    assert_eq!(keys.verify_token("tok-unknown", 10, None), None);
-    assert_eq!(
-        directory.asked.lock().expect("asked").len(),
-        2,
-        "both questions reached the directory rather than a second table here"
-    );
-}
-
-/// The revocation view answers from the same directory the verifier does, which is the point of
-/// binding one value rather than two.
+/// The revocation view answers from the directory the root bound.
 #[test]
 fn the_revocation_view_reads_the_same_directory() {
     let bindings = AuthBindings::new(a_directory() as Arc<dyn VirtualKeyDirectory>);
@@ -137,13 +33,11 @@ fn the_revocation_view_reads_the_same_directory() {
     assert!(!revocations.is_revoked("vk_1"));
 }
 
-/// An unbound node binds no authority, which is a posture rather than a gap: the chain's own answer
-/// with no verifier is to deny, and the gate that never runs would have had nothing to refuse that
-/// the denial had not already refused.
+/// An unbound node binds no revocation set, which is a posture rather than a gap: a set nothing
+/// supplies revokes nothing.
 #[test]
 fn an_unbound_node_binds_no_authority() {
     let bindings = AuthBindings::without_directory();
-    assert!(bindings.keys().is_none());
     assert!(bindings.revocations().is_none());
 }
 
@@ -153,10 +47,10 @@ fn an_unbound_node_binds_no_authority() {
 // run on a kind-neutral double; these run on the words this root hands in at boot.
 // ------------------------------------------------------------------------------------------------
 
-/// Hand the root's words in with its linked auth rows, as `register_planes` does at boot (the first
-/// install stands, and every install in this binary is this one).
-fn hand_in_the_root_words() {
-    busbar_kernel::preflight::install_linked_auth(crate::LINKED.auths, operator_words());
+/// The record lending the root's words with its linked auth rows, as `register_stores` builds the
+/// record `main` lends at boot.
+fn the_root_record() -> busbar_kernel::preflight::RootInstall {
+    busbar_kernel::test_support::lending_auth(crate::LINKED.auths, operator_words())
 }
 
 /// THE OPERATOR'S PROVIDER WORD IS THE MANIFEST'S: the registry key of the row the manifest's
@@ -223,8 +117,8 @@ fn word_1_5_5(key: &str) -> String {
 }
 
 #[test]
-fn the_kernel_answers_to_the_root_words_once_handed_in() {
-    hand_in_the_root_words();
+fn the_kernel_answers_to_the_root_words_its_record_lends() {
+    let lent = the_root_record();
     let words = operator_words();
     assert_eq!(
         words.provider,
@@ -236,18 +130,15 @@ fn the_kernel_answers_to_the_root_words_once_handed_in() {
         word_1_5_5("principal"),
         "1.5.5's operator principal"
     );
-    assert_eq!(busbar_kernel::config::operator_provider(), words.provider);
-    assert_eq!(
-        busbar_kernel::config::operator_principal_id(),
-        words.principal_id
-    );
+    assert_eq!(lent.operator.provider, words.provider);
+    assert_eq!(lent.operator.principal_id, words.principal_id);
     // The `auth.admin_auth:` default: the operator credential, referenced bare.
     assert_eq!(
-        busbar_kernel::config::default_admin_auth_names(),
+        busbar_kernel::config::default_admin_auth_names(&lent),
         [words.provider]
     );
     assert_eq!(
-        busbar_kernel::config::builtin_identity_providers(),
+        busbar_kernel::config::builtin_identity_providers(&lent),
         ["keys", words.provider]
     );
 }
@@ -257,7 +148,7 @@ fn the_kernel_answers_to_the_root_words_once_handed_in() {
 /// (v1.5.5:crates/busbar/src/config/mod.rs:1891, held as DATA).
 #[test]
 fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
-    hand_in_the_root_words();
+    let lent = the_root_record();
     let op = operator_words().provider;
     for word in busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE
         .iter()
@@ -265,7 +156,7 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
         .chain([op])
     {
         assert!(
-            busbar_kernel::config::is_reserved_hook_name(word),
+            busbar_kernel::config::is_reserved_hook_name(word, &lent),
             "`{word}` is reserved"
         );
     }
@@ -273,9 +164,10 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
         !busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.contains(&op),
         "the operator word is the root's, never the kernel's"
     );
-    assert!(!busbar_kernel::config::is_reserved_hook_name(&format!(
-        "{op}-2"
-    )));
+    assert!(!busbar_kernel::config::is_reserved_hook_name(
+        &format!("{op}-2"),
+        &lent
+    ));
     // Exactly 1.5.5's set (v1.5.5:crates/busbar/src/config/mod.rs:1891), as DATA.
     let mut space: Vec<&str> = busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
     space.push(op);
@@ -302,10 +194,12 @@ fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::
 /// `auth.admin_auth: [<operator word>]` and the secret ref on `identity-providers.<operator word>`.
 #[test]
 fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
-    hand_in_the_root_words();
+    let lent = the_root_record();
     let raw = "governance:\n  enabled: true\n  admin_token: \"${BUSBAR_ADMIN_TOKEN}\"\n\
                providers: {}\nmodels: {}\n";
-    let out = busbar_kernel::config::migrate::migrate_config(raw).expect("migrates");
+    let out =
+        busbar_kernel::config::migrate::migrate_config(raw, &lent, crate::root::legacy::table())
+            .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     assert_eq!(
         dig(&doc, &["auth", "admin_auth"])
@@ -333,13 +227,15 @@ fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
 /// chain keeps the bare name, as 1.5.5 wrote it.
 #[test]
 fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
-    hand_in_the_root_words();
+    let lent = the_root_record();
     let op = operator_words().provider;
     let raw = format!(
         "auth:\n  admin_auth:\n    - {op}: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
          providers: {{}}\nmodels: {{}}\n"
     );
-    let out = busbar_kernel::config::migrate::migrate_config(&raw).expect("migrates");
+    let out =
+        busbar_kernel::config::migrate::migrate_config(&raw, &lent, crate::root::legacy::table())
+            .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let chain: Vec<&str> = dig(&doc, &["auth", "admin_auth"])
         .and_then(|v| v.as_sequence())

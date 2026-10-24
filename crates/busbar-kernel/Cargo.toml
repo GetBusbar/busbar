@@ -84,7 +84,7 @@ busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 libc = { workspace = true, optional = true }
 busbar-plugin-loader = { path = "../plugin-loader" }
 # THE STAND-IN LINKED ROWS are no crate at all: the composition root links the build's store and
-# ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no root,
+# ranking hooks on the install record it lends (`preflight::RootInstall`); a test build has no root,
 # so the in-crate R-FIX3 doubles stand in, linked only — `test_support::store_double` (the store row
 # and the `MemoryStore` the kernel's tests build a `GovState` over) and `test_support::ranking_double`.
 # The kernel names no store crate under any name (THE DESIGN Part 2 #2: the kernel reaches a store
@@ -152,7 +152,7 @@ rcgen = { workspace = true, optional = true, features = ["pem"] }
 # No auth feature and no auth-module edge (DECISIONS #40, #2; ARCHITECT 2026-09-27 AUTH-ROW): every
 # admin auth module, the operator credential's included, resolves through the auth kind's registry by
 # the key the configuration names. The composition root links the build's auth rows
-# (`preflight::install_linked_auth`); this crate names none of them.
+# on its install record (`preflight::RootInstall::auths`); this crate names none of them.
 # No `hooks-ranking` feature (THE DESIGN l.1443: the `hooks-ranking` kernel feature is deleted): the
 # composition root links the ranking row under its own feature, and a test build's stand-in hook
 # rows carry the kernel's ranking double in every build (`preflight::STAND_IN_HOOK_DOORS`).

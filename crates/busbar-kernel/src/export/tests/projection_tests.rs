@@ -19,7 +19,11 @@ fn resolve_errs(yaml: &str) -> Vec<String> {
     crate::export::scrape::tests::installed_axis();
     let defs: ExportDefs = serde_yaml::from_str(yaml).expect("fixture parses");
     let mut errors = Vec::new();
-    let _ = crate::config::resolve_export(&defs, &mut errors);
+    let _ = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     errors
 }
 
@@ -377,7 +381,11 @@ fn projection_union_is_the_compute_gate() {
     )
     .unwrap();
     let mut errors = Vec::new();
-    let cfg = crate::config::resolve_export(&defs, &mut errors);
+    let cfg = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &defs,
+        &mut errors,
+    );
     assert!(errors.is_empty(), "{errors:#?}");
     let union = cfg.projection_union();
     assert!(union.wants_stream(ExportStream::Logs));

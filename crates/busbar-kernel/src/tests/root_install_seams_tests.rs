@@ -3,12 +3,12 @@
 
 //! THE ROOT'S INSTALL RECORD IS THE ONE INSTALL PATH (THE DESIGN Part 0: no kernel `OnceLock` seam
 //! beyond the two R6 exempts): the configuration projection and the auth-axis opener the
-//! composition root hands the kernel ride `RootInstall`, never a process-wide static of this crate.
-//! A test binary's own hand-in is a static gated to test builds, which no shipped build has.
+//! composition root hands the kernel ride `RootInstall`, never a process-wide static of this crate:
+//! the opener is set on each registry built from the record, and read off that registry.
 
 use std::path::{Path, PathBuf};
 
-use crate::preflight::{root_rows, RootInstall};
+use crate::preflight::RootInstall;
 
 /// Every shipped source file under `dir`: the `tests` directories and `test_support` are test code
 /// as a whole.
@@ -115,12 +115,39 @@ fn the_auth_axis_opener_rides_the_install_record_not_a_static() {
         "a process-wide static holds the root's auth-axis opener:\n{}",
         hits.join("\n")
     );
-    // Nothing installed: no auth row answers. A test build reads the stand-in's opener off the
-    // same record.
+    // Nothing lent: no auth row answers. A test build lends the stand-in's opener on the same
+    // record.
     assert!(RootInstall::default().auth_axis.is_none());
     assert_eq!(
-        root_rows().auth_axis.is_some(),
+        RootInstall::STAND_IN.auth_axis.is_some(),
         cfg!(feature = "test-support"),
         "a test build's install record carries the stand-in opener exactly under `test-support`"
+    );
+}
+
+/// The registry built from a record opens its auth rows through THAT record's opener: the linked
+/// registry of a record that lends one carries it, and the linked registry of a record that lends
+/// none carries none, in the same process.
+#[test]
+fn the_auth_axis_opener_rides_the_registry_built_from_the_record() {
+    let legacy = crate::config::Legacy::stand_in();
+    let lent = RootInstall {
+        auth_axis: Some(crate::test_support::outbound_auth::stand_in),
+        ..RootInstall::STAND_IN
+    };
+    let opened = crate::preflight::linked(&lent, legacy).expect("the lent rows link");
+    assert!(
+        opened.auth_axis().is_some(),
+        "the registry built from a record that lends an opener carries it"
+    );
+    let unlent = RootInstall {
+        auth_axis: None,
+        ..RootInstall::STAND_IN
+    };
+    let closed = crate::preflight::linked(&unlent, legacy).expect("the unlent rows link");
+    assert!(
+        closed.auth_axis().is_none(),
+        "the registry built from a record that lends no opener carries none, whatever another \
+         record lent"
     );
 }

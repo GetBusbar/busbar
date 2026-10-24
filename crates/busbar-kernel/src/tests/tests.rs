@@ -729,24 +729,28 @@ fn gov_with_store(store: &str) -> crate::config::StoreCfg {
 fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     let dir = tmp_plugin_dir("disabled-store");
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         Some(&gov_with_store("durable-kv")),
         None,
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, false),
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
     assert!(err.contains("durable-kv"), "names the store: {err}");
     // The ABSENT-block default behaves identically.
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         Some(&gov_with_store("durable-kv")),
         None,
         &Default::default(),
         &Default::default(),
         &crate::config::PluginsCfg::default(),
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "absent block: {err}");
@@ -761,12 +765,14 @@ fn a_bad_plugins_logs_value_is_refused_naming_its_key() {
     cfg.logs.level = Some("loud".into());
     let run = |cfg: &crate::config::PluginsCfg| {
         crate::plugins_preflight(
+            &crate::preflight::RootInstall::STAND_IN,
             None,
             None,
             &Default::default(),
             &Default::default(),
             cfg,
             &Default::default(),
+            crate::config::Legacy::stand_in(),
         )
     };
     let err = run(&cfg).unwrap_err();
@@ -789,12 +795,14 @@ fn disabled_plugins_are_inert_even_when_present() {
     // Even an INVALID tarball must not matter while disabled.
     std::fs::write(dir.join("junk.tar.gz"), b"not a tarball").unwrap();
     let reg = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         None,
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, false),
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("inert");
     assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
@@ -818,12 +826,14 @@ fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         tracing::subscriber::with_default(subscriber, || {
             crate::plugins_preflight(
+                &crate::preflight::RootInstall::STAND_IN,
                 None,
                 None,
                 &Default::default(),
                 &Default::default(),
                 cfg,
                 &Default::default(),
+                crate::config::Legacy::stand_in(),
             )
             .expect("the preflight passes");
         });
@@ -881,12 +891,14 @@ fn the_preflight_warns_about_a_malformed_floor() {
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     tracing::subscriber::with_default(subscriber, || {
         crate::plugins_preflight(
+            &crate::preflight::RootInstall::STAND_IN,
             None,
             None,
             &Default::default(),
             &Default::default(),
             &cfg,
             &Default::default(),
+            crate::config::Legacy::stand_in(),
         )
         .expect("the preflight passes");
     });
@@ -915,12 +927,14 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     let store = crate::test_support::stand_in_store();
     let name = store.module.as_str();
     let reg = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         Some(&store),
         None,
         &Default::default(),
         &Default::default(),
         &crate::config::PluginsCfg::default(),
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("the configured store resolves on the axis");
     let row = reg.resolve(name).expect("the configured store is a row");
@@ -937,12 +951,14 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     reg.store_door(&canonical)
         .expect("the canonical name opens the same store");
     let by_canonical = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         Some(&gov_with_store(&canonical)),
         None,
         &Default::default(),
         &Default::default(),
         &crate::config::PluginsCfg::default(),
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("`store.module: <canonical>` resolves as the key does");
     assert!(by_canonical.resolve(&canonical).expect("resolves").linked());
@@ -957,12 +973,14 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     cfg.trust.allow_unsigned = true;
     let scan = || {
         crate::plugins_preflight(
+            &crate::preflight::RootInstall::STAND_IN,
             Some(&store),
             None,
             &Default::default(),
             &Default::default(),
             &cfg,
             &Default::default(),
+            crate::config::Legacy::stand_in(),
         )
     };
     let reg = scan().expect("the directory scans");
@@ -999,12 +1017,14 @@ fn a_linked_rows_refusals_print_its_key() {
     let dir = tmp_plugin_dir("printed-key");
     let plugins = plugins_cfg(&dir, true);
     let reg = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         Some(&store),
         None,
         &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("the store resolves");
     let canonical = reg.resolve(&key).expect("the row").manifest.name.clone();
@@ -1013,12 +1033,14 @@ fn a_linked_rows_refusals_print_its_key() {
             serde_json::from_value(serde_json::json!({ "h": { "module": word, "kind": "tap" } }))
                 .expect("hooks");
         let refused = crate::plugins_preflight(
+            &crate::preflight::RootInstall::STAND_IN,
             Some(&store),
             None,
             &Default::default(),
             &hooks,
             &plugins,
             &Default::default(),
+            crate::config::Legacy::stand_in(),
         )
         .expect_err("a store is not a hook");
         assert!(
@@ -1030,12 +1052,14 @@ fn a_linked_rows_refusals_print_its_key() {
         let providers: crate::config::IdentityProviders =
             serde_json::from_value(serde_json::json!({ "x": { "module": word } })).expect("idps");
         let refused = crate::plugins_preflight(
+            &crate::preflight::RootInstall::STAND_IN,
             Some(&store),
             None,
             &providers,
             &Default::default(),
             &plugins,
             &Default::default(),
+            crate::config::Legacy::stand_in(),
         )
         .expect_err("a store is not an auth plugin");
         assert!(
@@ -1045,7 +1069,12 @@ fn a_linked_rows_refusals_print_its_key() {
             "{word}: {refused}"
         );
         assert_eq!(
-            crate::preflight::validate_secret_module(&reg, word).unwrap_err(),
+            crate::preflight::validate_secret_module(
+                crate::preflight::RootInstall::STAND_IN.secret_axis,
+                &reg,
+                word
+            )
+            .unwrap_err(),
             format!(
                 "secrets.{word}: plugin '{key}' has kind 'store', not 'secret'; only a kind: \
                  secret plugin can back a `secrets:` block entry"
@@ -1078,18 +1107,23 @@ fn a_linked_rows_refusals_print_its_key() {
 fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     use crate::config::secret::{SecretRef, SecretResolver};
     let reg = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         None,
         &Default::default(),
         &Default::default(),
         &crate::config::PluginsCfg::default(),
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("the default boot registers its linked rows");
     for name in ["env", "file"] {
         assert!(reg.resolve(name).is_none(), "{name} is no cold-kind row");
         assert!(
-            crate::config::secret::is_linked_secret(name),
+            crate::config::secret::is_linked_secret(
+                crate::preflight::RootInstall::STAND_IN.secret_axis,
+                name
+            ),
             "{name} is a linked secret plugin"
         );
     }
@@ -1112,19 +1146,24 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
     let reg = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         None,
         &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("the directory scans");
     assert!(
         reg.resolve("env").is_some(),
         "the dropped-in row registered"
     );
-    let cold = SecretResolver::with_plugin(Box::new(|_, _| Ok(b"from-the-cold-lane".to_vec())));
+    let cold = SecretResolver::with_plugin(
+        crate::preflight::RootInstall::STAND_IN.secret_axis,
+        Box::new(|_, _| Ok(b"from-the-cold-lane".to_vec())),
+    );
     assert_eq!(cold.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
     std::env::remove_var(var);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1147,12 +1186,14 @@ fn a_linked_hook_named_in_config_passes_preflight_and_an_unknown_one_is_refused(
     let dir = tmp_plugin_dir("linked-hook");
     let run = |module: &str, enabled: bool| {
         crate::plugins_preflight(
+            &crate::preflight::RootInstall::STAND_IN,
             None,
             None,
             &Default::default(),
             &hook(module),
             &plugins_cfg(&dir, enabled),
             &Default::default(),
+            crate::config::Legacy::stand_in(),
         )
     };
     let linked = linked_hook_name();
@@ -1192,16 +1233,23 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
         .filter(|n| crate::config::parse_strategy(n) != crate::config::PoolPolicy::Weighted)
     {
         assert!(
-            crate::preflight::builtin_ranking_known(name),
+            crate::preflight::builtin_ranking_known(&crate::preflight::RootInstall::STAND_IN, name),
             "a built-in ranking strategy is a hook word of the linked ranking door: {name}"
         );
-        let (policy, _) = crate::preflight::builtin_ranking(name).expect("the strategy opens");
+        let (policy, _) =
+            crate::preflight::builtin_ranking(&crate::preflight::RootInstall::STAND_IN, name)
+                .expect("the strategy opens");
         assert_eq!(policy.name(), *name);
     }
     assert!(!crate::preflight::builtin_ranking_known(
+        &crate::preflight::RootInstall::STAND_IN,
         crate::config::ON_ERROR_WEIGHTED
     ));
-    let reg = crate::preflight::linked().expect("the linked rows register");
+    let reg = crate::preflight::linked(
+        &crate::preflight::RootInstall::STAND_IN,
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("the linked rows register");
     assert!(
         reg.resolve("cheapest").is_none(),
         "a strategy word is the door's mark, not a registry alias"
@@ -1385,7 +1433,8 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
     let gate_default = std::time::Duration::from_millis(crate::config::DEFAULT_POLICY_TIMEOUT_MS);
     for (word, rows, want) in cases {
         let (policy, budget) =
-            crate::preflight::builtin_ranking(word).expect("the strategy opens through the door");
+            crate::preflight::builtin_ranking(&crate::preflight::RootInstall::STAND_IN, word)
+                .expect("the strategy opens through the door");
         assert!(
             budget > gate_default,
             "`{word}`'s deadline is the dispatcher's Call class budget, not the gate default"
@@ -1414,12 +1463,14 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
 
     // STRICT default trust: the referenced store plugin is skipped -> preflight fails, naming it.
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         Some(&gov_with_store("durable")),
         None,
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, true),
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(
@@ -1435,12 +1486,14 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
     let reg = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         Some(&gov_with_store("durable")),
         None,
         &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("allow_unsigned permits the unsigned store plugin at boot");
     assert!(reg.resolve("durable").is_some(), "alias resolves");
@@ -1449,12 +1502,14 @@ fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
         "canonical name resolves"
     );
     let reg2 = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         Some(&gov_with_store("busbar-store-durable")),
         None,
         &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("the canonical name is equally valid as governance.store");
     assert!(reg2.resolve("busbar-store-durable").is_some());
@@ -1471,12 +1526,14 @@ fn unknown_store_name_is_a_clear_boot_error() {
     let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         Some(&gov_with_store("dynamo")),
         None,
         &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(err.contains("'dynamo'"), "names the missing store: {err}");
@@ -1495,12 +1552,14 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
     let dir = tmp_plugin_dir("invalid-any");
     std::fs::write(dir.join("junk.tar.gz"), b"not a tarball at all").unwrap();
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         None,
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, true),
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(err.contains("junk.tar.gz"), "names the file: {err}");
@@ -1513,12 +1572,14 @@ fn invalid_manifest_in_enabled_dir_fails_boot() {
     let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
     std::fs::write(dir.join("sha.tar.gz"), tarball).unwrap();
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         None,
         &Default::default(),
         &Default::default(),
         &plugins_cfg(&dir, true),
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(err.contains("integrity"), "names the sha mismatch: {err}");
@@ -1540,12 +1601,14 @@ fn alias_conflict_fails_boot_naming_both() {
     std::fs::write(dir.join("a.tar.gz"), a).unwrap();
     std::fs::write(dir.join("b.tar.gz"), b).unwrap();
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         None,
         &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(
@@ -1579,12 +1642,14 @@ fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::Plug
     let tarball = unsigned_tarball(secret_manifest("acme-secret-vault", "vault"), b"lib");
     std::fs::write(dir.join("vault.tar.gz"), tarball).unwrap();
     let reg = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         None,
         &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("allow_unsigned permits the unsigned secret plugin");
     (dir, reg)
@@ -1597,7 +1662,12 @@ fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::Plug
 fn secrets_block_rejects_builtin_resolver_names() {
     let reg = busbar_plugin_loader::PluginRegistry::empty();
     for reserved in ["env", "file"] {
-        let err = validate_secret_module(&reg, reserved).unwrap_err();
+        let err = validate_secret_module(
+            crate::preflight::RootInstall::STAND_IN.secret_axis,
+            &reg,
+            reserved,
+        )
+        .unwrap_err();
         assert!(
             err.contains("built-in secret resolver"),
             "reserved '{reserved}' rejected as a module: {err}"
@@ -1610,7 +1680,12 @@ fn secrets_block_rejects_builtin_resolver_names() {
 #[test]
 fn secrets_block_rejects_unknown_module() {
     let reg = busbar_plugin_loader::PluginRegistry::empty();
-    let err = validate_secret_module(&reg, "typo-vault").unwrap_err();
+    let err = validate_secret_module(
+        crate::preflight::RootInstall::STAND_IN.secret_axis,
+        &reg,
+        "typo-vault",
+    )
+    .unwrap_err();
     assert!(
         err.contains("no loadable") && err.contains("typo-vault"),
         "unknown module named in the error: {err}"
@@ -1626,11 +1701,21 @@ fn secrets_block_canonicalizes_alias_and_name_to_the_same_key() {
     let (dir, reg) = secret_registry("secrets-canon");
     // Both the alias and the canonical name resolve to the SAME canonical name.
     assert_eq!(
-        validate_secret_module(&reg, "vault").unwrap(),
+        validate_secret_module(
+            crate::preflight::RootInstall::STAND_IN.secret_axis,
+            &reg,
+            "vault"
+        )
+        .unwrap(),
         "acme-secret-vault"
     );
     assert_eq!(
-        validate_secret_module(&reg, "acme-secret-vault").unwrap(),
+        validate_secret_module(
+            crate::preflight::RootInstall::STAND_IN.secret_axis,
+            &reg,
+            "acme-secret-vault"
+        )
+        .unwrap(),
         "acme-secret-vault"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1647,15 +1732,22 @@ fn secrets_block_rejects_non_secret_kind() {
     let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
     let reg = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         None,
         &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap();
-    let err = validate_secret_module(&reg, "x").unwrap_err();
+    let err = validate_secret_module(
+        crate::preflight::RootInstall::STAND_IN.secret_axis,
+        &reg,
+        "x",
+    )
+    .unwrap_err();
     assert!(
         err.contains("not 'secret'"),
         "wrong-kind rejection names the mismatch: {err}"
@@ -1834,12 +1926,14 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
     let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
     std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
     let reg = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         None,
         &Default::default(),
         &Default::default(),
         &cfg,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap();
     let root = cfg_with_provider_api_key(crate::config::SecretRef {
@@ -1911,7 +2005,11 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
             },
         );
     }
-    let err = match crate::preflight::build_secret_resolver(reg.clone(), &secrets) {
+    let err = match crate::preflight::build_secret_resolver(
+        crate::preflight::RootInstall::STAND_IN.secret_axis,
+        reg.clone(),
+        &secrets,
+    ) {
         Err(e) => e,
         Ok(_) => panic!("two spellings of one secret module must be a loud error"),
     };
@@ -1930,7 +2028,12 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
             },
         );
         assert!(
-            crate::preflight::build_secret_resolver(reg.clone(), &one).is_ok(),
+            crate::preflight::build_secret_resolver(
+                crate::preflight::RootInstall::STAND_IN.secret_axis,
+                reg.clone(),
+                &one
+            )
+            .is_ok(),
             "a single '{spelling}' block still configures the module"
         );
     }
@@ -2234,6 +2337,7 @@ fn load_config_from_disk_refuses_a_real_legacy_config_file_loudly() {
         Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
+        crate::config::Legacy::stand_in(),
     );
 
     let err = match result {
@@ -2267,7 +2371,12 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
 
     // Mirrors `migrate_config_command`: read the real file from disk, run the real migrator.
     let raw = std::fs::read_to_string(&legacy_config_path).unwrap();
-    let migrated = crate::config::migrate::migrate_config(&raw).expect("legacy config migrates");
+    let migrated = crate::config::migrate::migrate_config(
+        &raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("legacy config migrates");
 
     let migrated_path = dir.join("migrated-config.yaml");
     std::fs::write(&migrated_path, &migrated.yaml).unwrap();
@@ -2278,6 +2387,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
         Some(&providers_path),
         false,
         crate::config::EnvSubst::Strict,
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_or_else(|e| {
         panic!("the migrated config must boot cleanly through the real boot path: {e}")
@@ -2387,8 +2497,14 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
     // Guarded so any ambient value is restored on drop (incl. panic).
     let _guard = EnvVarGuard::capture("BUSBAR_CONFIG_OVERLAY");
     std::env::remove_var("BUSBAR_CONFIG_OVERLAY");
-    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-        .expect("a mutable default config must boot");
+    let loaded = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("a mutable default config must boot");
     assert!(!loaded.config_locked, "default config is mutable");
     assert_eq!(
         loaded.overlay_path.as_deref(),
@@ -2405,9 +2521,13 @@ fn boot_default_config_resolves_a_durable_overlay_next_to_config() {
 fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
     let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: false\n  overlay: false\n";
     let (dir, config_path, _p) = boot_config_dir("no-backend", cfg);
-    let Err(err) =
-        load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-    else {
+    let Err(err) = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::config::Legacy::stand_in(),
+    ) else {
         panic!("mutable + overlay disabled must refuse to boot");
     };
     // Pin the SPECIFIC resolve_backend Err arm for `overlay: false` on a mutable config — not an OR of
@@ -2427,8 +2547,14 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
 fn boot_locked_config_has_no_overlay() {
     let cfg = "providers: {}\nmodels: {}\nconfig:\n  locked: true\n";
     let (dir, config_path, _p) = boot_config_dir("locked", cfg);
-    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-        .expect("a locked config boots");
+    let loaded = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("a locked config boots");
     assert!(loaded.config_locked);
     assert!(loaded.overlay_path.is_none(), "locked ⇒ no overlay backend");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2458,8 +2584,14 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
     .unwrap();
 
     // No override → the `providers_file:` pointer is used.
-    let loaded = load_config_from_disk(&config_path, None, false, crate::config::EnvSubst::Strict)
-        .expect("providers_file pointer resolves");
+    let loaded = load_config_from_disk(
+        &config_path,
+        None,
+        false,
+        crate::config::EnvSubst::Strict,
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("providers_file pointer resolves");
     assert_eq!(
         loaded.providers_path, catalog,
         "the providers_file pointer must be honored"
@@ -2473,6 +2605,7 @@ fn boot_providers_file_pointer_is_honored_and_override_wins() {
         Some(&other),
         false,
         crate::config::EnvSubst::Strict,
+        crate::config::Legacy::stand_in(),
     )
     .expect("override resolves");
     assert_eq!(

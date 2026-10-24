@@ -350,9 +350,9 @@ pub const RESERVED_HOOK_NAMES: &[&str] = &[
 ];
 
 /// Whether `name` is a reserved hook name on every hook-write path: a word of
-/// [`RESERVED_HOOK_NAMES`], or the operator credential's provider the root handed in.
-pub fn is_reserved_hook_name(name: &str) -> bool {
-    RESERVED_HOOK_NAMES.contains(&name) || (!name.is_empty() && name == super::operator_provider())
+/// [`RESERVED_HOOK_NAMES`], or the operator credential's provider the install record `root` lends.
+pub fn is_reserved_hook_name(name: &str, root: &crate::preflight::RootInstall) -> bool {
+    RESERVED_HOOK_NAMES.contains(&name) || (!name.is_empty() && name == root.operator.provider)
 }
 
 /// The FROZEN 1.5.3 hook-name word space (freeze blocker) — the UNION of [`RESERVED_HOOK_NAMES`]

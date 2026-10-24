@@ -902,6 +902,7 @@ pub struct TestApp {
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
     plugin_trust: Option<crate::preflight::TrustPolicyBuild>,
+    root: Option<crate::preflight::RootInstall>,
     hook_env: Option<crate::hooks::HookEnv>,
     disk_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// When `true`, build an App that booted with NO plugin routes at all — an EMPTY live table AND an
@@ -1009,6 +1010,7 @@ impl TestApp {
             plugins_dir: None,
             plugins_cfg: None,
             plugin_trust: None,
+            root: None,
             hook_env: None,
             disk_paths: None,
             no_plugin_routes: false,
@@ -1116,6 +1118,12 @@ impl TestApp {
     /// build's [`trust_policy_stand_in`].
     pub fn plugin_trust(mut self, build: crate::preflight::TrustPolicyBuild) -> Self {
         self.plugin_trust = Some(build);
+        self
+    }
+    /// Lend the snapshot `root` — a composition root's own install record — in place of the test
+    /// build's [`crate::preflight::RootInstall::STAND_IN`].
+    pub fn root(mut self, root: crate::preflight::RootInstall) -> Self {
+        self.root = Some(root);
         self
     }
 
@@ -1742,8 +1750,11 @@ impl TestApp {
         // control-plane surface, and the per-container gate resolution below.
         let hook_env = self.hook_env.clone().unwrap_or_else(|| {
             crate::hooks::HookEnv::new(
+                &self.root.unwrap_or_else(lent_stand_in),
                 std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
-                std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
+                std::sync::Arc::new(crate::config::secret::SecretResolver::linked_only(
+                    self.root.unwrap_or_else(lent_stand_in).secret_axis,
+                )),
             )
             .expect("an empty registry's hook axis")
         });
@@ -1854,6 +1865,7 @@ impl TestApp {
             // plane is registered), read when that plane contributes no runtime of its own.
             config_tables,
             root_rules: std::sync::Arc::new(crate::appbuild::AcceptAll),
+            legacy: crate::config::Legacy::stand_in(),
             config_projection: None,
             store: store.clone(),
             plane_breakers: std::sync::Arc::new(crate::store::PlaneBreakers::new()),
@@ -1900,10 +1912,9 @@ impl TestApp {
             admin: std::sync::Arc::new(crate::admin::seam::AdminSlot::default()),
             mutation_limiter: std::sync::Arc::new(crate::ratelimit::MutationLimiter::new()),
             base_hook_names: self.base_hook_names,
-            admin_chain: self
-                .admin_chain
-                .clone()
-                .unwrap_or_else(crate::config::default_admin_auth_names),
+            admin_chain: self.admin_chain.clone().unwrap_or_else(|| {
+                crate::config::default_admin_auth_names(&self.root.unwrap_or_else(lent_stand_in))
+            }),
             admin_modules: {
                 // The operator credential answers over the fixture's governance token, through
                 // whatever auth row the test binary links (none, in this crate's own tests).
@@ -1911,10 +1922,19 @@ impl TestApp {
                     .admin_modules
                     .unwrap_or_else(crate::auth::AdminAuthChain::empty);
                 let digest = self.governance.as_ref().and_then(|g| g.admin_token_hash());
-                let reg =
-                    std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
-                chain.operator = crate::auth::open_operator(&reg, digest, &self.identity_providers)
-                    .expect("the linked operator credential opens");
+                let legacy = crate::config::Legacy::stand_in();
+                let root = self.root.unwrap_or_else(lent_stand_in);
+                let reg = std::sync::Arc::new(
+                    crate::preflight::linked(&root, legacy).expect("the linked registry"),
+                );
+                chain.operator = crate::auth::open_operator(
+                    &reg,
+                    digest,
+                    &self.identity_providers,
+                    &root,
+                    legacy,
+                )
+                .expect("the linked operator credential opens");
                 std::sync::Arc::new(chain)
             },
             login_methods: std::sync::Arc::new(
@@ -1959,7 +1979,9 @@ impl TestApp {
             max_auto_provisioned_groups: 0,
             governance: self.governance,
             secret_resolver: std::sync::Arc::new(
-                crate::config::secret::SecretResolver::builtins_only(),
+                crate::config::secret::SecretResolver::linked_only(
+                    self.root.unwrap_or_else(lent_stand_in).secret_axis,
+                ),
             ),
             cost: self
                 .cost
@@ -1969,6 +1991,7 @@ impl TestApp {
                 .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
             plugin_trust: Some(self.plugin_trust.unwrap_or(trust_policy_stand_in)),
+            root: self.root.unwrap_or_else(lent_stand_in),
             self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
             mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
@@ -2059,16 +2082,6 @@ pub fn hook_needs(
     user: busbar_plugin_loader::sign::NeedLevel,
 ) -> busbar_plugin_loader::sign::HookNeeds {
     busbar_plugin_loader::sign::HookNeeds { prompt, user }
-}
-
-/// Install a test build's linked auth rows and the operator credential's words, as boot does
-/// ([`crate::preflight::install_linked_auth`]); a cell calls this so it names neither the call's
-/// result nor the types behind it.
-pub fn install_linked_auth(
-    rows: &'static [busbar_kernel_identity::operator::LinkedAuth],
-    words: busbar_kernel_identity::operator::OperatorWords,
-) {
-    crate::preflight::install_linked_auth(rows, words);
 }
 
 /// A [`crate::hooks::HookEnv`] whose registry holds one `kind: hook` row per alias (each stating the
@@ -2217,8 +2230,6 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
-/// The rate holder and dater a test binary hands in, in place of the root's install record's.
-pub mod rate_holders;
 
 /// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
 /// second credential under, standing for the linked signed-request verifier's Statement marks (a
@@ -2310,43 +2321,93 @@ impl Drop for EnvVarGuard {
     }
 }
 
-/// TEST REGISTRY ROW — link the operator credential's auth row into this test binary's auth axis,
-/// as the composition root links it into the shipped one: `door` is the memory-ABI door of whichever
-/// auth plugin the test binary links for the purpose, registered
-/// under the operator words this build answers to: with no root, the kind-neutral `stand-in` double
-/// that `test-support` turns on (BUSBAR-1.6.0.md:175, "Kernel tests use kind-neutral doubles"). The
-/// first install stands (the axis is process-wide). A test crate names that plugin only in its
-/// manifest; its build script turns the manifest row into the `door` it hands here.
-pub fn install_operator_auth_row(door: AuthDoor) {
-    let words = OperatorWords {
-        provider: crate::config::operator_provider(),
-        principal_id: crate::config::operator_principal_id(),
-    };
-    install_operator_auth_row_as(words, door)
+/// A record carrying the auth rows `auths` under the operator words `operator`, the stand-in's in
+/// every other part ([`crate::preflight::RootInstall::STAND_IN`]): what a test binary that links its
+/// own operator plugin, or the composition root's table, lends its `TestApp`
+/// ([`TestApp::root`]) and its configurations, as the composition root lends its own record.
+#[must_use]
+pub const fn lending_auth(
+    auths: &'static [crate::preflight::LinkedAuth],
+    operator: OperatorWords,
+) -> crate::preflight::RootInstall {
+    crate::preflight::RootInstall {
+        auths,
+        operator,
+        ..crate::preflight::RootInstall::STAND_IN
+    }
 }
 
-/// `install_operator_auth_row_as(words, door)`: [`install_operator_auth_row`] under a test binary's
-/// OWN operator words — a binary that links the operator plugin the composition root links, and pins
-/// the root's bytes, hands in the root's words as the root does. The first install stands.
-pub use busbar_kernel_identity::operator::{
-    install_row as install_operator_auth_row_as, AuthDoor, OperatorWords,
+pub use busbar_kernel_identity::operator::{AuthDoor, OperatorWords};
+
+// FINAL-REPIN: delete with `preflight::install_auth_axis` and `preflight::install_linked_auth` when
+// the pinned door root cells lend their TestApp a record of their own (`TestApp::root`).
+/// What the pinned door root cells hand in (`preflight::install_auth_axis`,
+/// `preflight::install_linked_auth`): their auth-axis opener, and the composition root's auth rows
+/// and operator words. A [`TestApp`] lent no record of its own lends the stand-in with these in
+/// place of the stand-in's ([`lent_stand_in`]). Read by nothing else; a test that lends a record
+/// ([`TestApp::root`]) reads what that record lends. The first hand-in of each stands.
+struct PinnedCellsHandIn {
+    auth_axis: std::sync::OnceLock<crate::preflight::AuthAxisOpener>,
+    auth_rows: std::sync::OnceLock<(&'static [crate::preflight::LinkedAuth], OperatorWords)>,
+}
+
+/// The one holder of [`PinnedCellsHandIn`].
+static PINNED_CELLS_HAND_IN: PinnedCellsHandIn = PinnedCellsHandIn {
+    auth_axis: std::sync::OnceLock::new(),
+    auth_rows: std::sync::OnceLock::new(),
 };
 
-/// THE ROOT'S HOOK NAMES in a test binary of the composition root: `names` is the root's own
-/// generated list (`$OUT_DIR/linked_hook_names.rs`, the manifest's `linked-name` rows for the hook
-/// rows that build links), and the install record ([`crate::preflight::root_rows`]) reports them as
-/// the root's install record does, so the admin surface that binary serves, its `openapi.json`
-/// included, lists the hooks the shipped binary lists. A test build with no root hands in nothing
-/// and lists none. The first hand-in stands.
-pub fn install_root_hook_names(names: &'static [&'static str]) {
-    let _ = crate::preflight::TEST_ROOT_HOOK_NAMES.set(names);
+/// Hand the pinned door root cells' auth-axis opener in ([`PINNED_CELLS_HAND_IN`]).
+#[cfg(feature = "test-support")]
+pub(crate) fn hand_in_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
+    let _ = PINNED_CELLS_HAND_IN.auth_axis.set(open);
 }
 
-/// THE ROOT'S AUTH-AXIS OPENER in a test binary of the composition root, which the install record
-/// ([`crate::preflight::root_rows`]) then reports as a shipped root's install record
-/// (`RootInstall::auth_axis`) does, in place of the stand-in's. The first hand-in stands.
-pub fn install_root_auth_axis(open: crate::preflight::AuthAxisOpener) {
-    let _ = crate::preflight::TEST_ROOT_AUTH_AXIS.set(open);
+/// Hand the pinned door root cells' auth rows and operator words in ([`PINNED_CELLS_HAND_IN`]).
+#[cfg(feature = "test-support")]
+pub fn hand_in_root_auth_rows(rows: &'static [crate::preflight::LinkedAuth], words: OperatorWords) {
+    let _ = PINNED_CELLS_HAND_IN.auth_rows.set((rows, words));
+}
+
+/// A program environment's secret reference resolved at config time through the secret axis the
+/// stand-in record lends ([`crate::preflight::RootInstall::STAND_IN`]): the resolver a test build
+/// hands the connector it builds, in place of the root's.
+///
+/// # Errors
+///
+/// The reference does not resolve through the stand-in's secret axis.
+pub fn resolve_stand_in_secret_at_config(
+    secret: &crate::config::SecretRef,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<String, String> {
+    crate::config::secret::resolve_linked_string_at_config(
+        crate::preflight::RootInstall::STAND_IN.secret_axis,
+        secret,
+        scope,
+    )
+}
+
+/// The record a [`TestApp`] lent none of its own lends: the stand-in
+/// ([`crate::preflight::RootInstall::STAND_IN`]), with the pinned door root cells' auth-axis opener,
+/// auth rows and operator words in place of the stand-in's when they handed them in
+/// ([`PINNED_CELLS_HAND_IN`]).
+pub(crate) fn lent_stand_in() -> crate::preflight::RootInstall {
+    let stand_in = crate::preflight::RootInstall::STAND_IN;
+    let (auths, operator) = PINNED_CELLS_HAND_IN
+        .auth_rows
+        .get()
+        .copied()
+        .unwrap_or((stand_in.auths, stand_in.operator));
+    crate::preflight::RootInstall {
+        auth_axis: PINNED_CELLS_HAND_IN
+            .auth_axis
+            .get()
+            .copied()
+            .or(stand_in.auth_axis),
+        auths,
+        operator,
+        ..stand_in
+    }
 }
 
 /// THE CLOSED ADMIN VERB TABLE, as a kind-neutral double: three operations of the admin surface,

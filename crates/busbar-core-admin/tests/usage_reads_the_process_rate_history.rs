@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `GET /api/v1/admin/usage` PRICES THROUGH THE PROCESS'S DATED HISTORY, the one the kernel's rate
-//! dater holds (`busbar_kernel::rate_apply`), and through no seam of the admin crate's own.
+//! `GET /api/v1/admin/usage` PRICES THROUGH THE DATED HISTORY of the rate dater the app's
+//! governance book carries (`busbar_kernel::rate_apply`), and through no seam of the admin
+//! crate's own.
 //!
 //! R6 (BUSBAR-1.6.0.md, l.1472-1476): the cleanliness crates keep EXACTLY their two `OnceLock`
 //! seams; l.1558: "add no new kernel `OnceLock` seam beyond the two R6 exempts". The usage read
 //! used to reach the history through a static of its own that the composition root filled by name;
-//! the history it needs is the one the kernel's rate dater already hands the budget book. So the
-//! only install this test makes is the kernel's: if the read priced off anything else, a row earned
+//! the history it needs is the one the book's rate dater already hands the budget book. So the
+//! only dater this test lends is the book's: if the read priced off anything else, a row earned
 //! under the opening card would read back at the current one.
-//!
-//! A test BINARY of its own: the rate dater is process-wide, and the crate's unit tests read usage
-//! with no dater installed.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,7 +19,6 @@ use busbar_contract::records::{MeteringDelta, RecordStore};
 use busbar_kernel::cost::{CostModel, History, RateCard, TierRates};
 use busbar_kernel::governance::{GovState, MemoryStore, METERING_BUCKET_SECS};
 use busbar_kernel::rate_apply::RateEpoch;
-use busbar_kernel::test_support::rate_holders::install_rate_epoch;
 
 /// The one priced lane: a metering row's `model` and the card's lane, spelled once.
 const LANE: &str = "m-dated-read";
@@ -69,8 +66,9 @@ fn current_cost() -> CostModel {
     CostModel::resolve_parts(Some(&rates), 0, &BTreeMap::new())
 }
 
-/// Governance holding one metering row in `bucket`, earned under the opening entry.
-fn governance(bucket: u64) -> Arc<GovState> {
+/// Governance holding one metering row in `bucket`, earned under the opening entry, answering to
+/// `dater` as the book a build makes from the root's record answers to the record's.
+fn governance(bucket: u64, dater: &'static dyn RateEpoch) -> Arc<GovState> {
     let store = Arc::new(MemoryStore::new());
     RecordStore::add_metering(
         store.as_ref(),
@@ -92,16 +90,19 @@ fn governance(bucket: u64) -> Arc<GovState> {
         },
     )
     .expect("the memory store accepts a metering delta");
-    Arc::new(GovState::new(store, None).expect("governance builds"))
+    Arc::new(
+        GovState::new(store, None)
+            .expect("governance builds")
+            .with_rates(None, Some(dater)),
+    )
 }
 
-/// RED while the usage read priced through a seam of the admin crate's own: with only the kernel's
-/// rate dater installed, it fell back to the current card (1,000) and named no rate-card version.
+/// RED while the usage read priced through a seam of the admin crate's own: with only the book's
+/// rate dater lent, it fell back to the current card (1,000) and named no rate-card version.
 #[tokio::test]
 async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     let holder: &'static Holder =
         Box::leak(Box::new(Holder(Arc::new(History::opening(card(10), 0)))));
-    install_rate_epoch(holder);
 
     busbar_kernel::snapshot::init();
     busbar_core_admin::install();
@@ -109,7 +110,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         - METERING_BUCKET_SECS;
     // An OPEN admin posture: the read reaches its handler rather than an authentication refusal.
     let app = busbar_kernel::test_support::TestApp::new()
-        .governance(governance(bucket))
+        .governance(governance(bucket, holder))
         .cost(current_cost())
         .admin_chain(vec![])
         .build();

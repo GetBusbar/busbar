@@ -117,13 +117,43 @@ pub struct NamedDefView {
 }
 
 /// The served description of [`NamedDefView::token_configured`]: 1.5.5's text byte for byte, the
-/// operator credential's provider read off its frozen row, so the kernel spells no auth module.
+/// operator credential's provider standing as [`OPERATOR_PROVIDER_MARK`] until the document is
+/// generated under the words the install record lends ([`fill_operator_provider`]), so the kernel
+/// spells no auth module.
 #[cfg(feature = "openapi-schema")]
 fn token_configured_description() -> String {
     format!(
         "`identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in\n`{}` operator credential). The reference itself is never projected.",
-        crate::config::operator_provider()
+        OPERATOR_PROVIDER_MARK
     )
+}
+
+/// Where a generated schema description names the operator credential's provider: the derive reads
+/// no install record, so it writes this mark, and the generator of the document fills it with the
+/// provider of the record it is lent ([`fill_operator_provider`]). Compiled in every build, with no
+/// feature gate of its own, so the kernel's literals spell the document format no more often than
+/// `qa/c1-literals.toml` counts.
+pub const OPERATOR_PROVIDER_MARK: &str = "@@operator-credential-provider@@";
+
+/// Fill every [`OPERATOR_PROVIDER_MARK`] in the generated document `doc` with `provider`, the
+/// operator credential's provider the install record the document is generated under lends.
+pub fn fill_operator_provider(doc: &mut serde_json::Value, provider: &str) {
+    match doc {
+        serde_json::Value::String(text) if text.contains(OPERATOR_PROVIDER_MARK) => {
+            *text = text.replace(OPERATOR_PROVIDER_MARK, provider);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                fill_operator_provider(item, provider);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values_mut() {
+                fill_operator_provider(value, provider);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Attach a `$ref` schema onto `<abs_path>.<method>.responses.<status>.content` — the module-level

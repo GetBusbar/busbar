@@ -954,22 +954,6 @@ struct Denylist(bool);
 
 #[cfg(feature = "root-admin")]
 impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
-    fn verify(
-        &self,
-        credential: &str,
-        _now: u64,
-        _expected_aud: Option<&str>,
-    ) -> Option<crate::root::auth_bindings::KeyFacts> {
-        // A revocation withdraws an IDENTIFICATION: the directory has to know the credential
-        // before its denylist can take it away, or the refusal would be a probe answered for
-        // a string nothing verified. So the one credential these cells present is one this
-        // directory minted.
-        (credential == "admin-token").then(|| crate::root::auth_bindings::KeyFacts {
-            id: "key-admin-1".to_string(),
-            name: "the operator credential these cells present".to_string(),
-        })
-    }
-
     fn revoked(&self, _credential: &str) -> bool {
         self.0
     }
@@ -980,34 +964,13 @@ impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
 /// resolved to somebody; on an open door nothing is resolved, and a denylist consulted there
 /// would be a probe answered for a string nothing verified.
 #[cfg(feature = "root-admin")]
-struct IdentifiesOperator;
-
-#[cfg(feature = "root-admin")]
-impl busbar_kernel_identity::module::AuthModule for IdentifiesOperator {
-    fn name(&self) -> &'static str {
-        "identifies-operator"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some("admin-token") => busbar_kernel_identity::module::AuthOutcome::Identify(
-                busbar_kernel_identity::principal::Principal::from_id(
-                    crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
-                ),
-            ),
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
+fn identifies_operator(candidate: Option<&str>) -> Option<&'static str> {
+    (candidate == Some("admin-token")).then_some(crate::root::auth_bindings::ADMIN_PRINCIPAL_ID)
 }
 
 #[cfg(feature = "root-admin")]
-fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
-    busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-operator".to_string(),
-            module: Box::new(IdentifiesOperator),
-        }],
-        false,
-    )
+fn a_door_that_identifies_the_operator() -> crate::root::units_admin::Identify {
+    identifies_operator
 }
 
 /// Walk one request through the whole loop against a node whose door identifies the operator
@@ -1016,7 +979,7 @@ fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
 fn answer_under_denylist(revoked: bool) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(AnsweringDispatch),
-        door_of_chain(a_door_that_identifies_the_operator()),
+        door_of(a_door_that_identifies_the_operator()),
     )
     .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
         Denylist(revoked),
@@ -1070,26 +1033,13 @@ fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified()
 
 /// A door that identifies SOMEBODY, and it is not the operator.
 ///
-/// The sibling of `IdentifiesOperator`, and the only way this plane reaches its 403: the grant an
+/// The sibling of `identifies_operator`, and the only way this plane reaches its 403: the grant an
 /// admin unit carries is the operator principal's or none at all, so a caller the chain resolves to
 /// any other identity is authenticated and then has nothing to compare the endpoint's matrix row
 /// against. That is the authorization ending, and it is a different answer from the door's.
 #[cfg(feature = "root-admin")]
-struct IdentifiesSomebodyElse;
-
-#[cfg(feature = "root-admin")]
-impl busbar_kernel_identity::module::AuthModule for IdentifiesSomebodyElse {
-    fn name(&self) -> &'static str {
-        "identifies-somebody-else"
-    }
-    fn authenticate(&self, candidate: Option<&str>) -> busbar_kernel_identity::module::AuthOutcome {
-        match candidate {
-            Some("a-tenants-token") => busbar_kernel_identity::module::AuthOutcome::Identify(
-                busbar_kernel_identity::principal::Principal::from_id("acct:not-the-operator"),
-            ),
-            _ => busbar_kernel_identity::module::AuthOutcome::Pass,
-        }
-    }
+fn identifies_somebody_else(candidate: Option<&str>) -> Option<&'static str> {
+    (candidate == Some("a-tenants-token")).then_some("acct:not-the-operator")
 }
 
 /// Walk one request through the whole loop against a node whose door is CLOSED — one module,
@@ -1101,12 +1051,12 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesSomebodyElse {
 /// the caller presented and not about a credential the node withdrew.
 #[cfg(feature = "root-admin")]
 fn answer_at_the_closed_door(
-    door: busbar_kernel_identity::AuthChain,
+    door: crate::root::units_admin::Identify,
     credential: Option<&str>,
 ) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(AnsweringDispatch),
-        door_of_chain(door),
+        door_of(door),
     )
     .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
         Denylist(false),
@@ -1196,14 +1146,7 @@ fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() {
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_needed() {
-    let door = busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-somebody-else".to_string(),
-            module: Box::new(IdentifiesSomebodyElse),
-        }],
-        false,
-    );
-    let refused = answer_at_the_closed_door(door, Some("a-tenants-token"));
+    let refused = answer_at_the_closed_door(identifies_somebody_else, Some("a-tenants-token"));
     assert_eq!(
         refused.status, 403,
         "an identified caller with no grant is the authorization ending, not the door's"
@@ -3104,7 +3047,7 @@ fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_r
         request.credential = credential.map(ToString::to_string);
         // The revocation withdraws an identification, so when it is on, the door must identify first.
         let door = if revoked {
-            door_of_chain(a_door_that_identifies_the_operator())
+            door_of(a_door_that_identifies_the_operator())
         } else {
             open_door()
         };

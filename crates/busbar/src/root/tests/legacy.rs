@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ROOT LEGACY TABLE, held to 1.5.5: one test per retired word. Each installs the root's table
-//! (as `main` does), then holds `--migrate-config`'s rewrite and change line, and boot's 1.x refusal,
-//! to the bytes 1.5.5 printed for that word (`tests/fixtures/legacy_retired_1_5_5.yaml`). The words
-//! and the bytes are data; this file spells neither.
+//! THE ROOT LEGACY TABLE, held to 1.5.5: one test per retired word. Each lends the root's table
+//! (as `main` does) to the paths that read it, then holds `--migrate-config`'s rewrite and change
+//! line, and boot's 1.x refusal, to the bytes 1.5.5 printed for that word
+//! (`tests/fixtures/legacy_retired_1_5_5.yaml`). The words and the bytes are data; this file spells
+//! neither.
 
-use super::{install, LEGACY_ROWS};
+use super::{former_names, table, LEGACY_ROWS};
 
 /// The 1.5.5 golden entry `n` of the retired words.
 fn golden(n: usize) -> serde_yaml::Value {
@@ -25,7 +26,6 @@ fn field(v: &serde_yaml::Value, k: &str) -> String {
 
 /// The retired word at golden entry `n` meets exactly its 1.5.5 bytes.
 fn retired_word_meets_its_1_5_5_bytes(n: usize) {
-    install();
     let g = golden(n);
     let (word, module) = (field(&g, "word"), field(&g, "module"));
     assert!(
@@ -40,7 +40,8 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
     );
 
     // `--migrate-config`: the rewrite and its change line, byte for byte.
-    let out = busbar_kernel::config::migrate::migrate_config(&raw).expect("migrates");
+    let out = busbar_kernel::config::migrate::migrate_config(&raw, &root_record(), table())
+        .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output parses");
     assert_eq!(doc["store"]["module"].as_str(), Some(module.as_str()));
     assert_eq!(
@@ -70,6 +71,7 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
         None,
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        table(),
     )
     .err()
     .expect("a retired spelling refuses boot");
@@ -118,17 +120,17 @@ fn bullets(text: &str, head: &str, bullet: &str) -> Vec<String> {
 }
 
 /// KN-2b: the kernel spells none of the words of the 1.5.3 observability lift-out or the 1.x hook
-/// registry's URL transport; the root's table hands them in. With the table installed,
+/// registry's URL transport; the root's table lends them. With the table lent,
 /// `--migrate-config`'s change lines, TODOs and rewritten document, boot's 1.x refusal and the typed
 /// parse's unknown-field hints are what the published v1.5.5 binary printed for the same input.
 #[test]
 fn the_observability_lift_out_meets_its_1_5_5_bytes() {
-    install();
     let g = observability_golden();
     let text = |k: &str| field(&g, k);
     let raw = text("config");
 
-    let out = busbar_kernel::config::migrate::migrate_config(&raw).expect("migrates");
+    let out = busbar_kernel::config::migrate::migrate_config(&raw, &root_record(), table())
+        .expect("migrates");
     let changes = bullets(&text("migrate_stderr"), "CHANGES (", "  - ");
     assert!(
         !changes.is_empty(),
@@ -177,6 +179,7 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
         None,
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        table(),
     )
     .err()
     .expect("a 1.x config refuses boot");
@@ -205,7 +208,7 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
             .expect("1.5.5 printed a hint");
         let msg = format!("unknown field `{old}`");
         assert_eq!(
-            busbar_kernel::config::augment_config_error(&msg),
+            busbar_kernel::config::augment_config_error(&msg, table()),
             format!("{msg}{hint}"),
             "the `{old}` hint is not 1.5.5's"
         );
@@ -273,7 +276,7 @@ const HEADER: &str = "[package.metadata.busbar.legacy]";
 const NOTE: &str = "# THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each\n\
 # entry's `retired:` and `former_names:`); src/root/tests/legacy.rs is red on an edit and prints the\n\
 # render to paste.\n\
-# build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.\n";
+# build.rs emits it as `LEGACY_ROWS`, which the root lends to the kernel as `config::Legacy`.\n";
 
 fn text(v: &serde_yaml::Value, k: &str) -> Option<String> {
     v[k].as_str().map(str::to_string)
@@ -350,7 +353,7 @@ fn render(registry: &str) -> String {
 
 /// The manifest's table as written: from its header to the line before the next table header (or
 /// the end), less trailing blank lines.
-fn table(manifest: &str) -> String {
+fn manifest_table(manifest: &str) -> String {
     let lines: Vec<&str> = manifest.lines().collect();
     let start = lines
         .iter()
@@ -370,7 +373,7 @@ fn table(manifest: &str) -> String {
 /// to paste.
 fn drift(manifest: &str, registry: &str) -> Option<String> {
     let want = render(registry);
-    (table(manifest) != want).then(|| {
+    (manifest_table(manifest) != want).then(|| {
         format!(
             "crates/busbar/Cargo.toml: `{HEADER}` is not the render of plugins.yaml; replace it with:\n\n{want}"
         )
@@ -450,16 +453,13 @@ fn former_names_render_as_one_row_of_the_alias() {
     );
 }
 
-/// The root's table answers a linked plugin's former names by its alias
-/// (`busbar_kernel::config::legacy::former_names`), from the committed plugins.yaml.
+/// The root's table answers a linked plugin's former names by its alias (`former_names`, through
+/// the lent `busbar_kernel::config::Legacy`), from the committed plugins.yaml.
 #[test]
 fn a_linked_plugin_reads_its_former_names_by_its_alias() {
-    install();
-    assert_eq!(
-        busbar_kernel::config::legacy::former_names("webrequest"),
-        ["busbar-webrequest"]
-    );
-    assert!(busbar_kernel::config::legacy::former_names("planted-never-renamed").is_empty());
+    assert_eq!(former_names("webrequest"), ["busbar-webrequest"]);
+    assert_eq!(table().former_names("webrequest"), ["busbar-webrequest"]);
+    assert!(former_names("planted-never-renamed").is_empty());
 }
 
 /// Every frozen `legacy:` row of plugins.yaml cites the v1.5.5 source it is verbatim from (a
@@ -497,4 +497,13 @@ fn every_legacy_row_cites_v1_5_5() {
     let doc: serde_yaml::Value = serde_yaml::from_str(REGISTRY).expect("plugins.yaml parses");
     assert_eq!(n, doc["legacy"].as_mapping().expect("`legacy:`").len());
     assert!(n > 0);
+}
+
+/// The record the root lends its migrator: this build's linked auth rows and the operator words off
+/// the root legacy table, as `root::linked::register_stores` builds it.
+fn root_record() -> busbar_kernel::preflight::RootInstall {
+    busbar_kernel::test_support::lending_auth(
+        crate::LINKED.auths,
+        crate::root::auth_bindings::operator_words(),
+    )
 }

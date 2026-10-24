@@ -676,8 +676,10 @@ async fn cancelling_a_handler_future_does_not_release_the_mutation_domain() {
 /// "gate absent"; the SECRET resolution happens first and is what this measures.
 fn parking_secret_hook_env(delay: Duration) -> busbar_kernel::hooks::HookEnv {
     busbar_kernel::hooks::HookEnv::new(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         Arc::new(busbar_kernel::plugin_admission::PluginRegistry::empty()),
         Arc::new(busbar_kernel::config::secret::SecretResolver::with_plugin(
+            busbar_kernel::preflight::RootInstall::STAND_IN.secret_axis,
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(delay);
                 Ok(b"resolved".to_vec())

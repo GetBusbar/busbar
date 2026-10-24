@@ -25,8 +25,8 @@ use crate::diagnostics::{
 };
 
 use super::{
-    ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, OverlayCfg, RateEntryCfg, RootCfg, StoreCfg,
-    TlsCfg,
+    ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, Legacy, OverlayCfg, RateEntryCfg, RootCfg,
+    StoreCfg, TlsCfg,
 };
 
 /// The single, actionable message a config mutation gets when there is no writable overlay backend to
@@ -1036,11 +1036,16 @@ pub fn from_state(hooks: &HashMap<String, HookCfg>, global_hooks: &[String]) -> 
 /// the merged shape. A no-op when the overlay carries no root override. Kept a free fn (not folded
 /// into `merge_into`) precisely because it operates on a DIFFERENT input (DeployCfg, not RootCfg) at
 /// a DIFFERENT pipeline stage.
-pub fn apply_root_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+pub fn apply_root_to_deploy(
+    deploy: &mut DeployCfg,
+    doc: &OverlayDoc,
+    lent: &crate::preflight::RootInstall,
+    legacy: Legacy,
+) {
     if let Some(root) = &doc.root {
         root.apply_to_deploy(deploy);
     }
-    apply_pre_resolve_sections(deploy, doc);
+    apply_pre_resolve_sections(deploy, doc, lent, legacy);
 }
 
 /// Apply the overlay's `plugin_versions` pins onto `deploy.plugins.min_versions` (1.5.0
@@ -1085,7 +1090,15 @@ pub fn apply_plugin_versions_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc)
 /// overlay) is dropped with a LOUD error rather than aborting the whole boot: an unparseable exporter
 /// must not brick startup, and an unparseable identity provider that something still references fails
 /// LOUDLY anyway at `resolve` (the dangling-reference error), which is the actionable diagnostic.
-pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+///
+/// `root` is the install record and `legacy` the root legacy table the composition root lent, which
+/// the one typed parse reads.
+pub fn apply_named_maps_to_deploy(
+    deploy: &mut DeployCfg,
+    doc: &OverlayDoc,
+    root: &crate::preflight::RootInstall,
+    legacy: Legacy,
+) {
     use crate::config::named_map::NamedMapSection;
     for section in NamedMapSection::sections() {
         let Some(entries) = doc.named_maps.get(section.key()) else {
@@ -1096,7 +1109,7 @@ pub fn apply_named_maps_to_deploy(deploy: &mut DeployCfg, doc: &OverlayDoc) {
             // :887-904, parity, Q128 arch u29): the stored definition IS the entry, so a field the
             // overlay entry does not name never leaks in from a same-named base entry, and an
             // explicit `null` inside it reaches the typed parse exactly as the operator PUT it.
-            if let Err(e) = section.insert(deploy, name, def) {
+            if let Err(e) = section.insert(deploy, name, def, root, legacy) {
                 diag_error!(
                     CONFIG_OVERLAY_PATCH_UNPARSABLE,
                     section = section.key(), entry = %name, error = %e,
@@ -1142,6 +1155,8 @@ pub struct UnparseableNamedDef {
 pub fn unparseable_named_map_entries(
     path: Option<&Path>,
     section: crate::config::named_map::NamedMapSection,
+    root: &crate::preflight::RootInstall,
+    legacy: Legacy,
 ) -> BTreeMap<String, UnparseableNamedDef> {
     let mut out = BTreeMap::new();
     let Some(doc) = path.and_then(read) else {
@@ -1151,7 +1166,7 @@ pub fn unparseable_named_map_entries(
         return out;
     };
     for (name, def) in entries {
-        if let Err(error) = section.validate_def(name, def) {
+        if let Err(error) = section.validate_def(name, def, root, legacy) {
             out.insert(
                 name.clone(),
                 UnparseableNamedDef {
@@ -1168,9 +1183,14 @@ pub fn unparseable_named_map_entries(
 /// and the `named_maps` definitions. One function so a caller that must NOT take the overlay's `root`
 /// (because it is applying a caller-supplied root, e.g. `PUT /config/settings`) still cannot forget a
 /// sibling pre-resolve section; adding the next one is an edit HERE, not at six rebuild sites.
-pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
+pub fn apply_pre_resolve_sections(
+    deploy: &mut DeployCfg,
+    doc: &OverlayDoc,
+    root: &crate::preflight::RootInstall,
+    legacy: Legacy,
+) {
     apply_plugin_versions_to_deploy(deploy, doc);
-    apply_named_maps_to_deploy(deploy, doc);
+    apply_named_maps_to_deploy(deploy, doc, root, legacy);
 }
 
 /// Persist ONE named-map entry to the overlay: `Some(def)` upserts it, `None` removes it. Same

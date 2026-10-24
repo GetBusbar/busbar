@@ -42,9 +42,9 @@ impl AdminService {
 
     /// The same service, resolving usage against `history` instead of the process's.
     ///
-    /// The process's history is the kernel's rate dater's, installed once — so a test that needs to
-    /// drive the read against a history of its own naming pins it here rather than racing that
-    /// install. Every other caller reads the process's by construction.
+    /// The history is the rate dater's of the governance book the app carries — so a test that
+    /// needs to drive the read against a history of its own naming pins it here rather than lending
+    /// a book a dater of its own. Every other caller reads the app's book's by construction.
     #[cfg(test)]
     pub(crate) fn with_rate_history(mut self, history: Arc<busbar_kernel::cost::History>) -> Self {
         self.rate_history = Some(history);
@@ -58,8 +58,8 @@ impl AdminService {
         // The compiled-in plugin sets reflect the ACTUAL binary: the `keys` builtin and the linked
         // auth rows, plus the ranking hooks. `weighted` is the one baked in
         // (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
-        let auth_modules = auth_modules_compiled_in();
-        let hook_plugins = hook_plugins_compiled_in();
+        let auth_modules = auth_modules_compiled_in(&self.app.root);
+        let hook_plugins = hook_plugins_compiled_in(&self.app.root);
 
         let view = self.app.engine_tables_view();
         let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
@@ -332,6 +332,7 @@ impl AdminService {
         AdminError,
     > {
         let overlay = self.app.overlay_path.clone();
+        let (root, legacy) = (self.app.root, self.app.legacy);
         // The caller's tracing dispatcher rides onto the blocking thread, so the corrupt-overlay
         // warning the read raises still reaches it (the `GET /config/settings` read does the same).
         let dispatch = tracing::dispatcher::get_default(|d| d.clone());
@@ -340,6 +341,8 @@ impl AdminService {
                 busbar_kernel::config::overlay::unparseable_named_map_entries(
                     overlay.as_deref(),
                     section,
+                    &root,
+                    legacy,
                 )
             })
         })
@@ -501,10 +504,10 @@ impl AdminService {
                 // is engine-handled (a flag, not a boxed module), the operator credential lives on the
                 // ADMIN chain, and anything else is a boxed data-plane chain module.
                 let chain = self.app.auth.chain_names();
-                for name in auth_modules_compiled_in() {
+                for name in auth_modules_compiled_in(&self.app.root) {
                     let active = if name == busbar_kernel::config::KEYS_MODULE {
                         self.app.auth.keys_in_chain
-                    } else if name == busbar_kernel::config::operator_provider() {
+                    } else if name == self.app.root.operator.provider {
                         // By module: a provider of any name backed by the operator credential.
                         let op = &self.app.admin_modules.operator;
                         self.app.admin_chain.iter().any(|m| op.is(m))
@@ -524,7 +527,7 @@ impl AdminService {
                 // `role_bindings.<module>` keys off) appears in `chain_names()` but is NOT
                 // compiled-in — report each such module as a loaded plugin, always `active` (it is
                 // in the chain by construction).
-                let compiled = auth_modules_compiled_in();
+                let compiled = auth_modules_compiled_in(&self.app.root);
                 for name in &chain {
                     if !compiled.contains(&name.as_str()) {
                         plugins.push(PluginView::basic(
@@ -566,7 +569,7 @@ impl AdminService {
                     None,
                     None,
                 ));
-                for name in hook_plugins_compiled_in() {
+                for name in hook_plugins_compiled_in(&self.app.root) {
                     plugins.push(PluginView::basic(
                         name.to_string(),
                         "hooks",
@@ -674,7 +677,7 @@ impl AdminService {
         // off the root's linked rows; admin names no store. Which store backend is ACTIVE is a
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
-        let mut out = linked_store_rows();
+        let mut out = linked_store_rows(&self.app.root);
         let Ok(policy) = trust_policy(&self.app, env!("CARGO_PKG_VERSION")) else {
             return out;
         };
@@ -911,7 +914,7 @@ impl AdminService {
                 // Fail soft to the always-true linked rows rather than an admin 500 for what is
                 // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
                 // an unparseable `plugins_cfg` (`trust_policy` failing) just above.
-                Ok(linked_store_rows())
+                Ok(linked_store_rows(&self.app.root))
             }
         }
     }
@@ -1024,7 +1027,9 @@ impl AdminService {
         // plugin at the same version is already served by the linked row, so the install is an
         // accepted no-op (nothing is written); another version is refused now, in the words boot
         // would refuse it with, never published to brick the next boot.
-        match busbar_kernel::preflight::linked().and_then(|r| r.linked_copy(manifest, &file)) {
+        match busbar_kernel::preflight::linked(&self.app.root, self.app.legacy)
+            .and_then(|r| r.linked_copy(manifest, &file))
+        {
             Ok(None) => {}
             Ok(Some(_)) => {
                 return Ok(crate::v1::contract::PluginInstallView {
@@ -1351,8 +1356,11 @@ impl AdminService {
         let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
         // The running generation's root rules: a dry run judges what an apply would.
         let rules = std::sync::Arc::clone(&self.app.root_rules);
+        // The running generation's install record and legacy table, both the root's: the dry run
+        // resolves under them, as an apply does.
+        let (root, legacy) = (self.app.root, self.app.legacy);
         match tokio::task::spawn_blocking(move || {
-            validate_config_blocking(deploy, &defs, plugins_dir, &rules)
+            validate_config_blocking(root, deploy, &defs, plugins_dir, &rules, legacy)
         })
         .await
         {
@@ -1466,7 +1474,10 @@ impl AdminService {
         // DECISION #79 — THE DATED RATE-CARD HISTORY, taken ONCE for the whole read so every row of
         // one response is answered at one snapshot. A card appended while this read is in flight
         // must not price half its rows against one history and half against another.
-        let history = self.rate_history.clone().or_else(dated_rate_history);
+        let history = self
+            .rate_history
+            .clone()
+            .or_else(|| dated_rate_history(&self.app));
         // The snapshot the caller named, VALIDATED BEFORE ANY BOOK IS READ, so a request for a
         // state that does not exist is refused rather than quietly answered at some other state —
         // including when governance is off and the read would otherwise return early.
@@ -1852,9 +1863,9 @@ impl AdminService {
 
 /// THE LINKED STORE ROWS of the store catalog: one `compiled-in` row per store this build links, in
 /// the root's table order (none a default: a config names its store, Q-STORE = (B)). Read off the
-/// kernel's installed root rows, so admin names no store instance.
-fn linked_store_rows() -> Vec<PluginView> {
-    let stores = busbar_kernel::preflight::root_rows().stores;
+/// install record the root lent the snapshot (`root`), so admin names no store instance.
+fn linked_store_rows(root: &busbar_kernel::preflight::RootInstall) -> Vec<PluginView> {
+    let stores = root.stores;
     let row = |s: &busbar_kernel::preflight::LinkedStore| {
         PluginView::basic(s.0.to_string(), "store", "compiled-in", None, None)
     };
@@ -1892,14 +1903,16 @@ fn rollup_refused(error: &'static str) -> AdminError {
 /// boot-time semantic validation, then the plugin and secret pre-flight over the running install's
 /// `plugins_dir`.
 fn validate_config_blocking(
+    lent: busbar_kernel::preflight::RootInstall,
     mut deploy: DeployCfg,
     defs: &std::collections::HashMap<String, ProviderDef>,
     plugins_dir: String,
     rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
+    legacy: busbar_kernel::config::Legacy,
 ) -> ConfigValidateView {
     // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
     // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
-    let root = match busbar_kernel::config::resolve(&deploy, defs) {
+    let root = match busbar_kernel::config::resolve_in(lent, &deploy, defs, legacy) {
         Ok(root) => root,
         Err(errors) => return ConfigValidateView { ok: false, errors },
     };

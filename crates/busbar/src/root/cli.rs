@@ -210,7 +210,8 @@ pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) 
 /// deployment. Returns `Some(exit_code)` when the process should exit (after printing), `None` to
 /// proceed to normal startup. busbar takes no positional arguments and is configured via
 /// environment + YAML; an unrecognized flag is a usage error rather than a silent server start.
-pub(crate) fn handle_cli_flags() -> Option<i32> {
+/// `lent`: the install record `main` owns and lends (the `--validate` run resolves under it).
+pub(crate) fn handle_cli_flags(lent: busbar_kernel::preflight::RootInstall) -> Option<i32> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => None, // no args → run the gateway
@@ -284,10 +285,10 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
         // where the line-serve flag swaps the two listeners for the process's own stdin/stdout.
         // Recognised here so it is not refused as an unknown argument.
         Some(arg) if is_plane_flag(&help_rows(), arg) => None,
-        Some("--validate") => Some(validate_config_command()),
+        Some("--validate") => Some(validate_config_command(lent)),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
         Some("--list-plugins") => Some(list_plugins_command()),
-        Some("--migrate-config") => Some(migrate_config_command(args.next())),
+        Some("--migrate-config") => Some(migrate_config_command(args.next(), lent)),
         Some("--help" | "-h") => {
             print!("{}", render_help(env!("CARGO_PKG_VERSION"), &help_rows()));
             Some(0)
@@ -320,16 +321,20 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
 /// Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--safe-mode` exactly as boot does.
 /// Prints an OK summary + exits 0 when valid;
 /// prints every error (same text boot prints) + exits 1 when not.
-fn validate_config_command() -> i32 {
+fn validate_config_command(lent: busbar_kernel::preflight::RootInstall) -> i32 {
     let providers_override = providers_override();
     let config_path = std::path::PathBuf::from(resolve_config_path(config_path_flag().as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
+    // The root legacy table, lent to the load, the overlay's typed parse and `resolve`, as boot
+    // lends it.
+    let legacy = crate::root::legacy::table();
 
     let mut loaded = match load_config_from_disk(
         &config_path,
         providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Lenient,
+        legacy,
     ) {
         Ok(l) => l,
         Err(e) => {
@@ -348,9 +353,9 @@ fn validate_config_command() -> i32 {
     // boot-guard over the merged shape), not just the base file. The hooks/groups sections merge
     // POST-resolve below.
     if let Some(doc) = loaded.overlay_doc.as_ref() {
-        config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
+        config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc, &lent, legacy);
     }
-    let mut cfg = match config::resolve(&loaded.deploy, &loaded.defs) {
+    let mut cfg = match config::resolve_in(lent, &loaded.deploy, &loaded.defs, legacy) {
         Ok(c) => c,
         Err(errs) => {
             eprintln!(
@@ -489,6 +494,7 @@ fn list_plugins_command() -> i32 {
         providers_override.as_deref(),
         false,
         config::EnvSubst::Lenient,
+        crate::root::legacy::table(),
     ) {
         Ok(l) => {
             let store = l.deploy.store.as_ref().map(|g| g.module.clone());
@@ -568,7 +574,10 @@ fn list_plugins_command() -> i32 {
 /// to STDERR - zero side effects, nothing is written, no env interpolation (a `${VAR}` reference
 /// passes through verbatim so the output stays a template). Exit 0 on success (even with TODOs -
 /// they are review items, not errors), 1 on unreadable/unparseable input, 2 on a missing path.
-fn migrate_config_command(path: Option<String>) -> i32 {
+fn migrate_config_command(
+    path: Option<String>,
+    lent: busbar_kernel::preflight::RootInstall,
+) -> i32 {
     let Some(path) = path else {
         eprintln!(
             "busbar: --migrate-config requires a path: busbar --migrate-config <old-config.yaml>"
@@ -582,7 +591,7 @@ fn migrate_config_command(path: Option<String>) -> i32 {
             return 1;
         }
     };
-    match config::migrate::migrate_config(&raw) {
+    match config::migrate::migrate_config(&raw, &lent, crate::root::legacy::table()) {
         Ok(out) => {
             print!("{}", out.yaml);
             eprintln!("migrated '{path}' to the 1.5.0 config shape.");

@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use busbar_contract::secret_ref::SecretRef;
 
+use crate::preflight::RootInstall;
+
 /// One entry in the top-level `identity-providers:` NAMED-DEFINITION map (1.5.3). The map
 /// KEY is the provider INSTANCE name — the bare name `auth.chain:`, `auth.admin_auth:` and
 /// `role_bindings:` all reference — and this value says which `kind: auth` module backs it, how it is
@@ -60,12 +62,12 @@ pub struct IdentityProviderCfg {
     /// 1.5.3 moved this ONTO the definition: it used to sit on a data-plane CHAIN entry,
     /// which was incoherent — an admin ceiling is a property of the identity source, not of one
     /// plane's reference to it. Absent = the MOST RESTRICTIVE default (`read-only`) for every
-    /// provider EXCEPT the operator credential ([`operator_provider`]), which is `full` by
+    /// provider EXCEPT the operator credential (the provider of [`RootInstall::operator`](crate::preflight::RootInstall::operator)), which is `full` by
     /// definition and exempt. `full` from an external IdP is always an explicit opt-in.
     #[serde(default)]
     pub max_admin_scope: Option<String>,
-    /// The operator ADMIN credential, for a provider whose `module` is the [`operator_provider`]
-    /// (a secret reference). Meaningless on any other module (validated).
+    /// The operator ADMIN credential, for a provider whose `module` is the operator credential's
+    /// provider (a secret reference). Meaningless on any other module (validated).
     #[serde(default)]
     pub token: Option<SecretRef>,
     /// HOSTED-LOGIN parameters (freeze blocker). The 1.5.2 `auth.methods:` block FOLDED into this
@@ -356,10 +358,12 @@ pub struct AuthDeployCfg {
     /// open front door. `keys` is the built-in signed-key verifier, referenced bare.
     #[serde(default)]
     pub chain: Vec<String>,
-    /// The ADMIN auth chain gating `/api/v1/admin/*`, as ordered PROVIDER NAMES. Default
-    /// [`default_admin_auth_names`]. `[]` = OPEN admin (dev only; loud boot warning).
-    #[serde(default = "default_admin_auth_names")]
-    pub admin_auth: Vec<String>,
+    /// The ADMIN auth chain gating `/api/v1/admin/*`, as ordered PROVIDER NAMES. Absent (`None`):
+    /// [`default_admin_auth_names`], under the words of the install record the configuration is
+    /// resolved under (`resolve_auth`); the parse reads no words. `[]` = OPEN admin (dev only; loud
+    /// boot warning).
+    #[serde(default, deserialize_with = "present_names")]
+    pub admin_auth: Option<Vec<String>>,
     /// Role → policy bindings, NESTED BY PROVIDER NAME (see [`RoleBindingCfg`]).
     #[serde(default)]
     pub role_bindings: RoleBindings,
@@ -378,17 +382,27 @@ pub struct AuthDeployCfg {
 
 impl Default for AuthDeployCfg {
     /// The all-omitted `auth:` block: open front door (empty data chain) + the default
-    /// operator-credential admin chain, matching the per-field serde defaults exactly.
+    /// operator-credential admin chain (`admin_auth` absent), matching the per-field serde defaults
+    /// exactly.
     fn default() -> Self {
         Self {
             signing_key: None,
             chain: Vec::new(),
-            admin_auth: default_admin_auth_names(),
+            admin_auth: None,
             role_bindings: RoleBindings::new(),
             key_ttl: None,
             policy: AuthPolicyCfg::default(),
         }
     }
+}
+
+/// A PRESENT `admin_auth:` list: parsed exactly as the bare `Vec<String>` it is, so a malformed
+/// value is refused in the same words; only its absence is left for [`default_admin_auth_names`].
+fn present_names<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Vec::<String>::deserialize(deserializer).map(Some)
 }
 
 /// The RESOLVED `auth:` block — each `chain:`/`admin_auth:` NAME joined to its `identity-providers:`
@@ -427,17 +441,25 @@ pub struct AuthCfg {
 }
 
 impl AuthCfg {
-    /// Create a default (open front door, default admin chain) AuthCfg for initialization.
-    pub fn default_none() -> Self {
+    /// The default (open front door, default admin chain) AuthCfg a configuration with no `auth:`
+    /// block builds with, under the operator credential's words of the record `root` lends.
+    pub fn default_under(root: &RootInstall) -> Self {
         Self {
             signing_key: None,
             chain: vec![],
-            admin_auth: default_admin_auth(),
+            admin_auth: default_admin_auth(root),
             role_bindings: RoleBindings::new(),
             methods: AuthMethods::new(),
             key_ttl: None,
             policy: AuthPolicyCfg::default(),
         }
+    }
+
+    /// Create a default (open front door, default admin chain) AuthCfg for initialization: a TEST
+    /// build's, under the words of the record a test lends when it lends none of its own.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn default_none() -> Self {
+        Self::default_under(&crate::test_support::lent_stand_in())
     }
 
     /// TEST-SUPPORT constructor: the default (open, default-admin) posture with ONLY the data-plane
@@ -452,12 +474,12 @@ impl AuthCfg {
     }
 
     /// The operator-credential secret reference (the `token:` of the first entry backed by the
-    /// [`operator_provider`]), if configured.
-    pub fn admin_token_ref(&self) -> Option<&SecretRef> {
+    /// operator credential `root` lends, by any name `legacy` gives it), if configured.
+    pub fn admin_token_ref(&self, root: &RootInstall, legacy: super::Legacy) -> Option<&SecretRef> {
         self.admin_auth
             .iter()
             .chain(self.chain.iter())
-            .find(|e| names_operator(&e.module))
+            .find(|e| names_operator(&e.module, root, legacy))
             .and_then(|e| e.token.as_ref())
     }
 
@@ -473,12 +495,12 @@ impl AuthCfg {
     ///
     /// Does NOT resolve the token or consult `role_bindings` (neither is available here); a ceiling of
     /// `full` is the operator's explicit structural declaration that minting is reachable.
-    pub fn usable_mint_path(&self) -> bool {
+    pub fn usable_mint_path(&self, root: &RootInstall, legacy: super::Legacy) -> bool {
         if self.admin_auth.is_empty() {
             return true;
         }
         self.admin_auth.iter().any(|e| {
-            let operator = names_operator(&e.module);
+            let operator = names_operator(&e.module, root, legacy);
             (operator && e.token.is_some())
                 || (!operator && matches!(e.max_admin_scope.as_deref(), Some("full")))
         })
@@ -487,43 +509,46 @@ impl AuthCfg {
 
 /// The built-in signed-key verifier module name (`auth.chain: [keys]`).
 pub const KEYS_MODULE: &str = "keys";
-/// The operator credential's `module:` word, under the name the admin surface reads it by (the
-/// OpenAPI description of `admin_auth`): the same function as [`operator_provider`].
-pub use busbar_kernel_identity::operator::provider as operator_module;
-/// THE OPERATOR CREDENTIAL'S PROVIDER, as configuration spells it (the `auth.admin_auth:` default,
-/// referenced bare, the one `module:` whose definition may carry `token:`, and a reserved hook name),
-/// and the principal id it identifies the operator as. Frozen config text the composition root's
-/// legacy table holds and hands in with its linked auth rows (ARCHITECT 2026-09-30,
-/// KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173); the kernel never spells it. Which module answers it is
-/// the auth axis's business.
-pub use busbar_kernel_identity::operator::{
-    principal_id as operator_principal_id, provider as operator_provider,
-};
+/// THE OPERATOR CREDENTIAL'S PROVIDER and principal id in a TEST build: the words of the record a
+/// test lends when it lends none of its own (the kind-neutral stand-in's, or the pinned door root
+/// cells' hand-in). A shipped build has no such reader: every reader there is lent the record the
+/// composition root built and reads [`RootInstall::operator`] off it (ARCHITECT 2026-09-30,
+/// KERNEL-AUTH-ZERO Q2; BUSBAR-1.6.0.md:173). The kernel never spells the words.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn operator_provider() -> &'static str {
+    crate::test_support::lent_stand_in().operator.provider
+}
+
+/// The principal id beside [`operator_provider`], in a TEST build.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn operator_principal_id() -> &'static str {
+    crate::test_support::lent_stand_in().operator.principal_id
+}
 
 /// Whether `module` names THE OPERATOR CREDENTIAL'S PLUGIN, by its identity rather than one spelling
-/// (ARCHITECT C'): the [`operator_provider`] key, the canonical name its linked row answers to, or a
-/// former name the root legacy table gives that key — every name the registry resolves to that row.
-pub fn names_operator(module: &str) -> bool {
-    let op = operator_provider();
-    busbar_kernel_identity::operator::names(op, module)
-        || (!op.is_empty()
-            && crate::config::legacy::former_names(op)
-                .iter()
-                .any(|f| f == module))
+/// (ARCHITECT C'): the provider key `root` lends ([`RootInstall::operator`]), the canonical name its
+/// linked row (among the rows `root` lends) answers to, or a former name the root legacy table the
+/// composition root lent (`legacy`) gives that key — every name the registry resolves to that row.
+pub fn names_operator(module: &str, root: &RootInstall, legacy: super::Legacy) -> bool {
+    let op = root.operator.provider;
+    busbar_kernel_identity::operator::names(root.auths, op, module)
+        || (!op.is_empty() && legacy.former_names(op).iter().any(|f| f == module))
 }
 
 /// The BUILT-IN identity providers, referenced BARE from `auth.chain:`/`auth.admin_auth:` with no
-/// `identity-providers:` definition at all: the signed-key verifier and the operator credential. A
-/// definition entry for one of these exists only when it needs config — the operator credential
-/// carrying its `token:` secret ref is the one real case.
-pub fn builtin_identity_providers() -> [&'static str; 2] {
-    [KEYS_MODULE, operator_provider()]
+/// `identity-providers:` definition at all: the signed-key verifier and the operator credential
+/// `root` lends. A definition entry for one of these exists only when it needs config — the operator
+/// credential carrying its `token:` secret ref is the one real case.
+pub fn builtin_identity_providers(root: &RootInstall) -> [&'static str; 2] {
+    [KEYS_MODULE, root.operator.provider]
 }
 
 /// Whether a provider's `module:` names a BUILT-IN: one of [`builtin_identity_providers`], or the
 /// operator credential's plugin by any other name it answers to ([`names_operator`]).
-pub fn is_builtin_identity_module(module: &str) -> bool {
-    builtin_identity_providers().contains(&module) || names_operator(module)
+pub fn is_builtin_identity_module(module: &str, root: &RootInstall, legacy: super::Legacy) -> bool {
+    builtin_identity_providers(root).contains(&module) || names_operator(module, root, legacy)
 }
 
 /// The MOST RESTRICTIVE admin ceiling — the default for a provider whose definition omits
@@ -532,13 +557,13 @@ pub fn is_builtin_identity_module(module: &str) -> bool {
 /// (full by definition), which is why `resolve_auth` applies this only to the other providers.
 pub use busbar_contract::DEFAULT_MAX_ADMIN_SCOPE;
 
-/// The serde default for `auth.admin_auth:` - the [`operator_provider`], referenced bare (the single
-/// operator admin token; byte-identical to the pre-chain behavior).
-pub fn default_admin_auth_names() -> Vec<String> {
-    vec![operator_provider().to_string()]
+/// The default for an absent `auth.admin_auth:` - the operator credential's provider `root` lends,
+/// referenced bare (the single operator admin token; byte-identical to the pre-chain behavior).
+pub fn default_admin_auth_names(root: &RootInstall) -> Vec<String> {
+    vec![root.operator.provider.to_string()]
 }
 
 /// The RESOLVED form of [`default_admin_auth_names`].
-pub fn default_admin_auth() -> Vec<AuthChainEntry> {
-    vec![AuthChainEntry::bare(operator_provider())]
+pub fn default_admin_auth(root: &RootInstall) -> Vec<AuthChainEntry> {
+    vec![AuthChainEntry::bare(root.operator.provider)]
 }

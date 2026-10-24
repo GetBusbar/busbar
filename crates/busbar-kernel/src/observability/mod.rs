@@ -112,8 +112,12 @@ pub fn init_log_bridge() -> Result<(), tracing_log::log::SetLoggerError> {
 /// channel — the framed protocol on stdout forbids any byte that is not one of its own messages —
 /// so every log line moves to stderr instead, which is where such a transport's spec sends a
 /// server's diagnostics anyway. The listener modes keep stdout, unchanged.
+///
+/// `exports`: the export axis the composition root lends ([`crate::preflight::RootInstall`]); the
+/// `traces` producer is layered only when one is lent.
 pub fn init_logging(
     stdout_reserved: bool,
+    exports: crate::preflight::LinkedExports,
 ) -> Result<(), tracing::subscriber::SetGlobalDefaultError> {
     use tracing_subscriber::fmt::writer::BoxMakeWriter;
     use tracing_subscriber::layer::SubscriberExt as _;
@@ -130,7 +134,7 @@ pub fn init_logging(
         .with_filter(stderr_filter);
     let subscriber = tracing_subscriber::registry()
         .with(fmt_layer)
-        .with(crate::export::traces::layer(otlp_filter));
+        .with(crate::export::traces::layer(otlp_filter, exports));
     tracing::subscriber::set_global_default(subscriber)
 }
 

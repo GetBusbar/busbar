@@ -222,7 +222,12 @@ fn pools_of(section: &str) -> ModelPools {
         "providers: {{}}\nmodels: {{}}\npools:\n{section}"
     ))
     .expect("the deployment parses");
-    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let cfg = busbar_kernel::config::resolve_under(
+        &deploy,
+        &Default::default(),
+        crate::root::legacy::table(),
+    )
+    .expect("resolves");
     ModelPools::of(&cfg)
 }
 

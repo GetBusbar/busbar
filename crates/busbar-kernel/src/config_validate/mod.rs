@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::config::operator_provider;
 use busbar_kernel_identity::operator;
 use std::collections::{HashMap, HashSet};
 
@@ -693,7 +692,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // a built-in answers to or an `on_error` terminal word. Registry uniqueness + the closed
     // `on_error` string union (see the const's doc). A collision is a boot error naming the offender.
     for hook_name in cfg.hooks.keys() {
-        if crate::config::is_reserved_hook_name(hook_name) {
+        if crate::config::is_reserved_hook_name(hook_name, &cfg.root) {
             errors.push(format!(
                 "hook '{hook_name}' uses a reserved name (a built-in ranking strategy, auth module, \
                  or on_error terminal); rename the hook — a hook can never shadow a reserved word"
@@ -761,7 +760,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             // Compiled out (`--no-default-features`), naming one is a boot error, never a silent
             // degrade (the same compliance-by-compilation stance as the pool strategy rule).
             if crate::config::is_strategy_name(current) {
-                if !crate::preflight::builtin_ranking_known(current) {
+                if !crate::preflight::builtin_ranking_known(&cfg.root, current) {
                     errors.push(format!(
                         "hook '{hook_name}' on_error names the built-in ranking strategy \
                          '{current}' but this binary was built WITHOUT the `hooks-ranking` \
@@ -929,7 +928,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                 ));
             }
             for (role, binding) in roles {
-                if reserved_operator_principal_id(role) {
+                if reserved_operator_principal_id(role, &cfg.root) {
                     errors.push(format!(
                         "role_bindings.{module} binds role '{role}', which shadows the reserved \
                          operator principal id; choose another role name"
@@ -1003,9 +1002,11 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             }
             // `token:` is the operator credential; on any other module it is inert and almost
             // certainly a misplaced secret. Fail loud.
-            if entry.token.is_some() && !crate::config::names_operator(&entry.module) {
+            if entry.token.is_some()
+                && !crate::config::names_operator(&entry.module, &cfg.root, cfg.legacy)
+            {
                 errors.push(operator::misplaced_token(
-                    operator_provider(),
+                    cfg.root.operator.provider,
                     &entry.module,
                 ));
             }
@@ -1031,7 +1032,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // works — it's the engine's inline SWRR floor, not a plugin.)
     for (pool_name, pool_cfg) in &cfg.pools {
         let name = pool_cfg.policy.native_name();
-        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(n)) {
+        if name.is_some_and(|n| !crate::preflight::builtin_ranking_known(&cfg.root, n)) {
             errors.push(format!(
                 "pool '{pool_name}' names the {:?} ranking strategy but this binary was built \
                  WITHOUT the `hooks-ranking` feature — the built-in ranking strategies are absent. \
@@ -1154,8 +1155,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // see `AuthCfg::usable_mint_path`. An explicit OPEN admin (`admin_auth: []`) counts as a mint
         // path but is dev-only — WARN that anyone can mint. `oidc`/plugin chains never set
         // `keys_in_chain`, so they never trigger this (their identities are externally issued).
-        if verifies_signed_keys && !auth.usable_mint_path() {
-            errors.push(operator::no_mint_path(operator_provider()));
+        if verifies_signed_keys && !auth.usable_mint_path(&cfg.root, cfg.legacy) {
+            errors.push(operator::no_mint_path(cfg.root.operator.provider));
         }
         if verifies_signed_keys && auth.admin_auth.is_empty() {
             diag_warn!(
@@ -1179,6 +1180,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if any_passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
                 let resolved_key = crate::config::secret::resolve_linked_string_at_config(
+                    cfg.root.secret_axis,
                     &provider_cfg.api_key,
                     &busbar_contract::config_time::ConfigScope::config_time(),
                 )
@@ -1210,9 +1212,10 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // instances share (a webhook sink's in-flight bound) AMONG the limits' checks, each instance's
     // own (a webhook's delivery deadline) after them.
     use crate::export::plugin::check;
-    let sinks = &mut |e: &mut Vec<String>| check(&cfg.export, CheckPhase::Limits, e);
+    let exports = cfg.root.export_axis;
+    let sinks = &mut |e: &mut Vec<String>| check(exports, &cfg.export, CheckPhase::Limits, e);
     validate_limits_with(&cfg.limits, &mut errors, sinks);
-    check(&cfg.export, CheckPhase::Instances, &mut errors);
+    check(exports, &cfg.export, CheckPhase::Instances, &mut errors);
 
     // A model maps to ONE lane, so its `context_max` must be single-valued across every pool that
     // names it. `build_app_from_config` (boot) rejects a genuine conflict — mirror that here so a
@@ -1839,13 +1842,13 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // answers to additionally requires the plugin subsystem (checked with the registry in
     // `plugins_preflight`, the shared boot path).
     match &cfg.store {
-        None => errors.push(crate::config::store_required()),
+        None => errors.push(crate::config::store_required(cfg.legacy)),
         Some(store) if store.module.trim().is_empty() => {
             errors.push(format!(
                 "store.module must be non-empty; use `{}` (the compiled-in RAM store) or a \
                  store plugin name/alias ({} | <third-party>)",
-                crate::config::migrated_store_module(),
-                crate::config::migrate::legacy_store_text("module_examples")
+                crate::config::migrated_store_module(cfg.legacy),
+                crate::config::migrate::legacy_store_text(cfg.legacy, "module_examples")
             ));
         }
         Some(_) => {}
@@ -1863,7 +1866,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // contract-admin #10, Law 1: the kernel reads the shorthand off the plugins and names no
     // source). The VALUE is never resolved here (CI validates config structure without secrets
     // present); resolution failures are boot-time fail-closed errors.
-    let sugars = crate::config::secret::sugars();
+    let sugars = crate::config::secret::sugars(cfg.root.secret_axis);
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
         // `none` declares that there is NO credential here. That is meaningful for a provider
         // `api_key` (a keyless local upstream — ollama, vLLM) and meaningless everywhere else: a
@@ -1908,7 +1911,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         .collect::<Vec<_>>()
         .join(" / ");
     for module in cfg.secrets.keys() {
-        if crate::config::secret::is_linked_secret(module) {
+        if crate::config::secret::is_linked_secret(cfg.root.secret_axis, module) {
             errors.push(format!(
                 "secrets.{module}: the built-in '{module}' secret module takes no module-level \
                  config; its settings ({per_reference}) belong on each individual secret \
@@ -1921,9 +1924,13 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // would silently disable the admin API (the chain all-Passes) - a silent lockout must be a loud
     // boot error instead. The row is the composition root's, linked under the operator
     // credential's provider name by the root's packaging feature of the same name.
-    let token = cfg.auth.as_ref().and_then(|a| a.admin_token_ref());
-    if token.is_some() && !operator::answered(operator_provider()) {
-        errors.push(operator::unanswered_token(operator_provider()));
+    let token = cfg
+        .auth
+        .as_ref()
+        .and_then(|a| a.admin_token_ref(&cfg.root, cfg.legacy));
+    let op = cfg.root.operator.provider;
+    if token.is_some() && !operator::answered(cfg.root.auths, op) {
+        errors.push(operator::unanswered_token(op));
     }
 }
 
@@ -1974,7 +1981,8 @@ fn admin_root_segment() -> &'static str {
 }
 
 /// True when a `role_bindings` role name would shadow the built-in operator PRINCIPAL ID
-/// ([`crate::config::operator_principal_id`], the id the operator credential's module mints).
+/// (the principal id of the operator credential `root` lends, [`crate::preflight::RootInstall::operator`]:
+/// the id the operator credential's module mints).
 ///
 /// A DIFFERENT reservation from [`reserved_admin_name`], and split from it deliberately: that one
 /// guards a URL path SEGMENT (`api`), this one guards an identity string (`admin`). They shared one
@@ -1982,8 +1990,8 @@ fn admin_root_segment() -> &'static str {
 /// to `/api` a single shared check would have silently moved the principal-id reservation to `api`
 /// as well. With no auth row linked under the operator credential's provider there is no operator
 /// principal to shadow, so nothing is reserved.
-fn reserved_operator_principal_id(role: &str) -> bool {
-    role == crate::config::operator_principal_id() && operator::answered(operator_provider())
+fn reserved_operator_principal_id(role: &str, root: &crate::preflight::RootInstall) -> bool {
+    role == root.operator.principal_id && operator::answered(root.auths, root.operator.provider)
 }
 
 /// True when a pool / provider / model `name` would collide with the built-in native-API operator
@@ -2513,6 +2521,7 @@ fn validate_providers_with(
             // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
             // resolves (an unset var can't be validated — caught at boot).
             let cred = crate::config::secret::resolve_linked_string_at_config(
+                cfg.root.secret_axis,
                 &provider_cfg.api_key,
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )
@@ -2526,7 +2535,13 @@ fn validate_providers_with(
                     "token_url": busbar_kernel_egress::trust::net::strip_userinfo(token_url),
                     "scope": provider_cfg.scope.clone().unwrap_or_default(),
                 });
-                for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
+                for e in outbound_credential_refusals(
+                    &cfg.root,
+                    "oauth-client-credentials",
+                    &cred,
+                    &params,
+                    cfg.legacy,
+                ) {
                     errors.push(format!(
                         "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
@@ -2554,13 +2569,14 @@ fn validate_providers_with(
             }
             let config_time = busbar_contract::config_time::ConfigScope::config_time();
             let cred = crate::config::secret::resolve_linked_string_at_config(
+                cfg.root.secret_axis,
                 &provider_cfg.api_key,
                 &config_time,
             )
             .unwrap_or_default();
             // A credential naming its key file is read as the build reads it, in the same words.
             let cred = match service_account_json(cred.into_bytes(), |file| {
-                crate::config::secret::SecretResolver::builtins_only()
+                crate::config::secret::SecretResolver::linked_only(cfg.root.secret_axis)
                     .resolve_at_config(file, &config_time)
             }) {
                 Ok(json) => String::from_utf8(json).unwrap_or_default(),
@@ -2596,9 +2612,11 @@ fn validate_providers_with(
                             params.insert("scope".into(), serde_json::Value::String(scope.clone()));
                         }
                         outbound_credential_refusals(
+                            &cfg.root,
                             "jwt-bearer",
                             &cred,
                             &serde_json::Value::Object(params),
+                            cfg.legacy,
                         )
                     }
                 };
@@ -2658,13 +2676,15 @@ impl MetadataPosture {
 
 /// THE CREDENTIAL REFUSALS the auth plugin serving `style` names for `credential` under `params`,
 /// through the dry `open_outbound` the build binds with (the plugin's `credential:` lines, their
-/// text only). None when no plugin this build reaches serves the style.
+/// text only). None when no plugin `root` links serves the style.
 fn outbound_credential_refusals(
+    root: &crate::preflight::RootInstall,
     style: &str,
     credential: &str,
     params: &serde_json::Value,
+    legacy: crate::config::Legacy,
 ) -> Vec<String> {
-    let Some(axis) = crate::preflight::linked_auth_axis() else {
+    let Some(axis) = crate::preflight::linked_auth_axis(root, legacy) else {
         return Vec::new();
     };
     axis.check_outbound(style, credential.as_bytes(), params)

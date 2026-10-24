@@ -3190,8 +3190,11 @@ async fn a_credential_that_cannot_be_presented_reaches_the_caller_as_a_fixed_cla
     assert_eq!(class_of(ReasonCode::BreakerOpen), RefusalClass::Unreachable);
     let mut renders = Vec::new();
     for failing in failing_secrets() {
-        let operator_text = busbar_kernel::config::secret::resolve_linked_string(&failing.secret)
-            .expect_err("the reference does not resolve");
+        let operator_text = busbar_kernel::config::secret::resolve_linked_string(
+            busbar_kernel::preflight::RootInstall::STAND_IN.secret_axis,
+            &failing.secret,
+        )
+        .expect_err("the reference does not resolve");
         assert!(
             !markers_in(&operator_text, &failing).is_empty(),
             "the control: the operator's text names the source: {operator_text}"

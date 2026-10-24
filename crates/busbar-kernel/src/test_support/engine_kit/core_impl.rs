@@ -43,10 +43,6 @@ impl EngineTestKit for CoreEngineKit {
         crate::snapshot::init();
     }
 
-    fn install_operator_auth_row(&self, door: crate::test_support::AuthDoor) {
-        crate::test_support::install_operator_auth_row(door);
-    }
-
     fn new_app(&self) -> Box<dyn TestAppKit> {
         Box::new(TestApp::new())
     }
@@ -136,7 +132,12 @@ impl EngineTestKit for CoreEngineKit {
         name: &str,
         def: &serde_json::Value,
     ) -> Result<(), String> {
-        crate::config::named_map::NamedMapSection::Plane(section).validate_def(name, def)
+        crate::config::named_map::NamedMapSection::Plane(section).validate_def(
+            name,
+            def,
+            &crate::test_support::lent_stand_in(),
+            crate::config::Legacy::stand_in(),
+        )
     }
 
     fn durable_store_cfg(&self, tag: &str) -> (PathBuf, String) {

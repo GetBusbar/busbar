@@ -67,7 +67,7 @@ observability:
 #[test]
 fn legacy_markers_detected_and_named() {
     let doc: serde_yaml::Value = serde_yaml::from_str(LEGACY_14X).unwrap();
-    let markers = detect_legacy_markers(&doc);
+    let markers = detect_legacy_markers(&doc, crate::config::Legacy::stand_in());
     let joined = markers.join("\n");
     for expect in [
         "`governance:`",
@@ -99,7 +99,7 @@ fn legacy_markers_detected_and_named() {
     .expect("the canonical example exists");
     let doc: serde_yaml::Value = serde_yaml::from_str(&clean).unwrap();
     assert!(
-        detect_legacy_markers(&doc).is_empty(),
+        detect_legacy_markers(&doc, crate::config::Legacy::stand_in()).is_empty(),
         "the canonical 1.5.0 example must not trip the 1.x detector"
     );
 }
@@ -109,7 +109,7 @@ fn legacy_markers_detected_and_named() {
 fn auth_mode_marker_detected() {
     let doc: serde_yaml::Value =
         serde_yaml::from_str("auth:\n  mode: token\nproviders: {}\nmodels: {}\n").unwrap();
-    let markers = detect_legacy_markers(&doc);
+    let markers = detect_legacy_markers(&doc, crate::config::Legacy::stand_in());
     assert!(
         markers.iter().any(|m| m.contains("`auth.mode:`")),
         "{markers:?}"
@@ -124,7 +124,12 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
     // This test needs a plane registered so the migrated `pools:` section resolves (not real
     // llm/mcp/a2a behaviour — it only asserts the migrated document's SHAPE).
     crate::test_support::register_neutral_test_plane();
-    let out = migrate_config(LEGACY_14X).expect("migrates");
+    let out = migrate_config(
+        LEGACY_14X,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
     let get = |path: &[&str]| -> serde_yaml::Value {
@@ -311,7 +316,7 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
 
     // ROUND-TRIP: the migrated document deserializes into the 1.5.0 DeployCfg (boot-parses) and
     // trips NO legacy marker.
-    assert!(detect_legacy_markers(&doc).is_empty());
+    assert!(detect_legacy_markers(&doc, crate::config::Legacy::stand_in()).is_empty());
     let deploy: Result<crate::config::DeployCfg, _> =
         crate::config::deploy_from_yaml_str(&out.yaml);
     assert!(
@@ -323,7 +328,12 @@ fn migrate_14x_round_trips_into_deploy_cfg() {
 
 /// Small helper: migrate `raw` and return the parsed output document (panics if migrate fails).
 fn migrate_to_value(raw: &str) -> (MigrateOutput, serde_yaml::Value) {
-    let out = migrate_config(raw).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     (out, doc)
 }
@@ -580,7 +590,7 @@ pools:
     on_exhausted: { action: "fallback_pool:overflow" }
 "#;
     let doc: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
-    let joined = detect_legacy_markers(&doc).join("\n");
+    let joined = detect_legacy_markers(&doc, crate::config::Legacy::stand_in()).join("\n");
     for expect in [
         "top-level `group_map:`",
         "top-level `admin_auth:`",
@@ -608,7 +618,12 @@ models:
   m2: { provider: p }
 pools: {}
 "#;
-    let out = migrate_config(raw).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
     let card = doc
         .as_mapping()
@@ -648,7 +663,12 @@ pools:
     members: [ { target: widget, weight: 1 } ]
     policy: cheapest
 "#;
-    let out = migrate_config(raw).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
     let hooks = doc
         .as_mapping()
@@ -670,12 +690,20 @@ pools:
 /// `auth.mode` mapping: passthrough -> upstream_credentials; token -> keys chain + a re-mint TODO.
 #[test]
 fn migrate_auth_mode_arms() {
-    let out = migrate_config("auth:\n  mode: passthrough\nproviders: {}\nmodels: {}\npools: {}\n")
-        .unwrap();
+    let out = migrate_config(
+        "auth:\n  mode: passthrough\nproviders: {}\nmodels: {}\npools: {}\n",
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .unwrap();
     assert!(out.yaml.contains("upstream_credentials: passthrough"));
 
-    let out =
-        migrate_config("auth:\n  mode: token\nproviders: {}\nmodels: {}\npools: {}\n").unwrap();
+    let out = migrate_config(
+        "auth:\n  mode: token\nproviders: {}\nmodels: {}\npools: {}\n",
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .unwrap();
     assert!(out.yaml.contains("- keys"));
     assert!(
         out.todos.iter().any(|t| t.contains("signed key")),
@@ -696,7 +724,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw).unwrap();
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .unwrap();
     assert!(out.yaml.contains("<module>"));
     assert!(out
         .todos
@@ -720,7 +753,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw).unwrap();
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .unwrap();
     // The data must survive SOMEWHERE in the migrated document - either restored at the top level,
     // or (if a future fix manages to migrate it) folded into auth.role_bindings. Either way it must
     // not disappear, and there must be a loud TODO/warning naming the problem.
@@ -756,7 +794,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw).unwrap();
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .unwrap();
     assert!(
         out.yaml.contains("group_map"),
         "a non-mapping group_map must not silently vanish from the migrated document:\n{}",
@@ -797,7 +840,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
     let get = |path: &[&str]| -> serde_yaml::Value {
@@ -835,7 +883,12 @@ providers: {}
 models: {}
 pools: {}
 "#;
-    let out = migrate_config(raw).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let root = doc.as_mapping().unwrap();
     let store = root
@@ -883,7 +936,12 @@ pools:
     members:
       - { target: widget, weight: 1 }
 "#;
-    let out = migrate_config(raw).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let auth = doc
         .as_mapping()
@@ -1123,7 +1181,7 @@ models: {}
 pools: {}
 "#;
     let doc: serde_yaml::Value = serde_yaml::from_str(raw).unwrap();
-    let markers = detect_legacy_markers(&doc);
+    let markers = detect_legacy_markers(&doc, crate::config::Legacy::stand_in());
     let joined = markers.join("\n");
     assert!(
         joined.contains("request_log_webhook_url"),
@@ -1239,7 +1297,11 @@ pools: {}
     let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(&migrated_yaml)
         .expect("the migrated config must boot-parse");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &built_ins(&deploy.export),
+        &mut errs,
+    );
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(webhooks(&deploy.export), 1);
     assert!(export.recorder.is_some() && export.plugins.iter().any(|p| p.def.module == "otlp"));
@@ -1278,11 +1340,16 @@ pools:
 global_hooks:
   - { module: busbar-audit, settings: { url: "https://s/audit" }, kind: tap, at: completion }
 "#;
-    let out1 = migrate_config(raw).expect("migrates");
+    let out1 = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     // Boot-parses into the 1.5.3 DeployCfg and trips no legacy marker.
     let doc: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).expect("valid YAML");
     assert!(
-        detect_legacy_markers(&doc).is_empty(),
+        detect_legacy_markers(&doc, crate::config::Legacy::stand_in()).is_empty(),
         "no residual 1.x marker"
     );
     let deploy: crate::config::DeployCfg =
@@ -1320,7 +1387,12 @@ global_hooks:
 
     // IDEMPOTENT: re-migrating the output leaves the config tree byte-for-byte identical (the header
     // comment block carries run-specific todos, so compare the parsed VALUE, not the raw text).
-    let out2 = migrate_config(&out1.yaml).expect("re-migrates");
+    let out2 = migrate_config(
+        &out1.yaml,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("re-migrates");
     let v1: serde_yaml::Value = serde_yaml::from_str(&out1.yaml).unwrap();
     let v2: serde_yaml::Value = serde_yaml::from_str(&out2.yaml).unwrap();
     assert_eq!(
@@ -1345,7 +1417,7 @@ global_hooks:
 /// might really still have. Shared by the goldens below so each one states only what is specific.
 fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
     let doc: serde_yaml::Value = serde_yaml::from_str(raw).expect("valid YAML");
-    let markers = detect_legacy_markers(&doc);
+    let markers = detect_legacy_markers(&doc, crate::config::Legacy::stand_in());
     assert!(
         markers.iter().any(|m| m.contains(needle)),
         "the retired key '{needle}' must trip the boot detector; got {markers:?}"
@@ -1528,7 +1600,11 @@ fn golden_migrate_type_keyed_export_becomes_a_named_map() {
         crate::config::deploy_from_yaml_str(&serde_yaml::to_string(&doc).unwrap())
             .expect("boot-parses");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&built_ins(&deploy.export), &mut errs);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &built_ins(&deploy.export),
+        &mut errs,
+    );
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(webhooks(&deploy.export), 2);
     assert!(export.recorder.is_some());
@@ -1679,6 +1755,8 @@ fn golden_migrate_inline_chain_entries_dedupe_into_identity_providers() {
         deploy.auth.as_ref().expect("auth"),
         &deploy.identity_providers,
         &mut errs,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
     );
     assert!(errs.is_empty(), "{errs:?}");
     assert_eq!(auth.chain[1], auth.admin_auth[1]);
@@ -2286,7 +2364,7 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
 
         // (a) the loud fail-closed detector.
         let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
-        let joined = detect_legacy_markers(&doc).join("\n");
+        let joined = detect_legacy_markers(&doc, crate::config::Legacy::stand_in()).join("\n");
         assert!(
             joined.contains(old) && joined.contains(renamed.as_str()),
             "`store.module: {old}` must loud-fail with a marker naming the old AND new spelling; \
@@ -2318,9 +2396,9 @@ fn migrate_store_module_retired_1_5_3_spellings_to_the_renamed_alias() {
         // The migrated document must not itself trip the detector (the operator ran the migrator;
         // running it again must not keep telling them to run it).
         assert!(
-            detect_legacy_markers(&doc).is_empty(),
+            detect_legacy_markers(&doc, crate::config::Legacy::stand_in()).is_empty(),
             "the migrated document still trips the 1.x detector: {:?}",
-            detect_legacy_markers(&doc)
+            detect_legacy_markers(&doc, crate::config::Legacy::stand_in())
         );
     }
 
@@ -2441,7 +2519,11 @@ export:
         serde_yaml::from_value(dig(&doc, &["export"]).unwrap().clone())
             .expect("the migrated export block must parse");
     let mut errs = Vec::new();
-    let export = crate::config::resolve_export(&built_ins(&defs), &mut errs);
+    let export = crate::config::resolve_export(
+        crate::preflight::RootInstall::STAND_IN.export_axis,
+        &built_ins(&defs),
+        &mut errs,
+    );
     assert!(errs.is_empty(), "{errs:?}");
     // The webhook instance's projection is the sink's own to resolve (it is an export-axis module);
     // what the migration writes for it is `logs`, the stream it carries.
@@ -2692,7 +2774,12 @@ tools:
       url: "https://docs.example.com/rpc"
       pin: { mechanism: unpinned }
 "#;
-    let out = migrate_config(raw).expect("migrates");
+    let out = migrate_config(
+        raw,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    )
+    .expect("migrates");
     let root: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("valid yaml");
     let get = |keys: &[&str]| -> serde_yaml::Value {
         let mut v = root.clone();

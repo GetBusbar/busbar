@@ -213,3 +213,70 @@ fn an_unjudged_admin_verdict_is_the_1_5_5_refusal() {
         }
     }
 }
+
+/// A door no test opens: the rows below are read for their names alone.
+extern "C" fn no_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    unreachable!("the rows are read for their names; no test opens a door")
+}
+
+/// The rows a build links are an ARGUMENT: a row answers the operator provider by its key or by its
+/// canonical name, and `names` judges a module by the row's identity rather than one spelling.
+#[test]
+fn the_linked_rows_are_read_from_what_the_caller_hands_in() {
+    let rows: [crate::operator::LinkedAuth; 2] = [
+        ("op-key", "op-canonical", no_door),
+        ("other", "other", no_door),
+    ];
+    assert!(crate::operator::answered(&rows, "op-key"));
+    assert!(crate::operator::answered(&rows, "op-canonical"));
+    assert!(!crate::operator::answered(&rows, "absent"));
+    assert!(
+        !crate::operator::answered(&[], "op-key"),
+        "no rows answer nothing"
+    );
+    assert!(crate::operator::names(&rows, "op-key", "op-key"));
+    assert!(crate::operator::names(&rows, "op-key", "op-canonical"));
+    assert!(!crate::operator::names(&rows, "op-key", "other"));
+    assert!(
+        crate::operator::names(&[], "op-key", "op-key"),
+        "the bare key is always its own"
+    );
+}
+
+/// NO WORDS IS NO OPERATOR. A record that lends no operator words (`RootInstall::default()`, a
+/// build no root lent its record) reads its provider and principal id as the empty string; the
+/// operator credential built over that answers for no provider and mints nobody, so an admin chain
+/// position named `""` that identified `""` is not the operator. RED before: `Operator::new("")`
+/// answered for `""` and minted `""`.
+#[test]
+fn no_words_make_no_operator() {
+    let none = crate::operator::Operator::new("");
+    assert!(
+        !none.is(""),
+        "an empty provider is not the operator credential"
+    );
+    assert!(
+        !none.mints(Some(""), "", ""),
+        "with no words lent, nothing is minted as the operator"
+    );
+    let op = crate::operator::Operator::new("op");
+    assert!(op.is("op"));
+    assert!(op.mints(Some("op"), "root", "root"));
+    assert!(
+        !op.mints(Some("op"), "", ""),
+        "an empty principal id is minted by nobody, even by the operator credential"
+    );
+    let opened = crate::operator::Operator::open(
+        "",
+        [("", "")].into_iter(),
+        &|_: &str| true,
+        false,
+        None,
+        |_: &str| Err("not opened".to_string()),
+    )
+    .expect("an unanswered credential opens");
+    assert!(
+        !opened.is(""),
+        "an opened credential with no words answers for nothing"
+    );
+}

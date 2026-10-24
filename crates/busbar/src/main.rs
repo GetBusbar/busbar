@@ -258,8 +258,8 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 // crate this replaced did.
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 // `LINKED_HOOK_NAMES`: each linked hook row's name as the admin surface prints it (the manifest's
-// `linked-name` rows), carried on the root's install record (`root::linked::register_stores`) so the
-// admin crate names no hook plugin.
+// `linked-name` rows), carried on the install record the root lends
+// (`root::linked::register_stores`) so the admin crate names no hook plugin.
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 /// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
@@ -281,21 +281,15 @@ fn register_protocols() {
 /// (`root::boot::discover_planes`) and folded by one fold.
 /// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
-/// every root unit's seal.
-fn register_planes() {
-    // The root legacy table, before the first configuration read (the dropped-plugin scan below
-    // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
-    root::legacy::install();
-    // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
-    // auth axis, before anything resolves one.
+/// every root unit's seal. Answers the root's INSTALL RECORD, which `main` owns and lends to every
+/// reader (the CLI flags and the boot).
+fn register_planes() -> busbar_kernel::preflight::RootInstall {
+    // The linked store, auth and hook rows for the kernel's cold-kind axis, with the operator
+    // credential's words, on the install record the root lends, before anything resolves one.
     // THE DOOR-ROOT ROWS FIRST (status row 195): each crate's door admitted by the loader and its
     // Statement agreeing with its row, or the boot is refused (exit 2) before any row registers.
     root::door_root::check_door_roots(LINKED.door_roots);
-    root::linked::register_stores(&LINKED);
-    busbar_kernel::preflight::install_linked_auth(
-        LINKED.auths,
-        root::auth_bindings::operator_words(),
-    );
+    let lent = root::linked::register_stores(&LINKED);
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
@@ -332,6 +326,7 @@ fn register_planes() {
     // composition that disagrees with itself must not bind a listener, and finding that out on the
     // first request would be finding it out from a customer.
     root::linked::seal(ROOT_UNITS);
+    lent
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
@@ -376,7 +371,8 @@ fn main() {
     // PLANE REGISTRATION, same slot and the same reason: `--validate` (just below) reads the plane
     // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
-    register_planes();
+    // THE ROOT'S INSTALL RECORD: built here, owned by `main` and lent to every reader below.
+    let lent = register_planes();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
@@ -396,7 +392,7 @@ fn main() {
     root::linked::register_seams();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
-    if let Some(code) = root::cli::handle_cli_flags() {
+    if let Some(code) = root::cli::handle_cli_flags(lent) {
         std::process::exit(code);
     }
     // Enable jemalloc's background purge thread: freed dirty/muzzy pages are returned to the OS after
@@ -509,7 +505,7 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio control runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, lent));
     }
     #[cfg(not(unix))]
     {
@@ -518,11 +514,15 @@ fn main() {
             .enable_all()
             .build()
             .expect("failed to build the tokio runtime")
-            .block_on(run(worker_threads, late_services));
+            .block_on(run(worker_threads, late_services, lent));
     }
 }
 
-async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::LateServices>) {
+async fn run(
+    data_workers: usize,
+    late_services: std::sync::Arc<root::serve::LateServices>,
+    lent: busbar_kernel::preflight::RootInstall,
+) {
     // THE PLUGIN OBSERVABILITY ENVELOPE, before any plugin loads (`root::observe`).
     root::observe::install();
     // Metrics are configured AFTER the config loads (below, via `metrics::configure`) because they
@@ -546,11 +546,16 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let config_path =
         std::path::PathBuf::from(root::cli::resolve_config_path(cli_config.as_deref()));
     let safe_mode = safe_mode_requested(std::env::args());
+    // The root legacy table, LENT to the config load (the kernel's 1.x detector reads it), to the
+    // overlay's typed parse, to `resolve` (which keeps it on the configuration and the generation
+    // built from it) and to the metrics recorder.
+    let legacy = root::legacy::table();
     let loaded = load_config_from_disk(
         &config_path,
         providers_override.as_deref(),
         safe_mode,
         config::EnvSubst::Strict,
+        legacy,
     )
     .unwrap_or_else(|e| die(e));
     let LoadedConfig {
@@ -581,7 +586,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // hooks + groups overlay sections merge POST-resolve (below). `--safe-mode` clears `overlay_doc`,
     // so the root overrides are quarantined too — the whole overlay is one on/off switch.
     if let Some(doc) = overlay_doc.as_ref() {
-        config::overlay::apply_root_to_deploy(&mut deploy, doc);
+        config::overlay::apply_root_to_deploy(&mut deploy, doc, &lent, legacy);
     }
 
     // The `advanced.response_headers:` toggles (BOTH default false), read here, at a BOOT-ONCE
@@ -600,14 +605,15 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // the built-in exporter) sees a settled recorder decision.
     // 1.5.3: `export:` is a NAMED-DEFINITION map, so the typed per-module projection is lowered here
     // (and reused for `export::configure` below). Any error in it — unknown module, bad settings,
-    // duplicate singleton — is reported and FATAL a few lines down in `config::resolve`, which runs
-    // the same lowering; discarding the error list here just avoids reporting it twice.
-    let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
+    // duplicate singleton — is reported and FATAL a few lines down in `config::resolve_in`, which
+    // runs the same lowering; discarding the error list here just avoids reporting it twice.
+    let resolved_export = config::resolve_export(lent.export_axis, &deploy.export, &mut Vec::new());
     snapshot::configure(
         resolved_export
             .recorder
             .as_ref()
             .map(|p| Duration::from_secs(p.buffer_seconds)),
+        legacy,
     );
     // The top-level `plugins:` block (master switch + dir + trust). Absent = disabled defaults.
     let plugins_cfg = deploy.plugins.clone();
@@ -627,7 +633,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // request-path logging is captured.
     // A plane's line-serve flag reserves stdout for the plane's channel, so its logs move to
     // stderr — see `init_logging`'s `stdout_reserved`.
-    if let Err(e) = busbar_kernel::observability::init_logging(line_flag_passed(std::env::args())) {
+    if let Err(e) = busbar_kernel::observability::init_logging(
+        line_flag_passed(std::env::args()),
+        lent.export_axis,
+    ) {
         eprintln!("busbar: tracing subscriber already initialized: {e}");
     }
 
@@ -662,7 +671,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
 
     // Resolve deployment + definitions into resolved RootCfg (semantic validation runs inside
     // build_app_from_config — the one construction path).
-    let mut cfg = config::resolve(&deploy, &defs)
+    let mut cfg = config::resolve_in(lent, &deploy, &defs, legacy)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
     // THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): ONE judge for every outbound
     // connection, built once here, before anything dials: the kernel's `dest.judge` and its own
@@ -758,7 +767,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // one connector just built — before the first app is built, so the routes they declare are in
     // the boot route table (restart-to-apply, as every built-in PUSH sink is). A configured sink
     // that will not open refuses the boot.
-    export::plugin::open(&cfg.export).unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
+    export::plugin::open(cfg.root.export_axis, &cfg.export)
+        .unwrap_or_else(|e| die(format!("config errors:\n  - {e}")));
     // THE ROOT UNITS' CONFIGURATION STEP, in the same slot: the card repricer is armed BEFORE the
     // first app build below, so the boot's own rate resolution is the history's OPENING ENTRY and
     // nothing has to read the configuration twice. From there each resolution APPENDS an entry dated

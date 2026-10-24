@@ -11,6 +11,7 @@ fn make_root_cfg(
         plane_defs: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),
+        legacy: config::Legacy::stand_in(),
         listen: crate::config::DEFAULT_LISTEN_ADDR.into(),
         // No endpoint plane configured.
         endpoint_resources: Default::default(),
@@ -29,7 +30,7 @@ fn make_root_cfg(
         pools,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
         hooks: HashMap::new(),
-        admin_auth: config::default_admin_auth_names(),
+        admin_auth: config::default_admin_auth_names(&crate::test_support::lent_stand_in()),
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
@@ -45,6 +46,8 @@ fn make_root_cfg(
         export: Default::default(),
         identity_providers: Default::default(),
         export_defs: Default::default(),
+        // A test build has no root: the stand-in install record is lent in its place.
+        root: crate::preflight::RootInstall::STAND_IN,
     }
 }
 
@@ -5977,7 +5980,13 @@ fn parse_auth(yaml: &str) -> config::AuthCfg {
     }
     let doc: Doc = serde_yaml::from_str(yaml).expect("auth yaml parses");
     let mut errors = Vec::new();
-    let out = config::resolve_auth(&doc.auth, &doc.identity_providers, &mut errors);
+    let out = config::resolve_auth(
+        &doc.auth,
+        &doc.identity_providers,
+        &mut errors,
+        &crate::test_support::lent_stand_in(),
+        crate::config::Legacy::stand_in(),
+    );
     assert!(
         errors.is_empty(),
         "auth yaml must resolve cleanly: {errors:?}"

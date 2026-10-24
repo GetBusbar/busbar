@@ -766,7 +766,7 @@ required-features = ["auth-admin-tokens"]
 # THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each
 # entry's `retired:` and `former_names:`); src/root/tests/legacy.rs is red on an edit and prints the
 # render to paste.
-# build.rs emits it as `LEGACY_ROWS`, which the root hands to the kernel before any config is read.
+# build.rs emits it as `LEGACY_ROWS`, which the root lends to the kernel as `config::Legacy`.
 "export_module_streams" = "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
 "export_modules" = "prometheus | request-log-webhook | request-log-file | otlp"
 "export_trace_instance" = "traces"

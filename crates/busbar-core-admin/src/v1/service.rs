@@ -230,12 +230,16 @@ pub(crate) fn usage_refusal(
 /// rate-card history, PINNED for the length of one read: a card appended while the read is in
 /// flight must not price half of one response's rows against one history and half against another.
 ///
-/// The history is the kernel's rate dater's ([`busbar_kernel::rate_apply::dated_history`]) — the
-/// one the composition root installs at boot and the budget ledger's reads price by — so this crate
-/// holds no seam of its own (R6). `None` for a build that installed no dater, or a node that has
-/// resolved no configuration yet: the read then derives exactly as the previous release did.
-fn dated_rate_history() -> Option<Arc<busbar_kernel::cost::History>> {
-    busbar_kernel::rate_apply::dated_history()
+/// The history is the rate dater's of the governance book `app` carries
+/// ([`busbar_kernel::rate_apply::dated_history`]) — the one the composition root lends on its
+/// install record and the budget ledger's reads price by — so this crate holds no seam of its own
+/// (R6). `None` for an app with no governance book, a book whose record lent no dater, or a node
+/// that has resolved no configuration yet: the read then derives exactly as the previous release
+/// did.
+fn dated_rate_history(app: &App) -> Option<Arc<busbar_kernel::cost::History>> {
+    app.governance
+        .as_deref()
+        .and_then(busbar_kernel::rate_apply::dated_history)
 }
 
 /// **THE INSTANT A METERING ROW RESOLVES AT**: its own FIRST instant — the later of the bucket's
@@ -675,24 +679,25 @@ mod catalog_scan_test_hooks {
 /// for both `info`'s build proof and the `plugins?type=auth` catalog. `keys` (the built-in
 /// signed-key verifier) is engine-handled and always present; every other entry is an auth row the
 /// build LINKS onto the auth axis (the operator credential's, in the default build — its packaging
-/// feature is the composition root's). Public so the composition root's tests can hold the shipped
-/// build to 1.5.5's answer over the rows it really links.
-pub fn auth_modules_compiled_in() -> Vec<&'static str> {
+/// feature is the composition root's), read off the install record the composition root lent the
+/// snapshot (`root`, `busbar_kernel::state::App::root`'s `auths`). Public so the composition root's
+/// tests can hold the shipped build to 1.5.5's answer over the rows it really links.
+pub fn auth_modules_compiled_in(root: &busbar_kernel::preflight::RootInstall) -> Vec<&'static str> {
     let mut modules = vec![busbar_kernel::config::KEYS_MODULE];
-    modules.extend(busbar_kernel::preflight::inbound_auth_names(
-        busbar_kernel::preflight::linked_auth_rows(),
-    ));
+    modules.extend(busbar_kernel::preflight::inbound_auth_names(root.auths));
     modules
 }
 
 /// The removable hook plugins COMPILED INTO this binary: the hook rows this build LINKS, by the name
-/// every surface prints, read off the composition root's install record
-/// (`busbar_kernel::preflight::RootInstall::hook_names`) as the store catalog reads its `stores`.
-/// This crate names no hook plugin (Law 1) and holds no seam of its own (R6): the list is the
-/// root's data. Excludes the always-present, non-removable weighted SWRR floor, which is reported
-/// separately (as `weighted_floor` / the `weighted` compiled-in entry).
-pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
-    busbar_kernel::preflight::root_rows().hook_names.to_vec()
+/// every surface prints, read off the install record the composition root lent the snapshot
+/// (`root`, `busbar_kernel::state::App::root`'s `hook_names`) as the store catalog reads its
+/// `stores`. This crate names no hook plugin (Law 1) and holds no seam of its own (R6): the list is
+/// the root's data. Excludes the always-present, non-removable weighted SWRR floor, which is
+/// reported separately (as `weighted_floor` / the `weighted` compiled-in entry).
+pub(crate) fn hook_plugins_compiled_in(
+    root: &busbar_kernel::preflight::RootInstall,
+) -> Vec<&'static str> {
+    root.hook_names.to_vec()
 }
 
 /// Longest a plugin filename may be — generous headroom over any real tarball name, guarding the
@@ -851,7 +856,7 @@ pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, A
     // runtime-registered hook can neither shadow a built-in nor collide with an `on_error` terminal
     // word (which would make the on_error string union ambiguous for every consumer). Previously
     // only the boot/apply path checked this — the register API was the one write path missing it.
-    if busbar_kernel::config::is_reserved_hook_name(name) {
+    if busbar_kernel::config::is_reserved_hook_name(name, &current.root) {
         return Err(AdminError::Validation(format!(
             "hook name `{name}` is reserved (a built-in ranking strategy, auth module, or on_error \
              terminal); pick another name"

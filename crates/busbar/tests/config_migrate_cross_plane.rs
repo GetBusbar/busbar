@@ -78,7 +78,12 @@ agent_pools:
     members: [planner-eu, planner-us]
 "#;
 
-    let out = migrate_config(raw).expect("the full legacy config migrates");
+    let out = migrate_config(
+        raw,
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        busbar_kernel::config::Legacy::stand_in(),
+    )
+    .expect("the full legacy config migrates");
 
     // (c) NONE of the deprecated spellings survive anywhere in the migrated document.
     for needle in ["plugin:", "at: ", "tool_pools:", "agent_pools:"] {

@@ -127,7 +127,7 @@ fn chooser(app: &App) -> Response {
         .into_iter()
         .filter(|m| m.has_button)
         .map(|m| {
-            let brand = button_brand(&m.name, m.issuer.as_deref());
+            let brand = button_brand(app.legacy, &m.name, m.issuer.as_deref());
             (m.name, brand)
         })
         .collect();
@@ -213,7 +213,7 @@ async fn begin(app: &App, method: &str, refresh: bool) -> Response {
             }
             .encode();
             let base_url = app.public_url.as_deref().unwrap_or("");
-            let page = render_login_form(method, &form, &state, base_url, refresh);
+            let page = render_login_form(app.legacy, method, &form, &state, base_url, refresh);
             let mut resp = html_no_store(page);
             resp.headers_mut().append(
                 header::SET_COOKIE,
@@ -615,13 +615,14 @@ const GLYPH: &str = r##"<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000
 /// `login_brands` row (frozen 1.5.5 login-page data, `<match tokens> : <label> : <icon ref>` per
 /// brand, in 1.5.5's match order): the first brand any of whose tokens the lower-cased method name
 /// and issuer contain names the button; a method no brand matches is its title-cased name under the
-/// generic icon. The kernel names no brand.
-fn button_brand(name: &str, issuer: Option<&str>) -> (String, &'static str) {
-    brand_from(
-        busbar_kernel::config::legacy::text("login_brands"),
-        name,
-        issuer,
-    )
+/// generic icon. The kernel names no brand: the row is read off the table the composition root
+/// lent (`legacy`), which the generation serving the page keeps (`App::legacy`).
+fn button_brand(
+    legacy: busbar_kernel::config::Legacy,
+    name: &str,
+    issuer: Option<&str>,
+) -> (String, &'static str) {
+    brand_from(legacy.text("login_brands"), name, issuer)
 }
 
 /// [`button_brand`] over a given `login_brands` row (`""`: no row, every method generic).
@@ -769,13 +770,14 @@ fn render_chooser(buttons: &[(String, (String, &'static str))], base_url: &str) 
 /// (`Password` masked), a hidden CSRF `__state`, POSTing the values to `/auth/token`. Generic — the
 /// core renders WHATEVER fields the plugin declared, not a hardcoded username/password.
 fn render_login_form(
+    legacy: busbar_kernel::config::Legacy,
     method: &str,
     form: &busbar_contract::auth::LoginForm,
     state: &str,
     base_url: &str,
     refresh: bool,
 ) -> String {
-    let (provider, _) = button_brand(method, None);
+    let (provider, _) = button_brand(legacy, method, None);
     let title = if refresh {
         "Refresh your API key"
     } else {

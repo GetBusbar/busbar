@@ -47,7 +47,12 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
     );
     let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
         .expect("a minimal deployment");
-    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let cfg = busbar_kernel::config::resolve_under(
+        &deploy,
+        &Default::default(),
+        crate::root::legacy::table(),
+    )
+    .expect("resolves");
     let (credentials, credential_handle) = crate::root::credentials::AppCredentials::late();
     crate::root::serve::compose(crate::root::connector::dest_judge(&cfg), &late, credentials);
     assert_eq!(

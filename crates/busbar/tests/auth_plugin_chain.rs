@@ -209,12 +209,14 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
     );
     let cfg = chain_with("ref-auth", settings);
     let registry = busbar_kernel::plugins_preflight(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
+        busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("preflight resolves the kind:auth plugin");
     let registry = std::sync::Arc::new(registry);
@@ -286,12 +288,14 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     let cfg = chain_with("sec-auth", settings);
 
     let registry = busbar_kernel::plugins_preflight(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
+        busbar_kernel::config::Legacy::stand_in(),
     )
     .expect(
         "preflight resolves the kind:auth plugin, whose manifest declares `audience` as a \
@@ -354,12 +358,14 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
 
     // Manifest-only preflight resolves the auth plugin (the `--validate`/boot gate).
     let registry = busbar_kernel::plugins_preflight(
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
+        busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("preflight resolves the kind:auth plugin");
     let registry = std::sync::Arc::new(registry);
@@ -433,7 +439,8 @@ fn admin_modules_rebuilt_on_reload() {
         Path::new(&plugins.dir),
         &busbar_kernel::test_support::trust_policy(&plugins).unwrap(),
     )
-    .expect("scan succeeds");
+    .expect("scan succeeds")
+    .with_auth_axis(busbar_kernel::preflight::RootInstall::STAND_IN.auth_axis);
     let registry = std::sync::Arc::new(registry);
     let mut cfg = AuthCfg::default_none();
     let mut entry = AuthChainEntry::bare("admin-oidc");
@@ -445,7 +452,14 @@ fn admin_modules_rebuilt_on_reload() {
     let resolver = busbar_kernel::config::secret::SecretResolver::builtins_only();
 
     // BOOT build.
-    let boot = AdminAuthChain::build(&cfg, &registry, &resolver).expect("boot builds admin chain");
+    let boot = AdminAuthChain::build(
+        &cfg,
+        &registry,
+        &resolver,
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        busbar_kernel::config::Legacy::stand_in(),
+    )
+    .expect("boot builds admin chain");
     assert!(
         boot.modules.contains_key("admin-oidc"),
         "keyed by the config module name"
@@ -457,8 +471,14 @@ fn admin_modules_rebuilt_on_reload() {
     );
 
     // RELOAD build (the SAME code path `build_app_from_config` re-runs with `prior = Some`).
-    let reload =
-        AdminAuthChain::build(&cfg, &registry, &resolver).expect("reload rebuilds admin chain");
+    let reload = AdminAuthChain::build(
+        &cfg,
+        &registry,
+        &resolver,
+        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        busbar_kernel::config::Legacy::stand_in(),
+    )
+    .expect("reload rebuilds admin chain");
     assert!(
         reload.modules.contains_key("admin-oidc"),
         "reload repopulates admin_modules — never stale/empty"
@@ -519,6 +539,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         Some(&dir2.join("providers.yaml")),
         false,
         busbar_kernel::config::EnvSubst::Strict,
+        busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("the configuration reads");
     let cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)

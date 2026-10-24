@@ -16,7 +16,10 @@ fn env_module_resolves_and_fails_closed() {
         SecretResolver::builtins_only().resolve(&r).unwrap(),
         b"s3cret\n"
     );
-    assert_eq!(resolve_linked_string(&r).unwrap(), "s3cret");
+    assert_eq!(
+        resolve_linked_string(crate::preflight::RootInstall::STAND_IN.secret_axis, &r).unwrap(),
+        "s3cret"
+    );
     std::env::remove_var(&var);
     let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(err.contains("unset"), "unset env is fail-closed: {err}");
@@ -36,7 +39,10 @@ fn file_module_resolves_and_fails_closed() {
         SecretResolver::builtins_only().resolve(&r).unwrap(),
         b"file-secret\n"
     );
-    assert_eq!(resolve_linked_string(&r).unwrap(), "file-secret");
+    assert_eq!(
+        resolve_linked_string(crate::preflight::RootInstall::STAND_IN.secret_axis, &r).unwrap(),
+        "file-secret"
+    );
     std::fs::write(&path, b"").unwrap();
     let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(err.contains("EMPTY"), "empty file is fail-closed: {err}");

@@ -2603,7 +2603,7 @@ pub(crate) mod tool_door {
                 &[],
                 dispatcher.conn_waker(),
                 busbar_core_connector::pool::PoolPosture::NONE,
-                busbar_kernel::config::secret::resolve_linked_string_at_config,
+                busbar_kernel::test_support::resolve_stand_in_secret_at_config,
             )
             .expect("the connector builds");
             let plane = bound(
@@ -5062,16 +5062,20 @@ pub(crate) mod door_boundary {
         let row = row();
         registry(row);
         let slot = slot_over(row, tools.clone());
-        // The operator credential's row on the auth axis, as boot links it: the admin chain the
-        // admin router authenticates `x-admin-token` with.
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
-        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
-        let chain = vec![busbar_kernel::config::operator_provider().to_string()];
+        // The record the admin chain is opened under: the stand-in lending the root's linked auth
+        // rows and operator words (the operator credential's row, the admin chain the admin router
+        // authenticates `x-admin-token` with), its rows opened through the root's own auth axis, as
+        // the shipped root's install record lends them.
+        let lent = busbar_kernel::preflight::RootInstall {
+            auth_axis: Some(crate::root::dispatch::auth_axis),
+            ..busbar_kernel::test_support::lending_auth(
+                crate::LINKED.auths,
+                crate::root::auth_bindings::operator_words(),
+            )
+        };
+        let chain = vec![lent.operator.provider.to_string()];
         let rig = rig_tools(instance, port, tools, &|app| {
-            dispatched(app.admin_chain(chain.clone()), row, &slot)
+            dispatched(app.root(lent).admin_chain(chain.clone()), row, &slot)
         });
 
         // ── CONNECT ───────────────────────────────────────────────────────────────────────────────
@@ -5194,12 +5198,18 @@ pub(crate) mod door_boundary {
                  "inputSchema": super::tool_door::tool_schema()}
             ])))
         };
-        busbar_kernel::preflight::install_linked_auth(
-            crate::LINKED.auths,
-            crate::root::auth_bindings::operator_words(),
-        );
-        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
-        let chain = vec![busbar_kernel::config::operator_provider().to_string()];
+        // The record the admin chain is opened under: the stand-in lending the root's linked auth
+        // rows and operator words (the operator credential's row, the admin chain the admin router
+        // authenticates `x-admin-token` with), its rows opened through the root's own auth axis, as
+        // the shipped root's install record lends them.
+        let lent = busbar_kernel::preflight::RootInstall {
+            auth_axis: Some(crate::root::dispatch::auth_axis),
+            ..busbar_kernel::test_support::lending_auth(
+                crate::LINKED.auths,
+                crate::root::auth_bindings::operator_words(),
+            )
+        };
+        let chain = vec![lent.operator.provider.to_string()];
         let row = row();
         registry(row);
 
@@ -5219,7 +5229,7 @@ pub(crate) mod door_boundary {
         .expect("a section");
             let slot = slot_over(row, tools.clone());
             let rig = rig_tools(instance, port, tools, &|app| {
-                dispatched(app.admin_chain(chain.clone()), row, &slot)
+                dispatched(app.root(lent).admin_chain(chain.clone()), row, &slot)
             });
             let (status, body) = admin(&rig, "POST", "/tools/fs/connect").await;
             assert_eq!(status, 200, "{body}");
@@ -5253,7 +5263,7 @@ pub(crate) mod door_boundary {
         .expect("a section");
         let slot = slot_over(row, tools.clone());
         let rig = rig_tools(instance, port, tools, &|app| {
-            dispatched(app.admin_chain(chain.clone()), row, &slot)
+            dispatched(app.root(lent).admin_chain(chain.clone()), row, &slot)
         });
         let (status, body) = admin(&rig, "POST", "/tools/fs/connect").await;
         assert_eq!(status, 400, "{body}");
@@ -5307,7 +5317,7 @@ pub(crate) mod door_boundary {
             crate::LINKED.auths,
             crate::root::auth_bindings::operator_words(),
         );
-        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
         let row = row();
         registry(row);
@@ -7309,7 +7319,12 @@ done
 fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
     let handed = |yaml: &str| {
         let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let cfg = busbar_kernel::config::resolve_under(
+            &deploy,
+            &Default::default(),
+            crate::root::legacy::table(),
+        )
+        .expect("resolves");
         super::kernel_sections(&cfg)["limits"]["request_body_max_bytes"].as_u64()
     };
     assert_eq!(
@@ -8633,7 +8648,8 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
          models:\n  over:\n    provider: p\n    protocol: dialect-b\n  plain:\n    provider: p\n",
     )
     .expect("parses");
-    let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
+    let cfg = busbar_kernel::config::resolve_under(&deploy, &defs, crate::root::legacy::table())
+        .expect("resolves");
     let sections = super::kernel_sections(&cfg);
     let models = sections
         .get(busbar_contract::section::RESERVED_MODELS_KEY)
@@ -8713,8 +8729,12 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
         "store: {module: memory}\nmodels: {}\nproviders: {}\n",
     )
     .expect("parses");
-    let mut cfg = busbar_kernel::config::resolve(&deploy, &std::collections::HashMap::new())
-        .expect("resolves");
+    let mut cfg = busbar_kernel::config::resolve_under(
+        &deploy,
+        &std::collections::HashMap::new(),
+        crate::root::legacy::table(),
+    )
+    .expect("resolves");
     let rules = super::Rules::default();
     assert!(
         rules.planes_awaiting_restart(&cfg).is_empty(),
@@ -8828,7 +8848,12 @@ fn a_required_section_written_empty_hands_the_plane_its_sections() {
     let _registry = TestRegistryIsolation::seeded(&[&REQUIRES]);
     let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
         .expect("a deployment");
-    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let cfg = busbar_kernel::config::resolve_under(
+        &deploy,
+        &Default::default(),
+        crate::root::legacy::table(),
+    )
+    .expect("resolves");
     let sections = super::kernel_sections(&cfg);
     assert_eq!(
         sections.get(RESERVED_MODELS_KEY),

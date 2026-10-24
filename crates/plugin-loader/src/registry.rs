@@ -413,6 +413,13 @@ pub struct SkippedPlugin {
     pub kind: crate::sign::RejectKind,
 }
 
+/// Opens one build's AUTH AXIS over a registry, on the process's one dispatcher: the composition
+/// root's opener (it holds the dispatcher), lent on its install record and set on each registry the
+/// kernel builds from that record ([`PluginRegistry::with_auth_axis`]). The loader names neither
+/// the dispatcher nor the rows it opens.
+pub type AuthAxisOpener =
+    fn(std::sync::Arc<PluginRegistry>) -> std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>;
+
 /// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
 /// after all three phases pass; this is the ONLY resolution surface (`governance.store:` etc.), so
 /// nothing outside the validated set can ever be selected.
@@ -429,6 +436,10 @@ pub struct PluginRegistry {
     /// fine).
     by_name: HashMap<String, usize>,
     by_alias: HashMap<String, usize>,
+    /// The auth-axis opener the record this registry was built from lends
+    /// ([`Self::with_auth_axis`]), set once when the registry is built: what opens this registry's
+    /// auth rows. `None`: no auth row answers anything.
+    auth_axis: Option<AuthAxisOpener>,
 }
 
 impl std::fmt::Debug for PluginRegistry {
@@ -467,6 +478,7 @@ impl PluginRegistry {
             copies: Vec::new(),
             by_name: HashMap::new(),
             by_alias: HashMap::new(),
+            auth_axis: None,
         };
         for row in rows {
             registry.admit(row);
@@ -495,6 +507,7 @@ impl PluginRegistry {
     /// registration (`admit`). FAIL-CLOSED: a linked plugin that would not pass is a refusal naming
     /// it, as an invalid tarball is.
     pub fn link(self, linked: Vec<LinkedPlugin>) -> Result<Self, String> {
+        let auth_axis = self.auth_axis;
         let mut rows = Vec::with_capacity(linked.len() + self.rows.len());
         for LinkedPlugin {
             manifest,
@@ -544,7 +557,23 @@ impl PluginRegistry {
         }
         let mut registry = Self::of(kept, n, self.skipped);
         registry.copies = found;
+        registry.auth_axis = auth_axis;
         Ok(registry)
+    }
+
+    /// This registry, its auth rows opened through `open` — the auth-axis opener the install record
+    /// it was built from lends. Set once, where the registry is built from that record.
+    #[must_use]
+    pub fn with_auth_axis(mut self, open: Option<AuthAxisOpener>) -> Self {
+        self.auth_axis = open;
+        self
+    }
+
+    /// The auth-axis opener this registry was built with ([`Self::with_auth_axis`]); `None`: no
+    /// auth row answers anything.
+    #[must_use]
+    pub fn auth_axis(&self) -> Option<AuthAxisOpener> {
+        self.auth_axis
     }
 
     /// The dropped-in tarballs that are copies of plugins this build LINKS, at the same version

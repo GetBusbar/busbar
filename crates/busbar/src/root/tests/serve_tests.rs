@@ -247,7 +247,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_kernel::test_support::resolve_stand_in_secret_at_config,
     )
     .expect("the connector builds");
 
@@ -919,7 +919,7 @@ pub(super) mod session_door {
             &[],
             Arc::new(|_, _| {}),
             busbar_core_connector::pool::PoolPosture::NONE,
-            busbar_kernel::config::secret::resolve_linked_string_at_config,
+            busbar_kernel::test_support::resolve_stand_in_secret_at_config,
         )
         .expect("the connector builds")
     }
@@ -4309,7 +4309,7 @@ async fn serve_configured(
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_kernel::test_support::resolve_stand_in_secret_at_config,
     )
     .expect("the connector builds");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));

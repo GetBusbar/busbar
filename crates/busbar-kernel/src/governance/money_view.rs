@@ -65,14 +65,15 @@ impl PartialEq for Inputs {
 
 impl Inputs {
     /// The inputs of pricing `cell` (the bucket's current-window cell, live or durable) for
-    /// `period`, now.
+    /// `period`, now, by `gov`'s rate dater.
     pub(in crate::governance) fn of(
+        gov: &super::GovState,
         cost: &crate::cost::CostModel,
         period: &str,
         include_fee: bool,
         cell: &BudgetCell,
     ) -> Self {
-        let history = crate::rate_apply::dated_history().map(|h| {
+        let history = crate::rate_apply::dated_history(gov).map(|h| {
             let now_ms = wall_ms();
             let view = h.current();
             let (len, in_force) = (view.entries().len(), view.card_at(now_ms).map(|(s, _)| s.0));

@@ -125,8 +125,9 @@ fn seam_mount(
 /// here instead of naming `busbar_kernel::build_router` directly.
 /// Install the process-wide test environment exactly once, from the kernel's KIND-NEUTRAL doubles
 /// (THE DESIGN, the kernel: "Kernel tests use kind-neutral doubles ... The cleanliness crates obey the
-/// same rule"): the operator credential's double on the auth axis, the neutral fallback plane (a
-/// plane owns `pools:`), the neutral synthetic protocols, then the admin mount seam. This crate's
+/// same rule"): the neutral fallback plane (a plane owns `pools:`), the neutral synthetic
+/// protocols, then the admin mount seam. The operator credential's double rides the record
+/// `new_test_app` lends (`operator_double::RECORD`). This crate's
 /// tests link no plugin; a cell that asserts a real plane's behaviour is the composition root's.
 /// All installs are idempotent (first-wins), so calling this from every router builder is safe.
 ///
@@ -137,8 +138,6 @@ mod test_seams {
     pub(crate) fn ensure_seam() {
         static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
         SEAM_ONCE.call_once(|| {
-            // The operator credential's double, before anything resolves the auth axis.
-            busbar_kernel::test_support::operator_double::install();
             // The kernel's neutral seam: its synthetic protocols and the neutral fallback plane.
             (busbar_kernel::testkit::TEST_SEAM.install)();
             super::install();
@@ -154,7 +153,9 @@ use test_seams::ensure_seam;
 #[cfg(test)]
 pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
     ensure_seam();
+    // The operator credential's double, on the record the app is lent.
     busbar_kernel::test_support::TestApp::new()
+        .root(busbar_kernel::test_support::operator_double::RECORD)
 }
 
 /// The first codec protocol this test binary registers, read off the protocol registry (the

@@ -705,13 +705,13 @@ async fn node_boot_hooks_arm() {
             .contains("&crate::root::plane_node::ROOT_UNIT,"),
         "this build's generated ROOT_UNITS does not carry the node's root unit"
     );
-    // THE INSTALL RECORD, as main.rs installs it (`register_planes`: `root::linked::register_stores`),
-    // before anything reads the record: the card repricer reaches the kernel as the record's holder
-    // and dater, not through a static of its own.
-    crate::root::linked::register_stores(&crate::LINKED);
-    let rows = busbar_kernel::preflight::root_rows();
+    // THE INSTALL RECORD, as main.rs builds it (`register_planes`: `root::linked::register_stores`)
+    // and lends it to the configuration it resolves: the card repricer reaches the kernel as the
+    // record's holder and dater, carried by the governance book each build makes from it, not
+    // through a static of its own.
+    let lent = crate::root::linked::register_stores(&crate::LINKED);
     assert!(
-        rows.rate_apply.is_some() && rows.rate_epoch.is_some(),
+        lent.rate_apply.is_some() && lent.rate_epoch.is_some(),
         "the root's install record carries neither half (holder, dater) of the rate seam"
     );
     // THE CONFIGURATION STEP, before the first app build (main.rs), then the boot build: the card
@@ -722,9 +722,16 @@ async fn node_boot_hooks_arm() {
     let cfg = || {
         let deploy = busbar_kernel::config::deploy_from_yaml_str("providers: {}\nmodels: {}\n")
             .expect("a minimal deployment");
-        let mut cfg =
-            busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        let mut cfg = busbar_kernel::config::resolve_under(
+            &deploy,
+            &Default::default(),
+            crate::root::legacy::table(),
+        )
+        .expect("resolves");
         cfg.store = Some(busbar_kernel::test_support::stand_in_store());
+        // The root's rate holder and dater, on the record the configuration carries to the build.
+        cfg.root.rate_apply = lent.rate_apply;
+        cfg.root.rate_epoch = lent.rate_epoch;
         cfg
     };
     let boot = cfg();

@@ -9,7 +9,8 @@
 //! during the build, the rates of that rejected apply had already entered the history and the
 //! journal. So the seam rides the same commit the process-wide limits do: `InstalledLimits::keep`.
 //!
-//! A test BINARY of its own, because the rate holder this file hands in is process-wide.
+//! The holder rides the install record the configuration is lent (`RootInstall::rate_apply`), as
+//! the shipped root lends its own, and the build's governance book carries it to the commit.
 //!
 //! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
 //! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
@@ -21,7 +22,6 @@ mod linked;
 use std::sync::Mutex;
 
 use busbar_kernel::rate_apply::{RateApply, RawRates};
-use busbar_kernel::test_support::rate_holders::install_rate_apply;
 
 /// The holder, writing down the flat figure of every apply it hears — the only writer of the dated
 /// history and of the journal, so what it never hears neither of them holds.
@@ -35,6 +35,7 @@ impl RateApply for Recorder {
 
 fn build(
     per_request_fee: i64,
+    holder: &'static dyn RateApply,
 ) -> (
     busbar_kernel::state::App,
     Option<busbar_kernel::GovCredentialRotation>,
@@ -44,6 +45,7 @@ fn build(
         busbar_kernel::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY_RATE_APPLY_COMMIT"),
     );
     cfg.per_request_fee = per_request_fee;
+    cfg.root.rate_apply = Some(holder);
     busbar_kernel::build_app_from_config(
         cfg,
         busbar_kernel::config::PluginsCfg::default(),
@@ -66,10 +68,9 @@ fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_
     busbar_kernel::snapshot::init();
     linked::install();
     let recorder: &'static Recorder = Box::leak(Box::new(Recorder(Mutex::new(Vec::new()))));
-    install_rate_apply(recorder);
 
     // THE PERSIST FAILED: the transaction never reaches its commit and the handle falls out of scope.
-    let (_app, _rotate, limits) = build(424_242);
+    let (_app, _rotate, limits) = build(424_242, recorder);
     drop(limits);
     assert_eq!(
         *recorder.0.lock().unwrap(),
@@ -78,7 +79,7 @@ fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_
     );
 
     // THE APPLY LANDED: persist and swap both `Ok`, and the commit keeps it.
-    let (_app, _rotate, limits) = build(515_151);
+    let (_app, _rotate, limits) = build(515_151, recorder);
     assert_eq!(
         *recorder.0.lock().unwrap(),
         Vec::<i64>::new(),

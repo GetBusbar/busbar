@@ -200,12 +200,14 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
     let cfg = chain_with("test-idp-double", settings());
     // Preflight refuses (names the module + carries the trust opt-in to set).
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
         &Default::default(),
         &strict,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(
@@ -223,7 +225,8 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
         Path::new(&strict.dir),
         &crate::test_support::trust_policy(&strict).unwrap(),
     )
-    .expect("scan succeeds; the untrusted plugin is merely skipped");
+    .expect("scan succeeds; the untrusted plugin is merely skipped")
+    .with_auth_axis(crate::preflight::RootInstall::STAND_IN.auth_axis);
     let registry = std::sync::Arc::new(registry);
     let mw_err = AuthMiddleware::new(
         &cfg,
@@ -255,12 +258,14 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     let cfg = chain_with("test-idp-double", settings());
 
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(
@@ -283,7 +288,8 @@ fn missing_auth_plugin_is_loud_boot_failure() {
         Path::new(&plugins.dir),
         &crate::test_support::trust_policy(&plugins).unwrap(),
     )
-    .expect("scan");
+    .expect("scan")
+    .with_auth_axis(crate::preflight::RootInstall::STAND_IN.auth_axis);
     let registry = std::sync::Arc::new(registry);
     let mw_err = AuthMiddleware::new(
         &cfg,
@@ -311,12 +317,14 @@ fn auth_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     };
     let cfg = chain_with("test-idp-double", settings());
     let err = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .unwrap_err();
     assert!(err.contains("plugins.enabled"), "names the flag: {err}");
@@ -339,12 +347,14 @@ fn keys_module_is_not_a_plugin_ref() {
     // No plugins dir, plugins disabled: keys must not be treated as a plugin ref.
     let plugins = PluginsCfg::default();
     let registry = crate::plugins_preflight(
+        &crate::preflight::RootInstall::STAND_IN,
         None,
         Some(&cfg),
         &Default::default(),
         &Default::default(),
         &plugins,
         &Default::default(),
+        crate::config::Legacy::stand_in(),
     )
     .expect("keys needs no plugin");
     let registry = std::sync::Arc::new(registry);

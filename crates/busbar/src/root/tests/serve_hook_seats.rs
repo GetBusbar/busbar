@@ -850,7 +850,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_kernel::test_support::resolve_stand_in_secret_at_config,
     )
     .expect("the connector builds");
 
@@ -941,7 +941,8 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     }
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
         serde_yaml::from_str(&defs_yaml).expect("the providers");
-    let cfg = busbar_kernel::config::resolve(&deploy, &defs).map_err(|e| e.join("; "))?;
+    let cfg = busbar_kernel::config::resolve_under(&deploy, &defs, crate::root::legacy::table())
+        .map_err(|e| e.join("; "))?;
     let providers = provider_routes(
         &cfg.providers,
         &busbar_kernel::config_validate::MetadataPosture::default(),
