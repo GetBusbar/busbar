@@ -1871,9 +1871,19 @@ mod transport_pin {
     }
 
     impl Pki {
+        /// A fresh root under a subject no other root of this process carries: two roots sharing
+        /// a subject would make one a name-match candidate for the other's leaves, and a leaf
+        /// under an unrelated root would then be refused on its signature, not as an unknown
+        /// issuer.
         fn new() -> Self {
+            static ROOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = ROOTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let kp = KeyPair::generate().unwrap();
             let mut params = CertificateParams::new(Vec::new()).unwrap();
+            params.distinguished_name.push(
+                rcgen::DnType::CommonName,
+                format!("connector test root {n}"),
+            );
             params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
             let ca = params.self_signed(&kp).unwrap();
             Self {
@@ -2754,11 +2764,6 @@ mod transport_pin {
                 Err(ConnError::Refused),
                 "a certificate for another name is refused"
             );
-            assert_eq!(
-                next_report(&mut named).await,
-                (Some("pinned.test".to_owned()), false),
-                "the hello carried the configured name even though the handshake was refused"
-            );
             let cause = c.cause(OWNER, id).expect("a cause");
             assert_eq!(cause.stage, CAUSE_SECURITY);
             assert!(
@@ -2766,6 +2771,13 @@ mod transport_pin {
                     && cause.text.contains("pinned.test"),
                 "the name check's own refusal: {}",
                 cause.text
+            );
+            // The far end's handshake ends when the dialler leaves the refused connection.
+            c.close(OWNER, id).expect("closed");
+            assert_eq!(
+                next_report(&mut named).await,
+                (Some("pinned.test".to_owned()), false),
+                "the hello carried the configured name even though the handshake was refused"
             );
         });
     }
