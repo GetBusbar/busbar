@@ -50,7 +50,7 @@ fn compiled(info: &str) -> bool {
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|w| !w.is_empty())
         .collect();
-    if words.iter().any(|w| *w == "ignore") {
+    if words.contains(&"ignore") {
         return false;
     }
     words.iter().all(|w| {
