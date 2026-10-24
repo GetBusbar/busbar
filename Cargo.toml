@@ -19,7 +19,6 @@ members = [
     "testing/ws-conformance/subject",
     "testing/voice-conformance/harness",
     "testing/webrtc-conformance/subject",
-    "xtask",
 ]
 
 # ── the single source of truth for external dependency VERSIONS ──────────────────────────────────
@@ -275,17 +274,10 @@ opentelemetry-proto = { version = "0.32", default-features = false, features = [
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # `rmcp` (MCP's protocol-vocabulary crate) is STRUCK: its one member, `busbar-mcp`, is deleted (P3
 # DEL-MCP, ARCHITECT 2026-10-05), and `workspace-deps:no-orphans` refuses a pin nothing inherits.
-# THE LINE COUNTER'S PARSER, and the only reason either of these is a direct dependency of anything
-# in this workspace. `cargo xtask loc` is the ONE instrument that answers "how many lines of
-# production Rust is this tree", and the three wrong answers it replaces were each a regex or a
-# hand-rolled scanner: a nested `/* /* */ */` terminates one early, a `r#"…#[cfg(test)]…{"#` raw
-# string arms another, a `'{'` char literal shifts a third's brace depth. A PARSE makes every one of
-# those unrepresentable rather than handled. `span-locations` is what turns a parsed item back into
-# the line range it occupied, which is the whole measurement. Both are already in the lock as
-# build-time dependencies of the derive macros; resolver = "2" keeps that feature set separate from
-# this normal-dependency one, so enabling `span-locations` here does not re-build anybody's proc
-# macros.
+# The C header generator's parser (busbar-contract tests/abi_header). `span-locations` is harmless.
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# The C header generator and the source rules (busbar-contract tests) print parsed items back to tokens.
+quote = "1"
 # The floor shared by the dependency and dev-dependency uses; busbar adds `http2` to one and `json`
 # to the other. Both decline default features — rustls only, so no second crypto backend enters.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
@@ -317,10 +309,7 @@ smallvec = "1"
 # already present transitively in the lock. `all` exposes the `set_reuse_port` accessor on all targets.
 socket2 = { version = "0.6", features = ["all"] }
 sonic-rs = "0.5"
-# The other half of `cargo xtask loc`'s parser (see `proc-macro2` above). `full` because the counter
-# has to see items nested inside function bodies — `#[cfg(test)]` on a `fn` inside a `fn` is the
-# shape that hid from every line-oriented rule — and `visit` because the walk must reach EVERY node
-# that can carry an attribute rather than the handful somebody remembered to enumerate.
+# The C header generator's parser (busbar-contract tests/abi_header).
 syn = { version = "2", features = ["full", "visit", "parsing", "printing"] }
 # No `xattr`: the loader unpacks in memory and restores nothing to disk.
 tar = { version = "0.4", default-features = false }
@@ -402,15 +391,3 @@ strip = true         # strip symbols from the shipped binary (much smaller; set 
 # panic is left at the default `unwind` ON PURPOSE: a panic in one request task must unwind that
 # task, not abort the whole gateway. `panic = "abort"` would trade per-request isolation for a
 # little size — the wrong trade for a service in the request path.
-
-# xtask, OPTIMIZED IN EVERY DEV BUILD (ARCHITECT 2026-10-07, p6-selftest-memo). `cargo xtask` is
-# `cargo run --package xtask` under the dev profile, so CI's gates and self-tests ran xtask at
-# opt-level 0. Measured on busbar 214678af59, Latchkey large (8 cores), the same four batteries at
-# opt-level 0 -> 2: kind-isolation 925 s -> 170 s, kind-isolation-ship 631 s -> 123 s, ship-ready
-# 127 s -> 23 s, construction 101 s -> 19 s, every per-case verdict line byte-identical; building
-# xtask 67 s -> 71 s. Only xtask itself: its dependencies keep the dev profile. debug-assertions and
-# overflow-checks stay on (they follow the profile, not the opt-level), so the checks a dev build
-# makes are the checks it still makes. The self-test budgets (xtask/src/gates/mod.rs, TAKEN and
-# BUDGET) are measured at this opt-level.
-[profile.dev.package.xtask]
-opt-level = 2
