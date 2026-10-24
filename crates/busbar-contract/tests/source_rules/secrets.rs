@@ -39,14 +39,26 @@ const WRAPPERS: &[&str] = &["Secret", "Zeroizing", "SecretRef"];
 /// mint response, and the auth wire boundary.
 const ALLOWED: &[(&str, &str, &str)] = &[
     ("crates/busbar-contract/src/records.rs", "secret", "secret"),
-    ("crates/busbar-core-admin/src/v1/schema.rs", "token", "token"),
+    (
+        "crates/busbar-core-admin/src/v1/schema.rs",
+        "token",
+        "token",
+    ),
     (
         "crates/busbar-core-admin/src/v1/schema.rs",
         "aws_secret_access_key",
         "aws_secret_access_key",
     ),
-    ("crates/busbar-core-admin/src/v1/schema.rs", "access_token", ""),
-    ("crates/busbar-core-admin/src/v1/schema.rs", "secret", "secret"),
+    (
+        "crates/busbar-core-admin/src/v1/schema.rs",
+        "access_token",
+        "",
+    ),
+    (
+        "crates/busbar-core-admin/src/v1/schema.rs",
+        "secret",
+        "secret",
+    ),
     (
         "crates/busbar-core-admin/src/v1/contract/mod.rs",
         "upstream_credentials",
@@ -70,7 +82,11 @@ fn secret_needle(field: &str, ty_name: &str) -> Option<&'static str> {
     if let Some(n) = STRONG_NEEDLES.iter().copied().find(|n| tailmatch(field, n)) {
         return Some(n);
     }
-    if let Some(n) = CONTEXT_NEEDLES.iter().copied().find(|n| qualified(field, n)) {
+    if let Some(n) = CONTEXT_NEEDLES
+        .iter()
+        .copied()
+        .find(|n| qualified(field, n))
+    {
         return Some(n);
     }
     let in_context = CONTEXT_STRUCTS.iter().any(|c| ty_name.contains(c));
@@ -161,16 +177,35 @@ fn a_bare_secret_field_is_found() {
     };
     let found = bare_secret_fields(&src);
     assert!(found.iter().any(|f| f.contains("Cfg.api_key")), "{found:?}");
-    assert!(found.iter().any(|f| f.contains("IssuedKey.token")), "{found:?}");
+    assert!(
+        found.iter().any(|f| f.contains("IssuedKey.token")),
+        "{found:?}"
+    );
     assert_eq!(found.len(), 2, "{found:?}");
 }
 
 const SINK_PATHS: &[&str] = &["tracing", "log"];
 const SINK_MACROS: &[&str] = &[
-    "println", "eprintln", "print", "dbg", "panic", "info", "warn", "error", "debug", "trace",
-    "counter", "gauge", "histogram",
+    "println",
+    "eprintln",
+    "print",
+    "dbg",
+    "panic",
+    "info",
+    "warn",
+    "error",
+    "debug",
+    "trace",
+    "counter",
+    "gauge",
+    "histogram",
 ];
-const SINK_NAMES: &[&str] = &["metrics_emit", "journal_append", "AuditRecord", "PlaneAuditLog"];
+const SINK_NAMES: &[&str] = &[
+    "metrics_emit",
+    "journal_append",
+    "AuditRecord",
+    "PlaneAuditLog",
+];
 
 fn names_sink(toks: &[TokenTree]) -> bool {
     toks.iter().enumerate().any(|(i, t)| {
@@ -178,7 +213,8 @@ fn names_sink(toks: &[TokenTree]) -> bool {
             return false;
         };
         let s = id.to_string();
-        let next_punct = |c: char| matches!(toks.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == c);
+        let next_punct =
+            |c: char| matches!(toks.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == c);
         (SINK_PATHS.contains(&s.as_str()) && next_punct(':'))
             || (SINK_MACROS.contains(&s.as_str()) && next_punct('!'))
             || SINK_NAMES.contains(&s.as_str())

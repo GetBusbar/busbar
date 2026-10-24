@@ -133,7 +133,10 @@ fn every_core_config_struct_keeps_every_key_the_frozen_snapshot_records() {
             }
         }
     }
-    assert!(checked > 0, "no snapshot struct is declared in core: the walk is wrong");
+    assert!(
+        checked > 0,
+        "no snapshot struct is declared in core: the walk is wrong"
+    );
     assert!(
         removed.is_empty(),
         "a 1.5.x config key core no longer accepts (the grammar is additive-only): {removed:?}"
@@ -154,7 +157,11 @@ impl<'ast> Visit<'ast> for Calls<'_> {
     }
     fn visit_expr_call(&mut self, c: &'ast syn::ExprCall) {
         if let syn::Expr::Path(p) = &*c.func {
-            if p.path.segments.last().is_some_and(|s| s.ident == self.target) {
+            if p.path
+                .segments
+                .last()
+                .is_some_and(|s| s.ident == self.target)
+            {
                 if let Some(f) = &self.in_fn {
                     self.callers.insert(f.clone());
                 }

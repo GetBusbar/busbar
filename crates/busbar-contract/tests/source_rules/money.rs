@@ -68,16 +68,58 @@ const FLOAT_ALLOWED: &[(&str, &str)] = &[
         "from_micro_rates",
     ),
     ("crates/busbar-kernel/src/snapshot/money.rs", "set_gauge"),
-    ("crates/busbar-kernel/src/governance/state.rs", "rate_headroom"),
+    (
+        "crates/busbar-kernel/src/governance/state.rs",
+        "rate_headroom",
+    ),
 ];
 
 /// Methods that exist on `f32`/`f64` and on no integer type.
 const FLOAT_ONLY_METHODS: &[&str] = &[
-    "round", "floor", "ceil", "trunc", "fract", "mul_add", "powf", "powi", "sqrt", "cbrt", "ln",
-    "ln_1p", "log2", "log10", "exp", "exp2", "exp_m1", "sin", "cos", "tan", "asin", "acos", "atan",
-    "atan2", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh", "hypot", "recip", "to_degrees",
-    "to_radians", "copysign", "total_cmp", "round_ties_even", "is_nan", "is_infinite", "is_finite",
-    "is_normal", "is_subnormal", "is_sign_positive", "is_sign_negative",
+    "round",
+    "floor",
+    "ceil",
+    "trunc",
+    "fract",
+    "mul_add",
+    "powf",
+    "powi",
+    "sqrt",
+    "cbrt",
+    "ln",
+    "ln_1p",
+    "log2",
+    "log10",
+    "exp",
+    "exp2",
+    "exp_m1",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "sinh",
+    "cosh",
+    "tanh",
+    "asinh",
+    "acosh",
+    "atanh",
+    "hypot",
+    "recip",
+    "to_degrees",
+    "to_radians",
+    "copysign",
+    "total_cmp",
+    "round_ties_even",
+    "is_nan",
+    "is_infinite",
+    "is_finite",
+    "is_normal",
+    "is_subnormal",
+    "is_sign_positive",
+    "is_sign_negative",
 ];
 
 /// Items declared off the money path that hand their caller a float.
@@ -120,8 +162,8 @@ fn float_hits(toks: &[TokenTree]) -> Vec<String> {
         match t {
             TokenTree::Ident(id) => {
                 let s = id.to_string();
-                let after_dot = i > 0
-                    && matches!(&toks[i - 1], TokenTree::Punct(p) if p.as_char() == '.');
+                let after_dot =
+                    i > 0 && matches!(&toks[i - 1], TokenTree::Punct(p) if p.as_char() == '.');
                 let called = matches!(toks.get(i + 1), Some(TokenTree::Group(g))
                     if g.delimiter() == proc_macro2::Delimiter::Parenthesis);
                 if names_float(&s)

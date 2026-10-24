@@ -20,7 +20,6 @@ fn render(files: &[(&str, &str)], golden: &str) -> Result<String, String> {
     render_sources(&srcs, golden)
 }
 
-
 #[test]
 fn scalars_pointers_arrays_and_constants_map_to_c() {
     let h = render(
@@ -286,7 +285,6 @@ fn rendering_is_deterministic_and_the_first_difference_names_its_line() {
     );
 }
 
-
 #[test]
 fn the_committed_header_is_what_the_sources_render() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -324,7 +322,11 @@ fn the_committed_header_is_what_the_sources_render() {
     }
     let srcs: Vec<Src<'_>> = texts
         .iter()
-        .map(|(k, r, t)| Src { kind: k, rel: r, text: t })
+        .map(|(k, r, t)| Src {
+            kind: k,
+            rel: r,
+            text: t,
+        })
         .collect();
     let rendered = render::render_sources_pinned(&srcs, &read(render::GOLDEN))
         .unwrap_or_else(|e| panic!("the ABI sources do not render: {e}"));
@@ -333,7 +335,11 @@ fn the_committed_header_is_what_the_sources_render() {
         return;
     }
     if let Some(d) = first_difference(&read(render::HEADER), &rendered) {
-        panic!("{} drifted at {d}; run `{}`", render::HEADER, render::REGENERATE);
+        panic!(
+            "{} drifted at {d}; run `{}`",
+            render::HEADER,
+            render::REGENERATE
+        );
     }
 }
 

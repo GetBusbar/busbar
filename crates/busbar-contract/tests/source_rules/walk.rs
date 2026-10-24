@@ -147,8 +147,7 @@ pub fn production(roots: &[&str]) -> Vec<Source> {
 
 /// One named file, parsed. It must exist.
 pub fn one(rel: &str) -> Source {
-    let text =
-        std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+    let text = std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
     let file = syn::parse_file(&text).unwrap_or_else(|e| panic!("{rel}: {e}"));
     Source {
         rel: rel.to_string(),

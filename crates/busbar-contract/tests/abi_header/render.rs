@@ -31,17 +31,16 @@
 //! first differing line, if the committed header differs. `BUSBAR_ABI_HEADER_WRITE=1 cargo test -p busbar-contract --test abi_header` rewrites it.
 //! It is the one command to run after any change under `abi/`.
 
-
 use proc_macro2::{TokenStream, TokenTree};
 use std::collections::{HashMap, HashSet};
-
 
 /// Where the header is committed.
 pub const HEADER: &str = "crates/busbar-contract/include/busbar_plugin.h";
 /// The layout pin the header's static assertions come from.
 pub const GOLDEN: &str = "crates/busbar-contract/tests/golden/abi-layout.golden";
 /// The one command that regenerates the header.
-pub const REGENERATE: &str = "BUSBAR_ABI_HEADER_WRITE=1 cargo test -p busbar-contract --test abi_header";
+pub const REGENERATE: &str =
+    "BUSBAR_ABI_HEADER_WRITE=1 cargo test -p busbar-contract --test abi_header";
 
 pub const ABI: &str = "crates/busbar-contract/src/abi";
 
