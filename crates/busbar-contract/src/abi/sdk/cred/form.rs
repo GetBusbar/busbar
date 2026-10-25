@@ -86,13 +86,11 @@ impl CredUrl {
 }
 
 type Bytes = Zeroizing<Vec<u8>>;
+type Found = (Bytes, PasswordAt);
 
 const TWO: &str = "a URL with one password (userinfo or `password=`, not both)";
 
-fn split_url(
-    text: &str,
-    scheme_end: usize,
-) -> Result<(String, Option<(Bytes, PasswordAt)>), &'static str> {
+fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Found>), &'static str> {
     let head = &text[..scheme_end + 3];
     let rest = &text[scheme_end + 3..];
     let pre_query = rest.find('?').unwrap_or(rest.len());
