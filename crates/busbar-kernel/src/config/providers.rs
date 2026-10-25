@@ -39,7 +39,7 @@ use busbar_contract::secret_ref::SecretRef;
 
 use crate::ir::lane_caps::{MaxOutputKeyCfg, ModelCapabilities};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)] // a typo'd provider key must fail boot, not be silently ignored.
 pub struct ProviderCfg {
     /// The dialect the provider speaks, as the catalog (or a deployment override) names it, carried
@@ -150,7 +150,7 @@ pub struct HealthCfg {
 }
 
 /// Provider definition - vetted knowledge shipped in providers.yaml (no keys).
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct ProviderDef {
     pub protocol: String,
     pub base_url: String,
@@ -231,7 +231,7 @@ pub struct ProviderDef {
 }
 
 /// Provider deployment - operator config in config.yaml (names provider + supplies key).
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDeploy {
     /// The provider credential as a SECRET REFERENCE. Replaces the removed `api_key_env:`
@@ -355,7 +355,7 @@ pub const CORE_PROVIDER_KEYS: &[&str] = &[
 /// ONE RESOLVED PROVIDER: its catalog definition merged with its deployment. The kernel-owned keys
 /// typed, the rest an opaque [`ProviderTable`]. Not config grammar (it is never parsed), so it is not
 /// in the config-schema fingerprint; the grammar is [`ProviderDef`] / [`ProviderDeploy`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedProvider {
     /// The upstream base URL (the destination core dials and guards).
     pub base_url: String,
@@ -521,5 +521,194 @@ impl From<ProviderCfg> for ResolvedProvider {
             allow_metadata_hosts: p.allow_metadata_hosts,
             table,
         }
+    }
+}
+
+/// A URL as a `Debug` print shows it: the authority's userinfo replaced by a fixed marker
+/// (`busbar_kernel_egress::trust::net::redact_userinfo`, the form `--validate` repeats a base URL
+/// in), quoted as a string prints. Only the PRINT: the field keeps the URL as written, because its
+/// userinfo is the Basic credential the outbound request presents (row 74, F25).
+struct PrintedUrl<'a>(&'a str);
+
+impl std::fmt::Debug for PrintedUrl<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(
+            &busbar_kernel_egress::trust::net::redact_userinfo(self.0),
+            f,
+        )
+    }
+}
+
+/// An optional URL as a `Debug` print shows it (see [`PrintedUrl`]).
+fn printed_url(url: Option<&String>) -> Option<PrintedUrl<'_>> {
+    url.map(|u| PrintedUrl(u))
+}
+
+// THE PROVIDER STRUCTS' `Debug`, written out so `base_url` and `token_url` print through
+// [`PrintedUrl`]: a `user:pass@` the operator wrote never reaches a `{:?}` (CREDENTIAL-LOCKDOWN
+// A.3). Each destructures every field, so a field added later fails to compile here until it is
+// printed (or deliberately not).
+
+impl std::fmt::Debug for ProviderCfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            protocol,
+            base_url,
+            api_key,
+            health,
+            error_map,
+            path,
+            path_base,
+            organization,
+            project,
+            token_url,
+            scope,
+            subject,
+            auth,
+            max_output_key,
+            anthropic_adaptive_thinking,
+            native_structured_output,
+            model_capabilities,
+            allow_metadata_hosts,
+        } = self;
+        f.debug_struct("ProviderCfg")
+            .field("protocol", protocol)
+            .field("base_url", &PrintedUrl(base_url))
+            .field("api_key", api_key)
+            .field("health", health)
+            .field("error_map", error_map)
+            .field("path", path)
+            .field("path_base", path_base)
+            .field("organization", organization)
+            .field("project", project)
+            .field("token_url", &printed_url(token_url.as_ref()))
+            .field("scope", scope)
+            .field("subject", subject)
+            .field("auth", auth)
+            .field("max_output_key", max_output_key)
+            .field("anthropic_adaptive_thinking", anthropic_adaptive_thinking)
+            .field("native_structured_output", native_structured_output)
+            .field("model_capabilities", model_capabilities)
+            .field("allow_metadata_hosts", allow_metadata_hosts)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ProviderDef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            protocol,
+            base_url,
+            error_map,
+            health,
+            path,
+            path_base,
+            organization,
+            project,
+            token_url,
+            scope,
+            subject,
+            auth,
+            max_output_key,
+            anthropic_adaptive_thinking,
+            native_structured_output,
+            model_capabilities,
+            allow_metadata_hosts,
+        } = self;
+        f.debug_struct("ProviderDef")
+            .field("protocol", protocol)
+            .field("base_url", &PrintedUrl(base_url))
+            .field("error_map", error_map)
+            .field("health", health)
+            .field("path", path)
+            .field("path_base", path_base)
+            .field("organization", organization)
+            .field("project", project)
+            .field("token_url", &printed_url(token_url.as_ref()))
+            .field("scope", scope)
+            .field("subject", subject)
+            .field("auth", auth)
+            .field("max_output_key", max_output_key)
+            .field("anthropic_adaptive_thinking", anthropic_adaptive_thinking)
+            .field("native_structured_output", native_structured_output)
+            .field("model_capabilities", model_capabilities)
+            .field("allow_metadata_hosts", allow_metadata_hosts)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ProviderDeploy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            api_key,
+            protocol,
+            base_url,
+            error_map,
+            path,
+            path_base,
+            organization,
+            project,
+            token_url,
+            scope,
+            subject,
+            auth,
+            max_output_key,
+            anthropic_adaptive_thinking,
+            native_structured_output,
+            model_capabilities,
+            allow_metadata_hosts,
+            health,
+        } = self;
+        f.debug_struct("ProviderDeploy")
+            .field("api_key", api_key)
+            .field("protocol", protocol)
+            .field("base_url", &printed_url(base_url.as_ref()))
+            .field("error_map", error_map)
+            .field("path", path)
+            .field("path_base", path_base)
+            .field("organization", organization)
+            .field("project", project)
+            .field("token_url", &printed_url(token_url.as_ref()))
+            .field("scope", scope)
+            .field("subject", subject)
+            .field("auth", auth)
+            .field("max_output_key", max_output_key)
+            .field("anthropic_adaptive_thinking", anthropic_adaptive_thinking)
+            .field("native_structured_output", native_structured_output)
+            .field("model_capabilities", model_capabilities)
+            .field("allow_metadata_hosts", allow_metadata_hosts)
+            .field("health", health)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ResolvedProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            base_url,
+            api_key,
+            health,
+            path,
+            path_base,
+            token_url,
+            scope,
+            subject,
+            auth,
+            allow_metadata_hosts,
+            table,
+        } = self;
+        f.debug_struct("ResolvedProvider")
+            .field("base_url", &PrintedUrl(base_url))
+            .field("api_key", api_key)
+            .field("health", health)
+            .field("path", path)
+            .field("path_base", path_base)
+            .field("token_url", &printed_url(token_url.as_ref()))
+            .field("scope", scope)
+            .field("subject", subject)
+            .field("auth", auth)
+            .field("allow_metadata_hosts", allow_metadata_hosts)
+            .field("table", table)
+            .finish()
     }
 }
