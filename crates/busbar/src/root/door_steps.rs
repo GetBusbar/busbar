@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE KERNEL STEPS OF A UNIT SERVED THROUGH A PLANE'S DOOR (SERVE-WIRE step 33, the serving slice;
-//! `BUSBAR-1.6.0.md` Part 3 §12 "One unit, step by step", THE DESIGN §7): the steps the kernel
-//! answers around the plane's own seats (decode, route and encode are the plane driver's), one
-//! [`DoorSteps`] per unit. Generic over the plane's tail: it names no plane.
+//! `BUSBAR-1.6.0.md` Part 3 §12 "One unit, step by step", THE DESIGN §7): the deployment's plain
+//! answers at the kernel's seats, which the plane driver asks in the loop's order and stamps at each
+//! seat (decode, route and encode are the driver's own), one [`DoorSteps`] per unit. Generic over
+//! the plane's tail: it names no plane.
 //!
 //! | step | here |
 //! |---|---|

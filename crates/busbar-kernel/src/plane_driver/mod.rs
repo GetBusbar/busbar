@@ -5,7 +5,9 @@
 //! one driver. [`PlaneUnits`] implements the loop's [`Units`] and [`RouteAwait`] over one plane
 //! instance's [`PlaneCalls`] (the one dispatcher's plane handle, as the composition root hands it),
 //! so [`crate::teller::run_unit_async`] and [`crate::teller::open_unit`] drive it and no second
-//! loop exists. A compiled-in and a dropped-in plane reach it through the same table, and the
+//! loop exists. Its door — arrival through admit, with the plane's screen — is ONE awaited step
+//! ([`Units::govern`]); the deployment's answers at those seats are its [`DriverSteps`], plain
+//! values it stamps at each seat. A compiled-in and a dropped-in plane reach it through the same table, and the
 //! kernel names neither: only the contract's call surface.
 //!
 //! One unit, step by step (`BUSBAR-1.6.0.md` THE DESIGN, §1's order):
@@ -118,7 +120,9 @@ pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope,
 use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
 use crate::slice::GroupLeaseSlip;
-use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units};
+use crate::teller::{
+    Door, Ended, Evidence, Governed, Governing, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
+};
 use crate::trust::book::{Distrust, TrustFacts};
 use crate::trust::section::parse_section;
 use busbar_contract::ids::RecordSchemaId;
@@ -1560,13 +1564,209 @@ fn seated<S: busbar_contract::caps::Step>(
     }
 }
 
-impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
-    fn arrival(&self, token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep> {
-        seated(token, self.steps.arrival(ctx))
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
+    /// [`Units::govern`]'s body: the loop's seats up to the door, as one chain.
+    async fn door(&self, ctx: &UnitCtx, door: Door<'_>) -> Result<Governed, Refusal> {
+        let Door { seal, screen } = door;
+        let call = ctx.call;
+        self.steps
+            .arrival(ctx)
+            .map_err(stamped::<ArrivalStep>(seal, call))?;
+        self.decoded_op(ctx)
+            .map_err(stamped::<Decode>(seal, call))?;
+        let authenticated = self
+            .steps
+            .authenticate(ctx)
+            .map_err(stamped::<Authenticate>(seal, call))?;
+        let admit = Grant::<Admittance>::mint_bound(seal, call);
+        match authenticated {
+            // A challenge round: no destination, the anonymous principal at approve and the door,
+            // the zero hold and no lease (see `teller::by_seats`).
+            Authenticated::Challenge(_) => {
+                let anonymous = PrincipalId::anonymous();
+                let groups = GroupLeaseSlip::new();
+                self.approved(ctx, &anonymous, &[])
+                    .map_err(stamped::<Approve>(seal, call))?;
+                // The round's admission is the zero hold whatever the door sized; the slip, and
+                // whatever the door counted on it, goes back at the end of this arm.
+                let _admitted = self
+                    .admitted(&admit, ctx, &anonymous, &[], &groups)
+                    .map_err(stamped::<Admit>(seal, call))?;
+                Ok(Governed {
+                    admission: Admission::ZeroHold,
+                    destinations: Vec::new(),
+                    lease: None,
+                })
+            }
+            Authenticated::Principal(principal) => {
+                let destinations = self
+                    .verified(&Grant::<Dial>::mint_bound(seal, call), ctx, &principal)
+                    .map_err(stamped::<Verify>(seal, call))?;
+                self.approved(ctx, &principal, &destinations)
+                    .map_err(stamped::<Approve>(seal, call))?;
+                // THE SCREEN BEFORE THE DOOR ([`RouteAwait::screen`]): a unit it stops is refused
+                // at Approve's seat, before anything is admitted.
+                if let Some(screen) = screen {
+                    screen.await.map_err(stamped::<Approve>(seal, call))?;
+                }
+                let groups = GroupLeaseSlip::new();
+                let admission = self
+                    .admitted(&admit, ctx, &principal, &destinations, &groups)
+                    .map_err(stamped::<Admit>(seal, call))?;
+                Ok(Governed {
+                    admission,
+                    destinations,
+                    lease: Some(groups),
+                })
+            }
+        }
     }
 
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate> {
-        seated(token, self.steps.authenticate(ctx))
+    /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
+    /// it does not have, is refused.
+    fn decoded_op(&self, ctx: &UnitCtx) -> Result<OpClassId, Refusal> {
+        // Every arrival first pays what the units before it left owing ([`close`]), so a plane
+        // whose units are all refused before their route still has its dropped units closed.
+        self.driver.sweep();
+        self.lock().unit = ctx.key.get();
+        let decoded = self.arrive(ctx.key.get());
+        let classes = &self.driver.config.op_classes;
+        let op = decoded
+            .as_ref()
+            .and_then(|d| classes.get(d.op_class as usize).copied());
+        if let (Some(op), Some(d)) = (op, decoded.as_ref()) {
+            self.steps.decoded(ctx, op, d.route, d.pool.as_deref());
+            self.steps.route_flags(ctx, d.route_flags);
+            if let Some(t) = d.trust.as_ref() {
+                self.steps.counterparty(ctx, &t.counterparty);
+            }
+            if let Some(key) = &d.affinity {
+                self.steps.affinity(ctx, sticky_hash(key));
+            }
+            self.steps.expected(ctx, &d.expected);
+        }
+        self.lock().decoded = decoded;
+        op.ok_or_else(|| Refusal::new(ReasonCode::DecodeFailed))
+    }
+
+    /// The kernel's verify, after which the unit's caller reference is derived under the node's
+    /// key (its signing material, the deployment keyset, or its per-boot key); the principal
+    /// itself never enters a plane input.
+    ///
+    /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
+    /// unit, so a driver whose book lends references never lends an empty one to a governed
+    /// caller (any principal but the anonymous one). Such a caller is refused here, before the
+    /// plane is lent the unit, when it names no one or when the book holds no key to derive its
+    /// reference under; it is never lent the empty reference instead. The anonymous principal is
+    /// never refused here: with a key bound it is lent its reference like any principal (the one
+    /// reference every anonymous unit shares), and with none it is lent the empty one.
+    fn verified(
+        &self,
+        trust: &Grant<Dial>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> Result<Vec<VerifiedDestination>, Refusal> {
+        if let Some(slot) = &self.driver.config.caller_refs {
+            let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
+            if *principal != PrincipalId::anonymous() {
+                let Some(key) = key.filter(|_| !principal.as_str().is_empty()) else {
+                    return Err(Refusal::new(ReasonCode::Unauthenticated));
+                };
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            } else if let Some(key) = key {
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            }
+        }
+        // The verified principal: the hooks the unit binds read it, and the unit's audit row is
+        // written under it (never a plane input).
+        self.lock().principal = Some(principal.clone());
+        self.steps.verify(trust, ctx, principal)
+    }
+
+    /// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06: trust is the kernel's Approve step; a plane
+    /// states facts and judges none). The deployment's own Approve (the caller's grant over the
+    /// unit's route) runs FIRST, and its refusal stands; only a unit it admits has the trust facts
+    /// the plane's `arrive` stated judged against the kernel's trust book, and one the book does
+    /// not trust is refused [`ReasonCode::Untrusted`]. A unit that states none is the deployment's
+    /// answer alone. The order is the ordered gate's (identity, grant, then the counterparty's
+    /// standing; ruling (a), coordinator 2026-10-07): a caller the grant refuses is never told the
+    /// counterparty's trust state.
+    fn approved(
+        &self,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> Result<busbar_contract::ScopeFacts, Refusal> {
+        let facts = self.steps.approve(ctx, principal, destinations)?;
+        let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
+        let Some(t) = stated else {
+            return Ok(facts);
+        };
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let (counterparty, item, digest) = (
+            text(&t.counterparty),
+            t.item.as_deref().map(text),
+            t.digest.as_deref().map(text),
+        );
+        let stated = TrustFacts {
+            counterparty: &counterparty,
+            item: item.as_deref(),
+            digest: digest.as_deref(),
+        };
+        if let Err(why) = self
+            .driver
+            .services
+            .trust_judge(&self.driver.label, &stated)
+        {
+            self.lock().distrust = Some(why);
+            return Err(Refusal::new(ReasonCode::Untrusted));
+        }
+        Ok(facts)
+    }
+
+    /// The kernel's admission, unless the plane's `arrive` refused the unit about the entry it
+    /// named (abi/plane "A refused arrival", rule 6): that refusal is rendered here, after the
+    /// caller's identity and grant were judged and before anything is charged (ARCHITECT
+    /// Q-DEL-A2A-GATE: "refused → audits the refusal; nothing was charged").
+    fn admitted(
+        &self,
+        admit: &Grant<Admittance>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
+    ) -> Result<Admission, Refusal> {
+        if self.lock().declined.is_some() {
+            return Err(Refusal::new(ReasonCode::DecodeFailed));
+        }
+        self.steps
+            .admit(admit, ctx, principal, destinations, leases)
+    }
+}
+
+/// A refusal of the door's chain, stamped at seat `S` exactly as that seat's own answer would be.
+fn stamped<S: busbar_contract::caps::Step>(
+    seal: &busbar_contract::caps::KernelSeal,
+    call: busbar_contract::caps::CallId,
+) -> impl Fn(Refusal) -> Refusal + '_ {
+    move |refusal| match StepAnswer::<S>::refuse(
+        &Pass::<S>::mint_bound(seal, call),
+        refusal.clone(),
+    )
+    .into_result(seal)
+    {
+        Err(stamped) => stamped,
+        Ok(_) => refusal,
+    }
+}
+
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
+    /// THE UNIT'S DOOR, ANSWERED IN ONE STEP: arrival, the plane's `arrive`, who is calling, where
+    /// the unit may go, whether it may, the plane's screen, and the door, in the loop's order, each
+    /// refusal stamped at its seat. One awaited step rather than six seats: whatever the door waits
+    /// on, it waits on here.
+    fn govern<'a>(&'a self, ctx: &'a UnitCtx, door: Door<'a>) -> Governing<'a> {
+        Box::pin(self.door(ctx, door))
     }
 
     fn meter(
@@ -1617,139 +1817,6 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
             .filter(|secs| *secs != 0)
             .map(|secs| (refusal.reason(), secs));
         StepAnswer::proceed(token, self.steps.audit_refused(ctx, refusal))
-    }
-
-    /// The kernel's admission, unless the plane's `arrive` refused the unit about the entry it
-    /// named (abi/plane "A refused arrival", rule 6): that refusal is rendered here, after the
-    /// caller's identity and grant were judged and before anything is charged (ARCHITECT
-    /// Q-DEL-A2A-GATE: "refused → audits the refusal; nothing was charged").
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        admit: &Grant<Admittance>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-        leases: &GroupLeaseSlip,
-    ) -> StepAnswer<Admit> {
-        if self.lock().declined.is_some() {
-            return StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
-        }
-        seated(
-            token,
-            self.steps
-                .admit(admit, ctx, principal, destinations, leases),
-        )
-    }
-
-    /// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06: trust is the kernel's Approve step; a plane
-    /// states facts and judges none). The deployment's own Approve (the caller's grant over the
-    /// unit's route) runs FIRST, and its refusal stands; only a unit it admits has the trust facts
-    /// the plane's `arrive` stated judged against the kernel's trust book, and one the book does
-    /// not trust is refused [`ReasonCode::Untrusted`]. A unit that states none is the deployment's
-    /// answer alone. The order is the ordered gate's (identity, grant, then the counterparty's
-    /// standing; ruling (a), coordinator 2026-10-07): a caller the grant refuses is never told the
-    /// counterparty's trust state.
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-    ) -> StepAnswer<Approve> {
-        let facts = match self.steps.approve(ctx, principal, destinations) {
-            Ok(facts) => facts,
-            Err(refusal) => return StepAnswer::refuse(token, refusal),
-        };
-        let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
-        let Some(t) = stated else {
-            return StepAnswer::proceed(token, facts);
-        };
-        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-        let (counterparty, item, digest) = (
-            text(&t.counterparty),
-            t.item.as_deref().map(text),
-            t.digest.as_deref().map(text),
-        );
-        let stated = TrustFacts {
-            counterparty: &counterparty,
-            item: item.as_deref(),
-            digest: digest.as_deref(),
-        };
-        if let Err(why) = self
-            .driver
-            .services
-            .trust_judge(&self.driver.label, &stated)
-        {
-            self.lock().distrust = Some(why);
-            return StepAnswer::refuse(token, Refusal::new(ReasonCode::Untrusted));
-        }
-        StepAnswer::proceed(token, facts)
-    }
-
-    /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key (its signing material, the deployment keyset, or its per-boot key); the principal
-    /// itself never enters a plane input.
-    ///
-    /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
-    /// unit, so a driver whose book lends references never lends an empty one to a governed
-    /// caller (any principal but the anonymous one). Such a caller is refused here, before the
-    /// plane is lent the unit, when it names no one or when the book holds no key to derive its
-    /// reference under; it is never lent the empty reference instead. The anonymous principal is
-    /// never refused here: with a key bound it is lent its reference like any principal (the one
-    /// reference every anonymous unit shares), and with none it is lent the empty one.
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        trust: &Grant<Dial>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-    ) -> StepAnswer<Verify> {
-        if let Some(slot) = &self.driver.config.caller_refs {
-            let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
-            if *principal != PrincipalId::anonymous() {
-                let Some(key) = key.filter(|_| !principal.as_str().is_empty()) else {
-                    return StepAnswer::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
-                };
-                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
-            } else if let Some(key) = key {
-                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
-            }
-        }
-        // The verified principal: the hooks the unit binds read it, and the unit's audit row is
-        // written under it (never a plane input).
-        self.lock().principal = Some(principal.clone());
-        seated(token, self.steps.verify(trust, ctx, principal))
-    }
-
-    /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
-    /// it does not have, is refused.
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> StepAnswer<Decode> {
-        // Every arrival first pays what the units before it left owing ([`close`]), so a plane
-        // whose units are all refused before their route still has its dropped units closed.
-        self.driver.sweep();
-        self.lock().unit = ctx.key.get();
-        let decoded = self.arrive(ctx.key.get());
-        let classes = &self.driver.config.op_classes;
-        let op = decoded
-            .as_ref()
-            .and_then(|d| classes.get(d.op_class as usize).copied());
-        if let (Some(op), Some(d)) = (op, decoded.as_ref()) {
-            self.steps.decoded(ctx, op, d.route, d.pool.as_deref());
-            self.steps.route_flags(ctx, d.route_flags);
-            if let Some(t) = d.trust.as_ref() {
-                self.steps.counterparty(ctx, &t.counterparty);
-            }
-            if let Some(key) = &d.affinity {
-                self.steps.affinity(ctx, sticky_hash(key));
-            }
-            self.steps.expected(ctx, &d.expected);
-        }
-        self.lock().decoded = decoded;
-        op.map_or_else(
-            || StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
-            |op| StepAnswer::proceed(token, op),
-        )
     }
 
     /// The in-place Route seat: a plane's route awaits its far end, so the driver is reached

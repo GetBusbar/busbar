@@ -8,6 +8,11 @@
 //! ([`Node::drive_borrowed`]).
 
 use super::*;
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival, Authenticate, Consumption, Decode, Dial, Encode, Meter,
+    Refusal, SeatVerdict, Verify,
+};
+use busbar_kernel::slice::GroupLeaseSlip;
 
 use busbar_contract::caps::{
     Admission, ArrivalRecord, Authenticated, Frame, ReasonCode, RoutePlan, ScopeFacts, Usage,

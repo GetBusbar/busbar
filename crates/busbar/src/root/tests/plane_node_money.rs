@@ -18,6 +18,11 @@
 //! handed in as the door's `report_of` hands it), onto a bound book.
 
 use super::*;
+use busbar_contract::caps::{
+    Admit, Admittance, Approve, Arrival, Authenticate, Consumption, Decode, Dial, Encode, Meter,
+    Refusal, SeatVerdict, Verify,
+};
+use busbar_kernel::slice::GroupLeaseSlip;
 
 use std::sync::atomic::AtomicBool;
 
@@ -2223,8 +2228,8 @@ fn late_of(report: Report) -> Late {
     Box::new(move || Some((report.usage, report.fee_count, report.lane)))
 }
 
-/// One door unit's END, as the loop seals it: the unit run through the kernel loop over the
-/// borrowed drive's own wrapper ([`Borrowed`]) in `node`'s table, the end handed back unposted.
+/// One door unit's END, as the loop seals it: the unit run through the kernel loop in `node`'s
+/// table, its record kept on `post` (the borrowed drive's taps), the end handed back unposted.
 /// What `plane_node.rs`'s `drive_to_end` did over the handed unit's wrapper, on the door's.
 async fn drive_to_end(node: &Node, post: &NodeEndPost) -> Ended {
     let unit = DoorUnit::served();

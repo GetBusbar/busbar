@@ -45,13 +45,10 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival, Audit, Authenticate, Consumption, Decode, Dial, Encode,
-    Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Refusal, Route, SeatVerdict,
-    VerifiedDestination, Verify,
+    Audit, Grant, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Route, VerifiedDestination,
 };
 use busbar_contract::{LaneId, UnitKey};
 use busbar_kernel::plane_driver::PlaneAnswer;
-use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{
     AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
 };
@@ -1130,7 +1127,6 @@ impl Node {
                 };
                 let driven = Driven {
                     node: self,
-                    units: &*units,
                     route: &*route,
                     op_class,
                     principal: &principal,
@@ -1146,7 +1142,7 @@ impl Node {
                 };
                 let ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,
-                    &driven,
+                    &*units,
                     &ctx,
                     busbar_kernel::teller::Run {
                         cell: slot.cell(),
@@ -1155,7 +1151,7 @@ impl Node {
                         gauge: &self.gauge,
                         canary: &self.canary,
                         meter: &meter,
-                        taps: None,
+                        taps: Some(&driven),
                     },
                     &driven,
                 )
@@ -1961,7 +1957,6 @@ fn unavailable(proto: &str) -> Response {
 /// [`PlaneDispatch`]: crate::root::transports::PlaneDispatch
 struct Driven<'n> {
     node: &'n Node,
-    units: &'n (dyn Units + Send + Sync),
     route: &'n (dyn RouteAwait + Send + Sync),
     op_class: OpClassId,
     /// Whose unit this is — the principal the balance it settles onto is keyed by.
@@ -1996,102 +1991,17 @@ impl Driven<'_> {
     }
 }
 
-impl Units for Driven<'_> {
-    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
-        self.units.arrival(token, ctx)
-    }
-
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
-        self.units.decode(token, ctx)
-    }
-
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
-        self.units.authenticate(token, ctx)
-    }
-
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        trust: &Grant<Dial>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-    ) -> SeatVerdict<Verify> {
-        self.units.verify(token, trust, ctx, principal)
-    }
-
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Approve> {
-        self.units.approve(token, ctx, principal, destinations)
-    }
-
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        admit: &Grant<Admittance>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-        leases: &GroupLeaseSlip,
-    ) -> SeatVerdict<Admit> {
-        self.units
-            .admit(token, admit, ctx, principal, destinations, leases)
-    }
-
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        ctx: &UnitCtx,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Route> {
-        self.units.route(token, ctx, destinations)
-    }
-
-    fn meter(
-        &self,
-        token: &Pass<Meter>,
-        usage: &Grant<Consumption>,
-        ctx: &UnitCtx,
-        provisional: &Outcome,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Meter> {
-        self.units
-            .meter(token, usage, ctx, provisional, destinations)
-    }
-
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        self.units.audit(token, ctx, outcome)
-    }
-
-    fn audit_refused(
-        &self,
-        token: &Pass<Audit>,
-        ctx: &UnitCtx,
-        refusal: &Refusal,
-    ) -> SeatVerdict<Audit> {
-        self.units.audit_refused(token, ctx, refusal)
-    }
-
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> SeatVerdict<Encode> {
-        self.units.encode(token, ctx, outcome)
-    }
-
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
-        self.units.evidence(ctx)
-    }
-
+/// THE HANDED UNIT'S TAPS: its audit door's pass and facts held on its record-to-be until its one
+/// line is written (where its record is sealed with them). Where Route was lent to go is noted by
+/// its route leg below; how it ended is read off the posting.
+impl busbar_kernel::teller::UnitTaps for Driven<'_> {
     fn audited(&self, _ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
         self.accruing().get_or_insert_with(Accruing::default).door = Some((facts, pass));
     }
+
+    fn ended_as(&self, _ctx: &UnitCtx, _outcome: Outcome) {}
+
+    fn routed(&self, _ctx: &UnitCtx, _destinations: &[VerifiedDestination]) {}
 }
 
 impl RouteAwait for Driven<'_> {
