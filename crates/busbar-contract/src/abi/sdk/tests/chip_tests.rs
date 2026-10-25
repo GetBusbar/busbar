@@ -225,3 +225,92 @@ fn redact_echo_replaces_every_occurrence() {
     );
     assert_eq!(c.redact_echo("nothing here"), "nothing here");
 }
+
+#[cfg(feature = "chip-rsa")]
+mod rsa_tests {
+    use num_bigint::BigUint;
+
+    use super::cred;
+    use crate::abi::sdk::chip::digests::sha1;
+
+    /// A throwaway 1024-bit test key (generated for this test only): its public half as MySQL sends
+    /// it, and its private exponent so the test can decrypt.
+    const PEM: &[u8] = b"-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDAeGNPEkihhFwx9XuiW0X6VMAp
+LuC5WLdzvwnpZSXfmzok6brqc60v9bnBiCl/T9O5m7/eLcck0usOyQ9eV5p9T4Y4
+ijJ7b5W7pYuuReJdv9h481JKwwV75KY1M6dRf7kpYFOCA4Zo8xgdso69qxPTVUXL
+9WgH5N2PTtsNkF6eCwIDAQAB
+-----END PUBLIC KEY-----
+";
+    const D: &str = "24bd56479bb7dd8d04844cd5c2d2257379860cd673f32d6a27600a2651367f8e83f4d3e0e82c189d150cd652858955d59692927778c990cfea2ab25a8aa9b2457089a877e2b4980c55432d3cef569412f502c3d1a9a8e5b0f9e5ebb2a527b31b6a24a2ce35e7a7b47d74b1c07adacfcbd28b83dc30fa6614f9bf6bf19da166f1";
+    const N: &str = "c078634f1248a1845c31f57ba25b45fa54c0292ee0b958b773bf09e96525df9b3a24e9baea73ad2ff5b9c188297f4fd3b99bbfde2dc724d2eb0ec90f5e579a7d4f86388a327b6f95bba58bae45e25dbfd878f3524ac3057be4a63533a7517fb929605382038668f3181db28ebdab13d35545cbf56807e4dd8f4edb0d905e9e0b";
+
+    fn mgf1(seed: &[u8], len: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut c = 0_u32;
+        while out.len() < len {
+            out.extend_from_slice(&sha1(&[seed, &c.to_be_bytes()])[..]);
+            c += 1;
+        }
+        out.truncate(len);
+        out
+    }
+
+    /// RFC 8017 7.1.2 decryption, so the test checks what the server would read.
+    fn decrypt(ct: &[u8]) -> Vec<u8> {
+        let n = BigUint::parse_bytes(N.as_bytes(), 16).expect("n");
+        let d = BigUint::parse_bytes(D.as_bytes(), 16).expect("d");
+        let k = 128;
+        let mut em = BigUint::from_bytes_be(ct).modpow(&d, &n).to_bytes_be();
+        while em.len() < k {
+            em.insert(0, 0);
+        }
+        assert_eq!(em[0], 0);
+        let (masked_seed, masked_db) = em[1..].split_at(20);
+        let seed: Vec<u8> = masked_seed
+            .iter()
+            .zip(mgf1(masked_db, 20))
+            .map(|(a, b)| a ^ b)
+            .collect();
+        let db: Vec<u8> = masked_db
+            .iter()
+            .zip(mgf1(&seed, k - 21))
+            .map(|(a, b)| a ^ b)
+            .collect();
+        assert_eq!(&db[..20], &sha1(&[b""])[..], "lHash");
+        let one = 20
+            + db[20..]
+                .iter()
+                .position(|&b| b != 0)
+                .expect("the 0x01 marker");
+        assert_eq!(db[one], 1);
+        db[one + 1..].to_vec()
+    }
+
+    #[test]
+    fn the_rsa_packet_decrypts_to_the_password_xor_the_nonce() {
+        let nonce: Vec<u8> = (1..=20).collect();
+        let seal = cred("s3cr3t-pw")
+            .mysql_rsa_packet(4, &nonce, PEM)
+            .expect("encrypts");
+        let w = seal.wire();
+        assert_eq!(&w[..4], &[128, 0, 0, 4]);
+        let plain = decrypt(&w[4..]);
+        let want: Vec<u8> = b"s3cr3t-pw\0"
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ nonce[i % nonce.len()])
+            .collect();
+        assert_eq!(plain, want);
+        let again = cred("s3cr3t-pw")
+            .mysql_rsa_packet(4, &nonce, PEM)
+            .expect("encrypts");
+        assert_ne!(again.wire(), w, "a fresh OAEP seed each time");
+    }
+
+    #[test]
+    fn a_bad_key_or_an_empty_nonce_is_refused() {
+        assert!(cred("pw").mysql_rsa_packet(4, b"n", b"not a key").is_err());
+        assert!(cred("pw").mysql_rsa_packet(4, b"", PEM).is_err());
+    }
+}
