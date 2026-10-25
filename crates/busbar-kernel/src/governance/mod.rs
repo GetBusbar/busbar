@@ -812,6 +812,8 @@ pub struct GovState {
 pub struct SigningMaterial {
     signer: crate::governance::signing::TokenSigner,
     verifier: crate::governance::signing::TokenVerifier,
+    /// The key recoverable credentials are sealed under at rest, derived from the signing key.
+    kek: at_rest::CredentialKek,
 }
 
 impl SigningMaterial {
@@ -819,7 +821,13 @@ impl SigningMaterial {
     fn new(signer: crate::governance::signing::TokenSigner) -> Self {
         let verifier =
             crate::governance::signing::TokenVerifier::single(signer.kid(), signer.verifying_key());
-        Self { signer, verifier }
+        let material = zeroize::Zeroizing::new(signer.secret_bytes());
+        let kek = at_rest::CredentialKek::derive(signer.kid(), &material[..]);
+        Self {
+            signer,
+            verifier,
+            kek,
+        }
     }
 }
 
@@ -840,6 +848,8 @@ pub struct RotatedCredential {
 // public spelling is the substrate's own, and nothing outside busbar-core reaches this path.
 
 pub mod revocation;
+// A recoverable credential at rest: sealed before the store sees it (CHIP-DESIGN v4.1 change 1).
+pub mod at_rest;
 // The RESOLVED runtime mint policy (`auth.policy:`) — de-aliased out of `admin` (1.6.0, stage 2a):
 // core governance/config infrastructure read on the hot mint path, not admin-API surface.
 pub mod mint_policy;

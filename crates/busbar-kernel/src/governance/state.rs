@@ -402,22 +402,28 @@ impl GovState {
         // The credential is row-looked-up (by its public id), unlike the signed token above (see
         // CredentialMeta's doc). `secret_form: Recoverable`: its verifier re-derives from the
         // plaintext, so it cannot be a one-way digest.
+        let meta = CredentialMeta {
+            id: cred_id,
+            key_id: binding.id.clone(),
+            kind: kind.to_string(),
+            slot: 0,
+            public_id: public_id.clone(),
+            secret_form: SecretForm::Recoverable,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            revoked_at: None,
+            revoke_reason: None,
+            revision: 0,
+        };
+        // Sealed before the store sees it: no store holds a recoverable secret in the clear.
+        let sealed = material
+            .kek
+            .seal(&meta, secret_value.expose(&crate::seal::lend()).as_bytes())
+            .map_err(RecordStoreError)?;
         let secret = CredentialSecret {
-            meta: CredentialMeta {
-                id: cred_id,
-                key_id: binding.id.clone(),
-                kind: kind.to_string(),
-                slot: 0,
-                public_id: public_id.clone(),
-                secret_form: SecretForm::Recoverable,
-                created_at: now,
-                updated_at: now,
-                expires_at: None,
-                revoked_at: None,
-                revoke_reason: None,
-                revision: 0,
-            },
-            secret: format!("v1:plain:{}", secret_value.expose(&crate::seal::lend())),
+            meta,
+            secret: sealed,
         };
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
@@ -2488,12 +2494,22 @@ impl GovState {
         now: u64,
     ) -> (busbar_contract::redacted::Secret<String>, bool) {
         let dummy = crate::auth::DUMMY_SECRET;
-        // Owned copies, out of the cache lock before the revocation check takes its own: two
-        // allocations on either path.
+        let material = self.signing_material();
+        // Owned copies, out of the cache lock before the revocation check takes its own. The
+        // stored envelope is opened here, at the read: the cache holds it sealed.
         let (key, plain, enabled) = match self.lookup_credential(kind, public_id) {
             Some((key, cred)) => {
-                let plain = cred.plaintext().filter(|_| cred.meta.is_live(now));
-                (key.id.clone(), plain.map(str::to_string), key.enabled)
+                let plain = if cred.meta.is_live(now) {
+                    super::at_rest::open(
+                        material.as_ref().map(|m| &m.kek),
+                        &cred.meta,
+                        &cred.secret,
+                    )
+                    .map(|p| p.to_string())
+                } else {
+                    None
+                };
+                (key.id.clone(), plain, key.enabled)
             }
             None => (dummy.to_string(), None, false),
         };

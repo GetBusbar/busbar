@@ -3293,7 +3293,13 @@ mod signed_token {
         let (_, cred) = g
             .lookup_credential(&crate::governance::tests::signed_kind(), &minted.2)
             .expect("akid resolves");
-        assert_eq!(cred.secret, format!("v1:plain:{aws_secret}"));
+        // At rest it is sealed (CHIP-DESIGN v4.1 change 1), and the read opens it.
+        assert!(cred.secret.starts_with("v1:aead:"), "stored in the clear");
+        assert!(!cred.secret.contains(&aws_secret));
+        let (read, live) =
+            g.credential_secret(&crate::governance::tests::signed_kind(), &minted.2, 1_500);
+        assert!(live);
+        assert_eq!(read.expose(&crate::seal::lend()), &aws_secret);
     }
 
     /// Minting without a signer fails closed (no token can be issued).
