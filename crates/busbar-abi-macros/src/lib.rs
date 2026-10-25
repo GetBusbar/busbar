@@ -80,7 +80,12 @@ fn expand(d: &KindDecl) -> syn::Result<Tokens> {
         .iter()
         .filter_map(|op| op.check.as_ref().map(|cl| check_arm(op, cl)))
         .collect::<syn::Result<Vec<_>>>()?;
-    let shorts = d.ops.iter().filter(|op| !op.bufs.is_empty()).map(short_arm);
+    let shorts = d
+        .ops
+        .iter()
+        .filter(|op| !op.bufs.is_empty() || op.short.is_some())
+        .map(short_arm)
+        .collect::<syn::Result<Vec<_>>>()?;
     let unused = d.ops.iter().filter(|op| op.unused).map(|op| {
         let konst = &op.konst;
         quote!(slot::#konst)
@@ -196,16 +201,28 @@ fn check_arm(op: &OpDecl, cl: &ExprClosure) -> syn::Result<Tokens> {
 }
 
 /// `slot::X => out.<b>_needed != 0 || ..` (a FAILED answer naming a larger host buffer).
-fn short_arm(op: &OpDecl) -> Tokens {
+fn short_arm(op: &OpDecl) -> syn::Result<Tokens> {
     let konst = &op.konst;
     let (i, o) = (&op.input, &op.out);
-    let needed = op.bufs.iter().map(|b| {
-        let f = format_ident!("{}_needed", b);
-        quote!(o.#f != 0)
-    });
-    quote! {
+    let rule = match &op.short {
+        Some(cl) => {
+            let pats: Vec<&Pat> = cl.inputs.iter().collect();
+            let [p] = pats.as_slice() else {
+                return Err(syn::Error::new_spanned(cl, "a short closure takes `|out|`"));
+            };
+            let body = &cl.body;
+            quote!({ let #p: &#o = o; #body })
+        }
+        None => {
+            let needed = op.bufs.iter().map(|b| {
+                let f = format_ident!("{}_needed", b);
+                quote!(o.#f != 0)
+            });
+            quote!(false #(|| #needed)*)
+        }
+    };
+    Ok(quote! {
         // SAFETY: as `check`.
-        slot::#konst => unsafe { frames.get::<#i, #o>() }
-            .is_ok_and(|(_, o)| false #(|| #needed)*),
-    }
+        slot::#konst => unsafe { frames.get::<#i, #o>() }.is_ok_and(|(_, o)| #rule),
+    })
 }

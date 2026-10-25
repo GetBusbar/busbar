@@ -51,6 +51,9 @@ pub struct OpDecl {
     pub check: Option<ExprClosure>,
     /// The host buffers: `in.<b>_buf/_cap`, `out.<b>_written/_needed`.
     pub bufs: Vec<Ident>,
+    /// The short rule when the op's buffer fields do not follow the `<b>_needed` naming:
+    /// `|out| -> bool`, read on a FAILED answer.
+    pub short: Option<ExprClosure>,
 }
 
 mod kw {
@@ -63,6 +66,7 @@ mod kw {
     syn::custom_keyword!(unused);
     syn::custom_keyword!(check);
     syn::custom_keyword!(bufs);
+    syn::custom_keyword!(short);
 }
 
 impl Parse for KindDecl {
@@ -129,6 +133,7 @@ impl Parse for OpDecl {
             unused: false,
             check: None,
             bufs: Vec::new(),
+            short: None,
         };
         let mut class_seen = false;
         while !opts.is_empty() {
@@ -151,6 +156,10 @@ impl Parse for OpDecl {
                 opts.parse::<kw::check>()?;
                 opts.parse::<Token![:]>()?;
                 op.check = Some(opts.parse()?);
+            } else if la.peek(kw::short) {
+                opts.parse::<kw::short>()?;
+                opts.parse::<Token![:]>()?;
+                op.short = Some(opts.parse()?);
             } else if la.peek(kw::bufs) {
                 opts.parse::<kw::bufs>()?;
                 opts.parse::<Token![:]>()?;
