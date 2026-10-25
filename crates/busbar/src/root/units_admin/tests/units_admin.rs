@@ -1074,7 +1074,9 @@ fn a_bound_unit(request: AdminRequest) -> AdminWalk {
 ///   `InFlightCap`, stamped at `Arrival` because the origin is a client, with its arrival hold
 ///   handed back reserving nothing — the shedding the operator came to ask about;
 /// - a real admin request comes back with the operation's own 200 rather than the node's
-///   `unavailable`: an admin unit takes no slot in any in-flight table, so no cap can shed it.
+///   `unavailable`: an admin unit takes no slot in any in-flight table, so no cap can shed it. (It
+///   is not asserted that the full table stayed empty: the node never touches that table, so the
+///   assertion could not fail; the 200 is what says the cap did not shed it.)
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
@@ -1127,7 +1129,6 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
         answer_for(Outcome::Refused(StepName::Arrival, ReasonCode::InFlightCap)),
         "the answer is the request's own, not the gate's refusal"
     );
-    assert_eq!(full.len(), 0, "the admin unit took no slot");
 }
 
 /// Where an admin unit may go, and what that costs it.
@@ -6511,5 +6512,116 @@ fn route_refuses_a_unit_whose_grant_was_never_recorded() {
         outcome,
         Err(ReasonCode::ScopeDenied),
         "a unit with no recorded grant reached the verb"
+    );
+}
+
+/// A REQUEST THE ADMIN PLANE DID NOT COMPOSE IS NEVER SEALED AS AN ADMIN READ (regression guard
+/// for 8fb8a1f9ba).
+///
+/// The bug: a unit that no admin row claimed reached the root's audit door and was sealed under the
+/// admin plane's word for a verb that never resolved, `admin_read`, so the record said an operator
+/// read a page when no administrative operation was involved. With the steps called directly there
+/// is no shared audit door any more; what decides whether an admin record is sealed is the mount's
+/// claim. So this drives the mount itself: a path outside the admin prefix, and a path inside it that
+/// no row declares, go to the surface below and leave NO record on the node's book, while a declared
+/// admin read leaves exactly one, under `admin_read`.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
+    use tower::ServiceExt;
+
+    let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
+    let book: Arc<std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>> =
+        Arc::new(std::sync::OnceLock::new());
+    let kept = Arc::clone(&book);
+    let wrapped = mount(
+        inner,
+        busbar_kernel::teller::Kernel::new(),
+        1024,
+        move |dispatch| {
+            let units = crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door());
+            let _ = kept.set(Arc::clone(&units.durability));
+            units
+        },
+    );
+    let book = Arc::clone(book.get().expect("the mount built its units"));
+    let sealed = || {
+        let mut held = Vec::new();
+        NodeAudit::new(Arc::clone(&book)).read(&mut |_, records| {
+            held = records.map(<[_]>::to_vec).unwrap_or_default();
+        });
+        held
+    };
+    let get = |path: &str| {
+        axum::http::Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(axum::body::Body::empty())
+            .expect("the request builds")
+    };
+    let admin_read = busbar_kernel_audit::OpClassId::new(OP_UNRESOLVED_READ);
+
+    for uncomposed in ["/v1/chat/completions", "/api/v1/admin/not-a-real-operation"] {
+        let response = wrapped
+            .clone()
+            .oneshot(get(uncomposed))
+            .await
+            .expect("the router answers");
+        let records = sealed();
+        assert!(
+            records.iter().all(|r| r.what.op_class != admin_read),
+            "{uncomposed} was sealed as an administrative read: {records:?}"
+        );
+        assert!(
+            records.is_empty(),
+            "{uncomposed} is no admin unit and seals no admin record: {records:?}"
+        );
+        assert_eq!(
+            response.status(),
+            200,
+            "{uncomposed} reached the surface below"
+        );
+    }
+
+    // The positive control: a declared admin read is one unit, sealed once, as a read.
+    let response = wrapped
+        .oneshot(get("/api/v1/admin/audit?limit=4"))
+        .await
+        .expect("the router answers");
+    assert_eq!(response.status(), 200);
+    let records = sealed();
+    assert_eq!(records.len(), 1, "one declared admin unit, one record");
+    assert_eq!(records[0].what.op_class, admin_read);
+}
+
+/// A LENGTH THE REQUEST CLAIMS IS CHECKED AGAINST THE BYTES, NEVER TRUSTED (regression guard for
+/// e9fbbd4d55).
+///
+/// The bug: the root's answer framing reserved room for the header count a frame declared before
+/// reading a single header, so four bytes off the wire could ask for gigabytes. That framing is gone;
+/// the admin input a caller controls now is the request itself, and the same invariant holds there:
+/// what the request says about its own size is a claim, and the wrap reads no more than the
+/// operator's cap whatever the claim. A request that declares a length inside the cap and then sends
+/// more is refused, not read to its end and executed.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_claimed_length_is_checked_against_the_bytes_not_trusted() {
+    use tower::ServiceExt;
+
+    let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
+    let wrapped = mount(inner, busbar_kernel::teller::Kernel::new(), 4, |dispatch| {
+        crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door())
+    });
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/keys")
+        .header(axum::http::header::CONTENT_LENGTH, "3")
+        .body(axum::body::Body::from(b"0123456789".to_vec()))
+        .expect("the request builds");
+    let response = wrapped.oneshot(request).await.expect("the router answers");
+    assert_eq!(
+        response.status(),
+        400,
+        "a body longer than the cap is refused whatever length it declared"
     );
 }
