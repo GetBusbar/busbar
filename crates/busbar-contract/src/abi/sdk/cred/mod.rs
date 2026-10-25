@@ -117,6 +117,12 @@ pub struct Cred {
 /// wrote with one of them never goes out on a connection that is not.
 const SECURE_SCHEMES: &[&str] = &["https", "wss", "rediss", "ldaps", "grpcs", "mqtts", "amqps"];
 
+/// Whether a framed request's `target` is secured by its scheme ([`SECURE_SCHEMES`]); a target
+/// with no scheme is the need's own and answers `true`.
+pub(crate) fn secure_target(target: &str) -> bool {
+    !target.contains("://") || secure_scheme(target)
+}
+
 /// Whether `url`'s scheme is one of [`SECURE_SCHEMES`] (case-insensitive).
 pub(crate) fn secure_scheme(url: &str) -> bool {
     url.split_once("://").is_some_and(|(scheme, _)| {
