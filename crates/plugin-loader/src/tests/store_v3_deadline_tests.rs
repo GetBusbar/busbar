@@ -22,8 +22,8 @@ use busbar_contract::abi::store::{AddUsageBatchIn, HostBytesOut, OpId, RecordGet
 use busbar_contract::records::UsageDelta;
 use busbar_contract::store_calls::StoreCalls;
 
-use crate::dispatch::kinds::store::Store;
-use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
+use crate::dispatch::{DispatchConfig, Dispatcher};
+use crate::store_v3::test_support::load;
 use crate::store_v3::LoadedStore;
 
 /// `add_usage_batch`: PENDING, and no wake ever comes.
@@ -130,32 +130,15 @@ mod hung {
 
 fn open() -> (LoadedStore, Arc<Dispatcher>) {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(hung::door).expect("the hung door states its Statement");
-    let p = load_linked::<Store>(
-        &row,
-        Bind {
-            instance: Arc::from("the-instance"),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: d.adopter(),
-            conns: crate::dispatch::ConnTable::NoNeeds,
-        },
-    )
-    .expect("the hung door loads");
+    let p = load(hung::door, &d, 64, crate::dispatch::ConnTable::NoNeeds);
     (
         LoadedStore::open(p, d.clone(), b"{}", mint).expect("it opens"),
         d,
     )
 }
 
-/// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
-fn mint() -> OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    OpId::from_parts(
-        0x7e59,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
-}
+// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+super::test_support::op_ids!(mint, 0x7e59);
 
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()

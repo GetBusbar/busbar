@@ -124,18 +124,6 @@ fn an_over_large_attested_size_is_clamped_to_this_builds_struct() {
     assert_eq!(honoured_size(ours as u32, ours), ours as u32);
 }
 
-#[test]
-fn write_out_publishes_on_ok_and_tolerates_null() {
-    let mut slot = MaybeUninit::<u64>::uninit();
-    // SAFETY: `slot` is a live, writable MaybeUninit.
-    unsafe { write_out(&mut slot as *mut MaybeUninit<u64>, 0x1234_u64) };
-    // SAFETY: we just wrote it on the Ok path.
-    assert_eq!(unsafe { slot.assume_init() }, 0x1234);
-    // A null out-slot must not fault.
-    // SAFETY: null is explicitly tolerated by the contract.
-    unsafe { write_out(core::ptr::null_mut::<MaybeUninit<u64>>(), 99_u64) };
-}
-
 /// The sized-field guard must be safe to point at a peer buffer that is SHORTER than the struct it
 /// describes. Reading through a reference cannot be: a `&Pod` asserts the whole struct is valid and
 /// dereferenceable the instant it is formed, which over a shorter peer buffer is a claim about memory
@@ -167,12 +155,11 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
 #[test]
 fn the_auth_fact_bits_are_distinct_and_name_the_default_inbound_style() {
     use crate::abi::auth::{
-        FACT_CACHEABLE, FACT_DEFAULT_INBOUND_STYLE, FACT_INBOUND_ALL_HEADERS,
-        FACT_INBOUND_NEEDS_BODY_HASH, FACT_OPERATOR, FACT_READS_CREDENTIALS,
+        FACT_CACHEABLE, FACT_DEFAULT_INBOUND_STYLE, FACT_INBOUND_ALL_HEADERS, FACT_OPERATOR,
+        FACT_READS_CREDENTIALS,
     };
     let bits = [
         FACT_CACHEABLE,
-        FACT_INBOUND_NEEDS_BODY_HASH,
         FACT_INBOUND_ALL_HEADERS,
         FACT_OPERATOR,
         FACT_READS_CREDENTIALS,

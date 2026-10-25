@@ -17,8 +17,10 @@ use busbar_contract::records::{
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
 use super::LoadedStore;
-use crate::dispatch::kinds::store::{Store, StoreFacts};
-use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
+use crate::dispatch::kinds::store::StoreFacts;
+use crate::dispatch::{DispatchConfig, Dispatcher, LinkedRow};
+use crate::store_v3::test_support::block_on as run;
+use crate::store_v3::test_support::load;
 
 fn dispatcher() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::new(DispatchConfig::default()))
@@ -26,38 +28,17 @@ fn dispatcher() -> Arc<Dispatcher> {
 
 fn open() -> LoadedStore {
     let d = dispatcher();
-    let row = LinkedRow::of(crate::both_ways::store_fixture::door)
-        .expect("the memory store states its Statement");
-    let plugin = load_linked::<Store>(
-        &row,
-        Bind {
-            instance: Arc::from("the-instance"),
-            max_inflight_cap: 1024,
-            sink: Arc::new(NoSink),
-            dispatcher: d.adopter(),
-            conns: crate::dispatch::ConnTable::NoNeeds,
-        },
-    )
-    .expect("the memory store's door loads");
+    let plugin = load(
+        crate::both_ways::store_fixture::door,
+        &d,
+        1024,
+        crate::dispatch::ConnTable::NoNeeds,
+    );
     LoadedStore::open(plugin, d, b"{}", mint).expect("the memory store opens")
 }
 
-/// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
-fn mint() -> OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    OpId::from_parts(
-        0x7e57,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
-}
-
-fn run<T>(f: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime")
-        .block_on(f)
-}
+// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+super::test_support::op_ids!(mint, 0x7e57);
 
 fn op(n: u64) -> OpId {
     OpId::from_parts(9, n)

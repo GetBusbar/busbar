@@ -20,16 +20,11 @@ use busbar_contract::records::VirtualKey;
 use busbar_contract::store_calls::{OpenedStore, StoreAxis, StoreDoor};
 
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher, PluginLogConfig};
+use crate::store_v3::test_support::block_on as block;
 use crate::store_v3::DoorStoreAxis;
 
-/// This test's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
-fn mint() -> OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    OpId::from_parts(
-        0xa715,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
-}
+// This test's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+super::test_support::op_ids!(mint, 0xa715);
 
 fn axis() -> DoorStoreAxis {
     let none = Default::default();
@@ -40,14 +35,6 @@ fn axis() -> DoorStoreAxis {
         conns: crate::dispatch::ConnTable::NoNeeds,
         mint,
     }
-}
-
-fn block<T>(f: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime")
-        .block_on(f)
 }
 
 /// One script through both surfaces of an opened store: the 1.5.5 op set (a key written, read

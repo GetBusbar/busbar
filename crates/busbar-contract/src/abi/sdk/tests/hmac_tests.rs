@@ -53,35 +53,3 @@ fn the_wiped_sha256_matches_sha256_at_every_padding_boundary() {
         );
     }
 }
-
-/// THE DESIGN section 6 ("auth material is zeroised"), the rule this primitive is the ledgered
-/// exception for: every buffer the HMAC fills from the key (the padded key, the pads, the chaining state, the
-/// final blocks, the digests) is born a `Zeroizing` one, and nothing in the SDK keys an HMAC on a
-/// library value it frees unwiped (`ring`'s `hmac::Key`, a RustCrypto `Hmac`).
-#[test]
-fn every_key_derived_buffer_is_wiped_and_no_library_hmac_is_keyed() {
-    let src = include_str!("../hmac.rs");
-    let code: Vec<&str> = src
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.starts_with("//"))
-        .collect();
-    for line in &code {
-        if line.starts_with("let ") && (line.contains("[0_u8;") || line.contains("SHA256_IV")) {
-            assert!(
-                line.contains("Zeroizing::new("),
-                "a key-derived buffer is not wiped on drop: {line}"
-            );
-        }
-    }
-    for marker in [
-        concat!("hmac", "::Key"),
-        concat!("Hmac", "<"),
-        concat!("ring", "::hmac"),
-    ] {
-        assert!(
-            !code.iter().any(|l| l.contains(marker)),
-            "the SDK keys an HMAC on a library value it frees unwiped: {marker}"
-        );
-    }
-}

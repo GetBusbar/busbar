@@ -149,10 +149,6 @@ impl LoadablePlugin {
     }
 }
 
-/// The refusal of a `kind: secret` plugin that states no door ([`PluginRegistry::kind_refusal`]'s
-/// words for the secret kind).
-pub const JSON_SECRET_REFUSED: &str = "it speaks the 1.5.5 JSON secret contract, which this host does not load — rebuild the plugin against the 1.6.0 SDK";
-
 /// The `file` a linked row reports: it has no tarball.
 pub const LINKED_FILE: &str = "(linked)";
 

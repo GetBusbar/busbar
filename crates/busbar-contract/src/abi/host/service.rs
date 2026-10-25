@@ -344,18 +344,6 @@ pub struct RecordsSecretIn {
     pub into: ServiceBufs,
 }
 
-impl RecordsSecretIn {
-    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `RecordsSecretIn { …, ..RecordsSecretIn::ZERO }` so a field appended
-    /// later reads as not declared.
-    pub const ZERO: Self = Self {
-        head: ServiceHead::ZERO,
-        kind: AbiStr::ZERO,
-        id: AbiStr::ZERO,
-        into: ServiceBufs::ZERO,
-    };
-}
-
 /// `value` of [`op::RECORDS_SECRET`]: not live, or no such credential.
 pub const SECRET_NOT_LIVE: u64 = 0;
 /// `value` of [`op::RECORDS_SECRET`]: the credential is live.

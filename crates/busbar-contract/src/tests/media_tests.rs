@@ -6,36 +6,6 @@
 use super::*;
 
 #[test]
-fn mediablob_pcm_required_iff_raw_pcm() {
-    let l16 = MediaBlob {
-        payload: MediaPayload::B64("AA==".into()),
-        mime_type: "audio/L16;codec=pcm;rate=24000".into(),
-        pcm: Some(PcmParams {
-            sample_rate: 24000,
-            channels: 1,
-            bit_depth: 16,
-        }),
-    };
-    assert!(l16.is_well_formed());
-
-    let l16_missing = MediaBlob {
-        pcm: None,
-        ..l16.clone()
-    };
-    assert!(
-        !l16_missing.is_well_formed(),
-        "raw PCM without params is silently lossy"
-    );
-
-    let mp3 = MediaBlob {
-        payload: MediaPayload::Bytes(SlabBytes::from(&b"\xff\xfb"[..])),
-        mime_type: "audio/mpeg".into(),
-        pcm: None,
-    };
-    assert!(mp3.is_well_formed());
-}
-
-#[test]
 fn base64_roundtrip_and_rfc4648_vectors() {
     // RFC 4648 section 10 test vectors — encode must match, decode must invert.
     for (raw, enc) in [
@@ -109,33 +79,6 @@ fn image_output_is_additive_b64_and_url_coexist() {
     // `img.b64.is_some() && img.url.is_some()` after building it with both was an assertion on the
     // fixture's own literal: it could not fail, whatever `ImageOutput` did.
     //
-    // What is left to check is the predicate, and it is checked over all four populations rather
-    // than only the one the fixture happens to be. `has_payload` is an OR: EITHER representation on
-    // its own is still an image, and only neither is not. An AND — the reading the both-present
-    // fixture alone cannot tell apart — would silently drop every url-only dall-e answer and every
-    // b64-only one.
-    assert!(img.has_payload(), "both representations");
-    assert!(
-        ImageOutput {
-            b64: Some("iVBORw0KGgo=".into()),
-            ..Default::default()
-        }
-        .has_payload(),
-        "an inline payload alone is an image"
-    );
-    assert!(
-        ImageOutput {
-            url: Some("https://example/img.png".into()),
-            ..Default::default()
-        }
-        .has_payload(),
-        "a URL alone is an image"
-    );
-    assert!(
-        !ImageOutput::default().has_payload(),
-        "and neither is the one case that is not"
-    );
-
     // The two fields are independent storage, not two spellings of one slot: an output carrying only
     // the URL is a DIFFERENT value from one carrying only the inline payload, and both differ from
     // the one carrying both. A single-slot representation would collapse at least two of the three.

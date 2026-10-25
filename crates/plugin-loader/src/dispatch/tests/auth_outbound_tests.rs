@@ -30,8 +30,7 @@ use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth
 
 use super::*;
 use crate::dispatch::{
-    load_linked, Adopter, Bind, Budgets, DispatchConfig, Dispatcher, EnvelopeSink, LinkedRow,
-    NO_BLOB,
+    load_linked, Adopter, Bind, Budgets, DispatchConfig, Dispatcher, LinkedRow, NoSink, NO_BLOB,
 };
 
 /// The style whose fields fit the host's starting buffers.
@@ -230,13 +229,6 @@ mod plugin {
     }
 }
 
-struct Quiet;
-impl EnvelopeSink for Quiet {
-    fn metric(&self, _: crate::dispatch::Metric<'_>) {}
-    fn diag(&self, _: crate::dispatch::Diagnostic<'_>) {}
-    fn dropped(&self, _: crate::dispatch::Dropped) {}
-}
-
 /// The test door, linked, adopted by a fresh dispatcher and opened: the instance under test.
 fn opened() -> OutboundInstance {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
@@ -254,7 +246,7 @@ fn opened() -> OutboundInstance {
         Bind {
             instance: Arc::from("the-instance"),
             max_inflight_cap: 64,
-            sink: Arc::new(Quiet),
+            sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
             conns: crate::dispatch::ConnTable::NoNeeds,
         },

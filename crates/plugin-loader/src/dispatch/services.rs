@@ -740,9 +740,7 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
                     req,
                     Some(&i.into),
                     |completer| {
-                        let later =
-                            completer.map(|c| -> Later { Box::new(move |s| c.complete(s)) });
-                        provider.dest_judge(&dest, i.egress_class, i.flags, later)
+                        provider.dest_judge(&dest, i.egress_class, i.flags, later_of(completer))
                     },
                 )
             }

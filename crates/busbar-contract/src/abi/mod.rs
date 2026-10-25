@@ -23,12 +23,8 @@
 //!    `size` is read field by field only where `size` proves the sender wrote it (see
 //!    [`field_present`] / [`read_sized_field`]). New fields may ONLY be appended; a peer that
 //!    predates a field simply never reads it. Reorder/resize/insert = a MAJOR airlock bump.
-//! 3. **The out-param write discipline** ([`write_out`]) — the init-only-on-Ok rule a callee uses to
-//!    publish a large POD result into a caller slot without a `Vec` return.
 
 #![deny(unsafe_op_in_unsafe_fn)]
-
-use core::mem::MaybeUninit;
 
 /// ONE DECLARATIVE LIST PER TABLE: each slot's fn-pointer type and the `#[repr(C)]` table holding
 /// one `Option` of each — the table's size header first, then the slots in the order listed, each
@@ -526,30 +522,6 @@ macro_rules! read_sized_field {
             ::core::option::Option::None
         }
     }};
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// 3. The out-param write discipline — init-only-on-Ok.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// Write `value` into a caller-provided `&mut MaybeUninit<T>` out-slot, the ONLY way a host call
-/// returns a large POD without a `Vec`. Mirrors `plugin-sdk/boundary.rs`: the callee fully writes the
-/// slot INSIDE its `catch_unwind` and marks it initialized ONLY on the Ok path — so a caller that
-/// sees a non-`Ok` status must treat the slot as still uninitialized and never read it. A null `out`
-/// is tolerated (the value is dropped), matching the boundary's null-out-guard.
-///
-/// # Safety
-/// `out`, when non-null, must point to a writable, properly-aligned `MaybeUninit<T>` for the duration
-/// of the call. On any non-`Ok` status the caller MUST NOT assume the slot was written.
-#[inline]
-pub unsafe fn write_out<T>(out: *mut MaybeUninit<T>, value: T) {
-    if out.is_null() {
-        // No slot to publish into: drop the value, never write through a null pointer.
-        drop(value);
-        return;
-    }
-    // SAFETY: the caller guarantees `out` is a writable, aligned `MaybeUninit<T>` per the contract.
-    unsafe { (*out).write(value) };
 }
 
 #[cfg(test)]

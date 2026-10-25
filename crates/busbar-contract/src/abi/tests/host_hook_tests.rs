@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::abi::hook::validate::{check_notify_in, check_prompt_view};
+use crate::abi::mechanism::call::BLOB_ABSENT;
 use crate::hooks::{BudgetBucketState as K, CallerIdentity, PromptProjection};
 use crate::signal::Signal;
 

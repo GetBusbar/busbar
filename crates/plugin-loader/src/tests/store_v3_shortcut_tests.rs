@@ -15,42 +15,25 @@ use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{ModelTokensDelta, RecordStore, UsageDelta};
 use busbar_contract::store_calls::StoreCalls;
 
-use crate::dispatch::kinds::store::Store;
-use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
+use crate::dispatch::{DispatchConfig, Dispatcher};
+use crate::store_v3::test_support::block_on as block;
+use crate::store_v3::test_support::load;
 use crate::store_v3::LoadedStore;
 
 /// The shipped build's store: its compiled-in door, through the table.
 fn compiled_in() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(crate::both_ways::store_fixture::door)
-        .expect("the store states its Statement");
-    let bind = Bind {
-        instance: Arc::from("the-instance"),
-        max_inflight_cap: 1024,
-        sink: Arc::new(NoSink),
-        dispatcher: d.adopter(),
-        conns: crate::dispatch::ConnTable::NoNeeds,
-    };
-    let p = load_linked::<Store>(&row, bind).expect("the door loads");
+    let p = load(
+        crate::both_ways::store_fixture::door,
+        &d,
+        1024,
+        crate::dispatch::ConnTable::NoNeeds,
+    );
     LoadedStore::open(p, d, b"{}", mint).expect("it opens")
 }
 
-/// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
-fn mint() -> OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    OpId::from_parts(
-        0x7e58,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
-}
-
-fn block<T>(f: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime")
-        .block_on(f)
-}
+// This test process's `op_id` allocator: one counter, as the kernel's `door::op_id` is.
+super::test_support::op_ids!(mint, 0x7e58);
 
 fn delta(requests: i64, input: i64) -> UsageDelta {
     UsageDelta {

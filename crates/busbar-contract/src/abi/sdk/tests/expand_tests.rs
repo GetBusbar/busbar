@@ -463,7 +463,7 @@ fn a_test_in_sets_exactly_the_fields_its_builders_name() {
 #[test]
 fn a_fake_host_lends_its_own_tables() {
     use crate::abi::sdk::conn::Host;
-    use crate::abi::sdk::services::{Services, Wake};
+
     use crate::abi::sdk::test_support::fake::FakeHost;
     let fake = FakeHost::new();
     let tables = fake.lent();
@@ -473,22 +473,13 @@ fn a_fake_host_lends_its_own_tables() {
     // SAFETY: the fake's own tables, alive while `fake` is.
     let raw = unsafe { Host::from_raw(fake.tables_for_tests()) };
     assert_eq!(format!("{host:?}"), format!("{raw:?}"));
-    assert_eq!(
-        Services::of(&tables).is_some(),
-        // SAFETY: as above.
-        unsafe { Services::from_raw(fake.tables_for_tests()) }.is_some()
-    );
-    assert_eq!(
-        Wake::of(&tables).is_some(),
-        // SAFETY: as above.
-        unsafe { Wake::from_raw(fake.tables_for_tests()) }.is_some()
-    );
 }
 
 #[test]
 fn a_kept_handle_is_named_by_its_static_alias() {
     use crate::abi::mechanism::ticket::Ticket;
-    use crate::abi::sdk::auth_door::{StaticVerifyOp, VerifyOp};
+    use crate::abi::sdk::auth_door::VerifyOp;
+
     use crate::abi::sdk::conn::{Host, StaticHost};
     use crate::abi::sdk::services::{StaticServices, StaticWake};
     use crate::abi::sdk::test_support::fake::FakeHost;
@@ -515,7 +506,8 @@ fn a_kept_handle_is_named_by_its_static_alias() {
         Host::of(&tables).services().is_some()
     );
     assert_eq!(kept.wake.is_some(), fake.tables_for_tests().wake.is_some());
-    let op: StaticVerifyOp = VerifyOp::new(kept.services, Ticket::NONE);
+    let op: VerifyOp = VerifyOp::new(kept.services, Ticket::NONE);
+
     assert_eq!(op.services().is_some(), kept.services.is_some());
 }
 

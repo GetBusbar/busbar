@@ -124,8 +124,6 @@ pub struct ServedFacts {
     /// The keys of the other sections it owns (neither declaring nor consumed): what it opens
     /// with beside its settings (`PlaneOpenIn::owned`).
     pub owns: Vec<&'static str>,
-    /// The keys of the sections it consumes (`SECTION_CONSUMED`), in Statement order.
-    pub consumes: Vec<&'static str>,
     /// The keys of the sections it marks required (`SECTION_REQUIRED`), in Statement order: a
     /// document must carry each while the plane is linked (CONFIG-REQ).
     pub requires: Vec<&'static str>,
@@ -297,10 +295,12 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         tail.dialects_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    let declared = declared(&tail);
+    let trust_keys = declared.trust_keys.clone();
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
-        declared: declared(&tail),
+        declared,
         served: ServedFacts {
             section: sections
                 .iter()
@@ -314,11 +314,6 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
             owns: sections
                 .iter()
                 .filter(|s| s.flags & (SECTION_DECLARING | SECTION_CONSUMED) == 0)
-                .map(|s| kept(s.name))
-                .collect(),
-            consumes: sections
-                .iter()
-                .filter(|s| s.flags & SECTION_CONSUMED != 0)
                 .map(|s| kept(s.name))
                 .collect(),
             requires: sections
@@ -389,7 +384,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(|n| kept(n.trust_from))
                 .collect(),
-            trust_keys: declared(&tail).trust_keys,
+            trust_keys,
             need_transports: listed(st.needs, st.needs_len)
                 .into_iter()
                 .map(|n| kept(n.transport))
@@ -824,7 +819,7 @@ fn registered(
         key,
         section: served.section,
         owns: served.owns.clone(),
-        consumes: served.consumes.clone(),
+        consumes: served.consumed.clone(),
         requires: served.requires.clone(),
         secret_refs: served.secret_refs.clone(),
         admin_routes: served.admin_routes.clone(),

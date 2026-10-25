@@ -155,15 +155,14 @@ pub struct PluginLogConfig {
 }
 
 /// `plugins.logs.dir` when unset.
-pub const DEFAULT_DIR: &str = "logs/plugins";
+const DEFAULT_DIR: &str = "logs/plugins";
 /// `plugins.logs.keep` when unset.
-pub const DEFAULT_KEEP: u32 = 5;
+const DEFAULT_KEEP: u32 = 5;
 
 impl PluginLogConfig {
-    /// Resolve the `plugins.logs` block: `dir` (default [`DEFAULT_DIR`]), `level` (default `info`),
-    /// per-instance `levels`, `rotate_mb` (unset: never rotate) and `keep` (default
-    /// [`DEFAULT_KEEP`]). A level word that names no level, or a zero `rotate_mb`, is an error
-    /// naming its key.
+    /// Resolve the `plugins.logs` block: `dir` (default `logs/plugins`), `level` (default `info`),
+    /// per-instance `levels`, `rotate_mb` (unset: never rotate) and `keep` (default `5`). A level
+    /// word that names no level, or a zero `rotate_mb`, is an error naming its key.
     pub fn from_words(
         dir: Option<&str>,
         level: Option<&str>,

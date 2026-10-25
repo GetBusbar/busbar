@@ -8,11 +8,10 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::sdk::conn::Host;
-use busbar_contract::abi::store::OpId;
 
 use crate::both_ways::store_fixture::MemoryStore;
 use crate::dispatch::kinds::store::Store;
-use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink, Plugin};
+use crate::dispatch::{DispatchConfig, Dispatcher, Plugin};
 use crate::store_v3::wrap::{Hooks, Wrapped};
 use crate::store_v3::LoadedStore;
 
@@ -50,27 +49,16 @@ mod picky {
     busbar_contract::store_door!(super::Wrapped<super::Picky>, "picky", "0", 64);
 }
 
-fn mint() -> OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    OpId::from_parts(
-        0x7a11,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
-}
+super::test_support::op_ids!(mint, 0x7a11);
 
 fn load() -> (Plugin<Store>, Arc<Dispatcher>) {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let p = load_linked::<Store>(
-        &LinkedRow::of(picky::door).expect("the store states its Statement"),
-        Bind {
-            instance: Arc::from("the-instance"),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: d.adopter(),
-            conns: crate::dispatch::ConnTable::NoNeeds,
-        },
-    )
-    .expect("the door loads");
+    let p = crate::store_v3::test_support::load(
+        picky::door,
+        &d,
+        64,
+        crate::dispatch::ConnTable::NoNeeds,
+    );
     (p, d)
 }
 

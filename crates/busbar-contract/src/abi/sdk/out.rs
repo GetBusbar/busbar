@@ -383,12 +383,6 @@ impl Out<'_, crate::abi::plane::ArriveOut> {
         self.set(|o| &o.route_flags, crate::abi::plane::ROUTE_ONCE);
     }
 
-    /// THE UNIT IS ROUTED BY THE PRINCIPAL'S SCOPE ([`crate::abi::plane::ROUTE_SCOPE`], ARCHITECT
-    /// Q-DEL-A2A-SELECT): it names no entry, and the kernel routes it to the one entry the
-    /// principal's grant reaches.
-    pub fn by_scope(&mut self) {
-        self.set(|o| &o.route, crate::abi::plane::ROUTE_SCOPE);
-    }
     /// THE UNIT IS SERVED AS A DUPLEX SESSION ([`crate::abi::plane::ROUTE_SESSION`]): its pieces
     /// name its stream, and its unsolicited output is named on the instance's driver ticket.
     pub fn session(&mut self) {

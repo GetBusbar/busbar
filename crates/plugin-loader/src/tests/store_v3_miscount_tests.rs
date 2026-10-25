@@ -15,8 +15,9 @@ use busbar_contract::abi::sdk::store::{
 use busbar_contract::abi::store::OpId;
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
-use crate::dispatch::kinds::store::Store;
-use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
+use crate::dispatch::{DispatchConfig, Dispatcher};
+use crate::store_v3::test_support::block_on as run;
+use crate::store_v3::test_support::load;
 use crate::store_v3::LoadedStore;
 
 /// The memory store, except that every committed `reserve` and `slice_release` answers one item
@@ -63,46 +64,15 @@ mod miscounts {
     busbar_contract::store_door!(super::Wrapped<super::Miscounts>, "miscounts", "0", 64);
 }
 
-fn mint() -> OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    OpId::from_parts(
-        0x5108,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
-}
+super::test_support::op_ids!(mint, 0x5108);
 
-/// The handle's own allocator (another node than the test ops' [`mint`]).
-fn bridge_mint() -> OpId {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    OpId::from_parts(
-        0x5107,
-        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
-}
+// The handle's own allocator (another node than the test ops' [`mint`]).
+super::test_support::op_ids!(bridge_mint, 0x5107);
 
 fn open() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(miscounts::door).expect("the miscounting door states its Statement");
-    let p = load_linked::<Store>(
-        &row,
-        Bind {
-            instance: Arc::from("the-instance"),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: d.adopter(),
-            conns: crate::dispatch::ConnTable::NoNeeds,
-        },
-    )
-    .expect("the door loads");
+    let p = load(miscounts::door, &d, 64, crate::dispatch::ConnTable::NoNeeds);
     LoadedStore::open(p, d, b"{}", bridge_mint).expect("it opens")
-}
-
-fn run<T>(f: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime")
-        .block_on(f)
 }
 
 fn key(dimension: Dimension<'static>) -> CellKey<'static> {
