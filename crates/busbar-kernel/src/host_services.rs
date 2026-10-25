@@ -599,7 +599,10 @@ pub struct KernelServices {
     /// The positions of every instance's declared record chains, the flush's to keep.
     chains: Arc<crate::host_chains::ChainBook>,
     signer: OnceLock<Arc<dyn SignKey>>,
-    trust: TrustBook,
+    trust: Arc<TrustBook>,
+    /// The fleet re-sync of the operator's trust decisions: when it was last started (wall
+    /// seconds) and whether one is running ([`Self::trust_resync_tick`]).
+    trust_resync: Arc<(std::sync::atomic::AtomicU64, std::sync::atomic::AtomicBool)>,
     /// The destination guard; when set it IS the judge (`dest.judge`, [`Self::judge_dial`]).
     judge: Option<Arc<dyn DestJudge>>,
     demotions: OnceLock<Demotions>,
@@ -685,7 +688,8 @@ impl KernelServices {
             batcher: Arc::default(),
             chains: Arc::default(),
             signer: OnceLock::new(),
-            trust: TrustBook::default(),
+            trust: Arc::default(),
+            trust_resync: Arc::default(),
             judge: None,
             demotions: OnceLock::new(),
             work: Arc::default(),
@@ -1329,6 +1333,7 @@ impl KernelServices {
                 _ = at.tick() => {
                     self.flush_tick();
                     self.verify_tick();
+                    self.trust_resync_tick();
                     let wall = std::time::UNIX_EPOCH
                         + std::time::Duration::from_millis((self.wall_ms)());
                     jobs.extend(crate::tick::beat(wall));
@@ -1336,6 +1341,51 @@ impl KernelServices {
                 Some(()) = jobs.next(), if !jobs.is_empty() => {}
             }
         }
+    }
+
+    /// THE FLEET RE-SYNC OF THE OPERATOR'S TRUST DECISIONS, run beside [`Self::flush_tick`] and at
+    /// most once per [`crate::governance::REVOCATION_SYNC_TTL_SECS`]: the kept decisions are read
+    /// back on the pool and applied to every admitted instance, so an approval or a revoke the
+    /// operator made through another node of the fleet takes effect here within the window. One
+    /// read at a time; a read the store refuses is reported and leaves the book as it was.
+    pub fn trust_resync_tick(&self) {
+        use std::sync::atomic::Ordering;
+        let (Some(d), Some(pool)) = (self.demotions.get(), self.pool()) else {
+            return;
+        };
+        let now = (self.wall_ms)() / 1000;
+        let (last, running) = &*self.trust_resync;
+        if now.saturating_sub(last.load(Ordering::Relaxed))
+            < crate::governance::REVOCATION_SYNC_TTL_SECS
+            || running.swap(true, Ordering::Acquire)
+        {
+            return;
+        }
+        last.store(now, Ordering::Relaxed);
+        let (record, trust, state) = (
+            Arc::clone(&d.record),
+            Arc::clone(&self.trust),
+            Arc::clone(&self.trust_resync),
+        );
+        pool.run(Box::new(move || {
+            match record.decisions() {
+                Ok(rows) => {
+                    let instances: std::collections::BTreeSet<&str> =
+                        rows.iter().map(|r| r.instance.as_str()).collect();
+                    for instance in instances {
+                        trust.admit_decided(instance, &rows);
+                    }
+                }
+                Err(why) => crate::diagnostics::diag_warn!(
+                    crate::diagnostics::REVOCATION_RESYNC_FAILED,
+                    error = %why,
+                    "the operator's trust decisions could not be re-read; keeping the decisions \
+                     already applied (one made through another node may not be in force here \
+                     until the next successful re-read)"
+                ),
+            }
+            state.1.store(false, Ordering::Release);
+        }));
     }
 
     /// The verify cache's tick, run beside [`Self::flush_tick`]: every lead that lapsed passes to

@@ -2383,3 +2383,35 @@ fn a_trust_decision_the_store_refused_never_takes_effect() {
         "kept, it is in force"
     );
 }
+
+/// **AN OPERATOR'S TRUST DECISION MADE THROUGH ANOTHER NODE TAKES EFFECT HERE WITHIN ONE WINDOW.** Two
+/// nodes over one store, both admitting the same instance: the operator approves a counterparty
+/// through node `a`, and node `b`'s re-sync tick applies the kept approval.
+///
+/// RED while the kept decisions were read only at an instance's first admit: node `b` kept the
+/// counterparty pending (and a revoke made through `a` stayed unenforced on `b`) until `b` restarted.
+#[test]
+fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
+    use crate::trust::book::Ruling;
+    let r = rig();
+    let me = caller("inst");
+    let b = restarted(&r);
+    b.admit("inst", trusting(Some("fp"))).unwrap();
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "c1", l)).value,
+        svc::TRUST_NEW,
+        "a first sighting on node a"
+    );
+    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    assert_eq!(
+        b.trust_unreached(&me, "cp").value,
+        svc::TRUST_NEW,
+        "node b has not re-synced yet"
+    );
+    b.trust_resync_tick();
+    assert_eq!(
+        b.trust_unreached(&me, "cp").value,
+        svc::TRUST_SAME,
+        "node b applies the approval node a kept"
+    );
+}
