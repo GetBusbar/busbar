@@ -2186,10 +2186,24 @@
         "effects.metrics",
         "norm.rules"
       ],
-      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents. PREMISE 2026-10-24: the /effects/usage pointer was read against the JSON body, where it never exists; the premise is the cell's status.",
+      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents. PREMISE 2026-10-24: the /effects/usage pointer was read against the JSON body, where it never exists; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's JSON body is what the judge reads, so the premise is that body itemizing toolUsePromptTokenCount 4 beside promptTokenCount 11, the two counts whose sum (15) the entry bills as input; the bare status premise said nothing about the claim.",
       "premise": {
-        "cell": "llm|gemini|gemini|request|ok_tool_use_tokens@fixture",
-        "status": 200
+        "all": [
+          {
+            "cell": "llm|gemini|gemini|request|ok_tool_use_tokens@fixture",
+            "status": 200
+          },
+          {
+            "cell": "llm|gemini|gemini|request|ok_tool_use_tokens@fixture",
+            "pointer": "/usageMetadata/toolUsePromptTokenCount",
+            "equals": 4
+          },
+          {
+            "cell": "llm|gemini|gemini|request|ok_tool_use_tokens@fixture",
+            "pointer": "/usageMetadata/promptTokenCount",
+            "equals": 11
+          }
+        ]
       },
       "signoff": {
         "who": "ruling:§MONEY IS LEDGER × RATE CARD",
@@ -3840,10 +3854,22 @@
         "effects.metrics",
         "norm.rules"
       ],
-      "rationale": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged. The cell streams one Anthropic message_start that states 11 input tokens, then an upstream error. 1.5.5 recorded usage {requests 1} with no spend (spend_cents null); 1.6.0 ledgers the 11 input tokens the stream stated before the error and spends 110 cents (11 x the oracle rate card's input_utok 100000 = 1,100,000 utok). The other five stream_upstream_error@fixture cells state no usage before their error, so their usage is 1.5.5's and they are not in scope. The premise holds the candidate to the signed figure: this entry forgives the usage difference only when the candidate spends exactly 110 cents. PREMISE 2026-10-24: the pointer into /effects/usage was read against the SSE body and could never hold; the premise is the cell's status.",
+      "rationale": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged. The cell streams one Anthropic message_start that states 11 input tokens, then an upstream error. 1.5.5 recorded usage {requests 1} with no spend (spend_cents null); 1.6.0 ledgers the 11 input tokens the stream stated before the error and spends 110 cents (11 x the oracle rate card's input_utok 100000 = 1,100,000 utok). The other five stream_upstream_error@fixture cells state no usage before their error, so their usage is 1.5.5's and they are not in scope. The premise holds the candidate to the signed figure: this entry forgives the usage difference only when the candidate spends exactly 110 cents. PREMISE 2026-10-24: the pointer into /effects/usage was read against the SSE body and could never hold; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's own SSE body is what the judge reads, so the premise is that body stating the 11 input tokens in message_start AND ending in an error event, i.e. the stream stated cost before its upstream failed; the bare status premise said nothing about the claim.",
       "premise": {
-        "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
-        "status": 200
+        "all": [
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "status": 200
+          },
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "body_contains": "\"input_tokens\":11"
+          },
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "body_contains": "event: error"
+          }
+        ]
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
@@ -4009,31 +4035,6 @@
       "rationale": "OWNER 2026-10-24 (in session): 581's pass-through covers the egress path query on a same-dialect gemini route. 1.6.0 forwards the client's `?alt=sse` (plane-llm exchange/arrive.rs); translated routes are unchanged. The judge's transforms do not reach the egress record, so the class is forgiven on these four cells only."
     },
     {
-      "id": "OIDC-5 an explicit http jwks_url refuses boot",
-      "kind": "breaking",
-      "changelog": "1.6.0 Changed: the OIDC auth plugin refuses an explicit non-https `jwks_url` at boot; 1.5.5 booted and then failed every token at first use (it fetches the JWKS over https only).",
-      "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^egress\\.auth\\|login-hop\\|oidc$",
-      "expected_cells": 1,
-      "classes": [
-        "missing.candidate"
-      ],
-      "premise": {
-        "cell": "boot.refusal|BOOT-001|validate",
-        "status": 1
-      },
-      "rationale": "OWNER 2026-09-30 (busbar-auth-oidc 190164a) and 2026-10-24 (in session): signed as breaking for the one cell whose config writes an http jwks_url. The cell records nothing on 1.6.0 (boot refuses); row 194's premise on it is withheld."
-    },
-    {
       "id": "LOG-OWN export plugin log lines go to the plugin's own log file",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: an export plugin's log lines (its configuration refusals included) go to the plugin's own log file, not busbar.log.",
@@ -4136,7 +4137,7 @@
     {
       "id": "N34-WEBREQUEST plugin name busbar-webrequest -> busbar-hook-webrequest",
       "kind": "breaking",
-      "changelog": "Breaking, signed off by the owner (plugin fleet naming): every first-party plugin is named `busbar-<kind>-<name>`.",
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
