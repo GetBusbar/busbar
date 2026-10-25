@@ -783,9 +783,9 @@ impl HookCalls for HookInstance {
 struct Held<T>(T);
 // SAFETY: the pointers inside point at data the same future owns or lends to the op for its whole
 // life; one thread touches the future at a time.
-unsafe impl<T> Send for Held<T> {}
+unsafe impl Send for Held<NotifyIn> {}
 // SAFETY: as `Send`; it is only ever copied out of, never written through.
-unsafe impl<T: Copy> Sync for Held<T> {}
+unsafe impl Sync for Held<NotifyIn> {}
 impl<T: Copy> Held<T> {
     /// The value, copied (a method, so a closure captures the whole `Held`, never its field).
     fn get(&self) -> T {

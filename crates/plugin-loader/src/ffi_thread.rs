@@ -192,32 +192,37 @@ impl Drop for Lease {
     }
 }
 
-/// Borrow an idle worker, or create a new permanent one. Growing on demand (rather than capping) is
-/// what makes re-entrancy deadlock-free: plugin code that calls back into the loader takes a fresh
-/// worker instead of waiting for the one its own caller is occupying.
-fn acquire(pool: &'static Mutex<Pool>) -> Lease {
+/// [`acquire`], answering `None` instead of panicking when no thread can be started.
+fn try_acquire(pool: &'static Mutex<Pool>) -> Option<Lease> {
     {
         let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(idx) = p.idle.pop() {
-            return Lease {
+            return Some(Lease {
                 pool,
                 tx: p.all[idx].clone(),
                 idx,
-            };
+            });
         }
     }
     let (tx, rx) = sync_channel::<Job>(0);
     std::thread::Builder::new()
         .name("busbar-plugin-ffi".to_string())
         .spawn(move || worker(rx))
-        .expect("spawn a plugin FFI worker thread");
+        .ok()?;
     let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
     p.all.push(tx.clone());
-    Lease {
+    Some(Lease {
         pool,
         idx: p.all.len() - 1,
         tx,
-    }
+    })
+}
+
+/// Borrow an idle worker, or create a new permanent one. Growing on demand (rather than capping) is
+/// what makes re-entrancy deadlock-free: plugin code that calls back into the loader takes a fresh
+/// worker instead of waiting for the one its own caller is occupying.
+fn acquire(pool: &'static Mutex<Pool>) -> Lease {
+    try_acquire(pool).expect("spawn a plugin FFI worker thread")
 }
 
 /// Run `f` on a worker thread that will never exit, block until it finishes, and hand back what it
@@ -283,7 +288,12 @@ fn on_plugin_thread_in<F: FnOnce() -> R, R>(
 /// returned to the idle list when `f` ends. `f` owns everything it touches (`'static`), so the
 /// caller may go on (or go away) at once. A panic in `f` is caught on the worker and dropped.
 pub(crate) fn spawn_on_plugin_thread(f: impl FnOnce() + Send + 'static) {
-    let lease = acquire(pool());
+    let Some(lease) = try_acquire(pool()) else {
+        // No thread could be had for it: the job is dropped (what it owns is freed with it), and
+        // said; never a panic, as this runs from `Drop` too.
+        tracing::error!("no plugin thread could be started; a plugin job is dropped");
+        return;
+    };
     let tx = lease.tx.clone();
     let job = move || {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
