@@ -398,6 +398,15 @@ fn validate_config_command() -> i32 {
             return 1;
         }
     };
+    // The kernel hands back the contract's view of the registry this root's build made
+    // (`root::boot::registry_rows`); the stages below read the registry itself.
+    let Some(registry) = crate::root::loader::rows::registry_arc(registry) else {
+        eprintln!(
+            "[error] {}: the plugin rows are not this root's registry",
+            diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+        );
+        return 1;
+    };
 
     // STRICT SECRETS, `--validate` only. The pre-flight above is shared with boot and admin apply,
     // where an unresolvable secret WARNS by design. Here the operator is asking whether the config

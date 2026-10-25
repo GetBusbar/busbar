@@ -820,7 +820,7 @@ pub(crate) struct UnitState {
     /// The pool the unit's hooks were bound over (the walk's, else the plane's).
     hooked_pool: String,
     /// The hook that ordered or restricted the walk, for the opt-in transparency fields.
-    route_policy: Option<&'static str>,
+    route_policy: Option<std::sync::Arc<str>>,
     /// Why the kernel's Approve did not trust the unit's stated facts, for the plane's rendering.
     distrust: Option<Distrust>,
 }

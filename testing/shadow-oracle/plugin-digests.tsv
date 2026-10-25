@@ -47,7 +47,7 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # first-party (publisher busbar) by the run's throwaway oracle key, which the run's candidate embeds as its
 # release key (ARCHITECT ruling 2026-10-20, row 86: the oracle judges the production configuration). No
 # floating builds: every row is an exact commit. auth-oidc is the rev busbar's Cargo.lock links
-# (cc59d73, the workspace pin; 9ff64ff predated its memory-ABI door and was refused as a 1.5.5 JSON-contract plugin). A store is
+# (82b88d5, the workspace pin: busbar-auth-oidc #53, a loopback http jwks_url loads with a warning; 9ff64ff predated its memory-ABI door and was refused as a 1.5.5 JSON-contract plugin). A store is
 # pinned to the newest dev commit whose declares.json speaks the store contract ABI busbar supports (v3):
 # store-sqlite 59e3254 (its dev head 2026-10-19, back on v3 since its busbar pin 565f24f25e; it carries 5e6b6b0,
 # redeem_plane_token taking u64::MAX as 'never expires': e46e159 refused the boot's node-id claim with
@@ -62,7 +62,7 @@ store-postgres	src:2bfa17522f77c80c37c9b6de9019ded9d72ca1a8	build:busbar-store-p
 store-valkey	src:f37a6d9ee73b3f54669855885e6af1436f80b477	build:busbar-store-valkey	-	1.6
 store-mysql	src:cd609b8f3bcf3e8c13906ecef9471bd4556e3aa5	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:3c6baa9b5cd9d6758880ee837b0b66bb22fd0920	build:busbar-secret-vault	-	1.6
-auth-oidc	src:a75349ebcb41dc49edc3ff77605f4a6edb15b7b2	build:busbar-auth-oidc	-	1.6
+auth-oidc	src:82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab	build:busbar-auth-oidc	-	1.6
 auth-github	src:077388b9e3553d731e3bc7f4f0252e1abf8f2ef6	build:busbar-auth-github	-	1.6
 auth-ldap	src:cbc5d83e38604037eba85a56adc8ee650202f145	build:busbar-auth-ldap	-	1.6
 webrequest-hook	src:214bfc79b1a12f91f81bfa91c02f8e7e20e2d83f	build:busbar-hook-webrequest	-	1.6
