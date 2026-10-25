@@ -948,6 +948,18 @@ fn facts(
 }
 
 impl DriverSteps for DoorSteps<'_> {
+    /// Proceeds: the data listener's gates ran before the data door.
+    fn arrival(&self, _ctx: &UnitCtx) -> Result<busbar_contract::ArrivalRecord, Refusal> {
+        Ok(busbar_contract::ArrivalRecord {
+            source: String::new(),
+            port: 0,
+            alpn: None,
+            sni: None,
+            peer_cert: None,
+            transport_chain: Vec::new(),
+        })
+    }
+
     fn authenticate(&self, ctx: &UnitCtx) -> Result<Authenticated, Refusal> {
         match admission(self.key.as_ref(), self.open) {
             Admission::Refused => Err(Refusal::new(ReasonCode::Unauthenticated)),

@@ -950,7 +950,7 @@ pub async fn by_seats<'a, U: DoorSeats + ?Sized>(
                     });
                 // THE SCREEN BEFORE THE DOOR ([`RouteAwait::screen`]; a gate-first plane's hooks):
                 // a unit it stops is refused at Approve's seat, before anything is admitted.
-                screened_by(approved, door.screen(ctx), seal, ctx.call)
+                screened_by(approved, &door, ctx, seal)
                     .await
                     .and_then(|destinations| {
                         // The slip the door names its capped groups on, for the length of the one
@@ -1007,18 +1007,22 @@ async fn open_to_door<U: Units + ?Sized>(
 
 /// An approved unit's screen ([`RouteAwait::screen`]), its stop stamped at Approve's seat; a unit
 /// already refused is not screened.
-async fn screened_by(
+async fn screened_by<'d>(
     approved: Result<Vec<VerifiedDestination>, Refusal>,
-    screen: Option<Screen<'_>>,
+    door: &Door<'d>,
+    ctx: &'d UnitCtx,
     seal: &KernelSeal,
-    call: CallId,
 ) -> Result<Vec<VerifiedDestination>, Refusal> {
-    match (approved, screen) {
-        (Ok(destinations), Some(screen)) => screen
-            .await
-            .map(|()| destinations)
-            .map_err(|refusal| screened(seal, call, refusal)),
-        (approved, _) => approved,
+    match approved {
+        // The screen is built here, for an approved unit, and nowhere else.
+        Ok(destinations) => match door.screen(ctx) {
+            Some(screen) => screen
+                .await
+                .map(|()| destinations)
+                .map_err(|refusal| screened(seal, ctx.call, refusal)),
+            None => Ok(destinations),
+        },
+        Err(refusal) => Err(refusal),
     }
 }
 

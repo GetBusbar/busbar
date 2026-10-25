@@ -77,12 +77,16 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 // THE SCREEN BEFORE THE DOOR ([`crate::teller::RouteAwait::screen`]), built only
                 // for an approved unit: a unit it stops is refused at Approve's seat, before
                 // anything is admitted.
-                let screened = match (approved, door.screen(ctx)) {
-                    (Ok(destinations), Some(screen)) => screen
-                        .await
-                        .map(|()| destinations)
-                        .map_err(stamped::<Approve>(seal, call)),
-                    (approved, _) => approved,
+                let screened = match approved {
+                    Ok(destinations) => match door.screen(ctx) {
+                        Some(screen) => screen.await.map(|()| destinations).map_err(stamped::<
+                            Approve,
+                        >(
+                            seal, call
+                        )),
+                        None => Ok(destinations),
+                    },
+                    Err(refusal) => Err(refusal),
                 };
                 screened.and_then(|destinations| {
                     let groups = GroupLeaseSlip::new();

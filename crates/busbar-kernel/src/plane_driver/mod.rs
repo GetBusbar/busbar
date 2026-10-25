@@ -693,18 +693,8 @@ pub fn sticky_hash(key: &[u8]) -> u64 {
 /// refusal here is the seat's refusal. The plane's own seats (decode, route, encode) are the
 /// driver's and never reach these steps.
 pub trait DriverSteps {
-    /// The kernel's own gate, for a unit the data listener's gates already admitted: proceeds with
-    /// an empty arrival record by default.
-    fn arrival(&self, _ctx: &UnitCtx) -> Result<busbar_contract::ArrivalRecord, Refusal> {
-        Ok(busbar_contract::ArrivalRecord {
-            source: String::new(),
-            port: 0,
-            alpn: None,
-            sni: None,
-            peer_cert: None,
-            transport_chain: Vec::new(),
-        })
-    }
+    /// The kernel's own gate, for a unit the data listener's gates already admitted.
+    fn arrival(&self, ctx: &UnitCtx) -> Result<busbar_contract::ArrivalRecord, Refusal>;
 
     /// Who is calling.
     fn authenticate(&self, ctx: &UnitCtx) -> Result<Authenticated, Refusal>;
