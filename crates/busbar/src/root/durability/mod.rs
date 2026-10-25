@@ -61,6 +61,7 @@ use busbar_kernel_wal::{
 /// host's write-behind lane. A private child module; its public items are re-exported here.
 mod store_chain;
 pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
+pub(crate) use store_chain::off_runtime;
 // Its one caller is the admin append's wait on the store (`units_admin`), compiled with `root-admin`.
 #[cfg(feature = "root-admin")]
 pub use store_chain::ACK_DEADLINE;
@@ -306,7 +307,7 @@ impl Durability {
         Some((
             lane.clone(),
             self.journal.node(),
-            seal::keyset_of(&self.record),
+            keyset_of(&self.record),
         ))
     }
 

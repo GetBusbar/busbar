@@ -1741,7 +1741,7 @@ impl<U: Units> Units for Borrowed<'_, U> {
         &self,
         ctx: &UnitCtx,
         accrual: &busbar_contract::caps::HoldAccrual,
-    ) -> Result<u64, Refusal> {
+    ) -> Result<(), Refusal> {
         self.units.at_parent_exit(ctx, accrual)
     }
 }

@@ -709,7 +709,7 @@ impl JournalLane {
 
 /// Run a wait that blocks this thread: on a multi-threaded runtime's worker it first hands the
 /// worker's other tasks on, so no task queued behind it waits on the store.
-pub(super) fn off_runtime<T>(wait: impl FnOnce() -> T) -> T {
+pub(crate) fn off_runtime<T>(wait: impl FnOnce() -> T) -> T {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
             tokio::task::block_in_place(wait)
