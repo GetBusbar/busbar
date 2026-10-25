@@ -38,6 +38,6 @@ impl Cred {
         )
         .map_err(|_| Refused("RS256 signing failed"))?;
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&*sig);
-        Ok(Seal::new(Zeroizing::new(encoded.into_bytes())))
+        Ok(self.seal(Zeroizing::new(encoded.into_bytes())))
     }
 }

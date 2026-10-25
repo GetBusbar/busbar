@@ -90,8 +90,12 @@ impl CredUrl {
         } else {
             (text.to_owned(), None)
         };
+        let secure = secure_requested(&public);
         let (password, at) = match found {
-            Some((b, at)) => (Some(Cred::from_bytes(b)), Some(at)),
+            Some((b, at)) => {
+                let c = Cred::from_bytes(b);
+                (Some(if secure { c.require_secure() } else { c }), Some(at))
+            }
             None => (None, None),
         };
         Ok(Self {
@@ -104,6 +108,60 @@ impl CredUrl {
 
 type Bytes = Zeroizing<Vec<u8>>;
 type Found = (Bytes, PasswordAt);
+
+/// Whether the operator's text (its password already taken out) asks for a secure connection: a
+/// secure scheme (`https`, `rediss`, `ldaps`, …), or a TLS mode that refuses cleartext
+/// (`sslmode=require|verify-ca|verify-full`, `ssl-mode=REQUIRED|VERIFY_CA|VERIFY_IDENTITY`,
+/// `ssl=true`, `tls=true`), in a URL query or a key=value string. A unix-socket host asks for
+/// nothing: its drivers never secure one, whatever the mode says.
+fn secure_requested(public: &str) -> bool {
+    if super::secure_scheme(public) {
+        return true;
+    }
+    let lower = public.to_ascii_lowercase();
+    if lower.starts_with("unix:") {
+        return false;
+    }
+    let (head, params) = match lower.find("://") {
+        Some(i) => {
+            let rest = &lower[i + 3..];
+            match rest.split_once('?') {
+                Some((h, q)) => (h, q.split('&').collect::<Vec<_>>()),
+                None => (rest, Vec::new()),
+            }
+        }
+        None => ("", lower.split_whitespace().collect::<Vec<_>>()),
+    };
+    let authority = head.split('/').next().unwrap_or_default();
+    let host_is_socket = authority
+        .rsplit('@')
+        .next()
+        .is_some_and(|h| h.starts_with("%2f") || h.starts_with('/'));
+    let mut wants = false;
+    for p in params {
+        let Some((k, v)) = p.split_once('=') else {
+            continue;
+        };
+        let v = v.trim_matches(['\'', '"']);
+        match k.trim() {
+            "host" if v.starts_with('/') || v.starts_with("%2f") => return false,
+            "sslmode" | "ssl-mode" | "ssl_mode" => {
+                wants |= matches!(
+                    v,
+                    "require"
+                        | "verify-ca"
+                        | "verify-full"
+                        | "required"
+                        | "verify_ca"
+                        | "verify_identity"
+                );
+            }
+            "ssl" | "tls" => wants |= v == "true",
+            _ => {}
+        }
+    }
+    wants && !host_is_socket
+}
 
 const TWO: &str = "a URL with one password (userinfo or `password=`, not both)";
 

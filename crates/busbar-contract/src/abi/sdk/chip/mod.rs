@@ -202,14 +202,14 @@ fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> Zeroizing<[u8
 impl Cred {
     /// The credential as a field value, unchanged (an API key header).
     pub fn field(&self) -> Seal {
-        Seal::new(Zeroizing::new(self.wire().to_vec()))
+        self.seal(Zeroizing::new(self.wire().to_vec()))
     }
 
     /// `Bearer <credential>`.
     pub fn bearer(&self) -> Seal {
         let mut v = Zeroizing::new(b"Bearer ".to_vec());
         v.extend_from_slice(self.wire());
-        Seal::new(v)
+        self.seal(v)
     }
 
     /// `Basic base64(user:credential)` (RFC 7617; the user's octets as they are).
@@ -221,13 +221,13 @@ impl Cred {
         pair.extend_from_slice(self.wire());
         let mut v = Zeroizing::new(b"Basic ".to_vec());
         v.extend_from_slice(&b64(&pair));
-        Seal::new(v)
+        self.seal(v)
     }
 
     /// HMAC-SHA256 of `data` keyed by the credential, as lowercase hex.
     pub fn hmac_sha256_hex(&self, data: &[u8]) -> Seal {
         let mac = hmac_sha256(self.wire(), data);
-        Seal::new(Zeroizing::new(hex::encode(&mac[..]).into_bytes()))
+        self.seal(Zeroizing::new(hex::encode(&mac[..]).into_bytes()))
     }
 
     /// Whether `signature` is HMAC-SHA256 of `data` under the credential (constant time).
@@ -269,7 +269,7 @@ impl Cred {
 
     /// Postgres `PasswordMessage` carrying the password in clear (AuthenticationCleartextPassword).
     pub fn pg_password_message(&self) -> Seal {
-        pg_message(self.wire())
+        pg_message(self, self.wire())
     }
 
     /// Postgres `PasswordMessage` for AuthenticationMD5Password:
@@ -280,7 +280,7 @@ impl Cred {
         let outer = digests::md5(&[&inner_hex, &salt]);
         let mut body = Zeroizing::new(b"md5".to_vec());
         body.extend_from_slice(hex::encode(&outer[..]).as_bytes());
-        pg_message(&body)
+        pg_message(self, &body)
     }
 
     /// Postgres `SASLResponse` carrying the SCRAM-SHA-256 client-final message (RFC 5802, 7677),
@@ -299,7 +299,7 @@ impl Cred {
     ) -> Result<(Seal, ScramLink), Refused> {
         let (client_final, link) =
             self.scram_sha256(client_first_bare, server_first, channel_binding)?;
-        Ok((pg_message_raw(&client_final), link))
+        Ok((pg_message_raw(self, &client_final), link))
     }
 
     fn scram_sha256(
@@ -372,7 +372,7 @@ impl Cred {
             out.extend_from_slice(a);
             out.extend_from_slice(b"\r\n");
         }
-        Seal::new(out)
+        self.seal(out)
     }
 
     /// An LDAP simple `BindRequest` (RFC 4511 4.2) for `dn`, message id `id`, whole.
@@ -386,7 +386,7 @@ impl Cred {
         ber_tlv(&mut content, 0x60, &op);
         let mut out = Zeroizing::new(Vec::new());
         ber_tlv(&mut out, 0x30, &content);
-        Seal::new(out)
+        self.seal(out)
     }
 
     fn mysql_scramble(&self, auth: MysqlAuth, nonce: &[u8]) -> Bytes {
@@ -479,7 +479,7 @@ impl Cred {
                 p.extend_from_slice(v);
             }
         }
-        mysql_packet(h.seq, &p).map(Seal::new)
+        mysql_packet(h.seq, &p).map(|b| self.seal(b))
     }
 
     /// A MySQL auth-switch response packet for `auth` over the switch request's `nonce`, whole.
@@ -493,7 +493,7 @@ impl Cred {
         nonce: &[u8],
     ) -> Result<Seal, Refused> {
         let scramble = self.mysql_scramble(auth, nonce);
-        mysql_packet(seq, &scramble).map(Seal::new)
+        mysql_packet(seq, &scramble).map(|b| self.seal(b))
     }
 
     /// A MySQL packet carrying the password in clear, NUL-terminated: `caching_sha2_password` full
@@ -504,7 +504,7 @@ impl Cred {
     pub fn mysql_clear_packet(&self, seq: u8) -> Result<Seal, Refused> {
         let mut p = Zeroizing::new(self.wire().to_vec());
         p.push(0);
-        mysql_packet(seq, &p).map(Seal::new)
+        mysql_packet(seq, &p).map(|b| self.seal(b))
     }
 }
 
@@ -534,7 +534,7 @@ impl Cred {
             *b ^= nonce[i % nonce.len()];
         }
         let ct = rsa::oaep_sha1(&plain, server_key_pem, &seed)?;
-        mysql_packet(seq, &ct).map(Seal::new)
+        mysql_packet(seq, &ct).map(|b| self.seal(b))
     }
 }
 
@@ -573,18 +573,18 @@ fn scramble_323(nonce: &[u8], password: &[u8]) -> Bytes {
     out
 }
 
-fn pg_message(body: &[u8]) -> Seal {
+fn pg_message(c: &Cred, body: &[u8]) -> Seal {
     let mut b = Zeroizing::new(body.to_vec());
     b.push(0);
-    pg_message_raw(&b)
+    pg_message_raw(c, &b)
 }
 
-fn pg_message_raw(body: &[u8]) -> Seal {
+fn pg_message_raw(c: &Cred, body: &[u8]) -> Seal {
     let mut out = Zeroizing::new(Vec::with_capacity(body.len() + 5));
     out.push(b'p');
     out.extend_from_slice(&((body.len() + 4) as i32).to_be_bytes());
     out.extend_from_slice(body);
-    Seal::new(out)
+    c.seal(out)
 }
 
 #[cfg(test)]
