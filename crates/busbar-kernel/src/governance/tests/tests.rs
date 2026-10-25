@@ -698,6 +698,9 @@ fn test_refresh_updates_both_indices_atomically() {
         crate::governance::signing::DEFAULT_KID,
     );
     let gov = GovState::new_with_signer(store, None, Some(signer)).unwrap();
+    gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+        &[3u8; 32], None,
+    )));
     let (key, _token, akid, _secret) = gov
         .mint_signed_with_credential(
             NewKeySpec {
@@ -2999,9 +3002,13 @@ mod signed_token {
     fn gov() -> Arc<GovState> {
         let store = Arc::new(MemoryStore::new());
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
-        Arc::new(
-            GovState::new_with_signer(store, Some("admintok".into()), Some(signer)).expect("gov"),
-        )
+        let g =
+            GovState::new_with_signer(store, Some("admintok".into()), Some(signer)).expect("gov");
+        // `credentials.at_rest`: a recoverable credential is minted only with an at-rest key.
+        g.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+            &[3u8; 32], None,
+        )));
+        Arc::new(g)
     }
 
     fn spec(name: &str, group: Option<&str>, pools: Option<Vec<&str>>) -> NewKeySpec {
@@ -3258,8 +3265,8 @@ mod signed_token {
     /// The two one-time secrets `mint_signed_with_credential` hands back (the bearer token and the AWS
     /// secret access key) are sealed: a `{:?}` or `{}` of either, or a `{:?}` of the whole returned
     /// tuple, never carries the plaintext (DESIGN #54: secret material Debug/Display => REDACTED).
-    /// The stored credential row still holds the exact plaintext, so SigV4 verification and the
-    /// admin response bytes are unchanged.
+    /// The stored credential row holds it sealed under the at-rest key, and the read opens it, so
+    /// SigV4 verification and the admin response bytes are unchanged.
     #[test]
     fn mint_with_aws_secrets_never_print() {
         let g = gov();

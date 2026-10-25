@@ -609,3 +609,54 @@ auth:
         "the refusal names the field and says why `none` is wrong there; got: {errors:?}"
     );
 }
+
+/// `credentials.at_rest` (1.6.0, lifted off the frozen top-level struct): its `key` and `previous`
+/// are walked, so `--validate` resolves both as boot does, and `none` on either is refused — an
+/// at-rest key has no credential-free mode. A misspelt key under the block is refused by name.
+#[test]
+fn the_at_rest_keys_are_walked_and_refuse_none() {
+    let yaml = r#"
+listen: "127.0.0.1:8080"
+providers: {}
+models: {}
+auth:
+  chain: []
+  admin_auth: []
+credentials:
+  at_rest:
+    key: { file: /run/secrets/busbar-at-rest.key }
+    previous: { env: BUSBAR_TEST_NEVER_SET_AT_REST_PREVIOUS }
+"#;
+    let deploy = crate::config::deploy_from_yaml_str(yaml).expect("the fixture must parse");
+    let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
+        .expect("the fixture config must resolve");
+    for walk in [
+        super::secret_refs(&cfg),
+        super::boot_resolved_secret_refs(&cfg),
+    ] {
+        let paths: Vec<String> = walk.into_iter().map(|(p, _)| p).collect();
+        for want in ["credentials.at_rest.key", "credentials.at_rest.previous"] {
+            assert!(
+                paths.iter().any(|p| p == want),
+                "{want} is not walked: {paths:?}"
+            );
+        }
+    }
+
+    let mut cfg = cfg;
+    cfg.credentials.at_rest.as_mut().expect("at_rest").key = crate::config::SecretRef::none();
+    let errors = crate::config_validate::validate(&cfg)
+        .expect_err("`none` on credentials.at_rest.key must be refused");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("credentials.at_rest.key") && e.contains("NO credential")),
+        "{errors:?}"
+    );
+
+    let misspelt = yaml.replace("previous:", "previos:");
+    let e = crate::config::deploy_from_yaml_str(&misspelt)
+        .expect_err("an unknown key under credentials.at_rest is refused")
+        .to_string();
+    assert!(e.contains("previos"), "{e}");
+}

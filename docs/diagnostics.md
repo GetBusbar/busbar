@@ -2000,6 +2000,39 @@ A unit's drained usage report named a class that no installed plane declares as 
 
 **What to do:** The plane that served the unit reported a class outside its declaration, which is a plugin defect: upgrade or fix the plane so it declares every class it reports, or configure the class under the lane's `units:` if it is an operator-priced open class.
 
+<a id="credential-at-rest-unopenable"></a>
+### BUSBAR-8023 — A stored recoverable credential opens under neither at-rest key (it does not authenticate)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `credential-at-rest-unopenable`
+
+A recoverable credential (a signed-request secret) is stored sealed under an at-rest key whose kid matches neither credentials.at_rest.key nor credentials.at_rest.previous on this node, or its row was altered. It answers as an unknown credential: requests signed with it are refused. The refusal is audited once per kid.
+
+**What to do:** Configure the key with the named kid as credentials.at_rest.previous (or as key) on every node that shares the store, and reload. A credential whose key is lost cannot be recovered: re-mint it.
+
+<a id="credential-at-rest-rewrap-pending"></a>
+### BUSBAR-8024 — Recoverable credentials are not yet re-sealed under the current at-rest key
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `credential-at-rest-rewrap-pending`
+
+A boot or reload re-seals every stored recoverable credential sealed under credentials.at_rest.previous (or stored in the clear before 1.6.0) under credentials.at_rest.key. Some rows were not re-sealed on this pass: another node held their claim, the store keeps no claims, or the store refused the write. They still authenticate under the key they were sealed under.
+
+**What to do:** Keep credentials.at_rest.previous configured until a boot or reload re-seals them all (no further warning). If it persists on a single node, check that the store supports single-use claims and accepts credential writes.
+
+<a id="credential-at-rest-legacy-plain"></a>
+### BUSBAR-8025 — A recoverable credential written before 1.6.0 is stored in the clear
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `credential-at-rest-legacy-plain`
+
+A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as v1:plain. It still authenticates. A boot or reload with credentials.at_rest.key configured re-seals it under that key.
+
+**What to do:** Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear.
+
 ## 9xxx — Boot & lifecycle
 
 <a id="boot-audit-restore-read-failed"></a>

@@ -650,6 +650,18 @@ pub(crate) async fn create_key(
             Cond::NoSigningKey,
         );
     }
+    // A RECOVERABLE credential (`issue_aws_credential`) is stored sealed under the at-rest key
+    // (`credentials.at_rest`). Without one, refuse before anything is written, saying what to
+    // configure; the refusal is audited like every other mint refusal. It rides the declared
+    // `Conflict / NoSigningKey` condition (a mint key the config does not provide), so the frozen
+    // error taxonomy and openapi document stay as 1.5.5 published them.
+    if req.issue_aws_credential && !gov.at_rest_enabled() {
+        return key_err(
+            who,
+            &AdminError::Conflict(busbar_kernel::governance::at_rest::NO_KEY_REFUSAL.to_string()),
+            Cond::NoSigningKey,
+        );
+    }
     // `expires_in` and `expires_at` are mutually exclusive; resolve the token expiry (Unix secs).
     // `explicit` records whether the operator NAMED a lifetime (so the policy ceiling refuses an
     // over-ask but only clamps the default — see `apply_mint_ttl_ceiling`).

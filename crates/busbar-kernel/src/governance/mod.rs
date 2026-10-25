@@ -760,6 +760,11 @@ pub struct GovState {
     /// secret and reloading silently kept minting and accepting tokens under the old key. Read as an
     /// `Arc` clone on the verify hot path, so the lock is held only for the clone.
     signing: RwLock<Option<Arc<SigningMaterial>>>,
+    /// The AT-REST KEYS a recoverable credential is sealed under (`credentials.at_rest`, see
+    /// [`at_rest`]): `None` until boot resolves them, and on a node that configures none (which
+    /// then refuses to mint one). RE-SETTABLE (`set_at_rest_keys`) for the same reason as
+    /// `signing`: a reload that rotates them must take effect.
+    at_rest: RwLock<Option<Arc<at_rest::AtRestKeys>>>,
     /// The revocation DENYLIST as an in-memory set of subject ids, hydrated from the store at boot,
     /// updated live on revoke, and RE-HYDRATED from the store on a bounded TTL (see
     /// [`REVOCATION_SYNC_TTL_SECS`]). A verified token whose `sub` is present is rejected - the ONLY
@@ -812,8 +817,6 @@ pub struct GovState {
 pub struct SigningMaterial {
     signer: crate::governance::signing::TokenSigner,
     verifier: crate::governance::signing::TokenVerifier,
-    /// The key recoverable credentials are sealed under at rest, derived from the signing key.
-    kek: at_rest::CredentialKek,
 }
 
 impl SigningMaterial {
@@ -821,13 +824,7 @@ impl SigningMaterial {
     fn new(signer: crate::governance::signing::TokenSigner) -> Self {
         let verifier =
             crate::governance::signing::TokenVerifier::single(signer.kid(), signer.verifying_key());
-        let material = zeroize::Zeroizing::new(signer.secret_bytes());
-        let kek = at_rest::CredentialKek::derive(signer.kid(), &material[..]);
-        Self {
-            signer,
-            verifier,
-            kek,
-        }
+        Self { signer, verifier }
     }
 }
 
