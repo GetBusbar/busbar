@@ -53,7 +53,7 @@ const fn post_row(path: &'static str, verb: &'static str) -> VerbEntry {
     }
 }
 
-/// The 12 1.6.0-additive kernel verbs: the 9 money-governance verbs (the first eight carry the
+/// The 14 1.6.0-additive kernel verbs: the 9 money-governance verbs (the first eight carry the
 /// synthetic HTTP binding flagged in the module doc; the ninth, `amend_rate_history`, carries the
 /// design's own binding under `/ledger/`) and the three trust verbs, under the ruling's own paths.
 const NEW_VERBS_1_6_0: &[VerbEntry] = &[
@@ -78,6 +78,10 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
         "/api/v1/admin/ledger/amend-rate-history",
         "amend_rate_history",
     ),
+    // The rate-card history's two operator verbs (MONEY-DESIGN §3a), beside the amend under
+    // `/ledger/`: both write the history, so both are `full`.
+    post_row("/api/v1/admin/ledger/card/void", "card_void"),
+    post_row("/api/v1/admin/ledger/card/abandon", "card_abandon"),
     // The operator's trust decisions over the kernel's trust book (ARCHITECT 2026-10-06): one
     // generic verb set, counterparty-phrased, its paths the ruling's own.
     get_row("/api/v1/admin/trust", "get_trust"),
@@ -134,10 +138,11 @@ const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
     get_row("/api/v1/admin/audit/keys", "get_audit_keys"),
 ];
 
-/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 12 1.6.0 kernel
-/// verbs (the nine money-governance verbs and the three trust verbs), the 5 1.6.0 ledger views,
+/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 14 1.6.0 kernel
+/// verbs (the nine money-governance verbs, the two rate-card history verbs and the three trust
+/// verbs), the 5 1.6.0 ledger views,
 /// and the 3 audit-chain reads.
-pub(crate) const VERB_COUNT: usize = 66 + 12 + 5 + 3;
+pub(crate) const VERB_COUNT: usize = 66 + 14 + 5 + 3;
 
 // ── THE ROWS AND THEIR NAMES CANNOT DRIFT, AND THE COMPILER IS WHAT SAYS SO ────────────────────
 //

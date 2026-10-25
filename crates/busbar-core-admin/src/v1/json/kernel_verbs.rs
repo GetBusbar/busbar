@@ -474,6 +474,26 @@ pub(crate) struct AmendRateHistoryView {
     reason_sha256: String,
 }
 
+/// `POST /ledger/card/void`'s body: the entry to void.
+#[cfg(feature = "openapi-schema")]
+#[derive(Deserialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct CardVoidReq {
+    /// The entry's key, 40 lowercase hex characters.
+    key: String,
+}
+
+/// `POST /ledger/card/void` and `/ledger/card/abandon`'s answer: the entry acted on.
+#[cfg(feature = "openapi-schema")]
+#[derive(Serialize, JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct CardVerbView {
+    /// The entry's key, 40 lowercase hex characters.
+    key: String,
+    /// `voided` or `abandoned`.
+    outcome: String,
+}
+
 /// `GET /verify`: everything that has to be true of this node's ledger, checked. A failed
 /// verification is still a `200`; `ok` is the answer.
 #[cfg(feature = "openapi-schema")]
@@ -1117,6 +1137,52 @@ fn doc_for(
                 unavailable_503(
                     "the node could not take the unit, or no amendment journal will record it",
                 ),
+            ],
+        },
+        KernelVerb::CardVoid => VerbDoc {
+            summary: "Void a rate-card history entry whose start is still in the future",
+            description: "`card void <key>`: the entry is never in force, and its id stays known, so \
+                          counts already posted under it keep its card. Refused once its start is \
+                          past by this node's clock. Audited."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<CardVerbView>()),
+                "The entry that was voided",
+            ),
+            request: Some(schema_of(req_gen.subschema_for::<CardVoidReq>())),
+            query: Vec::new(),
+            errors: vec![
+                (
+                    "400",
+                    format!(
+                        "`invalid_request`: no `key`, a key that is not 40 hex characters, an \
+                         entry this node does not hold, an entry already in force, or \
+                         {BODY_UNREADABLE}"
+                    ),
+                ),
+                gated_403(),
+                unavailable_503("the store did not take the VOID record"),
+            ],
+        },
+        KernelVerb::CardAbandon => VerbDoc {
+            summary: "Abandon this node's pending rate-card entry",
+            description: "`card abandon`: stop re-putting the entry the store has not confirmed, \
+                          void it, and reopen admissions at the history's card. The VOID is kept \
+                          in the node's spool and re-put until the store confirms it. Audited."
+                .to_string(),
+            success: Success::Json(
+                schema_of(gen.subschema_for::<CardVerbView>()),
+                "The entry that was abandoned",
+            ),
+            request: None,
+            query: Vec::new(),
+            errors: vec![
+                (
+                    "400",
+                    "`invalid_request`: no rate-card entry is pending on this node".to_string(),
+                ),
+                gated_403(),
+                unavailable_503("the node's spool could not record the abandon"),
             ],
         },
 
