@@ -35,13 +35,24 @@ const CEILING: u64 = 24 * FRAME_BYTES as u64;
 /// What a power cut leaves: each segment's bytes as of its last completed sync.
 type Synced = Arc<Mutex<BTreeMap<u64, Vec<u8>>>>;
 
+/// The segments whose sync has failed once. Shared by every backing the factory hands out, so a
+/// segment reopened under the same index stays failed.
+type Failed = Arc<Mutex<std::collections::HashSet<u64>>>;
+
 /// A memory backing that copies its bytes to the synced image only when a sync completes, and can
 /// be told to fail its next sync.
+///
+/// AFTER A FAILED SYNC THE SEGMENT'S SYNCED IMAGE IS FROZEN. A kernel may drop the dirty pages of a
+/// file whose fsync returned EIO and report the next fsync as a success ("fsyncgate"), so nothing
+/// written to that segment before or after the failure counts as durable. A later `sync` answers
+/// `Ok` and snapshots nothing. A log that kept the failed batch on the poisoned segment, or marked it
+/// written instead of rewriting it on a fresh one, loses it here.
 struct PowerCutBackend {
     index: u64,
     written: MemorySegment,
     synced: Synced,
     fail_next_sync: Arc<Mutex<bool>>,
+    failed: Failed,
 }
 
 impl SegmentBackend for PowerCutBackend {
@@ -51,7 +62,11 @@ impl SegmentBackend for PowerCutBackend {
 
     fn sync(&mut self) -> io::Result<()> {
         if std::mem::take(&mut *self.fail_next_sync.lock().unwrap()) {
+            self.failed.lock().unwrap().insert(self.index);
             return Err(io::Error::other("simulated EIO at the sync point"));
+        }
+        if self.failed.lock().unwrap().contains(&self.index) {
+            return Ok(());
         }
         self.synced
             .lock()
@@ -79,6 +94,7 @@ struct PowerCutFactory {
     written: MemoryFactory,
     synced: Synced,
     fail_next_sync: Arc<Mutex<bool>>,
+    failed: Failed,
 }
 
 impl PowerCutFactory {
@@ -87,6 +103,7 @@ impl PowerCutFactory {
             written: MemoryFactory::retaining(),
             synced: Arc::default(),
             fail_next_sync: Arc::default(),
+            failed: Arc::default(),
         }
     }
 
@@ -110,6 +127,7 @@ impl SegmentFactory for PowerCutFactory {
             written: MemorySegment::over(self.written.segment_bytes(index)),
             synced: Arc::clone(&self.synced),
             fail_next_sync: Arc::clone(&self.fail_next_sync),
+            failed: Arc::clone(&self.failed),
         }))
     }
 
