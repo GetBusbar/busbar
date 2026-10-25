@@ -266,6 +266,7 @@ extern "C" {
 #define BB_HOOK_SLOT_STATUS UINT32_C(13) /* `status`. */
 #define BB_HOOK_SLOT_DESCRIBE UINT32_C(14) /* `describe`. */
 #define BB_HOOK_SLOT_SERVE UINT32_C(15) /* `serve`. */
+#define BB_HOOK_KIND_SLOTS UINT32_C(7) /* How many kind slots the table holds after the lifecycle. */
 #define BB_HOOK_SLOTS UINT32_C(16) /* How many slots the hook kind's whole table holds (the lifecycle plus its seven own ops). */
 #define BB_HOOK_SIGNAL_REQUESTED_MODEL UINT32_C(0) /* OLD `Signal::RequestedModel`. */
 #define BB_HOOK_SIGNAL_REQUEST_TOTAL_CHARS UINT32_C(1) /* OLD `Signal::RequestTotalChars`. */
@@ -2209,7 +2210,7 @@ struct bb_auth_TargetOut {
     bb_mech_Span target;
 };
 
-/* The hook kind's ops table. Leads with the shared [`OpsHead`]; kind op `k` is at slot index */
+/* The kind's ops table. */
 struct bb_hook_Ops {
     bb_mech_OpsHead head;
     bb_mech_Op decide;

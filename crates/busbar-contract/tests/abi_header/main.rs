@@ -4,6 +4,10 @@
 //! generated C header alone. These tests pin what the generator maps, how it names and orders what
 //! it maps, and that it FAILS, naming the item, on what it cannot map.
 
+// The kind declaration grammar, read here as `busbar_abi_macros::kind!` reads it.
+#[path = "../../../busbar-abi-macros/src/decl.rs"]
+#[allow(dead_code)]
+mod decl;
 mod render;
 
 use render::{first_difference, render_sources, Src};

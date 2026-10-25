@@ -1,0 +1,16 @@
+[package]
+name = "busbar-abi-macros"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "The one declaration per plugin kind: generates each kind's slot table and its per-op glue."
+license = "Apache-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }

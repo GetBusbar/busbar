@@ -110,6 +110,8 @@ crate-type = ["cdylib"]
 # `unicode-normalization`, `unicode-joining-type` and `tinyvec`: pure tables and string code, none
 # opens anything or reaches `libc`.
 [dependencies]
+# The one declaration per plugin kind (`abi/<kind>/mod.rs`): a proc-macro, compile time only.
+busbar-abi-macros = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # The section-map split (`section`) reads a plane's section as YAML values, in insertion order.

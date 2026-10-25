@@ -9,16 +9,18 @@
 //! class and grants, its `MARK_WORD_HOOK` words) are read once at bind into [`HookFacts`].
 
 use busbar_contract::abi::hook::{
-    self, slot, validate, ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn,
-    ServeIn, ServeOut, StatusOut, Tail, TransformOut, CLASS_GATE, CLASS_TAP, PROMPT_RW, USER_RO,
+    self, ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn, ServeIn, ServeOut,
+    StatusOut, Tail, TransformOut, CLASS_GATE, CLASS_TAP, PROMPT_RW, USER_RO,
 };
-use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_HOOK};
 use busbar_contract::abi::mechanism::KindCode;
 pub use busbar_contract::hook_calls::HookFacts;
 
-use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
+use crate::dispatch::{
+    declared_check, declared_name, declared_short, Answer, Context, InFrame, Kind, OutFrame,
+};
 
 /// A `'static` Statement string, copied; `None` when malformed.
 fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
@@ -115,73 +117,14 @@ impl Kind for Hook {
     }
 
     fn op_name(s: u32) -> &'static str {
-        match s {
-            slot::DECIDE => "decide",
-            slot::TRANSFORM => "transform",
-            slot::NOTIFY => "notify",
-            slot::CONFIGURE => "configure",
-            slot::STATUS => "status",
-            slot::DESCRIBE => "describe",
-            slot::SERVE => "serve",
-            _ => lifecycle_name(s),
-        }
+        declared_name::<hook::Ops>(s)
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {
-        match a.slot {
-            slot::DECIDE => {
-                let i = a.input::<DecideIn>()?;
-                validate::check_decide(
-                    a.out::<DecideOut>()?,
-                    i.reject_message_cap,
-                    i.restrict_tags_cap,
-                    i.order_cap,
-                )
-            }
-            slot::TRANSFORM => {
-                let i = a.input::<DecideIn>()?;
-                validate::check_transform(
-                    a.out::<TransformOut>()?,
-                    i.reject_message_cap,
-                    i.rewrite_cap,
-                )
-            }
-            slot::NOTIFY => {
-                a.input::<NotifyIn>()?;
-                validate::check_notify(a.out::<OutHead>()?)
-            }
-            slot::CONFIGURE => validate::check_configure(
-                a.out::<ConfigureOut>()?,
-                a.input::<ConfigureIn>()?.version,
-            ),
-            slot::STATUS => {
-                a.input::<InHead>()?;
-                validate::check_status(a.out::<StatusOut>()?)
-            }
-            slot::DESCRIBE => {
-                a.input::<InHead>()?;
-                validate::check_describe(a.out::<DescribeOut>()?)
-            }
-            slot::SERVE => {
-                a.input::<ServeIn>()?;
-                validate::check_serve(a.out::<ServeOut>()?)
-            }
-            _ => Ok(()),
-        }
+        declared_check::<hook::Ops>(a)
     }
 
     fn short(a: &Answer) -> bool {
-        if a.outcome != Outcome::Failed {
-            return false;
-        }
-        match a.slot {
-            slot::DECIDE => a.out::<DecideOut>().is_ok_and(|o| {
-                o.reject_message_needed != 0 || o.restrict_tags_needed != 0 || o.order_needed != 0
-            }),
-            slot::TRANSFORM => a
-                .out::<TransformOut>()
-                .is_ok_and(|o| o.reject_message_needed != 0 || o.rewrite_needed != 0),
-            _ => false,
-        }
+        declared_short::<hook::Ops>(a)
     }
 }

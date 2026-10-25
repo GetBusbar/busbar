@@ -357,6 +357,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-abi-macros"
+version = "1.6.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
 source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=b1337ce8805b1f9ee2e3f83bbf907e232559191f#b1337ce8805b1f9ee2e3f83bbf907e232559191f"
@@ -457,6 +466,7 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "busbar-abi-macros",
  "futures",
  "hex",
  "http",

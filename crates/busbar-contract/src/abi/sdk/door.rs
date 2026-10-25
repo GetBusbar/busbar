@@ -268,10 +268,6 @@ unsafe impl KindOps for crate::abi::auth::Ops {
     const KIND: KindCode = KindCode::Auth;
     type Lifecycle = Lifecycle;
 }
-unsafe impl KindOps for crate::abi::hook::Ops {
-    const KIND: KindCode = KindCode::Hook;
-    type Lifecycle = Lifecycle;
-}
 unsafe impl KindOps for crate::abi::export::Ops {
     const KIND: KindCode = KindCode::Export;
     type Lifecycle = Lifecycle;

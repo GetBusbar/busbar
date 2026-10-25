@@ -72,6 +72,7 @@ use busbar_contract::abi::mechanism::call::{
     Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT,
 };
 use busbar_contract::abi::mechanism::check::Fault;
+use busbar_contract::abi::mechanism::decl::KindDecl;
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReadyIn, RefreshIn, ReleaseIn,
@@ -285,6 +286,26 @@ pub fn lifecycle_name(slot: u32) -> &'static str {
         s::READY => "ready",
         _ => "op",
     }
+}
+
+/// Slot `slot`'s name from kind declaration `D`: a kind op's own, else the lifecycle's.
+pub fn declared_name<D: KindDecl>(slot: u32) -> &'static str {
+    D::op_name(slot).unwrap_or_else(|| lifecycle_name(slot))
+}
+
+/// Kind declaration `D`'s own check of `answer`.
+///
+/// # Errors
+/// The rule the answer breaks.
+pub fn declared_check<D: KindDecl>(answer: &Answer<'_>) -> Result<(), Fault> {
+    // SAFETY: an `Answer` holds the live frames of its crossing.
+    unsafe { D::check(answer.slot, answer.outcome, answer.frames()) }
+}
+
+/// Kind declaration `D`'s short-buffer rule over `answer`.
+pub fn declared_short<D: KindDecl>(answer: &Answer<'_>) -> bool {
+    // SAFETY: as `declared_check`.
+    unsafe { D::short(answer.slot, answer.outcome, answer.frames()) }
 }
 
 /// The byte offset of the first slot in every table.

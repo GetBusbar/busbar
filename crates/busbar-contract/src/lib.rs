@@ -40,6 +40,8 @@ pub mod authz;
 // nowhere else (the unsafe policy above).
 #[allow(unsafe_code, missing_docs, missing_debug_implementations)]
 pub mod abi;
+// `busbar_abi_macros::kind!` names this crate by its external path, inside it too.
+extern crate self as busbar_contract;
 // THE COUNTING ALLOCATOR A PLUGIN'S ALLOCATION GATES READ (ARCHITECT ruling 2026-10-21: plugin
 // crate roots keep the literal `#![forbid(unsafe_code)]`, so the `GlobalAlloc` impl lives here). Not
 // in a release build: compiled for this crate's own tests and, through the dev-only, EMPTY

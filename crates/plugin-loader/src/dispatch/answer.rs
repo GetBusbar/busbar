@@ -13,6 +13,7 @@ use std::mem::size_of;
 
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::check::{fault, Fault, Rule};
+use busbar_contract::abi::mechanism::decl::Frames;
 
 use super::{InFrame, OutFrame};
 
@@ -82,6 +83,17 @@ impl<'a> Answer<'a> {
     /// # Errors
     /// [`Rule::Foreign`] when the host's `in` is smaller than `T` (the op was submitted with another
     /// struct than its kind names).
+    /// The crossing's frames, for a kind declaration's checks.
+    #[must_use]
+    pub fn frames(&self) -> Frames {
+        Frames {
+            input: self.input,
+            in_size: self.in_size,
+            out: self.out,
+            out_size: self.out_size,
+        }
+    }
+
     pub fn input<T: InFrame>(&self) -> Result<&T, Fault> {
         if self.in_size < size_of::<T>() {
             return Err(fault(Rule::Foreign, "in"));

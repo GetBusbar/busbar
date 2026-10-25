@@ -137,87 +137,79 @@
 //!   `serve` are this kind's `may_pend` ops, and the two dispositions below cover a cancelled
 //!   verdict/response uniformly (nothing partial is ever committed for a hook reply).
 
-use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
+use super::mechanism::call::{AbiStr, Blob, InHead, OutHead};
 
 pub mod validate;
 use super::mechanism::door::KindTailHead;
-use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
+use super::mechanism::lifecycle::LIFECYCLE_SLOTS;
 
 /// The hook kind's ABI version: v1.5.5 shipped `1` (`HOOK_ABI_VERSION`), so 1.6.0 ships `2`.
 pub const ABI_VERSION: u32 = 2;
 
-/// [`InHead::op`] values the hook kind adds after the shared lifecycle, in table order.
-///
-/// # Examples
-/// ```
-/// use busbar_contract::abi::hook::{slot, SLOTS};
-/// use busbar_contract::abi::mechanism::lifecycle::LIFECYCLE_SLOTS;
-/// assert_eq!(slot::DECIDE, LIFECYCLE_SLOTS + 0);
-/// assert_eq!(slot::TRANSFORM, LIFECYCLE_SLOTS + 1);
-/// assert_eq!(slot::NOTIFY, LIFECYCLE_SLOTS + 2);
-/// assert_eq!(slot::CONFIGURE, LIFECYCLE_SLOTS + 3);
-/// assert_eq!(slot::STATUS, LIFECYCLE_SLOTS + 4);
-/// assert_eq!(slot::DESCRIBE, LIFECYCLE_SLOTS + 5);
-/// assert_eq!(slot::SERVE, LIFECYCLE_SLOTS + 6);
-/// assert_eq!(SLOTS, LIFECYCLE_SLOTS + 7);
-/// ```
-pub mod slot {
-    use super::LIFECYCLE_SLOTS;
-
-    /// `decide`.
-    pub const DECIDE: u32 = LIFECYCLE_SLOTS;
-    /// `transform`.
-    pub const TRANSFORM: u32 = LIFECYCLE_SLOTS + 1;
-    /// `notify`.
-    pub const NOTIFY: u32 = LIFECYCLE_SLOTS + 2;
-    /// `configure`.
-    pub const CONFIGURE: u32 = LIFECYCLE_SLOTS + 3;
-    /// `status`.
-    pub const STATUS: u32 = LIFECYCLE_SLOTS + 4;
-    /// `describe`.
-    pub const DESCRIBE: u32 = LIFECYCLE_SLOTS + 5;
-    /// `serve`.
-    pub const SERVE: u32 = LIFECYCLE_SLOTS + 6;
+busbar_abi_macros::kind! {
+    kind: Hook,
+    lifecycle: crate::abi::sdk::door::Lifecycle,
+    ops: {
+        /// `decide`.
+        ///
+        /// Rank/gate a request. In [`DecideIn`], out [`DecideOut`].
+        DECIDE decide: DecideIn => DecideOut {
+            class: Call, pend, request,
+            check: |i, o| validate::check_decide(o, i.reject_message_cap, i.restrict_tags_cap, i.order_cap),
+            bufs: [reject_message, restrict_tags, order],
+        },
+        /// `transform`.
+        ///
+        /// Rewrite a request the plugin has `ro`/`rw` prompt access to. In [`DecideIn`] (the same
+        /// views `decide` sees), out [`TransformOut`].
+        TRANSFORM transform: DecideIn => TransformOut {
+            class: Call, pend, request,
+            check: |i, o| validate::check_transform(o, i.reject_message_cap, i.rewrite_cap),
+            bufs: [reject_message, rewrite],
+        },
+        /// `notify`.
+        ///
+        /// Watch a request; fire-and-forget. In [`NotifyIn`], out [`OutHead`].
+        NOTIFY notify: NotifyIn => OutHead {
+            class: Call, pend, request,
+            check: |_i, o| validate::check_notify(o),
+        },
+        /// `configure`.
+        ///
+        /// Push settings to a fresh management instance. In [`ConfigureIn`], out [`ConfigureOut`].
+        CONFIGURE configure: ConfigureIn => ConfigureOut {
+            class: Call, pend,
+            check: |i, o| validate::check_configure(o, i.version),
+        },
+        /// `status`.
+        ///
+        /// The 1.5.5 status blob, under `head.lease` until `release`. In [`InHead`], out
+        /// [`StatusOut`].
+        STATUS status: InHead => StatusOut {
+            class: Call, pend,
+            check: |_i, o| validate::check_status(o),
+        },
+        /// `describe`.
+        ///
+        /// The 1.5.5 describe blob, under `head.lease` until `release`. In [`InHead`], out
+        /// [`DescribeOut`].
+        DESCRIBE describe: InHead => DescribeOut {
+            class: Call, pend,
+            check: |_i, o| validate::check_describe(o),
+        },
+        /// `serve`.
+        ///
+        /// The plugin's own HTTP surface (`/hooks/<name>/*`, [`Tail::routes`]). In [`ServeIn`],
+        /// out [`ServeOut`].
+        SERVE serve: ServeIn => ServeOut {
+            class: Call, pend, unused,
+            check: |_i, o| validate::check_serve(o),
+        },
+    },
 }
 
 /// How many slots the hook kind's whole table holds (the lifecycle plus its seven own ops).
-pub const SLOTS: u32 = LIFECYCLE_SLOTS + 7;
-
-/// The hook kind's ops table. Leads with the shared [`OpsHead`]; kind op `k` is at slot index
-/// [`LIFECYCLE_SLOTS`]` + k` ([`slot`]). EVERY slot below is called OFF-WORKER (module doc).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Ops {
-    /// The lifecycle.
-    pub head: OpsHead,
-    /// Rank/gate a request. REQUEST-PATH, `may_pend`,
-    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call), off-worker. In
-    /// [`DecideIn`], out [`DecideOut`].
-    pub decide: Option<Op>,
-    /// Rewrite a request the plugin has `ro`/`rw` prompt access to. REQUEST-PATH, `may_pend`,
-    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call), off-worker. In
-    /// [`DecideIn`] (the same views `decide` sees), out [`TransformOut`].
-    pub transform: Option<Op>,
-    /// Watch a request; fire-and-forget. REQUEST-PATH, `may_pend`,
-    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call), off-worker,
-    /// off-request (it never holds the request open). In [`NotifyIn`], out [`OutHead`].
-    pub notify: Option<Op>,
-    /// Push settings to a fresh management instance. OFF-PATH, `may_pend`, 5s deadline
-    /// ([`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call)), off-worker. In
-    /// [`ConfigureIn`], out [`ConfigureOut`].
-    pub configure: Option<Op>,
-    /// The 1.5.5 status blob, unchanged. OFF-PATH, not `may_pend`, off-worker. In [`InHead`], out
-    /// [`StatusOut`] (memory class iv: the blob lives under `head.lease` until `release`).
-    pub status: Option<Op>,
-    /// The 1.5.5 describe blob, unchanged. OFF-PATH, not `may_pend`, off-worker. In [`InHead`],
-    /// out [`DescribeOut`] (memory class iv: the blob lives under `head.lease` until `release`).
-    pub describe: Option<Op>,
-    /// The plugin's own HTTP surface (`/hooks/<name>/*`, [`Tail::routes`]). OFF-PATH, `may_pend`,
-    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call), off-worker. In
-    /// [`ServeIn`], out [`ServeOut`] (memory class iv: the response headers/body live under
-    /// `head.lease` until `release`).
-    pub serve: Option<Op>,
-}
+pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
 // ── Signals (OLD `Signal`/`SignalBag`, `busbar-contract/src/signal.rs`) ─────────────────────────
 
@@ -977,49 +969,39 @@ unsafe impl super::sdk::door::AbiOut for StatusOut {}
 unsafe impl super::sdk::door::AbiOut for DescribeOut {}
 unsafe impl super::sdk::door::AbiOut for ServeOut {}
 
-super::sdk::door::slot_structs!(
-    /// Each hook kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A
-    /// plugin wiring a slot to another op's structs does not compile:
-    ///
-    /// ```compile_fail,E0271
-    /// use busbar_contract::abi::hook::{ConfigureIn, ConfigureOut, DecideIn, DecideOut};
-    /// use busbar_contract::abi::hook::{DescribeOut, NotifyIn, ServeIn, ServeOut, StatusOut, TransformOut};
-    /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-    /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::Slot;
-    /// # use std::ffi::c_void;
-    /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
-    /// #     struct $n;
-    /// #     impl Slot for $n { type In = $i; type Out = $o;
-    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
-    /// # } }
-    /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-    /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
-    /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-    /// # ready!(Decide, DecideIn, DecideOut); ready!(Transform, DecideIn, TransformOut);
-    /// # ready!(Configure, ConfigureIn, ConfigureOut); ready!(Status, InHead, StatusOut);
-    /// # ready!(Describe, InHead, DescribeOut); ready!(Serve, ServeIn, ServeOut);
-    /// ready!(Notify, ConfigureIn, ConfigureOut); // `configure`'s structs on `notify`: refused
-    /// busbar_contract::plugin_door! {
-    ///     ops: busbar_contract::abi::hook::Ops,
-    ///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
-    ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
-    ///                  cancel: Cn, release: Rl, close: Cl },
-    ///     kind_ops: { decide: Decide, transform: Transform, notify: Notify, configure: Configure,
-    ///                 status: Status, describe: Describe, serve: Serve },
-    /// }
-    /// # fn main() { let _ = door(); }
-    /// ```
-    ///
-    /// With `Notify` reading [`NotifyIn`] and writing [`OutHead`] the same plugin compiles
-    /// (`abi/sdk/tests/door_tests.rs`, `a_hook_plugin_wires_every_kind_op`).
-    Ops {
-        slot::DECIDE => DecideIn, DecideOut;
-        slot::TRANSFORM => DecideIn, TransformOut;
-        slot::NOTIFY => NotifyIn, OutHead;
-        slot::CONFIGURE => ConfigureIn, ConfigureOut;
-        slot::STATUS => InHead, StatusOut;
-        slot::DESCRIBE => InHead, DescribeOut;
-        slot::SERVE => ServeIn, ServeOut;
-    }
-);
+/// Each hook kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs. A
+/// plugin wiring a slot to another op's structs does not compile:
+///
+/// ```compile_fail,E0271
+/// use busbar_contract::abi::hook::{ConfigureIn, ConfigureOut, DecideIn, DecideOut};
+/// use busbar_contract::abi::hook::{DescribeOut, NotifyIn, ServeIn, ServeOut, StatusOut, TransformOut};
+/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::sdk::door::Slot;
+/// # use std::ffi::c_void;
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(Decide, DecideIn, DecideOut); ready!(Transform, DecideIn, TransformOut);
+/// # ready!(Configure, ConfigureIn, ConfigureOut); ready!(Status, InHead, StatusOut);
+/// # ready!(Describe, InHead, DescribeOut); ready!(Serve, ServeIn, ServeOut);
+/// ready!(Notify, ConfigureIn, ConfigureOut); // `configure`'s structs on `notify`: refused
+/// busbar_contract::plugin_door! {
+///     ops: busbar_contract::abi::hook::Ops,
+///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: { decide: Decide, transform: Transform, notify: Notify, configure: Configure,
+///                 status: Status, describe: Describe, serve: Serve },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// With `Notify` reading [`NotifyIn`] and writing [`OutHead`] the same plugin compiles
+/// (`abi/sdk/tests/door_tests.rs`, `a_hook_plugin_wires_every_kind_op`).
+impl Ops {}

@@ -697,6 +697,50 @@ fn collect_items(items: &[syn::Item], file: usize, scope: &mut Vec<String>, col:
                     }
                     continue;
                 }
+                if name == "kind" {
+                    match syn::parse2::<crate::decl::KindDecl>(m.mac.tokens.clone()) {
+                        Ok(d) => {
+                            let mut fields = vec![("head".to_string(), parse_ty("OpsHead"))];
+                            for (k, op) in d.ops.iter().enumerate() {
+                                fields.push((op.field.to_string(), parse_ty("Option<Op>")));
+                                col.consts.push(RawConst {
+                                    file,
+                                    scope: "slot".to_string(),
+                                    name: op.konst.to_string(),
+                                    doc: doc_line(&op.docs),
+                                    kind: ConstKind::Int("u32"),
+                                    expr: syn::parse_str::<syn::Expr>(&format!(
+                                        "LIFECYCLE_SLOTS + {k}"
+                                    ))
+                                    .expect("a literal expression parses"),
+                                });
+                            }
+                            col.consts.push(RawConst {
+                                file,
+                                scope: String::new(),
+                                name: "KIND_SLOTS".to_string(),
+                                doc: Some(
+                                    "How many kind slots the table holds after the lifecycle."
+                                        .to_string(),
+                                ),
+                                kind: ConstKind::Int("u32"),
+                                expr: syn::parse_str::<syn::Expr>(&d.ops.len().to_string())
+                                    .expect("a literal expression parses"),
+                            });
+                            col.items.push(RawItem {
+                                file,
+                                name: "Ops".to_string(),
+                                doc: Some("The kind's ops table.".to_string()),
+                                raw: Raw::Struct {
+                                    union: false,
+                                    fields,
+                                },
+                            });
+                        }
+                        Err(why) => col.errs.push(format!("{}: kind!: {why}", at(col, "kind"))),
+                    }
+                    continue;
+                }
                 if name == "store_slots" {
                     match store_rows(m.mac.tokens.clone()) {
                         Ok(rows) => {
@@ -732,7 +776,7 @@ fn collect_items(items: &[syn::Item], file: usize, scope: &mut Vec<String>, col:
                     continue;
                 }
                 col.errs.push(format!(
-                    "{}: item macro `{name}!` is not one the generator knows (glue or store_slots)",
+                    "{}: item macro `{name}!` is not one the generator knows (glue, kind or store_slots)",
                     at(col, &name)
                 ));
             }
