@@ -25,10 +25,9 @@ const STORE: &str = "configured";
 /// a host back its id.
 const NODE: u64 = 31;
 
-/// One opened store: the 1.5.5 op set and the v3 slots of ONE instance.
+/// One opened store: the v3 slots of ONE instance.
 struct Opened {
-    records: Arc<dyn busbar_contract::records::RecordStore>,
-    calls: Arc<dyn StoreCalls>,
+    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
 }
 
 /// The build's linked ephemeral store, opened through its door on the store axis, as boot opens it.
@@ -62,7 +61,6 @@ fn ephemeral_store() -> Opened {
         )
         .expect("the ephemeral store opens through its door");
     Opened {
-        records: opened.records,
         calls: opened.calls.expect("a door-opened store has its v3 slots"),
     }
 }
