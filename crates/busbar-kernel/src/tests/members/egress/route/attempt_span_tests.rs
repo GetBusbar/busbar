@@ -7,11 +7,12 @@
 //! opened it around each degraded dispatch (a spill into a fallback pool, the least-bad bypass, a
 //! queued slot) and around no attempt of the ordered walk, so the walk's own attempts open none.
 
+use crate::test_support::tokens::pass;
 use std::sync::{Arc, Mutex};
 
 use tracing_subscriber::layer::SubscriberExt as _;
 
-use super::harness::{ok_frames, route_token, Health, Script};
+use super::harness::{ok_frames, Health, Script};
 use super::{member, Node};
 use crate::plane_driver::{FarEnd, Pick};
 use busbar_contract::DestinationId;
@@ -75,7 +76,7 @@ fn first_attempt(node: &Node) -> (Pick, Vec<Opened>) {
     let egress = node.egress();
     let picked = tracing::subscriber::with_default(subscriber, || {
         node.rt.block_on(async {
-            let token = route_token();
+            let token = pass::<busbar_contract::caps::Route>();
             let far = egress.unit(node.unit_route("primary"));
             let picked = far.member(&token, 1).await;
             drop(far.attempt_span(&token));

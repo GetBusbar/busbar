@@ -10,55 +10,15 @@
 
 use std::time::Duration;
 
+use super::tests::Mem;
 use super::*;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{
     RecordChain, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
 };
-use busbar_contract::kinds::{RecordBytes, StoreError};
+use busbar_contract::kinds::RecordBytes;
 
 use crate::governance::MemoryStore;
-
-/// The memory store's typed records.
-struct Mem(Arc<MemoryStore>);
-
-impl RecordRows for Mem {
-    fn claim(&self, token: &str, expires_at: u64, now: u64) -> Result<bool, StoreError> {
-        busbar_contract::records::RecordStore::redeem_plane_token(
-            &*self.0,
-            crate::host_records::CLAIM_KIND,
-            token,
-            expires_at,
-            now,
-        )
-        .map_err(|e| StoreError::Rejected(e.0))
-    }
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        self.0.record_put(schema, key, value)
-    }
-
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        self.0.record_get(schema, key)
-    }
-
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        self.0.record_scan(schema, prefix, limit)
-    }
-}
 
 /// Runs every job at once, on the caller's thread: a write is in the store when its call returns.
 struct Inline;
