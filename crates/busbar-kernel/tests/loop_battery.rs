@@ -632,6 +632,14 @@ fn the_loop_has_no_early_exits() {
         found.is_empty(),
         "the Teller returns early or uses `?`: {found:?}"
     );
+
+    // AND THE PRODUCTION DOOR: a plane's unit answers its whole door in one step
+    // (`plane_driver/govern.rs`, `Units::govern`), so the loop's shape is held there too.
+    let found = early_exits(include_str!("../src/plane_driver/govern.rs"));
+    assert!(
+        found.is_empty(),
+        "the plane driver's door returns early or uses `?`: {found:?}"
+    );
 }
 
 /// The early exits in `src`: every `return` keyword and every `?` operator in CODE, by 1-based line.

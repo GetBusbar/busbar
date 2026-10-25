@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE DRIVER (`BUSBAR-1.6.0.md` Part 3, §12): the kernel serves every plane through this
-//! one driver. [`PlaneUnits`] implements the loop's [`Units`] and [`RouteAwait`] over one plane
+//! one driver. [`PlaneUnits`] implements the loop's [`crate::teller::Units`] and [`RouteAwait`] over one plane
 //! instance's [`PlaneCalls`] (the one dispatcher's plane handle, as the composition root hands it),
 //! so [`crate::teller::run_unit_async`] and [`crate::teller::open_unit`] drive it and no second
 //! loop exists. Its door — arrival through admit, with the plane's screen — is ONE awaited step
-//! ([`Units::govern`]); the deployment's answers at those seats are its [`DriverSteps`], plain
+//! ([`crate::teller::Units::govern`]); the deployment's answers at those seats are its [`DriverSteps`], plain
 //! values it stamps at each seat. A compiled-in and a dropped-in plane reach it through the same table, and the
 //! kernel names neither: only the contract's call surface.
 //!
@@ -14,7 +14,7 @@
 //!
 //! | State | Plane op | Kernel |
 //! |---|---|---|
-//! | arrival | — | the kernel's own gates ([`Units::arrival`] of the kernel steps) |
+//! | arrival | — | the kernel's own gates ([`crate::teller::DoorSeats::arrival`] of the kernel steps) |
 //! | decode | `arrive` (pure) | the op class, the principal need, the dialect, the expected units; a short answer is re-called once, and a second short answer is FAULT |
 //! | authenticate → verify → approve → admit | `project` (pure, once per unit, when a hook is bound) | the kernel steps, unchanged; then, at the head of the route leg, the request-stage hooks see the projection |
 //! | refused | `refusal` | the kernel steps audit the refusal; the plane renders it; nothing was charged |
@@ -61,6 +61,7 @@ mod close;
 pub mod door;
 mod epoch;
 mod far_end;
+mod govern;
 pub(crate) mod hooks;
 pub mod host;
 mod money;
@@ -86,10 +87,9 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
-    Admission, Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate,
-    Authenticated, Consumption, Decode, Dial, Encode, Grant, HoldAccrual, Meter, OpClassId,
-    Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, SeatVerdict as StepAnswer,
-    Usage, VerifiedDestination, Verify,
+    Admission, Admittance, Audit, Authenticated, Consumption, Dial, Encode, Grant, HoldAccrual,
+    Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, RoutePlan,
+    SeatVerdict as StepAnswer, Usage, VerifiedDestination,
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
@@ -120,9 +120,7 @@ pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope,
 use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
 use crate::slice::GroupLeaseSlip;
-use crate::teller::{
-    Door, Ended, Evidence, Governed, Governing, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
-};
+use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, UnitEnds};
 use crate::trust::book::{Distrust, TrustFacts};
 use crate::trust::section::parse_section;
 use busbar_contract::ids::RecordSchemaId;
@@ -690,7 +688,7 @@ pub fn sticky_hash(key: &[u8]) -> u64 {
 /// may, the door, what it cost and what its record says — told once what the plane's `arrive`
 /// decided, before identity and scope run.
 ///
-/// PLAIN ANSWERS, NOT SEATS. [`PlaneUnits`] is the one implementor of the loop's [`Units`] for a
+/// PLAIN ANSWERS, NOT SEATS. [`PlaneUnits`] is the one implementor of the loop's [`crate::teller::Units`] for a
 /// plane's unit: it asks these in the loop's order and stamps each answer at its own seat, so a
 /// refusal here is the seat's refusal. The plane's own seats (decode, route, encode) are the
 /// driver's and never reach these steps.
@@ -727,7 +725,7 @@ pub trait DriverSteps {
         destinations: &[VerifiedDestination],
     ) -> Result<busbar_contract::ScopeFacts, Refusal>;
 
-    /// The door (see [`Units::admit`]).
+    /// The door (see [`crate::teller::DoorSeats::admit`]).
     fn admit(
         &self,
         admit: &Grant<Admittance>,
@@ -752,12 +750,12 @@ pub trait DriverSteps {
     /// The facts the record of a unit refused at or before the door seals.
     fn audit_refused(&self, ctx: &UnitCtx, refusal: &Refusal) -> busbar_contract::AuditFacts;
 
-    /// What the settlement table reads (see [`Units::evidence`]): nothing, by default.
+    /// What the settlement table reads (see [`UnitEnds::evidence`]): nothing, by default.
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
         Evidence::default()
     }
 
-    /// A child's parent exited while it ran (see [`Units::at_parent_exit`]).
+    /// A child's parent exited while it ran (see [`UnitEnds::at_parent_exit`]).
     fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
         Ok(accrual.amount())
     }
@@ -1565,63 +1563,6 @@ fn seated<S: busbar_contract::caps::Step>(
 }
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
-    /// [`Units::govern`]'s body: the loop's seats up to the door, as one chain.
-    async fn door(&self, ctx: &UnitCtx, door: Door<'_>) -> Result<Governed, Refusal> {
-        let Door { seal, screen } = door;
-        let call = ctx.call;
-        self.steps
-            .arrival(ctx)
-            .map_err(stamped::<ArrivalStep>(seal, call))?;
-        self.decoded_op(ctx)
-            .map_err(stamped::<Decode>(seal, call))?;
-        let authenticated = self
-            .steps
-            .authenticate(ctx)
-            .map_err(stamped::<Authenticate>(seal, call))?;
-        let admit = Grant::<Admittance>::mint_bound(seal, call);
-        match authenticated {
-            // A challenge round: no destination, the anonymous principal at approve and the door,
-            // the zero hold and no lease (see `teller::by_seats`).
-            Authenticated::Challenge(_) => {
-                let anonymous = PrincipalId::anonymous();
-                let groups = GroupLeaseSlip::new();
-                self.approved(ctx, &anonymous, &[])
-                    .map_err(stamped::<Approve>(seal, call))?;
-                // The round's admission is the zero hold whatever the door sized; the slip, and
-                // whatever the door counted on it, goes back at the end of this arm.
-                let _admitted = self
-                    .admitted(&admit, ctx, &anonymous, &[], &groups)
-                    .map_err(stamped::<Admit>(seal, call))?;
-                Ok(Governed {
-                    admission: Admission::ZeroHold,
-                    destinations: Vec::new(),
-                    lease: None,
-                })
-            }
-            Authenticated::Principal(principal) => {
-                let destinations = self
-                    .verified(&Grant::<Dial>::mint_bound(seal, call), ctx, &principal)
-                    .map_err(stamped::<Verify>(seal, call))?;
-                self.approved(ctx, &principal, &destinations)
-                    .map_err(stamped::<Approve>(seal, call))?;
-                // THE SCREEN BEFORE THE DOOR ([`RouteAwait::screen`]): a unit it stops is refused
-                // at Approve's seat, before anything is admitted.
-                if let Some(screen) = screen {
-                    screen.await.map_err(stamped::<Approve>(seal, call))?;
-                }
-                let groups = GroupLeaseSlip::new();
-                let admission = self
-                    .admitted(&admit, ctx, &principal, &destinations, &groups)
-                    .map_err(stamped::<Admit>(seal, call))?;
-                Ok(Governed {
-                    admission,
-                    destinations,
-                    lease: Some(groups),
-                })
-            }
-        }
-    }
-
     /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
     /// it does not have, is refused.
     fn decoded_op(&self, ctx: &UnitCtx) -> Result<OpClassId, Refusal> {
@@ -1744,31 +1685,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     }
 }
 
-/// A refusal of the door's chain, stamped at seat `S` exactly as that seat's own answer would be.
-fn stamped<S: busbar_contract::caps::Step>(
-    seal: &busbar_contract::caps::KernelSeal,
-    call: busbar_contract::caps::CallId,
-) -> impl Fn(Refusal) -> Refusal + '_ {
-    move |refusal| match StepAnswer::<S>::refuse(
-        &Pass::<S>::mint_bound(seal, call),
-        refusal.clone(),
-    )
-    .into_result(seal)
-    {
-        Err(stamped) => stamped,
-        Ok(_) => refusal,
-    }
-}
-
-impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
-    /// THE UNIT'S DOOR, ANSWERED IN ONE STEP: arrival, the plane's `arrive`, who is calling, where
-    /// the unit may go, whether it may, the plane's screen, and the door, in the loop's order, each
-    /// refusal stamped at its seat. One awaited step rather than six seats: whatever the door waits
-    /// on, it waits on here.
-    fn govern<'a>(&'a self, ctx: &'a UnitCtx, door: Door<'a>) -> Governing<'a> {
-        Box::pin(self.door(ctx, door))
-    }
-
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_, S, F, C> {
     fn meter(
         &self,
         token: &Pass<Meter>,

@@ -1519,7 +1519,7 @@ where
     let SessionOpen::Admitted {
         route,
         destinations,
-    } = open_unit(&kernel, &units, &ctx, run)
+    } = open_unit(&kernel, &units, &ctx, run).await
     else {
         panic!("the session is admitted");
     };

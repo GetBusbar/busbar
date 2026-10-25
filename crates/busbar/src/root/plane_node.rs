@@ -880,7 +880,7 @@ impl Node {
     /// audit door stated, or under `audit_kind` (the plane's stated audit kind) when that door
     /// handed nothing back.
     #[allow(clippy::too_many_arguments)]
-    pub fn open_borrowed<U: Units>(
+    pub async fn open_borrowed<U: Units>(
         &self,
         key: UnitKey,
         arrived: Arrived,
@@ -946,7 +946,8 @@ impl Node {
                 meter: &meter,
                 taps: Some(post),
             },
-        );
+        )
+        .await;
         // The destination set the open sealed is where the session goes: its record names it.
         if let busbar_kernel::teller::SessionOpen::Admitted { destinations, .. } = &opened {
             post.routed(key, destinations);

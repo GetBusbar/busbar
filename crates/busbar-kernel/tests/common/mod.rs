@@ -20,7 +20,7 @@ use busbar_contract::caps::{
 };
 use busbar_kernel::plane_driver::DriverSteps;
 use busbar_kernel::registry::Generation;
-use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx, Units};
+use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx};
 
 /// A group with a `concurrent` cap, kept the way a real door keeps one.
 ///
@@ -526,7 +526,7 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
 
 /// The battery as the loop's own seats: each answers from the body above, stamped at its seat;
 /// decode, route and encode are the loop double's alone.
-impl Units for TestUnits {
+impl busbar_kernel::teller::DoorSeats for TestUnits {
     fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
         seated(token, DriverSteps::arrival(self, ctx))
     }
@@ -583,7 +583,9 @@ impl Units for TestUnits {
             DriverSteps::admit(self, admit, ctx, principal, destinations, leases),
         )
     }
+}
 
+impl busbar_kernel::teller::UnitEnds for TestUnits {
     fn route(
         &self,
         token: &Pass<Route>,
