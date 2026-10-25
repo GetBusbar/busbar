@@ -1004,6 +1004,6 @@ fn an_answer_head_on_a_full_stream_waits_until_it_is_writable() {
             "the head goes with its status once the stream is writable"
         );
         tokio::spawn(async move { while let Ok(Some(_)) = next(&mut conn).await {} });
-        assert_eq!(client.await.unwrap(), [[b'C'], [b'H']]);
+        assert_eq!(client.await.unwrap(), [*b"C", *b"H"]);
     });
 }

@@ -243,6 +243,14 @@ pub trait FarEnd: Sync {
     fn constrain(&self, token: &Pass<Route>, constraint: super::hooks::Constraint) {
         let _ = (token, constraint);
     }
+    /// THE SPAN OF THE ATTEMPT the walk just took a member for ([`Self::member`]): the attempt's
+    /// send and its reply's pieces run inside it, and it closes when the attempt ends or fails
+    /// over. The far end decides which attempts open one (status row 173: 1.5.5's `forward_once`
+    /// was a terminal's dispatch, `proxy/engine/walk.rs:382`); the default opens none.
+    fn attempt_span(&self, token: &Pass<Route>) -> tracing::Span {
+        let _ = token;
+        tracing::Span::none()
+    }
     /// THE PLANE'S FAULT READING of the far end's answer it was just handed: `fault` is the
     /// plane's `OnPieceOut::fault` (`FAULT_NONE` when it states none). The breaker records the
     /// plane's first stated reading of a relayed non-success answer (healthy: a success), the
@@ -1218,6 +1226,15 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             if far_bound {
                 self.routing_tap(attempt_no, &member, self.far.remaining(run.token), failed);
             }
+            // THE ATTEMPT'S SPAN, where the far end states one for the member it took (status row
+            // 173: a terminal's dispatch opens 1.5.5's `forward_once`, `FarEnd::attempt_span`). It
+            // is opened under the unit's request span, its send and its reply's pieces run inside
+            // it, and it closes when the attempt ends or fails over.
+            let attempt_span = if far_bound {
+                self.far.attempt_span(run.token)
+            } else {
+                tracing::Span::none()
+            };
             let mut request = OutboundRequest {
                 member,
                 pool,
@@ -1290,7 +1307,13 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     None => End::Failed(ReasonCode::DestinationUnreachable),
                 };
             }
-            match turn_wait(run, turn, self.far.send(run.token, request)).await {
+            let sent = {
+                use tracing::Instrument as _;
+                self.far
+                    .send(run.token, request)
+                    .instrument(attempt_span.clone())
+            };
+            match turn_wait(run, turn, sent).await {
                 Ok(true) => {}
                 // Not sent, so nothing reached the caller: fail over.
                 Ok(false) => {
@@ -1301,7 +1324,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let mut first = true;
             loop {
-                let piece = match turn_wait(run, turn, self.far.next(run.token)).await {
+                let next = {
+                    use tracing::Instrument as _;
+                    self.far.next(run.token).instrument(attempt_span.clone())
+                };
+                let piece = match turn_wait(run, turn, next).await {
                     Ok(Some(piece)) => piece,
                     Ok(None) => FarPiece {
                         last: true,
@@ -1610,12 +1637,12 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         // TRANSPARENCY (opt-in, `advanced.response_headers.route_policy`): which
                         // hook chose the serving member, after the plane's own fields, as 1.5.5
                         // stamped them; nothing on the default path or when no hook chose.
-                        let chosen = self.lock().route_policy;
+                        let chosen = self.lock().route_policy.clone();
                         if chosen.is_some() {
                             route_policy_fields(
                                 &mut fields,
                                 crate::proxy::route_policy_headers_enabled(),
-                                chosen,
+                                chosen.as_deref(),
                                 &bufs.member,
                             );
                         }

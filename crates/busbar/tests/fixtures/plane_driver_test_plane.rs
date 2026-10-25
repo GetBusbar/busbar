@@ -70,7 +70,8 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::call::{MetricEntry, METRIC_SET};
 use busbar_contract::abi::mechanism::door::{
-    Door, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE, SECTION_DECLARING,
+    Door, DoorParts, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE,
+    SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpsHead, RefreshIn, TickIn, TickOut, LIFECYCLE_SLOTS,
@@ -363,15 +364,19 @@ static OPS: Shared<Ops> = Shared(Ops {
     catalog: None,
 });
 
-static DOOR: Shared<Door> = Shared(Door {
-    magic: DOOR_MAGIC,
-    mechanism_version: MECHANISM_VERSION,
-    size: std::mem::size_of::<Door>() as u32,
-    kind: KindCode::Plane as u32,
-    kind_abi: KindCode::Plane.abi_version(),
-    statement: &STATEMENT.0 as *const Statement,
-    ops: &OPS.0 as *const Ops as *const OpsHead,
-    ready: None,
+// SAFETY: the Statement and plane table are this file's own `'static` data, laid out above: every
+// list points at its stated count of `'static` entries and every slot honours the call convention.
+static DOOR: Shared<Door> = Shared(unsafe {
+    Door::__from_parts(DoorParts {
+        magic: DOOR_MAGIC,
+        mechanism_version: MECHANISM_VERSION,
+        size: std::mem::size_of::<Door>() as u32,
+        kind: KindCode::Plane as u32,
+        kind_abi: KindCode::Plane.abi_version(),
+        statement: &STATEMENT.0 as *const Statement,
+        ops: &OPS.0 as *const Ops as *const OpsHead,
+        ready: None,
+    })
 });
 
 /// The claims: every path under `/call` for POST, `/open`, a claim that takes no inbound
@@ -400,6 +405,10 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
     },
 ]);
 
+/// The claims' arrival spans (status row 173), one per claim: an arrival on `/call` opens
+/// `test_arrival`; `/open` and `/framed` open none, the RED arm of the root's span test.
+static ARRIVALS: Shared<[AbiStr; 3]> = Shared([s(b"test_arrival"), s(b""), s(b"")]);
+
 /// The admin routes the snapshot publishes, served through `serve`: an audited admin route, and a
 /// public one the kernel's admin table never serves.
 static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
@@ -424,7 +433,7 @@ static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
 const SHORT_REPLY: usize = 1 << 20;
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
-pub extern "C" fn door() -> *const Door {
+pub extern "C" fn door() -> &'static Door {
     &DOOR.0
 }
 
@@ -680,8 +689,8 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             resource_facts,
             listed: std::ptr::null(),
             listed_len: 0,
-            arrival_spans: std::ptr::null(),
-            arrival_spans_len: 0,
+            arrival_spans: ARRIVALS.0.as_ptr(),
+            arrival_spans_len: ARRIVALS.0.len(),
         });
         let me = Box::new(Inst {
             wake,

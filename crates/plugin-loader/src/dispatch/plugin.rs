@@ -1095,9 +1095,10 @@ impl Instance {
         }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
-        // The unit this crossing serves, for the host services it calls.
+        // The unit this crossing serves, and the ticket it carries, for the host services it calls.
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
+        let _ticket = super::services::crossing(ticket);
         // The deadline of the op this crossing is, for the host services it calls (`auth.call`).
         // SAFETY: the host's own `in`, led by its head, live for the crossing.
         let _deadline = super::services::op_deadline(unsafe { &*input });
@@ -1126,6 +1127,7 @@ impl Instance {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
+                let _ticket = super::services::crossing(ticket);
                 with_crossing(Some(self), || {
                     enter_lifecycle((self.op_name)(s), op, instance, input, output)
                 })
@@ -1393,18 +1395,18 @@ pub(crate) fn judge(raw: RawOutcome, head: &OutHead, ticket: Ticket, out_size: u
     }
 }
 
-/// `len` entries at `p`, or `None` for NULL-with-length or an over-long array.
+/// `len` entries at `p`, or `None` for NULL-with-length, an over-long array, or one misaligned for
+/// `T`: formed only through the one capped, validated reader ([`validate::lent`], THE DESIGN
+/// §11.13 M1).
 ///
 /// # Safety
-/// A non-NULL `p` points to `len` live `T`s.
+/// A range that passes the checks names `len` live `T`s.
 unsafe fn array<'a, T>(p: *const T, len: usize) -> Option<&'a [T]> {
-    match (p.is_null(), len) {
-        (_, 0) => Some(&[]),
-        (true, _) => None,
-        (false, n) if n > MAX_ENVELOPE_ENTRIES => None,
-        // SAFETY: the caller's contract.
-        (false, n) => Some(unsafe { std::slice::from_raw_parts(p, n) }),
+    if len > MAX_ENVELOPE_ENTRIES {
+        return None;
     }
+    // SAFETY: the caller's contract.
+    unsafe { validate::lent(p, len) }
 }
 
 /// `st`'s kind tail as this host's `T`, by THE KIND TAIL GROWTH RULE
@@ -2036,3 +2038,7 @@ pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option
 #[cfg(test)]
 #[path = "../tests/instance_id_tests.rs"]
 mod instance_id_tests;
+
+#[cfg(test)]
+#[path = "../tests/envelope_array_tests.rs"]
+mod envelope_array_tests;

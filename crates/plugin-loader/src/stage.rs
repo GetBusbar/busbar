@@ -284,6 +284,13 @@ fn stage_temp_file(bytes: &[u8]) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// TEST WITNESS: the libraries the calling thread staged through [`load_library_from_bytes`]
+    /// (the staging is entered on the loading thread; only the `dlopen` runs on a worker).
+    pub(crate) static STAGED_HERE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Load a dynamic library from EXACTLY the in-memory `bytes` supplied - the verified-bytes ==
 /// loaded-bytes entrypoint. On Linux this uses `memfd_create` + `/proc/self/fd/N` (zero disk
 /// files); elsewhere (or if memfd fails) the bytes are staged into the per-process private `0700`
@@ -293,6 +300,8 @@ pub(crate) fn load_library_from_bytes(
     bytes: &[u8],
     display: &str,
 ) -> Result<(Library, Staged), String> {
+    #[cfg(test)]
+    STAGED_HERE.with(|n| n.set(n.get() + 1));
     #[cfg(target_os = "linux")]
     {
         match load_via_memfd(bytes, display) {

@@ -1113,8 +1113,8 @@ enum BodyRead {
     /// Past the cap: the over-gate refusal answers it.
     Over,
     /// The body failed (a bound broke, or the caller gave it up): the router's `400` with the
-    /// failure's words.
-    Failed(Response),
+    /// failure's words (boxed: a response is large).
+    Failed(Box<Response>),
 }
 
 /// THE BODY, READ WHOLE UNDER `cap` bytes, as the data router's body read does (its body limit,
@@ -1138,12 +1138,12 @@ async fn read_body(mut body: axum::body::Body, cap: usize) -> Result<Bytes, Body
                 }
             }
             Some(Err(e)) => {
-                return Err(BodyRead::Failed(
+                return Err(BodyRead::Failed(Box::new(
                     axum::response::IntoResponse::into_response((
                         axum::http::StatusCode::BAD_REQUEST,
                         format!("Failed to buffer the request body: {e}"),
                     )),
-                ))
+                )))
             }
         }
     }
@@ -1211,9 +1211,8 @@ async fn serve_stream(
         HandedDoor::Router => {
             use hyper::service::Service as _;
             let service = hyper_util::service::TowerToHyperService::new(door.router.clone());
-            if let Ok(response) = service.call(request).await {
-                answer.respond(response).await;
-            }
+            let Ok(response) = service.call(request).await;
+            answer.respond(response).await;
         }
         HandedDoor::Request { .. } | HandedDoor::Catalog { .. } => {
             let response = door
@@ -1236,7 +1235,7 @@ async fn serve_stream(
                 .layered(request, move |req| async move {
                     let req = match this.door_request(req, handed).await {
                         Ok(req) => req,
-                        Err(response) => return response,
+                        Err(response) => return *response,
                     };
                     let key = busbar_contract::UnitKey::new(handed.unit);
                     let opened = routes.open_session_keyed(plane, claim, req, Some(key));
@@ -1345,7 +1344,7 @@ impl DataDoor {
         let head = request.method() == axum::http::Method::HEAD;
         let req = match self.door_request(request, handed).await {
             Ok(req) => req,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
         let response = match *doorway {
             HandedDoor::Catalog { plane } => routes.catalog(plane, &req),
@@ -1368,7 +1367,7 @@ impl DataDoor {
         &self,
         request: axum::http::Request<axum::body::Body>,
         handed: busbar_kernel::inbound::Handed,
-    ) -> Result<DoorRequest, Response> {
+    ) -> Result<DoorRequest, Box<Response>> {
         let (parts, body) = request.into_parts();
         let path = parts.uri.path().to_owned();
         let target = parts
@@ -1380,18 +1379,18 @@ impl DataDoor {
         let bytes = match read_body(body, cap).await {
             Ok(bytes) => bytes,
             Err(BodyRead::Over) => {
-                return Err(busbar_kernel::router::oversized_refusal(
+                return Err(Box::new(busbar_kernel::router::oversized_refusal(
                     &self.handle,
                     &path,
                     &target,
-                ))
+                )))
             }
-            Err(BodyRead::Failed(response)) => return Err(routed(response, head)),
+            Err(BodyRead::Failed(response)) => return Err(Box::new(routed(*response, head))),
         };
         let app = self.handle.load();
         let (_, gov, credential) = crate::root::inbound::host()
             .door_ctx(handed.unit, &app)
-            .map_err(|_| routed(crate::root::serve::unrendered_response(None), head))?;
+            .map_err(|_| Box::new(routed(crate::root::serve::unrendered_response(None), head)))?;
         let mut headers = parts.headers;
         headers.remove(busbar_contract::abi::host::service::CARRIER_SESSION_FIELD);
         Ok(DoorRequest {
@@ -1403,6 +1402,10 @@ impl DataDoor {
             credential,
             app,
             scheme: self.scheme().0,
+            // The framer stripped the fields the line's auths named before it handed the head up
+            // (`Inbound::head_of`), and the unit keeps their names only, not their scheme words:
+            // a handed-up request states none.
+            consumed_fields: Vec::new(),
         })
     }
 }

@@ -210,8 +210,10 @@ pub fn catalog_names(app: &App, gov: &GovCtx) -> Vec<String> {
 }
 
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
-    if let Some(halted) = plugin_dispatch_halted(busbar_plugin_loader::dispatch::handle::latched())
-    {
+    let latched = crate::preflight::root_rows()
+        .dispatch_latched
+        .is_some_and(|latched| latched());
+    if let Some(halted) = plugin_dispatch_halted(latched) {
         return halted;
     }
     let t = now();

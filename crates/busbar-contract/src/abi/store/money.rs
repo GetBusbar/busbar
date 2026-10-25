@@ -123,6 +123,13 @@ pub const RESERVE_STALE_EPOCH: u32 = 2;
 /// That rule holds for a single node ONLY; a store a fleet shares follows (a)-(c). The shared
 /// conformance cases every durable store runs are `busbar_contract::testkit::store_v3`.
 ///
+/// (e) A RELEASE ON WINDOW 0 IS FINAL, for every store. Window 0 never rolls
+/// ([`UnitCell::window_start`] `0`), so a slice on it has no window close to end it, and under (d)
+/// no expiry either: a partly spent window-0 slice left open would outlive its holder. So a
+/// `slice_release` of a window-0 slice takes back the unspent it names (capped as above), the spent
+/// rest stays counted against the cap, and the slice CLOSES: another release of it returns `0`. A
+/// slice on a rolling window keeps the partial-release rule above.
+///
 /// SLICE_TTL_MS is 60 s because the kernel names no slice refresh cadence to derive it from: it is
 /// the bound on the headroom a partitioned node's undrawn slices can strand before expiry returns it.
 pub const SLICE_TTL_MS: u64 = 60_000;

@@ -1017,6 +1017,14 @@ fn keys_judged(
     }
 }
 
+/// What [`Inbound::door_ctx`] answers for a unit: its caller, the governance context it is served
+/// under, and the credential its identity was verified from.
+pub type DoorCtx = (
+    crate::auth::AuthPrincipal,
+    crate::governance::PlaneRequestCtx,
+    Option<Secret<Vec<u8>>>,
+);
+
 impl Inbound {
     /// A kernel side with no tables yet.
     #[must_use]
@@ -1732,18 +1740,7 @@ impl Inbound {
     /// `Denied` for a unit the kernel holds no identity for (no verdict, a refusal, a line whose
     /// claimant runs the chain itself, or no live unit); `NoGrant` for an identity that earns no
     /// governance key, the refusal the hand-in already stopped it with.
-    pub fn door_ctx(
-        &self,
-        unit: u64,
-        app: &App,
-    ) -> Result<
-        (
-            crate::auth::AuthPrincipal,
-            crate::governance::PlaneRequestCtx,
-            Option<Secret<Vec<u8>>>,
-        ),
-        crate::auth::IdentityRefusal,
-    > {
+    pub fn door_ctx(&self, unit: u64, app: &App) -> Result<DoorCtx, crate::auth::IdentityRefusal> {
         let units = self.units();
         let u = units
             .get(&unit)

@@ -99,12 +99,13 @@ use busbar_contract::abi::auth::{
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, RawOutcome, Span, BLOB_OCTETS,
 };
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::OpsHead;
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::conn::{
     ConnError, ConnId, ConnSlab, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc, Piece,
     PieceKind,
@@ -113,14 +114,13 @@ use busbar_contract::ids::StreamId;
 use busbar_contract::transport::ConnFacts;
 
 use super::super::{
-    bind, called, close, crossings, dispatcher, input, json, open, output, ready_step, real_door,
-    validate, Counts, Fold, Leg, Recorder, Restated, Subject,
+    bind, called, close, crossings, dispatcher, input, json, load_dropped_staged, open, output,
+    ready_step, real_door, validate, Counts, Fold, Leg, Recorder, Restated, Subject,
 };
 use super::{secret, stated, undeclared, Stated};
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{
-    load_dropped, load_linked, now_ns, Bind, ConnTable, Dispatcher, Frame, Lent, LinkedRow, Plugin,
-    Reply,
+    load_linked, now_ns, Bind, ConnTable, Dispatcher, Frame, Lent, LinkedRow, Plugin, Reply,
 };
 
 /// The suite's tick clock at the first `tick` (any instant; the plugin's schedule is read back).
@@ -652,7 +652,7 @@ const NO_STR: AbiStr = AbiStr {
 fn load_leg(
     s: &Subject,
     leg: Leg,
-    door: DoorFn,
+    door: RawDoorFn,
     d: &Dispatcher,
     instance: &str,
     conns: Option<Arc<dyn DeclaredConns>>,
@@ -668,10 +668,10 @@ fn load_leg(
     };
     match leg {
         Leg::Linked => load_linked::<Auth>(
-            &LinkedRow::of(door).unwrap_or_else(|e| panic!("the linked door is refused: {e}")),
+            &LinkedRow::of_raw(door).unwrap_or_else(|e| panic!("the linked door is refused: {e}")),
             b,
         ),
-        Leg::Dropped => load_dropped::<Auth>(&s.cdylib(), &s.stated(), b),
+        Leg::Dropped => load_dropped_staged::<Auth>(&s.cdylib(), &s.stated(), b),
     }
     .unwrap_or_else(|e| panic!("the auth door loads ({leg:?}): {e}"))
 }
@@ -973,7 +973,7 @@ fn point_of(st: &Stated, style: &str) -> (u32, u32) {
 }
 
 /// THE OUTBOUND SCRIPT over `door` (the subject's, or a RED arm's restated one), reached by `leg`.
-pub(super) fn fold(s: &Subject, leg: Leg, door: DoorFn, st: &Stated) -> Fold {
+pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold {
     let k = s.kind_inputs("auth");
     let styles: Vec<Style> = k["outbound"]
         .as_array()
@@ -1599,7 +1599,7 @@ fn plant(s: &Subject, slot: &Restated, edit: impl FnOnce(&mut auth::Ops)) {
     let mut planted = ops;
     edit(&mut planted);
     let planted: &'static auth::Ops = Box::leak(Box::new(planted));
-    slot.set(Door {
+    slot.set(DoorParts {
         ops: std::ptr::from_ref(planted).cast::<OpsHead>(),
         ..real
     });

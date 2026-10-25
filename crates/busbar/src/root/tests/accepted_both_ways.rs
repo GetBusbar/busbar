@@ -117,36 +117,27 @@ fn verifier_app() -> busbar_kernel::test_support::TestApp {
         .expect("the verifier states its door")
         .map(hex::encode);
     m.publisher = crate::root::loader::sign::FIRST_PARTY_PUBLISHER.into();
-    let tarball = crate::root::test_plugins::signed(
-        &busbar_kernel::test_support::test_release_key(),
-        m,
-        &lib,
-    );
+    // The test build's release key (`tests/common/root_install.rs`), the first-party key the scan
+    // trusts: the kernel's test kit names no loader, so the root's own fixture scans the directory
+    // as boot does and its auth axis opens the dropped-in row.
+    let release = crate::root::test_plugins::key(0x5a);
+    let tarball = crate::root::test_plugins::signed(&release, m, &lib);
     std::fs::write(dir.join("verifier.tar.gz"), tarball).expect("the tarball is written");
-    let mut plugins = busbar_kernel::config::PluginsCfg {
-        enabled: true,
-        dir: dir.to_string_lossy().into_owned(),
-        ..Default::default()
-    };
-    plugins.trust.allow_unsigned = true;
     let mut entry = busbar_kernel::config::AuthChainEntry::bare(VERIFIER);
     entry.settings = issuer().settings(AUDIENCE);
     let cfg = busbar_kernel::config::AuthCfg {
         chain: vec![entry],
         ..busbar_kernel::config::AuthCfg::default_none()
     };
-    let registry = busbar_kernel::plugins_preflight(
-        None,
-        Some(&cfg),
-        &Default::default(),
-        &Default::default(),
-        &plugins,
-        &Default::default(),
-    )
-    .expect("the preflight admits the verifier");
+    let registry: Arc<dyn busbar_contract::plugin_rows::PluginRows> =
+        Arc::new(crate::root::test_plugins::boot_with(
+            &dir,
+            &crate::root::test_plugins::release_policy(&release),
+        ));
+    busbar_kernel::test_support::install_root_auth_axis(verifier_axis);
     let auth = busbar_kernel::auth::AuthMiddleware::new(
         &cfg,
-        &Arc::new(registry),
+        &registry,
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
     )
     .expect("the verifier opens");
@@ -159,6 +150,18 @@ fn verifier_app() -> busbar_kernel::test_support::TestApp {
     busbar_kernel::test_support::TestApp::new()
         .auth(Arc::new(auth))
         .role_bindings(roles)
+}
+
+/// The auth axis the verifier opens on: the loader's own over the scanned registry, on a
+/// dispatcher of its own, as the integration tests' root install opens a dropped-in auth row
+/// (`tests/common/root_install.rs`), the kernel's seal lent.
+fn verifier_axis(
+    rows: Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+) -> Arc<dyn busbar_contract::auth_calls::AuthAxis> {
+    // Rows the loader did not build (the kit's linked stand-in) are no dropped-in row's: none.
+    let registry = crate::root::loader::rows::registry_arc(rows)
+        .unwrap_or_else(|| Arc::new(crate::root::loader::PluginRegistry::empty()));
+    crate::root::loader::auth_axis::stand_in(registry, busbar_kernel::seal::lend())
 }
 
 /// The rig over the test plane composed as `instance`, its data chain `chain`, the router's
@@ -324,7 +327,6 @@ impl Rig {
         crate::root::doors::served(
             plugin,
             &busbar_contract::transport::TransportSettings::default(),
-            None,
         )
         .expect("the dropped-in framer opens")
         .0

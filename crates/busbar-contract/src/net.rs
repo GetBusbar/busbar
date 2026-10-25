@@ -506,12 +506,15 @@ pub fn normalize_host(raw: &str) -> String {
 /// boundary, the userinfo drop, the IPv6 bracket, the percent-decode and the trailing dot. `None`
 /// for any other scheme.
 ///
-/// This is the reader the 1.5.5 configuration validators use, kept byte-for-byte; a caller judging
-/// a URL of any scheme reads it with [`url_host`] or [`parse_url`].
+/// This is the reader the 1.5.5 configuration validators use, kept byte-for-byte for an ASCII host;
+/// a caller judging a URL of any scheme reads it with [`url_host`] or [`parse_url`]. A non-ASCII
+/// host reads as its punycode name ([`url_host_to_ascii`]), as the dialling stack reads it
+/// (`http://ｌｏｃａｌｈｏｓｔ/` names `localhost`), and `None` when UTS #46 refuses it: a host read
+/// as written here would be judged as a name no dial reaches.
 pub fn extract_normalized_host(url: &str) -> Option<String> {
     let url = strip_whatwg_removed(url);
     let rest = strip_scheme(url.as_ref())?;
-    normalize_authority(rest, false)
+    normalize_authority(rest)
 }
 
 /// The same host extraction over an authority that names no scheme at all (`host:port`). Anything
@@ -523,13 +526,14 @@ pub fn extract_normalized_authority_host(authority: &str) -> Option<String> {
     if authority.contains("://") {
         return None;
     }
-    normalize_authority(&authority, true)
+    normalize_authority(&authority)
 }
 
 /// Everything [`extract_normalized_host`] does once the scheme is out of the way, shared by both
-/// spellings so neither can read a different host than the other. `idn` maps a non-ASCII host to
-/// its punycode name ([`url_host_to_ascii`]) before the root dot is dropped.
-fn normalize_authority(rest: &str, idn: bool) -> Option<String> {
+/// spellings so neither can read a different host than the other. A non-ASCII host is mapped to its
+/// punycode name ([`url_host_to_ascii`]) before the root dot is dropped; an ASCII one is
+/// [`normalize_host`]'s, byte for byte.
+fn normalize_authority(rest: &str) -> Option<String> {
     let rest: Cow<'_, str> = if rest.contains('\\') {
         Cow::Owned(rest.replace('\\', "/"))
     } else {
@@ -551,9 +555,6 @@ fn normalize_authority(rest: &str, idn: bool) -> Option<String> {
     };
     if host.is_empty() {
         return None;
-    }
-    if !idn {
-        return Some(normalize_host(host));
     }
     let decoded = percent_decode_host(host);
     let mapped = url_host_to_ascii(decoded.as_ref()).ok()?;
@@ -699,6 +700,71 @@ pub fn url_host_to_ascii(host: &str) -> Result<Cow<'_, str>, UrlRefusal> {
     }
     idna::domain_to_ascii_from_cow(Cow::Borrowed(host.as_bytes()), idna::AsciiDenyList::URL)
         .map_err(|_| UrlRefusal::NoHost)
+}
+
+/// `url` 2.5.8's IPv4 READING of a host already mapped to ASCII ([`url_host_to_ascii`]), the step
+/// its host parser takes after the mapping (`Host::parse_cow`: the WHATWG ends-in-a-number check,
+/// then the IPv4 parser, `url/src/host.rs` `ends_in_a_number`, `parse_ipv4number`,
+/// `parse_ipv4addr`), the same reading [`dial_authority`] serialises a special host by.
+/// `Ok(Some(addr))`: `url` dials the host as `addr` (`127.1`, `0x7f.1`, `017700000001` and `0x` all
+/// read as an address; one trailing root dot is allowed). `Ok(None)`: the host is a domain to
+/// `url`.
+///
+/// # Errors
+///
+/// [`UrlRefusal::NoHost`] when the host ends in a number but is no address `url` reads
+/// (`1.2.3.4.5`, `999.1.1.1`, `09`): `url` refuses a URL naming it.
+pub fn url_host_ipv4(host: &str) -> Result<Option<Ipv4Addr>, UrlRefusal> {
+    // The one port of `url`'s IPv4 reading, the one `url`'s special host is read by too.
+    if !ends_in_a_number(host) {
+        return Ok(None);
+    }
+    url_ipv4(host).map(Some).ok_or(UrlRefusal::NoHost)
+}
+
+/// THE HOST A DESTINATION JUDGE COMPARES, read as the name or address a URL client dials: the
+/// brackets dropped, the host mapped to ASCII by UTS #46 ([`url_host_to_ascii`]: `ｌｏｃａｌｈｏｓｔ`
+/// reads `localhost`, `①⑥⑨.②⑤④.①⑥⑨.②⑤④` reads `169.254.169.254`, `LOCALHOST。` reads
+/// `localhost.`), one trailing root dot dropped, lower-cased. An ASCII host is that host as before,
+/// byte for byte, and so is an IPv6 literal (a zone id included), which is never mapped.
+///
+/// The host is then held to `url`'s IPv4 reading ([`url_host_ipv4`]): the address [`host_ip`] reads
+/// out of it must be the address `url` dials it as. An alternate IPv4 spelling (`0x7f.1`,
+/// `017700000001`) is handed back as spelled, so a judge reads it as it always did
+/// ([`is_alternate_ipv4_encoding`]): measured over every spelling of up to seven characters from
+/// `0179x8f.`, no host that spelling test passes reads as a different address under `url`.
+///
+/// # Errors
+///
+/// [`UrlRefusal::NoHost`], the host unjudgeable: UTS #46 refuses it, or it ends in a number and
+/// `url` reads an address [`host_ip`] does not (`0x` is `0.0.0.0` to `url` and a name to a reader
+/// that stops there) or refuses it as no address at all (`1.2.3.4.5`), or it holds a `%` outside an
+/// IPv6 literal's zone id. A host reaches a judge decoded (every URL reader here decodes it), so a
+/// `%` left in one is an escape this reading does not decode: `%6c%6fcalhost` is `localhost` to a
+/// client that decodes it and an unknown name here, so it is judged as neither.
+pub fn judged_host(host: &str) -> Result<String, UrlRefusal> {
+    let h = host.trim_start_matches('[').trim_end_matches(']');
+    if let Some(at) = h.find('%') {
+        // Only an IPv6 literal carries a `%`, opening its zone id (`fe80::1%eth0`, `fe80::1%25eth0`).
+        if h[..at].parse::<Ipv6Addr>().is_err() {
+            return Err(UrlRefusal::NoHost);
+        }
+    }
+    let fold = |s: &str| s.strip_suffix('.').unwrap_or(s).to_ascii_lowercase();
+    if h.contains(':') && (h.is_ascii() || host_ip(h).is_some()) {
+        return Ok(fold(h));
+    }
+    let name = fold(url_host_to_ascii(h)?.as_ref());
+    let agrees = match url_host_ipv4(&name) {
+        Ok(None) => true,
+        Ok(Some(v4)) => host_ip(&name) == Some(IpAddr::V4(v4)),
+        Err(_) => false,
+    };
+    if agrees || is_alternate_ipv4_encoding(&name) {
+        Ok(name)
+    } else {
+        Err(UrlRefusal::NoHost)
+    }
 }
 
 /// READ A URL OF ANY SCHEME, by its family's rules (see [`UrlFamily`]).
