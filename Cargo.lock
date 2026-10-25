@@ -911,7 +911,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=1367f8c318f2fb58e2f57ef4ab7aa5e4407c4220#1367f8c318f2fb58e2f57ef4ab7aa5e4407c4220"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=4af52d193d00255bb4648655a2ae0f21cfb0a911#4af52d193d00255bb4648655a2ae0f21cfb0a911"
 dependencies = [
  "busbar-contract",
  "sha2",
