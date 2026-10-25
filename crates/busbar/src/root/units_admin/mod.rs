@@ -4068,7 +4068,7 @@ pub use adjust::RecordedCounts;
 pub(crate) mod bound;
 pub use bound::{
     live_admin_door, live_planes, live_records, live_replay_store, no_planes, no_trust,
-    PlaneLookup, PlaneRecordSink, ReplayStore, TrustDesk,
+    PlaneLookup, PlaneRecordSink, TrustDesk,
 };
 
 #[cfg(test)]
