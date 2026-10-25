@@ -16,6 +16,7 @@
 use super::{Journal, NeutralRecord, Restored};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::store::plane_view::{decode, encode, PlaneStore};
+use crate::test_support::warn_capture::DiagCapture;
 use busbar_contract::records::{
     PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreError, RecordStoreResult,
 };
@@ -329,39 +330,6 @@ fn restore_scoped_skips_one_undecodable_record_and_keeps_the_rest() {
         "the undecodable row must emit PLANE_JOURNAL_ROW_UNREADABLE (BUSBAR-2046) at ERROR at its \
          skip site — a silent count is the regression being fixed; captured: {diags:?}"
     );
-}
-
-/// A tracing layer that records the `diag = \"BUSBAR-NNNN\"` field of every ERROR event, so a test
-/// can assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose.
-#[derive(Clone, Default)]
-struct DiagCapture(Arc<Mutex<Vec<String>>>);
-
-impl<S> tracing_subscriber::Layer<S> for DiagCapture
-where
-    S: tracing::Subscriber,
-{
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if *event.metadata().level() != tracing::Level::ERROR {
-            return;
-        }
-        struct V<'a>(&'a mut Option<String>);
-        impl tracing::field::Visit for V<'_> {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "diag" {
-                    *self.0 = Some(format!("{value:?}"));
-                }
-            }
-        }
-        let mut diag = None;
-        event.record(&mut V(&mut diag));
-        if let Some(d) = diag {
-            self.0.lock().unwrap().push(d);
-        }
-    }
 }
 
 /// A scope whose rows are ALL undecodable is NOT an `empty_scope`. RF3: an enumerated-but-empty
