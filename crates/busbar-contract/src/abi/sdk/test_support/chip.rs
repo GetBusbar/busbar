@@ -30,3 +30,10 @@ pub fn drive_sealed<E>(
 ) -> std::task::Poll<Result<(), E>> {
     w.drive(&mut write)
 }
+
+/// The bytes a [`Cred`](crate::abi::sdk::cred::Cred) holds, for a test's fake far end that checks
+/// what it was authenticated with.
+#[must_use]
+pub fn cred_bytes(cred: &crate::abi::sdk::cred::Cred) -> Vec<u8> {
+    cred.wire().to_vec()
+}
