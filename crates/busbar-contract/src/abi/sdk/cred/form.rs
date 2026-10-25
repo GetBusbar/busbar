@@ -9,7 +9,8 @@ use super::Cred;
 
 /// A URL (`scheme://user:pass@host/...?password=...`, or `?pass=`) or key/value connection string
 /// (`host=h password='p'`) with its password taken out and sealed. [`CredUrl::public`] is the text
-/// with no password in it; the password is a [`Cred`].
+/// with no password in it (a userinfo keeps its user and its `@`, so `:pw@` reads as an empty
+/// user, as a URL reader read it); the password is a [`Cred`].
 #[allow(missing_debug_implementations)]
 #[derive(Clone)]
 pub struct CredUrl {
@@ -115,10 +116,8 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Found>), &
             match userinfo.split_once(':') {
                 Some((user, pass)) => {
                     password = Some((decode(pass), userinfo_at));
-                    if !user.is_empty() {
-                        public.push_str(user);
-                        public.push('@');
-                    }
+                    public.push_str(user);
+                    public.push('@');
                 }
                 None => {
                     public.push_str(userinfo);

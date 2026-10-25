@@ -84,7 +84,7 @@ fn a_settings_error_names_the_path() {
 #[test]
 fn url_userinfo_and_query_passwords_are_split_out() {
     let u = split("redis://:p%40ss@cache:6379/0");
-    assert_eq!(u.public(), "redis://cache:6379/0");
+    assert_eq!(u.public(), "redis://@cache:6379/0");
     assert_eq!(pw(&u).as_deref(), Some(&b"p@ss"[..]));
 
     let u = split("mysql://root@h:3306/db?password=pw&ssl-mode=required");
@@ -153,7 +153,7 @@ fn take_wipes_the_setting_where_it_was() {
     let u = CredUrl::take(&mut doc["url"])
         .expect("string")
         .expect("splits");
-    assert_eq!(u.public(), "redis://h");
+    assert_eq!(u.public(), "redis://@h");
     assert!(doc["url"].is_null());
     let k = Cred::take(&mut doc["key"]).expect("string");
     assert_eq!(k.wire(), b"k");
