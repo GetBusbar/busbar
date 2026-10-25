@@ -35,12 +35,6 @@ use busbar_kernel_egress::ports::{
     Unavailable, UpstreamStatus,
 };
 
-/// The route step's pass, minted through the kernel seal as the kernel's own loop mints it; this
-/// crate is the kernel, so a fixture presents a real `Pass<Route>`.
-pub fn route_token() -> busbar_contract::caps::Pass<busbar_contract::caps::Route> {
-    busbar_contract::caps::Pass::mint(&busbar_contract::caps::KernelSeal::acquire_for_kernel())
-}
-
 // ── the clock ───────────────────────────────────────────────────────────────────────────────────
 
 /// A clock on the harness's paused runtime, which a test can also move by hand.
