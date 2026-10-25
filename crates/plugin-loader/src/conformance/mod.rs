@@ -1250,13 +1250,20 @@ fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
         .collect()
 }
 
-/// `validate` over `settings`, its secret references taken out as the auth host takes them before
-/// `validate` (`auth_door::split_secrets`) and boot before `open`; a secret kind's stay.
+/// `validate` over `settings` as the kind's host passes them: the auth host takes a provider's
+/// secret references out first (`auth_door::split_secrets`); every other kind's host validates the
+/// block as written (`export_axis::probe`).
 pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
-    let (settings, _) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let split;
+    let settings = if K::CODE == KindCode::Auth {
+        split = lend_secrets(p.secret_refs(), settings, false).0;
+        &split[..]
+    } else {
+        settings
+    };
     let mut err = [0_u8; 512];
     let mut f: Frame<ValidateIn, OutHead> = Frame::new(input(), output());
-    f.input.settings = json(&settings);
+    f.input.settings = json(settings);
     f.input.err_buf = err.as_mut_ptr();
     f.input.err_cap = err.len();
     p.call(life::VALIDATE, &mut f)
