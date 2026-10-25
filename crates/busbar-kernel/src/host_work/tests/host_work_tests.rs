@@ -11,47 +11,15 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::host::service::{self as svc, MAX_WORK_RECORD, WORK_LIVE, WORK_SETTLED};
 use busbar_contract::abi::mechanism::call::Outcome;
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::ids::RecordSchemaId;
-use busbar_contract::kinds::{RecordBytes, StoreError};
 use busbar_contract::records::VirtualKey;
-use busbar_contract::services::{Caller, HostServices, Later, Ran, Stored};
+use busbar_contract::services::{HostServices, Later, Ran, Stored};
 
 use super::*;
 use crate::governance::MemoryStore;
-use crate::host_records::RecordRows;
+use crate::host_services::tests::{caller, Mem};
 use crate::host_services::{InstanceFacts, KernelServices, Offload, NOT_A_KIND, POOL_REFUSED};
 use crate::host_units::UnitRecord;
-
-struct Mem(Arc<MemoryStore>);
-
-impl RecordRows for Mem {
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError> {
-        self.0.record_put(schema, key, value)
-    }
-
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError> {
-        self.0.record_get(schema, key)
-    }
-
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        self.0.record_scan(schema, prefix, limit)
-    }
-}
 
 /// Runs every job at once, on the caller's thread.
 struct Inline;
@@ -76,14 +44,6 @@ impl Offload for Gate {
 }
 
 const KIND: RecordSchemaId = RecordSchemaId::new("job");
-
-fn caller(instance: &str) -> Caller {
-    Caller {
-        instance: Arc::from(instance),
-        plugin: Arc::from("the-plugin"),
-        kind: KindCode::Plane,
-    }
-}
 
 fn key(id: &str) -> Arc<VirtualKey> {
     Arc::new(VirtualKey {
