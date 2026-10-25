@@ -3,8 +3,6 @@
 # and added here; it goes red until somebody has looked at it.
 busbar-core-admin/src/governance.rs	reason
 busbar-core-admin/src/refusal.rs	reason
-busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)
-busbar/src/root/units_admin/mod.rs	verbs_reason(refusal.reason)
 busbar-kernel/src/plane_driver/mod.rs	reason
 busbar-kernel/src/plane_driver/mod.rs	cause
 # Reviewed (lane-dg): the hook stage's refusal at the head of the route leg (HookVeto or

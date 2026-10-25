@@ -361,10 +361,18 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 /// row carries a `gauntlet-*` axis, so `install()` registered it under no plane and nothing served
 /// it — taking its two sites with it: one `NoDestination` (the rider's pre-admission destination
 /// check) and one `TaskLost` (its synchronous `route` arm, never taken). None is a money reason and
-/// none was served. The population is sixty-two since; the floor is re-armed there. A population that falls because code was DELETED
+/// none was served. The population was sixty-two then, and sixty-three when S-2 called the admin
+/// surface's steps directly instead of walking them as a kernel unit. That deleted `ProductionUnits`'
+/// `Units` impl — its nine per-step default refusals for a unit no plane claimed: four
+/// `NoDestination`, two `DecodeFailed`, one `Unauthenticated`, one `ScopeDenied`, one `Unpriced`,
+/// none reached (the admin plane was the one plane registered) — and the admin steps' twenty-one
+/// `SeatVerdict` refusals, which now answer a bare `ReasonCode` at the same step with the same
+/// reason; the two carried `verbs_reason(refusal.reason)` were pinned below until then. None is a
+/// money reason. The population is thirty-three since; the floor is re-armed there. A population
+/// that falls because code was DELETED
 /// re-arms this floor in the same commit as the deletion, naming the sites; a population that falls
 /// with no deletion is the scanner regression this floor exists to catch.
-const MIN_REFUSAL_SITES: usize = 62;
+const MIN_REFUSAL_SITES: usize = 33;
 
 /// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
 ///

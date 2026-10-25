@@ -1333,6 +1333,15 @@ pub(crate) fn audit_pass(seal: &KernelSeal, call: CallId) -> Pass<Audit> {
     Pass::<Audit>::mint_bound(seal, call)
 }
 
+/// THE AUDIT PASS OF A KERNEL-VERB UNIT: an administrative request the root answers directly
+/// rather than walking it through this loop. Such a unit holds nothing, is charged nothing and has no
+/// Route leg to await, so it has no hold to settle and no exit to leave through — but it still gets
+/// its one audit record (U14), and that record is sealed by a pass minted here, from [`audit_pass`],
+/// for a call of its own. One pass per unit: the caller asks once, when it seals the record.
+pub fn verb_audit_pass(kernel: &Kernel) -> Pass<Audit> {
+    audit_pass(&kernel.seal, kernel.next_call())
+}
+
 /// A hold the cell handed back. It has been superseded by the admitted one and carries no spend of
 /// its own; taking it by value here is what makes "the arrival hold is consumed by the swap" a fact
 /// about ownership rather than a comment.
