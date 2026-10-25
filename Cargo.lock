@@ -773,7 +773,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=fafb021f9f5ff4f109da47a9ea711353a003d26e#fafb021f9f5ff4f109da47a9ea711353a003d26e"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=f4948049b9e5a9cabda6968ad1bc20732d1d564a#f4948049b9e5a9cabda6968ad1bc20732d1d564a"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -914,6 +914,7 @@ version = "1.5.0"
 source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=4af52d193d00255bb4648655a2ae0f21cfb0a911#4af52d193d00255bb4648655a2ae0f21cfb0a911"
 dependencies = [
  "busbar-contract",
+ "serde_json",
  "sha2",
 ]
 

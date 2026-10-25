@@ -273,19 +273,18 @@ fn cancel_green_and_red() {
 #[test]
 fn purges_route_to_the_count_check() {
     let i = in_head();
-    for s in [slot::PURGE_PLANE_RECORDS_BEFORE] {
-        let o = CountOut {
-            head: out_head(),
-            count: 9,
-        };
-        assert_eq!(Store::check(&answer(s, Outcome::Ready, &i, &o)), Ok(()));
-        assert_eq!(
-            Store::check(&answer(s, Outcome::Failed, &i, &o)),
-            Err(sc::COUNT_FAILED_WRITTEN),
-            "{}",
-            Store::op_name(s)
-        );
-    }
+    let s = slot::PURGE_PLANE_RECORDS_BEFORE;
+    let o = CountOut {
+        head: out_head(),
+        count: 9,
+    };
+    assert_eq!(Store::check(&answer(s, Outcome::Ready, &i, &o)), Ok(()));
+    assert_eq!(
+        Store::check(&answer(s, Outcome::Failed, &i, &o)),
+        Err(sc::COUNT_FAILED_WRITTEN),
+        "{}",
+        Store::op_name(s)
+    );
 }
 
 // ── every outcome ────────────────────────────────────────────────────────────────────────────

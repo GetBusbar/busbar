@@ -181,14 +181,6 @@ impl<S: StoreSlots> SlotStore<S> {
     }
 }
 
-/// `step`'s answer, mapped.
-fn then<T, U>(step: Step<T>, f: impl FnOnce(T) -> U) -> Step<U> {
-    match step {
-        Step::Ready(t) => Step::Ready(f(t)),
-        Step::Pending { wake_at_ns } => Step::Pending { wake_at_ns },
-    }
-}
-
 /// One call's answer, already in hand.
 fn ready<'a, T: Send + 'a>(answer: Result<T, StoreFailure>) -> StoreCall<'a, T> {
     Box::pin(std::future::ready(answer))

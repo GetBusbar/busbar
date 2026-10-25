@@ -15,12 +15,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::abi::sdk::store::{Cap, Cell, Grant};
 use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::{Head, RecordBytes};
-use busbar_contract::records::{
-    AuditRecord, MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta,
-};
+use busbar_contract::kinds::RecordBytes;
+use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
 use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 use oauth_as::store::Storage as _;
 

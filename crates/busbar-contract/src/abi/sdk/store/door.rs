@@ -172,9 +172,8 @@ impl std::fmt::Write for Rendered {
     }
 }
 
-/// A FAILED or REFUSED answer's text: a fixed one, one the door rendered, or the store's own.
+/// A FAILED or REFUSED answer's text: one the door rendered, or the store's own.
 enum Text {
-    Fixed(&'static str),
     Rendered(Rendered),
     Owned(String),
 }
@@ -186,7 +185,6 @@ impl Text {
 
     fn as_str(&self) -> &str {
         match self {
-            Self::Fixed(t) => t,
             Self::Rendered(r) => r.as_str(),
             Self::Owned(t) => t.as_str(),
         }
@@ -226,12 +224,11 @@ impl<B: StoreSlots> Served<B> {
         &self.store
     }
 
-    /// Keep `text` alive in the ring (a fixed text needs no keeping), cut to [`MAX_TEXT`] on a
+    /// Keep `text` alive in the ring, cut to [`MAX_TEXT`] on a
     /// character boundary, and answer it as an [`AbiStr`]. Allocates nothing: an owned text is
     /// moved in, and the ring never grows past the capacity it was opened with.
     fn text(&self, text: Text) -> AbiStr {
         let text = match text {
-            Text::Fixed(t) => return abi_str(t),
             Text::Owned(mut t) => {
                 let mut end = t.len().min(MAX_TEXT);
                 while !t.is_char_boundary(end) {

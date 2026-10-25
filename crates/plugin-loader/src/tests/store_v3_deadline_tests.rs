@@ -54,13 +54,13 @@ mod hung {
     use busbar_contract::abi::sdk::Safe as S;
 
     const TAIL: busbar_contract::abi::store::StoreTail = d::tail::<M>();
-    const DIAGS: [busbar_contract::abi::mechanism::call::AbiStr; 2] = d::DIAG_IDS;
+    const DIAGS: [busbar_contract::abi::mechanism::call::AbiStr; 1] = d::DIAG_IDS;
 
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::store::Ops,
         statement: busbar_contract::abi::mechanism::door::Statement {
             diag_ids: DIAGS.as_ptr(),
-            diag_ids_len: 2,
+            diag_ids_len: 1,
             kind_tail: ::core::ptr::from_ref(&TAIL)
                 .cast::<busbar_contract::abi::mechanism::door::KindTailHead>(),
             ..busbar_contract::abi::sdk::door::statement("hung", "0", 64)
