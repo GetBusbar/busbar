@@ -279,6 +279,32 @@ fn on_plugin_thread_in<F: FnOnce() -> R, R>(
     slot.r.take().expect("the trampoline always fills the slot")
 }
 
+/// Run `f` on a permanent worker WITHOUT waiting for it: the worker is borrowed for `f` alone and
+/// returned to the idle list when `f` ends. `f` owns everything it touches (`'static`), so the
+/// caller may go on (or go away) at once. A panic in `f` is caught on the worker and dropped.
+pub(crate) fn spawn_on_plugin_thread(f: impl FnOnce() + Send + 'static) {
+    let lease = acquire(pool());
+    let tx = lease.tx.clone();
+    let job = move || {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        drop(lease);
+    };
+    let boxed: Box<dyn FnOnce() + Send> = Box::new(job);
+    /// # Safety
+    /// `p` is a `Box<Box<dyn FnOnce() + Send>>` leaked by `spawn_on_plugin_thread`, run once.
+    unsafe fn run_boxed(p: *mut ()) {
+        let f = unsafe { Box::from_raw(p.cast::<Box<dyn FnOnce() + Send>>()) };
+        f();
+    }
+    let (done, _) = sync_channel::<()>(1);
+    tx.send(Job {
+        run: run_boxed,
+        data: Box::into_raw(Box::new(boxed)).cast::<()>(),
+        done,
+    })
+    .expect("a plugin FFI worker never exits, so its receiver is always live");
+}
+
 #[cfg(test)]
 #[path = "tests/ffi_thread_tests.rs"]
 mod tests;

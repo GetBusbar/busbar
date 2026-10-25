@@ -58,8 +58,9 @@ pub const REJECT_STATUS: u16 = 429;
 pub const MAX_INFLIGHT: u32 = 8;
 
 /// The instance: the most messages a request may carry before it is rejected, how long its
-/// `decide` sleeps first, and the session whose requests it rejects, if any.
-pub struct Gate(u64, u64, Option<Vec<u8>>);
+/// `decide` sleeps first, the session whose requests it rejects, if any, and whether its `decide`
+/// waits forever (answers PENDING and never wakes).
+pub struct Gate(u64, u64, Option<Vec<u8>>, bool);
 
 impl Life for Gate {
     const CANCEL: u32 = cancel::ABORTED;
@@ -92,7 +93,11 @@ impl Gate {
             .get("reject_session")
             .and_then(serde_json::Value::as_str)
             .map(|s| s.as_bytes().to_vec());
-        Ok(Gate(over, sleep_ms, session))
+        let pend = settings
+            .get("pend")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        Ok(Gate(over, sleep_ms, session, pend))
     }
 }
 
@@ -113,6 +118,9 @@ impl SafeSlot for Decide {
             return Outcome::Refused;
         };
         let gate = held.life();
+        if gate.3 {
+            return Outcome::Pending;
+        }
         if gate.1 > 0 {
             std::thread::sleep(std::time::Duration::from_millis(gate.1));
         }

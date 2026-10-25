@@ -26,8 +26,6 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use busbar_contract::abi::mechanism::call::DeadlineClass;
-
 use super::plugin::Instance;
 use super::worker::{spawn_worker, Pool, Worker};
 
@@ -113,10 +111,11 @@ fn ticketless(pool: &Pool) {
         let fresh: Vec<u64> = inst
             .lock_calls()
             .iter()
-            .filter(|&&(id, started, s)| {
-                id >= from && started.elapsed() > pool.env.budgets.of(s, DeadlineClass::Call)
+            .filter(|c| {
+                c.id >= from
+                    && c.started.elapsed() > pool.env.budgets.of(c.slot, c.class).max(c.watch)
             })
-            .map(|&(id, _, _)| id)
+            .map(|c| c.id)
             .collect();
         let Some(&last) = fresh.iter().max() else {
             continue;

@@ -668,19 +668,14 @@ async fn a_wedged_trial_holds_no_other_caller() {
     let gate = std::sync::Mutex::new(Some((entered_tx, released)));
     let first = bind().expect("the hook binds");
     let instance = Arc::new(
-        HookInstance::open(
-            first,
-            Arc::clone(&dispatcher),
-            br#"{"reject_over_messages": 3}"#,
-            move || {
-                // The trial's bind, wedged until the test releases it.
-                if let Some((entered, released)) = gate.lock().unwrap().take() {
-                    entered.send(()).unwrap();
-                    released.recv().unwrap();
-                }
-                bind()
-            },
-        )
+        HookInstance::open(first, br#"{"reject_over_messages": 3}"#, move || {
+            // The trial's bind, wedged until the test releases it.
+            if let Some((entered, released)) = gate.lock().unwrap().take() {
+                entered.send(()).unwrap();
+                released.recv().unwrap();
+            }
+            bind()
+        })
         .expect("the hook opens"),
     );
     // Faulted, its trial window open now.
@@ -746,13 +741,8 @@ fn an_instance_debug_never_shows_its_settings() {
         }
     };
     let settings = br#"{"reject_over_messages": 3}"#;
-    let opened = super::HookInstance::open(
-        bind().expect("the fixture binds"),
-        Arc::clone(&rows.dispatcher),
-        settings,
-        bind,
-    )
-    .expect("the fixture opens over its settings");
+    let opened = super::HookInstance::open(bind().expect("the fixture binds"), settings, bind)
+        .expect("the fixture opens over its settings");
     let shown = format!("{opened:?}");
     assert!(shown.contains(NAME), "the name names the instance: {shown}");
     for leak in ["reject_over_messages", "3}"] {
@@ -800,5 +790,108 @@ async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
     assert!(
         abstains.contains("Ready") && abstains.contains("verbs=0x2 "),
         "a hook that declared `orders: false` and abstains is served: {abstains}"
+    );
+}
+
+/// A hook instance over the conforming fixture, opened directly over `settings` (so a test reads
+/// its live instance).
+fn opened(settings: &[u8]) -> Arc<super::HookInstance> {
+    use crate::dispatch::{ConnTable, NoSink};
+    let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
+    let c = axis.find(NAME).expect("the linked row").clone();
+    let dispatcher = Arc::clone(&axis.dispatcher);
+    let bind = move || {
+        HookRows::bind(
+            &c,
+            &dispatcher,
+            "hooks.live",
+            Arc::new(NoSink),
+            ConnTable::NoNeeds,
+        )
+    };
+    let first = bind().expect("the hook binds");
+    Arc::new(super::HookInstance::open(first, settings, bind).expect("the hook opens"))
+}
+
+/// The `max_inflight` units the live instance of `h` holds now.
+fn held_units(h: &super::HookInstance) -> u32 {
+    match &*h.inner.lock() {
+        super::State::Live(p) => p.inflight(),
+        _ => u32::MAX,
+    }
+}
+
+/// Wait (a bounded while) for `h` to hold no unit.
+async fn units_come_back(h: &super::HookInstance) -> u32 {
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while held_units(h) != 0 && std::time::Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    held_units(h)
+}
+
+/// THE WATCH BUDGET ON THE ONE CALL PATH: a crossing slower than the Call class budget (1 s) but
+/// inside the hook's own `timeout_ms` is answered, and the instance is not quarantined (1.5.5: a hook
+/// is cut only by its own timeout).
+#[tokio::test]
+async fn a_hook_slower_than_the_call_class_but_inside_its_timeout_answers_and_stays_live() {
+    use busbar_contract::hook_calls::HookCalls;
+    let h = opened(br#"{"reject_over_messages": 3, "sleep_ms": 1300}"#);
+    let answered = h.decide(frame(2), Duration::from_secs(4)).await;
+    assert!(
+        matches!(
+            answered,
+            Answered::Answer {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
+                ..
+            }
+        ),
+        "a hook inside its own timeout answers: {}",
+        decided(2, &answered)
+    );
+    assert!(
+        !h.quarantined(),
+        "a hook inside its own timeout is not quarantined"
+    );
+}
+
+/// A hook that waits (PENDING, never woken) is cancelled at its deadline, the caller answered
+/// `TimedOut` then, and its `max_inflight` unit comes back.
+#[tokio::test]
+async fn a_pending_hook_is_cut_at_its_deadline_and_gives_its_unit_back() {
+    use busbar_contract::hook_calls::HookCalls;
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true}"#);
+    let started = std::time::Instant::now();
+    let answered = h.decide(frame(2), Duration::from_millis(100)).await;
+    assert!(
+        matches!(answered, Answered::TimedOut),
+        "a waiting hook is cut at its deadline: {}",
+        decided(2, &answered)
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(
+        units_come_back(&h).await,
+        0,
+        "the cut op gives its unit back"
+    );
+    assert!(!h.quarantined());
+}
+
+/// A call dropped while its hook waits (its future dropped, not timed out) gives its unit back:
+/// the op is cancelled on a plugin thread, never in the drop.
+#[tokio::test]
+async fn a_dropped_call_on_a_waiting_hook_gives_its_unit_back() {
+    use busbar_contract::hook_calls::HookCalls;
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true}"#);
+    let dropped =
+        tokio::time::timeout(Duration::from_millis(100), h.decide(frame(2), BUDGET)).await;
+    assert!(
+        dropped.is_err(),
+        "the call was still waiting when it was dropped"
+    );
+    assert_eq!(
+        units_come_back(&h).await,
+        0,
+        "the dropped op gives its unit back"
     );
 }

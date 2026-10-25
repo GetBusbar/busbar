@@ -37,7 +37,7 @@ use std::mem::size_of;
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::{
@@ -266,6 +266,11 @@ pub struct Called {
 }
 
 impl Called {
+    /// The host's own answer, with no crossing.
+    pub(crate) fn host(outcome: Outcome) -> Self {
+        Self::from(Crossed::host(outcome))
+    }
+
     /// THE OPERATOR'S TEXT FOR AN `open` THAT DID NOT ANSWER READY, 1.5.5's wording rebuilt from
     /// the host's own context: `plugin '{display}' open failed: {reason}`, `display` being the name
     /// the host knows the plugin by. The reason is what the plugin wrote into the host's lent
@@ -487,7 +492,7 @@ pub(crate) struct Instance {
     /// the op pends.
     pub(crate) resumes: AtomicU64,
     /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
-    pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
+    pub(crate) calls: Mutex<Vec<Watched>>,
     next_call: AtomicU64,
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
@@ -712,7 +717,7 @@ impl Instance {
         }
     }
 
-    pub(crate) fn lock_calls(&self) -> std::sync::MutexGuard<'_, Vec<(u64, Instant, u32)>> {
+    pub(crate) fn lock_calls(&self) -> std::sync::MutexGuard<'_, Vec<Watched>> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -959,12 +964,17 @@ impl Instance {
         frame.name_unit(unit.unwrap_or(0));
         let (input, out, out_size) = frame.prepare(ticket, class as u8);
         let id = self.next_call.fetch_add(1, Ordering::Relaxed);
-        self.lock_calls().push((id, Instant::now(), slot::CANCEL));
+        self.lock_calls().push(Watched::new(
+            id,
+            slot::CANCEL,
+            Duration::ZERO,
+            DeadlineClass::Call,
+        ));
         // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
         let crossed = crate::ffi_thread::on_plugin_thread(|| unsafe {
             self.cross(slot::CANCEL, input, out, out_size)
         });
-        self.lock_calls().retain(|c| c.0 != id);
+        self.lock_calls().retain(|c| c.id != id);
         crossed.map_or(Outcome::Fault, |c| c.outcome)
     }
 
@@ -1862,23 +1872,130 @@ impl<K: Kind> Plugin<K> {
         ticket: Ticket,
         resume: bool,
     ) -> Called {
+        let class = if ticket.is_none() {
+            DeadlineClass::Call
+        } else {
+            DeadlineClass::Connection
+        };
+        match self.admit(s, size_of::<I>(), size_of::<O>()) {
+            Ok(admitted) => self.cross_admitted(&admitted, s, frame, ticket, resume, class),
+            Err(o) => Called::from(Crossed::host(o)),
+        }
+    }
+
+    /// ADMIT one op `s` with an `in`/`out` of these sizes: the instance's refusals, the lifecycle
+    /// exclusion and its `max_inflight` units, all held until the [`Admitted`] drops (an op that
+    /// pends holds them across its crossings).
+    pub(crate) fn admit(
+        &self,
+        s: u32,
+        in_size: usize,
+        out_size: usize,
+    ) -> Result<Admitted, Outcome> {
         let inst = &*self.inner;
-        if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
-            return Called::from(Crossed::host(o));
+        if let Some(o) = inst.refuse(s, in_size, out_size) {
+            return Err(o);
         }
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
-            return Called::from(Crossed::host(Outcome::Refused));
+            return Err(Outcome::Refused);
         }
         let Some(units) = inst.acquire(s) else {
             if lifecycle {
                 inst.leave_lifecycle();
             }
-            return Called::from(Crossed::host(Outcome::Refused));
+            return Err(Outcome::Refused);
         };
+        Ok(Admitted {
+            inst: Arc::clone(&self.inner),
+            units,
+            lifecycle,
+            watch: Duration::ZERO,
+        })
+    }
+
+    /// [`Plugin::cross_admitted`] on an inline ticket (or none): a NEW op on the ticket starts with
+    /// nothing kept; a resume, or the re-call a short answer earns, reads what its op kept.
+    pub(crate) fn cross_inline<I: InFrame, O: OutFrame>(
+        &self,
+        admitted: &Admitted,
+        s: u32,
+        frame: &mut Frame<I, O>,
+        ticket: Ticket,
+        resume: bool,
+        class: DeadlineClass,
+    ) -> Called {
+        let inline = (!ticket.is_none()).then(|| self.inline_tickets()).flatten();
+        if let Some(tickets) = &inline {
+            tickets.starting(ticket, self.inner.instance, s, resume);
+        }
+        let called = self.cross_admitted(admitted, s, frame, ticket, resume, class);
+        if let Some(tickets) = &inline {
+            tickets.ended(ticket, s, called.recall.is_some());
+        }
+        called
+    }
+
+    /// The inline tickets of the dispatcher that adopted this instance.
+    fn inline_tickets(&self) -> Option<Arc<super::inline::InlineTickets>> {
+        self.inner
+            .wake
+            .route
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|route| route.inline())
+    }
+
+    /// A fresh inline ticket for one op; `None` before a dispatcher adopted the instance.
+    pub(crate) fn inline_ticket(&self) -> Option<super::inline::InlineTicket> {
+        self.inline_tickets()?.mint()
+    }
+
+    /// `cancel` of the op pending on `ticket` (class `class`, serving `unit`), on the caller's
+    /// thread: ticket-less (it may not pend), with the kind's own frame.
+    pub(crate) fn cancel_inline(
+        &self,
+        ticket: Ticket,
+        class: DeadlineClass,
+        unit: Option<u64>,
+    ) -> Outcome {
+        let inst = &*self.inner;
+        if inst.faulted.load(Ordering::Acquire) {
+            return Outcome::Fault;
+        }
+        let mut frame = (inst.cancel_frame)();
+        frame.name_unit(unit.unwrap_or(0));
+        let (input, out, out_size) = frame.prepare(ticket, class as u8);
+        let id = inst.next_call.fetch_add(1, Ordering::Relaxed);
+        inst.lock_calls().push(Watched::new(
+            id,
+            slot::CANCEL,
+            Duration::ZERO,
+            DeadlineClass::Call,
+        ));
+        // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
+        let crossed = unsafe { inst.cross(slot::CANCEL, input, out, out_size) };
+        inst.lock_calls().retain(|c| c.id != id);
+        crossed.outcome
+    }
+
+    /// One crossing of the op `admitted` admitted, on `ticket` (`resume`: the same op again), its
+    /// head stamped with deadline class `class`.
+    pub(crate) fn cross_admitted<I: InFrame, O: OutFrame>(
+        &self,
+        admitted: &Admitted,
+        s: u32,
+        frame: &mut Frame<I, O>,
+        ticket: Ticket,
+        resume: bool,
+        class: DeadlineClass,
+    ) -> Called {
+        let inst = &*self.inner;
+        debug_assert!(std::ptr::eq(inst, &*admitted.inst));
         let (i, o, out_size) = frame.heads();
         let id = inst.next_call.fetch_add(1, Ordering::Relaxed);
-        inst.lock_calls().push((id, Instant::now(), s));
+        inst.lock_calls()
+            .push(Watched::new(id, s, admitted.watch, class));
         // SAFETY: the frame is ours for the call; its heads lead the structs.
         let crossed = unsafe {
             let head = &mut *i;
@@ -1886,19 +2003,11 @@ impl<K: Kind> Plugin<K> {
             // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
             // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
             head.flags = (head.flags & !FLAG_RESUME) | if resume { FLAG_RESUME } else { 0 };
-            head.deadline_class = if ticket.is_none() {
-                DeadlineClass::Call as u8
-            } else {
-                DeadlineClass::Connection as u8
-            };
+            head.deadline_class = class as u8;
             head.ticket = ticket;
             inst.cross(s, i, o, out_size)
         };
-        inst.lock_calls().retain(|c| c.0 != id);
-        inst.release(units);
-        if lifecycle {
-            inst.leave_lifecycle();
-        }
+        inst.lock_calls().retain(|c| c.id != id);
         let token = crossed.short.then(|| Recall {
             instance: self.instance_id(),
             slot: s,
@@ -1906,6 +2015,49 @@ impl<K: Kind> Plugin<K> {
         Called {
             recall: token,
             ..Called::from(crossed)
+        }
+    }
+}
+
+/// One crossing in progress, as the watchdog judges it: past the longer of its class budget and
+/// its own watch budget, it is a breach.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Watched {
+    pub(crate) id: u64,
+    pub(crate) started: Instant,
+    pub(crate) slot: u32,
+    pub(crate) watch: Duration,
+    pub(crate) class: DeadlineClass,
+}
+
+impl Watched {
+    fn new(id: u64, slot: u32, watch: Duration, class: DeadlineClass) -> Self {
+        Self {
+            id,
+            started: Instant::now(),
+            slot,
+            watch,
+            class,
+        }
+    }
+}
+
+/// One admitted op: its instance's `max_inflight` units and, for a lifecycle op, the lifecycle
+/// exclusion, given back when it drops.
+pub(crate) struct Admitted {
+    inst: Arc<Instance>,
+    units: u32,
+    lifecycle: bool,
+    /// A longer watch budget its crossings get from the watchdog than their class's (a hook's
+    /// `timeout_ms`).
+    pub(crate) watch: Duration,
+}
+
+impl Drop for Admitted {
+    fn drop(&mut self) {
+        self.inst.release(self.units);
+        if self.lifecycle {
+            self.inst.leave_lifecycle();
         }
     }
 }

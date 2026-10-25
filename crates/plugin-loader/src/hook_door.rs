@@ -28,7 +28,6 @@
 //!   instance through the same door and makes one trial call on it.
 //! * A plugin's leased answer (`status`, `describe`) is copied, then its lease released.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -44,16 +43,16 @@ use busbar_contract::abi::mechanism::door::{DoorFn, MARK_WORD_HOOK};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn,
 };
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::conn::DeclaredConns;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, HookFacts, Pending, Probed};
 
 use crate::boot::{Candidate, Origin};
+use crate::dispatch::call::{self, Opts, Ran};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
-    EnvelopeSink, Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig, NO_BLOB,
+    in_head, load_dropped_bytes, load_linked, out_head, Bind, ConnTable, Dispatcher, EnvelopeSink,
+    Frame, InFrame, Lent, NoSink, OutFrame, Plugin, PluginLogConfig, NO_BLOB,
 };
 use crate::PluginRegistry;
 
@@ -205,14 +204,12 @@ enum State {
 
 struct Inner {
     name: String,
-    dispatcher: Arc<Dispatcher>,
     rebind: Rebind,
     // settings-leak-lint: allow — NON-PROJECTION engine type: the instance's own settings bytes,
     // re-sent to the plugin's `open` on a quarantine trial. `Inner` implements neither `Debug` nor
     // `Serialize`, and `HookInstance`'s hand-written `Debug` prints the name only.
     settings: Vec<u8>,
     state: Mutex<State>,
-    next_worker: AtomicU32,
     /// Whether the hook may answer an order (`declares.hook.orders`); `false`: an order it answers
     /// is refused where the host reads it ([`HookInstance::verdict`]).
     orders: bool,
@@ -337,15 +334,15 @@ impl Inner {
         close(plugin);
     }
 
-    /// SUBMIT op `s` with the frame `make` builds (re-built over `regrow` once after a SHORT
-    /// answer), lending `lent` to the op, bounded by `budget`. `None` = no answer could be had
-    /// (named).
+    /// CALL op `s` with the frame `make` builds (re-built over `regrow` once after a SHORT
+    /// answer), lending `lent` to the op, bounded by `budget`: on the caller's task, on the one call
+    /// path. `Err` = no answer could be had (named).
     async fn submit<I, O>(
         &self,
         s: u32,
         budget: Duration,
         lent: Lent,
-        make: impl Fn() -> Frame<I, O> + Send,
+        make: impl Fn() -> Frame<I, O> + Send + Sync,
         mut regrow: impl FnMut(&O) -> Option<Lent> + Send,
     ) -> Result<Submitted<O>, Answered<O>>
     where
@@ -353,25 +350,8 @@ impl Inner {
         O: OutFrame + Copy,
     {
         let deadline = Instant::now() + budget;
-        let deadline_ns =
-            now_ns().saturating_add(u64::try_from(budget.as_nanos()).unwrap_or(u64::MAX));
-        let mut lent = lent;
-        let mut first = true;
         'route: loop {
             let plugin = self.live(deadline).await.map_err(Answered::Broken)?;
-            let workers = self.dispatcher.workers().max(1);
-            let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
-            let Some(ticket) = self.dispatcher.mint(worker) else {
-                return Err(Answered::Broken(format!(
-                    "hook '{}' could not be called: no ticket",
-                    self.name
-                )));
-            };
-            let mut guard = Ticketed {
-                dispatcher: Arc::clone(&self.dispatcher),
-                ticket,
-                answered: false,
-            };
             let mut slot_wait = SLOT_WAIT_FIRST;
             let mut retried_free = false;
             loop {
@@ -379,31 +359,38 @@ impl Inner {
                 // this op: the call is one made while quarantined, so it waits for the trial window
                 // within its own budget (R2) instead of answering FAULT for a crossing it never made.
                 if plugin.is_faulted() {
-                    guard.answered = true;
                     continue 'route;
                 }
-                // THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (`BUSBAR-1.6.0.md` §11.7): the
-                // call's budget rides the op, so a hook slower than the Call class budget but inside
-                // its own `timeout_ms` is never quarantined, as in 1.5.5.
-                let reply = self.dispatcher.submit_watched(
-                    &*plugin,
-                    ticket,
+                let mut regrown = |f: &Frame<I, O>| {
+                    let grown = regrow(&f.out)?;
+                    Some((make(), grown))
+                };
+                // THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (`BUSBAR-1.6.0.md` §11.7): a
+                // hook slower than the Call class budget but inside its own `timeout_ms` is never
+                // quarantined, as in 1.5.5. THE BUDGET CUTS THE WAIT, NOT THE PLUGIN: a hook still
+                // inside its slot, or pending, when the deadline passes answers the caller
+                // `TimedOut` then, never after.
+                let ran = call::call(
+                    &plugin,
                     s,
                     make(),
-                    DeadlineClass::Call,
-                    deadline_ns,
                     Arc::clone(&lent),
-                    budget,
-                );
-                // THE BUDGET CUTS THE WAIT, NOT THE PLUGIN: a hook that is still inside its slot
-                // when the deadline passes answers the caller `TimedOut` then, never after (1.5.5's
-                // timeout behaviour, frozen); the dropped guard tells the dispatcher no one is
-                // waiting.
-                let Ok(done) =
-                    tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), reply)
-                        .await
-                else {
-                    return Err(Answered::TimedOut);
+                    Opts {
+                        class: DeadlineClass::Call,
+                        deadline,
+                        watch: budget,
+                        leave: true,
+                    },
+                    &mut regrown,
+                )
+                .await;
+                let (done, frame, answered_lent) = match ran {
+                    Ran::TimedOut => return Err(Answered::TimedOut),
+                    Ran::Answered {
+                        called,
+                        frame,
+                        lent,
+                    } => (called, frame, lent),
                 };
                 // THE CAP IS BACKPRESSURE, NOT A LATCH (1.5.5's `MAX_INFLIGHT_HOOK_CALLS`, frozen):
                 // an instance whose `max_inflight` units are all held REFUSES the op and never calls
@@ -417,10 +404,9 @@ impl Inner {
                 }
                 // REFUSED, AND THE INSTANCE FAULTED SINCE (the watchdog quarantined it between the
                 // refusal and this look): a refusal is never a crossing, so this call was never
-                // made; like one that met the fault before it was submitted (above), it waits for
-                // the trial window within its own budget (R2), never answering the refusal.
+                // made; like one that met the fault before it was made (above), it waits for the
+                // trial window within its own budget (R2), never answering the refusal.
                 if done.outcome == Outcome::Refused && plugin.is_faulted() {
-                    guard.answered = true;
                     continue 'route;
                 }
                 if done.outcome == Outcome::Refused {
@@ -440,35 +426,23 @@ impl Inner {
                         continue;
                     }
                 }
-                let out = done.frame.as_ref().map(|f| f.out);
-                if done.short && first {
-                    if let Some(grown) = out.as_ref().and_then(&mut regrow) {
-                        first = false;
-                        lent = grown;
-                        continue;
-                    }
-                }
-                guard.answered = true;
-                return match (done.outcome, out) {
-                    (Outcome::Ready | Outcome::Failed, _) if done.disposition.is_some() => {
-                        Err(Answered::TimedOut)
-                    }
-                    (Outcome::Ready | Outcome::Failed, Some(out)) => Ok(Submitted {
+                return match done.outcome {
+                    Outcome::Ready | Outcome::Failed => Ok(Submitted {
                         plugin,
                         outcome: done.outcome,
-                        out,
+                        out: frame.out,
                         error: text(done.error),
                         lease: done.lease,
-                        lent,
+                        lent: answered_lent,
                     }),
-                    (Outcome::Fault, _) => {
+                    Outcome::Fault => {
                         self.faulted(&plugin);
                         Err(Answered::Broken(format!(
                             "hook '{}' broke the hook kind's contract (FAULT)",
                             self.name
                         )))
                     }
-                    (o, _) => Err(Answered::Broken(format!(
+                    o => Err(Answered::Broken(format!(
                         "hook '{}' answered {o:?}{}",
                         self.name,
                         text(done.error).map_or_else(String::new, |t| format!(": {t}"))
@@ -513,23 +487,6 @@ struct Submitted<O> {
     lent: Lent,
 }
 
-/// A submitted op's ticket: recycled when the answer is read, and handed to the client-drop path
-/// first when the caller stopped waiting before it (the lent memory stays with the op).
-struct Ticketed {
-    dispatcher: Arc<Dispatcher>,
-    ticket: Ticket,
-    answered: bool,
-}
-
-impl Drop for Ticketed {
-    fn drop(&mut self) {
-        if !self.answered {
-            self.dispatcher.drop_client(self.ticket);
-        }
-        self.dispatcher.recycle(self.ticket);
-    }
-}
-
 /// ONE OPENED HOOK INSTANCE, called through the hook kind's table on the one dispatcher. Cheap to
 /// clone; every clone is the same instance. Closed when its last clone drops.
 #[derive(Clone)]
@@ -555,18 +512,17 @@ impl Drop for Inner {
 }
 
 impl HookInstance {
-    /// `open` `plugin` over `settings` (JSON bytes) on `dispatcher`; `rebind` binds a fresh
+    /// `open` `plugin` over `settings` (JSON bytes); `rebind` binds a fresh
     /// instance of the same plugin through its door when a quarantine's trial window opens.
     ///
     /// # Errors
     /// The plugin's refusal, in 1.5.5's words.
     pub fn open(
         plugin: Plugin<Hook>,
-        dispatcher: Arc<Dispatcher>,
         settings: &[u8],
         rebind: impl Fn() -> Result<Plugin<Hook>, String> + Send + Sync + 'static,
     ) -> Result<Self, String> {
-        Self::open_declaring(plugin, dispatcher, settings, true, rebind)
+        Self::open_declaring(plugin, settings, true, rebind)
     }
 
     /// [`Self::open`] for a hook whose `declares.hook.orders` is `orders`: when `false`, the hook
@@ -577,7 +533,6 @@ impl HookInstance {
     /// The plugin's refusal, in 1.5.5's words.
     pub fn open_declaring(
         plugin: Plugin<Hook>,
-        dispatcher: Arc<Dispatcher>,
         settings: &[u8],
         orders: bool,
         rebind: impl Fn() -> Result<Plugin<Hook>, String> + Send + Sync + 'static,
@@ -586,11 +541,9 @@ impl HookInstance {
         Ok(Self {
             inner: Arc::new(Inner {
                 name: plugin.name().to_string(),
-                dispatcher,
                 rebind: Box::new(rebind),
                 settings: settings.to_vec(),
                 state: Mutex::new(State::Live(Arc::new(plugin))),
-                next_worker: AtomicU32::new(0),
                 orders,
             }),
         })
@@ -825,6 +778,8 @@ struct Held<T>(T);
 // SAFETY: the pointers inside point at data the same future owns or lends to the op for its whole
 // life; one thread touches the future at a time.
 unsafe impl<T> Send for Held<T> {}
+// SAFETY: as `Send`; it is only ever copied out of, never written through.
+unsafe impl<T> Sync for Held<T> {}
 impl<T: Copy> Held<T> {
     /// The value, copied (a method, so a closure captures the whole `Held`, never its field).
     fn get(&self) -> T {
@@ -1082,13 +1037,7 @@ impl HookAxis for HookRows {
             move || Self::bind(&c, &dispatcher, &label, Arc::clone(&sink), conns.clone())
         };
         let text = settings.to_string();
-        let opened = HookInstance::open_declaring(
-            plugin,
-            Arc::clone(&self.dispatcher),
-            text.as_bytes(),
-            c_orders,
-            rebind,
-        )?;
+        let opened = HookInstance::open_declaring(plugin, text.as_bytes(), c_orders, rebind)?;
         Ok(Arc::new(opened))
     }
 
