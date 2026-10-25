@@ -62,7 +62,7 @@ pub const MAX_INFLIGHT: u32 = 8;
 /// waits forever (answers PENDING and never wakes), whether it wakes its own ticket inside the
 /// crossing that answers PENDING, and after how many milliseconds a thread of its own wakes it
 /// (`0`: none). A woken `decide` answers as an unwaiting one does.
-pub struct Gate(u64, u64, Option<Vec<u8>>, bool, bool, u64);
+pub struct Gate(u64, u64, Option<Vec<u8>>, bool, bool, u64, u64);
 
 /// How many `decide` resumes (`FLAG_RESUME` entries) every instance of this image has seen.
 pub static RESUMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -73,11 +73,15 @@ pub static LAST_DEADLINE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 /// How many parked waits every instance of this image has had dropped (a `cancel` clears them).
 pub static CANCELLED_WAITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// What a waiting `decide` parks: its drop is counted.
-struct Waiting;
+/// What a waiting `decide` parks: its drop (the `cancel` clears it) is counted, after sleeping
+/// this many milliseconds (a slow cancel).
+struct Waiting(u64);
 
 impl Drop for Waiting {
     fn drop(&mut self) {
+        if self.0 > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(self.0));
+        }
         CANCELLED_WAITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
@@ -125,7 +129,19 @@ impl Gate {
             .get("wake_in_ms")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        Ok(Gate(over, sleep_ms, session, pend, wake_self, wake_in_ms))
+        let slow_cancel_ms = settings
+            .get("slow_cancel_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        Ok(Gate(
+            over,
+            sleep_ms,
+            session,
+            pend,
+            wake_self,
+            wake_in_ms,
+            slow_cancel_ms,
+        ))
     }
 }
 
@@ -148,7 +164,7 @@ impl SafeSlot for Decide {
         let gate = held.life();
         LAST_DEADLINE_NS.store(input.head.deadline_ns, std::sync::atomic::Ordering::SeqCst);
         if gate.3 {
-            instance.park(Waiting);
+            instance.park(Waiting(gate.6));
             return Outcome::Pending;
         }
         if instance.resuming() {

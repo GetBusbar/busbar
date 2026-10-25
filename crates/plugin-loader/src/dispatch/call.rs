@@ -153,6 +153,11 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
             return held.finish(called);
         }
         if !op.woken_by(wake_at, opts.deadline).await {
+            if opts.leave {
+                // The caller is answered at its deadline; the `cancel` runs after, on a plugin
+                // thread (a slow or hung one never holds the caller).
+                return Ran::TimedOut { cancelled: None };
+            }
             let cancelled = op.cancel_now().await;
             held.0 = None;
             return Ran::TimedOut {
@@ -167,6 +172,11 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
 /// plugin is entered.
 #[cfg(test)]
 pub(crate) static PANIC_IN_RUN_FOR: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// TEST ONLY: the plugin (by its `Arc` address) whose waited-for cancels panic in the host.
+#[cfg(test)]
+pub(crate) static PANIC_IN_CANCEL_FOR: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 /// The op's own waker: a wake sets it and wakes the task waiting on the op.
@@ -443,11 +453,30 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
         }
         let op = Arc::clone(self);
         crate::ffi_thread::spawn_on_plugin_thread(move || {
-            let cancelled = op.cancel_pending().unwrap_or(Cancelled {
-                outcome: Outcome::Ready,
-                disposition: None,
-                writes: Vec::new(),
-            });
+            // A host panic inside the cancel still answers the caller (FAULT), never leaves it
+            // waiting.
+            let cancelled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                if PANIC_IN_CANCEL_FOR.load(Ordering::SeqCst) == Arc::as_ptr(&op.plugin) as usize {
+                    panic!("the host panics inside a cancel (test)");
+                }
+                op.cancel_pending()
+            }));
+            let cancelled = match cancelled {
+                Ok(c) => c.unwrap_or(Cancelled {
+                    outcome: Outcome::Ready,
+                    disposition: None,
+                    writes: Vec::new(),
+                }),
+                Err(_) => {
+                    op.end();
+                    Cancelled {
+                        outcome: Outcome::Fault,
+                        disposition: None,
+                        writes: Vec::new(),
+                    }
+                }
+            };
             let mut st = op.lock();
             st.cancelled = Some(cancelled);
             let waker = st.waker.take();
