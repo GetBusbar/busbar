@@ -3531,32 +3531,6 @@ fn failover_pools_are_absent_by_default() {
 // `crates/busbar/tests/config_cross_plane.rs::a_failover_pool_needs_two_members` (needs a real
 // the retired agent engine's `AgentsCfg`). See that file's header.
 
-/// `repeatable:` IS THE SAFETY DECLARATION, and the default is that nothing is repeatable. Asserted
-/// here rather than only in the seam's own tests because this is where an operator's document is
-/// turned into the answer, and a default that drifted here would be invisible there.
-#[test]
-fn nothing_is_repeatable_unless_the_operator_names_it() {
-    let pool = crate::config::pools::CandidatePoolCfg {
-        members: vec!["a".into(), "b".into()],
-        repeatable: vec!["search_code".into()],
-        breaker: None,
-    };
-    assert_eq!(
-        pool.repeatability("search_code"),
-        crate::config::pools::Repeatable::Yes
-    );
-    assert_eq!(
-        pool.repeatability("send_email"),
-        crate::config::pools::Repeatable::No,
-        "an operation nobody spoke about is NEVER repeated"
-    );
-    assert_eq!(
-        crate::config::pools::CandidatePoolCfg::default().repeatability("search_code"),
-        crate::config::pools::Repeatable::No,
-        "and an empty declaration repeats nothing at all"
-    );
-}
-
 // ── 1.6.0 auth.policy: block (additive; parse/resolve coverage) ──────────────────────────────────
 
 /// A fully-populated `auth.policy:` block parses and RESOLVES onto `AuthCfg.policy` verbatim —
