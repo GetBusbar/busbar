@@ -11,6 +11,7 @@
 //! when the answer does not arrive whole. Every route here is the walk's members, attempted by the
 //! production far end.
 
+use crate::test_support::tokens::pass;
 use busbar_contract::abi::transport::STATUS_CALLER_FAULT;
 use busbar_contract::conn::ConnError;
 use busbar_contract::transport::registry::status_ns;
@@ -617,9 +618,8 @@ use busbar_kernel_egress::ports::{
 };
 use busbar_kernel_egress::wire::STATUS_SERVICE_UNAVAILABLE;
 
-use super::harness::{route_token, Reply};
-use super::{Refusal, Served};
-use crate::plane_driver::{Egress, FarEnd, FarPiece, Pick};
+use super::harness::Reply;
+use crate::plane_driver::{Egress, FarEnd, Pick};
 
 /// THE SERVED BREAKER: busbar-kernel-breaker's [`BreakerUnit`] bound to the egress port exactly as
 /// the composition root's `BreakerAdapter` binds it (`crates/busbar/src/root/adapters.rs`), every
@@ -812,8 +812,8 @@ impl Breaker for RealBreaker {
         );
     }
 
-    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
-        self.unit.release_probe(pool, destination, epoch, now);
+    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {
+        self.unit.release_probe(pool, destination, epoch);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {
@@ -862,82 +862,16 @@ pub(super) fn ok_200() -> Option<(u32, u32)> {
     Some((200, u32::from(STATUS_SUCCESS)))
 }
 
-/// [`Node::route`] over `egress`: every attempt as the pump makes it, until an answer ends or the
-/// walk refuses.
-pub(super) async fn route_async(node: &Node, egress: &Egress, pool: &str) -> Routed {
-    let token = route_token();
-    let far = egress.unit(node.unit_route(pool));
-    let mut attempt_no = 0;
-    'attempt: loop {
-        attempt_no += 1;
-        let (member, pool) = match far.member(&token, attempt_no).await {
-            Pick::Member { name, pool, .. } => (name, pool),
-            Pick::Exhausted {
-                status,
-                retry_after,
-                ..
-            } => {
-                return Routed::Refused(Refusal {
-                    status,
-                    retry_after,
-                })
-            }
-            Pick::Vetoed { status, .. } => {
-                return Routed::Refused(Refusal {
-                    status,
-                    retry_after: None,
-                })
-            }
-            // A member credential refusal; none occurs in these walk proofs (the harness's own
-            // route answers it the same way).
-            Pick::Refused(_) => {
-                return Routed::Refused(Refusal {
-                    status: 502,
-                    retry_after: None,
-                })
-            }
-        };
-        let destination = node.destination_of(&pool, &member);
-        if !far
-            .send(&token, super::request(&member, &pool, attempt_no))
-            .await
-        {
-            continue 'attempt;
-        }
-        let mut served = Served {
-            destination,
-            pool,
-            status: None,
-            pieces: 0,
-        };
-        loop {
-            let piece = far.next(&token).await.unwrap_or(FarPiece {
-                last: true,
-                ..FarPiece::default()
-            });
-            if piece.fail_over {
-                continue 'attempt;
-            }
-            if served.status.is_none() {
-                served.status = piece.status;
-            }
-            if !piece.fields && !piece.bytes.is_empty() {
-                served.pieces += 1;
-            }
-            if piece.last {
-                return Routed::Delivered(served);
-            }
-        }
-    }
-}
-
-/// [`route_async`] on the node's paused runtime, bounded so a route that never resolves fails the
+/// [`Node::route_on`] on the node's paused runtime, bounded so a route that never resolves fails the
 /// test instead of hanging it.
 pub(super) fn route_over(node: &Node, egress: &Egress, pool: &str) -> Routed {
     node.rt.block_on(async {
-        tokio::time::timeout(Duration::from_secs(86_400), route_async(node, egress, pool))
-            .await
-            .expect("the route resolves; it never hangs")
+        tokio::time::timeout(
+            Duration::from_secs(86_400),
+            node.route_on(egress, pool, |_, _| {}),
+        )
+        .await
+        .expect("the route resolves; it never hangs")
     })
 }
 
@@ -971,7 +905,7 @@ fn a_refused_primary_fails_over_to_the_next_lane() {
         vec![Outcome::Transient { retry_after: None }]
     );
     let now = node.clock.now_secs();
-    let token = route_token();
+    let token = pass::<busbar_contract::caps::Route>();
     assert!(
         !real.ready("primary", DestinationId::new(0), now, &token),
         "the refused lane is unusable: it cools down as a transient failure"
@@ -1262,7 +1196,7 @@ fn test_permit_lifetime_during_stream() {
     );
 
     let egress = node.egress();
-    let token = route_token();
+    let token = pass::<busbar_contract::caps::Route>();
     let far = egress.unit(node.unit_route("default"));
     node.rt.block_on(async {
         let Pick::Member { name, pool, .. } = far.member(&token, 1).await else {

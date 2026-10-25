@@ -1118,7 +1118,7 @@ pub const fn nothing_sent(reason: u32) -> bool {
 // ── the one refusal classification ───────────────────────────────────────────────────────────────
 
 /// THE ONE REFUSAL CLASSIFICATION: which family of answer a refusal reason gets, whatever the
-/// plane. This is the P-item "refusal-reason collapse" (spec DONE item 2; TODO L-ENG9).
+/// plane. This is the P-item "refusal-reason collapse" (spec DONE item 2).
 ///
 /// A refusal reason is the kernel's own word, and a client never sees it. A client sees the plane's
 /// rendering of it. Before this table there were eight hand-copied reason matches, and they

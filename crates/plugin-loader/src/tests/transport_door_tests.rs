@@ -59,6 +59,29 @@ fn bind() -> Bind {
     }
 }
 
+/// A plugin log directory of this test binary's own, named (`plugins.logs.dir`), so every sink
+/// bound under it opens its file as it is bound.
+fn log_config() -> crate::dispatch::PluginLogConfig {
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    let dir = DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "busbar-transport-plugin-log-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch directory");
+        dir
+    });
+    crate::dispatch::PluginLogConfig::from_words(
+        Some(dir.to_str().expect("a UTF-8 scratch path")),
+        None,
+        &Default::default(),
+        None,
+        None,
+    )
+    .expect("the named directory resolves")
+}
+
 /// The fixture's manifest, stating the door's Statement rendering as its signed manifest does (the
 /// door is admitted against it).
 fn manifest() -> crate::sign::Manifest {
@@ -89,7 +112,7 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
     let lib = fixture();
     let registry = dropped("door-fixture", manifest(), &lib);
     let entries = registry
-        .open_transport_entries(&bind(), &uses(&["door-fixture"]))
+        .open_transport_entries(&bind(), &uses(&["door-fixture"]), &log_config())
         .expect("the door opens");
     assert_eq!(entries.doors.len(), 1);
     let door = &entries.doors[0];
@@ -140,7 +163,7 @@ fn a_transport_library_with_no_door_is_refused() {
     );
     let registry = dropped("no-door", manifest, &lib);
     let why = registry
-        .open_transport_entries(&bind(), &uses(&["no-door"]))
+        .open_transport_entries(&bind(), &uses(&["no-door"]), &log_config())
         .err()
         .expect("a library with no door is not a transport");
     assert!(
@@ -169,7 +192,7 @@ fn a_dropped_transport_no_configured_scheme_selects_is_never_opened() {
     let lib = fixture();
     let registry = dropped("door-fixture", manifest(), &lib);
     let entries = registry
-        .open_transport_entries(&bind(), &uses(&["https"]))
+        .open_transport_entries(&bind(), &uses(&["https"]), &log_config())
         .expect("nothing to open is no refusal");
     assert!(
         entries.doors.is_empty(),
@@ -177,7 +200,31 @@ fn a_dropped_transport_no_configured_scheme_selects_is_never_opened() {
         entries.doors.iter().map(|d| d.name()).collect::<Vec<_>>()
     );
     let entries = registry
-        .open_transport_entries(&bind(), &uses(&["door-fixture"]))
+        .open_transport_entries(&bind(), &uses(&["door-fixture"]), &log_config())
         .expect("the selected door opens");
     assert_eq!(entries.doors.len(), 1, "the scheme it claims selects it");
+}
+
+/// A DROPPED-IN TRANSPORT WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2, "Plugin
+/// logging": "all plugins should log to their plugin's log file. no logs for plugins is not an
+/// option ... The HOST writes it to that plugin instance's own log file").
+///
+/// RED before an opened transport door was bound to its instance's log file: every dropped-in
+/// transport took the bind's sink (the root's `NoSink`), so what it logged went nowhere and no
+/// transport plugin log file was ever opened.
+#[test]
+fn a_dropped_transport_is_bound_to_its_own_plugin_log_file() {
+    let lib = fixture();
+    let registry = dropped("door-fixture", manifest(), &lib);
+    let logs = log_config();
+    let entries = registry
+        .open_transport_entries(&bind(), &uses(&["door-fixture"]), &logs)
+        .expect("the door opens");
+    assert_eq!(entries.doors.len(), 1);
+    let path = logs.path_for("door-fixture");
+    assert!(
+        path.is_file(),
+        "the transport instance's plugin log file {} was not opened at its bind",
+        path.display()
+    );
 }

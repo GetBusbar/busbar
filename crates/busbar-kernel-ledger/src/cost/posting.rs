@@ -99,7 +99,6 @@ impl Posting {
     ///
     /// A posting holds quantities and an instant and no figure, so this answers exactly what the
     /// quantities and the history say: there is no stored price that could stand in for it.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn priced_nanos(&self, view: &HistoryView<'_>) -> Result<u128, Unpriceable> {
         price(view, self).map(|p| p.priced_nanos)
     }

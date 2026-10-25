@@ -269,8 +269,9 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
     let stores: Vec<_> = crate::LINKED.stores.iter().map(|s| s.1).collect();
     assert_eq!(stores, [true], "one linked store: ephemeral");
-    assert!(
-        !(crate::LINKED.stores[0].2)().is_null(),
+    assert_eq!(
+        (crate::LINKED.stores[0].2)().magic(),
+        busbar_contract::abi::mechanism::DOOR_MAGIC,
         "the linked store states its door"
     );
     let strategies = [
@@ -305,7 +306,7 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
     assert_eq!(words, want, "the ranking door claims every strategy word");
 }
 
-/// WIRE-SECRET (THE DESIGN, "Plugins"; TODO step 28) — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
+/// WIRE-SECRET (THE DESIGN, "Plugins") — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
 /// DISPATCHER. `env` and `file` are the linked secret plugins the root's axis answers for, by the
 /// module alias their Statements declare; a reference resolves through the secret kind table on
 /// `root::dispatch`'s dispatcher, on one shared instance, and the refusal text is the plugin's own

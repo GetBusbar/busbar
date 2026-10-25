@@ -124,7 +124,7 @@ impl<'r> ExportRows<'r> {
         let name = &row.manifest.name;
         let refused = |e: crate::dispatch::LoadError| format!("export plugin '{name}': {e}");
         let image = match row.door() {
-            Some(door) => Image::Linked(LinkedRow::of(door).map_err(refused)?),
+            Some(door) => Image::Linked(LinkedRow::of_raw(door).map_err(refused)?),
             None => match row.manifest.stated_rendering()? {
                 Some(stated) => Image::Dropped(stated),
                 None => return Err(format!("export plugin '{name}': {NO_DOOR}")),

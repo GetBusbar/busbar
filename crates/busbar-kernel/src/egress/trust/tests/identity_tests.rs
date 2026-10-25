@@ -18,9 +18,10 @@ fn isolated() -> MutexGuard<'static, ()> {
     guard
 }
 
-/// A self-signed client identity, from its parts (the PEM walk `ClientIdentity::from_pem` runs —
-/// `reqwest::Identity::from_pem` parity by the R4 corpus — is the connector's, proven over the real
-/// wrap in the connector's `tls/engine_tests.rs`).
+/// A self-signed client identity, from its parts. `ClientIdentity::from_pem` hands its PEM walk to
+/// the installed secure layer; the connector's own outbound identity (`tls::client_identity`, presented
+/// over a real handshake) is proven in `busbar-core-connector`'s `tls/client_tests.rs`
+/// (`a_client_identity_is_presented_to_a_mutual_peer`).
 fn an_identity() -> crate::egress::engine::ClientIdentity {
     use rcgen::{CertificateParams, KeyPair};
     let kp = KeyPair::generate().expect("a key pair");

@@ -2823,11 +2823,13 @@ fn overlay_reset_doc_row_matches_the_section_set() {
 fn linked_export_axis() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        busbar_kernel::test_support::export_axis::install_first_party_door(
+        static SINKS: [crate::root_install::ExportDoor; 1] = [(
             busbar_export_prometheus::NAME,
             busbar_export_prometheus::ALIAS,
             busbar_export_prometheus::door::door,
-        );
+        )];
+        crate::ensure_seam();
+        crate::root_install::link_exports(&SINKS);
     });
 }
 

@@ -321,7 +321,7 @@ pub(crate) async fn remove_plugin(
 ///
 /// It re-runs the exact fail-closed plugin pipeline boot runs (re-read `config.yaml` + the persisted
 /// overlay → resolve → three-phase `scan_and_validate` → open the hook transports) to build a FRESH
-/// `App` snapshot carrying a NEW `PluginRegistry` and NEW hook-plugin instances, then `handle.swap`s
+/// `App` snapshot carrying a NEW plugin registry and NEW hook-plugin instances, then `handle.swap`s
 /// it. New requests immediately use the new plugin instances; in-flight requests finish on the OLD
 /// snapshot, and when that snapshot drops its instances drop, their `Arc`-held `Library` handles drop,
 /// and the old shared libraries unmap — no process restart. The core never goes down: any pipeline
@@ -3416,16 +3416,15 @@ pub(crate) async fn plugin_schema(
         // conservative label (never assert trust the manifest catalog can't back up).
         let loadable = current.hook_env.registry.resolve(&hook.plugin);
         let trust = loadable
-            .map(|p| verdict_trust(&p.verdict))
+            .as_ref()
+            .map(|p| verdict_trust(&p.trust))
             .unwrap_or("unverified");
         // `kind`/`restart_required_default`: the kind-derived restart-scoping default, so
         // busbar-ui does not have to hardcode the kind->default table itself. `None` when the
         // plugin cannot even be resolved to a manifest — same posture `trust: "unverified"`
         // already takes for the identical case.
-        let kind = loadable.map(|p| p.manifest.kind.clone());
-        let restart_required_default = kind
-            .as_deref()
-            .map(busbar_kernel::plugin_admission::sign::kind_restart_default);
+        let kind = loadable.as_ref().map(|p| p.kind.clone());
+        let restart_required_default = kind.as_deref().map(|k| kind_restart_default(&current, k));
         if described.is_some() {
             return ok_json(
                 StatusCode::OK,
@@ -3436,7 +3435,8 @@ pub(crate) async fn plugin_schema(
         // baseline, same as a never-loaded plugin, rather than reporting "no schema available"
         // when the manifest actually has one.
         let (schema, schema_error) = loadable
-            .map(|p| manifest_schema(p.manifest.settings_schema.as_deref()))
+            .as_ref()
+            .map(|p| manifest_schema(p.settings_schema.as_deref()))
             .unwrap_or((None, None));
         return ok_json(
             StatusCode::OK,
@@ -3446,8 +3446,8 @@ pub(crate) async fn plugin_schema(
     let Some(loadable) = current.hook_env.registry.resolve(&name) else {
         return err_json(&AdminError::not_found(format!("plugin `{name}`")));
     };
-    let trust = verdict_trust(&loadable.verdict);
-    let (schema, schema_error) = manifest_schema(loadable.manifest.settings_schema.as_deref());
+    let trust = verdict_trust(&loadable.trust);
+    let (schema, schema_error) = manifest_schema(loadable.settings_schema.as_deref());
     ok_json(
         StatusCode::OK,
         &json!({
@@ -3456,8 +3456,8 @@ pub(crate) async fn plugin_schema(
             "schema_error": schema_error,
             "trust": trust,
             "source": "manifest",
-            "kind": loadable.manifest.kind,
-            "restart_required_default": busbar_kernel::plugin_admission::sign::kind_restart_default(&loadable.manifest.kind),
+            "kind": loadable.kind,
+            "restart_required_default": kind_restart_default(&current, &loadable.kind),
         }),
     )
 }
@@ -3483,16 +3483,25 @@ fn manifest_schema(settings_schema: Option<&str>) -> (Option<serde_json::Value>,
 }
 
 /// The catalog's own trust vocabulary (`"trusted" | "unverified" | "rejected"` — see
-/// `docs/admin-api.md`'s plugin catalog and `service.rs`'s `evaluate()` mapping), applied to a
-/// [`busbar_kernel::plugin_admission::sign::Verdict`]. A `LoadablePlugin` (what `PluginRegistry::resolve` returns)
-/// is never `"rejected"` — a rejected artifact is a `SkippedPlugin`, not a load candidate — but
-/// the mapping stays total (not a partial match on `Trusted`/`Allowed` alone) so a future verdict
-/// variant is a compile error here, not a silently-missing label.
-fn verdict_trust(v: &busbar_kernel::plugin_admission::sign::Verdict) -> &'static str {
+/// `docs/admin-api.md`'s plugin catalog and `service.rs`'s trust mapping), applied to a row's
+/// [`busbar_contract::plugin_rows::Trust`]. An admitted row (what `PluginRows::resolve` returns) is
+/// never `"rejected"` — a rejected artifact is a skipped plugin, not a row — but the mapping stays
+/// total (not a partial match on `Trusted`/`Allowed` alone) so a future trust variant is a compile
+/// error here, not a silently-missing label.
+fn verdict_trust(v: &busbar_contract::plugin_rows::Trust) -> &'static str {
     match v {
-        busbar_kernel::plugin_admission::sign::Verdict::Trusted { .. } => "trusted",
-        busbar_kernel::plugin_admission::sign::Verdict::Allowed { .. } => "unverified",
+        busbar_contract::plugin_rows::Trust::Trusted { .. } => "trusted",
+        busbar_contract::plugin_rows::Trust::Allowed { .. } => "unverified",
     }
+}
+
+/// The binding lifecycle default for a `kind` plugin's settings change (whether it needs a process
+/// restart), as the root's admission answers it. With no admission installed this build cannot say
+/// what the kind's default is, so it answers `true` — a restart — the SAFE default: an operator told
+/// to restart when a hot apply would have done loses a restart, while one told a change applies hot
+/// when it does not is left running the old settings.
+fn kind_restart_default(app: &busbar_kernel::state::App, kind: &str) -> bool {
+    app.plugin_admission.is_none_or(|a| a.restart_default(kind))
 }
 
 /// `GET /api/v1/admin/hooks/{name}/schema` — proxy the hook's self-described settings JSON Schema

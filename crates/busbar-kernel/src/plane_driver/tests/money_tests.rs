@@ -1144,7 +1144,7 @@ fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
 }
 
 /// A SESSION'S FEE IS REFUNDED WHEN ITS OPEN FAILS, AS ITS OWN FEE UNIT (ARCHITECT Q-L5-FEE (A);
-/// Q17-6; TODO row 17): a session plane declares `per_session` as its fee unit and a billable class.
+/// Q17-6): a session plane declares `per_session` as its fee unit and a billable class.
 /// A session whose far end never answered reports no fee unit, and its end gives back ONE
 /// `per_session` from the plane's fee lane; a session whose far end answered reports it `1` and
 /// keeps its fee. The fee unit is never ledgered as usage.
@@ -1467,4 +1467,77 @@ fn dropping_the_signer_with_no_keyset_falls_back_to_the_boot_key_never_to_nothin
         by_boot,
         "dropping the signer did not fall back to the boot key"
     );
+}
+
+/// THE CHECKPOINT'S CHECK BUILDS NOTHING (row 159 K2#4): `adds_up` answers exactly what the checked
+/// sums by class name answer — an undeclared class is never added, two indices naming one class
+/// add together, and a class whose counts overflow a `u64` does not add up — without the counts
+/// vector or the sums map the piece path used to build.
+#[test]
+fn the_checkpoint_check_agrees_with_the_checked_sums() {
+    let unit = |class: u32, amount: u64| UnitCount {
+        class,
+        source: UNITS_REPORTED,
+        amount,
+    };
+    let one = ["input".to_string(), "output".to_string()];
+    let twice = ["input".to_string(), "input".to_string()];
+    let cases: [(&[String], Vec<UnitCount>); 8] = [
+        (&one[..], vec![]),
+        (&one[..], vec![unit(0, 3), unit(1, 4)]),
+        (&one[..], vec![unit(0, u64::MAX), unit(1, u64::MAX)]),
+        (&one[..], vec![unit(0, u64::MAX), unit(0, 1)]),
+        (&one[..], vec![unit(1, 1), unit(0, 2), unit(1, u64::MAX)]),
+        (&one[..], vec![unit(7, u64::MAX), unit(7, u64::MAX)]),
+        (&twice[..], vec![unit(0, u64::MAX), unit(1, 1)]),
+        (
+            &twice[..],
+            vec![unit(0, u64::MAX / 2), unit(1, u64::MAX / 2)],
+        ),
+    ];
+    for (classes, units) in &cases {
+        let counts: Vec<(u32, u64)> = units.iter().map(|u| (u.class, u.amount)).collect();
+        assert_eq!(
+            super::adds_up(classes, units),
+            super::named(classes, &counts, u64::checked_add).is_some(),
+            "{classes:?} {counts:?}"
+        );
+    }
+}
+
+/// EVERY OPEN UNIT IS ONE UNIT, whichever lock holds it (row 159 K2#4): units spread over the
+/// shards are each counted open, each checkpointed once per epoch, and each closed by its end.
+#[test]
+fn units_over_every_shard_are_counted_checkpointed_and_closed() {
+    let epoch = FlushEpoch::new();
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let money = PlaneMoney::new(r.gov.clone(), r.posted.clone()).with_epoch(epoch.clone());
+    let keys: Vec<u64> = (1..=3 * super::SHARDS as u64).collect();
+    for k in &keys {
+        money.open(UnitKey::new(*k), r.unit.clone());
+    }
+    assert_eq!(money.open_units(), keys.len());
+    for k in &keys {
+        assert_eq!(
+            money.checkpoint(&ctx(*k), &reported(*k)),
+            Checkpoint::Continue
+        );
+    }
+    epoch.bump();
+    let site = Journaled::default();
+    assert_eq!(money.flush_checkpoints(&site), keys.len());
+    let mut handed = site.taken();
+    handed.sort_by_key(|(key, _)| *key);
+    assert_eq!(
+        handed,
+        keys.iter()
+            .map(|k| (UnitKey::new(*k), input(*k)))
+            .collect::<Vec<_>>(),
+        "each unit's own last counts, once"
+    );
+    assert_eq!(money.flush_checkpoints(&site), 0, "once per epoch");
+    for k in &keys {
+        money.settle_end(UnitKey::new(*k), 200);
+    }
+    assert_eq!(money.open_units(), 0, "every end closes its unit");
 }
