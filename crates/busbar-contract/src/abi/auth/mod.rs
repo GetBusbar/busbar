@@ -40,9 +40,9 @@
 //! The host side is `busbar_contract::auth_calls`: the kernel's identity chain calls `verify` through
 //! it, the loader dispatching it through the one dispatcher.
 
-use super::mechanism::call::{AbiStr, Op};
+use super::mechanism::call::AbiStr;
 use super::mechanism::door::KindTailHead;
-use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
+use super::mechanism::lifecycle::LIFECYCLE_SLOTS;
 
 mod check;
 mod inbound;
@@ -67,116 +67,83 @@ pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY
 /// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = 3;
 
-/// [`InHead::op`](super::mechanism::call::InHead) of each auth op: kind op `k` is at slot
-/// [`LIFECYCLE_SLOTS`]` + k`, contiguous, in [`Ops`] field order.
-///
-/// ```
-/// use busbar_contract::abi::auth::{slot, Ops, KIND_SLOTS, SLOTS};
-/// use busbar_contract::abi::mechanism::lifecycle::LIFECYCLE_SLOTS;
-/// use std::mem::{offset_of, size_of};
-/// let order = [
-///     (slot::VERIFY, offset_of!(Ops, verify)),
-///     (slot::BEGIN_LOGIN, offset_of!(Ops, begin_login)),
-///     (slot::COMPLETE_LOGIN, offset_of!(Ops, complete_login)),
-///     (slot::OPEN_OUTBOUND, offset_of!(Ops, open_outbound)),
-///     (slot::OUTBOUND_READY, offset_of!(Ops, outbound_ready)),
-///     (slot::FIELDS, offset_of!(Ops, fields)),
-///     (slot::TARGET, offset_of!(Ops, target)),
-/// ];
-/// assert_eq!(order.len() as u32, KIND_SLOTS);
-/// for (k, (idx, off)) in order.into_iter().enumerate() {
-///     assert_eq!(idx, LIFECYCLE_SLOTS + k as u32);
-///     // OpsHead's `size` + `slots` (8 bytes), then one 8-byte slot per index.
-///     assert_eq!(off, 8 + 8 * idx as usize);
-/// }
-/// assert_eq!(SLOTS, LIFECYCLE_SLOTS + KIND_SLOTS);
-/// assert_eq!(size_of::<Ops>(), 8 + 8 * SLOTS as usize);
-/// ```
-pub mod slot {
-    use super::LIFECYCLE_SLOTS;
-
-    /// `verify`.
-    pub const VERIFY: u32 = LIFECYCLE_SLOTS;
-    /// `begin_login`.
-    pub const BEGIN_LOGIN: u32 = LIFECYCLE_SLOTS + 1;
-    /// `complete_login`.
-    pub const COMPLETE_LOGIN: u32 = LIFECYCLE_SLOTS + 2;
-    /// `open_outbound`.
-    pub const OPEN_OUTBOUND: u32 = LIFECYCLE_SLOTS + 3;
-    /// `outbound_ready`.
-    pub const OUTBOUND_READY: u32 = LIFECYCLE_SLOTS + 4;
-    /// `fields`.
-    pub const FIELDS: u32 = LIFECYCLE_SLOTS + 5;
-    /// `target`.
-    pub const TARGET: u32 = LIFECYCLE_SLOTS + 6;
+busbar_abi_macros::kind! {
+    kind: Auth,
+    lifecycle: crate::abi::sdk::door::Lifecycle,
+    ops: {
+        /// `verify`.
+        ///
+        /// Judge an inbound request at one AUTH POINT ([`VerifyIn::point`]; THE DESIGN, "Auth
+        /// points and guest lists": the inbound point call reuses this slot). REQUEST-PATH; may pend
+        /// (a key-set fetch or a directory read over the plugin's need);
+        /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass). In [`VerifyIn`] (fixed
+        /// 320 B, plus the line, peer and body bytes), out [`IdentifyOut`] (fixed 232 B; results in
+        /// the host's [`IdentityBuf`], [`IDENTITY_BUF_BYTES`] and [`IDENTITY_GROUPS`] to start, and its
+        /// strip array, [`FIELDS_MAX`] to start). The verdict is [`VERDICT_IDENTITY`],
+        /// [`VERDICT_REJECT`] or [`VERDICT_PASS`]; the decision is [`DECISION_CONTINUE`] or
+        /// [`DECISION_STOP`]; the credential lines to strip are named whatever the verdict. The
+        /// transport receives only the decision and the strips; the verdict, the identity and the
+        /// credential go to the kernel. OVERLOAD: when the instance's `max_inflight` is full, the host does not
+        /// queue the call and answers the request 503 (an accepted difference from 1.5.5). The plugin
+        /// never signals overload itself.
+        VERIFY verify: VerifyIn => IdentifyOut { class: Call, pend, request, },
+        /// `begin_login`.
+        ///
+        /// Start a login. OFF-PATH; may pend through the plugin's own need; `Call`. In
+        /// [`BeginLoginIn`] (fixed 168 B), out [`BeginLoginOut`] (fixed 136 B; URL and form held under
+        /// `OutHead.lease`).
+        BEGIN_LOGIN begin_login: BeginLoginIn => BeginLoginOut { class: Call, pend, },
+        /// `complete_login`.
+        ///
+        /// Finish a login: the token exchange runs over the plugin's own need to its need-declared
+        /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 232 B), out
+        /// [`IdentifyOut`] (fixed 232 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
+        /// [`LOGIN_BAD_CREDENTIAL`], [`LOGIN_OUTAGE`] or [`LOGIN_SECURITY_CHECK_FAILED`].
+        COMPLETE_LOGIN complete_login: CompleteLoginIn => IdentifyOut { class: Call, pend, },
+        /// `open_outbound`.
+        ///
+        /// Bind one outbound style to its credential and answer a handle. OFF-PATH, at generation
+        /// seal; never pends (the first mint runs in the background on `tick`); `Call`. In
+        /// [`OpenOutboundIn`] (fixed 152 B), out [`OpenOutboundOut`] (fixed 104 B). A handle is
+        /// GENERATION DATA: the kernel re-opens every handle at each generation, and a handle is valid
+        /// until `retire` of the generation it was opened at. There is no close slot. The token cache
+        /// behind a handle is keyed by (style, credential, settings) and outlives it.
+        OPEN_OUTBOUND open_outbound: OpenOutboundIn => OpenOutboundOut { class: Call, },
+        /// `outbound_ready`.
+        ///
+        /// The handle's `ready` fact, read by the health prober. OFF-PATH; never pends; `Call`. In
+        /// [`OutboundReadyIn`] (fixed 96 B), out [`OutboundReadyOut`] (fixed 104 B).
+        OUTBOUND_READY outbound_ready: OutboundReadyIn => OutboundReadyOut { class: Call, },
+        /// `fields`.
+        ///
+        /// The per-attempt call the kernel makes before encode: the auth fields for this request.
+        /// REQUEST-PATH; may pend only when the cached token has expired and its refresh failed
+        /// (the design's expired-token rule, Q-EXPIRED), bounded by the attempt's deadline; `Call`.
+        /// Called at the style's AUTH POINTS ([`FieldsIn::point`]; THE DESIGN, "Auth points and
+        /// guest lists", step 5): the host REPLACES the plane's lines of the same name with the fields
+        /// answered and adds nothing to the head after them; REFUSED or FAILED stops the request.
+        /// In [`FieldsIn`] (fixed 288 B), out [`FieldsOut`] (fixed 112 B; fields in the host's
+        /// buffer, [`FIELDS_BUF_BYTES`] and [`FIELDS_MAX`] to start; one re-call when short). READY
+        /// with zero fields = no auth header, so the upstream answers 401: 1.5.5's answer before the
+        /// first mint and for an un-encodable key.
+        FIELDS fields: FieldsIn => FieldsOut { class: Call, pend, request, },
+        /// `target`.
+        ///
+        /// The destination one outbound style's credential sends to, for the kernel to judge (the
+        /// need's target is the kernel's to judge, THE DESIGN's needs section): PURE (no I/O, never dials, reads
+        /// only the credential and settings it is handed), called with NO instance (the `instance`
+        /// argument is NULL) at config time and at the generation seal, never pends; `Call`. In
+        /// [`TargetIn`] (fixed 168 B), out [`TargetOut`] (fixed 104 B). READY with a present
+        /// [`TargetOut::target`]: the URL, in the host's buffer. READY with it absent: the style sends
+        /// to no destination of its own. FAILED: why, one line in `head.error` (in the host's buffer),
+        /// rendered verbatim. REFUSED: the plugin does not serve `target` (the SDK's answer for a door
+        /// that wires none): the style names no destination.
+        TARGET target: TargetIn => TargetOut { class: Call, unused, },
+    },
 }
 
-/// How many kind ops follow the lifecycle.
-pub const KIND_SLOTS: u32 = 7;
-/// [`OpsHead::slots`] for auth v3.
+/// [`OpsHead::slots`](super::mechanism::lifecycle::OpsHead::slots) for auth v3.
 pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
-
-/// The auth kind's ops table: the shared [`OpsHead`], then the kind's slots, contiguous.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Ops {
-    /// The lifecycle. `refresh` also drops the plugin's inbound cache (the admin flush).
-    pub head: OpsHead,
-    /// Judge an inbound request at one AUTH POINT ([`VerifyIn::point`]; THE DESIGN, "Auth
-    /// points and guest lists": the inbound point call reuses this slot). REQUEST-PATH; may pend
-    /// (a key-set fetch or a directory read over the plugin's need);
-    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass). In [`VerifyIn`] (fixed
-    /// 320 B, plus the line, peer and body bytes), out [`IdentifyOut`] (fixed 232 B; results in
-    /// the host's [`IdentityBuf`], [`IDENTITY_BUF_BYTES`] and [`IDENTITY_GROUPS`] to start, and its
-    /// strip array, [`FIELDS_MAX`] to start). The verdict is [`VERDICT_IDENTITY`],
-    /// [`VERDICT_REJECT`] or [`VERDICT_PASS`]; the decision is [`DECISION_CONTINUE`] or
-    /// [`DECISION_STOP`]; the credential lines to strip are named whatever the verdict. The
-    /// transport receives only the decision and the strips; the verdict, the identity and the
-    /// credential go to the kernel. OVERLOAD: when the instance's `max_inflight` is full, the host does not
-    /// queue the call and answers the request 503 (an accepted difference from 1.5.5). The plugin
-    /// never signals overload itself.
-    pub verify: Option<Op>,
-    /// Start a login. OFF-PATH; may pend through the plugin's own need; `Call`. In
-    /// [`BeginLoginIn`] (fixed 168 B), out [`BeginLoginOut`] (fixed 136 B; URL and form held under
-    /// `OutHead.lease`).
-    pub begin_login: Option<Op>,
-    /// Finish a login: the token exchange runs over the plugin's own need to its need-declared
-    /// targets. OFF-PATH; may pend; `Call`. In [`CompleteLoginIn`] (fixed 232 B), out
-    /// [`IdentifyOut`] (fixed 232 B; host [`IdentityBuf`]). The verdict is [`LOGIN_IDENTITY`],
-    /// [`LOGIN_BAD_CREDENTIAL`], [`LOGIN_OUTAGE`] or [`LOGIN_SECURITY_CHECK_FAILED`].
-    pub complete_login: Option<Op>,
-    /// Bind one outbound style to its credential and answer a handle. OFF-PATH, at generation
-    /// seal; never pends (the first mint runs in the background on `tick`); `Call`. In
-    /// [`OpenOutboundIn`] (fixed 152 B), out [`OpenOutboundOut`] (fixed 104 B). A handle is
-    /// GENERATION DATA: the kernel re-opens every handle at each generation, and a handle is valid
-    /// until `retire` of the generation it was opened at. There is no close slot. The token cache
-    /// behind a handle is keyed by (style, credential, settings) and outlives it.
-    pub open_outbound: Option<Op>,
-    /// The handle's `ready` fact, read by the health prober. OFF-PATH; never pends; `Call`. In
-    /// [`OutboundReadyIn`] (fixed 96 B), out [`OutboundReadyOut`] (fixed 104 B).
-    pub outbound_ready: Option<Op>,
-    /// The per-attempt call the kernel makes before encode: the auth fields for this request.
-    /// REQUEST-PATH; may pend only when the cached token has expired and its refresh failed
-    /// (the design's expired-token rule, Q-EXPIRED), bounded by the attempt's deadline; `Call`.
-    /// Called at the style's AUTH POINTS ([`FieldsIn::point`]; THE DESIGN, "Auth points and
-    /// guest lists", step 5): the host REPLACES the plane's lines of the same name with the fields
-    /// answered and adds nothing to the head after them; REFUSED or FAILED stops the request.
-    /// In [`FieldsIn`] (fixed 288 B), out [`FieldsOut`] (fixed 112 B; fields in the host's
-    /// buffer, [`FIELDS_BUF_BYTES`] and [`FIELDS_MAX`] to start; one re-call when short). READY
-    /// with zero fields = no auth header, so the upstream answers 401: 1.5.5's answer before the
-    /// first mint and for an un-encodable key.
-    pub fields: Option<Op>,
-    /// The destination one outbound style's credential sends to, for the kernel to judge (the
-    /// need's target is the kernel's to judge, THE DESIGN's needs section): PURE (no I/O, never dials, reads
-    /// only the credential and settings it is handed), called with NO instance (the `instance`
-    /// argument is NULL) at config time and at the generation seal, never pends; `Call`. In
-    /// [`TargetIn`] (fixed 168 B), out [`TargetOut`] (fixed 104 B). READY with a present
-    /// [`TargetOut::target`]: the URL, in the host's buffer. READY with it absent: the style sends
-    /// to no destination of its own. FAILED: why, one line in `head.error` (in the host's buffer),
-    /// rendered verbatim. REFUSED: the plugin does not serve `target` (the SDK's answer for a door
-    /// that wires none): the style names no destination.
-    pub target: Option<Op>,
-}
 
 /// [`AuthTail::caps`]: the plugin serves `verify`.
 pub const CAP_INBOUND: u32 = 1;
@@ -500,50 +467,40 @@ unsafe impl super::sdk::door::AbiOut for OutboundReadyOut {}
 unsafe impl super::sdk::door::AbiOut for FieldsOut {}
 unsafe impl super::sdk::door::AbiOut for TargetOut {}
 
-super::sdk::door::slot_structs!(
-    /// Each auth kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
-    /// A plugin wiring a slot to another op's structs does not compile:
-    ///
-    /// ```compile_fail,E0271
-    /// use busbar_contract::abi::auth::{FieldsIn, FieldsOut, IdentifyOut, VerifyIn};
-    /// use busbar_contract::abi::auth::{BeginLoginIn, BeginLoginOut, CompleteLoginIn};
-    /// use busbar_contract::abi::auth::{OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut};
-    /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-    /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::Slot;
-    /// # use std::ffi::c_void;
-    /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
-    /// #     struct $n;
-    /// #     impl Slot for $n { type In = $i; type Out = $o;
-    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
-    /// # } }
-    /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-    /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
-    /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-    /// # ready!(Begin, BeginLoginIn, BeginLoginOut); ready!(Complete, CompleteLoginIn, IdentifyOut);
-    /// # ready!(OpenOb, OpenOutboundIn, OpenOutboundOut); ready!(Ready, OutboundReadyIn, OutboundReadyOut);
-    /// # ready!(Fields, FieldsIn, FieldsOut);
-    /// ready!(Verify, FieldsIn, FieldsOut); // `fields`' structs on `verify`: refused
-    /// busbar_contract::plugin_door! {
-    ///     ops: busbar_contract::abi::auth::Ops,
-    ///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
-    ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
-    ///                  cancel: Cn, release: Rl, close: Cl },
-    ///     kind_ops: { verify: Verify, begin_login: Begin, complete_login: Complete,
-    ///                 open_outbound: OpenOb, outbound_ready: Ready, fields: Fields },
-    /// }
-    /// # fn main() { let _ = door(); }
-    /// ```
-    ///
-    /// With `Verify` reading [`VerifyIn`] and writing [`IdentifyOut`] the same plugin compiles
-    /// (`abi/sdk/tests/door_tests.rs`, `an_auth_plugin_wires_every_kind_op`).
-    Ops {
-        slot::VERIFY => VerifyIn, IdentifyOut;
-        slot::BEGIN_LOGIN => BeginLoginIn, BeginLoginOut;
-        slot::COMPLETE_LOGIN => CompleteLoginIn, IdentifyOut;
-        slot::OPEN_OUTBOUND => OpenOutboundIn, OpenOutboundOut;
-        slot::OUTBOUND_READY => OutboundReadyIn, OutboundReadyOut;
-        slot::FIELDS => FieldsIn, FieldsOut;
-        slot::TARGET => TargetIn, TargetOut;
-    }
-);
+/// Each auth kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
+/// A plugin wiring a slot to another op's structs does not compile:
+///
+/// ```compile_fail,E0271
+/// use busbar_contract::abi::auth::{FieldsIn, FieldsOut, IdentifyOut, VerifyIn};
+/// use busbar_contract::abi::auth::{BeginLoginIn, BeginLoginOut, CompleteLoginIn};
+/// use busbar_contract::abi::auth::{OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut};
+/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::sdk::door::Slot;
+/// # use std::ffi::c_void;
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(Begin, BeginLoginIn, BeginLoginOut); ready!(Complete, CompleteLoginIn, IdentifyOut);
+/// # ready!(OpenOb, OpenOutboundIn, OpenOutboundOut); ready!(Ready, OutboundReadyIn, OutboundReadyOut);
+/// # ready!(Fields, FieldsIn, FieldsOut);
+/// ready!(Verify, FieldsIn, FieldsOut); // `fields`' structs on `verify`: refused
+/// busbar_contract::plugin_door! {
+///     ops: busbar_contract::abi::auth::Ops,
+///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: { verify: Verify, begin_login: Begin, complete_login: Complete,
+///                 open_outbound: OpenOb, outbound_ready: Ready, fields: Fields },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// With `Verify` reading [`VerifyIn`] and writing [`IdentifyOut`] the same plugin compiles
+/// (`abi/sdk/tests/door_tests.rs`, `an_auth_plugin_wires_every_kind_op`).
+impl Ops {}

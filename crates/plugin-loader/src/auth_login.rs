@@ -2,9 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE LOGIN HALF OF AN AUTH INSTANCE (WIRE-AUTH, ARCHITECT ruling 2026-09-30 (A)(3)): the hosted
-//! login's `begin_login` and `complete_login` on the one dispatcher, in the same shape as `verify`:
-//! submitted on a request ticket, answered through the reply's waker, the memory the `in` lends
-//! travelling with the op. The plugin runs its own token exchange over its own need, holding its own
+//! login's `begin_login` and `complete_login` on the one call path, in the same shape as `verify`:
+//! each on a ticket of its own, the memory the `in` lends travelling with the op. The plugin runs its own token exchange over its own need, holding its own
 //! client secret; the kernel names neither this crate nor the plugin.
 //!
 //! * `begin_login`: [`LoginOutcome::Authorize`] (`BEGIN_AUTHORIZE`) or [`LoginOutcome::Prompt`]
@@ -20,11 +19,9 @@
 //! The code, the PKCE verifier and every submitted field are secret: zeroed when the op's lent
 //! memory is dropped, and never printed.
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use busbar_contract::abi::auth::{
     slot, BeginLoginIn, BeginLoginOut, CompleteLoginIn, IdentifyOut, LoginField, BEGIN_AUTHORIZE,
@@ -35,12 +32,12 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, DeadlineClass, Outcome, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::lifecycle::{slot as lc, ReleaseIn};
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::auth::{BeginLogin, FieldKind, LoginForm, LoginOutcome, Principal};
 use busbar_contract::auth_calls::{LoginCall, LoginCallback, LoginSettled, VerifyRequest};
 
-use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Shared};
-use crate::dispatch::{in_head, now_ns, out_head, Done, Frame, Reply};
+use super::{blob, grown, identify_out, lend, lend_opt, zero, Held, Running, Shared};
+use crate::dispatch::call::{self, Opts, Ran};
+use crate::dispatch::{in_head, out_head, Frame};
 
 /// A submitted `begin_login`'s deadline.
 pub const BEGIN_LOGIN_DEADLINE: Duration = Duration::from_secs(10);
@@ -178,95 +175,52 @@ fn release(shared: &Shared, lease: u64) {
     let _ = shared.plugin.call(lc::RELEASE, &mut f);
 }
 
-/// Submit `begin_login` on `shared`.
+/// `begin_login` on `shared`, on the one call path.
 pub(super) fn begin(shared: &Arc<Shared>, request: BeginLogin) -> Box<dyn LoginCall> {
     if overloaded(shared) {
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
     }
-    let Some(ticket) = shared.ticket() else {
-        return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
-    };
-    let held = BeginHeld::new(request);
-    let lent: crate::dispatch::Lent = held.clone();
-    let reply = shared.dispatcher.submit_lent(
-        &shared.plugin,
-        ticket,
-        slot::BEGIN_LOGIN,
-        Frame::new(held.input(), begin_out()),
-        DeadlineClass::Call,
-        now_ns() + BEGIN_LOGIN_DEADLINE.as_nanos() as u64,
-        lent,
-    );
-    Box::new(Begin {
-        shared: shared.clone(),
-        ticket,
-        _held: held,
-        reply: Some(reply),
-        answer: None,
-        faulted: false,
-    })
-}
-
-/// A submitted `begin_login`.
-struct Begin {
-    shared: Arc<Shared>,
-    ticket: Ticket,
-    _held: Arc<BeginHeld>,
-    reply: Option<Reply<BeginLoginIn, BeginLoginOut>>,
-    answer: Option<LoginOutcome>,
-    /// The step answered FAULT ([`LoginCall::faulted`]).
-    faulted: bool,
-}
-
-impl Begin {
-    fn step(&mut self, cx: &mut Context<'_>) -> Poll<LoginOutcome> {
-        if let Some(a) = &self.answer {
-            return Poll::Ready(a.clone());
-        }
-        let Some(reply) = self.reply.as_mut() else {
-            return Poll::Ready(LoginOutcome::Reject);
+    let shared = Arc::clone(shared);
+    let faulted = Arc::new(AtomicBool::new(false));
+    let fault = Arc::clone(&faulted);
+    let op = async move {
+        let held = BeginHeld::new(request);
+        let ran = call::call(
+            &shared.plugin,
+            slot::BEGIN_LOGIN,
+            Frame::new(held.input(), begin_out()),
+            held as crate::dispatch::Lent,
+            Opts {
+                class: DeadlineClass::Call,
+                deadline: Some(Instant::now() + BEGIN_LOGIN_DEADLINE),
+                watch: Duration::ZERO,
+                leave: false,
+                lane: None,
+            },
+            &mut |_| None,
+        )
+        .await;
+        let Ran::Answered { called, frame, .. } = ran else {
+            return LoginOutcome::Reject;
         };
-        let done: Done<BeginLoginIn, BeginLoginOut> = match Pin::new(reply).poll(cx) {
-            Poll::Ready(d) => d,
-            Poll::Pending => return Poll::Pending,
-        };
-        self.reply = None;
-        self.faulted = done.outcome == Outcome::Fault;
-        let answer = match (done.outcome, done.frame.as_ref()) {
-            (Outcome::Ready, Some(f)) => begun(&f.out).unwrap_or(LoginOutcome::Reject),
+        fault.store(called.outcome == Outcome::Fault, Ordering::Release);
+        let answer = match called.outcome {
+            Outcome::Ready => begun(&frame.out).unwrap_or(LoginOutcome::Reject),
             _ => LoginOutcome::Reject,
         };
-        release(&self.shared, done.lease);
-        self.answer = Some(answer.clone());
-        Poll::Ready(answer)
-    }
+        release(&shared, called.lease);
+        answer
+    };
+    Box::new(Running::new(op, faulted))
 }
 
-impl Future for Begin {
-    type Output = LoginOutcome;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<LoginOutcome> {
-        self.step(cx)
-    }
-}
-
-impl LoginCall for Begin {
+impl LoginCall for Running<LoginOutcome> {
     fn settled(&mut self) -> Option<LoginOutcome> {
-        let mut cx = Context::from_waker(Waker::noop());
-        match self.step(&mut cx) {
-            Poll::Ready(a) => Some(a),
-            Poll::Pending => None,
-        }
+        Running::settled(self)
     }
 
     fn faulted(&self) -> bool {
-        self.faulted
-    }
-}
-
-impl Drop for Begin {
-    fn drop(&mut self) {
-        drop(self.reply.take());
-        self.shared.dispatcher.recycle(self.ticket);
+        self.faulted.load(Ordering::Acquire)
     }
 }
 
@@ -387,123 +341,62 @@ fn completed(outcome: Outcome, out: &IdentifyOut, held: &CompleteHeld) -> LoginO
     }
 }
 
-/// Submit `complete_login` on `shared`.
+/// `complete_login` on `shared`, on the one call path.
 pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn LoginCall> {
     if overloaded(shared) {
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
     }
-    let Some(ticket) = shared.ticket() else {
-        return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
-    };
     // No seal lent to the dispatcher: the submitted fields are not revealed, and the login is
     // refused.
-    let seal = shared.dispatcher.seal();
-    if !request.login.submitted.is_empty() && seal.is_none() {
+    if !request.login.submitted.is_empty() && shared.dispatcher.seal().is_none() {
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
     }
-    let held = CompleteHeld::new(&request, seal, IDENTITY_BUF_BYTES, IDENTITY_GROUPS);
-    let reply = submit_complete(shared, ticket, &held);
-    Box::new(Complete {
-        shared: shared.clone(),
-        ticket,
-        request,
-        held,
-        reply: Some(reply),
-        recalled: false,
-        answer: None,
-        faulted: false,
-    })
-}
-
-fn submit_complete(
-    shared: &Shared,
-    ticket: Ticket,
-    held: &Arc<CompleteHeld>,
-) -> Reply<CompleteLoginIn, IdentifyOut> {
-    let lent: crate::dispatch::Lent = held.clone();
-    shared.dispatcher.submit_lent(
-        &shared.plugin,
-        ticket,
-        slot::COMPLETE_LOGIN,
-        Frame::new(held.input(), identify_out()),
-        DeadlineClass::Call,
-        now_ns() + COMPLETE_LOGIN_DEADLINE.as_nanos() as u64,
-        lent,
-    )
-}
-
-/// A submitted `complete_login`: its reply, the one re-call a short answer earns, then its answer.
-struct Complete {
-    shared: Arc<Shared>,
-    ticket: Ticket,
-    request: LoginCallback,
-    held: Arc<CompleteHeld>,
-    reply: Option<Reply<CompleteLoginIn, IdentifyOut>>,
-    recalled: bool,
-    answer: Option<LoginOutcome>,
-    /// A step of it (the answer or the short re-call) answered FAULT ([`LoginCall::faulted`]).
-    faulted: bool,
-}
-
-impl Complete {
-    fn step(&mut self, cx: &mut Context<'_>) -> Poll<LoginOutcome> {
-        loop {
-            if let Some(a) = &self.answer {
-                return Poll::Ready(a.clone());
+    let shared = Arc::clone(shared);
+    let faulted = Arc::new(AtomicBool::new(false));
+    let fault = Arc::clone(&faulted);
+    let op = async move {
+        let held = CompleteHeld::new(
+            &request,
+            shared.dispatcher.seal(),
+            IDENTITY_BUF_BYTES,
+            IDENTITY_GROUPS,
+        );
+        let current = Arc::new(Mutex::new(Arc::clone(&held)));
+        let mut regrow = {
+            let (current, shared) = (Arc::clone(&current), Arc::clone(&shared));
+            move |f: &Frame<CompleteLoginIn, IdentifyOut>| {
+                let mut c = current.lock().unwrap_or_else(PoisonError::into_inner);
+                let (cap, groups, _) = grown(&f.out, &c.id)?;
+                let bigger = CompleteHeld::new(&request, shared.dispatcher.seal(), cap, groups);
+                *c = Arc::clone(&bigger);
+                let frame = Frame::new(bigger.input(), identify_out());
+                Some((frame, bigger as crate::dispatch::Lent))
             }
-            let Some(reply) = self.reply.as_mut() else {
-                return Poll::Ready(LoginOutcome::Reject);
-            };
-            let done = match Pin::new(reply).poll(cx) {
-                Poll::Ready(d) => d,
-                Poll::Pending => return Poll::Pending,
-            };
-            self.reply = None;
-            self.faulted |= done.outcome == Outcome::Fault;
-            let out = done.frame.as_ref().map(|f| f.out);
-            if done.short && !self.recalled {
-                self.recalled = true;
-                if let Some((cap, groups, _)) = out.as_ref().and_then(|o| grown(o, &self.held.id)) {
-                    let seal = self.shared.dispatcher.seal();
-                    self.held = CompleteHeld::new(&self.request, seal, cap, groups);
-                    self.reply = Some(submit_complete(&self.shared, self.ticket, &self.held));
-                    continue;
-                }
-                self.answer = Some(LoginOutcome::Reject);
-                continue;
-            }
-            self.answer = Some(match out {
-                Some(o) => completed(done.outcome, &o, &self.held),
-                None => LoginOutcome::Reject,
-            });
+        };
+        let ran = call::call(
+            &shared.plugin,
+            slot::COMPLETE_LOGIN,
+            Frame::new(held.input(), identify_out()),
+            held as crate::dispatch::Lent,
+            Opts {
+                class: DeadlineClass::Call,
+                deadline: Some(Instant::now() + COMPLETE_LOGIN_DEADLINE),
+                watch: Duration::ZERO,
+                leave: false,
+                lane: None,
+            },
+            &mut regrow,
+        )
+        .await;
+        let Ran::Answered { called, frame, .. } = ran else {
+            return LoginOutcome::Reject;
+        };
+        fault.store(called.outcome == Outcome::Fault, Ordering::Release);
+        if called.recall.is_some() {
+            return LoginOutcome::Reject;
         }
-    }
-}
-
-impl Future for Complete {
-    type Output = LoginOutcome;
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<LoginOutcome> {
-        self.step(cx)
-    }
-}
-
-impl LoginCall for Complete {
-    fn settled(&mut self) -> Option<LoginOutcome> {
-        let mut cx = Context::from_waker(Waker::noop());
-        match self.step(&mut cx) {
-            Poll::Ready(a) => Some(a),
-            Poll::Pending => None,
-        }
-    }
-
-    fn faulted(&self) -> bool {
-        self.faulted
-    }
-}
-
-impl Drop for Complete {
-    fn drop(&mut self) {
-        drop(self.reply.take());
-        self.shared.dispatcher.recycle(self.ticket);
-    }
+        let held = Arc::clone(&current.lock().unwrap_or_else(PoisonError::into_inner));
+        completed(called.outcome, &frame.out, &held)
+    };
+    Box::new(Running::new(op, faulted))
 }

@@ -444,68 +444,59 @@ impl OutboundAuth for OutboundInstance {
             if request.caller_credential.is_some() && this.dispatcher.seal().is_none() {
                 return Fields::Failed;
             }
-            let Some(ticket) = this.dispatcher.mint(this.worker) else {
-                return Fields::Failed;
-            };
-            let guard = Ticketed {
-                dispatcher: Arc::clone(&this.dispatcher),
-                ticket,
-                answered: false,
-            };
-            let mut sizes = (FIELDS_BUF_BYTES, FIELDS_MAX as usize);
-            let mut first = true;
-            loop {
-                let mut lend = Lend::new(copy(&request), sizes.0, sizes.1);
-                let input = lend.input(handle, this.dispatcher.seal());
-                let lent: Arc<Lend> = Arc::from(lend);
-                let reply = this.dispatcher.submit_lent(
-                    &*this.plugin,
-                    ticket,
-                    slot::FIELDS,
-                    Frame::new(input, fields_out()),
-                    DeadlineClass::Call,
-                    deadline_ns,
-                    Arc::clone(&lent) as super::Lent,
-                );
-                let done = reply.await;
-                let out = done.frame.as_ref().map(|f| f.out);
-                match (done.short && first, out) {
-                    // THE ONE RE-CALL, on the same ticket, with what the answer said it needs; the
-                    // dispatcher answers a second short answer FAULT.
-                    (true, Some(out)) => {
-                        first = false;
-                        sizes = grown(&out);
-                    }
-                    (_, Some(out)) => {
-                        let mut guard = guard;
-                        guard.answered = true;
-                        break settled(done.outcome, &lent, &out);
-                    }
-                    (_, None) => break Fields::Failed,
+            let mut lend = Lend::new(copy(&request), FIELDS_BUF_BYTES, FIELDS_MAX as usize);
+            let input = lend.input(handle, this.dispatcher.seal());
+            let lent: Arc<Lend> = Arc::from(lend);
+            let current = Arc::new(std::sync::Mutex::new(Arc::clone(&lent)));
+            let mut regrow = {
+                let (current, this) = (Arc::clone(&current), this.clone());
+                move |f: &Frame<FieldsIn, FieldsOut>| {
+                    // THE ONE RE-CALL, on the same ticket, with what the answer said it needs.
+                    let (bytes, fields) = grown(&f.out);
+                    let mut lend = Lend::new(copy(&request), bytes, fields);
+                    let input = lend.input(handle, this.dispatcher.seal());
+                    let lent: Arc<Lend> = Arc::from(lend);
+                    *current
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::clone(&lent);
+                    Some((Frame::new(input, fields_out()), lent as super::Lent))
                 }
+            };
+            let deadline = (deadline_ns != 0).then(|| {
+                std::time::Instant::now()
+                    + std::time::Duration::from_nanos(deadline_ns.saturating_sub(super::now_ns()))
+            });
+            let ran = super::call::call(
+                &this.plugin,
+                slot::FIELDS,
+                Frame::new(input, fields_out()),
+                lent as super::Lent,
+                super::call::Opts {
+                    class: DeadlineClass::Call,
+                    deadline,
+                    watch: std::time::Duration::ZERO,
+                    leave: false,
+                    lane: None,
+                },
+                &mut regrow,
+            )
+            .await;
+            match ran {
+                super::call::Ran::Answered { called, frame, .. } => {
+                    let lent = Arc::clone(
+                        &current
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    );
+                    settled(called.outcome, &lent, &frame.out)
+                }
+                super::call::Ran::TimedOut { .. } | super::call::Ran::NoTicket => Fields::Failed,
             }
         };
         Box::new(Waiting {
             run: Box::pin(run),
             done: None,
         })
-    }
-}
-
-/// A submitted `fields`' ticket: recycled when the answer is read, and handed to the client-drop
-/// path first when the caller stops waiting before it (the lent memory stays with the op).
-struct Ticketed {
-    dispatcher: Arc<Dispatcher>,
-    ticket: busbar_contract::abi::mechanism::ticket::Ticket,
-    answered: bool,
-}
-
-impl Drop for Ticketed {
-    fn drop(&mut self) {
-        if !self.answered {
-            self.dispatcher.drop_client(self.ticket);
-        }
-        self.dispatcher.recycle(self.ticket);
     }
 }
 

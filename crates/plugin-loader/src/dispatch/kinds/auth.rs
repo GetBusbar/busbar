@@ -43,7 +43,7 @@ use busbar_contract::abi::mechanism::door::{
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::auth_calls::IssuedShape;
 
-use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
+use crate::dispatch::{declared_name, Answer, Context, InFrame, Kind, OutFrame};
 
 /// The auth kind.
 #[derive(Debug, Clone, Copy)]
@@ -493,16 +493,7 @@ impl Kind for Auth {
     }
 
     fn op_name(s: u32) -> &'static str {
-        match s {
-            slot::VERIFY => "verify",
-            slot::BEGIN_LOGIN => "begin_login",
-            slot::COMPLETE_LOGIN => "complete_login",
-            slot::OPEN_OUTBOUND => "open_outbound",
-            slot::OUTBOUND_READY => "outbound_ready",
-            slot::FIELDS => "fields",
-            slot::TARGET => "target",
-            _ => lifecycle_name(s),
-        }
+        declared_name::<auth::Ops>(s)
     }
 
     /// `target` is optional: a style that states none sends its credential to no destination of

@@ -205,8 +205,8 @@ extern "C" {
 #define BB_AUTH_SLOT_OUTBOUND_READY UINT32_C(13) /* `outbound_ready`. */
 #define BB_AUTH_SLOT_FIELDS UINT32_C(14) /* `fields`. */
 #define BB_AUTH_SLOT_TARGET UINT32_C(15) /* `target`. */
-#define BB_AUTH_KIND_SLOTS UINT32_C(7) /* How many kind ops follow the lifecycle. */
-#define BB_AUTH_SLOTS UINT32_C(16) /* [`OpsHead::slots`] for auth v3. */
+#define BB_AUTH_KIND_SLOTS UINT32_C(7) /* How many kind slots the table holds after the lifecycle. */
+#define BB_AUTH_SLOTS UINT32_C(16) /* [`OpsHead::slots`](super::mechanism::lifecycle::OpsHead::slots) for auth v3. */
 #define BB_AUTH_CAP_INBOUND UINT32_C(1) /* [`AuthTail::caps`]: the plugin serves `verify`. */
 #define BB_AUTH_CAP_LOGIN UINT32_C(2) /* [`AuthTail::caps`]: the plugin serves `begin_login`/`complete_login`. */
 #define BB_AUTH_CAP_OUTBOUND UINT32_C(4) /* [`AuthTail::caps`]: the plugin serves `open_outbound`/`outbound_ready`/`fields`. */
@@ -2099,7 +2099,7 @@ struct bb_auth_CompleteLoginIn {
     bb_mech_AbiStr nonce;
 };
 
-/* The auth kind's ops table: the shared [`OpsHead`], then the kind's slots, contiguous. */
+/* The kind's ops table. */
 struct bb_auth_Ops {
     bb_mech_OpsHead head;
     bb_mech_Op verify;
