@@ -131,6 +131,8 @@ pub mod secret;
 // The config secret-reference SHAPE (DECISIONS #83 MERGE, fold F1): the former `busbar-secret-ref`
 // crate. Its `SecretRef` is also the kind ABI's (`kinds::SecretRef` re-exports it): one type.
 pub mod secret_ref;
+// DECLARED SECRET FIELDS: the paths a Statement names in `secret_refs`, matched, lent and policed.
+pub mod secret_fields;
 pub mod section;
 pub mod services;
 pub mod signal;
