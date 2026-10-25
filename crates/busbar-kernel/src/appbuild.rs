@@ -673,9 +673,13 @@ pub fn build_app_from_config(
     // configuration's card is kept aside as the SEED an empty history opens with. Replaced before
     // validation, so completeness is judged against the card that will be in force.
     let configured_card = config::card::CardFields::of_root(&cfg);
-    if let Some(card) = crate::rate_apply::build_card() {
-        card.apply_to(&mut cfg);
-    }
+    let substituted = match crate::rate_apply::build_card() {
+        Some(card) => {
+            card.apply_to(&mut cfg);
+            card != configured_card
+        }
+        None => false,
+    };
     // The root's rules of this configuration, before any part of it is built or installed: a
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
@@ -695,7 +699,14 @@ pub fn build_app_from_config(
     // so an apply/reload validates identically and an invalid config changes nothing. It runs
     // BEFORE this configuration's limits are visible to anything (BUSBAR-1.6.0.md §3: "A validation
     // refusal keeps the running generation").
-    if let Err(validation_errors) = config_validate::validate(&cfg) {
+    // A card the history holds (a PUT's) may price a model the file does not define yet; the
+    // file's own card never may (MONEY-DESIGN §3a item 27).
+    let validated = if substituted {
+        config_validate::relax_undefined_models(|| config_validate::validate(&cfg))
+    } else {
+        config_validate::validate(&cfg)
+    };
+    if let Err(validation_errors) = validated {
         return Err(format!(
             "config validation failed:\n  - {}",
             validation_errors.join("\n  - ")

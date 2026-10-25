@@ -358,6 +358,17 @@ impl RootHistory {
         self.card_store().and_then(|s| s.admission_refusal())
     }
 
+    /// Whether the boot generation was built with another card than the one in force: the
+    /// history is loaded and its card in force is not the card the boot's configuration resolved.
+    #[must_use]
+    pub fn boot_card_stale(&self) -> bool {
+        let Some(in_force) = self.card_store().and_then(|s| s.in_force()) else {
+            return false;
+        };
+        let seed = self.seed.lock().unwrap_or_else(|p| p.into_inner());
+        seed.merged.as_ref() != Some(&in_force)
+    }
+
     /// Raise the boot's merged seed: the card its configuration resolved (first raise wins).
     pub fn seed_merged(&self, card: &busbar_kernel::config::card::CardFields) {
         let mut seed = self.seed.lock().unwrap_or_else(|p| p.into_inner());

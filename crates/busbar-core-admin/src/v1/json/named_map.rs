@@ -416,7 +416,7 @@ async fn apply(
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
             )
-            .map_err(AdminError::Validation)?;
+            .map_err(AdminError::from_build)?;
             // BASE-CONFIG PROTECTION: an entry declared in `config.yaml` is operator file config and
             // is never shadowed, retuned or subtracted through the API — the same posture the hooks
             // and groups surfaces take. Checked against the FRESHLY loaded, PRE-overlay deploy, which
