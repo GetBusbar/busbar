@@ -739,12 +739,22 @@ impl<'a> Op<'a> {
         target: Option<&str>,
         request: impl FnOnce() -> Result<Request, ConnFailure>,
     ) -> Answer<ExchangeResponse> {
+        self.exchange_sealed(need, target, || request().map(|r| (r, Vec::new())))
+    }
+
+    /// [`Op::exchange`] for a request with sealed fields ([`Exchange::request_sealed`]).
+    pub fn exchange_sealed(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), ConnFailure>,
+    ) -> Answer<ExchangeResponse> {
         let Some(host) = self.host else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
         let mut state = match self.on.resume() {
             Some(parked) => *parked,
-            None => match request().and_then(Exchange::request) {
+            None => match request().and_then(|(r, sealed)| Exchange::request_sealed(r, sealed)) {
                 Ok(s) => s,
                 Err(e) => return Poll::Ready(Err(e)),
             },
