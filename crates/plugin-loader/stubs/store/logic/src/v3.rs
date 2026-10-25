@@ -511,8 +511,11 @@ impl MemoryStore {
                 d.left -= back;
                 let slot = d.slot.clone();
                 // Nothing left to return, or nothing unspent to return it from: the slice closes
-                // (its unit spent the rest; "it closes when nothing is left").
-                if d.left == 0 || unspent == 0 {
+                // (its unit spent the rest; "it closes when nothing is left"). A slice on window 0
+                // closes at its first release whatever it still holds (`abi::store` slice life (e),
+                // a release on window 0 is final): window 0 never rolls and a node-local slice
+                // never expires, so left open it would outlive its holder.
+                if d.left == 0 || unspent == 0 || slot.window_start == 0 {
                     inner.slices.remove(&id);
                     inner.closed.insert(id, now);
                 }
