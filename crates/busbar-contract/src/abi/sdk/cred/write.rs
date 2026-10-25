@@ -266,10 +266,20 @@ impl SealedWrite {
     /// Write what is left into `buf`, as much as there is room for (backpressure: the host
     /// flushes it and calls again). Answers how many bytes went in; [`SealedWrite::finished`]
     /// once every byte is taken.
-    pub fn stream_into(&mut self, buf: &mut crate::abi::sdk::HostBuf<'_, u8>) -> usize {
+    ///
+    /// # Errors
+    /// [`super::NOT_SECURE`]: it carries a credential that must go out secured, and a host buffer
+    /// reports no connection security (as [`SealedWrite::poll_io`] refuses it). Nothing is written.
+    pub fn stream_into(
+        &mut self,
+        buf: &mut crate::abi::sdk::HostBuf<'_, u8>,
+    ) -> Result<usize, &'static str> {
+        if self.secure {
+            return Err(super::NOT_SECURE);
+        }
         let n = buf.stream(&self.buf[self.done..]);
         self.done += n;
-        n
+        Ok(n)
     }
 
     /// The bytes not yet taken (a length is public).

@@ -196,7 +196,7 @@ fn a_sealed_answer_streams_into_a_host_buffer() {
         let lent = unsafe { Lent::new(&input) };
         let mut buf = lent.reply_buf();
         let before = w.remaining();
-        let n = w.stream_into(&mut buf);
+        let n = w.stream_into(&mut buf).expect("not secure-required");
         assert_eq!(n, before.min(room.len()));
         assert_eq!(w.remaining(), before - n);
         got.extend_from_slice(&room[..n]);
@@ -211,5 +211,32 @@ fn a_sealed_answer_streams_into_a_host_buffer() {
     input.reply_cap = room.len() as _;
     // SAFETY: as above.
     let lent = unsafe { Lent::new(&input) };
-    assert_eq!(w.stream_into(&mut lent.reply_buf()), 0, "nothing is left");
+    assert_eq!(
+        w.stream_into(&mut lent.reply_buf()),
+        Ok(0),
+        "nothing is left"
+    );
+}
+
+/// RED: a host buffer reports no connection security, so an answer carrying a credential that must
+/// go out secured is refused there, nothing written (as `poll_io` refuses it).
+#[test]
+fn a_secure_required_credential_is_refused_into_a_host_buffer() {
+    let mut w = SealedJson::new()
+        .sealed("value", &cred(CANARY).require_secure())
+        .encoded()
+        .expect("text");
+    assert!(w.secure_required());
+    let mut room = [0u8; 64];
+    let mut input: OnPieceIn = zeroed();
+    input.reply_buf = room.as_mut_ptr();
+    input.reply_cap = room.len() as _;
+    // SAFETY: `reply_buf` is `room`, `reply_cap` writable bytes, live for the borrow.
+    let lent = unsafe { Lent::new(&input) };
+    assert_eq!(
+        w.stream_into(&mut lent.reply_buf()),
+        Err(crate::abi::sdk::cred::NOT_SECURE)
+    );
+    assert_eq!(w.remaining(), w.len());
+    assert_eq!(room, [0u8; 64]);
 }
