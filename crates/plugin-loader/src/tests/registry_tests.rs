@@ -444,10 +444,7 @@ fn open_secret_refuses_non_secret_kind_and_vice_versa() {
     // rebuild: no JSON secret lane remains (THE DESIGN §11.8).
     let err = reg.secret_refusal("delta");
     assert!(
-        err.contains(
-            "it speaks the 1.5.5 JSON secret contract, which this host does not load — rebuild \
-             the plugin against the 1.6.0 SDK"
-        ),
+        err.contains(crate::registry::JSON_SECRET_REFUSED),
         "got {err}"
     );
     let _ = std::fs::remove_dir_all(&dir);

@@ -1750,6 +1750,70 @@ fn red_one_recall_a_second_short_answer_is_fault() {
     d.recycle(t);
 }
 
+// ── EXACT VERSIONS: older, newer and a wrong magic are each refused ─────────────────────────────
+
+fn door_with(f: impl Fn(&mut DoorParts)) -> Option<LoadError> {
+    let mut d = plug::door().parts();
+    f(&mut d);
+    // SAFETY: a copy of the real door with one field wrong, which the loader reads only through
+    // its checks (the refusal under test).
+    validate_door::<TestKind>(Box::leak(Box::new(unsafe { Door::__from_parts(d) }))).err()
+}
+
+#[test]
+fn red_refuses_an_older_door() {
+    let (m, k) = (MECHANISM_VERSION, plug::KIND.abi_version());
+    assert_eq!(
+        door_with(|d| d.mechanism_version = m - 1),
+        Some(LoadError::Mechanism {
+            door: m - 1,
+            host: m
+        })
+    );
+    assert_eq!(
+        door_with(|d| d.kind_abi = k - 1),
+        Some(LoadError::KindAbi {
+            kind: plug::KIND,
+            door: k - 1,
+            host: k
+        })
+    );
+}
+
+#[test]
+fn red_refuses_a_newer_door() {
+    let (m, k) = (MECHANISM_VERSION, plug::KIND.abi_version());
+    assert_eq!(
+        door_with(|d| d.mechanism_version = m + 1),
+        Some(LoadError::Mechanism {
+            door: m + 1,
+            host: m
+        })
+    );
+    assert_eq!(
+        door_with(|d| d.kind_abi = k + 1),
+        Some(LoadError::KindAbi {
+            kind: plug::KIND,
+            door: k + 1,
+            host: k
+        })
+    );
+}
+
+#[test]
+fn red_refuses_a_wrong_magic() {
+    let retired = u64::from_le_bytes(*b"BUSPLANE");
+    assert_eq!(
+        door_with(|d| d.magic = retired),
+        Some(LoadError::Magic(retired))
+    );
+    assert_eq!(
+        door_with(|_| {}),
+        None,
+        "the GREEN twin: the real door loads"
+    );
+}
+
 // ── CLOSE, TEXT CAPS, THE WATCHDOG, UNLOADS, CANCEL DISPOSITIONS ──────────────────────────────────────────────────────────────
 
 fn crossings(p: &Plugin<TestKind>) -> u64 {

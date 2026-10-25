@@ -18,12 +18,12 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::Slot;
-use busbar_contract::abi::store::{GetPlaneRecordIn, HostBytesOut, RecordGetIn};
+use busbar_contract::abi::store::{GetPlaneRecordIn, HostBytesOut, OpId, RecordGetIn};
 use busbar_contract::records::RecordStore;
 use busbar_contract::store_calls::StoreCalls;
 
-use crate::dispatch::{Budgets, DispatchConfig, Dispatcher};
-use crate::store_v3::test_support::load;
+use crate::dispatch::kinds::store::Store;
+use crate::dispatch::{load_linked, Bind, Budgets, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 
 /// One wedged slot's gate: (let go, what the crossing read once let go).
@@ -185,11 +185,28 @@ fn open() -> LoadedStore {
         watchdog_period: Duration::from_millis(10),
         ..DispatchConfig::default()
     }));
-    let p = load(wedged::door, &d, 64, crate::dispatch::ConnTable::NoNeeds);
+    let row = LinkedRow::of(wedged::door).expect("the wedged door states its Statement");
+    let p = load_linked::<Store>(
+        &row,
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: crate::dispatch::ConnTable::NoNeeds,
+        },
+    )
+    .expect("the wedged door loads");
     LoadedStore::open(p, d, b"{}", mint).expect("it opens")
 }
 
-super::test_support::op_ids!(mint, 0x1e47);
+fn mint() -> OpId {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    OpId::from_parts(
+        0x1e47,
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+    )
+}
 
 const LENT: u8 = 0xab;
 

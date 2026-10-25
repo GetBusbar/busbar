@@ -1165,6 +1165,30 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
     );
 }
 
+/// **OWED, and named so it is not forgotten.** The assertions above compare what the host was
+/// HANDED. The one #85's acceptance clause names compares what the host RENDERS:
+///
+/// ```ignore
+/// // wherever a metrics recorder legitimately exists (the engine, not the loader):
+/// install_recorder();
+/// run_compiled_in();
+/// let a = busbar_kernel::snapshot::render();
+/// reset_recorder();
+/// run_dropped_in();
+/// let b = busbar_kernel::snapshot::render();
+/// assert_eq!(a, b);   // byte-identical exposition
+/// ```
+///
+/// It is not written here because this crate has no recorder and must not acquire one, and it is
+/// not written in the kernel because the kernel may not name a concrete plugin instance — not even
+/// under `tests/` (DECISIONS #2). Its home is the composition root, which is the one place entitled
+/// to name both. Recorded here rather than in a document because a test file is the thing the next
+/// person editing this seam actually reads.
+#[test]
+fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {
+    // Nothing to assert; this test is a landmark. It fails only if deleted, which is the point.
+}
+
 /// A series the host itself emits, for the collision arm — installed once as this test binary's
 /// host catalog (the composition root installs the real one).
 const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";

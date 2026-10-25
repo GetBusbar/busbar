@@ -27,8 +27,10 @@ use busbar_contract::records::{
 use busbar_contract::store_calls::StoreCalls;
 
 use crate::both_ways::store_fixture::MemoryStore;
-use crate::dispatch::{in_head, out_head, DispatchConfig, Dispatcher};
-use crate::store_v3::test_support::load;
+use crate::dispatch::kinds::store::Store;
+use crate::dispatch::{
+    in_head, load_linked, out_head, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+};
 use crate::store_v3::wrap::{Hooks, Wrapped};
 use crate::store_v3::LoadedStore;
 
@@ -277,11 +279,27 @@ mod pends_on_nothing {
     );
 }
 
-super::test_support::op_ids!(pub(super) mint, 0x9e4d);
+pub(super) fn mint() -> OpId {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    OpId::from_parts(
+        0x9e4d,
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+    )
+}
 
 fn open(door: busbar_contract::abi::mechanism::door::DoorFn) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let p = load(door, &d, 64, crate::dispatch::ConnTable::NoNeeds);
+    let p = load_linked::<Store>(
+        &LinkedRow::of(door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: crate::dispatch::ConnTable::NoNeeds,
+        },
+    )
+    .expect("the door loads");
     LoadedStore::open(p, d, b"{}", mint).expect("it opens")
 }
 
@@ -735,12 +753,17 @@ fn a_store_declaring_a_tcp_need_receives_a_connector() {
     let table = Arc::new(Table::default());
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let conns: Arc<dyn busbar_contract::conn::DeclaredConns> = table.clone();
-    let p = load(
-        over_tcp::door,
-        &d,
-        64,
-        crate::dispatch::ConnTable::Host(conns),
-    );
+    let p = load_linked::<Store>(
+        &LinkedRow::of(over_tcp::door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: crate::dispatch::ConnTable::Host(conns),
+        },
+    )
+    .expect("the door loads");
     let s = LoadedStore::open(p, d, b"{}", mint).expect("it opens");
     assert_eq!(
         *table.declared.lock().expect("declared"),
@@ -853,7 +876,17 @@ fn open_over(
 ) -> Result<LoadedStore, String> {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let conns: Arc<dyn busbar_contract::conn::DeclaredConns> = table.clone();
-    let p = load(door, &d, 64, crate::dispatch::ConnTable::Host(conns));
+    let p = load_linked::<Store>(
+        &LinkedRow::of(door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: crate::dispatch::ConnTable::Host(conns),
+        },
+    )
+    .expect("the door loads");
     LoadedStore::open(p, d, b"{}", mint)
 }
 
@@ -986,12 +1019,17 @@ fn a_wire_body_pends_on_its_reads_and_answers_the_backends_reply() {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
         Arc::new(crate::tcp_conns::TcpConns::new(d.conn_waker()));
-    let p = load(
-        over_wire::door,
-        &d,
-        64,
-        crate::dispatch::ConnTable::Host(conns),
-    );
+    let p = load_linked::<Store>(
+        &LinkedRow::of(over_wire::door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: crate::dispatch::ConnTable::Host(conns),
+        },
+    )
+    .expect("the door loads");
     let s = LoadedStore::open(p, d, b"{}", mint).expect("it opens");
     assert_eq!(
         RecordStore::list_denylist(&s).expect("the wire op answers"),

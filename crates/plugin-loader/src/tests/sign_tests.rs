@@ -1040,6 +1040,17 @@ fn manifest_with_foreign_host_is_rejected() {
         err.contains("busbar-ui") && err.contains("host"),
         "rejection must name both the offending host and the field, got: {err}"
     );
+
+    // Not just structural: even a manifest that WOULD verify as trusted first-party never
+    // reaches `evaluate` in the real pipeline, because `registry.rs::examine` runs
+    // `validate_structure` (phase 1) before `evaluate` (phase 2, trust) — a foreign host never
+    // gets a chance to be laundered through a loose trust posture.
+    let pol = policy(Some(&key), &[], true, true);
+    assert!(
+        validate_structure(&m, artifact, &abi, HOST_IDENTITY).is_err(),
+        "the host gate is structural and does not consult TrustPolicy at all"
+    );
+    let _ = pol; // constructed only to make the "trust cannot help" point explicit above
 }
 
 /// A `host` value that is neither absent, `busbar`, nor a recognizable other product string

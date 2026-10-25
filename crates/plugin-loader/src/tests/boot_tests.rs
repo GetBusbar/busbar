@@ -5,6 +5,7 @@
 //! per class), and the one load binding each selected instance, linked and dropped, to its own log
 //! file — an unselected plugin is never opened.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING};
@@ -13,7 +14,6 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 
 use super::*;
-use crate::both_ways::example_cdylib;
 use crate::dispatch::NoSink;
 use crate::plane_door_plugin as plug;
 
@@ -242,6 +242,24 @@ fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
         ..st
     })];
     assert!(select(&u, &cands).is_empty());
+}
+
+fn example_cdylib(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().expect("the test binary's path");
+    let path = exe
+        .parent()
+        .and_then(|deps| deps.parent())
+        .expect("the test binary sits in <profile>/deps")
+        .join("examples")
+        .join(format!(
+            "{}{name}{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+    if !path.exists() {
+        crate::both_ways::missing(name, crate::both_ways::BUILD_EXAMPLES);
+    }
+    path
 }
 
 /// RED: an absent example is a hard failure naming the command that builds it, never a skip.

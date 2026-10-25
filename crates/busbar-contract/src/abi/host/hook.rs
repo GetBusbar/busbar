@@ -29,10 +29,24 @@ use crate::abi::hook::{
     STAGE_HAS_REMAINING_CANDIDATES, STAGE_HAS_STATUS, VIEW_HAS_BUDGET_REMAINING, VIEW_HAS_PROMPT,
     VIEW_HAS_USER,
 };
-use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Outcome, BLOB_OCTETS};
+use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Outcome, BLOB_ABSENT, BLOB_OCTETS};
 use crate::hook_wire::HookStageProjection;
 use crate::hooks::{Candidate, RoutingContext, RoutingRequest};
 use crate::signal::{SignalBag, SignalValue as Value};
+
+/// The NULL string: absent.
+const NULL: AbiStr = AbiStr {
+    ptr: std::ptr::null(),
+    len: 0,
+};
+
+/// An absent blob.
+const NO_BLOB: Blob = Blob {
+    ptr: std::ptr::null(),
+    len: 0,
+    fmt: BLOB_ABSENT,
+    flags: 0,
+};
 
 /// The owned storage a view's pointers name. Every element is pushed BEFORE a pointer to it is
 /// taken, and nothing is pushed after, so every heap buffer below is stable for the view's life.
@@ -58,13 +72,13 @@ impl Store {
     }
 
     fn opt(&mut self, v: Option<&str>) -> AbiStr {
-        v.map_or(AbiStr::ABSENT, |v| self.s(v))
+        v.map_or(NULL, |v| self.s(v))
     }
 
     /// Present octets ([`BLOB_OCTETS`]), copied into the view; `None` = an absent blob.
     fn octets(&mut self, v: Option<&[u8]>) -> Blob {
         let Some(v) = v else {
-            return Blob::ABSENT;
+            return NO_BLOB;
         };
         let b: Box<[u8]> = v.into();
         let out = Blob {
@@ -132,7 +146,7 @@ impl Store {
         let view = PromptView {
             system: self.opt(p.system.as_deref()),
             message_count: items.len() as u64,
-            body: Blob::ABSENT,
+            body: NO_BLOB,
             messages: if items.is_empty() {
                 std::ptr::null()
             } else {
@@ -147,16 +161,16 @@ impl Store {
 
 fn empty_prompt() -> PromptView {
     PromptView {
-        system: AbiStr::ABSENT,
+        system: NULL,
         message_count: 0,
-        body: Blob::ABSENT,
+        body: NO_BLOB,
         messages: std::ptr::null(),
         messages_len: 0,
     }
 }
 
-/// The request's [`REQUEST_HAS_MAX_TOKENS`] | [`REQUEST_HAS_TOOLS`] | [`REQUEST_STREAM`] flags.
-fn request_flags(req: &RoutingRequest<'_>) -> u32 {
+fn request_view(store: &mut Store, req: &RoutingRequest<'_>) -> RequestView {
+    let (signals, signals_len) = store.bag(&req.signals);
     let mut flags = 0;
     if req.max_tokens.is_some() {
         flags |= REQUEST_HAS_MAX_TOKENS;
@@ -167,12 +181,6 @@ fn request_flags(req: &RoutingRequest<'_>) -> u32 {
     if req.stream {
         flags |= REQUEST_STREAM;
     }
-    flags
-}
-
-fn request_view(store: &mut Store, req: &RoutingRequest<'_>) -> RequestView {
-    let (signals, signals_len) = store.bag(&req.signals);
-    let flags = request_flags(req);
     RequestView {
         request_id: req.request_id,
         pool: store.s(req.pool),
@@ -234,9 +242,9 @@ impl DecideView {
                 }
             }
             None => UserView {
-                key_id: AbiStr::ABSENT,
-                key_name: AbiStr::ABSENT,
-                user: AbiStr::ABSENT,
+                key_id: NULL,
+                key_name: NULL,
+                user: NULL,
             },
         };
         if ctx.budget_remaining.is_some() {
@@ -672,7 +680,16 @@ impl NotifyFrame {
             Some(p) => (p, VIEW_HAS_PROMPT),
             None => (empty_prompt(), 0),
         };
-        let flags = request_flags(req);
+        let mut flags = 0;
+        if req.max_tokens.is_some() {
+            flags |= REQUEST_HAS_MAX_TOKENS;
+        }
+        if req.has_tools {
+            flags |= REQUEST_HAS_TOOLS;
+        }
+        if req.stream {
+            flags |= REQUEST_STREAM;
+        }
         let mut sv = StageView {
             request_id: req.request_id,
             pool: store.s(req.pool),
@@ -680,9 +697,9 @@ impl NotifyFrame {
             message_count: req.message_count as u64,
             total_chars: req.total_chars as u64,
             remaining_candidates: 0,
-            model: AbiStr::ABSENT,
-            previous_failure: AbiStr::ABSENT,
-            outcome: AbiStr::ABSENT,
+            model: NULL,
+            previous_failure: NULL,
+            outcome: NULL,
             max_tokens: req.max_tokens.unwrap_or(0),
             flags,
             at: 0,

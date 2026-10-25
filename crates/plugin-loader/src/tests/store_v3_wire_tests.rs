@@ -25,8 +25,8 @@ use busbar_contract::records::{RecordStore, RecordStoreError, RecordStoreResult}
 
 use super::pend_tests::{mint, TCP};
 use crate::both_ways::store_fixture::MemoryStore;
-use crate::dispatch::{DispatchConfig, Dispatcher};
-use crate::store_v3::test_support::load;
+use crate::dispatch::kinds::store::Store;
+use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::wrap::Hooks;
 use crate::store_v3::LoadedStore;
 use crate::tcp_conns::{SecureDial, SecuredSock, TcpConns};
@@ -297,7 +297,17 @@ fn open_over(
         ..DispatchConfig::default()
     }));
     let conns = conns(&d);
-    let p = load(door, &d, 64, crate::dispatch::ConnTable::Host(conns));
+    let p = load_linked::<Store>(
+        &LinkedRow::of(door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: crate::dispatch::ConnTable::Host(conns),
+        },
+    )
+    .expect("the door loads");
     LoadedStore::open(p, d, b"{}", mint).expect("it opens")
 }
 
@@ -754,12 +764,17 @@ fn a_bound_covers_the_handshake_after_the_dial() {
     ));
     let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
         Arc::new(TcpConns::new(d.conn_waker()));
-    let p = load(
-        bounded_handshake::door,
-        &d,
-        64,
-        crate::dispatch::ConnTable::Host(conns),
-    );
+    let p = load_linked::<Store>(
+        &LinkedRow::of(bounded_handshake::door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: crate::dispatch::ConnTable::Host(conns),
+        },
+    )
+    .expect("the door loads");
     let s = LoadedStore::open(p, d, b"{}", mint).expect("it opens");
     let t = std::time::Instant::now();
     let e = ping_of(&s).expect_err("the handshake never answers");

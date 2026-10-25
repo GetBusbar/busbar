@@ -125,6 +125,7 @@ fn a_nested_member_name_flattens_to_its_basename_as_in_1_5_5() {
 fn extra_members_and_traversal_are_refused() {
     // Three regular files: manifest + two libraries.
     let m = manifest();
+    let t1 = package(&m, "lib.so", b"abc").unwrap();
     // Rebuild with an extra member by unpacking the raw tar and appending.
     let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     let mut t = tar::Builder::new(gz);
@@ -143,6 +144,7 @@ fn extra_members_and_traversal_are_refused() {
     let bytes = t.into_inner().unwrap().finish().unwrap();
     let err = unpack(&bytes).unwrap_err();
     assert!(err.contains("more than one library"), "got {err}");
+    drop(t1);
 
     // Parent-reference path. `tar::Builder::append_data` itself refuses `..`, so write the
     // hostile name into the raw 512-byte header directly (what an attacker's tool would emit).

@@ -12,11 +12,12 @@ use std::sync::Arc;
 use crate::both_ways::store_fixture::MemoryStore;
 use crate::store_v3::wrap::{Hooks, Wrapped};
 use busbar_contract::abi::sdk::conn::Host;
+use busbar_contract::abi::store::OpId;
 use busbar_contract::records::{RecordStore, UsageDelta};
 use busbar_contract::store_calls::{OpIdMint, StoreCalls};
 
-use crate::dispatch::{DispatchConfig, Dispatcher};
-use crate::store_v3::test_support::load;
+use crate::dispatch::kinds::store::Store;
+use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink};
 use crate::store_v3::LoadedStore;
 
 /// A DURABLE store stand-in: every instance opened on the same settings (the same "database") is
@@ -45,14 +46,34 @@ mod shared {
     busbar_contract::store_door!(super::Wrapped<super::Shared>, "shared", "0", 64);
 }
 
-// One boot's allocator: its node half (the kernel draws it from the CSPRNG once per process) and
-// its one counter.
-use super::test_support::op_ids as boot;
+/// One boot's allocator: its node half (the kernel draws it from the CSPRNG once per process) and
+/// its one counter.
+macro_rules! boot {
+    ($name:ident, $node:expr) => {
+        fn $name() -> OpId {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            OpId::from_parts(
+                $node,
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+            )
+        }
+    };
+}
 
 /// The store on database `db`, minting from `mint`.
 fn open(db: &str, mint: OpIdMint) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let p = load(shared::door, &d, 64, crate::dispatch::ConnTable::NoNeeds);
+    let p = load_linked::<Store>(
+        &LinkedRow::of(shared::door).expect("the store states its Statement"),
+        Bind {
+            instance: Arc::from("the-instance"),
+            max_inflight_cap: 64,
+            sink: Arc::new(NoSink),
+            dispatcher: d.adopter(),
+            conns: crate::dispatch::ConnTable::NoNeeds,
+        },
+    )
+    .expect("the door loads");
     let settings = format!("{{\"db\":\"{db}\"}}");
     LoadedStore::open(p, d, settings.as_bytes(), mint).expect("it opens")
 }

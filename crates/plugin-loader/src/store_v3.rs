@@ -2040,10 +2040,6 @@ impl busbar_contract::store_calls::StoreAxis for DoorStoreAxis {
 }
 
 #[cfg(test)]
-#[path = "tests/store_v3_support.rs"]
-mod test_support;
-
-#[cfg(test)]
 #[path = "tests/store_v3_tests.rs"]
 mod tests;
 
