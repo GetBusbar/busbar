@@ -6,7 +6,7 @@
 //!
 //! The chain these tests read is sealed by the ONE chain mechanism in the framing a plane's task
 //! chain declares (length-prefixed, its scope digested). The frozen pipe-joined chain a plane's task
-//! store sealed before this ABI is not shipped: B1 ruling 1 (coordinator 2026-10-07) declares the
+//! store sealed before this ABI is not shipped: the ABI declares the
 //! length-prefixed framing, so the goldens that pinned those pipe-joined bytes are retired.
 
 use super::*;

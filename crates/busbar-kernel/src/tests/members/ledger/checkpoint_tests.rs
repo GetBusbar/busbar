@@ -387,7 +387,7 @@ fn a_rolled_back_checkpoint_is_detected_against_the_anchor() {
     )));
 }
 
-// ── THE SEAL VERIFIES AGAINST A KEYSET (Q71(3), #82) ────────────────────────────────────────────
+// ── THE SEAL VERIFIES AGAINST A KEYSET ────────────────────────────────────────────
 //
 // The ledger holds no key: the keyset is the audit unit's, and the one that signs and checks real
 // checkpoints is busbar_kernel_audit::AuditKeySet (its own tests prove the ed25519 half). Here the
