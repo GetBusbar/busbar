@@ -76,6 +76,11 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   "Refresh key" link). From any other site, a typed URL or a non-browser client it re-shows the
   current key instead. 1.5.5 rotated from any origin, so another site could revoke a signed-in
   user's key.
+- **An identified principal with no grant is refused.** A caller that an auth module identifies
+  (for example an IdP-verified user) but that earns no governance key, because it has no roles or its
+  roles are unbound, now gets `401` (`NoGrant`). 1.5.5 admitted such a caller ungoverned: no pool
+  ACL, no budget, and its spend was booked to `anonymous`. Bind the principal's roles in
+  `role_bindings` to admit it.
 - **A `store:` block is required.** `busbar --validate` and boot refuse a config without one, and tell
   you to add one, e.g. `store: {module: memory}`. 1.5.5 used `memory` when the block was absent.
   **Migration:** run `busbar --migrate-config`, which inserts exactly `store: {module: memory}`
