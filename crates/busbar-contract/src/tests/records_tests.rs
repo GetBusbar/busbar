@@ -6,14 +6,15 @@
 use super::*;
 
 /// A name-keyed reserved-four unit map (test helper) — the M1b replacement for the old
-/// `TierTokens { input, output, cache_read, cache_write }` literal. Zero tiers are omitted so the
-/// sparse-map (no-zero-entry) invariant holds.
-fn units(
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_write: u64,
-) -> std::collections::BTreeMap<String, u64> {
+/// `TierTokens { input, output, cache_read, cache_write }` literal, at the unsigned width and at the
+/// signed one `ModelTokensDelta` payloads carry. Zero tiers are omitted so the sparse-map
+/// (no-zero-entry) invariant holds.
+fn units<T: Copy + Default + PartialEq>(
+    input: T,
+    output: T,
+    cache_read: T,
+    cache_write: T,
+) -> std::collections::BTreeMap<String, T> {
     let mut m = std::collections::BTreeMap::new();
     for (k, v) in [
         (UNIT_INPUT, input),
@@ -21,28 +22,7 @@ fn units(
         (UNIT_CACHE_READ, cache_read),
         (UNIT_CACHE_WRITE, cache_write),
     ] {
-        if v != 0 {
-            m.insert(k.to_string(), v);
-        }
-    }
-    m
-}
-
-/// The signed twin of [`units`] for `ModelTokensDelta` payloads.
-fn units_i(
-    input: i64,
-    output: i64,
-    cache_read: i64,
-    cache_write: i64,
-) -> std::collections::BTreeMap<String, i64> {
-    let mut m = std::collections::BTreeMap::new();
-    for (k, v) in [
-        (UNIT_INPUT, input),
-        (UNIT_OUTPUT, output),
-        (UNIT_CACHE_READ, cache_read),
-        (UNIT_CACHE_WRITE, cache_write),
-    ] {
-        if v != 0 {
+        if v != T::default() {
             m.insert(k.to_string(), v);
         }
     }
@@ -474,7 +454,7 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
         billable_requests: 2,
         models: vec![ModelTokensDelta {
             model: "gpt-5".to_string(),
-            usage_units: units_i(100, 50, 10, 5),
+            usage_units: units(100, 50, 10, 5),
         }],
     });
     assert_eq!(l.requests, 2);
@@ -496,7 +476,7 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
         billable_requests: 1,
         models: vec![ModelTokensDelta {
             model: "haiku".to_string(),
-            usage_units: units_i(7, 3, 0, 0),
+            usage_units: units(7, 3, 0, 0),
         }],
     });
     assert_eq!(l.models.len(), 2);
@@ -508,7 +488,7 @@ fn usage_ledger_applies_deltas_and_floors_at_zero() {
         billable_requests: -10,
         models: vec![ModelTokensDelta {
             model: "haiku".to_string(),
-            usage_units: units_i(-1000, -1, 0, 0),
+            usage_units: units(-1000, -1, 0, 0),
         }],
     });
     assert_eq!(l.requests, 0);
@@ -563,7 +543,7 @@ fn default_add_usage_accumulates_via_get_put() {
         billable_requests: 1,
         models: vec![ModelTokensDelta {
             model: "m".to_string(),
-            usage_units: units_i(5, 5, 0, 0),
+            usage_units: units(5, 5, 0, 0),
         }],
     };
     s.add_usage("bucket", 0, &d).unwrap();
@@ -619,12 +599,12 @@ fn model_tokens_delta_is_zero_requires_every_unit_zero() {
     assert!(ModelTokensDelta::default().is_zero());
     let d = ModelTokensDelta {
         model: "m".into(),
-        usage_units: units_i(1, 0, 0, 0),
+        usage_units: units(1, 0, 0, 0),
     };
     assert!(!d.is_zero());
     let d = ModelTokensDelta {
         model: "m".into(),
-        usage_units: units_i(0, -1, 0, 0),
+        usage_units: units(0, -1, 0, 0),
     };
     assert!(!d.is_zero());
 }
@@ -645,7 +625,7 @@ fn usage_delta_is_zero_requires_requests_billable_and_every_model_zero() {
     assert!(!UsageDelta {
         models: vec![ModelTokensDelta {
             model: "m".to_string(),
-            usage_units: units_i(1, 0, 0, 0),
+            usage_units: units(1, 0, 0, 0),
         }],
         ..Default::default()
     }
@@ -950,7 +930,7 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     let mut ledger = UsageLedger::default();
     let mut d1 = ModelTokensDelta {
         model: "m".into(),
-        usage_units: units_i(0, 0, 0, 0),
+        usage_units: units(0, 0, 0, 0),
     };
     d1.usage_units.insert("search".into(), 5);
     ledger.apply_model_delta(&d1);

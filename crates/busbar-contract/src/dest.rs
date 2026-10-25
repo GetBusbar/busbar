@@ -273,59 +273,6 @@ impl fmt::Display for DestinationId {
     }
 }
 
-/// A candidate's position in the verified set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
-pub struct CandidateIdx(pub u16);
-
-/// An order over the verified set.
-///
-/// A ranking hook returns one of these and the failover walk takes it as-is. Candidate sets are
-/// unbounded because the deployment's configured candidate space is unbounded, so this is one of
-/// the few places the contract does not impose a ceiling — imposing one would refuse a
-/// configuration the previous release accepted.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Permutation {
-    /// The candidates, in the order they should be walked.
-    pub order: Vec<CandidateIdx>,
-}
-
-/// A narrowing of the verified set.
-///
-/// Restrictions from several hooks at one seat intersect. What happens when the intersection is
-/// empty is the hook's own declaration, and the default is to reject.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CandidateSet {
-    /// Which candidates survive.
-    pub members: Vec<CandidateIdx>,
-    /// What to do when nothing survives.
-    pub on_empty: OnEmpty,
-}
-
-/// What a gate does when its restriction leaves nothing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum OnEmpty {
-    /// Refuse the unit. The default, and the previous release's default.
-    #[default]
-    Reject,
-    /// Skip this gate's restriction and leave the candidate set unchanged.
-    Weighted,
-    /// Order only, as the terminal of an on-error chain; an empty restriction still refuses.
-    First,
-}
-
-/// The closed code a gate hook vetoes with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum VetoCode {
-    /// The principal may not perform this operation.
-    NotPermitted,
-    /// The content is not admissible.
-    ContentRefused,
-    /// An external policy said no.
-    PolicyRefused,
-    /// The rate this principal is asking at is not admissible.
-    RateRefused,
-}
-
 /// The wire request a plane encoded for one verified destination.
 ///
 /// The envelope is the transport's shape, the body is arena bytes, and the scheme names which
@@ -463,26 +410,6 @@ impl TransportKeyHandle {
     #[must_use]
     pub fn issue(_token: &dyn KernelSeal, slot: u64, fingerprint: &'static str) -> Self {
         Self { slot, fingerprint }
-    }
-
-    /// The handle that names NO key material — no seal, because it attests nothing.
-    ///
-    /// A layered transport whose upgrade reads no key of its own (the WebSocket handshake: whatever
-    /// secured the bytes was resolved by the layer underneath, at ITS `listen`) still has to pass a
-    /// handle. Before #65 sealed [`KernelSeal`], such a layer forged a seal to call
-    /// [`issue`](Self::issue) — shipping code fabricating kernel evidence to say "I have none",
-    /// which is the forgery this release closed.
-    ///
-    /// This is the honest spelling. It takes no seal BECAUSE it conveys no authority: the seal on
-    /// `issue` attests that the transport-key unit resolved real material, and there is no material
-    /// here to attest. It can only ever produce slot 0 / `"none"` — a caller cannot name a slot or
-    /// a fingerprint through it, which is exactly what the forged seal used to allow.
-    #[must_use]
-    pub fn keyless() -> Self {
-        Self {
-            slot: 0,
-            fingerprint: "none",
-        }
     }
 
     /// The node-local slot the material lives in.
