@@ -62,6 +62,7 @@
 #![allow(dead_code)]
 
 pub mod adapters;
+pub mod admission;
 pub mod auth_bindings;
 pub mod boot;
 pub mod cli;
@@ -101,6 +102,14 @@ pub mod transports;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
 pub mod userinfo;
+
+// The operator surface's plugin verbs under THE ROOT'S REAL ADMISSION: real tarballs uploaded,
+// inspected, listed and rolled back through the admin router on a snapshot carrying
+// `root::admission::ADMISSION` (the admin crate names no loader, so its loader-judgement tests live
+// here).
+#[cfg(test)]
+#[path = "tests/admin_plugin_admission.rs"]
+mod admin_plugin_admission;
 
 /// THE PROCESS-WIDE ADMIN SURFACES' ONE TEST LOCK: the admin route table and the operator audit
 /// ring are the process's one each, so a test that publishes a plane's admin routes, or that

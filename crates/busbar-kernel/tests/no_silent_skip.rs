@@ -21,13 +21,12 @@
 use std::path::{Path, PathBuf};
 
 /// Files the scan must reach, so a walk that silently found nothing cannot pass: one per shape the
-/// walk collects — a file under a `tests/` directory, and a sibling `src/**/*_tests.rs` outside one.
-/// (`src/plane_host/pipe_tests.rs` held the sibling shape until the host pipe it tested was deleted;
-/// `src/topology/worker_shard_tests.rs` is now the crate's one file of that shape.)
-const MUST_COVER: &[&str] = &[
-    "src/auth/tests/plugin_chain_tests.rs",
-    "src/topology/worker_shard_tests.rs",
-];
+/// walk collects that the crate still holds — a file under a `tests/` directory. The walk still
+/// collects a sibling `src/**/*_tests.rs` outside one, but the crate holds none: the last,
+/// `src/topology/worker_shard_tests.rs`, left with the outbound engine it tested (row 130), as
+/// `src/plane_host/pipe_tests.rs` left with the host pipe before it. A new file of that shape is
+/// named here.
+const MUST_COVER: &[&str] = &["src/auth/tests/plugin_chain_tests.rs"];
 
 /// The probes whose early-return guard is a skip (rule c).
 const SUBJECTS: &[&str] = &[
