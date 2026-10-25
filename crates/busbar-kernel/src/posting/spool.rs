@@ -176,9 +176,14 @@ impl Spool {
     }
 
     fn create_segment(dir: &Path, id: u64, syncer: &dyn Syncer) -> io::Result<File> {
+        drop(
+            OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(seg_path(dir, id))?,
+        );
         let f = OpenOptions::new()
-            .create(true)
-            .truncate(true)
             .append(true)
             .read(true)
             .open(seg_path(dir, id))?;

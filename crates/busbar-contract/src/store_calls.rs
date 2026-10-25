@@ -21,7 +21,7 @@ use std::pin::Pin;
 
 use crate::abi::store::OpId;
 use crate::kinds::RecordBytes;
-use crate::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+use crate::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta, UsageLedger};
 
 /// THE NODE'S ONE `op_id` ALLOCATOR, as a store handle is handed it: every `op_id` a handle mints
 /// for itself (the synchronous bridge's additive writes) comes from the kernel's one allocator, so no
@@ -74,6 +74,10 @@ pub trait StoreCalls: Send + Sync {
     /// `add_metering_batch`.
     fn add_metering_batch<'a>(&'a self, op: OpId, deltas: &'a [MeteringDelta])
         -> StoreCall<'a, ()>;
+    /// `get_usage`: one `(bucket, window)` usage row, empty when absent. The same `GET_USAGE` slot
+    /// the 1.5.5 op set reads, submitted and awaited (the fleet snapshot reads it off the request
+    /// path, MONEY-DESIGN §3d).
+    fn get_usage<'a>(&'a self, bucket: &'a str, window_start: u64) -> StoreCall<'a, UsageLedger>;
     /// `record_put`.
     fn record_put<'a>(
         &'a self,

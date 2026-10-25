@@ -27,7 +27,7 @@
 use std::collections::BTreeMap;
 
 use crate::cost::{
-    nanos_of_exact, whole, History, HistorySeq, HistoryView, Money, MoneyError, RateCard, Tally,
+    nanos_of_exact, whole, EntryId, History, HistorySeq, HistoryView, Money, MoneyError, RateCard, Tally,
     STANDARD_TIER_BP,
 };
 
@@ -176,6 +176,148 @@ pub fn price_dated<'r>(
     })?;
     // THE ONE TRUNCATION, through the sanctioned projections: exact → nano → money, each toward
     // zero, which for a non-negative figure is one truncation from exact to money.
+    Money::of_nanos(nanos_of_exact(exact)?)
+}
+
+/// One bucket's billable-request count (the flat fee's base), SPLIT BY THE CARD ENTRY each request
+/// was admitted under (MONEY-DESIGN §3b: a count's segment is the id of the history entry that
+/// priced it). Whatever of the bucket's billable total these entries do not account for is the
+/// legacy remainder (`None`): counts written with no entry, priced at the card covering the window's
+/// start.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FeeSegs(Vec<(EntryId, u64)>);
+
+impl FeeSegs {
+    /// One request admitted under `seg`; the legacy remainder is implicit and not recorded.
+    pub fn charge(&mut self, seg: Option<EntryId>) {
+        let Some(id) = seg else {
+            return;
+        };
+        match self.0.iter_mut().find(|(e, _)| *e == id) {
+            Some((_, n)) => *n = n.saturating_add(1),
+            None => self.0.push((id, 1)),
+        }
+    }
+
+    /// One billable request refunded from the segment it was ADMITTED under. A segment this split
+    /// no longer holds a request of is the remainder. The caller decrements the total in the same
+    /// step.
+    pub fn refund(&mut self, seg: Option<EntryId>) {
+        if let Some((_, n)) = self
+            .0
+            .iter_mut()
+            .find(|(e, n)| Some(*e) == seg && *n > 0)
+        {
+            *n -= 1;
+        }
+    }
+
+    /// Add `n` requests under `seg` (a hydrated or foreign segment).
+    pub fn add(&mut self, seg: Option<EntryId>, n: u64) {
+        let Some(id) = seg else {
+            return;
+        };
+        match self.0.iter_mut().find(|(e, _)| *e == id) {
+            Some((_, have)) => *have = have.saturating_add(n),
+            None => self.0.push((id, n)),
+        }
+    }
+
+    /// The fee base per segment, given the bucket's billable total: every entry segment, then the
+    /// legacy remainder.
+    pub fn split(&self, billable_total: u64) -> impl Iterator<Item = (Option<EntryId>, u64)> + '_ {
+        let dated = self
+            .0
+            .iter()
+            .fold(0u64, |acc, (_, n)| acc.saturating_add(*n));
+        self.0
+            .iter()
+            .map(|(e, n)| (Some(*e), *n))
+            .chain(std::iter::once((None, billable_total.saturating_sub(dated))))
+    }
+}
+
+/// **A SEGMENTED BUDGET CELL, PRICED** (MONEY-DESIGN §3b, §3d). `money = f(ledger counts, card
+/// history)` over one bucket, every segment at the card of the entry whose id it carries, NEVER
+/// re-resolved:
+///
+/// - `rows`: `(lane, segment, counts)`; a segment is an entry id, or `None` for the legacy remainder;
+/// - `fees`: `(segment, billable requests)`;
+/// - `window_start_ms`: the start of the cell's window: the legacy remainder prices at the card
+///   covering it, as `dated.rs`'s remainder rule did;
+/// - `live`: the caller's current card. A segment whose entry is the one in force at `now_ms` prices
+///   at `live` (the only card that also carries the open classes a deployment configured);
+/// - `history`: the history and the read's instant, or `None` where none is installed: then every
+///   segment prices at `live`.
+///
+/// An entry id the history does not hold REFUSES ([`MoneyError::NoCardInForce`]) rather than price
+/// at 0; so does a hole at the window's start for the remainder.
+pub fn price_segments<'r>(
+    rows: impl IntoIterator<Item = (&'r str, Option<EntryId>, &'r BTreeMap<String, u64>)>,
+    fees: impl IntoIterator<Item = (Option<EntryId>, u64)>,
+    window_start_ms: u64,
+    live: &RateCard,
+    history: Option<(&History, u64)>,
+) -> Result<Money, MoneyError> {
+    let in_force = history.and_then(|(h, now)| h.entry_at(now).map(|(id, _)| id));
+    let resolve = |seg: Option<EntryId>| -> Result<(HistorySeq, &RateCard), MoneyError> {
+        let Some((h, _)) = history else {
+            return Ok((HistorySeq::OPENING, live));
+        };
+        let entry = match seg {
+            Some(id) => h.entries().iter().find(|e| e.id() == id),
+            None => h
+                .entries()
+                .iter()
+                .rev()
+                .find(|e| e.covers(window_start_ms)),
+        };
+        let entry = entry.ok_or(MoneyError::NoCardInForce { at: window_start_ms })?;
+        Ok((
+            entry.seq(),
+            if Some(entry.id()) == in_force {
+                live
+            } else {
+                entry.card()
+            },
+        ))
+    };
+    let mut tallies: Vec<(HistorySeq, Tally<'_>)> = Vec::new();
+    let mut tally_for = |seg: Option<EntryId>| -> Result<usize, MoneyError> {
+        let (seq, card) = resolve(seg)?;
+        Ok(match tallies.iter().position(|(s, _)| *s == seq) {
+            Some(i) => i,
+            None => {
+                tallies.push((seq, Tally::at_card_seq(seq, card)));
+                tallies.len() - 1
+            }
+        })
+    };
+    let mut rows_at: Vec<(usize, &str, &BTreeMap<String, u64>)> = Vec::new();
+    for (lane, seg, counts) in rows {
+        rows_at.push((tally_for(seg)?, lane, counts));
+    }
+    let mut fees_at: Vec<(usize, u64)> = Vec::new();
+    for (seg, n) in fees {
+        if n != 0 {
+            fees_at.push((tally_for(seg)?, n));
+        }
+    }
+    for (i, lane, counts) in rows_at {
+        tallies[i].1.row(
+            lane,
+            0,
+            STANDARD_TIER_BP,
+            counts.iter().map(|(class, n)| (class.as_str(), whole(*n))),
+            whole(0),
+        )?;
+    }
+    for (i, n) in fees_at {
+        tallies[i].1.fee(0, STANDARD_TIER_BP, whole(n))?;
+    }
+    let exact = tallies.iter().try_fold(0i128, |acc, (_, t)| {
+        acc.checked_add(t.exact()?).ok_or(MoneyError::Overflow)
+    })?;
     Money::of_nanos(nanos_of_exact(exact)?)
 }
 

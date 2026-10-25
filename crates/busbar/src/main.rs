@@ -1287,19 +1287,20 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         });
     }
 
-    // WRITE-BEHIND BUDGET FLUSHER: the in-memory budget counters are authoritative on the request hot
-    // path (no SQLite await on admission); this background task periodically flushes accrued
-    // spend/requests to the durable store and runs one FINAL flush when the shutdown signal fires, so
-    // a graceful stop loses nothing (an ungraceful crash can lose at most one flush interval). Spawned
-    // once here (not on config apply/reload — the reused `Arc<GovState>` keeps its live cells and its
-    // already-running flusher). No-op when governance is disabled.
+    // THE SPEND RECORDER (MONEY-DESIGN §3c): its spooler takes every budget shard's pending deltas
+    // each flush window and spools them (with a data directory), its sender posts them to the
+    // store in sequence, one batch in flight, and its probe stamps the store's round trips. Beside
+    // it, the fleet snapshot reads other nodes' counts for the capped buckets this node touched.
+    // Nothing on the request path waits on either. Spawned once here (not on config apply: the
+    // reused `Arc<GovState>` keeps its recorder); the shutdown tail drains what is left.
     if let Some(gov) = app_handle.load().governance.clone() {
-        // Handle intentionally dropped (not awaited): the flusher runs for the process lifetime and
-        // exits its own loop on the shutdown broadcast; nothing here needs to join it.
-        std::mem::drop(busbar_kernel::governance::spawn_budget_flusher(
-            gov,
-            shutdown_tx.subscribe(),
-        ));
+        if let Some(recorder) = gov.recorder() {
+            recorder.spawn();
+            let handle = std::sync::Arc::clone(&app_handle);
+            std::mem::drop(gov.spawn_snapshot(recorder.store(), move || {
+                std::sync::Arc::clone(&handle.load().cost)
+            }));
+        }
     }
 
     // START EVERY PLANE'S BACKGROUND WORK — a plane's refresh sweep, a plane's re-verification

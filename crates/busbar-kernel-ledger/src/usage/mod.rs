@@ -36,7 +36,7 @@
 mod dated;
 mod source;
 
-pub use dated::{by_lane, price_dated, DatedHistory, FeeEras};
+pub use dated::{by_lane, price_dated, price_segments, DatedHistory, FeeEras, FeeSegs};
 pub use source::{Direction, LocatorPtr, QuantitySource};
 
 #[cfg(test)]

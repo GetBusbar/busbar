@@ -1103,6 +1103,22 @@ impl StoreCalls for LoadedStore {
         })
     }
 
+    fn get_usage<'a>(&'a self, bucket: &'a str, window_start: u64) -> StoreCall<'a, UsageLedger> {
+        boxed(async move {
+            let r = fixed::<_, LeasedBlobOut>(
+                slot::GET_USAGE,
+                owned_in(|o, head| WindowIn {
+                    head,
+                    bucket: o.text(bucket),
+                    window_start,
+                }),
+            );
+            let (ran, _) = run!(self, submit, r);
+            let got: Option<UsageLedger> = self.record(ran)?;
+            Ok(got.unwrap_or_default())
+        })
+    }
+
     fn record_put<'a>(
         &'a self,
         schema: &'a str,

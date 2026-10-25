@@ -110,75 +110,62 @@ pub(crate) fn generate_binding_generation() -> Result<String, getrandom::Error> 
     Ok(hex::encode(raw))
 }
 
-/// One model's in-cell token counters: the CURRENT tier tokens plus the last durably-ACKNOWLEDGED
-/// (flushed) tier tokens - the additive-flush baseline, per model. The model name is an
-/// `Arc<str>` interned ONCE per (bucket, model) on first sight (allocate-on-miss); the per-request
-/// accrual after that is a linear scan over the few models the bucket actually used plus integer
-/// adds - no hashing, no allocation.
+/// A count's SEGMENT (MONEY-DESIGN §3b): the id of the card-history entry this node priced it with
+/// (tokens at accrual, fees at admission), or `None` for the legacy remainder (counts written with
+/// no entry: no history installed, or a 1.5.5 / pre-PR-B row). A segment is priced at ITS entry's
+/// card and never re-resolved.
+pub type Seg = Option<busbar_kernel_ledger::cost::EntryId>;
+
+/// A segment as the spool and the sibling row spell it: 24 hex characters, or `""` for none.
+pub(crate) fn seg_hex(seg: Seg) -> String {
+    seg.map(|id| id.hex()).unwrap_or_default()
+}
+
+/// A segment from its spelling (`""` is the legacy remainder; anything else not an id is too).
+pub(crate) fn seg_parse(text: &str) -> Seg {
+    busbar_kernel_ledger::cost::EntryId::parse_hex(text)
+}
+
+/// One (model, segment)'s in-cell counters. The model name is an `Arc<str>` interned ONCE per
+/// (bucket, model, segment) on first sight.
 #[derive(Clone)]
 struct ModelCell {
     model: std::sync::Arc<str>,
-    /// The card era these counts were earned under (Q14, #79): the `effective_from` in force at
-    /// accrual, `0` undated. One cell per (model, era), so an edit mid-window opens a second one.
-    era: u64,
-    /// (1.6.0 M1b) The name-keyed CURRENT unit counters — the reserved four
-    /// (`input`/`output`/`cache_read`/`cache_write`) are ordinary keys beside any open unit, the
-    /// sole representation now that `TierTokens` is dissolved. Sparse (a zero unit is absent).
+    /// The entry these counts were earned under.
+    seg: Seg,
+    /// The name-keyed CURRENT unit counters. Sparse (a zero unit is absent).
     cur: std::collections::BTreeMap<String, u64>,
-    /// The last durably-ACKNOWLEDGED (flushed) unit counters — the additive-flush baseline.
-    flushed: std::collections::BTreeMap<String, u64>,
 }
 
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
 /// enforcement state. A bucket is a key's own budget bucket OR a budget-group bucket (same shape).
-/// NO SPEND FIELD: money is derived at check time as `cell tokens x the card IN FORCE WHEN EACH WAS
-/// EARNED` (+ the flat fee x requests per admission era) - OWNER RULING Q14 / #79. The counts are
-/// segmented by card era and each era prices at the card the dated history resolves for it, so an
-/// edit prices what follows it and a signed back-dated correction reprices the window it names,
-/// with no data fix either way. The durable store is a write-behind
-/// layer flushed off the request path. One cell per bucket (current window only; reset on
-/// rollover), so growth is bucket-count-bounded (keys + group-window buckets).
+/// NO SPEND FIELD: money is derived at check time as `cell counts x the card of the entry each was
+/// earned under` (+ the flat fee x billable requests per entry). The counts are segmented by card
+/// entry, and each segment prices at its entry's card (MONEY-DESIGN §3b). What reaches the store is
+/// not read off the cell: every count-changing mutation emits its delta into its shard's
+/// [`Pending`] map in the same critical section (MONEY-DESIGN §3c).
 #[derive(Clone, Default)]
 struct BudgetCell {
     window_start: u64,
-    /// ADMISSION count: incremented once per admitted request, NEVER refunded. This backs the
-    /// `requests`-LIMIT metric, so a caller cannot escape the requests cap by hammering failing
-    /// requests (each still consumed a request slot at admission).
+    /// ADMISSION count: incremented once per admitted request, NEVER refunded (the `requests` cap).
     requests: u64,
-    /// BILLABLE request count: admitted requests MINUS non-2xx refunds. This backs the flat
-    /// per-request-FEE component of the `budget` metric (the fee bills 2xx only), so budget spend
-    /// derives from this, never from `requests`. Charged with `requests` at admission; a non-2xx
-    /// outcome decrements ONLY this via `refund_bucket`.
+    /// BILLABLE request count: admitted requests MINUS non-2xx refunds (the flat fee's base).
     billable_requests: u64,
-    /// The last durably-acknowledged admission-request count - the additive-flush baseline. Each
-    /// flush writes only the DELTA (current - flushed) via `Store::add_usage`, then advances the
-    /// baselines on success, so a shared store accumulates the TRUE fleet total across nodes. On
-    /// a failed flush the baseline does not advance and the cell is re-marked dirty, so the
-    /// unacked delta is retried (at-least-once: an ack lost after the write landed can
-    /// double-count at most one flush interval - documented).
-    flushed_requests: u64,
-    /// The billable-request flush baseline (twin of `flushed_requests` for the fee-base counter).
-    flushed_billable_requests: u64,
-    /// Per-(model, era, tier) token counters + flush baselines. Small Vec (the models this bucket
-    /// actually used), scanned linearly.
+    /// Per-(model, segment) counters. Small Vec, scanned linearly.
     models: Vec<ModelCell>,
-    /// The fee base split by the card era each billable request was admitted under, so each fee
-    /// prices at the card in force when that request was admitted.
-    fee_eras: busbar_kernel_ledger::usage::FeeEras,
-    /// THE ROLLED WINDOWS' UNACKNOWLEDGED DELTAS, each under the window it was earned in. A roll to
-    /// a newer window moves what the old window held past its last acknowledged flush here
-    /// ([`BudgetCell::roll`]) instead of discarding it; `flush_budgets` drains them to the store
-    /// under their OWN window and parks a failed one back, so a store outage across a boundary
-    /// loses nothing. Empty in steady state.
-    rolled: Vec<(u64, UsageDelta)>,
-    dirty: bool,
-    /// Wall-clock of the last accrual or admission charge. The eviction sweep ages cells by
-    /// `window_start`, but a key's own bucket and a synthesized SSO principal's bucket both live in
-    /// the all-time window (`window_start == 0`), which never ages — so those cells were retained
-    /// for the process lifetime even after the key was deleted or the principal stopped appearing.
-    /// `dirty` alone cannot substitute: the flusher clears it every 100ms, so a busy cell is
-    /// legitimately clean and would be swept mid-use.
+    /// The fee base split by the entry each billable request was admitted under.
+    fee_segs: busbar_kernel_ledger::usage::FeeSegs,
+    /// Wall-clock of the last accrual or admission charge (the all-time cell's eviction age).
     last_touch: u64,
+    /// HAS PENDING DELTAS: a mutation emitted into the shard's pending map since the writer's last
+    /// take. With `unsent_seq`, what keeps the sweep from evicting the cell (and its `posted_hi`).
+    dirty: bool,
+    /// The highest batch sequence carrying this bucket's deltas that is not yet READY.
+    unsent_seq: Option<u64>,
+    /// `posted_hi` for this window (MONEY-DESIGN §3d): the hydrated counts, plus every positive
+    /// delta handed to the writer, plus every negative one once READY. An upper bound on this node's
+    /// share of any store read of the row.
+    posted: crate::posting::record::CellCount,
 }
 
 impl BudgetCell {
@@ -189,79 +176,35 @@ impl BudgetCell {
         }
     }
 
-    /// ROLL the cell to the newer `window`. The counts start over, but what the old window holds
-    /// past its last acknowledged flush is not the new window's to forget: it is parked under the
-    /// old window ([`BudgetCell::park`]) for the flusher to write there. The cell stays dirty while
-    /// anything is parked.
+    /// ROLL the cell to the newer `window`: the counts start over. Emits nothing: what the old
+    /// window held was emitted as it happened. What is still pending or unsent keeps it resident.
     fn roll(&mut self, window: u64) {
-        let (old, unacked) = (self.window_start, self.unflushed());
-        let rolled = std::mem::take(&mut self.rolled);
+        let (dirty, unsent_seq) = (self.dirty, self.unsent_seq);
         *self = Self::fresh(window);
-        self.rolled = rolled;
-        self.park(old, unacked);
-        self.dirty = !self.rolled.is_empty();
+        self.dirty = dirty;
+        self.unsent_seq = unsent_seq;
     }
 
-    /// Add `delta` to what is parked under `window` (signed: a negative delta takes back counts the
-    /// store already holds). An entry that nets to nothing is dropped.
-    fn park(&mut self, window: u64, delta: UsageDelta) {
-        if delta.is_zero() {
-            return;
-        }
-        let at = self.rolled.iter().position(|(w, _)| *w == window);
-        let Some(i) = at else {
-            self.rolled.push((window, delta));
-            return;
-        };
-        let into = &mut self.rolled[i].1;
-        into.requests = into.requests.saturating_add(delta.requests);
-        into.billable_requests = into
-            .billable_requests
-            .saturating_add(delta.billable_requests);
-        let both = (into.models.iter()).chain(delta.models.iter());
-        into.models = model_deltas(both.map(|m| (m.model.as_str(), m.usage_units.clone())));
-        if into.is_zero() {
-            self.rolled.remove(i);
-        }
+    /// Whether the sweep must keep the cell: deltas pending, or carried by a batch not yet READY.
+    fn resident(&self) -> bool {
+        self.dirty || self.unsent_seq.is_some()
     }
 
-    /// The cell's counts past its last acknowledged flush (current - flushed baseline), per model:
-    /// the eras of one model are one delta on the wire (the durable row is per model and carries no
-    /// era — Q14's wire step), byte-identical to an undated cell's.
-    fn unflushed(&self) -> UsageDelta {
-        let deltas = self.models.iter().map(|m| {
-            // The UNION of unit keys in cur+flushed (freshly accrued, or refunded away).
-            let keys = m.cur.keys().chain(m.flushed.keys());
-            let at = |side: &std::collections::BTreeMap<String, u64>, k: &String| {
-                signed(side.get(k).copied().unwrap_or(0))
-            };
-            let d = keys.map(|k| (k.clone(), at(&m.cur, k) - at(&m.flushed, k)));
-            (&*m.model, d.collect())
-        });
-        UsageDelta {
-            requests: signed(self.requests) - signed(self.flushed_requests),
-            billable_requests: signed(self.billable_requests)
-                - signed(self.flushed_billable_requests),
-            models: model_deltas(deltas),
-        }
-    }
-
-    /// Accrue one response's keyed units under `model` in card era `era`, interning the pair on
-    /// first sight and each unit key on first sight of that (model, era, unit).
-    fn accrue(&mut self, model: &str, era: u64, units: &std::collections::BTreeMap<String, u64>) {
+    /// Accrue one response's keyed units under `model` in segment `seg`, interning the pair on
+    /// first sight and each unit key on first sight of that (model, segment, unit).
+    fn accrue(&mut self, model: &str, seg: Seg, units: &std::collections::BTreeMap<String, u64>) {
         let at = self
             .models
             .iter()
-            .position(|m| &*m.model == model && m.era == era);
+            .position(|m| &*m.model == model && m.seg == seg);
         let cell = match at {
             Some(i) => &mut self.models[i],
             None => {
-                // Allocate ONLY on the first sight of a (bucket, model, era).
+                // Allocate ONLY on the first sight of a (bucket, model, segment).
                 self.models.push(ModelCell {
                     model: std::sync::Arc::from(model),
-                    era,
+                    seg,
                     cur: std::collections::BTreeMap::new(),
-                    flushed: std::collections::BTreeMap::new(),
                 });
                 self.models.last_mut().expect("just pushed")
             }
@@ -275,70 +218,67 @@ impl BudgetCell {
         }
     }
 
-    /// THE CELL, PRICED, each era at the card in force when it was earned: every (model, era)
-    /// segment and — with `include_fee` — the fee base per era, each at the card its era resolves to
-    /// in the installed dated history (none: the live card), through the one function. A present
-    /// card silent about a held class, or an overflow, REFUSES — never a silent 0.
+    /// THE CELL, PRICED, each segment at the card of the entry it carries (the legacy remainder at
+    /// the card covering the window's start), and — with `include_fee` — the fee base per segment,
+    /// through the one function. A present card silent about a held class, an overflow, or an entry
+    /// this node does not hold REFUSES — never a silent 0.
     fn spend(
         &self,
         cost: &crate::cost::CostModel,
         include_fee: bool,
     ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
-        use busbar_kernel_ledger::usage::{price_dated, DatedHistory};
         let history = crate::rate_apply::dated_history();
         let now_ms = crate::store::now_ms();
-        let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
-        let fees = (self.fee_eras.split(self.billable_requests)).filter(|_| include_fee);
-        let rows = self.models.iter().map(|m| (&*m.model, m.era, &m.cur));
+        let fees = (self.fee_segs.split(self.billable_requests)).filter(|_| include_fee);
+        let rows = self.models.iter().map(|m| (&*m.model, m.seg, &m.cur));
         let start_ms = self.window_start.saturating_mul(1_000);
-        price_dated(rows, fees, start_ms, cost.card(), dated)
+        busbar_kernel_ledger::usage::price_segments(
+            rows,
+            fees,
+            start_ms,
+            cost.card(),
+            history.as_deref().map(|h| (h, now_ms)),
+        )
     }
 
-    /// Drop DEAD `ModelCell`s so the `models` Vec cannot grow without bound in a long-lived,
-    /// never-rolled cell (the all-time `window_start == 0` cell, which the sweep never ages out).
-    /// `accrue` interns a `ModelCell` on the FIRST sight of a (bucket, model) pair — including a
-    /// zero-token response — so over a long-running process a bucket accumulates one entry per model
-    /// name EVER seen, most of them long dormant. A cell is DEAD iff it carries no current tokens
-    /// (`cur.total() == 0`) AND nothing unflushed (`flushed.total() == 0`): removing it loses no
-    /// enforcement truth (its token contribution is zero) and no unacked write-behind delta (there is
-    /// none). A model that later reappears is simply re-interned by `accrue`. Called from the
-    /// amortized cell sweep, so it costs one linear pass on the same cadence as the stale-cell prune.
-    /// A segment pruned while a flush of it is still in flight is restored when that flush is
-    /// acknowledged ([`BudgetCell::advance_model_baselines`]).
-    fn prune_dead_models(&mut self) {
-        self.models
-            .retain(|m| units_total(&m.cur) != 0 || units_total(&m.flushed) != 0);
-    }
-
-    /// ADVANCE THE PER-SEGMENT BASELINES to `acked`, the segments a flush snapshotted and the store
-    /// has now acknowledged. A segment the sweep pruned while that write was in flight (a refund
-    /// took its `cur` back to empty after the snapshot, so it looked dead) comes back holding the
-    /// acknowledged counts as its baseline and nothing current, and the cell is marked dirty: the
-    /// next flush writes the refund as a negative delta instead of leaving the store one fee unit
-    /// over (THE DESIGN §7: a refund returns the bucket actually charged; the write-behind loses no
-    /// delta).
-    fn advance_model_baselines(&mut self, acked: &[ModelCell]) {
-        for s in acked {
-            let at = (self.models.iter()).position(|m| m.model == s.model && m.era == s.era);
-            match at {
-                Some(i) => self.models[i].flushed = s.cur.clone(),
-                None if units_total(&s.cur) != 0 => {
-                    self.models.push(ModelCell {
-                        model: s.model.clone(),
-                        era: s.era,
-                        cur: std::collections::BTreeMap::new(),
-                        flushed: s.cur.clone(),
-                    });
-                    self.dirty = true;
-                }
-                None => {}
+    /// Add `counts` (non-negative: hydrated, foreign or dead-lettered) to the cell.
+    fn add_counts(&mut self, counts: &crate::posting::record::CellCount) {
+        self.requests = self
+            .requests
+            .saturating_add(u64::try_from(counts.requests).unwrap_or(0));
+        for (seg, n) in &counts.billable {
+            let n = u64::try_from(*n).unwrap_or(0);
+            self.billable_requests = self.billable_requests.saturating_add(n);
+            self.fee_segs.add(seg_parse(seg), n);
+        }
+        for (seg, models) in &counts.units {
+            for (model, classes) in models {
+                let units = classes
+                    .iter()
+                    .map(|(c, n)| (c.clone(), u64::try_from(*n).unwrap_or(0)))
+                    .collect();
+                self.accrue(model, seg_parse(seg), &units);
             }
         }
     }
 
+    /// The cell with `foreign` counts (other nodes', from the fleet snapshot) added: what the cap
+    /// test and the views price. Allocates only when there is foreign spend.
+    fn with_foreign(&self, foreign: &crate::posting::record::CellCount) -> BudgetCell {
+        let mut out = self.clone();
+        out.add_counts(foreign);
+        out
+    }
+
+    /// Drop DEAD `ModelCell`s (no current counts) so the `models` Vec cannot grow without bound in
+    /// a long-lived, never-rolled cell. A model that later reappears is simply re-interned.
+    fn prune_dead_models(&mut self) {
+        self.models.retain(|m| units_total(&m.cur) != 0);
+    }
+
     /// Total current TOKENS across models — every token-family class (the scalar view for admin
-    /// reads and the `tokens:` cap). A class in another family (a rerank's `search_units`, audio
-    /// seconds) rides the same map to be PRICED, but it is not a token and never counts as one.
+    /// reads and the `tokens:` cap). A class in another family rides the same map to be PRICED, but
+    /// it is not a token and never counts as one.
     fn total_tokens(&self) -> u64 {
         token_total(self.models.iter().map(|m| &m.cur))
     }
@@ -351,24 +291,62 @@ impl BudgetCell {
     }
 }
 
+/// ONE BUDGET SHARD'S PENDING DELTAS (MONEY-DESIGN §3c): every count-changing mutation of a cell in
+/// the shard adds its delta here, inside the shard's own lock, in the same critical section. The
+/// background writer takes the whole map with `mem::take`, one shard at a time. Keyed (bucket,
+/// window); each value is net and segmented.
+#[derive(Default)]
+pub(crate) struct Pending(HashMap<(String, u64), crate::posting::record::CellCount>);
+
+impl Pending {
+    fn at(&mut self, bucket: &str, window: u64) -> &mut crate::posting::record::CellCount {
+        self.0
+            .entry((bucket.to_string(), window))
+            .or_insert_with(|| crate::posting::record::CellCount::new(bucket, window))
+    }
+
+    /// `requests` and the fee base changed by `n` (+1 at a charge, -1 at an uncharge).
+    fn admitted(&mut self, bucket: &str, window: u64, n: i64) {
+        let c = self.at(bucket, window);
+        c.requests = c.requests.saturating_add(n);
+    }
+
+    /// The flat fee base of `seg` changed by `n`.
+    fn billable(&mut self, bucket: &str, window: u64, seg: Seg, n: i64) {
+        self.at(bucket, window).add_billable(&seg_hex(seg), n);
+    }
+
+    /// `units` of `model` in `seg`, signed by `sign`.
+    fn units(
+        &mut self,
+        bucket: &str,
+        window: u64,
+        (model, seg): (&str, Seg),
+        units: &std::collections::BTreeMap<String, u64>,
+        sign: i64,
+    ) {
+        let hex = seg_hex(seg);
+        let c = self.at(bucket, window);
+        for (class, n) in units {
+            c.add_unit(&hex, model, class, signed(*n).saturating_mul(sign));
+        }
+    }
+
+    /// Drop every pending delta of `bucket` (its cell was removed: a deleted key's rows are never
+    /// recreated).
+    fn forget(&mut self, bucket: &str) {
+        self.0.retain(|(b, _), _| b != bucket);
+    }
+
+    /// Whether anything is pending.
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// Clamp a u64 counter into the signed delta domain.
 fn signed(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
-}
-
-/// Signed per-unit deltas folded to one entry per model (a model's eras summed), zero units and
-/// all-zero models dropped: the shape `Store::add_usage` takes.
-fn model_deltas<'r>(
-    segments: impl IntoIterator<Item = (&'r str, std::collections::BTreeMap<String, i64>)>,
-) -> Vec<busbar_contract::records::ModelTokensDelta> {
-    busbar_kernel_ledger::usage::by_lane(segments, i64::saturating_add)
-        .into_iter()
-        .map(|(model, mut usage_units)| {
-            usage_units.retain(|_, v| *v != 0);
-            busbar_contract::records::ModelTokensDelta { model, usage_units }
-        })
-        .filter(|d| !d.usage_units.is_empty())
-        .collect()
 }
 
 /// Whether `class` counts toward a `tokens:` cap: a reserved token tier, or a class an installed
@@ -469,7 +447,8 @@ pub enum LimitBlocked {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FeeCharge {
     lane: Option<String>,
-    era: u64,
+    /// The card entry the fee was charged under.
+    seg: Seg,
     cells: Vec<(String, u64)>,
 }
 
@@ -483,12 +462,21 @@ pub struct FeeCharge {
 pub struct AdmitGrant {
     gauges: Vec<Arc<std::sync::atomic::AtomicI64>>,
     charge: FeeCharge,
+    /// STRICT MODE (`advanced.strict_spend_recording`): why spend could not be recorded, collected
+    /// in PASS 1 and raised by the caller only after every 1.5.5 refusal (MONEY-DESIGN §3c).
+    strict: Option<crate::posting::Closed>,
 }
 
 impl AdmitGrant {
     /// What this admission's fee charge reached: the one input its refund reads.
     pub fn charge(&self) -> &FeeCharge {
         &self.charge
+    }
+
+    /// Under strict mode, why this admission's spend cannot be recorded: the caller undoes it with
+    /// [`GovState::uncharge`] and answers 503 `DurabilityUnavailable`. `None` with strict mode off.
+    pub fn unrecordable(&self) -> Option<crate::posting::Closed> {
+        self.strict
     }
 
     /// TEST-ONLY: how many gauges this grant holds.
@@ -560,14 +548,37 @@ const GOV_SHARDS: usize = 64;
 /// One shard of a [`Sharded`] map: the key→value map plus its OWN amortized-sweep ticker (the sweep
 /// is per-shard, so a shard scans only its own — ~1/64th — of the keys when it fires).
 struct MapShard<V> {
-    map: RwLock<HashMap<String, V>>,
+    map: RwLock<ShardMap<V>>,
     sweep_ticker: AtomicU32,
+}
+
+/// One shard's cells and, under the SAME lock, its [`Pending`] deltas: a mutation and its emitted
+/// delta are one critical section. Derefs to the cell map.
+pub(crate) struct ShardMap<V> {
+    cells: HashMap<String, V>,
+    pending: Pending,
+}
+
+impl<V> std::ops::Deref for ShardMap<V> {
+    type Target = HashMap<String, V>;
+    fn deref(&self) -> &Self::Target {
+        &self.cells
+    }
+}
+
+impl<V> std::ops::DerefMut for ShardMap<V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.cells
+    }
 }
 
 impl<V> Default for MapShard<V> {
     fn default() -> Self {
         Self {
-            map: RwLock::new(HashMap::new()),
+            map: RwLock::new(ShardMap {
+                cells: HashMap::new(),
+                pending: Pending::default(),
+            }),
             sweep_ticker: AtomicU32::new(0),
         }
     }
@@ -618,7 +629,7 @@ impl<V> Sharded<V> {
     /// cascade into a governance outage on the request path; the maps' invariants are re-established
     /// per call, so the recovered guard is safe to use).
     #[inline]
-    fn write(&self, key_id: &str) -> std::sync::RwLockWriteGuard<'_, HashMap<String, V>> {
+    fn write(&self, key_id: &str) -> std::sync::RwLockWriteGuard<'_, ShardMap<V>> {
         self.shard_for(key_id)
             .map
             .write()
@@ -627,7 +638,7 @@ impl<V> Sharded<V> {
 
     /// Acquire this key's shard for reading (poison-recovering, same rationale as [`Sharded::write`]).
     #[inline]
-    fn read(&self, key_id: &str) -> std::sync::RwLockReadGuard<'_, HashMap<String, V>> {
+    fn read(&self, key_id: &str) -> std::sync::RwLockReadGuard<'_, ShardMap<V>> {
         self.shard_for(key_id)
             .map
             .read()
@@ -640,7 +651,7 @@ impl<V> Sharded<V> {
     /// only for the single shard the iterator currently holds).
     fn write_all(
         &self,
-    ) -> impl Iterator<Item = std::sync::RwLockWriteGuard<'_, HashMap<String, V>>> {
+    ) -> impl Iterator<Item = std::sync::RwLockWriteGuard<'_, ShardMap<V>>> {
         self.shards
             .iter()
             .map(|s| s.map.write().unwrap_or_else(|p| p.into_inner()))
@@ -657,7 +668,7 @@ impl<V> Sharded<V> {
     /// the write guard to poison exactly the shard the key resolves to, then asserts the hot path
     /// recovers for that same key).
     #[cfg(test)]
-    fn shard_lock_for(&self, key_id: &str) -> &RwLock<HashMap<String, V>> {
+    fn shard_lock_for(&self, key_id: &str) -> &RwLock<ShardMap<V>> {
         &self.shard_for(key_id).map
     }
 }
@@ -804,7 +815,23 @@ pub struct GovState {
     /// material nor a deployment keyset, so a verified principal is never lent the empty reference.
     /// Zeroised on drop and never logged (`GovState` has no `Debug`).
     boot_caller_ref: zeroize::Zeroizing<[u8; 32]>,
+    /// THE RECORDER of the configured store (MONEY-DESIGN §3c), attached once at boot: it takes
+    /// the shards' pending deltas off the request path and posts them.
+    recorder: std::sync::OnceLock<Arc<crate::posting::recorder::Recorder>>,
+    /// `advanced.strict_spend_recording`: refuse (503) an admission whose spend cannot be recorded.
+    strict: std::sync::atomic::AtomicBool,
+    /// THE FLEET SNAPSHOT (MONEY-DESIGN §3d): other nodes' counts per capped bucket, refreshed by a
+    /// background tick, read by admission without a lock or an await.
+    foreign: arc_swap::ArcSwap<recording::Snapshot>,
+    /// Wakes the snapshot task when a capped bucket is touched with no fresh snapshot.
+    snapshot_wake: tokio::sync::Notify,
 }
+
+/// Recording counts off the request path: the recorder, strict mode and the fleet snapshot.
+#[path = "recording.rs"]
+pub mod recording;
+
+use state::state_rows;
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived
 /// from it. Swapped atomically by `GovState::set_signing_key`, so a reload can never leave the
@@ -1568,80 +1595,6 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
 // test build also links as its stand-in store row. The kernel names no store crate.
 #[cfg(any(test, feature = "test-support"))]
 pub use crate::test_support::store_double::MemoryStore;
-
-/// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes the
-/// dirty in-memory budget cells and the accumulated `pending_metering` rows to the durable store off
-/// the request hot path. The canonical spawned-flusher shape in the crate — a spawned loop
-/// that ticks, does the durable write, and runs one FINAL flush on the shutdown signal so a graceful
-/// stop loses nothing. The in-memory budget cells stay AUTHORITATIVE for enforcement; metering cells
-/// are authoritative for nothing (the store is their only consumer). `flush_budgets` and
-/// `flush_metering` are best-effort and re-queue their unwritten data on a store error, so a
-/// transient write failure is retried on the next tick rather than lost. The admin audit log needs no
-/// flush here: its ONE durable path is the neutral journal seam, which persists each record inline as
-/// it is recorded.
-pub fn spawn_budget_flusher(
-    gov: std::sync::Arc<GovState>,
-    mut shutdown: tokio::sync::broadcast::Receiver<()>,
-) -> tokio::task::JoinHandle<()> {
-    let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
-    // SERIALIZE flushes: `flush_budgets` snapshots each dirty cell's DELTA against its acked
-    // baseline and `add_usage`-accumulates it, advancing the baseline only on success. If a slow
-    // flush outlasts a tick, a second concurrent flush would snapshot against the SAME un-advanced
-    // baseline and re-send the first flush's still-in-flight delta - a durable DOUBLE-COUNT. A
-    // single-permit async gate makes at most one flush in flight at a time: the periodic tick SKIPS
-    // if a flush is still running (`try_lock`), and the shutdown arm WAITS for the in-flight flush to
-    // drain (`lock().await`) before its final flush, so shutdown never overlaps and never loses the
-    // last window's spend.
-    let flush_gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep(interval) => {
-                    // `flush_budgets` runs SYNCHRONOUS SQLite writes (store `*_inner` on a std Mutex);
-                    // calling it inline here would block a Tokio worker thread for the duration of the
-                    // durable write. Offload to the blocking pool so the async runtime keeps serving
-                    // requests. `gov` is an Arc, so clone the handle into the blocking task; we do not
-                    // await the join (write-behind is fire-and-forget - a store error re-marks the cell
-                    // dirty and the next tick retries).
-                    //
-                    // SKIP-IF-STILL-FLUSHING: acquire the flush gate with `try_lock`; if a prior flush
-                    // is still in flight, this tick is a no-op (its dirty cells stay dirty and the next
-                    // free tick flushes them) rather than racing a second overlapping flush. The guard
-                    // is moved INTO the blocking task and dropped when the flush returns, releasing the
-                    // gate for the next tick.
-                    let Ok(guard) = flush_gate.clone().try_lock_owned() else {
-                        continue;
-                    };
-                    let gov = gov.clone();
-                    tokio::task::spawn_blocking(move || {
-                        gov.flush_budgets();
-                        gov.flush_metering();
-                        drop(guard);
-                    });
-                }
-                _ = shutdown.recv() => {
-                    // Graceful shutdown: one FINAL flush so no accrued spend/requests is lost, then exit.
-                    // WAIT for any in-flight periodic flush to drain first (`lock().await`) so the final
-                    // flush never overlaps one - otherwise the final flush's newer snapshot could be
-                    // overwritten by the older in-flight flush completing after it. This one is AWAITED
-                    // (via spawn_blocking + join) rather than fire-and-forget: the task is about to break
-                    // and stop ticking, so the final durable write must COMPLETE before we exit or the
-                    // last window's accrued spend is lost. It still runs on the blocking pool (not inline
-                    // on the worker), and a join error falls back to nothing flushed - best-effort.
-                    let guard = flush_gate.clone().lock_owned().await;
-                    let gov = gov.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        gov.flush_budgets();
-                        gov.flush_metering();
-                        drop(guard);
-                    })
-                    .await;
-                    break;
-                }
-            }
-        }
-    })
-}
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

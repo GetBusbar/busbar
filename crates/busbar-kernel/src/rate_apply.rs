@@ -145,6 +145,14 @@ pub fn effective_from_at(at_ms: u64) -> u64 {
     dater().map_or(0, |h| h.effective_from_at(at_ms))
 }
 
+/// THE ENTRY IN FORCE at `at_ms` (MONEY-DESIGN §3b): the id of the highest-keyed live history entry
+/// covering it, the segment a count earned then carries. `None` where no history is installed or
+/// none covers the instant: the legacy remainder.
+#[must_use]
+pub fn entry_at(at_ms: u64) -> crate::governance::Seg {
+    dated_history().and_then(|h| h.entry_at(at_ms).map(|(id, _)| id))
+}
+
 /// The installed holder's dated history, if it holds one — see [`RateEpoch::history`].
 #[must_use]
 pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {

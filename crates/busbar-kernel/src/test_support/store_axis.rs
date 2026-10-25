@@ -189,6 +189,10 @@ fn ready<'a, T: Send + 'a>(answer: Result<T, StoreFailure>) -> StoreCall<'a, T> 
 }
 
 impl<S: StoreSlots> StoreCalls for SlotStore<S> {
+    fn get_usage<'a>(&'a self, bucket: &'a str, window_start: u64) -> StoreCall<'a, UsageLedger> {
+        ready(self.record(|s, cx| S::get_usage(s, cx, bucket, window_start)))
+    }
+
     fn add_usage_batch<'a>(
         &'a self,
         op: OpId,

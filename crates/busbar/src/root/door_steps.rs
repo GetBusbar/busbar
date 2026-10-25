@@ -1286,6 +1286,33 @@ impl Units for DoorSteps<'_> {
         if !local && self.lock().routed.is_none() {
             return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
         }
+        // STRICT MODE (`advanced.strict_spend_recording`, MONEY-DESIGN §3c): an admission whose
+        // spend cannot be recorded, raised only HERE, after every 1.5.5 refusal (the windowed caps in
+        // `admit_checked`, then the route). The charge is undone in RAM (`uncharge`, its negatives
+        // emitted) and the unit's money facts close with nothing to settle.
+        let unrecordable = self.lock().grant.as_ref().and_then(AdmitGrant::unrecordable);
+        if let Some(closed) = unrecordable {
+            let grant = self.lock().grant.take();
+            if let (Some(gov), Some(grant)) = (self.app.governance.as_ref(), grant) {
+                gov.uncharge(grant.charge());
+            }
+            if let Some(money) = self.money {
+                money.void(ctx.key);
+            }
+            let mut u = self.lock();
+            u.charged = false;
+            u.refused.1 = Some(format!(
+                "spend cannot be recorded ({}); strict spend recording refuses the request",
+                closed.reason()
+            ));
+            drop(u);
+            tracing::warn!(
+                principal = %principal,
+                reason = closed.reason(),
+                "money audit: an admission was refused with 503 because strict spend recording could not record its spend"
+            );
+            return SeatVerdict::refuse(token, Refusal::new(ReasonCode::DurabilityUnavailable));
+        }
         // The door reserves nothing: the unit's hold opens at zero and the money steps ledger what
         // the plane reported, at its end. A NESTED unit accrues against its parent's admission
         // instead (zero at admission, ARCHITECT H3): one admission chain, its posting into the

@@ -71,6 +71,9 @@ fn every_patch_mirrors_every_field_of_its_section() {
         // once), so not runtime-patchable.
         block_private_addresses: _,
         allow_destinations: _,
+        // Read at every config apply from the file; not in the settings overlay's patch, so the
+        // settings API's shape is 1.5.5's.
+        strict_spend_recording: _,
     } = crate::config::AdvancedCfg::default();
     let _ = AdvancedPatch {
         rate_sweep_interval: Some(rate_sweep_interval),

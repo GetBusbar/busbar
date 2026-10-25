@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
+use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta, UsageLedger};
 use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 use oauth_as::store::Storage as _;
 
@@ -121,6 +121,9 @@ fn not_this<'a, T: Send + 'a>() -> StoreCall<'a, T> {
 }
 
 impl StoreCalls for OneStore {
+    fn get_usage<'a>(&'a self, _: &'a str, _: u64) -> StoreCall<'a, UsageLedger> {
+        not_this()
+    }
     fn add_usage_batch<'a>(
         &'a self,
         _: OpId,

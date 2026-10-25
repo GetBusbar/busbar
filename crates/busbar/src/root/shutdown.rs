@@ -7,7 +7,7 @@
 //! the store before the process is gone, whichever transport the answer went out on (ruling H2
 //! U10; BUSBAR-1.6.0.md THE DESIGN, §7):
 //!
-//! 1. the budget and metering write-behind, flushed synchronously;
+//! 1. the spend recorder, drained (its last take, then delivery until the deadline);
 //! 2. the plane record write-behind, drained ([`crate::root::serve::drain_records`]);
 //! 3. the journal's lane to the configured store, drained under the same deadline
 //!    ([`crate::root::serve::RECORD_DRAIN`]): on a node with no data directory the store is where
@@ -35,18 +35,13 @@ pub async fn tail(
     late: &LateServices,
     journal: Option<&Arc<Mutex<Durability>>>,
 ) {
-    // BUDGET WRITE-BEHIND: one FINAL, SYNCHRONOUS flush after the graceful drain, so a graceful stop
-    // persists the freshest accrued spend/requests before the process exits. The background
-    // flusher's shutdown arm also flushes, but it is a fire-and-forget task that could lose the race
-    // with process exit; flushing inline here guarantees durability (this call blocks briefly under
-    // the budget lock, off any request path — the serving side has already stopped).
-    if let Some(gov) = governance {
-        let n = gov.flush_budgets();
-        tracing::info!(flushed = n, "budget counters flushed on shutdown");
-        // The flusher task's own shutdown arm also flushes metering, but it is fire-and-forget and
-        // can lose the race with process exit (same reason the budget flush above is inline here).
-        let m = gov.flush_metering();
-        tracing::info!(flushed = m, "metering rows flushed on shutdown");
+    // THE SPEND RECORDER (MONEY-DESIGN §3c): one final take of every shard's pending deltas, then
+    // the sender delivers what is queued, retrying until the bounded deadline (1.5.5 made one
+    // attempt). What is left is logged; with a data directory it is spooled and replays at boot.
+    if let Some(recorder) = governance.as_ref().and_then(|g| g.recorder()) {
+        let delivered = recorder.drain(true, RECORD_DRAIN).await;
+        recorder.stop();
+        tracing::info!(delivered, "spend recorder drained on shutdown");
     }
     // THE PLANE RECORD WRITE-BEHIND, drained before the store closes.
     if !drain_records(late).await {

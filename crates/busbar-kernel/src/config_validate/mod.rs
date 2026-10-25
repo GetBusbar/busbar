@@ -1498,6 +1498,8 @@ fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut 
         // Not numeric.
         upstream_http1_only: _,
         upstream_h2_prior_knowledge: _,
+        // A switch, not a bounded figure.
+        strict_spend_recording: _,
     } = limits;
     let secs = [
         (

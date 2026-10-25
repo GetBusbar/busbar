@@ -673,6 +673,11 @@ pub const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total"; // lab
 // per-response gap.)
 pub const METERING_PENDING_COALESCED_TOTAL: &str = "busbar_metering_pending_coalesced_total"; // no labels
 
+// The fleet snapshot's capped buckets whose last store read FAILED (MONEY-DESIGN §3d): their
+// foreign spend is as of the last good read. Set only once a read has failed, so a node whose
+// reads all succeed exports nothing new.
+pub const MONEY_SNAPSHOT_FAILING: &str = "busbar_money_snapshot_failing_buckets"; // no labels
+
 // A plugin HTTP-endpoint route's INBOUND request header count exceeded
 // `plugin_routes::MAX_PLUGIN_HEADERS` before the projection was forwarded to the plugin's
 // `handle_http`. The projection is still sent (truncated, never silently — see

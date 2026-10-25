@@ -178,6 +178,13 @@ pub struct AdvancedCfg {
     /// graceful shutdown flushes fully. Default 100.
     #[serde(default = "default_usage_flush_interval_ms")]
     pub usage_flush_interval_ms: u64,
+    /// STRICT SPEND RECORDING (MONEY-DESIGN §3c), default `false`. Off, a down or slow store is
+    /// served through and spend is recorded later, as 1.5.5 did. On, an admission that passes every
+    /// 1.5.5 check is refused with an explained, audited 503 when spend cannot be recorded (a
+    /// recorded delta unresolved, the store silent, or the spool unsynced, for over 2 s). Read at
+    /// every config apply. Not rendered while `false`, so a 1.5.5 settings read is unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict_spend_recording: bool,
     /// Tokio worker-thread count (`advanced.worker_threads`, migrated from `BUSBAR_WORKER_THREADS`).
     /// A BOOT-TIME knob read once before the runtime is built — not runtime-mutable via the overlay.
     /// Absent (`None`) ⇒ one worker per available core (`available_parallelism`, capped at
@@ -288,6 +295,7 @@ impl Default for AdvancedCfg {
         Self {
             rate_sweep_interval: default_rate_sweep_interval(),
             usage_flush_interval_ms: default_usage_flush_interval_ms(),
+            strict_spend_recording: false,
             worker_threads: None,
             upstream_http1_only: false,
             upstream_h2_prior_knowledge: false,

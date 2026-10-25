@@ -124,6 +124,62 @@ pub fn inert_durable_keys_banner(
     }
 }
 
+/// OPEN THE RECORDER of `gs`'s store and DELIVER its spool before hydrate (MONEY-DESIGN §3c,
+/// "Recovery"): every unresolved spooled batch is replayed under its own op ids, in sequence order,
+/// on a thread of its own (boot is synchronous). Past the deadline (120 s, plus 2 s per 4,096
+/// backlog cells, plus 30 s per refusal met) the boot fails, as hydrate's store error does.
+fn open_recorder(
+    gs: &Arc<governance::GovState>,
+    ephemeral: bool,
+    window_ms: u64,
+) -> Result<busbar_kernel::posting::recorder::Recovered, String> {
+    use busbar_kernel::posting::recorder::{Medium, PostStore, Recorder, RecordsOnly, SlotStore};
+    let post: Arc<dyn PostStore> = match gs.store_calls() {
+        Some(calls) => Arc::new(SlotStore::new(calls)),
+        None => Arc::new(RecordsOnly(gs.store())),
+    };
+    let medium = match crate::preflight::fleet_data_dir() {
+        Some(dir) => Medium::Dir(dir),
+        None => Medium::Memory,
+    };
+    let (recorder, recovered) = Recorder::open(
+        gs.ledger(),
+        post,
+        &medium,
+        ephemeral,
+        std::time::Duration::from_millis(window_ms.max(1)),
+        Arc::new(busbar_kernel::posting::spool::DataSync),
+    )
+    .map_err(|e| format!("governance boot: the spend spool could not be opened ({e})"))?;
+    if recovered.batches > 0 {
+        let deadline = recovered.deadline();
+        let replaying = Arc::clone(&recorder);
+        let delivered = std::thread::scope(|scope| {
+            scope
+                .spawn(move || {
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map(|rt| rt.block_on(replaying.drain(false, deadline)))
+                        .unwrap_or(false)
+                })
+                .join()
+                .unwrap_or(false)
+        });
+        if !delivered {
+            return Err(format!(
+                "governance boot: {} spooled spend batch(es) could not be delivered to the store \
+                 within {}s; refusing to start with counts the store does not hold. Fix the durable \
+                 store and restart.",
+                recorder.unresolved(),
+                deadline.as_secs()
+            ));
+        }
+    }
+    gs.attach_recorder(recorder);
+    Ok(recovered)
+}
+
 /// Return the STATEFUL-PLANE ephemeral-store WARN to emit, or `None` when no sharper warn applies.
 ///
 /// The generic [`crate::diagnostics::GOVERNANCE_STORE_EPHEMERAL`] notice beside the store resolution
@@ -1434,6 +1490,10 @@ pub fn build_app_from_config(
                 if let Some(calls) = store_calls {
                     gs.attach_store_calls(calls);
                 }
+                // THE RECORDER (MONEY-DESIGN §3c): counts reach the store off the request path.
+                // Its spool (with a data directory) is read back and REPLAYED before hydrate, so
+                // what hydrate reads already holds every batch spooled before a crash, exactly once.
+                let recovered = open_recorder(&gs, ephemeral, cfg.limits.usage_flush_interval_ms)?;
                 // BOOT-ONLY crash-recovery: hydrate the in-memory token-ledger cells (key buckets +
                 // budget-group buckets) from the durable store so a restart resumes enforcement from
                 // the persisted ledger. A no-op for the empty RAM store.
@@ -1445,6 +1505,8 @@ pub fn build_app_from_config(
                          unenforced (reset) ledger. Fix the durable store and restart."
                     ));
                 }
+                // A `refused` dead letter is not in the store: RAM `cur` counts it, so caps do.
+                gs.absorb_dead(&recovered.refused_cells);
                 // BOOT FAIL-CLOSED: every stored key naming a budget_group must resolve in THIS
                 // config (mint validates it; a shared durable store can carry keys minted under a
                 // config another node no longer has). A dangling reference is a boot error naming
@@ -1491,6 +1553,10 @@ pub fn build_app_from_config(
             Err(e) => return Err(format!("governance init failed: {e}")),
         }
     };
+    // STRICT SPEND RECORDING (MONEY-DESIGN §3c): read at every apply, on the reused state too.
+    if let Some(gs) = governance.as_ref() {
+        gs.set_strict_spend_recording(cfg.limits.strict_spend_recording);
+    }
     // The operator credential judges the token this build declares, or — when it declares none —
     // the one the governance state holds (that live credential stands, as it does for the rotation).
     let digest = rotated_digest.unwrap_or_else(|| governance.as_ref()?.admin_token_hash());

@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SPOOL'S RECORDS (MONEY-DESIGN §3c, "The spool"). Counts only: a contribution is a unit's
-//! final 1.5.5 bill as RAM `cur` applied it, per (bucket, window, segment), plus its metering
-//! rows. Nothing here is a price.
+//! THE SPOOL'S RECORDS (MONEY-DESIGN §3c, "The spool"). Counts only: a batch is the net deltas RAM
+//! `cur` applied during one or more flush windows, per (bucket, window, segment), plus the metering
+//! rows accumulated over the same windows. Nothing here is a price.
 //!
-//! The store batch bodies are DERIVED from the contributions an op lists, deterministically
-//! ([`usage_body`], [`metering_body`]), so a replay after a restart sends the identical body under
-//! the identical op id.
+//! A batch's store bodies are DERIVED from its cells, deterministically ([`usage_body`]), so a
+//! replay after a restart sends the identical body under the identical op id.
 
 use std::collections::BTreeMap;
 
@@ -21,64 +20,38 @@ pub const SEP: char = '\u{1f}';
 /// The unit the fee count of a segment is keyed under in a sibling row.
 pub const FEE_UNIT: &str = "fee";
 
-/// A unit's random id (CSPRNG, never the per-boot `UnitKey` counter).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct UnitId(pub [u8; 16]);
-
-impl UnitId {
-    /// A fresh id from the OS CSPRNG. Entropy failure is not survivable for an id that must never
-    /// repeat, so it falls back to the op-id allocator's unique bits.
-    #[must_use]
-    pub fn mint() -> Self {
-        let mut raw = [0u8; 16];
-        if getrandom::fill(&mut raw).is_err() {
-            raw = crate::door::op_id().0;
-        }
-        UnitId(raw)
-    }
-}
-
-impl std::fmt::Debug for UnitId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&hex::encode(self.0))
-    }
-}
-
-impl std::fmt::Display for UnitId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&hex::encode(self.0))
-    }
-}
-
-impl Serialize for UnitId {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&hex::encode(self.0))
-    }
-}
-
-impl<'de> Deserialize<'de> for UnitId {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(d)?;
-        let bytes = hex::decode(&text).map_err(serde::de::Error::custom)?;
-        <[u8; 16]>::try_from(bytes.as_slice())
-            .map(UnitId)
-            .map_err(|_| serde::de::Error::custom("a unit id is 16 bytes"))
-    }
-}
-
 /// An op id as the spool spells it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Op(pub OpId);
 
 impl Op {
-    /// A fresh op id from the node's one allocator.
+    /// A fresh op id from the node's one allocator (its node half is a per-boot CSPRNG draw, so a
+    /// restart never mints a previous boot's id).
     #[must_use]
     pub fn mint() -> Self {
         Op(crate::door::op_id())
     }
 }
 
+impl PartialOrd for Op {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Op {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0 .0.cmp(&other.0 .0)
+    }
+}
+
 impl std::fmt::Debug for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&hex::encode(self.0 .0))
+    }
+}
+
+impl std::fmt::Display for Op {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&hex::encode(self.0 .0))
     }
@@ -100,29 +73,7 @@ impl<'de> Deserialize<'de> for Op {
     }
 }
 
-/// A unit's two op ids, minted at its ADMISSION: one for its usage op, one for its metering op
-/// (the stores' dedupe table is one namespace across slots). A single post of the unit, from RAM
-/// while the spool is failed or as its crash bill at boot, always uses this pair.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Ops {
-    /// The usage op.
-    pub usage: Op,
-    /// The metering op.
-    pub metering: Op,
-}
-
-impl Ops {
-    /// A fresh pair.
-    #[must_use]
-    pub fn mint() -> Self {
-        Ops {
-            usage: Op::mint(),
-            metering: Op::mint(),
-        }
-    }
-}
-
-/// Which of a unit's two ops.
+/// Which of a batch's two ops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Kind {
     /// `add_usage_batch`.
@@ -131,12 +82,13 @@ pub enum Kind {
     Metering,
 }
 
-/// A segment: the 24-hex id of the card-history entry that priced the counts, or `""` for the
-/// legacy remainder (counts with no entry: no history installed).
+/// A segment as a record spells it: the 24-hex id of the card-history entry that priced the counts,
+/// or `""` for the legacy remainder (counts written with no entry).
 pub type Seg = String;
 
-/// ONE (bucket, window) CELL of a contribution, as RAM `cur` applied it, by segment. Every count
-/// is non-negative (MONEY-DESIGN §3c): net of the unit's own refunds, parks included.
+/// ONE (bucket, window) CELL's net delta, by segment, exactly as RAM `cur` applied it. Signed: a
+/// refund after the charge's window was swapped is a `-1` on that window. Batches reach the store
+/// one at a time, in order, so a `-1` never lands before the `+1` it cancels.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellCount {
     /// The bucket id (a key id, or `group:<name>@<window>#<scope>`).
@@ -144,13 +96,14 @@ pub struct CellCount {
     /// The window start the counts were applied to.
     pub window: u64,
     /// Admission count.
-    pub requests: u64,
+    #[serde(default)]
+    pub requests: i64,
     /// The flat fee base, by segment.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub billable: BTreeMap<Seg, u64>,
+    pub billable: BTreeMap<Seg, i64>,
     /// Unit counts: segment, then model (lane), then class.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub units: BTreeMap<Seg, BTreeMap<String, BTreeMap<String, u64>>>,
+    pub units: BTreeMap<Seg, BTreeMap<String, BTreeMap<String, i64>>>,
 }
 
 impl CellCount {
@@ -179,33 +132,110 @@ impl CellCount {
 
     /// The total billable count over every segment.
     #[must_use]
-    pub fn billable_total(&self) -> u64 {
+    pub fn billable_total(&self) -> i64 {
         self.billable
             .values()
-            .fold(0u64, |a, n| a.saturating_add(*n))
+            .fold(0i64, |a, n| a.saturating_add(*n))
     }
 
-    /// Add `other` (same bucket and window) into this cell.
+    /// Add `n` to `seg`'s billable count.
+    pub fn add_billable(&mut self, seg: &str, n: i64) {
+        if n == 0 {
+            return;
+        }
+        let slot = self.billable.entry(seg.to_string()).or_insert(0);
+        *slot = slot.saturating_add(n);
+    }
+
+    /// Add `n` to `seg`'s `model` `class` count.
+    pub fn add_unit(&mut self, seg: &str, model: &str, class: &str, n: i64) {
+        if n == 0 {
+            return;
+        }
+        let slot = self
+            .units
+            .entry(seg.to_string())
+            .or_default()
+            .entry(model.to_string())
+            .or_default()
+            .entry(class.to_string())
+            .or_insert(0);
+        *slot = slot.saturating_add(n);
+    }
+
+    /// Add `other` (same bucket and window) into this cell, dropping what nets to zero.
     pub fn merge(&mut self, other: &CellCount) {
         self.requests = self.requests.saturating_add(other.requests);
         for (seg, n) in &other.billable {
-            let slot = self.billable.entry(seg.clone()).or_insert(0);
-            *slot = slot.saturating_add(*n);
+            self.add_billable(seg, *n);
         }
         for (seg, models) in &other.units {
-            let into = self.units.entry(seg.clone()).or_default();
             for (model, classes) in models {
-                let into = into.entry(model.clone()).or_default();
                 for (class, n) in classes {
-                    let slot = into.entry(class.clone()).or_insert(0);
-                    *slot = slot.saturating_add(*n);
+                    self.add_unit(seg, model, class, *n);
                 }
             }
         }
+        self.tidy();
+    }
+
+    /// Drop every zero count.
+    pub fn tidy(&mut self) {
+        self.billable.retain(|_, n| *n != 0);
+        for models in self.units.values_mut() {
+            for classes in models.values_mut() {
+                classes.retain(|_, n| *n != 0);
+            }
+            models.retain(|_, c| !c.is_empty());
+        }
+        self.units.retain(|_, m| !m.is_empty());
+    }
+
+    /// The same cell with every count's sign flipped.
+    #[must_use]
+    pub fn negated(&self) -> CellCount {
+        let mut out = CellCount::new(&self.bucket, self.window);
+        out.requests = self.requests.saturating_neg();
+        for (seg, n) in &self.billable {
+            out.add_billable(seg, n.saturating_neg());
+        }
+        for (seg, models) in &self.units {
+            for (model, classes) in models {
+                for (class, n) in classes {
+                    out.add_unit(seg, model, class, n.saturating_neg());
+                }
+            }
+        }
+        out
+    }
+
+    /// Only the counts of the given sign (`positive`: above zero; else below zero).
+    #[must_use]
+    pub fn signed_part(&self, positive: bool) -> CellCount {
+        let keep = |n: i64| if positive { n > 0 } else { n < 0 };
+        let mut out = CellCount::new(&self.bucket, self.window);
+        if keep(self.requests) {
+            out.requests = self.requests;
+        }
+        for (seg, n) in &self.billable {
+            if keep(*n) {
+                out.add_billable(seg, *n);
+            }
+        }
+        for (seg, models) in &self.units {
+            for (model, classes) in models {
+                for (class, n) in classes {
+                    if keep(*n) {
+                        out.add_unit(seg, model, class, *n);
+                    }
+                }
+            }
+        }
+        out
     }
 }
 
-/// Fold `cells` into one cell per (bucket, window), in (bucket, window) order.
+/// Fold `cells` into one cell per (bucket, window), in (bucket, window) order, zero cells dropped.
 #[must_use]
 pub fn merged<'c>(cells: impl IntoIterator<Item = &'c CellCount>) -> Vec<CellCount> {
     let mut by: BTreeMap<(String, u64), CellCount> = BTreeMap::new();
@@ -217,164 +247,107 @@ pub fn merged<'c>(cells: impl IntoIterator<Item = &'c CellCount>) -> Vec<CellCou
     by.into_values().filter(|c| !c.is_zero()).collect()
 }
 
-/// A unit's METERING row counts, keyed as the store's row is, its entry id prefixing the provider
-/// on the wire ([`metering_body`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MeterCount {
-    /// The key.
-    pub key_id: String,
-    /// The metering day bucket.
-    pub bucket: u64,
-    /// The model (lane).
-    pub model: String,
-    /// The provider, unprefixed.
-    pub provider: String,
-    /// The entry that priced the row, `""` for none.
-    #[serde(default)]
-    pub seg: Seg,
-    /// The instant the card the row was served under started.
-    pub priced_from_ms: u64,
-    /// Requests.
-    pub requests: u64,
-    /// Input tokens.
-    #[serde(default)]
-    pub tokens_input: u64,
-    /// Output tokens.
-    #[serde(default)]
-    pub tokens_output: u64,
-    /// Cache-read tokens.
-    #[serde(default)]
-    pub tokens_cache_read: u64,
-    /// Cache-write tokens.
-    #[serde(default)]
-    pub tokens_cache_write: u64,
-    /// Every other class.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub usage_units: BTreeMap<String, u64>,
-}
-
-impl MeterCount {
-    fn row_key(&self) -> (String, u64, String, String, String, u64) {
-        (
-            self.key_id.clone(),
-            self.bucket,
-            self.model.clone(),
-            self.provider.clone(),
-            self.seg.clone(),
-            self.priced_from_ms,
-        )
-    }
-
-    fn merge(&mut self, o: &MeterCount) {
-        self.requests = self.requests.saturating_add(o.requests);
-        self.tokens_input = self.tokens_input.saturating_add(o.tokens_input);
-        self.tokens_output = self.tokens_output.saturating_add(o.tokens_output);
-        self.tokens_cache_read = self.tokens_cache_read.saturating_add(o.tokens_cache_read);
-        self.tokens_cache_write = self.tokens_cache_write.saturating_add(o.tokens_cache_write);
-        for (k, n) in &o.usage_units {
-            let slot = self.usage_units.entry(k.clone()).or_insert(0);
-            *slot = slot.saturating_add(*n);
-        }
-    }
-
-    /// The provider column as it is written: `"<id>\u{1f}<provider>"` for a row with an entry.
-    #[must_use]
-    pub fn wire_provider(&self) -> String {
-        if self.seg.is_empty() {
-            self.provider.clone()
-        } else {
-            format!("{}{SEP}{}", self.seg, self.provider)
-        }
-    }
-}
-
-/// A unit's ONE contribution: its final bill, handed to the poster at its close.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Contrib {
-    /// The unit.
-    pub unit: UnitId,
-    /// Its own op pair, minted at admission.
-    pub ops: Ops,
-    /// Its per-window net counts.
-    pub cells: Vec<CellCount>,
-    /// Its metering rows.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub metering: Vec<MeterCount>,
-    /// When it was handed off, wall-clock ms.
-    pub at_ms: u64,
-}
-
-/// A unit's ADMISSION MARK: the charge its admission recorded, posted as its crash bill when no
-/// contribution retires it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Mark {
-    /// The unit.
-    pub unit: UnitId,
-    /// Its own op pair.
-    pub ops: Ops,
-    /// The charge: `requests +1` and `billable +1`, or the plane lane fee unit, per bucket.
-    pub cells: Vec<CellCount>,
-    /// When it was appended, wall-clock ms.
-    pub at_ms: u64,
-}
-
-/// One op's dead-letter state.
+/// A dead letter's state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeadState {
     /// REFUSED alone: never applied.
     Refused,
-    /// Applied-unknown past the op-id retention margin.
+    /// Applied-unknown past the op-id retention margin: the operator says whether it landed.
     LandedUnknown,
+}
+
+/// A batch: what one take of the pending maps (or a merged run of never-sent takes) carried.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Batch {
+    /// Its SEQUENCE: monotonic per node; a split child and every record derived from it keep it, and
+    /// the sender resolves the lowest unresolved sequence first, one in flight.
+    pub seq: u64,
+    /// The usage op.
+    pub usage_op: Op,
+    /// The metering op.
+    pub metering_op: Op,
+    /// The cells, merged and sorted.
+    pub cells: Vec<CellCount>,
+    /// The metering rows (the provider already carries the entry-id prefix).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub metering: Vec<MeteringDelta>,
+    /// When it was taken, wall-clock ms (the retention clock, and strict mode's age).
+    pub at_ms: u64,
+}
+
+/// One PART of a REFUSED op: the cells (usage) or rows (metering) `lo..hi` of the batch, sent
+/// alone under its own new op id. A refused part is BISECTED into two halves; a single cell refused
+/// alone is dead-lettered. Parts are never merged with anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Part {
+    /// The part's op.
+    pub op: Op,
+    /// First index, inclusive.
+    pub lo: usize,
+    /// Last index, exclusive.
+    pub hi: usize,
 }
 
 /// A spool record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "r", rename_all = "snake_case")]
 pub enum Rec {
-    /// An admission mark.
-    Admitted(Mark),
-    /// A contribution.
-    Contrib(Contrib),
-    /// A batch: `op` of `kind` carries exactly these units' contributions (the body is derived).
+    /// A batch, appended and synced by the spooler.
+    Batch(Batch),
+    /// The sender is about to send batch `seq` for the FIRST time: synced before the send. A batch
+    /// with this record is never merged again; it replays under its own ops.
     Sent {
-        /// The op.
-        op: Op,
-        /// Which body.
-        kind: Kind,
-        /// The units, in body order.
-        units: Vec<UnitId>,
-        /// When the op was first sent, wall-clock ms (the retention clock).
-        at_ms: u64,
+        /// The batch.
+        seq: u64,
     },
-    /// A unit's crash bill, posted under its own usage op.
-    CrashBill {
-        /// The unit.
-        unit: UnitId,
-        /// When, wall-clock ms.
-        at_ms: u64,
+    /// A contiguous run of never-sent batches merged, in sequence order, into `into` (a fresh op
+    /// pair), synced before its first send.
+    Merge {
+        /// The merged batches' sequences.
+        seqs: Vec<u64>,
+        /// The batch that replaces them (it carries the lowest of `seqs`).
+        into: Batch,
     },
     /// `op` answered applied.
     Ready {
         /// The op.
         op: Op,
     },
-    /// `op` was REFUSED; its units go on alone, each under a NEW op.
-    Superseded {
-        /// The refused op.
-        op: Op,
+    /// Batch `seq`'s `kind` body now stands as `parts` (after a REFUSED op was bisected), written
+    /// before any new part is sent. The parts keep the batch's sequence.
+    Split {
+        /// The batch.
+        seq: u64,
         /// Which body.
         kind: Kind,
-        /// Each unit and its new op.
-        pieces: Vec<(UnitId, Op)>,
-        /// When, wall-clock ms.
-        at_ms: u64,
+        /// Every part of the body, the done ones included.
+        parts: Vec<Part>,
     },
-    /// The unit's `kind` op was dead-lettered (the dead-letter file holds its counts).
+    /// The `kind` body of batch `seq`, from index `lo` to `hi`, was dead-lettered.
     Dead {
-        /// The unit.
-        unit: UnitId,
+        /// The batch.
+        seq: u64,
         /// Which body.
         kind: Kind,
+        /// First index.
+        lo: usize,
+        /// Last index, exclusive.
+        hi: usize,
+    },
+    /// A never-sent batch rewritten without the dead-lettered `(bucket, window)` cells, under a
+    /// fresh op pair (safe: its ops never left the node). Audited.
+    Rewrite {
+        /// The batch, as it now stands.
+        into: Batch,
+    },
+    /// `bucket` was deleted: every batch with a sequence at or below `seq` leaves its cells out,
+    /// on its first send and on every replay. Written before the store deletes the key, so a
+    /// re-created bucket keeps the counts of later batches.
+    Drop {
+        /// The bucket.
+        bucket: String,
+        /// The last sequence it filters.
+        seq: u64,
     },
 }
 
@@ -385,44 +358,42 @@ pub fn sibling_bucket(bucket: &str) -> String {
     format!("e:{}", hex::encode(&digest.as_ref()[..16]))
 }
 
-/// THE USAGE BODY of the contributions `cells`: per (bucket, window) the PLAIN row (every
-/// segment's total, exactly the 1.5.5 row) and, when any count carries an entry, the SIBLING row
-/// with per-entry pseudo-models. Cells merged per (bucket, window, sibling) and sorted that way.
+/// THE USAGE BODY of `cells`: per (bucket, window) the PLAIN row (every segment's total, exactly
+/// the 1.5.5 row) and, when any count carries an entry, the SIBLING row with per-entry
+/// pseudo-models (`"<id>\u{1f}<model>"`, and `"<id>\u{1f}"` with unit `fee` for the fee base). Cells
+/// merged per (bucket, window, sibling) and sorted that way.
 #[must_use]
-pub fn usage_body<'c>(cells: impl IntoIterator<Item = &'c CellCount>) -> Vec<(String, u64, UsageDelta)> {
+pub fn usage_body<'c>(
+    cells: impl IntoIterator<Item = &'c CellCount>,
+) -> Vec<(String, u64, UsageDelta)> {
     let mut out: Vec<(String, u64, bool, UsageDelta)> = Vec::new();
     for cell in merged(cells) {
         let mut plain: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
         let mut sib: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
+        let mut add = |into: &mut BTreeMap<String, BTreeMap<String, i64>>,
+                       model: String,
+                       class: &str,
+                       n: i64| {
+            let slot = into
+                .entry(model)
+                .or_default()
+                .entry(class.to_string())
+                .or_insert(0);
+            *slot = slot.saturating_add(n);
+        };
         for (seg, models) in &cell.units {
             for (model, classes) in models {
                 for (class, n) in classes {
-                    let v = i64::try_from(*n).unwrap_or(i64::MAX);
-                    let slot = plain
-                        .entry(model.clone())
-                        .or_default()
-                        .entry(class.clone())
-                        .or_insert(0);
-                    *slot = slot.saturating_add(v);
+                    add(&mut plain, model.clone(), class, *n);
                     if !seg.is_empty() {
-                        let slot = sib
-                            .entry(format!("{seg}{SEP}{model}"))
-                            .or_default()
-                            .entry(class.clone())
-                            .or_insert(0);
-                        *slot = slot.saturating_add(v);
+                        add(&mut sib, format!("{seg}{SEP}{model}"), class, *n);
                     }
                 }
             }
         }
         for (seg, n) in &cell.billable {
-            if !seg.is_empty() && *n > 0 {
-                let slot = sib
-                    .entry(format!("{seg}{SEP}"))
-                    .or_default()
-                    .entry(FEE_UNIT.to_string())
-                    .or_insert(0);
-                *slot = slot.saturating_add(i64::try_from(*n).unwrap_or(i64::MAX));
+            if !seg.is_empty() {
+                add(&mut sib, format!("{seg}{SEP}"), FEE_UNIT, *n);
             }
         }
         let models = |m: BTreeMap<String, BTreeMap<String, i64>>| {
@@ -439,8 +410,8 @@ pub fn usage_body<'c>(cells: impl IntoIterator<Item = &'c CellCount>) -> Vec<(St
             cell.window,
             false,
             UsageDelta {
-                requests: i64::try_from(cell.requests).unwrap_or(i64::MAX),
-                billable_requests: i64::try_from(cell.billable_total()).unwrap_or(i64::MAX),
+                requests: cell.requests,
+                billable_requests: cell.billable_total(),
                 models: models(plain),
             },
         ));
@@ -465,33 +436,29 @@ pub fn usage_body<'c>(cells: impl IntoIterator<Item = &'c CellCount>) -> Vec<(St
         .collect()
 }
 
-/// THE METERING BODY of `rows`: merged per row key, sorted, the provider prefixed by the entry id.
+/// The provider column a metering row is written with: `"<id>\u{1f}<provider>"` when an entry
+/// priced it (MONEY-DESIGN §3d, `/admin/usage`: `provider` is in the metering primary key, so
+/// rows of two entries never merge, and 1.5.5 still prices the row by its unprefixed `model`).
 #[must_use]
-pub fn metering_body<'m>(rows: impl IntoIterator<Item = &'m MeterCount>) -> Vec<MeteringDelta> {
-    let mut by: BTreeMap<(String, u64, String, String, String, u64), MeterCount> = BTreeMap::new();
-    for r in rows {
-        by.entry(r.row_key())
-            .and_modify(|m| m.merge(r))
-            .or_insert_with(|| r.clone());
+pub fn prefixed_provider(seg: &str, provider: &str) -> String {
+    if seg.is_empty() {
+        provider.to_string()
+    } else {
+        format!("{seg}{SEP}{provider}")
     }
-    by.into_values()
-        .map(|m| MeteringDelta {
-            key_id: m.key_id.clone(),
-            bucket: m.bucket,
-            model: m.model.clone(),
-            provider: m.wire_provider(),
-            tokens_input: m.tokens_input,
-            tokens_output: m.tokens_output,
-            tokens_cache_read: m.tokens_cache_read,
-            tokens_cache_write: m.tokens_cache_write,
-            requests: m.requests,
-            billable_requests: m.requests,
-            key_group_at_use: String::new(),
-            pricing_version: String::new(),
-            priced_from_ms: m.priced_from_ms,
-            usage_units: m.usage_units.clone(),
-        })
-        .collect()
+}
+
+/// A stored provider column split into its entry id (`""` for a legacy row) and the provider.
+#[must_use]
+pub fn split_provider(stored: &str) -> (&str, &str) {
+    match stored.split_once(SEP) {
+        Some((id, provider))
+            if id.len() == 24 && id.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            (id, provider)
+        }
+        _ => ("", stored),
+    }
 }
 
 /// A record's bytes.
@@ -504,4 +471,71 @@ pub fn encode(rec: &Rec) -> Vec<u8> {
 #[must_use]
 pub fn decode(bytes: &[u8]) -> Option<Rec> {
     serde_json::from_slice(bytes).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(n: u8) -> String {
+        hex::encode([n; 12])
+    }
+
+    #[test]
+    fn the_plain_row_is_the_1_5_5_total_and_the_sibling_row_carries_each_entry() {
+        let mut a = CellCount::new("group:g@day", 100);
+        a.requests = 2;
+        a.add_billable(&seg(1), 1);
+        a.add_billable("", 1);
+        a.add_unit(&seg(1), "gpt", "input", 10);
+        a.add_unit("", "gpt", "input", 5);
+        let body = usage_body([&a]);
+        assert_eq!(body.len(), 2);
+        let (plain_id, w, plain) = &body[0];
+        assert_eq!((plain_id.as_str(), *w), ("group:g@day", 100));
+        assert_eq!(plain.requests, 2);
+        assert_eq!(plain.billable_requests, 2);
+        assert_eq!(plain.models[0].usage_units["input"], 15);
+        let (sib_id, _, sib) = &body[1];
+        assert_eq!(sib_id, &sibling_bucket("group:g@day"));
+        assert_eq!(sib_id.len(), 34);
+        assert_eq!(sib.requests, 0);
+        let fee = sib
+            .models
+            .iter()
+            .find(|m| m.model == format!("{}{SEP}", seg(1)))
+            .expect("fee key");
+        assert_eq!(fee.usage_units[FEE_UNIT], 1);
+        let tok = sib
+            .models
+            .iter()
+            .find(|m| m.model == format!("{}{SEP}gpt", seg(1)))
+            .expect("model key");
+        assert_eq!(tok.usage_units["input"], 10);
+    }
+
+    #[test]
+    fn a_cell_that_nets_to_zero_writes_nothing() {
+        let mut a = CellCount::new("k", 0);
+        a.add_billable(&seg(2), 1);
+        let b = a.negated();
+        assert!(usage_body([&a, &b]).is_empty());
+    }
+
+    #[test]
+    fn the_body_is_deterministic_whatever_the_cell_order() {
+        let mut a = CellCount::new("b", 1);
+        a.requests = 1;
+        let mut c = CellCount::new("a", 1);
+        c.add_unit(&seg(3), "m", "output", 4);
+        assert_eq!(usage_body([&a, &c]), usage_body([&c, &a]));
+    }
+
+    #[test]
+    fn a_provider_prefix_round_trips() {
+        let p = prefixed_provider(&seg(4), "openai");
+        assert_eq!(split_provider(&p), (seg(4).as_str(), "openai"));
+        assert_eq!(split_provider("openai"), ("", "openai"));
+        assert_eq!(split_provider("a\u{1f}b"), ("", "a\u{1f}b"));
+    }
 }

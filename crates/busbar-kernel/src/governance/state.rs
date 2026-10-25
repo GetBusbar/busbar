@@ -4,15 +4,14 @@ use busbar_kernel_ledger::{
     cost::{
         plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT, PER_REQUEST,
     },
-    usage::FeeEras,
+    usage::FeeSegs,
 };
 use std::collections::{BTreeMap, BTreeSet};
 // The wall clock, by name: the admission path reads it and never reaches a store handle for it.
 use crate::store::now_ms as wall_ms;
 
 use crate::diagnostics::{
-    diag_debug, diag_error, diag_warn, ACCRUAL_GROUP_MISSING, BUDGET_FLUSH_PARTIAL_FAILURE,
-    DELETE_KEY_CACHE_RECONCILE_FAILED, METERING_FLUSH_PARTIAL_FAILURE,
+    diag_debug, diag_error, ACCRUAL_GROUP_MISSING, DELETE_KEY_CACHE_RECONCILE_FAILED,
     REFRESH_SELF_CACHE_REFRESH_FAILED, REFRESH_SELF_INCONSISTENT_BINDING,
     ROTATE_KEY_CACHE_RECONCILE_FAILED,
 };
@@ -152,6 +151,10 @@ impl GovState {
                 SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
             ),
             store_calls: std::sync::OnceLock::new(),
+            recorder: std::sync::OnceLock::new(),
+            strict: std::sync::atomic::AtomicBool::new(false),
+            foreign: arc_swap::ArcSwap::from_pointee(super::recording::Snapshot::default()),
+            snapshot_wake: tokio::sync::Notify::new(),
         })
     }
 
@@ -586,13 +589,16 @@ impl GovState {
         if units.values().all(|v| *v == 0) {
             return; // nothing to ledger
         }
-        // THE CARD ERA (Q14, #79), read as the metering row beside this accrual reads it: the
-        // tokens are dated when they land, on the history's own millisecond clock.
-        let era = crate::rate_apply::effective_from_at(crate::store::now_ms());
-        // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same era,
-        // mirrored onto the key's metering row by THIS accrual — the one place every ledgered class
-        // lands — so the admin usage read prices exactly the counts this book prices.
-        self.meter_classes(&key.id, model, units, era, now);
+        // THE CARD ENTRY (MONEY-DESIGN §3b), read as the metering row beside this accrual reads
+        // it: the tokens are segmented by the entry in force when they land, on the history's own
+        // millisecond clock. The metering row also keeps the entry's start (`priced_from_ms`).
+        let at_ms = crate::store::now_ms();
+        let seg = crate::rate_apply::entry_at(at_ms);
+        let era = crate::rate_apply::effective_from_at(at_ms);
+        // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same
+        // entry, mirrored onto the key's metering row by THIS accrual — the one place every
+        // ledgered class lands — so the admin usage read prices exactly the counts this book prices.
+        self.meter_classes(&key.id, model, units, (era, seg), now);
         // A missing group cannot block ACCRUAL (the request was already admitted/served);
         // degrade to the key-only bucket so the tokens are never lost.
         let chain = match cost.chain_for(key) {
@@ -600,14 +606,14 @@ impl GovState {
             Err(missing) => {
                 diag_debug!(ACCRUAL_GROUP_MISSING, key = %key.id, group = missing,
                     "group missing at accrual; tokens ledgered to the key bucket only");
-                self.accrue_bucket(&key.id, super::WINDOW_TOTAL, (model, era), units, now);
+                self.accrue_bucket(&key.id, super::WINDOW_TOTAL, (model, seg), units, now);
                 return;
             }
         };
         // Tokens land only on the buckets this request's pool participates in - the same
         // predicate the admission charge used, so accrual mirrors the charge exactly.
         for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
-            self.accrue_bucket(bucket.bucket_id, bucket.window, (model, era), units, now);
+            self.accrue_bucket(bucket.bucket_id, bucket.window, (model, seg), units, now);
         }
     }
 
@@ -629,7 +635,7 @@ impl GovState {
         key_id: &str,
         lane: &str,
         units: &std::collections::BTreeMap<String, u64>,
-        priced_from_ms: u64,
+        (priced_from_ms, seg): (u64, super::Seg),
         now: u64,
     ) {
         let (plane, subject) = busbar_kernel_ledger::cost::split_plane_lane(lane);
@@ -654,7 +660,7 @@ impl GovState {
             key_id.to_string(),
             metering_bucket(now),
             model.to_string(),
-            provider.to_string(),
+            crate::posting::record::prefixed_provider(&super::seg_hex(seg), provider),
             priced_from_ms,
         );
         self.pending_metering.accrue(
@@ -702,25 +708,28 @@ impl GovState {
         &self,
         bucket_id: &str,
         budget_period: &str,
-        (model, era): (&str, u64),
+        (model, seg): (&str, super::Seg),
         units: &std::collections::BTreeMap<String, u64>,
         now: u64,
     ) {
         let window = budget_window(budget_period, now);
-        let mut map = self.budget.write(bucket_id);
-        let cell = match map.get_mut(bucket_id) {
+        let mut guard = self.budget.write(bucket_id);
+        let super::ShardMap { cells, pending } = &mut *guard;
+        let cell = match cells.get_mut(bucket_id) {
             Some(c) if window > c.window_start => {
-                c.roll(window); // the old window's unflushed counts stay owed to it
+                c.roll(window);
                 c
             }
             Some(c) => c, // same window or straddle (cell newer-or-equal) → credit in place
-            None => map
+            None => cells
                 .entry(bucket_id.to_string())
                 .or_insert_with(|| BudgetCell::fresh(window)),
         };
-        cell.accrue(model, era, units);
-        cell.dirty = true;
+        cell.accrue(model, seg, units);
         cell.last_touch = now;
+        // THE EMIT (MONEY-DESIGN §3c): the same delta, in the same critical section.
+        pending.units(bucket_id, cell.window_start, (model, seg), units, 1);
+        cell.dirty = true;
     }
 
     /// Record one completed response's RAW consumption into the per-(key, day-bucket, model,
@@ -804,12 +813,15 @@ impl GovState {
         // two card publishes and still resolving to the first. Two clocks of different resolution
         // cannot order two events inside one tick of the coarser one, so the accrual reads the
         // finer one, which is the one the thing it is being compared against was written on.
-        let priced_from_ms = dater(clock_ms());
+        let at_ms = clock_ms();
+        let priced_from_ms = dater(at_ms);
+        // The entry that priced the row prefixes its provider (MONEY-DESIGN §3d, `/admin/usage`).
+        let seg = super::seg_hex(crate::rate_apply::entry_at(at_ms));
         let key: MeterKey = (
             key_id.to_string(),
             metering_bucket(now),
             model.to_string(),
-            provider.to_string(),
+            crate::posting::record::prefixed_provider(&seg, provider),
             priced_from_ms,
         );
         // Accrue through the sharded accumulator: this locks ONLY the shard owning `key_id`, so
@@ -827,78 +839,45 @@ impl GovState {
         self.pending_metering.totals()
     }
 
-    /// Drain `pending_metering` and write each entry to the store as one `MeteringDelta`. A DRAIN,
-    /// not a baseline (contrast `flush_budgets`): nothing in the tree enforces against a metering
-    /// cell, so there is no authoritative running total to protect, and a successfully-flushed
-    /// entry is simply gone. In steady state cardinality is bounded by arrival rate x the flush
-    /// interval; under a SUSTAINED store outage the re-queue below plus fresh arrivals would grow it
-    /// without bound, so the re-queue goes through `accrue_pending`, which caps the map at
-    /// [`MAX_PENDING_METERING`] and coalesces the overflow into a per-bucket sentinel (totals kept,
-    /// attribution collapsed) rather than dropping billable usage. On a store error the entry's
-    /// counts are merged BACK into whatever
-    /// accumulated meanwhile (saturating add, not overwrite) so the next tick retries the full
-    /// amount exactly once — this is what makes two concurrently-running flushes safe without a
-    /// gate: [`PendingMetering::drain`] `mem::take`s each shard under its own lock (an atomic
-    /// per-shard swap) and a key never migrates shards, so any two calls partition the arrivals
-    /// between them by construction and cannot double-send. Returns the number of deltas written.
-    pub fn flush_metering(&self) -> usize {
-        let taken = self.pending_metering.drain();
-        let mut flushed = 0usize;
-        // Aggregate failures: during a store outage EVERY pending key fails on the same tick, so a
-        // per-key `warn!` spams. Emit exactly ONE throttled warn per tick carrying the failed count;
-        // the per-key detail (key + error) stays at `debug!`.
-        let mut failed = 0usize;
-        let mut last_error: Option<String> = None;
-        for ((key_id, bucket, model, provider, priced_from_ms), counts) in taken {
-            if counts.is_zero() {
-                continue;
-            }
-            let delta = MeteringDelta {
-                key_id: key_id.clone(),
-                bucket,
-                model: model.clone(),
-                provider: provider.clone(),
-                tokens_input: counts.tokens_input,
-                tokens_output: counts.tokens_output,
-                tokens_cache_read: counts.tokens_cache_read,
-                tokens_cache_write: counts.tokens_cache_write,
-                requests: counts.requests,
-                billable_requests: counts.requests,
-                key_group_at_use: String::new(),
-                pricing_version: String::new(),
-                // The instant the cell's card started, carried verbatim from the accrual key so the
-                // durable row can be resolved against the dated history exactly as the cell was.
-                priced_from_ms,
-                usage_units: counts.usage_units.clone(),
-            };
-            match self.store.add_metering(&delta) {
-                Ok(()) => flushed += 1,
-                Err(e) => {
-                    failed += 1;
-                    tracing::debug!(key = %key_id, error = %e, "metering flush failed for key; will retry next tick");
-                    last_error = Some(e.to_string());
-                    // Re-queue the failed delta through the SAME sharded, bounded accrual as the hot
-                    // path (it lands back in the key's own shard). Under a sustained outage with
-                    // diverse keys this is exactly where the map used to grow without bound; `accrue`
-                    // now caps each shard (coalescing past the cap into the per-bucket overflow
-                    // sentinel), so no billable usage is dropped and retry is preserved — a re-queued
-                    // cell that still exists next tick simply accumulates.
-                    self.pending_metering
-                        .accrue((key_id, bucket, model, provider, priced_from_ms), counts);
-                }
-            }
-        }
-        if failed > 0 {
-            diag_warn!(
-                METERING_FLUSH_PARTIAL_FAILURE,
-                failed,
-                flushed,
-                error = last_error.as_deref().unwrap_or(""),
-                "metering flush: {failed} key(s) failed to persist this tick; retained and will \
-                 retry next tick (per-key detail at debug)"
-            );
-        }
-        flushed
+    /// THE WRITER'S METERING TAKE (MONEY-DESIGN §3c): drain `pending_metering` into the rows of the
+    /// next batch. Each shard is `mem::take`n under its own lock, so an accrual is wholly in this
+    /// batch or wholly in the next. The provider already carries the row's entry-id prefix.
+    pub fn take_metering(&self) -> Vec<MeteringDelta> {
+        let mut rows: Vec<MeteringDelta> = self
+            .pending_metering
+            .drain()
+            .into_iter()
+            .filter(|(_, counts)| !counts.is_zero())
+            .map(
+                |((key_id, bucket, model, provider, priced_from_ms), counts)| MeteringDelta {
+                    key_id,
+                    bucket,
+                    model,
+                    provider,
+                    tokens_input: counts.tokens_input,
+                    tokens_output: counts.tokens_output,
+                    tokens_cache_read: counts.tokens_cache_read,
+                    tokens_cache_write: counts.tokens_cache_write,
+                    requests: counts.requests,
+                    billable_requests: counts.requests,
+                    key_group_at_use: String::new(),
+                    pricing_version: String::new(),
+                    // The instant the cell's card started, carried verbatim from the accrual key.
+                    priced_from_ms,
+                    usage_units: counts.usage_units,
+                },
+            )
+            .collect();
+        rows.sort_by(|a, b| {
+            (&a.key_id, a.bucket, &a.model, &a.provider, a.priced_from_ms).cmp(&(
+                &b.key_id,
+                b.bucket,
+                &b.model,
+                &b.provider,
+                b.priced_from_ms,
+            ))
+        });
+        rows
     }
 
     /// Every metering row for `bucket` (a [`metering_bucket`] day start) — the raw material of the
@@ -1211,6 +1190,11 @@ impl GovState {
     /// DEGRADED-BUT-APPLIED ([`REVOCATION_DURABLE_MARKER`]), never as a bare error implying nothing
     /// happened. Same discipline `refresh_self` already applies to its tombstone path.
     pub fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
+        // THE DROP RECORD FIRST (MONEY-DESIGN §3c): synced before the store deletes the key and
+        // before any shard lock is taken, so no unsent batch recreates its rows.
+        if let Some(rec) = self.recorder.get() {
+            rec.drop_bucket(id);
+        }
         self.store.delete_key(id)?;
         // The targeted eviction FIRST and unconditionally: this is the step that stops the
         // credential resolving, and it must happen whether or not the full reconcile succeeds.
@@ -1220,9 +1204,13 @@ impl GovState {
         // before it lets a request admitted in the gap re-insert. The key bucket is uncapped
         // (`cost::chain_for`), so this reclaims attribution state only and can never reset a cap.
         //
-        // A still-dirty cell would also be flushed after the store cascade-deleted the key's
-        // ledger rows; whether that re-creates a durable row depends on the delta being non-zero.
-        self.budget.write(id).remove(id);
+        // Its PENDING deltas go in the same critical section (MONEY-DESIGN §3c), as 1.5.5 dropped
+        // them with the cell: the writer never recreates a deleted key's rows.
+        {
+            let mut shard = self.budget.write(id);
+            shard.remove(id);
+            shard.pending.forget(id);
+        }
         self.money_view.forget(id);
         if let Err(refresh_err) = refreshed {
             diag_error!(
@@ -1280,11 +1268,30 @@ impl GovState {
     /// the ones that stopped backing one. With SSO auto-provisioning creating a group per subject,
     /// that is a monotonic leak that no admin read (`groups_registry.len()` included) can see.
     pub fn reclaim_group_cells(&self, group: &str) -> usize {
+        // THE DROP RECORDS FIRST, synced, before any shard WRITE lock: the group's buckets are
+        // collected under each shard's read lock in turn, released before the drop's `fsync`.
+        if let Some(rec) = self.recorder.get() {
+            let mut ids: BTreeSet<String> = BTreeSet::new();
+            for shard in self.budget.shards.iter() {
+                let map = shard.map.read().unwrap_or_else(|p| p.into_inner());
+                ids.extend(
+                    (map.keys())
+                        .chain(map.pending.0.keys().map(|(b, _)| b))
+                        .filter(|id| crate::cost::is_bucket_of_group(id, group))
+                        .cloned(),
+                );
+            }
+            for id in ids {
+                rec.drop_bucket(&id);
+            }
+        }
         let mut dropped = 0usize;
         for mut shard in self.budget.write_all() {
             let before = shard.len();
             shard.retain(|id, _| !crate::cost::is_bucket_of_group(id, group));
             dropped += before - shard.len();
+            // Its pending deltas go with it, in the same critical section.
+            (shard.pending.0).retain(|(id, _), _| !crate::cost::is_bucket_of_group(id, group));
         }
         // The per-group in-flight `concurrent` gauge is materialised on the first admission of a
         // capped group and, unlike the budget cells above, was never swept on delete — a server
@@ -1442,35 +1449,21 @@ impl GovState {
             .map(|b| (b.bucket_id.as_str(), b.window));
         for (bucket_id, period) in key_buckets.chain(group_buckets) {
             let window = budget_window(period, now);
-            let ledger = self.store.get_usage(bucket_id, window)?;
-            if ledger.requests == 0 && ledger.models.is_empty() {
+            // THE PLAIN ROW FIRST, then its sibling era row (MONEY-DESIGN §3b, §3d).
+            let plain = self.store.get_usage(bucket_id, window)?;
+            if plain.requests == 0 && plain.models.is_empty() {
                 continue;
             }
+            let sibling = self
+                .store
+                .get_usage(&crate::posting::record::sibling_bucket(bucket_id), window)?;
             // `billable_requests` is trusted UNCONDITIONALLY from the persisted ledger — it is
-            // NEVER re-derived from `requests` here. An earlier version of this function tried to
-            // detect a "pre-split legacy row" (from when the two counters were one field) via
-            // `billable_requests == 0 && requests > 0` and re-seeded it from `requests` — but that
-            // exact shape is ALSO what a bucket looks like when every request in the window was
-            // legitimately REFUNDED (`refund_bucket` decrements `billable_requests` but
-            // deliberately never touches `requests`, by design), so every restart silently
-            // re-billed correctly-refunded fees, with no way to tell the two cases apart from the
-            // counter values alone. Real fix: each durable store backend's own `migrate()` now
-            // performs this exact backfill ONCE, ever, at its SCHEMA_VERSION 5->6 crossing (gated
-            // on the schema version, not a per-boot value guess) — done while 1.5.0 had no real
-            // production data yet, so there was no live refunded-to-zero row that migration could
-            // have mis-fired against. From v6 onward every row is written correctly from the
-            // start, so this function has nothing left to infer.
-            let mut cell = durable_cell(ledger, window);
+            // NEVER re-derived from `requests` (every row since schema v6 is written correctly).
+            let mut cell = durable_cell(plain, sibling, window);
             // Stamp as touched NOW, not 0: an unstamped hydrated cell is instantly older than any
             // TTL, so the first post-boot sweep would discard every restored key's history before
             // that key had served a single request.
             cell.last_touch = now;
-            // The store already holds every count restored here: the flush baselines start level.
-            cell.flushed_requests = cell.requests;
-            cell.flushed_billable_requests = cell.billable_requests;
-            for m in &mut cell.models {
-                m.flushed = m.cur.clone();
-            }
             self.budget
                 .write(bucket_id)
                 .insert(bucket_id.to_string(), cell);
@@ -1541,7 +1534,8 @@ impl GovState {
         now: u64,
     ) -> RecordStoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
         let window = budget_window(budget_period, now);
-        let cell = self.bucket_cell(bucket_id, window)?;
+        // A VIEW prices `cur` plus the fleet snapshot's foreign counts (MONEY-DESIGN §3d).
+        let cell = self.viewed(bucket_id, self.bucket_cell(bucket_id, window)?);
         self.price_cell(
             cost,
             (bucket_id, budget_period, window),
@@ -1563,7 +1557,7 @@ impl GovState {
         now: u64,
     ) -> RecordStoreResult<DerivedUsage> {
         let window = budget_window(budget_period, now);
-        let cell = self.bucket_cell(bucket_id, window)?;
+        let cell = self.viewed(bucket_id, self.bucket_cell(bucket_id, window)?);
         let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
@@ -1605,7 +1599,13 @@ impl GovState {
             .cloned();
         Ok(match live {
             Some(cell) => cell,
-            None => durable_cell(self.store.get_usage(bucket_id, window)?, window),
+            None => {
+                let plain = self.store.get_usage(bucket_id, window)?;
+                let sibling = self
+                    .store
+                    .get_usage(&crate::posting::record::sibling_bucket(bucket_id), window)?;
+                durable_cell(plain, sibling, window)
+            }
         })
     }
 
@@ -1665,17 +1665,15 @@ impl GovState {
             if !lands {
                 continue;
             }
-            let at = adj.card_epoch_ms;
-            let seg = (segments.iter().enumerate())
-                .filter(|(_, m)| *m.model == *adj.lane && m.era <= at)
-                .max_by_key(|(_, m)| m.era)
-                .map(|(i, _)| i);
+            // The delta lands on the unit's lane in the segment of the entry in force at its epoch.
+            let entry = crate::rate_apply::entry_at(adj.card_epoch_ms);
+            let seg = (segments.iter())
+                .position(|m| *m.model == *adj.lane && m.seg == entry);
             let i = seg.unwrap_or_else(|| {
                 segments.push(ModelCell {
                     model: std::sync::Arc::from(adj.lane.as_str()),
-                    era: crate::rate_apply::effective_from_at(at),
+                    seg: entry,
                     cur: BTreeMap::new(),
-                    flushed: BTreeMap::new(),
                 });
                 segments.len() - 1
             });
@@ -1705,10 +1703,7 @@ impl GovState {
         let live = (self.budget.read(bucket_id).get(bucket_id))
             .filter(|c| c.window_start == window)
             .map(|c| c.models.clone());
-        let read = live.map_or_else(
-            || (self.store.get_usage(bucket_id, window)).map(|l| durable_segments(l.models)),
-            Ok,
-        );
+        let read = live.map_or_else(|| self.bucket_cell(bucket_id, window).map(|c| c.models), Ok);
         let Ok(mut models) = read else {
             return Vec::new();
         };
@@ -1745,7 +1740,9 @@ impl GovState {
                 let map = self.budget.read(bucket.bucket_id);
                 match map.get(bucket.bucket_id) {
                     Some(cell) if cell.window_start == window => {
-                        cell.spend(cost, true).and_then(Money::micros_i64)
+                        // `cur` plus the fleet snapshot's foreign counts (MONEY-DESIGN §3d).
+                        let viewed = self.viewed(bucket.bucket_id, cell.clone());
+                        viewed.spend(cost, true).and_then(Money::micros_i64)
                     }
                     _ => Ok(0),
                 }
@@ -1905,6 +1902,10 @@ impl GovState {
         estimate: Option<i64>,
     ) -> Result<AdmitGrant, LimitBlocked> {
         let (plane, pool) = split_plane_lane(pool);
+        let now_ms = wall_ms();
+        // STRICT MODE: the recording gate's shared stamps, never the store. Collected here, raised
+        // by the caller only after every 1.5.5 refusal.
+        let mut strict = self.recording_gate(now_ms);
         // FAIL-CLOSED: a key bound to a group this node's config does not know cannot be admitted
         // under the chain's caps, so it is not admitted at all.
         let missing = |g: &str| LimitBlocked::MissingGroup(g.to_string());
@@ -1963,7 +1964,7 @@ impl GovState {
         }
         let mut order = shard_idx.clone();
         order.sort_unstable();
-        let mut guards: Vec<Option<std::sync::RwLockWriteGuard<'_, HashMap<String, BudgetCell>>>> =
+        let mut guards: Vec<Option<std::sync::RwLockWriteGuard<'_, super::ShardMap<BudgetCell>>>> =
             Vec::new();
         guards.resize_with(n, || None);
         let mut guard_shards = vec![usize::MAX; n];
@@ -1987,11 +1988,9 @@ impl GovState {
                 let max_window = 31 * super::SECS_PER_DAY;
                 map.retain(|id, c| {
                     if c.window_start != 0 {
-                        // A DIRTY cell still owes the store a delta (its live window's, or a rolled
-                        // window's parked under it): it waits for its write whatever its age. The
-                        // flusher's failure arm re-creates a removed cell at its OLD window to hold
-                        // that delta, and through a long outage that cell is past the horizon.
-                        return c.dirty || c.window_start.saturating_add(max_window) > now;
+                        // What a cell owes the store is in the shard's pending map, not the cell,
+                        // so an evicted cell loses nothing the writer has not taken.
+                        return c.resident() || c.window_start.saturating_add(max_window) > now;
                     }
                     // The all-time window never rolls, so age these by last use instead. The
                     // `group:` exemption is NARROW, and exactly as narrow as its own rationale: a
@@ -2008,7 +2007,7 @@ impl GovState {
                     // bucket carries no cap, enforces NOTHING; it now ages out by last touch like
                     // any other attribution cell (and, like them, only while clean).
                     still_enforces_a_cap(cost, id)
-                        || c.dirty
+                        || c.resident()
                         || c.last_touch.saturating_add(max_window) > now
                 });
                 // Bound the per-cell `models` Vec too: a never-rolled cell (the all-time
@@ -2055,7 +2054,22 @@ impl GovState {
             // read only for a class that carries a cap — the same best-effort post-paid shape as
             // `tokens_cap`. A class counts only itself: a `tokens_input` cap reads the `input`
             // class, so a cache-read count never counts against it.
-            let (requests, tokens, live, derived) = match map.get(bucket.bucket_id) {
+            // THE FLEET (MONEY-DESIGN §3d): other nodes' counts for this window, from the background
+            // snapshot, never a store read. None on one node, so the answers are 1.5.5's.
+            let foreign = map
+                .get(bucket.bucket_id)
+                .filter(|c| c.window_start >= window)
+                .and_then(|c| self.foreign_for(bucket.bucket_id, c.window_start, now_ms, &mut strict));
+            let with_foreign;
+            let found = match (map.get(bucket.bucket_id), foreign) {
+                (Some(cell), Some(f)) => {
+                    with_foreign = cell.with_foreign(&f);
+                    Some(&with_foreign)
+                }
+                (cell, None) => cell,
+                (None, Some(_)) => None,
+            };
+            let (requests, tokens, live, derived) = match found {
                 Some(cell) if cell.window_start >= window => (
                     cell.requests,
                     bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
@@ -2124,14 +2138,15 @@ impl GovState {
             }
         }
 
-        // The arrival's card era: each bucket's fee base records the request under the card in
+        // The arrival's card entry: each bucket's fee base records the request under the entry in
         // force at admission, so a card edit reprices only what follows it.
-        let era = crate::rate_apply::effective_from_at(wall_ms());
+        let seg = crate::rate_apply::entry_at(now_ms);
         // Another plane's request is one fee unit on ITS fee lane (#47), not the flat fee base.
         let one = || BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
         let plane_fee = (!plane.is_empty()).then(|| (plane_fee_lane(plane), one()));
         grant.charge.lane = plane_fee.as_ref().map(|(lane, _)| lane.clone());
-        grant.charge.era = era;
+        grant.charge.seg = seg;
+        grant.strict = strict;
         // PASS 2 - CHARGE every bucket (+1 request, dirty) under the SAME held guards: atomic
         // all-or-nothing with the checks above. STRADDLE-SAFE cell resolution (mirrors
         // `accrue_bucket`): roll ONLY a genuinely stale cell (this window strictly newer); a cell
@@ -2139,23 +2154,28 @@ impl GovState {
         for (bi, bucket) in buckets.iter().enumerate() {
             let gi = guard_for(&guard_shards, shard_idx[bi]);
             let window = budget_window(bucket.window, now);
-            let map = guards[gi].as_deref_mut().expect("guard held");
-            let cell = match map.get_mut(bucket.bucket_id) {
+            let super::ShardMap { cells, pending } =
+                &mut **guards[gi].as_mut().expect("guard held");
+            let cell = match cells.get_mut(bucket.bucket_id) {
                 Some(c) if window > c.window_start => {
-                    c.roll(window); // the old window's unflushed counts stay owed to it
+                    c.roll(window);
                     c
                 }
                 Some(c) => c, // same window or straddle (cell newer) - charge the live cell
-                None => map
+                None => cells
                     .entry(bucket.bucket_id.to_string())
                     .or_insert_with(|| BudgetCell::fresh(window)),
             };
             cell.requests = cell.requests.saturating_add(1);
+            // THE EMIT (MONEY-DESIGN §3c), in the same critical section as the charge.
+            pending.admitted(bucket.bucket_id, cell.window_start, 1);
             if let Some((lane, one)) = &plane_fee {
-                cell.accrue(lane, era, one);
+                cell.accrue(lane, seg, one);
+                pending.units(bucket.bucket_id, cell.window_start, (lane, seg), one, 1);
             } else {
                 cell.billable_requests = cell.billable_requests.saturating_add(1);
-                cell.fee_eras.charge(era);
+                cell.fee_segs.charge(seg);
+                pending.billable(bucket.bucket_id, cell.window_start, seg, 1);
             }
             cell.dirty = true;
             cell.last_touch = now;
@@ -2184,31 +2204,51 @@ impl GovState {
     /// plane's fee lane, and that is what comes back — never the flat fee base, which that request
     /// never charged.
     pub fn refund_charge(&self, charge: &FeeCharge) {
+        self.give_back(charge, false);
+    }
+
+    /// UNDO AN ADMISSION refused after its charge by strict mode (MONEY-DESIGN §3c): `requests`,
+    /// the billable count and the fee lane reversed in one critical section per bucket (where
+    /// [`GovState::refund_charge`] never touches `requests`), each emitting its negative delta. A
+    /// cell that has rolled since takes the counts back from the charge's window, as a refund does.
+    /// The `+1`/`-1` pair may straddle two batches, which nets to zero in the store.
+    pub fn uncharge(&self, charge: &FeeCharge) {
+        self.give_back(charge, true);
+    }
+
+    /// The one give-back behind [`GovState::refund_charge`] and [`GovState::uncharge`].
+    fn give_back(&self, charge: &FeeCharge, requests_too: bool) {
         let lane = charge.lane.as_deref().map(|l| (l, PER_REQUEST));
         for (bucket_id, window) in &charge.cells {
-            let mut map = self.budget.write(bucket_id);
-            let Some(cell) = map.get_mut(bucket_id) else {
-                continue; // swept: nothing in memory holds the charge any more
+            let mut guard = self.budget.write(bucket_id);
+            let super::ShardMap { cells, pending } = &mut *guard;
+            let Some(cell) = cells.get_mut(bucket_id) else {
+                continue; // swept: nothing in memory holds the charge any more (as on dev)
             };
             if cell.window_start == *window {
-                refund_in_place(cell, lane, charge.era);
-            } else if cell.window_start > *window {
-                // The charge's window has rolled away; its counts were parked under it.
-                let taken_back = match lane {
-                    None => UsageDelta {
-                        billable_requests: -1,
-                        ..UsageDelta::default()
-                    },
-                    Some((lane, unit)) => UsageDelta {
-                        models: vec![busbar_contract::records::ModelTokensDelta {
-                            model: lane.to_string(),
-                            usage_units: BTreeMap::from([(unit.to_string(), -1)]),
-                        }],
-                        ..UsageDelta::default()
-                    },
-                };
-                cell.park(*window, taken_back);
+                if requests_too {
+                    cell.requests = cell.requests.saturating_sub(1);
+                    pending.admitted(bucket_id, *window, -1);
+                }
+                refund_in_place(cell, pending, (bucket_id, *window), lane, charge.seg);
                 cell.dirty = true;
+            } else if cell.window_start > *window {
+                // The charge's window has rolled away: RAM `cur` no longer holds it, but the store
+                // does, so the -1 is emitted to the charge's own window (MONEY-DESIGN §3c).
+                cell.dirty = true;
+                if requests_too {
+                    pending.admitted(bucket_id, *window, -1);
+                }
+                match lane {
+                    None => pending.billable(bucket_id, *window, charge.seg, -1),
+                    Some((lane, unit)) => pending.units(
+                        bucket_id,
+                        *window,
+                        (lane, charge.seg),
+                        &BTreeMap::from([(unit.to_string(), 1)]),
+                        -1,
+                    ),
+                }
             }
         }
     }
@@ -2255,159 +2295,106 @@ impl GovState {
         (lane, unit): (&str, &str),
     ) {
         let window = budget_window(budget_period, now);
-        let mut map = self.budget.write(bucket_id);
-        if let Some(cell) = map.get_mut(bucket_id) {
+        let mut guard = self.budget.write(bucket_id);
+        let super::ShardMap { cells, pending } = &mut *guard;
+        if let Some(cell) = cells.get_mut(bucket_id) {
             // The exact inverse of the charge's cell resolution: that lands a charge in place on a
             // cell holding this window OR a newer one, so this returns the fee from the same set.
             // An equality test here would leave the flat fee for a failed straddling request on the
             // rolled cell forever, and the derived spend the budget cap reads one fee too high for
             // the rest of that window.
             if cell.window_start >= window {
+                // The newest segment holding one (first-seen order: the last such).
                 let held = (cell.models.iter_mut())
-                    .filter(|m| &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0))
-                    .max_by_key(|m| m.era);
+                    .rev()
+                    .find(|m| &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0));
                 if let Some(m) = held {
                     take_one(&mut m.cur, unit);
+                    let one = BTreeMap::from([(unit.to_string(), 1)]);
+                    pending.units(bucket_id, cell.window_start, (lane, m.seg), &one, -1);
+                    cell.dirty = true;
                 }
-                cell.dirty = true;
             }
         }
     }
 
-    /// WRITE-BEHIND flush of the dirty in-memory budget cells to the durable store — ADDITIVE, so
-    /// the shared store reflects the TRUE FLEET TOTAL. Runs OFF the request hot path (the periodic
-    /// flusher + the graceful-shutdown arm).
-    ///
-    /// Under each shard lock, snapshot every dirty cell's DELTA since its last acknowledged flush
-    /// (current - flushed baseline) and clear its dirty flag; then OFF the lock, `add_usage`
-    /// (atomic accumulate in the store) each delta and advance the cell's acked baseline on
-    /// success. With N nodes sharing one store, each node's deltas SUM into the durable record —
-    /// where the old absolute `put_usage` overwrite made the record whichever node flushed last.
-    ///
-    /// A ROLLED WINDOW'S DELTA ([`BudgetCell::roll`]) is drained with the cell and written under the
-    /// window it was earned in, never the cell's current one.
-    ///
-    /// On a store error, log, RE-MARK the cell dirty, and do NOT advance the baseline, so the
-    /// unacked delta is retried next tick (at-least-once: an ack lost after the write landed can
-    /// double-count at most one flush interval — the honest trade for fleet additivity; the
-    /// in-memory admission cap is unaffected). A rolled window's failed delta is parked back under
-    /// its window, so a store outage across a boundary is retried, not dropped. Snapshotting under
-    /// the lock but writing off it keeps the hot-path lock hold O(dirty). Returns the number of
-    /// deltas flushed.
-    pub fn flush_budgets(&self) -> usize {
-        /// The baselines a live cell's delta was taken against: they become the acked baseline on
-        /// success.
-        struct Acked {
-            requests: u64,
-            billable_requests: u64,
-            models: Vec<ModelCell>,
-        }
-        /// One delta to write: the PER-MODEL TOKEN delta payload for `Store::add_usage`, under the
-        /// window it belongs to. `acked` is `Some` for the cell's live window and `None` for a
-        /// rolled window's parked delta (nothing to advance: the cell moved on). No dollar figure
-        /// anywhere - only tokens + requests cross the wire.
-        struct DirtySnap {
-            bucket_id: String,
-            window: u64,
-            delta: UsageDelta,
-            acked: Option<Acked>,
-        }
-        // Snapshot dirty cells across ALL shards and clear their flags. One shard is locked at a
-        // time (the `write_all` iterator acquires each guard lazily), so a concurrent charge
-        // blocks only on the single shard the snapshot currently holds, not the whole map.
-        let mut dirty: Vec<DirtySnap> = Vec::new();
-        for mut map in self.budget.write_all() {
-            for (id, cell) in map.iter_mut() {
-                if !cell.dirty {
-                    continue;
+    /// THE WRITER'S TAKE (MONEY-DESIGN §3c): every shard's pending map, `mem::take`n ONE shard at
+    /// a time under that shard's write lock only, never two locks and never across I/O. The
+    /// positive part of each delta joins its cell's `posted_hi` in the same critical section; the
+    /// negative part joins once READY ([`GovState::landed`]).
+    pub fn take_pending(&self) -> Vec<crate::posting::record::CellCount> {
+        let mut out = Vec::new();
+        for mut guard in self.budget.write_all() {
+            if guard.pending.is_empty() {
+                continue;
+            }
+            let super::ShardMap { cells, pending } = &mut *guard;
+            for ((bucket, window), delta) in std::mem::take(&mut pending.0) {
+                if let Some(cell) = cells.get_mut(&bucket) {
+                    cell.dirty = false;
+                    if cell.window_start == window && !delta.is_zero() {
+                        let mut up = delta.signed_part(true);
+                        up.bucket.clear();
+                        cell.posted.merge(&up);
+                    }
                 }
-                for (window, delta) in std::mem::take(&mut cell.rolled) {
-                    dirty.push(DirtySnap {
-                        bucket_id: id.clone(),
-                        window,
-                        delta,
-                        acked: None,
-                    });
+                if !delta.is_zero() {
+                    out.push(delta);
                 }
-                dirty.push(DirtySnap {
-                    bucket_id: id.clone(),
-                    window: cell.window_start,
-                    delta: cell.unflushed(),
-                    acked: Some(Acked {
-                        requests: cell.requests,
-                        billable_requests: cell.billable_requests,
-                        models: cell.models.clone(),
-                    }),
-                });
-                cell.dirty = false;
             }
         }
-        let mut flushed = 0usize;
-        // Aggregate failures: during a store outage every dirty bucket fails on the same tick, so a
-        // per-bucket `warn!` spams. Emit exactly ONE throttled warn per tick with the failed count;
-        // per-bucket detail (bucket + error) stays at `debug!`.
-        let mut failed = 0usize;
-        let mut last_error: Option<String> = None;
-        for snap in dirty {
-            let outcome = if snap.delta.is_zero() {
-                // Nothing new since the last acked flush (e.g. a charge fully refunded back to the
-                // baseline): the durable record is already correct; skip the store round-trip.
-                Ok(())
-            } else {
-                self.store
-                    .add_usage(&snap.bucket_id, snap.window, &snap.delta)
+        out
+    }
+
+    /// `cells` ride batch `seq`: their cells stay resident until a batch at or above it is READY.
+    pub fn carried(&self, cells: &[crate::posting::record::CellCount], seq: u64) {
+        for delta in cells {
+            let mut guard = self.budget.write(&delta.bucket);
+            if let Some(cell) = guard.get_mut(&delta.bucket) {
+                cell.unsent_seq = Some(cell.unsent_seq.map_or(seq, |s| s.max(seq)));
+            }
+        }
+    }
+
+    /// Batch `seq` carrying `cells` answered READY (or was dead-lettered): their negative parts
+    /// join `posted_hi` (the store holds them now), and a cell no later batch carries may leave RAM.
+    pub fn landed(&self, cells: &[crate::posting::record::CellCount], seq: u64) {
+        for delta in cells {
+            let mut guard = self.budget.write(&delta.bucket);
+            let Some(cell) = guard.get_mut(&delta.bucket) else {
+                continue;
             };
-            let mut map = self.budget.write(&snap.bucket_id);
-            match outcome {
-                Ok(()) => {
-                    flushed += 1;
-                    let (Some(cell), Some(acked)) = (map.get_mut(&snap.bucket_id), snap.acked)
-                    else {
-                        continue;
-                    };
-                    if cell.window_start == snap.window {
-                        // Advance the acked baselines: the cell still holds the window written.
-                        cell.flushed_requests = acked.requests;
-                        cell.flushed_billable_requests = acked.billable_requests;
-                        cell.advance_model_baselines(&acked.models);
-                    } else if cell.window_start > snap.window {
-                        // The cell rolled while this write was in flight, and the roll parked
-                        // everything past the baseline — this delta included. It has landed now,
-                        // so take it back out of what is parked.
-                        cell.park(snap.window, negated(&snap.delta));
-                        cell.dirty = true;
-                    }
-                }
-                Err(e) => {
-                    failed += 1;
-                    tracing::debug!(bucket = %snap.bucket_id, error = %e, "budget flush failed for bucket; will retry next tick");
-                    last_error = Some(e.to_string());
-                    if snap.acked.is_none() {
-                        // A rolled window's delta: parked back under its window for the next tick.
-                        let cell = map
-                            .entry(snap.bucket_id.clone())
-                            .or_insert_with(|| BudgetCell::fresh(snap.window));
-                        cell.park(snap.window, snap.delta);
-                        cell.dirty = true;
-                    } else if let Some(cell) = map.get_mut(&snap.bucket_id) {
-                        // The live window's delta stays in the cell (the baseline did not advance);
-                        // if the cell rolled meanwhile, the roll parked it.
-                        cell.dirty = true;
-                    }
-                }
+            if cell.unsent_seq.is_some_and(|s| s <= seq) {
+                cell.unsent_seq = None;
+            }
+            if cell.window_start == delta.window {
+                let mut down = delta.signed_part(false);
+                down.bucket.clear();
+                cell.posted.merge(&down);
             }
         }
-        if failed > 0 {
-            diag_warn!(
-                BUDGET_FLUSH_PARTIAL_FAILURE,
-                failed,
-                flushed,
-                error = last_error.as_deref().unwrap_or(""),
-                "budget flush: {failed} bucket(s) failed to persist this tick; re-marked dirty and \
-                 will retry next tick (per-bucket detail at debug)"
-            );
+    }
+
+    /// THE DEAD LETTERS STANDING AT BOOT, folded into RAM `cur` so caps still count them, and NOT
+    /// into `posted_hi`, because the store does not hold them (MONEY-DESIGN §3c). Only a letter for
+    /// its bucket's live window lands; an older window's counts no longer bear on any cap.
+    pub fn absorb_dead(&self, cells: &[crate::posting::record::CellCount]) {
+        for c in cells {
+            let mut guard = self.budget.write(&c.bucket);
+            let cell = guard
+                .entry(c.bucket.clone())
+                .or_insert_with(|| BudgetCell::fresh(c.window));
+            if cell.window_start == c.window {
+                cell.add_counts(&c.signed_part(true));
+            }
         }
-        flushed
+    }
+
+    /// `posted_hi` of `bucket` in `window`, when its cell holds that window.
+    pub fn posted_hi(&self, bucket: &str, window: u64) -> Option<crate::posting::record::CellCount> {
+        (self.budget.read(bucket).get(bucket))
+            .filter(|c| c.window_start == window)
+            .map(|c| c.posted.clone())
     }
 
     /// Load every LIVE key, indexed by id (the token `sub` / subject id) — the sole in-memory key
@@ -2566,21 +2553,33 @@ fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool 
 /// `lane`. Refund ONLY the billable (fee-base) counter - the flat fee bills 2xx only. The admission
 /// `requests` counter is NEVER refunded, so a failed request still consumed its requests-limit slot
 /// (a caller cannot escape the requests cap by hammering failures). Floored at 0.
-fn refund_in_place(cell: &mut BudgetCell, lane: Option<(&str, &str)>, era: u64) {
+fn refund_in_place(
+    cell: &mut BudgetCell,
+    pending: &mut super::Pending,
+    (bucket, window): (&str, u64),
+    lane: Option<(&str, &str)>,
+    seg: super::Seg,
+) {
     match lane {
         None => {
-            cell.billable_requests = cell.billable_requests.saturating_sub(1);
-            cell.fee_eras.refund(era);
+            if cell.billable_requests > 0 {
+                cell.billable_requests -= 1;
+                cell.fee_segs.refund(seg);
+                pending.billable(bucket, window, seg, -1);
+            }
         }
-        // A plane's fee unit: one count off its fee lane, in the era the charge accrued it under.
+        // A plane's fee unit: one count off its fee lane, in the segment the charge accrued it under.
         Some((lane, unit)) => {
-            let charged = (cell.models.iter_mut()).find(|m| &*m.model == lane && m.era == era);
+            let charged = (cell.models.iter_mut()).find(|m| &*m.model == lane && m.seg == seg);
             if let Some(m) = charged {
-                take_one(&mut m.cur, unit);
+                if m.cur.get(unit).is_some_and(|n| *n > 0) {
+                    take_one(&mut m.cur, unit);
+                    let one = BTreeMap::from([(unit.to_string(), 1)]);
+                    pending.units(bucket, window, (lane, seg), &one, -1);
+                }
             }
         }
     }
-    cell.dirty = true;
 }
 
 /// One count off `unit`, floored at 0; a unit that reaches 0 is dropped (the map is sparse).
@@ -2590,22 +2589,6 @@ fn take_one(counts: &mut BTreeMap<String, u64>, unit: &str) {
         if *n == 0 {
             counts.remove(unit);
         }
-    }
-}
-
-/// `delta` with every count's sign flipped: what takes an already-written delta back out.
-fn negated(delta: &UsageDelta) -> UsageDelta {
-    UsageDelta {
-        requests: delta.requests.saturating_neg(),
-        billable_requests: delta.billable_requests.saturating_neg(),
-        models: (delta.models.iter())
-            .map(|m| busbar_contract::records::ModelTokensDelta {
-                model: m.model.clone(),
-                usage_units: (m.usage_units.iter())
-                    .map(|(k, v)| (k.clone(), v.saturating_neg()))
-                    .collect(),
-            })
-            .collect(),
     }
 }
 
@@ -2619,27 +2602,77 @@ fn money_refusal(bucket_id: &str, e: &busbar_kernel_ledger::cost::MoneyError) ->
     ))
 }
 
-/// The durable ledger's per-model rows as undated segments (the row carries no era).
-/// A bucket's durable window row as a cell: the counts it holds, each model at era zero (the row
-/// carries no era). The ONE reading of a durable row — boot hydration builds the cell it keeps from
-/// this, and a read of a bucket with no live cell prices this — so the two cannot answer different
-/// figures for the same row.
-fn durable_cell(row: busbar_contract::records::UsageLedger, window: u64) -> BudgetCell {
+/// A bucket's durable window rows as a cell (MONEY-DESIGN §3b): the PLAIN row holds every count,
+/// the SIBLING era row holds the counts posted under each entry id (`"<id>\u{1f}<model>"`, and
+/// `"<id>\u{1f}"` with unit `fee` for the fee base). What the plain row holds beyond every segment
+/// is the legacy remainder (1.5.5 and pre-PR-B rows), priced at the card covering the window's
+/// start. The ONE reading of durable rows — boot hydration builds the cell it keeps from this, and a
+/// read of a bucket with no live cell prices this — so the two cannot answer different figures. The
+/// cell's `posted_hi` starts at what was read.
+fn durable_cell(
+    plain: busbar_contract::records::UsageLedger,
+    sibling: busbar_contract::records::UsageLedger,
+    window: u64,
+) -> BudgetCell {
+    let counts = super::state_rows(plain, sibling, window);
     let mut cell = BudgetCell::fresh(window);
-    cell.requests = row.requests;
-    cell.billable_requests = row.billable_requests;
-    cell.models = durable_segments(row.models);
+    cell.add_counts(&counts);
+    cell.posted = counts;
     cell
 }
 
-fn durable_segments(rows: Vec<busbar_contract::records::ModelTokens>) -> Vec<ModelCell> {
-    let segment = |m: busbar_contract::records::ModelTokens| ModelCell {
-        model: std::sync::Arc::from(m.model),
-        era: 0,
-        cur: m.usage_units,
-        flushed: BTreeMap::new(),
-    };
-    rows.into_iter().map(segment).collect()
+/// A stored (plain, sibling) row pair as segmented counts: each entry's segment from the sibling
+/// row, the legacy remainder (`""`) the plain row's excess over every segment.
+pub(super) fn state_rows(
+    plain: busbar_contract::records::UsageLedger,
+    sibling: busbar_contract::records::UsageLedger,
+    window: u64,
+) -> crate::posting::record::CellCount {
+    use busbar_kernel_ledger::cost::EntryId;
+    let mut counts = crate::posting::record::CellCount::new("", window);
+    counts.requests = i64::try_from(plain.requests).unwrap_or(i64::MAX);
+    let mut dated_fee = 0u64;
+    let mut dated: BTreeMap<(String, String), u64> = BTreeMap::new();
+    for row in &sibling.models {
+        let Some((id, model)) = EntryId::split_pseudo(&row.model) else {
+            continue;
+        };
+        let seg = id.hex();
+        for (class, n) in &row.usage_units {
+            if model.is_empty() {
+                if class == crate::posting::record::FEE_UNIT {
+                    counts.add_billable(&seg, i64::try_from(*n).unwrap_or(i64::MAX));
+                    dated_fee = dated_fee.saturating_add(*n);
+                }
+                continue;
+            }
+            counts.add_unit(&seg, model, class, i64::try_from(*n).unwrap_or(i64::MAX));
+            let d = dated
+                .entry((model.to_string(), class.clone()))
+                .or_insert(0);
+            *d = d.saturating_add(*n);
+        }
+    }
+    counts.add_billable(
+        "",
+        i64::try_from(plain.billable_requests.saturating_sub(dated_fee)).unwrap_or(i64::MAX),
+    );
+    for row in &plain.models {
+        for (class, n) in &row.usage_units {
+            let seen = dated
+                .get(&(row.model.clone(), class.clone()))
+                .copied()
+                .unwrap_or(0);
+            counts.add_unit(
+                "",
+                &row.model,
+                class,
+                i64::try_from(n.saturating_sub(seen)).unwrap_or(i64::MAX),
+            );
+        }
+    }
+    counts.tidy();
+    counts
 }
 
 // The scrape's memo over the money view: a bucket reprices only when what it was priced from changed.

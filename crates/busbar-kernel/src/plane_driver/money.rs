@@ -353,6 +353,12 @@ impl PlaneMoney {
         }
     }
 
+    /// VOID unit `key`'s money facts: its admission was undone in RAM (`GovState::uncharge`, strict
+    /// spend recording's refusal), so nothing is ledgered, metered or refunded for it.
+    pub fn void(&self, key: UnitKey) {
+        self.shard(key).remove(&key);
+    }
+
     /// Unit `key`'s last cumulative counts, as the plane reported them.
     #[must_use]
     pub fn last_counts(&self, key: UnitKey) -> Vec<UnitCount> {

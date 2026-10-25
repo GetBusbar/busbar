@@ -16,7 +16,7 @@
 //! prices or even touches this memo: staleness is decided at read time, by comparing inputs, so no
 //! write path can forget to mark a bucket.
 
-use super::{wall_ms, BudgetCell, DerivedUsage, FeeEras, History, MoneyError};
+use super::{wall_ms, BudgetCell, DerivedUsage, FeeSegs, History, MoneyError, Seg};
 
 /// A bucket's derived figure, or the one function's refusal.
 type Priced = Result<DerivedUsage, MoneyError>;
@@ -30,8 +30,8 @@ struct Facts {
     window_start: u64,
     requests: u64,
     billable_requests: u64,
-    fee_eras: FeeEras,
-    models: Vec<(Arc<str>, u64, BTreeMap<String, u64>)>,
+    fee_segs: FeeSegs,
+    models: Vec<(Arc<str>, Seg, BTreeMap<String, u64>)>,
 }
 
 /// Everything one bucket's derived figure depends on.
@@ -85,9 +85,9 @@ impl Inputs {
                 window_start: cell.window_start,
                 requests: cell.requests,
                 billable_requests: cell.billable_requests,
-                fee_eras: cell.fee_eras.clone(),
+                fee_segs: cell.fee_segs.clone(),
                 models: (cell.models.iter())
-                    .map(|m| (m.model.clone(), m.era, m.cur.clone()))
+                    .map(|m| (m.model.clone(), m.seg, m.cur.clone()))
                     .collect(),
             },
             card: cost.generation(),

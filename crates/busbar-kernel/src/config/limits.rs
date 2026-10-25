@@ -433,6 +433,8 @@ pub struct LimitsResolved {
     pub key_gauge_limit: usize,
     pub rate_sweep_interval: u32,
     pub usage_flush_interval_ms: u64,
+    /// `advanced.strict_spend_recording` (MONEY-DESIGN §3c), read at every config apply.
+    pub strict_spend_recording: bool,
     /// Pin the shared upstream client to HTTP/1.1 (`advanced.upstream_http1_only`). BOOT-TIME knob
     /// read once at client build. Carried here (like `rate_sweep_interval`) so the client-build wiring
     /// reads a flat struct. (The `BUSBAR_UPSTREAM_HTTP1_ONLY` env var was removed in 1.6.0.)
@@ -494,6 +496,7 @@ impl LimitsResolved {
             key_gauge_limit,
             rate_sweep_interval: advanced.rate_sweep_interval,
             usage_flush_interval_ms: advanced.usage_flush_interval_ms,
+            strict_spend_recording: advanced.strict_spend_recording,
             upstream_http1_only: advanced.upstream_http1_only,
             upstream_h2_prior_knowledge: advanced.upstream_h2_prior_knowledge,
             default_probe_interval_secs: health.default_probe_interval_secs,
