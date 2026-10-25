@@ -87,8 +87,7 @@ pub trait EgressTrustHost: Send + Sync {
     }
 
     /// An answer the kernel's own pooled client resolved for `host`, judged whole under `class` by
-    /// the deployment's destination guard (OWNER DESTINATION GUARD; the connector decides). INTERIM
-    /// for the eight pooled-client builders; struck when D1-D6 move onto `conns` (Phase B).
+    /// the deployment's destination guard (OWNER DESTINATION GUARD; the connector decides).
     ///
     /// # Errors
     ///

@@ -1,5 +1,5 @@
 //! The protocol seam names no transport's types (BUSBAR-1.6.0.md Part 2 #49, "core names zero plane
-//! types"; Part 4: every ABI shape lives in busbar-contract and is neutral; TODO row 34c).
+//! types"; Part 4: every ABI shape lives in busbar-contract and is neutral).
 //!
 //! `protocol.rs` is the vocabulary a dialect implements and the kernel reads back. A head crosses it
 //! as [`HeadFields`](busbar_contract::protocol::HeadFields) pairs and a status as a `u16`; the

@@ -5,16 +5,10 @@
 //! every call. Moved from `busbar-kernel-breaker`'s own suite (`src/tests/mod.rs`): minting that
 //! token is the kernel's, so the tests that need one run here, against the unit's public API.
 
-use busbar_contract::caps::{KernelSeal, Pass, Route};
+use crate::test_support::tokens::pass;
+use busbar_contract::caps::Route;
 use busbar_kernel_breaker::cfg::{BreakerCfg, TripConfig, TripMode};
 use busbar_kernel_breaker::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
-
-/// A fresh `Pass<Route>` for one `observe`/`state` call — test-only, minted through the
-/// kernel seal exactly as CG-29 says a real deployment would (`KernelSeal::acquire_for_kernel` is
-/// `// contract:` kernel-only outside test modules).
-fn route_token() -> Pass<Route> {
-    Pass::mint(&KernelSeal::acquire_for_kernel())
-}
 
 fn consecutive_cfg(base_cooldown_secs: u64, max_cooldown_secs: u64) -> BreakerCfg {
     BreakerCfg {
@@ -43,11 +37,11 @@ fn trip_then_cooldown_then_half_open_then_success_closes() {
         Outcome::Transient { retry_after: None },
         &cfg,
         now,
-        &route_token(),
+        &pass::<Route>(),
     );
     assert!(tripped, "a single failure must trip a consecutive_n=1 cell");
     let LaneState::Suppressed { until } =
-        unit.state("pool", DestinationId::new(1), now, &route_token())
+        unit.state("pool", DestinationId::new(1), now, &pass::<Route>())
     else {
         panic!("expected Suppressed immediately after a trip");
     };
@@ -71,7 +65,7 @@ fn trip_then_cooldown_then_half_open_then_success_closes() {
         }
     ));
     assert_eq!(
-        unit.state("pool", DestinationId::new(1), past, &route_token()),
+        unit.state("pool", DestinationId::new(1), past, &pass::<Route>()),
         LaneState::ProbeInFlight
     );
 
@@ -82,11 +76,11 @@ fn trip_then_cooldown_then_half_open_then_success_closes() {
         Outcome::Success,
         &cfg,
         past,
-        &route_token(),
+        &pass::<Route>(),
     );
     assert!(!re_tripped, "a success is never reported as a trip");
     assert_eq!(
-        unit.state("pool", DestinationId::new(1), past, &route_token()),
+        unit.state("pool", DestinationId::new(1), past, &pass::<Route>()),
         LaneState::Ready
     );
 }
@@ -103,10 +97,10 @@ fn a_failed_probe_re_trips_with_the_shifted_cooldown() {
         Outcome::Transient { retry_after: None },
         &cfg,
         now,
-        &route_token(),
+        &pass::<Route>(),
     );
     let LaneState::Suppressed { until: first_until } =
-        unit.state("pool", DestinationId::new(1), now, &route_token())
+        unit.state("pool", DestinationId::new(1), now, &pass::<Route>())
     else {
         panic!("expected Suppressed after the first trip");
     };
@@ -131,11 +125,11 @@ fn a_failed_probe_re_trips_with_the_shifted_cooldown() {
         Outcome::Transient { retry_after: None },
         &cfg,
         first_until,
-        &route_token(),
+        &pass::<Route>(),
     );
     let LaneState::Suppressed {
         until: second_until,
-    } = unit.state("pool", DestinationId::new(1), first_until, &route_token())
+    } = unit.state("pool", DestinationId::new(1), first_until, &pass::<Route>())
     else {
         panic!("expected Suppressed after the re-trip");
     };
@@ -156,7 +150,7 @@ fn an_exhausted_destination_budget_is_excluded_not_ordered_last() {
     // "budget exhausted" verdict must come from the budget check EXCLUDING the destination before
     // the breaker is even consulted, not from ranking it behind healthy destinations.
     assert_eq!(
-        unit.state("pool", DestinationId::new(1), now, &route_token()),
+        unit.state("pool", DestinationId::new(1), now, &pass::<Route>()),
         LaneState::BudgetExhausted
     );
     assert_eq!(
@@ -172,10 +166,10 @@ fn an_exhausted_destination_budget_is_excluded_not_ordered_last() {
         Outcome::Success,
         &cfg,
         now,
-        &route_token(),
+        &pass::<Route>(),
     );
     assert_eq!(
-        unit.state("pool", DestinationId::new(1), now, &route_token()),
+        unit.state("pool", DestinationId::new(1), now, &pass::<Route>()),
         LaneState::BudgetExhausted
     );
 }
@@ -189,15 +183,15 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
     // Touch three cells for the same destination (the default "" cell, and two named pools) so
     // each exists before the hard-down fan-out.
     assert_eq!(
-        unit.state("", DestinationId::new(1), now, &route_token()),
+        unit.state("", DestinationId::new(1), now, &pass::<Route>()),
         LaneState::Ready
     );
     assert_eq!(
-        unit.state("pool-a", DestinationId::new(1), now, &route_token()),
+        unit.state("pool-a", DestinationId::new(1), now, &pass::<Route>()),
         LaneState::Ready
     );
     assert_eq!(
-        unit.state("pool-b", DestinationId::new(1), now, &route_token()),
+        unit.state("pool-b", DestinationId::new(1), now, &pass::<Route>()),
         LaneState::Ready
     );
 
@@ -207,12 +201,12 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
         Outcome::HardDown,
         &cfg,
         now,
-        &route_token(),
+        &pass::<Route>(),
     );
     assert!(fresh, "the first hard-down trip must be reported fresh");
 
     for pool in ["", "pool-a", "pool-b"] {
-        match unit.state(pool, DestinationId::new(1), now, &route_token()) {
+        match unit.state(pool, DestinationId::new(1), now, &pass::<Route>()) {
             LaneState::Suppressed { until } => {
                 assert!(until > now, "pool {pool:?} must carry a sticky cooldown")
             }
@@ -227,7 +221,7 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
         Outcome::HardDown,
         &cfg,
         now,
-        &route_token(),
+        &pass::<Route>(),
     );
     assert!(!fresh_again);
 }
@@ -243,14 +237,14 @@ fn a_pool_that_only_read_readiness_is_parked_by_a_hard_down_through_another() {
     let now = 1_000;
 
     assert_eq!(
-        unit.state("considered", destination, now, &route_token()),
+        unit.state("considered", destination, now, &pass::<Route>()),
         LaneState::Ready
     );
     let _ = unit.hard_down_all(destination, now);
 
     assert!(
         matches!(
-            unit.state("considered", destination, now, &route_token()),
+            unit.state("considered", destination, now, &pass::<Route>()),
             LaneState::Suppressed { .. }
         ),
         "a hard-down left a pool serving that a walk had already read the destination in"
@@ -272,7 +266,7 @@ fn a_readiness_read_creates_no_cell_that_a_subsequent_trip_would_miss() {
     let now = 1_000;
 
     assert_eq!(
-        unit.state("asked", destination, now, &route_token()),
+        unit.state("asked", destination, now, &pass::<Route>()),
         LaneState::Ready
     );
     // The default cell trips on its own, without a hard-down's fan-out.
@@ -282,13 +276,13 @@ fn a_readiness_read_creates_no_cell_that_a_subsequent_trip_would_miss() {
         Outcome::Transient { retry_after: None },
         &cfg,
         now,
-        &route_token(),
+        &pass::<Route>(),
     ));
 
     for pool in ["asked", "never-asked"] {
         assert!(
             matches!(
-                unit.state(pool, destination, now, &route_token()),
+                unit.state(pool, destination, now, &pass::<Route>()),
                 LaneState::Suppressed { until } if until > now
             ),
             "pool {pool:?} must read the destination's trip"
@@ -313,7 +307,7 @@ fn a_pool_first_touched_after_a_hard_down_is_parked_by_it() {
 
     assert!(unit.hard_down_all(destination, now));
 
-    let LaneState::Suppressed { until } = unit.state("late", destination, now, &route_token())
+    let LaneState::Suppressed { until } = unit.state("late", destination, now, &pass::<Route>())
     else {
         panic!("a pool first read after a hard-down must read it");
     };
@@ -332,7 +326,7 @@ fn a_pool_first_touched_after_a_hard_down_is_parked_by_it() {
 #[test]
 fn a_refusal_never_reports_a_state_that_would_have_admitted() {
     let cfg = consecutive_cfg(1, 5);
-    let token = route_token();
+    let token = pass::<Route>();
     let destination = DestinationId::new(1);
 
     // One cell, cycled through Open -> HalfOpen -> Closed under a crowd asking it for admission:
@@ -422,12 +416,12 @@ fn six_healthy_502s_in_a_row_do_not_trip_a_cell() {
             read(WireFault::Healthy),
             &cfg,
             now,
-            &route_token(),
+            &pass::<Route>(),
         );
         assert!(!tripped, "healthy answer {i} must not trip");
     }
     assert_eq!(
-        healthy.state("pool", DestinationId::new(1), now, &route_token()),
+        healthy.state("pool", DestinationId::new(1), now, &pass::<Route>()),
         LaneState::Ready
     );
 
@@ -439,7 +433,7 @@ fn six_healthy_502s_in_a_row_do_not_trip_a_cell() {
             read(WireFault::Transient),
             &cfg,
             now,
-            &route_token(),
+            &pass::<Route>(),
         )
     });
     assert!(tripped, "six transient 502s trip the same cell");

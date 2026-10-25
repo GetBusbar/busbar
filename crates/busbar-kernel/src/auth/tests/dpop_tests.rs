@@ -49,13 +49,18 @@ fn only_a_token_carrying_cnf_jkt_is_dpop_bound() {
 /// `(status, body)` of `GET /stats` with `headers`, on a deployment whose chain identifies any
 /// credential and that runs NO authorization server.
 async fn stats(headers: &[(&str, String)]) -> (u16, String) {
-    stats_on(headers, false).await
+    served(reqwest::Method::GET, "/stats", headers, false).await
 }
 
-/// [`stats`], on a deployment that runs an authorization server when `authorization_server` (an
-/// opaque stand-in handle: the door reads only that one is configured before it refuses a bound
-/// bearer).
-async fn stats_on(headers: &[(&str, String)], authorization_server: bool) -> (u16, String) {
+/// `(status, body)` of `method path` with `headers`, on a deployment whose chain identifies any
+/// credential and that runs an authorization server when `authorization_server` (an opaque
+/// stand-in handle: the door reads only that one is configured before it refuses a bound bearer).
+async fn served(
+    method: reqwest::Method,
+    path: &str,
+    headers: &[(&str, String)],
+    authorization_server: bool,
+) -> (u16, String) {
     crate::snapshot::init();
     let mut app = TestApp::new().idp_chain();
     if authorization_server {
@@ -66,7 +71,7 @@ async fn stats_on(headers: &[(&str, String)], authorization_server: bool) -> (u1
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let mut req = reqwest::Client::new().get(format!("http://{addr}/stats"));
+    let mut req = reqwest::Client::new().request(method, format!("http://{addr}{path}"));
     for (k, v) in headers {
         req = req.header(*k, v);
     }
@@ -115,9 +120,21 @@ async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() 
 #[tokio::test]
 async fn with_an_authorization_server_a_dpop_bound_bearer_is_refused() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
-    let (status, _) = stats_on(&[("authorization", format!("Bearer {bound}"))], true).await;
+    let (status, _) = served(
+        reqwest::Method::GET,
+        "/stats",
+        &[("authorization", format!("Bearer {bound}"))],
+        true,
+    )
+    .await;
     assert_eq!(status, 401);
-    let (status, _) = stats_on(&[("x-api-key", bound)], true).await;
+    let (status, _) = served(
+        reqwest::Method::GET,
+        "/stats",
+        &[("x-api-key", bound)],
+        true,
+    )
+    .await;
     assert_eq!(status, 401, "whichever carrier presents it as a bearer");
 }
 
@@ -137,25 +154,7 @@ async fn without_an_authorization_server_a_dpop_bound_bearer_is_admitted_as_1_5_
 /// `(status, body)` of `POST /auth/token` with `headers`, on the deployment [`stats`] reads, with
 /// an authorization server (`oauth_as:`) when `serving_as`.
 async fn exchanged(serving_as: bool, headers: &[(&str, String)]) -> (u16, String) {
-    crate::snapshot::init();
-    let mut app = TestApp::new().idp_chain();
-    if serving_as {
-        // The bound-bearer refusal reads only that a server runs, never the server itself.
-        app = app.oauth_as_plane(std::sync::Arc::new(()));
-    }
-    let app = app.build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let mut req = reqwest::Client::new().post(format!("http://{addr}/auth/token"));
-    for (k, v) in headers {
-        req = req.header(*k, v);
-    }
-    let resp = req.send().await.unwrap();
-    let out = (resp.status().as_u16(), resp.text().await.unwrap());
-    handle.abort();
-    out
+    served(reqwest::Method::POST, "/auth/token", headers, serving_as).await
 }
 
 /// RED (Q128 kernel part 10, MEDIUM): WHERE THIS DEPLOYMENT RUNS ITS OWN AUTHORIZATION SERVER, THE

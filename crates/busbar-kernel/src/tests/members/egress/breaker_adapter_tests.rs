@@ -15,7 +15,8 @@
 //! class (the fee leg) and its fault reading (the breaker's leg); the breaker unit reads the fault
 //! reading alone, or, when neither was stated, the fact that no answer came. No number crosses.
 
-use busbar_contract::caps::{KernelSeal, Pass, Route};
+use crate::test_support::tokens::pass;
+use busbar_contract::caps::{Pass, Route};
 use busbar_contract::transport::wire::{WireFault, WireStatusClass};
 use busbar_kernel_breaker::cfg::BreakerCfg;
 use busbar_kernel_breaker::classify::Reading;
@@ -23,12 +24,6 @@ use busbar_kernel_breaker::{Breaker as BreakerUnitTrait, BreakerUnit};
 use busbar_kernel_egress::ports::{
     Admit, Breaker, Classified, DestinationId, Disposition, Outcome, Unavailable, UpstreamStatus,
 };
-
-/// A fresh `Pass<Route>` for one `observe`/`state` call — test-only, minted through the
-/// kernel seal exactly as CG-29 says a real deployment would.
-fn route_token() -> Pass<Route> {
-    Pass::mint(&KernelSeal::acquire_for_kernel())
-}
 
 /// The integrator's binding of the egress unit's `Breaker` port onto the breaker unit's
 /// `BreakerUnit`. A thin wrapper with no policy of its own beyond the one status fold the module
@@ -198,7 +193,7 @@ impl Breaker for BreakerAdapter {
 #[test]
 fn a_fresh_destination_is_ready_and_admits() {
     let breaker = BreakerAdapter::new();
-    assert!(breaker.ready("pool", DestinationId::new(3), 0, &route_token()));
+    assert!(breaker.ready("pool", DestinationId::new(3), 0, &pass::<Route>()));
     assert!(breaker.admissible(DestinationId::new(3)));
     assert_eq!(
         breaker.try_admit("pool", DestinationId::new(3), 0),
@@ -249,23 +244,23 @@ fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects(
     let breaker = BreakerAdapter::new();
     // Touch the "pool" cell before the trip — `hard_down_all` fans out only to pools already
     // known for this destination (the default `""` cell is always included).
-    assert!(breaker.ready("pool", DestinationId::new(4), 0, &route_token()));
+    assert!(breaker.ready("pool", DestinationId::new(4), 0, &pass::<Route>()));
     let tripped = breaker.observe(
         "pool",
         DestinationId::new(4),
         Outcome::HardDown,
         0,
-        &route_token(),
+        &pass::<Route>(),
     );
     assert!(tripped);
 
-    assert!(!breaker.ready("pool", DestinationId::new(4), 10, &route_token()));
+    assert!(!breaker.ready("pool", DestinationId::new(4), 10, &pass::<Route>()));
     let err = breaker
         .try_admit("pool", DestinationId::new(4), 10)
         .unwrap_err();
     assert_eq!(err, Unavailable::BreakerOpen { until: 1800 });
     assert_eq!(
-        breaker.cooldown_remaining("pool", DestinationId::new(4), 10, &route_token()),
+        breaker.cooldown_remaining("pool", DestinationId::new(4), 10, &pass::<Route>()),
         1790
     );
 }
@@ -297,16 +292,16 @@ fn a_hard_reading_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destina
 
     // Two pools name the same destination. Touch both so both cells exist — `hard_down_all` fans
     // out to the pools already known for the destination.
-    assert!(breaker.ready("primary", destination, 0, &route_token()));
-    assert!(breaker.ready("secondary", destination, 0, &route_token()));
+    assert!(breaker.ready("primary", destination, 0, &pass::<Route>()));
+    assert!(breaker.ready("secondary", destination, 0, &pass::<Route>()));
 
-    assert!(breaker.observe("primary", destination, out.outcome, 0, &route_token()));
+    assert!(breaker.observe("primary", destination, out.outcome, 0, &pass::<Route>()));
 
     assert!(
-        breaker.cooldown_remaining("secondary", destination, 0, &route_token()) > 0,
+        breaker.cooldown_remaining("secondary", destination, 0, &pass::<Route>()) > 0,
         "the sibling lane goes down with it: a refused credential is not one pool's problem"
     );
-    assert!(!breaker.ready("secondary", destination, 0, &route_token()));
+    assert!(!breaker.ready("secondary", destination, 0, &pass::<Route>()));
 }
 
 /// The upstream asked for seven seconds, so it waits seven seconds — the ladder's own (much
@@ -337,9 +332,9 @@ fn a_transient_reading_with_a_stated_wait_of_seven_sets_a_seven_second_cooldown(
         }
     );
 
-    breaker.observe("primary", destination, out.outcome, 100, &route_token());
+    breaker.observe("primary", destination, out.outcome, 100, &pass::<Route>());
     assert_eq!(
-        breaker.cooldown_remaining("primary", destination, 100, &route_token()),
+        breaker.cooldown_remaining("primary", destination, 100, &pass::<Route>()),
         7,
         "the upstream's own wait is the floor the cooldown lands on"
     );
@@ -367,11 +362,11 @@ fn a_transient_reading_with_no_stated_wait_keeps_the_ladders_own_cooldown() {
     assert_eq!(out.disposition, Disposition::TransientUpstream);
     assert_eq!(out.outcome, Outcome::Transient { retry_after: None });
 
-    breaker.observe("primary", destination, out.outcome, 100, &route_token());
+    breaker.observe("primary", destination, out.outcome, 100, &pass::<Route>());
     // The failure streak is incremented before the cooldown is computed, so the first failure is
     // already one rung up the ladder (`base << 1` = 40), and every trip is jittered ±10% — so the
     // claim is the BAND that value sits in, not a point a reseeded jitter would break.
-    let remaining = breaker.cooldown_remaining("primary", destination, 100, &route_token());
+    let remaining = breaker.cooldown_remaining("primary", destination, 100, &pass::<Route>());
     assert!(
         (36..=44).contains(&remaining),
         "the ladder's own cooldown, jittered — nothing from the upstream moved it: {remaining}"
@@ -393,13 +388,13 @@ fn probe_release_crosses_the_seam() {
     let breaker = BreakerAdapter::new();
     // Trip and let the cooldown expire so the next admit wins a half-open recovery probe. Touch
     // "pool" first, same as above: `hard_down_all` only fans out to pools already known.
-    breaker.ready("pool", DestinationId::new(5), 0, &route_token());
+    breaker.ready("pool", DestinationId::new(5), 0, &pass::<Route>());
     breaker.observe(
         "pool",
         DestinationId::new(5),
         Outcome::HardDown,
         0,
-        &route_token(),
+        &pass::<Route>(),
     );
     let admit = breaker
         .try_admit("pool", DestinationId::new(5), 100_000)
