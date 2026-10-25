@@ -200,6 +200,7 @@ pub fn persist_provisioned_group(
 ) -> impl FnOnce() -> Result<(), String> + Send + 'static {
     move || {
         crate::config::overlay::persist_groups(
+            installed.root.durable,
             installed.overlay_path.as_deref(),
             &installed.groups_registry,
             None,

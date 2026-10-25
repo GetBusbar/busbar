@@ -105,15 +105,15 @@ fn linked_rows() -> (Vec<Row>, Vec<String>) {
     let mut rows: Vec<Row> = Vec::new();
     let stores = crate::LINKED.stores.iter();
     rows.extend(stores.map(|s| {
-        Row::of(&busbar_kernel::preflight::linked_store_row(
-            s,
+        Row::of(&crate::root::boot::linked_row(
+            &busbar_kernel::preflight::LinkedRow::Store(*s),
             crate::root::legacy::table(),
         ))
     }));
     let auths = crate::LINKED.auths.iter();
     rows.extend(auths.map(|a| {
-        Row::of(&busbar_kernel::preflight::linked_auth_row(
-            a,
+        Row::of(&crate::root::boot::linked_row(
+            &busbar_kernel::preflight::LinkedRow::Auth(*a),
             crate::root::legacy::table(),
         ))
     }));

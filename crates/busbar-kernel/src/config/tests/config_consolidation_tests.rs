@@ -37,7 +37,12 @@ fn a_mutable_default_persists_across_a_simulated_restart_with_no_env_var() {
         per_request_fee: Some(7),
         ..Default::default()
     };
-    persist_root(Some(&path), &settings).expect("persist must land durably");
+    persist_root(
+        crate::preflight::RootInstall::STAND_IN.durable,
+        Some(&path),
+        &settings,
+    )
+    .expect("persist must land durably");
     // Simulate a restart: read the overlay fresh from disk.
     let doc = read(&path).expect("overlay reads back after a 'restart'");
     assert_eq!(
@@ -49,7 +54,7 @@ fn a_mutable_default_persists_across_a_simulated_restart_with_no_env_var() {
 
 /// (b) LOCKED ⇒ no overlay backend, so a persist against it is REFUSED (never a silent success).
 ///
-/// Pre-1.5.3 there was no `locked` concept and `persist_root(None, ..)` returned
+/// Pre-1.5.3 there was no `locked` concept and `persist_root(crate::preflight::RootInstall::STAND_IN.durable, None, ..)` returned
 /// a silent `Ok`, so neither of these assertions could hold.
 #[test]
 fn b_locked_config_has_no_overlay_and_refuses_a_mutation() {
@@ -65,7 +70,12 @@ fn b_locked_config_has_no_overlay_and_refuses_a_mutation() {
     assert!(res.locked);
     assert!(res.path.is_none(), "locked ⇒ no overlay backend");
     // A persist against the locked (None) backend must ERROR, not silently succeed.
-    assert!(persist_root(res.path.as_deref(), &RootSettings::default()).is_err());
+    assert!(persist_root(
+        crate::preflight::RootInstall::STAND_IN.durable,
+        res.path.as_deref(),
+        &RootSettings::default()
+    )
+    .is_err());
 }
 
 /// (c) BOOT INVARIANT: a MUTABLE config with the overlay explicitly DISABLED refuses. That state
@@ -179,13 +189,14 @@ fn e_bare_filename_overlay_in_writable_cwd_is_writable() {
 /// (f) The `None` (LOCKED) overlay path is REFUSED by EVERY persist/reset entry point — not just
 /// `persist_root`. Guards against reverting any one of them to the pre-1.5.3 silent `Ok(())`.
 ///
-/// `clear_section(None, ..)` and `try_persist_plugin_versions(None, ..)` returned
+/// `clear_section(crate::preflight::RootInstall::STAND_IN.durable, None, ..)` and `try_persist_plugin_versions(crate::preflight::RootInstall::STAND_IN.durable, None, ..)` returned
 /// a silent `Ok(())` until this fix; reverting either to `return Ok(())` fails this test.
 #[test]
 fn f_every_persist_entry_point_refuses_a_none_locked_overlay() {
     let empty_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     assert!(
         persist(
+            crate::preflight::RootInstall::STAND_IN.durable,
             None,
             &HashMap::<String, HookCfg>::new(),
             &[],
@@ -194,10 +205,10 @@ fn f_every_persist_entry_point_refuses_a_none_locked_overlay() {
             &empty_names,
         )
         .is_err(),
-        "persist(None) must refuse (hooks)"
+        "persist(crate::preflight::RootInstall::STAND_IN.durable, None) must refuse (hooks)"
     );
     assert!(
-        persist_groups(
+        persist_groups(crate::preflight::RootInstall::STAND_IN.durable,
             None,
             &BTreeMap::<String, GroupCfg>::new(),
             None,
@@ -205,18 +216,18 @@ fn f_every_persist_entry_point_refuses_a_none_locked_overlay() {
             &empty_names,
         )
         .is_err(),
-        "persist_groups(None) must refuse (groups)"
+        "persist_groups(crate::preflight::RootInstall::STAND_IN.durable, None) must refuse (groups)"
     );
     assert!(
-        persist_root(None, &RootSettings::default()).is_err(),
-        "persist_root(None) must refuse (settings)"
+        persist_root(crate::preflight::RootInstall::STAND_IN.durable, None, &RootSettings::default()).is_err(),
+        "persist_root(crate::preflight::RootInstall::STAND_IN.durable, None) must refuse (settings)"
     );
     assert!(
-        clear_section(None, OverlaySection::Hooks).is_err(),
-        "clear_section(None) must refuse (per-section reset)"
+        clear_section(crate::preflight::RootInstall::STAND_IN.durable, None, OverlaySection::Hooks).is_err(),
+        "clear_section(crate::preflight::RootInstall::STAND_IN.durable, None) must refuse (per-section reset)"
     );
     assert!(
-        try_persist_plugin_versions(None, &BTreeMap::<String, String>::new()).is_err(),
-        "try_persist_plugin_versions(None) must refuse (rollback pin)"
+        try_persist_plugin_versions(crate::preflight::RootInstall::STAND_IN.durable, None, &BTreeMap::<String, String>::new()).is_err(),
+        "try_persist_plugin_versions(crate::preflight::RootInstall::STAND_IN.durable, None) must refuse (rollback pin)"
     );
 }

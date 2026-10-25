@@ -623,14 +623,14 @@ pub use busbar_kernel_identity::{
 /// provider the effective `providers` back with its module ([`Operator::backed`]), by any name the
 /// root legacy table the composition root lent (`legacy`) gives it.
 pub fn open_operator(
-    registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+    registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     digest: Option<String>,
     providers: &crate::config::IdentityProviders,
     root: &crate::preflight::RootInstall,
     legacy: crate::config::Legacy,
 ) -> Result<Operator, String> {
     let op = root.operator.provider;
-    let axis = crate::preflight::auth_axis(registry.clone());
+    let axis = crate::preflight::auth_axis(root, registry.clone());
     let answered = axis.as_ref().is_some_and(|axis| axis.answers(op));
     let defs = providers.iter().map(|(n, d)| (n.as_str(), d.module.trim()));
     let is_op = |m: &str| crate::config::names_operator(m, root, legacy);
@@ -645,9 +645,9 @@ pub fn open_operator(
 }
 
 /// Why no door on the auth axis answers `module`, in the registry's own words: the kind-neutral
-/// refusal every axis gives ([`busbar_plugin_loader::PluginRegistry::kind_refusal`]).
+/// refusal every axis gives ([`busbar_contract::plugin_rows::PluginRows::kind_refusal`]).
 pub(crate) fn auth_refusal(
-    registry: &busbar_plugin_loader::PluginRegistry,
+    registry: &dyn busbar_contract::plugin_rows::PluginRows,
     module: &str,
 ) -> String {
     registry.kind_refusal(
@@ -687,7 +687,7 @@ impl AdminAuthChain {
     /// silently-dropped module. Runs at boot AND reload (inside `build_app_from_config`).
     pub fn build(
         cfg: &AuthCfg,
-        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
         root: &crate::preflight::RootInstall,
         legacy: crate::config::Legacy,
@@ -724,8 +724,8 @@ impl AdminAuthChain {
                     let axis = match &axis {
                         Some(axis) => axis.clone(),
                         None => {
-                            let opened =
-                                crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
+                            let opened = crate::preflight::auth_axis(root, registry.clone())
+                                .ok_or_else(|| {
                                     refused(format!("no `kind: auth` plugin answers to '{other}'"))
                                 })?;
                             axis.insert(opened).clone()
@@ -734,7 +734,7 @@ impl AdminAuthChain {
                     // A module no door answers is refused in the registry's own words (a name only
                     // a door's Statement alias answers is the axis's).
                     if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry, other)));
+                        return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
                     // The host label is unique per opened instance: the admin chain's provider,
                     // apart from a data-plane provider of the same name.
@@ -785,8 +785,9 @@ impl AuthMiddleware {
     /// off; the instance is opened under it as its host label.
     pub fn new(
         cfg: &AuthCfg,
-        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
+        root: &crate::preflight::RootInstall,
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
         let mut chain: Vec<ChainEntry> = Vec::new();
@@ -845,8 +846,8 @@ impl AuthMiddleware {
                     let axis = match &axis {
                         Some(axis) => axis.clone(),
                         None => {
-                            let opened =
-                                crate::preflight::auth_axis(registry.clone()).ok_or_else(|| {
+                            let opened = crate::preflight::auth_axis(root, registry.clone())
+                                .ok_or_else(|| {
                                     refused(format!("no `kind: auth` plugin answers to '{other}'"))
                                 })?;
                             axis.insert(opened).clone()
@@ -855,7 +856,7 @@ impl AuthMiddleware {
                     // A module no door answers is refused in the registry's own words (a name only
                     // a door's Statement alias answers is the axis's).
                     if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry, other)));
+                        return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
                     let calls = axis
                         .open(other, &entry.name, &serde_json::Value::Object(resolved))
@@ -883,7 +884,7 @@ impl AuthMiddleware {
         if keys_in_chain {
             let axis = match &axis {
                 Some(axis) => Some(axis.clone()),
-                None => crate::preflight::auth_axis(registry.clone()),
+                None => crate::preflight::auth_axis(root, registry.clone()),
             };
             for module in axis.iter().flat_map(|a| a.credential_readers()) {
                 let calls = axis
@@ -916,7 +917,7 @@ impl AuthMiddleware {
         // without a style. FAIL-CLOSED: two rows stating it is a hard boot error, naming both.
         let carriers = match &axis {
             Some(axis) => axis.default_inbound_style()?,
-            None => crate::preflight::auth_axis(registry.clone())
+            None => crate::preflight::auth_axis(root, registry.clone())
                 .map(|axis| axis.default_inbound_style())
                 .transpose()?
                 .unwrap_or_default(),
@@ -934,7 +935,7 @@ impl AuthMiddleware {
             })
             .or_else(|| match &axis {
                 Some(axis) => axis.issued_credential(),
-                None => crate::preflight::auth_axis(registry.clone())
+                None => crate::preflight::auth_axis(root, registry.clone())
                     .and_then(|axis| axis.issued_credential()),
             });
         Ok(Self {
@@ -954,12 +955,11 @@ impl AuthMiddleware {
     pub fn new_builtin(cfg: &AuthCfg) -> Self {
         // The empty registry a test build's record would build, its auth rows opened through the
         // opener that record lends.
-        let registry = busbar_plugin_loader::PluginRegistry::empty()
-            .with_auth_axis(crate::test_support::lent_stand_in().auth_axis);
         let mut mw = Self::new(
             cfg,
-            &std::sync::Arc::new(registry),
+            &crate::test_support::rows::empty(),
             &crate::config::secret::SecretResolver::builtins_only(),
+            &crate::test_support::lent_stand_in(),
         )
         .expect("builtin-only auth chain never fails to construct");
         if mw.carriers.is_empty() {

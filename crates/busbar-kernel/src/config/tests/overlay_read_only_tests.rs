@@ -106,6 +106,7 @@ fn b_a_degraded_backend_refuses_a_persist_rather_than_silently_dropping_it() {
 
     assert!(
         crate::config::overlay::persist_root(
+            crate::preflight::RootInstall::STAND_IN.durable,
             res.path.as_deref(),
             &crate::config::overlay::RootSettings::default()
         )

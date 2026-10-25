@@ -595,7 +595,7 @@ async fn apply(
             Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
-                    busbar_kernel::config::overlay::persist_named_map(
+                    busbar_kernel::config::overlay::persist_named_map(p.root.durable,
                         p.overlay_path.as_deref(),
                         txn_section,
                         &persist_name,

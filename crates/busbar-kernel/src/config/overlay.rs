@@ -262,6 +262,7 @@ fn default_overlay_version() -> u32 {
 /// `None` path is NO LONGER a silent success: with the boot invariant it means the config is LOCKED,
 /// so the mutation is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
 pub fn persist(
+    durable: crate::durable::Lent,
     path: Option<&Path>,
     hooks: &HashMap<String, HookCfg>,
     global_hooks: &[String],
@@ -311,7 +312,7 @@ pub fn persist(
     doc.deleted
         .retain(|name| !hooks.contains_key(name) && base_hook_names.contains(name));
     doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+    write(durable, p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// Load the existing overlay for a read-modify-WRITE, or `None` to signal REFUSE-to-overwrite.
@@ -355,6 +356,7 @@ fn load_for_rmw(p: &Path) -> Option<OverlayDoc> {
 /// `deleted_add`/`deleted_remove` tombstone/untombstone a group name; a wholesale write (both `None`,
 /// e.g. rollback) reconciles away any tombstone for a name the restored registry contains.
 pub fn persist_groups(
+    durable: crate::durable::Lent,
     path: Option<&Path>,
     groups: &BTreeMap<String, GroupCfg>,
     deleted_add: Option<&str>,
@@ -387,7 +389,7 @@ pub fn persist_groups(
     doc.deleted_groups
         .retain(|name| !groups.contains_key(name) && base_group_names.contains(name));
     doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+    write(durable, p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// The `root` overlay section (1.5.0 full-config coverage): the API-settable SINGLE-VALUE config
@@ -553,7 +555,11 @@ impl RootSettings {
 /// clobbered). `None` path is a no-op. `settings` is the full desired root state (the merge of the
 /// prior overlay root + this request's fields is computed by the caller, so a `PUT /config/settings`
 /// passes the already-merged desired state here — this fn just stores it).
-pub fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), String> {
+pub fn persist_root(
+    durable: crate::durable::Lent,
+    path: Option<&Path>,
+    settings: &RootSettings,
+) -> Result<(), String> {
     let Some(p) = path else {
         // 1.5.3: this is the exact silent-`Ok` that let handlers report durable storage that never
         // happened. It is now a hard error. The boot invariant guarantees a MUTABLE config has a
@@ -574,7 +580,7 @@ pub fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), 
         Some(settings.clone())
     };
     doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+    write(durable, p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// Persist the `plugin_versions` overlay section — the durable half of an explicit plugin ROLLBACK
@@ -591,6 +597,7 @@ pub fn persist_root(path: Option<&Path>, settings: &RootSettings) -> Result<(), 
 /// a silent success (matching the sibling `persist_*`): it means the config is LOCKED, so the pin is
 /// refused ([`NO_WRITABLE_OVERLAY_MSG`]).
 pub fn try_persist_plugin_versions(
+    durable: crate::durable::Lent,
     path: Option<&Path>,
     pins: &BTreeMap<String, String>,
 ) -> Result<(), String> {
@@ -610,7 +617,7 @@ pub fn try_persist_plugin_versions(
     };
     doc.plugin_versions = pins.clone();
     doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+    write(durable, p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// One MUTABLE overlay SECTION — the unit a per-section reset (`DELETE /api/v1/admin/overlay/{section}`)
@@ -697,7 +704,11 @@ impl OverlaySection {
 /// silently drop the other section's tombstones) or a write failure, so `commit_and_swap` does not
 /// swap a reset it could not durably record. `None` path is NO LONGER a silent success: with the boot
 /// invariant it means the config is LOCKED, so the reset is refused ([`NO_WRITABLE_OVERLAY_MSG`]).
-pub fn clear_section(path: Option<&Path>, section: OverlaySection) -> Result<(), String> {
+pub fn clear_section(
+    durable: crate::durable::Lent,
+    path: Option<&Path>,
+    section: OverlaySection,
+) -> Result<(), String> {
     let Some(p) = path else {
         // 1.5.3: NEVER a silent `Ok` (matches `persist`/`persist_groups`/`persist_root`). With the boot
         // invariant (`locked` XOR a writable overlay), a mutable busbar always has a backend here, so
@@ -717,7 +728,7 @@ pub fn clear_section(path: Option<&Path>, section: OverlaySection) -> Result<(),
     };
     doc.clear_section(section);
     doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+    write(durable, p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// The persisted overlay document: the API-applied hook registry + global-hook wiring, plus TOMBSTONES
@@ -1005,9 +1016,10 @@ fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
 /// during normal operation, and `write_with` already gives every call a per-call-unique
 /// `.<name>.<pid>-<seq>.tmp` temp name, so there is no fixed, guessable temp name for a pre-planted
 /// decoy to occupy in the first place — the anti-pre-plant posture would add no protection here.
-pub fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
+pub fn write(durable: crate::durable::Lent, path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?;
     crate::durable::write_with(
+        durable,
         path,
         &json,
         crate::durable::DurableOpts {
@@ -1198,6 +1210,7 @@ pub fn apply_pre_resolve_sections(
 /// section (and its tombstones) is carried forward verbatim, an unreadable overlay is REFUSED rather
 /// than clobbered, and a `None` path is the LOCKED config (refuse, never a silent `Ok`).
 pub fn persist_named_map(
+    durable: crate::durable::Lent,
     path: Option<&Path>,
     section: crate::config::named_map::NamedMapSection,
     name: &str,
@@ -1231,7 +1244,7 @@ pub fn persist_named_map(
         }
     }
     doc.version = OVERLAY_VERSION;
-    write(p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
+    write(durable, p, &doc).map_err(|e| format!("overlay write to '{}' failed: {e}", p.display()))
 }
 
 /// Merge an overlay into the RESOLVED config (the boot-merge, run AFTER `config::resolve` - the

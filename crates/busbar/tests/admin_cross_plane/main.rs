@@ -15,6 +15,9 @@
 #[path = "../linked/mod.rs"]
 mod linked;
 
+#[path = "../common/root_install.rs"]
+mod root_install;
+
 mod keys;
 #[cfg(feature = "openapi-schema")]
 mod openapi;
@@ -50,10 +53,17 @@ pub(crate) const ROOT_WORDS: busbar_kernel::test_support::OperatorWords =
 const ROOT_AUTH_ROWS: &[busbar_kernel::preflight::LinkedAuth] =
     operator_auth_rows!(ROOT_WORDS.provider);
 
-/// THE RECORD THIS BINARY LENDS its apps and configurations: the stand-in, lending the root's
-/// operator credential row and words as the root's install record lends them.
+/// THE RECORD THIS BINARY LENDS its apps and configurations: the loader-backed root over the
+/// stand-in ([`root_install::RECORD`]), lending the root's operator credential row and words as the
+/// root's install record lends them. The operator credential's row is the root's REAL operator auth
+/// door, which only the loader's auth rows open (the kernel's stand-in axis answers its in-process
+/// doubles alone).
 pub(crate) const ROOT_RECORD: busbar_kernel::preflight::RootInstall =
-    busbar_kernel::test_support::lending_auth(ROOT_AUTH_ROWS, ROOT_WORDS);
+    busbar_kernel::preflight::RootInstall {
+        auths: ROOT_AUTH_ROWS,
+        operator: ROOT_WORDS,
+        ..root_install::RECORD
+    };
 
 /// Install the process-wide test environment exactly once: every test-linked plane
 /// (`linked::install`) and the admin mount seam — the order busbar-core-admin's own test
@@ -61,6 +71,10 @@ pub(crate) const ROOT_RECORD: busbar_kernel::preflight::RootInstall =
 pub(crate) fn ensure_seam() {
     static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
     SEAM_ONCE.call_once(|| {
+        // The loader-backed root over the kernel's stand-in (`root_install`), for what resolves a
+        // configuration under no record of its own; every app here is lent [`ROOT_RECORD`], which
+        // lends the same loader-backed rows.
+        root_install::install();
         linked::install();
         busbar_core_admin::install();
     });
@@ -70,7 +84,9 @@ pub(crate) fn ensure_seam() {
 /// `.build()` resolves them, lent [`ROOT_RECORD`].
 pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
     ensure_seam();
-    busbar_kernel::test_support::TestApp::new().root(ROOT_RECORD)
+    busbar_kernel::test_support::TestApp::new()
+        .root(ROOT_RECORD)
+        .plugin_admission(&root_install::ADMISSION)
 }
 
 /// The admin service's router over `app`, after [`ensure_seam`].

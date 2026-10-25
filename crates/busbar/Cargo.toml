@@ -394,7 +394,7 @@ plane-a2a-door = "busbar-plane-a2a"
 # What each linked feature's crate registers (keyed by the feature, as the linked row is), axis by axis: `plane` (PLANE_DECLARATION + PLANE_HOOKS, joined
 # kernel-side), `protocols`, `body-ingress`, `protocol-seams`, `diagnostics`,
 # `on-host`, `compose`, `exports` — each an item of the crate's entry
-# module — and the root-bound seams it drives: `egress`, `plane-sections`.
+# module — and the root-bound seam it drives: `egress`.
 # `claims`: the pure plane the boot seal registers (`PLANE`) and the claims it declares (`CLAIMS`).
 # `node`: the entry's `install_node`, handed the node a root unit drives the entry's units through.
 # `transport`: a wire's memory-ABI `door`, and nothing else: its key (its own claim, which is its
@@ -645,6 +645,9 @@ futures = { workspace = true }
 # runtime dep after the core split, so the integration test needs its own copy.
 base64 = { workspace = true }
 bytes = { workspace = true }
+# `src/root/tests/admin_plugin_admission.rs` types the admin contract's request and view bodies it
+# drives (derive only; no wire shape is spelled as a string).
+serde = { workspace = true }
 serde_json = { workspace = true }
 # The dropped-in export plugin's end-to-end proof (`tests/export_plugin_dropped_in_serves.rs`): the
 # FILE sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge

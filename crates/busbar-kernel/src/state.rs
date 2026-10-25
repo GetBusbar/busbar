@@ -425,11 +425,12 @@ pub struct App {
     /// catalog entry's trust verdict. Carried on the snapshot (not a global) so it is testable and
     /// survives swaps.
     pub plugins_cfg: crate::config::PluginsCfg,
-    /// The composition root's ONE plugin trust builder ([`crate::preflight::RootInstall`]'s
-    /// `trust_policy`, the one boot admits plugins under): every admin moment that judges a plugin
-    /// (catalog, install, inspect, rollback) resolves `plugins_cfg` through it and through nothing
-    /// else, so the operator surface reports the verdict boot reaches. `None` = no root installed one.
-    pub plugin_trust: Option<crate::preflight::TrustPolicyBuild>,
+    /// The composition root's PLUGIN ADMISSION ([`crate::preflight::RootInstall`]'s `admission`,
+    /// over the one trust builder boot admits plugins under): every admin moment that judges a
+    /// plugin (catalog, install, inspect, rollback) resolves `plugins_cfg` through it and through
+    /// nothing else, so the operator surface reports the verdict boot reaches. `None` = no root
+    /// installed one.
+    pub plugin_admission: Option<&'static dyn crate::admission::PluginAdmission>,
     /// THE INSTALL RECORD THE COMPOSITION ROOT LENT the configuration this snapshot was built from
     /// ([`crate::config::RootCfg::root`]): what the operator surface reads the linked rows off (the
     /// store catalog's `stores`, the compiled-in `hook_names`, the registry link a plugin install

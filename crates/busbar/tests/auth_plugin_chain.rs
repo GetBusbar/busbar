@@ -112,11 +112,11 @@ fn auth_manifest(name: &str, alias: &str, publisher: &str) -> busbar_plugin_load
 }
 
 /// The module's tarball SIGNED FIRST-PARTY (publisher `busbar`) under the test build's release key
-/// (`busbar_kernel::test_support::test_release_key`), the trust a shipped busbar gives the module
+/// (`common::root_install::release_key`), the trust a shipped busbar gives the module
 /// with no `plugins.trust` opt-in.
 fn first_party_tarball(mut m: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<u8> {
     m.publisher = busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into();
-    common::plugins::signed(&busbar_kernel::test_support::test_release_key(), m, lib)
+    common::plugins::signed(&common::root_install::release_key(), m, lib)
 }
 
 /// Write the auth module's tarball, signed first-party ([`first_party_tarball`]), into `dir` under
@@ -194,6 +194,7 @@ fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>
 /// UNRESOLVABLE ref fails the load FAIL-CLOSED — the plugin is never handed a dangling reference.
 #[test]
 fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
+    common::root_install::install();
     let dir = tmp_plugin_dir("auth-plugin-secret-ref");
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "ref-auth");
     let plugins = plugins_cfg_allow_unsigned(&dir);
@@ -209,7 +210,7 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
     );
     let cfg = chain_with("ref-auth", settings);
     let registry = busbar_kernel::plugins_preflight(
-        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        &common::root_install::RECORD,
         None,
         Some(&cfg),
         &Default::default(),
@@ -219,11 +220,11 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
         busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("preflight resolves the kind:auth plugin");
-    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        &common::root_install::RECORD,
     )
     .expect("a resolvable setting ref is delivered and the plugin loads");
     assert_eq!(mw.chain_names(), vec![module_name()], "plugin loaded");
@@ -239,6 +240,7 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
         &cfg,
         &registry,
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        &common::root_install::RECORD,
     )
     .expect_err("an unresolvable setting ref fails the load fail-closed");
     assert!(
@@ -272,6 +274,7 @@ fn auth_plugin_setting_secret_ref_is_resolved_and_delivered() {
 /// trust-root path intact.
 #[test]
 fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
+    common::root_install::install();
     let dir = tmp_plugin_dir("auth-plugin-root-secret-contract");
     write_auth_plugin_with_root_secret_schema(&dir, "idp.tar.gz", "acme-idp", "sec-auth");
     let plugins = plugins_cfg_allow_unsigned(&dir);
@@ -288,7 +291,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
     let cfg = chain_with("sec-auth", settings);
 
     let registry = busbar_kernel::plugins_preflight(
-        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        &common::root_install::RECORD,
         None,
         Some(&cfg),
         &Default::default(),
@@ -301,11 +304,11 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
         "preflight resolves the kind:auth plugin, whose manifest declares `audience` as a \
                  root-level x-busbar-secret field",
     );
-    let registry = std::sync::Arc::new(registry);
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        &common::root_install::RECORD,
     )
     .expect(
         "the {env: VAR} reference resolves BEFORE open() — the module's `audience: String` field \
@@ -350,6 +353,7 @@ fn auth_plugin_root_level_secret_marked_setting_resolves_and_authenticates() {
 /// a non-token and an absent credential fail-closed-deny.
 #[test]
 fn auth_plugin_loads_and_identifies_through_middleware() {
+    common::root_install::install();
     let dir = tmp_plugin_dir("auth-plugin-e2e");
     // The config chain name is the ALIAS `my-auth`; the plugin's canonical name differs on purpose.
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "my-auth");
@@ -358,7 +362,7 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
 
     // Manifest-only preflight resolves the auth plugin (the `--validate`/boot gate).
     let registry = busbar_kernel::plugins_preflight(
-        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        &common::root_install::RECORD,
         None,
         Some(&cfg),
         &Default::default(),
@@ -368,13 +372,13 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
         busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("preflight resolves the kind:auth plugin");
-    let registry = std::sync::Arc::new(registry);
 
     // The real load through the middleware — resolve → the auth axis opens it → chain.
     let mw = AuthMiddleware::new(
         &cfg,
         &registry,
         &busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        &common::root_install::RECORD,
     )
     .expect("auth chain loads the plugin");
     // The RUNTIME module identity is the plugin's own `name()`, NOT the config alias.
@@ -431,17 +435,18 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
 /// the reload path can never leave `admin_modules` stale/empty.
 #[test]
 fn admin_modules_rebuilt_on_reload() {
+    common::root_install::install();
     use busbar_kernel::auth::AdminAuthChain;
     let dir = tmp_plugin_dir("admin-modules-reload");
     write_auth_plugin(&dir, "idp.tar.gz", "acme-idp", "admin-oidc");
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let registry = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins.dir),
-        &busbar_kernel::test_support::trust_policy(&plugins).unwrap(),
+        &common::root_install::trust_policy(&plugins).unwrap(),
     )
-    .expect("scan succeeds")
-    .with_auth_axis(busbar_kernel::preflight::RootInstall::STAND_IN.auth_axis);
-    let registry = std::sync::Arc::new(registry);
+    .expect("scan succeeds");
+    let registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows> =
+        std::sync::Arc::new(registry);
     let mut cfg = AuthCfg::default_none();
     let mut entry = AuthChainEntry::bare("admin-oidc");
     entry.settings = settings();
@@ -456,7 +461,7 @@ fn admin_modules_rebuilt_on_reload() {
         &cfg,
         &registry,
         &resolver,
-        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        &common::root_install::RECORD,
         busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("boot builds admin chain");
@@ -475,7 +480,7 @@ fn admin_modules_rebuilt_on_reload() {
         &cfg,
         &registry,
         &resolver,
-        &busbar_kernel::preflight::RootInstall::STAND_IN,
+        &common::root_install::RECORD,
         busbar_kernel::config::Legacy::stand_in(),
     )
     .expect("reload rebuilds admin chain");
@@ -494,6 +499,7 @@ fn admin_modules_rebuilt_on_reload() {
 /// configuration read from disk as boot reads it.
 #[test]
 fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login() {
+    common::root_install::install();
     let dir = tmp_plugin_dir("auth-login-v1-gate");
     let lib = std::fs::read(auth_cdylib()).expect("read the auth module's cdylib");
     let mut manifest = auth_manifest("acme-idp", "cap-idp", "acme");
@@ -502,7 +508,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let errs = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins.dir),
-        &busbar_kernel::test_support::trust_policy(&plugins).unwrap(),
+        &common::root_install::trust_policy(&plugins).unwrap(),
     )
     .expect_err("a v1 auth plugin is refused at boot");
     assert!(

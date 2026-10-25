@@ -117,7 +117,12 @@ impl DurableStore {
         let answer = write.apply(&store)?;
         journal.push(write);
         let bytes = serde_json::to_vec(&journal).map_err(|e| err(&e))?;
-        crate::durable::write(&self.path, &bytes).map_err(|e| err(&e))?;
+        crate::durable::write(
+            crate::preflight::RootInstall::STAND_IN.durable,
+            &self.path,
+            &bytes,
+        )
+        .map_err(|e| err(&e))?;
         serde_json::from_value(answer).map_err(|e| err(&e))
     }
 }

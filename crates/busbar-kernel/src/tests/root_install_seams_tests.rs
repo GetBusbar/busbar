@@ -126,8 +126,8 @@ fn the_auth_axis_opener_rides_the_install_record_not_a_static() {
 }
 
 /// The registry built from a record opens its auth rows through THAT record's opener: the linked
-/// registry of a record that lends one carries it, and the linked registry of a record that lends
-/// none carries none, in the same process.
+/// registry of a record that lends one opens through it, and the linked registry of a record that
+/// lends none opens through none, in the same process.
 #[test]
 fn the_auth_axis_opener_rides_the_registry_built_from_the_record() {
     let legacy = crate::config::Legacy::stand_in();
@@ -137,8 +137,8 @@ fn the_auth_axis_opener_rides_the_registry_built_from_the_record() {
     };
     let opened = crate::preflight::linked(&lent, legacy).expect("the lent rows link");
     assert!(
-        opened.auth_axis().is_some(),
-        "the registry built from a record that lends an opener carries it"
+        crate::preflight::auth_axis(&lent, opened).is_some(),
+        "the registry built from a record that lends an opener opens through it"
     );
     let unlent = RootInstall {
         auth_axis: None,
@@ -146,8 +146,8 @@ fn the_auth_axis_opener_rides_the_registry_built_from_the_record() {
     };
     let closed = crate::preflight::linked(&unlent, legacy).expect("the unlent rows link");
     assert!(
-        closed.auth_axis().is_none(),
-        "the registry built from a record that lends no opener carries none, whatever another \
+        crate::preflight::auth_axis(&unlent, closed).is_none(),
+        "the registry built from a record that lends no opener opens through none, whatever another \
          record lent"
     );
 }

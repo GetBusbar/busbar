@@ -21,7 +21,7 @@ fn write_read_round_trip() {
         &HashMap::from([("compress".to_string(), gate())]),
         &["compress".to_string()],
     );
-    write(&path, &doc).expect("atomic write");
+    write(crate::preflight::RootInstall::STAND_IN.durable, &path, &doc).expect("atomic write");
     let read_back = read(&path).expect("read back");
     assert!(read_back.hooks.contains_key("compress"));
     assert_eq!(read_back.global_hooks, vec!["compress".to_string()]);
@@ -41,7 +41,8 @@ fn write_read_round_trip() {
     // A pre-existing stale temp from a prior crashed run (a foreign name under the primitive's
     // per-call-unique naming) must NOT wedge the next write — it is simply ignored.
     std::fs::write(path.with_extension("overlay.tmp"), b"stale").unwrap();
-    write(&path, &doc).expect("write despite a pre-existing stale temp");
+    write(crate::preflight::RootInstall::STAND_IN.durable, &path, &doc)
+        .expect("write despite a pre-existing stale temp");
     assert!(no_durable_temp(), "no durable temp should remain");
     let _ = std::fs::remove_file(path.with_extension("overlay.tmp"));
     let _ = std::fs::remove_file(&path);
@@ -65,7 +66,7 @@ fn write_is_0600() {
         &HashMap::from([("compress".to_string(), gate())]),
         &["compress".to_string()],
     );
-    write(&path, &doc).expect("atomic write");
+    write(crate::preflight::RootInstall::STAND_IN.durable, &path, &doc).expect("atomic write");
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(
         mode, 0o600,
@@ -160,6 +161,7 @@ fn persist_refuses_to_overwrite_unreadable_overlay() {
     let corrupt = b"{ this is not valid json and may hide tombstones";
     std::fs::write(&path, corrupt).unwrap();
     let err = persist(
+        crate::preflight::RootInstall::STAND_IN.durable,
         Some(&path),
         &HashMap::from([("newhook".to_string(), gate())]),
         &["newhook".to_string()],
@@ -190,6 +192,7 @@ fn persist_reconciles_tombstone_against_present_hook() {
     let path = dir.join(format!("busbar-overlay-recon-{}.json", std::process::id()));
     // Seed a prior overlay that tombstoned "x" (an earlier API delete).
     write(
+        crate::preflight::RootInstall::STAND_IN.durable,
         &path,
         &OverlayDoc {
             hooks: HashMap::new(),
@@ -201,6 +204,7 @@ fn persist_reconciles_tombstone_against_present_hook() {
     .unwrap();
     // Rollback restores a registry that CONTAINS "x", persisting with both tombstone args None.
     persist(
+        crate::preflight::RootInstall::STAND_IN.durable,
         Some(&path),
         &HashMap::from([("x".to_string(), gate())]),
         &["x".to_string()],
@@ -234,6 +238,7 @@ fn persist_prunes_tombstone_for_a_name_absent_from_base_config() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("busbar-ovl-prune-hook-{}.json", std::process::id()));
     write(
+        crate::preflight::RootInstall::STAND_IN.durable,
         &path,
         &OverlayDoc {
             hooks: HashMap::new(),
@@ -246,6 +251,7 @@ fn persist_prunes_tombstone_for_a_name_absent_from_base_config() {
     let base_hook_names: std::collections::HashSet<String> =
         ["shadowed_base".to_string()].into_iter().collect();
     persist(
+        crate::preflight::RootInstall::STAND_IN.durable,
         Some(&path),
         &HashMap::from([("newhook".to_string(), gate())]),
         &["newhook".to_string()],
@@ -305,6 +311,7 @@ fn persist_hook_preserves_groups_section() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("busbar-ovl-preserve-{}.json", std::process::id()));
     write(
+        crate::preflight::RootInstall::STAND_IN.durable,
         &path,
         &OverlayDoc {
             groups: BTreeMap::from([("user:bob".to_string(), group_with_budget())]),
@@ -314,6 +321,7 @@ fn persist_hook_preserves_groups_section() {
     )
     .unwrap();
     persist(
+        crate::preflight::RootInstall::STAND_IN.durable,
         Some(&path),
         &HashMap::from([("h".to_string(), gate())]),
         &["h".to_string()],
@@ -346,6 +354,7 @@ fn persist_groups_preserves_hooks_and_reconciles_tombstone() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("busbar-ovl-gpreserve-{}.json", std::process::id()));
     write(
+        crate::preflight::RootInstall::STAND_IN.durable,
         &path,
         &OverlayDoc {
             hooks: HashMap::from([("keepme".to_string(), gate())]),
@@ -356,6 +365,7 @@ fn persist_groups_preserves_hooks_and_reconciles_tombstone() {
     .unwrap();
     // Persist a group registry that CONTAINS "x" (a rollback), both tombstone args None.
     persist_groups(
+        crate::preflight::RootInstall::STAND_IN.durable,
         Some(&path),
         &BTreeMap::from([("x".to_string(), group_with_budget())]),
         None,
@@ -388,6 +398,7 @@ fn persist_groups_prunes_tombstone_for_a_name_absent_from_base_config() {
         std::process::id()
     ));
     write(
+        crate::preflight::RootInstall::STAND_IN.durable,
         &path,
         &OverlayDoc {
             deleted_groups: vec!["ghost_group".to_string(), "shadowed_base_group".to_string()],
@@ -398,6 +409,7 @@ fn persist_groups_prunes_tombstone_for_a_name_absent_from_base_config() {
     let base_group_names: std::collections::HashSet<String> =
         ["shadowed_base_group".to_string()].into_iter().collect();
     persist_groups(
+        crate::preflight::RootInstall::STAND_IN.durable,
         Some(&path),
         &BTreeMap::from([("newgroup".to_string(), group_with_budget())]),
         None,
@@ -443,7 +455,7 @@ fn overlay_section_parse_round_trips_and_rejects() {
     }
 }
 
-/// `clear_section(Groups)` wipes the groups entries + tombstones and leaves the hooks section
+/// `clear_section(crate::preflight::RootInstall::STAND_IN.durable, Groups)` wipes the groups entries + tombstones and leaves the hooks section
 /// (and its tombstones) untouched — the per-section reset invariant.
 #[test]
 fn clear_section_wipes_one_section_only() {
@@ -498,6 +510,7 @@ fn clear_section_persist_preserves_sibling() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("busbar-ovl-clearsect-{}.json", std::process::id()));
     write(
+        crate::preflight::RootInstall::STAND_IN.durable,
         &path,
         &OverlayDoc {
             hooks: HashMap::from([("keepme".to_string(), gate())]),
@@ -508,7 +521,12 @@ fn clear_section_persist_preserves_sibling() {
         },
     )
     .unwrap();
-    clear_section(Some(&path), OverlaySection::Groups).expect("clear groups section");
+    clear_section(
+        crate::preflight::RootInstall::STAND_IN.durable,
+        Some(&path),
+        OverlaySection::Groups,
+    )
+    .expect("clear groups section");
     let doc = read(&path).expect("read back");
     assert!(
         doc.groups.is_empty() && doc.deleted_groups.is_empty(),
@@ -539,7 +557,12 @@ fn clear_section_refuses_to_overwrite_corrupt_overlay() {
     let corrupt = b"{ not valid json hiding tombstones";
     std::fs::write(&path, corrupt).unwrap();
     assert!(
-        clear_section(Some(&path), OverlaySection::Groups).is_err(),
+        clear_section(
+            crate::preflight::RootInstall::STAND_IN.durable,
+            Some(&path),
+            OverlaySection::Groups
+        )
+        .is_err(),
         "clearing a section on a corrupt overlay must FAIL CLOSED (refuse), not clobber it"
     );
     let raw = std::fs::read(&path).expect("still present");
@@ -629,6 +652,7 @@ fn persist_root_round_trips_and_preserves_siblings() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("busbar-ovl-root-{}.json", std::process::id()));
     write(
+        crate::preflight::RootInstall::STAND_IN.durable,
         &path,
         &OverlayDoc {
             hooks: HashMap::from([("keepme".to_string(), gate())]),
@@ -638,7 +662,12 @@ fn persist_root_round_trips_and_preserves_siblings() {
         },
     )
     .unwrap();
-    persist_root(Some(&path), &sample_root()).expect("persist root");
+    persist_root(
+        crate::preflight::RootInstall::STAND_IN.durable,
+        Some(&path),
+        &sample_root(),
+    )
+    .expect("persist root");
     let doc = read(&path).expect("read back");
     assert!(
         doc.root
@@ -654,14 +683,19 @@ fn persist_root_round_trips_and_preserves_siblings() {
         "group tombstones preserved"
     );
     // Storing an empty root clears the section.
-    persist_root(Some(&path), &RootSettings::default()).expect("persist empty root");
+    persist_root(
+        crate::preflight::RootInstall::STAND_IN.durable,
+        Some(&path),
+        &RootSettings::default(),
+    )
+    .expect("persist empty root");
     let doc = read(&path).expect("read back after clear");
     assert!(doc.root.is_none(), "empty root clears the section");
     assert!(doc.hooks.contains_key("keepme"), "hooks still preserved");
     let _ = std::fs::remove_file(&path);
 }
 
-/// `clear_section(Root)` wipes only the root override; the hooks/groups sections survive. And the
+/// `clear_section(crate::preflight::RootInstall::STAND_IN.durable, Root)` wipes only the root override; the hooks/groups sections survive. And the
 /// on-disk `clear_section` refuses a corrupt overlay (fail-closed, like the sibling sections).
 #[test]
 fn clear_root_section_only() {
@@ -792,6 +826,7 @@ fn persist_plugin_versions_round_trips_and_preserves_siblings() {
     let dir = std::env::temp_dir();
     let path = dir.join(format!("busbar-ovl-pins-{}.json", std::process::id()));
     write(
+        crate::preflight::RootInstall::STAND_IN.durable,
         &path,
         &OverlayDoc {
             hooks: HashMap::from([("keepme".to_string(), gate())]),
@@ -801,7 +836,12 @@ fn persist_plugin_versions_round_trips_and_preserves_siblings() {
     )
     .unwrap();
     let pins = BTreeMap::from([("acme-store-x".to_string(), "1.4.0".to_string())]);
-    try_persist_plugin_versions(Some(&path), &pins).unwrap();
+    try_persist_plugin_versions(
+        crate::preflight::RootInstall::STAND_IN.durable,
+        Some(&path),
+        &pins,
+    )
+    .unwrap();
     let doc = read(&path).expect("read back");
     assert_eq!(
         doc.plugin_versions.get("acme-store-x").map(String::as_str),
@@ -816,7 +856,12 @@ fn persist_plugin_versions_round_trips_and_preserves_siblings() {
     );
 
     // Clearing the pins restores the base floors and preserves siblings.
-    try_persist_plugin_versions(Some(&path), &BTreeMap::new()).unwrap();
+    try_persist_plugin_versions(
+        crate::preflight::RootInstall::STAND_IN.durable,
+        Some(&path),
+        &BTreeMap::new(),
+    )
+    .unwrap();
     let doc = read(&path).expect("read back after clear");
     assert!(doc.plugin_versions.is_empty(), "pins cleared");
     assert!(doc.hooks.contains_key("keepme"), "hooks still preserved");
@@ -827,7 +872,7 @@ fn persist_plugin_versions_round_trips_and_preserves_siblings() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// `clear_section(PluginVersions)` wipes only the pins; the other sections survive — the durable
+/// `clear_section(crate::preflight::RootInstall::STAND_IN.durable, PluginVersions)` wipes only the pins; the other sections survive — the durable
 /// half of `DELETE /api/v1/admin/overlay/plugin_versions` (lift every rollback pin).
 #[test]
 fn clear_plugin_versions_section_only() {

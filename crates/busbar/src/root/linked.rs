@@ -323,10 +323,7 @@ pub fn linked_exports(
             manifest(d.name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
                 .map(|row| {
-                    busbar_kernel::preflight::answering_former_names(
-                        row,
-                        crate::root::legacy::table(),
-                    )
+                    crate::root::boot::answering_former_names(row, crate::root::legacy::table())
                 })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -430,7 +427,7 @@ pub fn register_stores(linked: &Linked) -> RootInstall {
             // table: the record holds them, as it holds the stores.
             auths: linked.auths,
             operator: crate::root::auth_bindings::operator_words(),
-            registry_build: Some(crate::root::boot::registry),
+            registry_build: Some(crate::root::boot::registry_rows),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
             hook_names: crate::LINKED_HOOK_NAMES,
@@ -443,7 +440,12 @@ pub fn register_stores(linked: &Linked) -> RootInstall {
             rate_apply: Some(&crate::root::kernel::CardRepricer),
             rate_epoch: Some(&crate::root::kernel::CardRepricer),
             export_axis: Some(&crate::root::exports::EXPORTS),
-            trust_policy: Some(crate::root::boot::trust_policy),
+            admission: Some(&crate::root::admission::ADMISSION),
+            durable: Some(&crate::root::admission::DURABLE),
+            plugin_logs: Some(crate::root::admission::plugin_logs),
+            hook_answers: Some(crate::root::admission::hook_answers),
+            auth_chain_module: Some(crate::root::admission::auth_chain_module),
+            dispatch_latched: Some(crate::root::admission::dispatch_latched),
             auth_axis: Some(crate::root::dispatch::auth_axis),
             config_projection: Some(crate::root::door_steps::door_config),
         },
@@ -1020,18 +1022,6 @@ fn catalogue_entries(
         }
     }
     Ok(declared)
-}
-
-/// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
-/// (the manifest's `plane-sections` axis, emitted by the build script as a `linked_*` cfg): the
-/// parse-time section list a cross-plane hook refusal reads. The `egress` axis binds nothing here:
-/// a plane dials through the one connector. The egress-trust host is installed by `run` once the
-/// configuration loads, over the destination guard.
-pub fn register_seams() {
-    #[cfg(linked_plane_sections)]
-    busbar_kernel::config::plane_sections::install_plane_sections(
-        busbar_kernel::config::plane_sections::config_sections,
-    );
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a
