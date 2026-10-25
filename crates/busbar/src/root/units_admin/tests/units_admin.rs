@@ -388,22 +388,22 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
     }
 }
 
-/// THE SIX VERBS THAT USED TO WAIT ON AN OPERATOR KEY ARE PLAIN SCOPED VERBS AT THE ROUTE STEP
+/// THE VERBS THAT USED TO WAIT ON AN OPERATOR KEY ARE PLAIN SCOPED VERBS AT THE ROUTE STEP
 /// (#77(9), OWNER-LOCKED, `docs/design/BUSBAR-1.6.0.md` l.2279: "no verb carries dual control,
 /// escrow or operator signatures. Each verb is a plain scoped verb authorized by the per-verb
 /// allow-list on the admin token").
 ///
 /// A binding as `AdminBinding::new` builds it — no operator key anywhere, because there is none to
-/// configure — walks each of `chain_break`, `store_restore`, `commit_upgrade`,
-/// `reseal_epoch_floor`, `adjust` and `amend_rate_history` past authorization under a grant that
+/// configure — walks each of `chain_break`, `store_restore`, `commit_upgrade`, `adjust` and
+/// `amend_rate_history` past authorization under a grant that
 /// covers it (`full`): whatever the verb's own effect then answers over this fixture's refusing
 /// store and empty bodies, it is never the scope refusal. Under a grant that does NOT cover it
 /// (`read-only`) every one is refused at scope. RED before the fix: under the default unsealed
-/// posture every one of the six was refused `OperatorUnset`, which this step says as
+/// posture every one of them was refused `OperatorUnset`, which this step says as
 /// `ScopeDenied`, whatever the grant.
 #[test]
 #[cfg(feature = "root-admin")]
-fn the_six_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
+fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
     let seal = busbar_kernel::test_support::tokens::seal();
     let admin = crate::root::kernel::new_kernel().admin_token();
 
@@ -414,7 +414,7 @@ fn the_six_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
         request.method = "POST".to_string();
         request.path = path.to_string();
         // `store_restore` refuses a body naming no backup before it reaches authorization, so every
-        // body names one; the other five read nothing from it that would change the assertion.
+        // body names one; the others read nothing from it that would change the assertion.
         request.body = b"{\"backup_ref\":\"backup-1\"}".to_vec();
         binding.units.open(key, request);
         let ctx = UnitCtx {
@@ -441,7 +441,6 @@ fn the_six_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
         "/api/v1/admin/chain-break",
         "/api/v1/admin/store-restore",
         "/api/v1/admin/commit-upgrade",
-        "/api/v1/admin/reseal-epoch-floor",
         "/api/v1/admin/adjust",
         "/api/v1/admin/ledger/amend-rate-history",
     ] {
@@ -1559,7 +1558,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
 /// stop passing.
 const AN_IDENTIFIED_OPERATOR: &str = "operator-alice";
 
-/// Each of the three recovery verbs reaches the STORE, and a refusing store's answer is the
+/// Each of the two recovery verbs reaches the STORE, and a refusing store's answer is the
 /// caller's.
 ///
 /// The three used to travel `Verbs::execute`, which sends every new verb to the governance seam
@@ -1599,17 +1598,6 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
                 .push(format!("store_restore:{backup_ref}"));
             Err(busbar_contract::verb_store::StoreError::Failed)
         }
-
-        fn reseal_epoch_floor(
-            &self,
-            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_contract::verb_store::StoreError> {
-            self.0
-                .lock()
-                .unwrap()
-                .push("reseal_epoch_floor".to_string());
-            Err(busbar_contract::verb_store::StoreError::Failed)
-        }
     }
 
     /// A dispatch that must never be asked. If a recovery verb still travelled the governance
@@ -1631,11 +1619,6 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             "/api/v1/admin/store-restore",
             "{\"backup_ref\":\"nightly-2026-09-05\"}",
             "store_restore:nightly-2026-09-05",
-        ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
         ),
     ] {
         let store = Arc::new(RecordingStore::default());
@@ -1813,11 +1796,7 @@ fn exactly_three_verbs_land_on_the_store() {
         .collect();
     assert_eq!(
         landing,
-        vec![
-            KernelVerb::ChainBreak,
-            KernelVerb::StoreRestore,
-            KernelVerb::ResealEpochFloor
-        ]
+        vec![KernelVerb::ChainBreak, KernelVerb::StoreRestore]
     );
     for verb in LEGACY_VERBS
         .iter()

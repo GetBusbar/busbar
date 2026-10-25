@@ -197,11 +197,11 @@ mod audit;
 #[cfg(feature = "root-admin")]
 pub use audit::AuditWindowAt;
 
-/// The three disaster-recovery verbs over the node's journal and the configured store (status row
-/// 187): the operator's chain break on the chain, the epoch floor in the store, the restore refused.
-/// A private child module, as `replay` is; its public items are re-exported here.
+/// The two disaster-recovery verbs over the node's journal and the configured store (status row
+/// 187): the operator's chain break on the chain, the restore refused. A private child module, as
+/// `replay` is; its public items are re-exported here.
 mod recovery;
-pub use recovery::{boot_recovery, node_verb_store};
+pub use recovery::{node_verb_store, report_operator_breaks};
 
 /// The money-book seam: the settling descriptor ([`Settling`], [`PostingStamp`]), what a settlement
 /// left ([`Settled`]), the [`MoneyBook`] trait an exit arm settles through and its one pass-through

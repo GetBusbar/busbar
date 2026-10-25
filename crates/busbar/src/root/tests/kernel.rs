@@ -449,14 +449,6 @@ impl busbar_contract::verb_store::Store for ReachedStore {
         self.note(format!("store_restore {backup_ref}"));
         Ok(())
     }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.note("reseal_epoch_floor".to_string());
-        Ok(())
-    }
 }
 
 /// ROW 113: THE ADMIN UNITS OVER A BOOK REACH THAT BOOK'S STORE, for every recovery primitive.
@@ -490,16 +482,12 @@ fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() 
     store
         .store_restore(&units.admin_token, "nightly")
         .expect("store_restore applies");
-    store
-        .reseal_epoch_floor(&units.admin_token)
-        .expect("reseal_epoch_floor applies");
 
     assert_eq!(
         configured.reached(),
         vec![
             "chain_break".to_string(),
             "store_restore nightly".to_string(),
-            "reseal_epoch_floor".to_string(),
         ],
         "every recovery primitive landed on the book's configured store"
     );

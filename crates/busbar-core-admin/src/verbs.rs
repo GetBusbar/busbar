@@ -33,11 +33,11 @@
 //!    [`crate::idempotency::IdempotencyCache`]; [`Verbs::execute`] refuses both verbs.
 //!
 //! Only once all of that has admitted the call does anything reach [`crate::governance::Governance`]
-//! or [`busbar_contract::verb_store::Store`]. That holds for the three disaster-recovery verbs too: their effect
+//! or [`busbar_contract::verb_store::Store`]. That holds for the two disaster-recovery verbs too: their effect
 //! lands on the store rather than on governance, but they are new verbs like any other, so they
-//! reach the store only through [`Verbs::chain_break`], [`Verbs::store_restore`] and
-//! [`Verbs::reseal_epoch_floor`], each of which runs the same admission first. The bound store is
-//! not handed out — a caller holding it could have run any of the three with none of the checks,
+//! reach the store only through [`Verbs::chain_break`] and [`Verbs::store_restore`], each of which
+//! runs the same admission first. The bound store is
+//! not handed out — a caller holding it could have run either with none of the checks,
 //! and nothing in the type system would have asked it not to.
 
 use crate::governance::{Governance, GovernanceError};
@@ -234,10 +234,10 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
             .ok_or(busbar_contract::verb_store::StoreError::Failed)
     }
 
-    /// The gate the three disaster-recovery verbs run through before they reach the store.
+    /// The gate the two disaster-recovery verbs run through before they reach the store.
     ///
     /// Identical to what [`Verbs::execute`] runs for any other new verb — scope, then rate class —
-    /// because these three are new verbs; the only thing that makes them different is that their
+    /// because these two are new verbs; the only thing that makes them different is that their
     /// effect lands on [`Store`] rather than [`Governance`], and where an effect lands is not a
     /// reason to be admitted differently. Each is a plain scoped verb (#77(9), OWNER-LOCKED,
     /// `docs/design/BUSBAR-1.6.0.md` l.2279): no operator key, signature or second approver.
@@ -280,21 +280,6 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         self.admit_recovery_verb(KernelVerb::StoreRestore, actor, granted, now)?;
         self.bound_store()
             .and_then(|store| store.store_restore(admin, backup_ref))
-            .map_err(store_error_into_refusal)
-    }
-
-    /// `reseal_epoch_floor` — reseal the epoch floor after a chain break or restore. Admitted
-    /// through [`Verbs::admit_recovery_verb`] and only then handed to the store.
-    pub fn reseal_epoch_floor(
-        &self,
-        admin: &Grant<AdminVerb>,
-        actor: &str,
-        granted: VerbScope,
-        now: u64,
-    ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::ResealEpochFloor, actor, granted, now)?;
-        self.bound_store()
-            .and_then(|store| store.reseal_epoch_floor(admin))
             .map_err(store_error_into_refusal)
     }
 }

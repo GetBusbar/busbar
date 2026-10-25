@@ -3446,7 +3446,7 @@ pub(crate) fn route(
         Arc::clone(&binding.mutations),
     );
 
-    // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
+    // THE TWO DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
     // verbs and are admitted exactly as every other new verb is — scope, then rate class — but
     // their effect lands on `Store` rather than on a
     // handler, and the unit gives each of them its own entry point for precisely that reason.
@@ -3470,9 +3470,6 @@ pub(crate) fn route(
                         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
                     }
                 }
-            }
-            RecoveryVerb::ResealEpochFloor => {
-                verbs.reseal_epoch_floor(admin, &actor, granted, request.at)
             }
         };
         return match ran {
@@ -3498,16 +3495,15 @@ pub(crate) fn route(
     }
 }
 
-/// The three verbs whose effect lands on the store rather than on a handler.
+/// The two verbs whose effect lands on the store rather than on a handler.
 ///
-/// Named as a closed enumeration of its own rather than matched inline, so "these three and no
+/// Named as a closed enumeration of its own rather than matched inline, so "these two and no
 /// others" is a fact with a test on it. The verbs unit draws the same line from the other side: it
 /// gives each of them a method, and gives `execute` no arm that could reach one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecoveryVerb {
     ChainBreak,
     StoreRestore,
-    ResealEpochFloor,
 }
 
 /// Which recovery verb this is, or `None` for a verb whose effect is the governance seam's.
@@ -3515,15 +3511,14 @@ fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
     match verb {
         KernelVerb::ChainBreak => Some(RecoveryVerb::ChainBreak),
         KernelVerb::StoreRestore => Some(RecoveryVerb::StoreRestore),
-        KernelVerb::ResealEpochFloor => Some(RecoveryVerb::ResealEpochFloor),
         _ => None,
     }
 }
 
 /// What an operation that changed something and has nothing to say answers with.
 ///
-/// A recovery verb's whole result is its effect: the chain broke, or the floor resealed (a restore
-/// is refused, never answered here, row 187). There is no document to return and none was ever specified, so the answer carries no
+/// A recovery verb's whole result is its effect: the chain broke (a restore is refused, never
+/// answered here, row 187). There is no document to return and none was ever specified, so the answer carries no
 /// body and declares no content type — inventing a document here would put a schema on the wire that
 /// nothing describes and that a client would then be entitled to depend on.
 fn applied_answer() -> AdminAnswer {
@@ -4068,7 +4063,7 @@ pub use adjust::RecordedCounts;
 pub(crate) mod bound;
 pub use bound::{
     live_admin_door, live_planes, live_records, live_replay_store, no_planes, no_trust,
-    PlaneLookup, PlaneRecordSink, ReplayStore, TrustDesk,
+    PlaneLookup, PlaneRecordSink, TrustDesk,
 };
 
 #[cfg(test)]

@@ -293,8 +293,6 @@ pub enum KernelVerb {
     ChainBreak,
     /// Restore the store from backup (disaster recovery; irreducible; off-node CLI also exists).
     StoreRestore,
-    /// Reseal the epoch floor after a chain break/restore (irreducible; off-node CLI also exists).
-    ResealEpochFloor,
     /// Commit the schema/version upgrade (irreducible).
     CommitUpgrade,
     /// Manually adjust a ledger figure (irreducible above `adjust_threshold`).
@@ -682,7 +680,6 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::PlaneRecordWrite,
     KernelVerb::ChainBreak,
     KernelVerb::StoreRestore,
-    KernelVerb::ResealEpochFloor,
     KernelVerb::CommitUpgrade,
     KernelVerb::Adjust,
     KernelVerb::AmendRateHistory,
@@ -705,9 +702,8 @@ pub const NEW_VERBS: &[KernelVerb] = &[
 #[must_use]
 pub const fn effect_bound(verb: KernelVerb) -> bool {
     match verb {
-        // Their effect lands on the store (`Verbs::chain_break` / `store_restore` /
-        // `reseal_epoch_floor`).
-        KernelVerb::ChainBreak | KernelVerb::StoreRestore | KernelVerb::ResealEpochFloor => true,
+        // Their effect lands on the store (`Verbs::chain_break` / `store_restore`).
+        KernelVerb::ChainBreak | KernelVerb::StoreRestore => true,
         // Their effect lands on the node's amendment journal (the composition root's
         // `execute_new_verb`).
         KernelVerb::Adjust | KernelVerb::AmendRateHistory => true,
@@ -827,7 +823,6 @@ pub const fn verb_name(verb: KernelVerb) -> Option<&'static str> {
         KernelVerb::PlaneRecordWrite => "plane_record_write",
         KernelVerb::ChainBreak => "chain_break",
         KernelVerb::StoreRestore => "store_restore",
-        KernelVerb::ResealEpochFloor => "reseal_epoch_floor",
         KernelVerb::CommitUpgrade => "commit_upgrade",
         KernelVerb::Adjust => "adjust",
         KernelVerb::AmendRateHistory => "amend_rate_history",

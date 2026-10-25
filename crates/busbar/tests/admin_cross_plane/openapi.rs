@@ -206,13 +206,12 @@ fn openapi_every_mutating_operation_declares_a_request_body() {
         // change what it does. Its sibling `POST /agents/{name}/approve` is NOT here — that one
         // carries the fingerprint the operator is attesting they saw, which is the whole trust root.
         ("post", "/api/v1/admin/agents/{name}/connect"),
-        // The 1.6.0 kernel verbs whose body the node's administrative loop never reads: the two
-        // recovery verbs are pure commands (the effect is the store's; the verb IS the argument).
+        // The 1.6.0 kernel verb whose body the node's administrative loop never reads: the chain
+        // break is a pure command (the effect is the store's; the verb IS the argument).
         // Their siblings that DO take one — `store-restore` (`backup_ref`), `adjust` (the count
         // correction) and `ledger/amend-rate-history` (the signed correction) — are not here; the
         // verbs with no effect bound are not served, so not documented at all.
         ("post", "/api/v1/admin/chain-break"),
-        ("post", "/api/v1/admin/reseal-epoch-floor"),
     ];
 
     let doc = openapi_doc_seamed();

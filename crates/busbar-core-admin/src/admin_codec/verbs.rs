@@ -1,10 +1,9 @@
 //! The closed 66+12+5+3 kernel-verb table, and the pure `(method, path) -> verb` match over it.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
-//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 8 are the
+//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 7 are the
 //! 1.6.0-additive money-governance verbs the design names by name only (`verify`, `plane_facts`,
-//! `plane_record_write`, `chain_break`, `store_restore`, `reseal_epoch_floor`, `commit_upgrade`,
-//! `adjust`) with no HTTP method or path of their own — they are new admin-API surface, not part
+//! `plane_record_write`, `chain_break`, `store_restore`, `commit_upgrade`, `adjust`) with no HTTP method or path of their own — they are new admin-API surface, not part
 //! of the 1.5.5 tag. Five more the design once named (`set_operator_key`, `set_escrow`,
 //! `set_dual_control`, `export_keyset`, `approve`) left 1.6.0 by the owner's 2026-09-08 ruling, and
 //! four (`set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`) by
@@ -67,7 +66,6 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     post_row("/api/v1/admin/plane-record-write", "plane_record_write"),
     post_row("/api/v1/admin/chain-break", "chain_break"),
     post_row("/api/v1/admin/store-restore", "store_restore"),
-    post_row("/api/v1/admin/reseal-epoch-floor", "reseal_epoch_floor"),
     post_row("/api/v1/admin/commit-upgrade", "commit_upgrade"),
     post_row("/api/v1/admin/adjust", "adjust"),
     // `amend_rate_history`: unlike the eight above, its path is NOT a judgment call. The

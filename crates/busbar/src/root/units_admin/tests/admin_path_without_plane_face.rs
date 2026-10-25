@@ -515,13 +515,6 @@ impl busbar_contract::verb_store::Store for AnApplyingStore {
     ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
 }
 
 /// The served rows for one resource that the operator (`admin`) is attributed, as
@@ -599,11 +592,6 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
             r#"{"backup_ref":"nightly"}"#,
             "store_restore",
         ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
-        ),
     ];
     for (path, body, verb) in applied {
         let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;
@@ -651,7 +639,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
 ///
 /// The book is the one `root::boot::book` opens over a real App with a governance store, and the
 /// units are the ones `main` composes over it (`ProductionUnits::admin_over_book`). The chain break
-/// and the reseal answer `204` and land on the book's journal and that store; the restore is
+/// answers `204` and lands on the book's journal and that store; the restore is
 /// refused `503` — the store has no restore operation (row 187). RED (the defect this
 /// replaced): the composition held a refusing stand-in, so each answered the store failure on a
 /// node whose store was right there; drop the book's store, or the units' binding of it, and this
@@ -715,12 +703,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
             r#"{"backup_ref":"nightly"}"#,
             "store_restore",
             503,
-        ),
-        (
-            "/api/v1/admin/reseal-epoch-floor",
-            "{}",
-            "reseal_epoch_floor",
-            204,
         ),
     ] {
         let (status, _, _) = over(&mounted, "POST", path, body.as_bytes().to_vec()).await;

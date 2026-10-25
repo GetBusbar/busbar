@@ -10,7 +10,7 @@
 //! answers it, and neither depends on the other.
 //!
 //! The store seam here is the disaster-recovery primitives named in the architecture document's
-//! irreducible set (`chain_break`, `store_restore`, `reseal_epoch_floor`). Every method is a
+//! irreducible set (`chain_break`, `store_restore`). Every method is a
 //! `// contract:` seam: the actual durable operation is always the integrator's.
 
 use crate::caps::{AdminVerb, Grant};
@@ -42,7 +42,4 @@ pub trait Store {
     /// operation answers [`StoreError::Failed`] and restores nothing; it never acknowledges a restore
     /// that did not happen.
     fn store_restore(&self, admin: &Grant<AdminVerb>, backup_ref: &str) -> Result<(), StoreError>;
-
-    /// `// contract:` reseal the epoch floor after a chain break or restore.
-    fn reseal_epoch_floor(&self, admin: &Grant<AdminVerb>) -> Result<(), StoreError>;
 }
