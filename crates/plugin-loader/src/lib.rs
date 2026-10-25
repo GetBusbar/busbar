@@ -414,7 +414,7 @@ mod dispatch_kind_hook_tests;
 #[path = "tests/dispatch_kind_auth_tests.rs"]
 mod dispatch_kind_auth_tests;
 
-/// The both-ways harness on the memory ABI (TODO ABI-b4): one door loaded LINKED and DROPPED IN
+/// The both-ways harness on the memory ABI: one door loaded LINKED and DROPPED IN
 /// through the one dispatcher, one script, two transcripts compared.
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DEAL's REDs (TODO step 9): a section reaches only its plugin, a reserved key is stripped,
+//! THE DEAL's REDs: a section reaches only its plugin, a reserved key is stripped,
 //! and a refusal names the operator's file position in 1.5.5's bytes.
 
 use super::*;
