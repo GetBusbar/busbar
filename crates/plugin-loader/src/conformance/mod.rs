@@ -1211,26 +1211,23 @@ pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, V
     let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(settings) else {
         return (settings.to_vec(), vec![Vec::new(); refs.len()]);
     };
-    let secrets = refs
-        .iter()
-        .map(|path| {
-            let (parent, last) = match path.rsplit_once('.') {
-                Some((head, last)) => (head.split('.').try_fold(&mut v, |v, k| v.get_mut(k)), last),
-                None => (Some(&mut v), path.as_str()),
-            };
-            let object = parent.and_then(serde_json::Value::as_object_mut);
-            let value = if keep {
-                object.and_then(|o| o.get(last).cloned())
-            } else {
-                object.and_then(|o| o.remove(last))
-            };
-            match value {
-                Some(serde_json::Value::String(s)) => s.into_bytes(),
-                _ => Vec::new(),
-            }
-        })
-        .collect();
-    if keep {
+    let as_bytes = |v: Option<serde_json::Value>| match v {
+        Some(serde_json::Value::String(s)) => s.into_bytes(),
+        _ => Vec::new(),
+    };
+    let secrets = busbar_contract::secret_fields::lend(
+        &mut v,
+        refs,
+        keep,
+        |_, v| Ok::<_, std::convert::Infallible>(as_bytes(v)),
+        |_, v| Ok(as_bytes(Some(v))),
+    )
+    .unwrap_or_else(|e| match e {});
+    if keep
+        && !refs
+            .iter()
+            .any(|p| busbar_contract::secret_fields::is_wildcard(p))
+    {
         return (settings.to_vec(), secrets);
     }
     (v.to_string().into_bytes(), secrets)

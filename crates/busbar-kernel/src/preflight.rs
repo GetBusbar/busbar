@@ -1152,6 +1152,7 @@ pub fn preflight_plugins_and_secrets(
     )?;
     validate_secret_modules(registry.as_ref(), &cfg.secrets)?;
     validate_secret_refs(registry.as_ref(), cfg)?;
+    config_validate::undeclared_secret_refs(registry.as_ref(), cfg)?;
     Ok(registry)
 }
 
@@ -1306,6 +1307,8 @@ pub(crate) fn build_secret_resolver(
         }
         config::secret::resolve_settings(
             &mcfg.settings,
+            &registry.secret_slots(module),
+            module,
             &builtins,
             &busbar_contract::config_time::ConfigScope::config_time(),
         )

@@ -2205,7 +2205,9 @@ pub mod deal;
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
+mod undeclared_secret_refs;
 pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allowed, secret_refs};
+pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way

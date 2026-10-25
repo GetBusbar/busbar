@@ -191,6 +191,17 @@ impl Rows {
             .collect()
     }
 
+    /// `self` with the dropped-in `row` admitted, its Statement naming the secret references
+    /// `slots` (the declared paths, `*` = any key or index).
+    #[must_use]
+    pub fn with_dropped_secret_slots(mut self, row: Row, slots: &[&str]) -> Self {
+        self = self.with_dropped(row);
+        if let Some(e) = self.dropped.last_mut() {
+            e.secret_slots = slots.iter().map(|s| (*s).to_string()).collect();
+        }
+        self
+    }
+
     /// `self` with the dropped-in `row` admitted after the rows it already has.
     #[must_use]
     pub fn with_dropped(mut self, row: Row) -> Self {

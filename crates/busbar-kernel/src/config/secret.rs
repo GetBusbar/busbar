@@ -244,13 +244,17 @@ pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
     SettingShape::Verbatim(value)
 }
 
-/// Walk a plugin's opaque `settings:` map and RESOLVE any [`SecretRef`]-shaped value in place,
-/// substituting the resolved UTF-8 secret string, so the plugin receives the real value (e.g. its
-/// `licenseKey`) and never a reference it cannot dereference. Non-ref values (strings, numbers,
-/// nested config the plugin documents) pass through VERBATIM - a value only resolves if it parses as
-/// a full secret reference (`{ env: … }` / `{ file: … }` / `{ module: …, settings: … }`); an
-/// ordinary settings object like `{ db_path: … }` is not a ref (its keys aren't a ref's keys) and is
-/// left untouched.
+/// Walk a plugin's opaque `settings:` map and RESOLVE the [`SecretRef`]-shaped values at the
+/// positions the plugin DECLARED secret (`declared`: its Statement's `secret_refs`, `.`-separated
+/// paths, `*` = any key or index) in place, substituting the resolved UTF-8 secret string, so the
+/// plugin receives the real value and never a reference it cannot dereference. Non-ref values
+/// (strings, numbers, nested config the plugin documents) pass through VERBATIM; a top-level
+/// `{ literal: … }` wrapper is unwrapped.
+///
+/// A reference at a position the plugin did NOT declare secret is REFUSED, wherever it sits
+/// (OWNER RULING, CHIP-REVIEW-v4 change 2, overturning Q123): the sentence names the field and
+/// `plugin`, and says to write the value itself. Core's own typed fields are not plugin settings
+/// and never come here.
 ///
 /// Runs CORE-SIDE at every `open` (boot, config apply/reload, AND hot plugin reload) BEFORE the
 /// settings JSON crosses the ABI - it does not touch the wire ABI or the manifest signature. The
@@ -259,45 +263,65 @@ pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
 ///
 /// FAIL-CLOSED: an unresolvable ref (unknown module, unset env, missing/empty file, plugin error) is
 /// a hard `Err` that must fail the plugin load/reload - the plugin is NEVER handed an unresolved ref
-/// or a silently-empty value. `field` names the settings key in the error (never the secret value).
+/// or a silently-empty value. The error names the settings path (never the secret value).
 pub(crate) fn resolve_settings(
     settings: &serde_json::Map<String, serde_json::Value>,
+    declared: &[String],
+    plugin: &str,
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let mut out = serde_json::Map::with_capacity(settings.len());
-    for (field, value) in settings {
-        match classify_setting(value) {
-            SettingShape::Verbatim(v) => {
-                out.insert(field.clone(), v.clone());
-            }
-            SettingShape::Reference(secret) => {
-                // NEVER silent: say which setting was interpreted as a reference and where it
-                // points (never its value), so a coercion the operator did not intend is visible in
-                // the boot log instead of surfacing as a corrupt setting inside the plugin.
-                //
-                // This log — and this whole function — belongs to the CONFIGURE PUSH (boot / apply /
-                // hot reload), NOT to any read path: it does blocking I/O (a `kind: secret` plugin
-                // is a synchronous FFI call) and names a secret reference on every invocation. A
-                // per-request caller would turn both into a per-request cost; see
-                // `hooks::settings_drift_keys`, which classifies WITHOUT resolving for exactly that
-                // reason.
-                tracing::info!(
-                    setting = field.as_str(),
-                    reference = %secret.describe(),
-                    "plugin setting resolved as a SECRET REFERENCE; if this object was meant as \
-                     literal plugin config, wrap it as `{{ literal: … }}` to pass it through verbatim"
-                );
-                let resolved = resolver
-                    .resolve_string_at_config(&secret, scope)
-                    .map_err(|e| {
-                        format!(
+    use busbar_contract::secret_fields;
+    let mut tree = serde_json::Value::Object(settings.clone());
+    if let Some(at) = secret_fields::undeclared_reference(&tree, declared) {
+        return Err(secret_fields::undeclared_refusal(
+            &format!("settings.{at}"),
+            plugin,
+        ));
+    }
+    for path in declared {
+        for at in secret_fields::declared_references(&tree, path) {
+            let field = at.join(".");
+            let Some(slot) = secret_fields::value_at_mut(&mut tree, &at) else {
+                continue;
+            };
+            let SettingShape::Reference(secret) = classify_setting(slot) else {
+                continue;
+            };
+            // NEVER silent: say which setting was resolved as a reference and where it points
+            // (never its value).
+            //
+            // This log — and this whole function — belongs to the CONFIGURE PUSH (boot / apply /
+            // hot reload), NOT to any read path: it does blocking I/O (a `kind: secret` plugin
+            // is a synchronous FFI call) and names a secret reference on every invocation. A
+            // per-request caller would turn both into a per-request cost; see
+            // `hooks::settings_drift_keys`, which classifies WITHOUT resolving for exactly that
+            // reason.
+            tracing::info!(
+                setting = field.as_str(),
+                reference = %secret.describe(),
+                "plugin setting resolved as a SECRET REFERENCE at a field the plugin declares secret"
+            );
+            let resolved = resolver
+                .resolve_string_at_config(&secret, scope)
+                .map_err(|e| {
+                    format!(
                         "plugin setting '{field}' is a secret reference that did not resolve: {e}"
                     )
-                    })?;
-                out.insert(field.clone(), serde_json::Value::String(resolved));
-            }
+                })?;
+            *slot = serde_json::Value::String(resolved);
         }
+    }
+    let serde_json::Value::Object(resolved) = tree else {
+        return Ok(serde_json::Map::new());
+    };
+    let mut out = serde_json::Map::with_capacity(resolved.len());
+    for (field, value) in resolved {
+        let value = match classify_setting(&value) {
+            SettingShape::Verbatim(v) => v.clone(),
+            SettingShape::Reference(_) => value,
+        };
+        out.insert(field, value);
     }
     // License-agnostic ergonomic breadcrumb: if the settings carry a well-known license key, note at
     // INFO that a license credential is being DELIVERED to the plugin (which validates it itself; the

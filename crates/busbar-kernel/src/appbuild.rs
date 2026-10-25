@@ -783,6 +783,8 @@ pub fn build_app_from_config(
     // `api_key: { module: acme-vault }` passes once the plugin is loaded + trusted. This is the boot
     // twin of the `--validate` check, sharing `validate_secret_refs`/`config_validate::secret_refs`.
     validate_secret_refs(plugin_registry.as_ref(), &cfg)?;
+    // A secret reference in a plugin's settings at a field the plugin did not declare secret.
+    crate::config_validate::undeclared_secret_refs(plugin_registry.as_ref(), &cfg)?;
 
     // The SECRET RESOLVER: built-in env/file resolve inline; any other module delegates to a
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
@@ -1241,6 +1243,8 @@ pub fn build_app_from_config(
     if let Some(store_cfg) = cfg.store.as_ref() {
         if let Err(e) = config::secret::resolve_settings(
             &store_cfg.settings,
+            &plugin_registry.secret_slots(&store_cfg.module),
+            &store_cfg.module,
             secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),
         ) {
@@ -1390,6 +1394,8 @@ pub fn build_app_from_config(
             true => Default::default(),
             false => config::secret::resolve_settings(
                 &g.settings,
+                &plugin_registry.secret_slots(&g.module),
+                &g.module,
                 secret_resolver.as_ref(),
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )

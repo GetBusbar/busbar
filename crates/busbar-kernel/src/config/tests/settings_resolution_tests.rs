@@ -5,6 +5,10 @@
 
 use super::*;
 
+fn declared(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|p| (*p).to_string()).collect()
+}
+
 fn obj(pairs: &[(&str, serde_json::Value)]) -> serde_json::Map<String, serde_json::Value> {
     pairs
         .iter()
@@ -26,6 +30,8 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
     ]);
     let out = resolve_settings(
         &settings,
+        &declared(&["licenseKey"]),
+        "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -52,6 +58,8 @@ fn leaves_non_ref_object_settings_untouched() {
     let settings = obj(&[("db", serde_json::json!({ "path": ":memory:", "wal": true }))]);
     let out = resolve_settings(
         &settings,
+        &declared(&[]),
+        "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -73,6 +81,8 @@ fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
     let settings = obj(&[("license", serde_json::json!({ "env": var }))]);
     let err = resolve_settings(
         &settings,
+        &declared(&["license"]),
+        "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -93,6 +103,8 @@ fn unknown_secret_module_in_setting_fails_closed() {
     )]);
     let err = resolve_settings(
         &settings,
+        &declared(&["licenseKey"]),
+        "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -122,6 +134,8 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     );
     let out = resolve_settings(
         &settings,
+        &declared(&["licenseKey"]),
+        "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -136,6 +150,8 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     );
     let out = resolve_settings(
         &settings,
+        &declared(&[]),
+        "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -152,6 +168,8 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     settings.insert("plain".to_string(), serde_json::json!({ "db_path": "x" }));
     let out = resolve_settings(
         &settings,
+        &declared(&[]),
+        "test-plugin",
         &resolver,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -204,6 +222,8 @@ fn settings_resolve_through_the_config_time_form_with_the_proof() {
     )]);
     let out = resolve_settings(
         &settings,
+        &declared(&["licenseKey"]),
+        "test-plugin",
         &ConfigTimeOnly,
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
@@ -231,6 +251,74 @@ fn the_kernel_resolver_answers_the_same_at_config_time_for_a_built_in() {
     assert_eq!(
         dynamic.resolve_at_config(&reference, &scope),
         dynamic.resolve(&reference)
+    );
+    std::env::remove_var(&var);
+}
+
+/// OWNER RULING (CHIP-REVIEW-v4 change 2, overturning Q123): at boot a reference at a field the
+/// plugin did not declare secret is REFUSED, never resolved in place, wherever it sits; the
+/// sentence names the field and the plugin and says to write the value itself.
+#[test]
+fn boot_refuses_a_reference_at_an_undeclared_field() {
+    let resolver = SecretResolver::builtins_only();
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    let top = obj(&[("api_base", serde_json::json!({ "env": "GHE_API" }))]);
+    let err = resolve_settings(
+        &top,
+        &declared(&["client_secret"]),
+        "busbar-auth-github",
+        &resolver,
+        &scope,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("settings.api_base")
+            && err.contains("'busbar-auth-github'")
+            && err.contains("did not declare it as a secret")
+            && err.contains("write the value itself"),
+        "{err}"
+    );
+    let nested = obj(&[(
+        "servers",
+        serde_json::json!({ "a": { "headers": { "X": { "file": "/run/k" } } } }),
+    )]);
+    let err = resolve_settings(
+        &nested,
+        &declared(&["servers.*.env.*"]),
+        "p",
+        &resolver,
+        &scope,
+    )
+    .unwrap_err();
+    assert!(err.contains("settings.servers.a.headers.X"), "{err}");
+}
+
+/// A reference at a declared EXACT path and one at a declared WILDCARD path both resolve in place;
+/// a literal at the wildcard path is left as written (the lending host takes it as written).
+#[test]
+fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
+    let var = format!("BUSBAR_DECLARED_FIELD_{}", std::process::id());
+    std::env::set_var(&var, "RESOLVED\n");
+    let resolver = SecretResolver::builtins_only();
+    let settings = obj(&[
+        ("client_secret", serde_json::json!({ "env": var })),
+        (
+            "servers",
+            serde_json::json!({ "a": { "env": { "API_KEY": { "env": var }, "LOG": "debug" } } }),
+        ),
+    ]);
+    let out = resolve_settings(
+        &settings,
+        &declared(&["client_secret", "servers.*.env.*"]),
+        "p",
+        &resolver,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect("declared references resolve");
+    assert_eq!(out["client_secret"], serde_json::json!("RESOLVED"));
+    assert_eq!(
+        out["servers"],
+        serde_json::json!({ "a": { "env": { "API_KEY": "RESOLVED", "LOG": "debug" } } })
     );
     std::env::remove_var(&var);
 }
