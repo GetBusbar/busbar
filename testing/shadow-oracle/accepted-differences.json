@@ -3946,6 +3946,66 @@
         ]
       },
       "rationale": "OWNER 2026-10-21 (relayed by the coordinator; replaces the earlier revert-to-1.5.5 ruling), widened by OWNER 2026-10-22 (the DNS-name rule). 1.5.5's oidc module (busbar-auth-oidc v1.0.6 reqwest_fetcher.rs) followed up to 10 https redirects on its discovery and JWKS fetches with no address check. 1.6.0's busbar-auth-oidc door (PR #41, reviewed head 506a47037c) keeps that policy (at most 10, https only, reqwest 0.12.28's texts after 1.5.5's `request to {url} failed: ` prefix) and refuses two redirects before the next hop is asked. Each refusal names the URL that was ASKED (the configured or discovered discovery/JWKS URL), not the redirect target: `request to {asked URL} failed: a redirect to a cloud metadata address is not allowed` for a redirect to a cloud-metadata or IPv6 link-local host, from any host; `request to {asked URL} failed: a redirect to a private or loopback address is not allowed` for a redirect to a private or loopback host (an IP literal, or the localhost name: `localhost` and `*.localhost`, busbar-contract net.rs host_is_private_or_loopback) unless the hop that sent it is itself on a private or loopback host. THE RULE, exactly: each hop is judged by the host that redirected (fetch.rs `refused_hop(&at, &next, url)`, `at` being the hop that answered the redirect), so a chain that leaves through a public host cannot come back into the private network (asked https://10.0.0.7/... -> https://cdn.idp.example/jwks -> https://10.0.0.8/jwks is refused). The check reads the literal host only, with no DNS lookup. An identity provider reached by any other DNS name (e.g. keycloak.corp) counts as public, so its redirect to a private or loopback host is refused, where 1.5.5 followed it (OWNER 2026-10-22, relayed by the coordinator: approved). An identity provider on a private IP or at localhost may redirect to private or loopback hosts. A redirect to a DNS name that resolves privately is followed, and the dial guard judges it. A public-to-public https redirect is followed; the token POST follows no redirect, as on 1.5.5. Every other oidc error text is 1.5.5's. No oracle cell drives a redirect: egress.auth|login-hop|oidc serves its issuer, JWKS and token endpoint directly from the loopback capture mock, and plugins.load|auth-oidc lists the module. Neither is in `cells`; both must stay byte-identical. So this entry forgives no measured cell today; it registers the contract change, with `cells` naming the owed redirect cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's measured login hop to its 1.5.5 recording (the callback's 401 and the token POST with the injected client_secret), a cell in which no redirect occurs, so the new refusal has nothing to act on and the recording must stay 1.5.5's. Proof at 506a47037c (auth-oidc/src/tests/fetch_tests.rs): a_redirect_to_a_private_or_metadata_address_is_refused (asserts the asked URL in each refusal), a_public_to_public_https_redirect_is_followed, a_redirected_discovery_is_followed_to_its_document, a_redirected_key_set_is_followed_across_pending. Newer heads of busbar-auth-oidc #41 carry the same behaviour and the same tests: cf4d45a394. NOT FORGIVEN by this entry, and outside the owner's 2026-10-21 and 2026-10-22 approvals: the plugin PR discloses one known difference pending a contract accessor. The SDK `exchange()` returns head and body as one result, so a generic failure after the response head (a reset, a stall after headers) prints the send text `error sending request for url (<asked>)` where 1.5.5 printed `reading {url} response body failed: {e}`. No oracle cell measures it, and this entry's `cells` and classes do not reach it."
+    },
+    {
+      "id": "G13 an AWS-credential mint with no at-rest key is refused (409)",
+      "kind": "breaking",
+      "changelog": "1.6.0 Breaking: minting a key with `issue_aws_credential: true` needs an at-rest key (`credentials.at_rest.key`); without one, `POST /api/v1/admin/keys` answers `409 conflict` and writes nothing.",
+      "by": "owner (Matthew Jackson), owner G13, 2026-10-25 (ORACLE-SIGNOFF G13 option (a); option (b), an oracle upgrade-config step, rejected)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-25",
+        "ruling": "owner G13, 2026-10-25: ORACLE-SIGNOFF G13 option (a), the 201 -> 409 of auth.lifecycle|aws-credential-chain-without-keys accepted; option (b) rejected (relayed by the coordinator)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^auth\\.lifecycle\\|aws\\-credential\\-chain\\-without\\-keys$",
+      "expected_cells": 1,
+      "classes": [
+        "body",
+        "effects.script"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "status": 0
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/aws_mint_status",
+            "equals": 409
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/aws_mint/access_key_id_shape_ok",
+            "equals": false
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/aws_mint/secret_access_key_shape_ok",
+            "equals": false
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/aws_mint/token_is_signed",
+            "equals": false
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/plain_mint_status",
+            "equals": 201
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/plain_mint_carries_aws",
+            "equals": false
+          }
+        ]
+      },
+      "rationale": "OWNER G13, 2026-10-25 (ORACLE-SIGNOFF G13 option (a)): a recoverable credential is sealed under a dedicated at-rest key (#1690, owner ruling), so a node with no credentials.at_rest.key refuses the mint, saying what to configure. The cell's own config has no credentials block, so its AWS mint now answers 409 where the 1.5.5 golden recorded 201. SCOPE: exactly this one cell, and in it only `aws_mint_status` (201 -> 409) and the `aws_mint` facts (the token, AccessKeyId and secret-access-key shapes, state and group_provisioned are absent from a refusal). The PREMISE holds the rest: the cell ran (status 0), the AWS mint answered 409 and carried no AccessKeyId, secret or signed token, and the plain mint on the same node still answers 201 and carries neither AWS field, exactly as the golden records. The golden is not edited."
     }
   ]
 }
