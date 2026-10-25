@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use super::{settings, Cred, CredUrl, Parts, SealedWrite};
+use super::{settings, Cred, CredUrl, FormBody, Parts, SealedWrite};
 
 const CANARY: &str = "CANARY-cred-5f3a9c";
 
@@ -255,4 +255,74 @@ fn a_jws_assertion_verifies_under_the_keys_public_half() {
     assert!(Cred::captured(zeroize::Zeroizing::new(b"nope".to_vec()))
         .rsa_pkcs8_check()
         .is_err());
+}
+
+/// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4): the operator's URL decides. A secure scheme or a
+/// TLS mode that refuses cleartext requires the password to go out secured; a unix socket, or a
+/// mode that allows cleartext, requires nothing.
+#[test]
+fn the_operators_url_decides_whether_the_password_goes_out_secured() {
+    let required = |text: &str| {
+        CredUrl::parse(text)
+            .expect("parses")
+            .password()
+            .expect("a password")
+            .secure_required()
+    };
+    for yes in [
+        "rediss://:pw@cache:6380",
+        "https://u:pw@hook.example/x",
+        "ldaps://u:pw@dir.example",
+        "postgres://u:pw@db/app?sslmode=require",
+        "postgres://u:pw@db/app?sslmode=verify-full",
+        "mysql://u:pw@db/app?ssl-mode=REQUIRED",
+        "host=db sslmode=verify-ca password=pw",
+    ] {
+        assert!(required(yes), "{yes}");
+    }
+    for no in [
+        "redis://:pw@cache:6379",
+        "http://u:pw@hook.example/x",
+        "postgres://u:pw@db/app",
+        "postgres://u:pw@db/app?sslmode=prefer",
+        "postgres://u:pw@%2Fvar%2Frun%2Fpostgresql/app?sslmode=require",
+        "postgres://u:pw@/app?host=/tmp&sslmode=require",
+        "host=/tmp sslmode=require password=pw",
+        "mysql://u:pw@db/app?ssl-mode=PREFERRED",
+    ] {
+        assert!(!required(no), "{no}");
+    }
+}
+
+/// The requirement travels with everything the credential makes, and is never relaxed.
+#[test]
+fn the_requirement_travels_with_every_seal() {
+    let c = Cred::captured(zeroize::Zeroizing::new(b"pw".to_vec()));
+    assert!(!c.secure_required() && !c.bearer().secure_required());
+    let c = c.secure_for("http://x").secure_for("ldaps://dir");
+    assert!(c.secure_required());
+    let c = c.secure_for("http://x");
+    assert!(c.secure_required(), "never relaxed");
+    for s in [
+        c.field(),
+        c.bearer(),
+        c.basic("u"),
+        c.hmac_sha256_hex(b"d"),
+        c.resp_auth(None),
+    ] {
+        assert!(s.secure_required());
+    }
+    assert!(!Parts::new().public(b"a").sealed(c.field()).is_empty());
+    assert!(SealedWrite::new(Parts::new().sealed(c.field())).secure_required());
+    assert!(!SealedWrite::new(Parts::new().public(b"a")).secure_required());
+    let body = FormBody::new()
+        .sealed("client_secret", &c)
+        .encoded()
+        .expect("encodes");
+    assert!(body.secure_required());
+    assert!(!FormBody::new()
+        .public("a", "b")
+        .encoded()
+        .expect("encodes")
+        .secure_required());
 }
