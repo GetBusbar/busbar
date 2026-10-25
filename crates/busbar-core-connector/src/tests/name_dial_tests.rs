@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::{host_slots, ConnHost, HostConns};
-use busbar_contract::conn::{ConnError, ConnId, Conns, InstanceId, NeedId, OpenDesc};
+use busbar_contract::conn::{
+    ConnError, ConnId, Conns, DeclaredConns, InstanceId, NeedId, OpenDesc,
+};
 use busbar_kernel::config::Destinations;
 
 use crate::guard::{Guard, Resolve, Resolved, SystemResolver};
@@ -198,6 +200,75 @@ fn a_refused_connect_moves_on_to_the_names_next_address() {
             read(&t, id).await.expect("the second address answers"),
             b"ping"
         );
+        t.close(id).unwrap();
+    });
+}
+
+/// Ask `c` whether `id`'s dial has landed until it answers, as `ESTABLISH` asks on the plugin's
+/// ticket.
+async fn landed(c: &Connector, id: ConnId) -> Result<(), ConnError> {
+    for _ in 0..2000 {
+        match DeclaredConns::landed(c, OWNER, id, 7) {
+            Err(ConnError::Pending) => tokio::time::sleep(Duration::from_millis(1)).await,
+            answer => return answer,
+        }
+    }
+    panic!("the dial neither landed nor failed in two seconds");
+}
+
+/// A LIBPQ MULTI-HOST URL'S ENDPOINTS, as `ESTABLISH` answers them (oracle
+/// `store.boot|postgres|multi-host`: `127.0.0.1:1,127.0.0.1:<port>`): an open answers with its
+/// dial in flight, and the dial's landing is what the plugin's connect waits on. The first
+/// endpoint REFUSES the connect: its landing answers the refusal, its cause the connect's, so the
+/// plugin closes it and opens the next; the second lands and carries the bytes. Each endpoint is
+/// the plugin's own open, judged as every open is: nothing wider is admitted. RED before: the
+/// connector named no landing (the table's default answered every open landed), so the refused
+/// endpoint was the plugin's connection and the second was never dialled.
+#[test]
+fn a_refused_endpoint_fails_its_landing_and_the_next_endpoint_lands() {
+    worker().block_on(async {
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let port = echo([127, 0, 0, 1].into()).await;
+        let c = connector(Arc::new(Table(Vec::new())), Arc::default());
+        let host = host(&c);
+        let t = table(&host);
+        let first = format!("127.0.0.1:{closed}");
+        let id = t
+            .open(
+                NEED,
+                &OpenDesc {
+                    target: &first,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("an address opens, its dial in flight");
+        assert_eq!(
+            landed(&c, id).await,
+            Err(ConnError::Refused),
+            "the refused connect is the landing's answer"
+        );
+        assert_eq!(
+            DeclaredConns::cause(c.as_ref(), OWNER, id).map(|k| k.stage),
+            Some(busbar_contract::abi::host::conn::connector::CAUSE_CONNECT),
+            "its cause is the connect"
+        );
+        t.close(id).unwrap();
+        let second = format!("127.0.0.1:{port}");
+        let id = t
+            .open(
+                NEED,
+                &OpenDesc {
+                    target: &second,
+                    ..OpenDesc::default()
+                },
+            )
+            .expect("the next endpoint opens");
+        assert_eq!(landed(&c, id).await, Ok(()), "the next endpoint lands");
+        assert_eq!(t.write(id, b"ping", false, false), Ok(4));
+        assert_eq!(read(&t, id).await.expect("the echo"), b"ping");
         t.close(id).unwrap();
     });
 }

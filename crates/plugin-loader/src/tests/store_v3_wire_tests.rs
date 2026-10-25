@@ -555,6 +555,104 @@ fn a_rejected_first_host_is_closed_and_the_op_lands_on_the_next() {
     );
 }
 
+/// A libpq endpoint list, as the postgres store tries it (`pgwire::Client::connect`): each
+/// endpoint in order, moving on ONLY when the connect is refused; a failure after the connect
+/// (the handshake's) is the op's.
+async fn ping_first_connecting(w: Wire, targets: Vec<String>) -> RecordStoreResult<Vec<String>> {
+    let mut refused = None;
+    for target in targets {
+        match w.connect(0, Some(&target)).await {
+            Ok(()) => {
+                refused = None;
+                break;
+            }
+            Err(e) => {
+                w.close().await;
+                refused = Some(failed(&e));
+            }
+        }
+    }
+    if let Some(e) = refused {
+        return Err(e);
+    }
+    let greeting = line(&w, "HELLO").await?;
+    if greeting != "WELCOME" {
+        return Err(RecordStoreError(format!("wire-store: greeted {greeting}")));
+    }
+    line(&w, "ping").await.map(|l| vec![l])
+}
+
+struct Endpoints;
+
+impl Endpoints {
+    fn pool() -> &'static Arc<Pool> {
+        static POOL: LazyLock<Arc<Pool>> = LazyLock::new(|| Pool::new(1));
+        &POOL
+    }
+    fn targets() -> &'static Mutex<Vec<String>> {
+        static TARGETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        &TARGETS
+    }
+}
+
+impl Hooks for Endpoints {
+    fn list_denylist(_: &MemoryStore, cx: &mut Op<'_>) -> Step<RecordStoreResult<Vec<String>>> {
+        let targets = Self::targets()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        drive_kept(cx, Self::pool(), move |w| {
+            Box::pin(ping_first_connecting(w, targets))
+        })
+    }
+}
+
+mod endpoints {
+    busbar_contract::store_door!(
+        crate::store_v3::wrap::Wrapped<super::Endpoints>,
+        "wire-store",
+        "0",
+        64,
+        needs: super::TCP
+    );
+}
+
+/// A LIBPQ MULTI-HOST URL (oracle `store.boot|postgres|multi-host`: `postgres://…@127.0.0.1:1,
+/// 127.0.0.1:<port>/…`): the first endpoint REFUSES the connect, and the op moves on and dials the
+/// second, as 1.5.5's driver did. Over a table whose opens answer with the dial in flight, as the
+/// host's connector answers them, `ESTABLISH` answers a raw stream only once its dial has landed,
+/// so the refusal is the connect's own answer. RED before: `ESTABLISH` answered the first
+/// endpoint's stream at once, the store took it as connected, and its first write met the refusal
+/// (`error communicating with the server: Connection refused`); the second endpoint was never
+/// dialled.
+#[test]
+fn a_refused_first_endpoint_moves_the_connect_on_to_the_next() {
+    let refused = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        l.local_addr().expect("addr").to_string()
+    };
+    let (primary, primary_seen) = tcp_backend(Behaviour::default());
+    *Endpoints::targets().lock().expect("targets") = vec![refused, primary];
+    let s = open_over(endpoints::door, |d: &Dispatcher| {
+        Arc::new(TcpConns::dialling_late(d.conn_waker()))
+            as Arc<dyn busbar_contract::conn::DeclaredConns>
+    });
+    assert_eq!(
+        ping_of(&s).expect("the op moves on to the second endpoint"),
+        vec!["echo ping".to_string()]
+    );
+    assert_eq!(
+        primary_seen.load(Ordering::SeqCst),
+        1,
+        "the second endpoint was dialled"
+    );
+    assert_eq!(
+        (Endpoints::pool().live(), Endpoints::pool().idle()),
+        (1, 1),
+        "the refused endpoint holds no connection; the second's is kept"
+    );
+}
+
 struct Who;
 
 impl Hooks for Who {

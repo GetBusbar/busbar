@@ -1004,6 +1004,11 @@ each dialect translates, field by field, is listed in the generated
 
 ### Changed
 
+- On a same-dialect Gemini route the upstream request keeps the client's `?alt=sse` query; 1.5.5 dropped it.
+- 1.6.0 Changed: an export plugin's log lines (its configuration refusals included) go to the plugin's own log file, not busbar.log.
+- 1.6.0 Changed: a postgres store that cannot open names the server's SQLSTATE and message (or the TLS failure) where 1.5.5 printed `db error` / `error performing TLS handshake`.
+- 1.6.0 Changed: a plugin's `interface_version` is its kind's memory-ABI contract version (hook 2, store 3).
+- 1.6.0 Changed: first-party plugins ship at version 1.6.x, above every 1.5.5-era release.
 - **The TLS listener now offers h2 via ALPN** (owner-signed, 2026-10-04, Q137). A `tls:` listener offers
   ALPN `h2, http/1.1`; 1.5.5 offered `http/1.1` alone. A client that offers `h2` (curl, browsers, gRPC
   clients) speaks HTTP/2 to Busbar over TLS; a client that offers only `http/1.1`, or no ALPN, is served
@@ -1087,6 +1092,7 @@ each dialect translates, field by field, is listed in the generated
 
 ### Fixed
 
+- 1.6.0 Fixed: a webrequest hook's status no longer reports drift where its settings match.
 - **`oauth_as:` could not mint an authorization code at all.** The consent session cookie was
   scoped to a sibling path of the endpoint that reads it, so the browser never sent it and every
   authorization-code flow bounced between `/authorize` and the consent screen forever. The cookie
