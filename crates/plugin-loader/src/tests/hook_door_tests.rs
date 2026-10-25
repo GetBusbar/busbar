@@ -1156,3 +1156,66 @@ async fn a_pending_hook_op_counts_for_a_reload_drain_until_it_ends() {
     }
     assert_eq!(plugin.drainable_for_tests(), 0, "an ended op is not");
 }
+
+/// THE BUDGET CUTS THE WAIT, NOT THE CANCEL (round 4): a pending hook whose `cancel` is slow is
+/// still answered `TimedOut` at its budget; the cancel runs on after.
+#[tokio::test]
+async fn a_pending_hook_with_a_slow_cancel_is_answered_at_its_budget() {
+    use busbar_contract::hook_calls::HookCalls;
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true, "slow_cancel_ms": 1500}"#);
+    let started = std::time::Instant::now();
+    let answered = h.decide(frame(2), Duration::from_millis(100)).await;
+    assert!(
+        matches!(answered, Answered::TimedOut),
+        "{}",
+        decided(2, &answered)
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(800),
+        "answered at the budget, not after the cancel: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(units_come_back(&h).await, 0);
+}
+
+/// A HOST PANIC INSIDE A WAITED-FOR CANCEL (round 4) answers the caller FAULT; it never waits for
+/// ever.
+#[tokio::test]
+async fn a_host_panic_inside_a_waited_cancel_answers_fault() {
+    use crate::dispatch::call::{self, Opts, Ran, PANIC_IN_CANCEL_FOR};
+    use crate::dispatch::Frame;
+    use busbar_contract::abi::hook::slot;
+    use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
+    use std::sync::atomic::Ordering;
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true}"#);
+    let plugin = live(&h);
+    let f = frame(2);
+    PANIC_IN_CANCEL_FOR.store(Arc::as_ptr(&plugin) as usize, Ordering::SeqCst);
+    let ran = tokio::time::timeout(
+        Duration::from_secs(3),
+        call::call(
+            &plugin,
+            slot::DECIDE,
+            Frame::new(
+                f.input(),
+                super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
+            ),
+            Arc::clone(&f) as crate::dispatch::Lent,
+            Opts {
+                class: DeadlineClass::Call,
+                deadline: std::time::Instant::now() + Duration::from_millis(100),
+                watch: Duration::ZERO,
+                leave: false,
+            },
+            &mut |_| None,
+        ),
+    )
+    .await;
+    PANIC_IN_CANCEL_FOR.store(0, Ordering::SeqCst);
+    let ran = ran.expect("the caller is answered, not left waiting");
+    assert!(
+        matches!(&ran, Ran::TimedOut { cancelled: Some(c) } if c.outcome == Outcome::Fault),
+        "{ran:?}"
+    );
+    assert_eq!(units_come_back(&h).await, 0);
+}
