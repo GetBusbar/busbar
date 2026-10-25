@@ -187,9 +187,9 @@ impl Ledger {
         &self.book
     }
 
-    /// The books, to be moved directly: TEST SUPPORT only (a test corrupts a book to prove a check
-    /// sees it). The book moves through this type's own verbs everywhere else.
-    #[cfg(any(test, feature = "test-support"))]
+    /// The books, to be moved directly: a test corrupts a book to prove a check sees it. The book
+    /// moves through this type's own verbs everywhere else.
+    #[doc(hidden)]
     pub fn book_mut(&mut self) -> &mut Book {
         &mut self.book
     }

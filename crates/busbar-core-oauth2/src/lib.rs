@@ -57,10 +57,8 @@ pub mod policy;
 pub mod routes;
 pub mod shared;
 pub mod signer;
-// `testkit` names `busbar_kernel::test_support::TestApp`, which only exists when the kernel compiles
-// with its own `test-support` feature (or under `cfg(test)`) — so this module is gated the same way,
-// and a production build of this crate (the shipped binary's dependency) never reaches for it.
-#[cfg(any(test, feature = "test-support"))]
+// `testkit`: this crate's own tests' `oauth_as:`-configured `TestApp` builder.
+#[cfg(test)]
 pub mod testkit;
 
 // A module whose tests are its own wires them from inside itself (`#[path = "tests/…"] mod …;`):

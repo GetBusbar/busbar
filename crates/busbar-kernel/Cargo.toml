@@ -202,7 +202,7 @@ loom-model = ["dep:loom"]
 # capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
 # `tokio/net`: the test kit's mock servers bind loopback sockets (`test_support`); the shipped
 # kernel asks for no socket layer (THE DESIGN §5).
-test-support = ["tokio/net", "busbar-kernel-identity/stand-in", "busbar-kernel-ledger/test-support"]
+test-support = ["tokio/net", "busbar-kernel-identity/stand-in"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
