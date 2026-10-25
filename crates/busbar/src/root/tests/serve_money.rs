@@ -92,8 +92,8 @@ fn screen_cfg(token: &str) -> busbar_kernel::config::HookCfg {
 /// The hook env the gate's `module` resolves in: the kernel's hook double, its manifest asking to
 /// read the prompt.
 fn screen_env() -> busbar_kernel::hooks::HookEnv {
-    let needs = crate::root::loader::sign::HookNeeds {
-        prompt: crate::root::loader::sign::NeedLevel::Ro,
+    let needs = busbar_kernel::test_support::HookNeeds {
+        prompt: busbar_contract::plugin_rows::NeedLevel::Ro,
         ..Default::default()
     };
     busbar_kernel::test_support::test_hook_env(&["test-hook"], needs)

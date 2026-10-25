@@ -1185,3 +1185,41 @@ fn an_auth_module_whose_open_fails_is_named_in_1_5_5s_words() {
         "{refused}"
     );
 }
+
+/// A CREDENTIAL FORM IS FORMED ONLY THROUGH THE ONE CAPPED, VALIDATED READER (`BUSBAR-1.6.0.md`
+/// THE DESIGN §11.13 M1: "Every slice built from a plugin-reported length is capped and validated
+/// before it is formed").
+///
+/// RED before `begin_login`'s form went through `dispatch::validate::lent`: a READY answer whose
+/// `form` pointer is not aligned for `LoginField` (the kind's check refuses only NULL) was formed
+/// into a slice as it stood, so the host read plugin memory as fields it does not hold.
+#[test]
+fn a_begin_login_form_misaligned_for_its_fields_is_malformed() {
+    use busbar_contract::abi::auth::{BeginLoginOut, LoginField, BEGIN_FORM};
+    let size = std::mem::size_of::<LoginField>();
+    let align = std::mem::align_of::<LoginField>();
+    assert!(
+        align > 1,
+        "a field holds pointers, so it has an alignment to miss"
+    );
+    // Zeroed bytes are one well-formed field (two empty strings), one byte past an aligned start.
+    let buf = vec![0u64; size.div_ceil(8) + 2];
+    let at = buf.as_ptr().cast::<u8>().wrapping_add(1);
+    assert!(!at.cast::<LoginField>().is_aligned());
+    let out = BeginLoginOut {
+        head: crate::dispatch::out_head(),
+        shape: BEGIN_FORM,
+        _reserved: 0,
+        authorize_url: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        form: at.cast::<LoginField>(),
+        form_len: 1,
+    };
+    assert!(
+        super::login::begun(&out).is_none(),
+        "a form not aligned for its fields is a malformed answer, never read"
+    );
+    drop(buf);
+}

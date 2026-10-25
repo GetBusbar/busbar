@@ -645,6 +645,9 @@ futures = { workspace = true }
 # runtime dep after the core split, so the integration test needs its own copy.
 base64 = { workspace = true }
 bytes = { workspace = true }
+# `src/root/tests/admin_plugin_admission.rs` types the admin contract's request and view bodies it
+# drives (derive only; no wire shape is spelled as a string).
+serde = { workspace = true }
 serde_json = { workspace = true }
 # The dropped-in export plugin's end-to-end proof (`tests/export_plugin_dropped_in_serves.rs`): the
 # FILE sink's repo's cdylib crate at the SAME pinned rev as the linked `busbar-export-file` edge
@@ -913,7 +916,7 @@ busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-deci
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "0565fcf1fa040ed986e0abcc8528e1b336e2e83c" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "fafb021f9f5ff4f109da47a9ea711353a003d26e" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in
