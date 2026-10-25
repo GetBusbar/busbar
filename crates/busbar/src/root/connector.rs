@@ -219,14 +219,12 @@ pub fn boot(
         eprintln!("busbar: the connector did not build: {refusal}");
         std::process::exit(2);
     });
-    let one = install(connector).unwrap_or_else(|_| {
+    // THE ONE PROXY CHOICE (status row 130 E5a) is the connector's own: it read the process
+    // environment and every framed dial it makes honours it. The kernel dials nothing to hand it.
+    install(connector).unwrap_or_else(|_| {
         eprintln!("busbar: a second connector was built; the process has one");
         std::process::exit(2);
-    });
-    // THE ONE PROXY CHOICE (status row 130 E5a): the connector read the process environment; the
-    // kernel's remaining egress engine takes the same value and reads none of its own.
-    busbar_kernel::egress::engine::install_proxy(one.proxy());
-    one
+    })
 }
 
 /// THE REACTOR A SOCKET A PLUGIN OPENS FROM A DISPATCHER WORKER REGISTERS ON

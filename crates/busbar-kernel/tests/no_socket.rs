@@ -57,23 +57,16 @@ const MANIFEST_NEEDLES: &[&str] = &["hyper-util", "tokio-tungstenite", "reqwest"
 const TOKIO_NET: &str = "tokio:net";
 
 /// TODAY'S OFFENDERS, measured on predev after row 130 E1 (the hyper serve loop moved to the root).
-/// Each line is struck in the commit that drains it.
-const PINNED: &[(&str, &str)] = &[
-    // E5: the engine pool (the owned hyper-util client, its https connector and resolver).
-    ("src/egress/engine/client.rs", "hyper::client"),
-    ("src/egress/engine/https.rs", "TcpStream"),
-    ("src/egress/engine/https.rs", "hyper_util::client"),
-    ("src/egress/engine/mod.rs", "TcpStream"),
-    ("src/egress/engine/mod.rs", "hyper_util::client"),
-    ("src/egress/engine/observe.rs", "hyper_util::client"),
-    ("src/egress/engine/pool.rs", "hyper::client"),
-    ("src/egress/engine/resolve.rs", "hyper_util::client"),
-    ("src/egress/mod.rs", "reqwest::"),
-    ("src/secure.rs", "TcpStream"),
-];
+/// Each line is struck in the commit that drains it. EMPTY since u30 (TODO row 36): the kernel's
+/// outbound engine (`egress/engine/`: its hyper client, https connector, resolver and pool), the
+/// reqwest reference stack (`egress/mod.rs`) and the TLS seam that handed the engine a dialled
+/// `TcpStream` (`secure.rs`) are deleted; every dial is the connector's (THE DESIGN §5).
+const PINNED: &[(&str, &str)] = &[];
 
-/// TODAY'S MANIFEST OFFENDERS, struck as the code that needs each one leaves.
-const PINNED_MANIFEST: &[&str] = &["hyper-util", "reqwest", TOKIO_NET];
+/// TODAY'S MANIFEST OFFENDERS, struck as the code that needs each one leaves. `hyper-util` and
+/// tokio's `net` left with the engine (u30); `reqwest` left when the test kit's oversized-POST
+/// helper began handing its request to the router itself (E7). Empty: row 130's proof is met.
+const PINNED_MANIFEST: &[&str] = &[];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
