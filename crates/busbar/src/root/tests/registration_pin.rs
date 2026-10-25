@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A REGISTRATION'S PEER-KEY PIN AND CLIENT IDENTITY, END TO END THROUGH THE HOST (the transport pin,
-//! ARCHITECT 2026-10-03: "the connector enforces pins itself"): a registration written as an
+//! A REGISTRATION'S PEER-KEY PIN AND CLIENT IDENTITY, END TO END THROUGH THE HOST: a registration written as an
 //! operator writes it, read by the host's one reader of its anchors ([`super::registration_anchors`])
 //! under the trust keys and the `trust_from` path a REAL linked plane door states, sealed on the
 //! in-tree connector over this build's linked wires, and dialled over real TLS to a far end on

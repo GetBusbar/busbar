@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE `plugins.fetch` DOWNLOAD, WIRED (status row 130 E6): the connector's download
+//! THE `plugins.fetch` DOWNLOAD, WIRED: the connector's download
 //! (`busbar_core_connector::fetch`) over the process's one connector, under the root's own identity
 //! ([`crate::root::connector::ROOT_OWNER`]; `NeedId(0)` there is the authorization server's, the
 //! download rides `NeedId(1)` for a secured URL and `NeedId(2)` for a plaintext one).

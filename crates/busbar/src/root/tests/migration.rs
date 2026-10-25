@@ -208,7 +208,7 @@ fn a_deployment_with_nothing_behind_it_still_seals() {
     assert!(opening.checkpoint.body_hash_verifies());
 }
 
-/// THE OPENING IS SIGNED WITH THE CHAIN'S OWN KEY (OWNER Q71(3): one keyset, #82): the signer the
+/// THE OPENING IS SIGNED WITH THE CHAIN'S OWN KEY: the signer the
 /// boot hands the migration is the audit chain's, so the opening verifies against the audit keyset;
 /// a chain given no key offers no signer and the opening goes down unsigned rather than failing.
 #[test]

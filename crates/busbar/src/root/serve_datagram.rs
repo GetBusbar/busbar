@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A DATAGRAM SESSION, on the data listener (ARCHITECT rulings, row 132: the seam (a)-(d), the
-//! channels ruling and the pairing ruling).
+//! A DATAGRAM SESSION, on the data listener.
 //!
 //! A door plane's claim whose carrier a DATAGRAM framer answers is an HTTP unit whose answer turns
 //! it into a duplex session on a host carrier, as an upgrade does for a stream: the request body is
@@ -59,7 +58,7 @@ impl ClaimDoors {
         self.0.get(claim).cloned()
     }
 
-    /// THE CLAIM DOORS BOOT BINDS (ARCHITECT ruling, row 132 seam (d)): one for every inbound
+    /// THE CLAIM DOORS BOOT BINDS: one for every inbound
     /// listener in the one list of listeners whose transport a DATAGRAM framer answers, bound on
     /// the address its `{listen}` block names, its task on the calling worker. A listener over any
     /// other transport is no claim door (the data listener and the stream listeners bind those);

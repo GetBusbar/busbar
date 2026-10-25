@@ -122,7 +122,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
 ///
 /// This used to assert the opposite — that the served document had no ledger path, because the
 /// 1.6.0 operations were described in a side-car document of their own so the served bytes need not
-/// move. That side-car is gone (owner ruling Q41, items 45/46): there is ONE administrative
+/// move. That side-car is gone: there is ONE administrative
 /// document, generated from the code, describing every operation the build can serve. The views
 /// are answered by the composition root's loop, which this leg does not run — so the document says
 /// who answers them (`x-busbar-since: 1.6.0`, the loop's mark), and the test above still proves

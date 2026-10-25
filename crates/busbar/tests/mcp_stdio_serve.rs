@@ -36,7 +36,7 @@
 // The plane under test is the door `plane-mcp` carries, served on the root's line carrier (SEAM-S1)
 // through the stdio claim its door states; gated on `linked_section_tools`, set exactly when the
 // linked door declaring `tools:` is in the build.
-// It also needs the `test-harness` build (ARCHITECT ruling, busbar #700): the dropped-in OIDC module
+// It also needs the `test-harness` build: the dropped-in OIDC module
 // is signed first-party, and only a `test-harness` child takes the first-party key a test holds
 // (`root::boot::HARNESS_FIRST_PARTY_KEY_ENV`). So this battery runs in the root test-harness row and
 // no longer in the single-plane or plain workspace rows.
@@ -204,7 +204,7 @@ fn meta() -> serde_json::Value {
     })
 }
 
-/// CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): `providers:` and `models:` are required only by a linked
+/// CONFIG-REQ: `providers:` and `models:` are required only by a linked
 /// plane that declares it requires them. This file's builds all link the plane serving this door;
 /// with the plane that owns `models:` linked too (`linked_section_pools`: the default build),
 /// a document carrying neither is refused with the published v1.5.5 line — measured on that
@@ -398,7 +398,7 @@ fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 1.5.5 PARITY (Q128 u27, Q20): an admitted credential under a module with no `role_bindings`
+/// 1.5.5 PARITY: an admitted credential under a module with no `role_bindings`
 /// table earns NO enforcement key and is served UNGOVERNED, as 1.5.5 admitted it (v1.5.5
 /// crates/busbar/src/auth/mod.rs:1543): the session binds with the UNGOVERNED warning on stderr,
 /// is never refused `insufficient_scope`, and EOF on stdin is a clean shutdown.

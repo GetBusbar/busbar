@@ -138,8 +138,7 @@ agent_pools:
     );
 }
 
-/// A POOL UNDER A PLANE'S VERB REFUSES EVERY FIELD ITS PLANE DOES NOT HONOUR (Q128 arch u28 HIGH,
-/// coordinator ruling: a field the path does not honour is refused, naming it). A plane's pool is
+/// A POOL UNDER A PLANE'S VERB REFUSES EVERY FIELD ITS PLANE DOES NOT HONOUR. A plane's pool is
 /// the reserved `pools` sub-key of its own section and carries `members:` by bare name and
 /// `repeatable:`; each other family below used to be dropped without a word by the old projection
 /// of a top-level pool onto a plane, so a gate the operator wrote on such a pool never fired. One RED

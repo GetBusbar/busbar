@@ -11,9 +11,7 @@
 //!
 //! A test BINARY of its own, because the rate holder this file hands in is process-wide.
 //!
-//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
-//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
-//! build.rs): its config names a provider, whose dialect only a real plane declares, and the
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation: core names zero plane types, its tests included): its config names a provider, whose dialect only a real plane declares, and the
 //! composition root is where a plane may be linked.
 
 mod linked;

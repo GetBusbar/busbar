@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ORACLE NEVER READS "NOTHING JUDGED" AS A VERDICT (2026-10-07, row 86). A filtered replay
+//! THE ORACLE NEVER READS "NOTHING JUDGED" AS A VERDICT. A filtered replay
 //! handed `--filter` (record's flag; replay selects with `--id-filter`) exited 2 from the engine's
 //! argument parser, and the fence and dated-baseline sections then printed their own rows, which
 //! read like a verdict over the selected cells. `bin/oracle replay-refusal-selftest` drives a copy

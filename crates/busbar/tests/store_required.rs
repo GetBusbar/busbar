@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Q-STORE = (B) (owner ruling 2026-09-27, BUSBAR-1.6.0.md Appendix B; THE DESIGN §4), at the
+//! A missing `store:` block is refused at the
 //! outermost surface — the REAL binary over the no-store fixture (`fixtures/no_store_1_5_5.yaml`):
 //!
 //! 1. `busbar --validate` REFUSES a config with no `store:` block (exit 1), naming the store to add

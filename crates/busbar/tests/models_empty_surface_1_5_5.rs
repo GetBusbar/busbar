@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **A DOCUMENT THAT WRITES `models: {}` ANSWERS AS 1.5.5 ANSWERED IT** (ARCHITECT row-82 ruling:
-//! a written consumed|required key counts).
+//! **A DOCUMENT THAT WRITES `models: {}` ANSWERS AS 1.5.5 ANSWERED IT**.
 //!
 //! The previous release required `providers:` and `models:` and accepted `models` empty (v1.5.5
 //! crates/busbar/src/config/mod.rs:2626-2632; `pools:` was optional). Such a deployment still

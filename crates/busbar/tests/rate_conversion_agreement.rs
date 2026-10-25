@@ -109,7 +109,7 @@ fn the_two_conversions_agree_on_ten_thousand_generated_rates() {
 /// configured DECIMAL by a thousand, exactly, and take it only if it is a positive whole number of
 /// nano-units that fits a `u64` (#81: no binary float on the money path). A rate with any digit past
 /// the third decimal is NOT rounded — not up, not down, not to 1.5.5's figure — it is a rate the
-/// card cannot hold, and it converts to nothing here and is refused at boot (OWNER rule 21).
+/// card cannot hold, and it converts to nothing here and is refused at boot.
 ///
 /// THE CEILING IS AN INTEGER ONE. The conversion used to cast a float, and `u64::MAX as f64` rounds
 /// UP to `2^64`, so a guard spelled against it let a cast SATURATE to `u64::MAX` — an astronomical

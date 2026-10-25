@@ -80,7 +80,7 @@ fn the_credential_variable_is_spelled_from_the_plane_and_the_carrier() {
 /// A LINE PAST THE BOUND IS DROPPED WHOLE, its tail with it, and the next line is read as it is
 /// (the carrier's own contract: "a longer one is read to its end and dropped ... so the session
 /// goes on"). The reader hands the line over in pieces smaller than the bound, so the bound is
-/// crossed mid-line and pieces of the same line follow it. RED before Q128 root-p9 #5: the buffer
+/// crossed mid-line and pieces of the same line follow it. RED before the fix: the buffer
 /// was cleared where the bound was crossed and the rest of the line kept, so its tail (`bb`) came
 /// back as a line of its own.
 #[tokio::test]
