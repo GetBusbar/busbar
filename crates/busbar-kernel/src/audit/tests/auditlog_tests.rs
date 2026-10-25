@@ -402,10 +402,8 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
 /// the migration or restore fails this against a hash a PAST build computed, not one this build did.
 #[test]
 fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
-    // The frozen pre-cleave `serde(AuditRecord)` rows and their frozen tail hash — copied verbatim
-    // from `crate::audit::tests::boot_verify_golden` (that module is private).
-    const AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
-    const AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
+    // `boot_verify_golden`'s frozen pre-cleave `serde(AuditRecord)` rows and their frozen hashes.
+    use crate::audit::boot_verify_golden::{AD_1, AD_2};
     const AD_HEAD_HASH: &str = "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa";
     const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
@@ -481,11 +479,7 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     assert!(ring.iter().all(|e| !e.recorded_here));
 }
 
-/// A tracing layer that records the `diag = "BUSBAR-NNNN"` field of every ERROR event, so a test can
-/// assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose. The peer
-/// of the journal restore tests' capture layer.
-#[derive(Clone, Default)]
-struct DiagCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+use crate::test_support::warn_capture::DiagCapture;
 
 /// Serializes every test that restores an admin audit stream holding an undecodable row, because they
 /// all hit the same process-wide tracing callsite (BUSBAR-2047). tracing caches a callsite's interest
@@ -509,34 +503,6 @@ fn capture_into(cap: &DiagCapture) -> IsolatedCapture {
     IsolatedCapture {
         _guard: guard,
         _lock: lock,
-    }
-}
-
-impl<S> tracing_subscriber::Layer<S> for DiagCapture
-where
-    S: tracing::Subscriber,
-{
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if *event.metadata().level() != tracing::Level::ERROR {
-            return;
-        }
-        struct V<'a>(&'a mut Option<String>);
-        impl tracing::field::Visit for V<'_> {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "diag" {
-                    *self.0 = Some(format!("{value:?}"));
-                }
-            }
-        }
-        let mut diag = None;
-        event.record(&mut V(&mut diag));
-        if let Some(d) = diag {
-            self.0.lock().unwrap().push(d);
-        }
     }
 }
 
@@ -1406,9 +1372,8 @@ fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
 
 // ── Q128 p12#3: a part-way legacy migration resumes ─────────────────────────────────────────────
 
-/// The frozen pre-cleave legacy rows (the same bytes `boot_verify_golden` pins).
-const LEGACY_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
-const LEGACY_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
+// The frozen pre-cleave legacy rows (the bytes `boot_verify_golden` pins).
+use crate::audit::boot_verify_golden::{AD_1 as LEGACY_1, AD_2 as LEGACY_2};
 
 /// A copy an earlier boot left part-way (legacy seq 1 copied, seq 2 not) is finished on the next
 /// boot, and the restored chain carries the whole legacy history.

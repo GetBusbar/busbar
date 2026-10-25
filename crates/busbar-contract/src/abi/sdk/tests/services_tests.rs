@@ -856,7 +856,7 @@ extern "C" fn claims(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) 
     )
 }
 
-/// THE RECORDS WRAPPERS (K-RECORDS; TODO step 3b H2 records): `records.get` answers the record as
+/// THE RECORDS WRAPPERS (K-RECORDS): `records.get` answers the record as
 /// a view into the caller's buffer, absent as `None`, a short buffer as the size to re-call with,
 /// and pends only on a ticket; a FOUND without its record broke the rule.
 #[test]

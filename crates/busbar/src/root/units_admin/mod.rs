@@ -1414,7 +1414,7 @@ fn json_answer(body: Vec<u8>) -> AdminAnswer {
 
 /// Whether `view` already holds `correction`: an amendment entry by the same author for the same
 /// reason over the same window, carrying every figure the correction names. That is what the same
-/// body produces each time it is applied, so a second one is a replay (TODO M28).
+/// body produces each time it is applied, so a second one is a replay.
 fn already_applied(
     view: busbar_kernel_ledger::cost::HistoryView<'_>,
     correction: &crate::root::kernel::Correction,
@@ -1487,7 +1487,7 @@ fn amend_rate_history_effect(
     if effective_until.is_some_and(|until| until <= effective_from) {
         return Err(GovernanceError::Validation);
     }
-    // A CORRECTION IS BACK-DATED OR IT IS NOT A CORRECTION (TODO M28; #79 "an entry whose
+    // A CORRECTION IS BACK-DATED OR IT IS NOT A CORRECTION (#79 "an entry whose
     // `effective_from` lies in the past"). A window that opens after the instant the correction
     // arrived prices a future no booked line has reached yet: that is a forward price, which is a
     // configuration write, and an amendment signed today must not be able to stand in for one.
@@ -1628,7 +1628,7 @@ fn amend_rate_history_effect(
     };
     let seq = history
         .amend(&correction, |card, base| {
-            // A CORRECTION APPLIES ONCE (TODO M28). The body names the window, the cells, the fee
+            // A CORRECTION APPLIES ONCE. The body names the window, the cells, the fee
             // and the reason, and nothing that makes one submission different from the next — so
             // the same bytes, sent again after a later correction moved the window on, would put
             // the earlier price back with no new operator act. Under the apply lock (this closure

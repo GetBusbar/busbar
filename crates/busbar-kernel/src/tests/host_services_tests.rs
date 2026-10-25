@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 
-fn verdict_now(r: Ran) -> Stored {
+pub(crate) fn verdict_now(r: Ran) -> Stored {
     match r {
         Ran::Now(s) => s,
         Ran::Later => panic!("the answer pended"),
@@ -69,7 +69,7 @@ use crate::trust::reverify::Policy;
 use crate::trust::section::{DeclaredPin, TrustEntry};
 
 /// The memory store's typed record reads.
-struct Mem(Arc<MemoryStore>);
+pub(crate) struct Mem(pub(crate) Arc<MemoryStore>);
 
 impl RecordRows for Mem {
     fn record_put(
@@ -124,7 +124,7 @@ const KIND: RecordSchemaId = RecordSchemaId::new("approval");
 const SECTION_KEY: &str = "tools";
 
 /// An instance of the one test plugin, by its label.
-fn caller(instance: &str) -> Caller {
+pub(crate) fn caller(instance: &str) -> Caller {
     Caller {
         instance: Arc::from(instance),
         plugin: Arc::from("the-plugin"),
