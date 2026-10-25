@@ -167,11 +167,11 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Found>), &
 
 fn looks_keyword(text: &str) -> bool {
     let t = text.trim_start();
-    t.split_whitespace().next().is_some_and(|w| {
-        w.split_once('=').is_some_and(|(k, _)| {
-            !k.is_empty() && k.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        })
-    })
+    let key = t
+        .bytes()
+        .take_while(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        .count();
+    key > 0 && t[key..].trim_start().starts_with('=')
 }
 
 const KEYWORD: &str = "a connection string of key=value pairs";

@@ -118,6 +118,9 @@ fn keyword_connection_strings_are_split_out() {
     assert_eq!(u.public(), "host=db port=5432 user=app");
     let u2 = split(r"host=db password='a \'b\' c' user=app");
     assert_eq!(pw(&u2).as_deref(), Some(&b"a 'b' c"[..]));
+    let u4 = split("host = db port=5433 user=u password = 'se cret' dbname=x");
+    assert_eq!(u4.public(), "host = db port=5433 user=u dbname=x");
+    assert_eq!(pw(&u4).as_deref(), Some(&b"se cret"[..]));
     let u3 = split("host=db password=plain user=app");
     assert_eq!(u3.public(), "host=db user=app");
     assert_eq!(pw(&u3).as_deref(), Some(&b"plain"[..]));
