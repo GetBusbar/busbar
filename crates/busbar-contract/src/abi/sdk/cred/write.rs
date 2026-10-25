@@ -61,6 +61,18 @@ impl Parts {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    #[cfg(any(test, feature = "test-seal"))]
+    pub(crate) fn assembled(&self) -> Zeroizing<Vec<u8>> {
+        let mut buf = Zeroizing::new(Vec::with_capacity(self.len()));
+        for p in &self.parts {
+            match p {
+                Part::Public(b) => buf.extend_from_slice(b),
+                Part::Sealed(s) => buf.extend_from_slice(s.wire()),
+            }
+        }
+        buf
+    }
 }
 
 /// Bytes on their way to the host, held where the plugin cannot read them. Park it on the op's

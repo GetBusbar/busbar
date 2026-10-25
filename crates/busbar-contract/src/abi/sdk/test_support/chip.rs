@@ -37,3 +37,9 @@ pub fn drive_sealed<E>(
 pub fn cred_bytes(cred: &crate::abi::sdk::cred::Cred) -> Vec<u8> {
     cred.wire().to_vec()
 }
+
+/// The bytes [`Parts`](crate::abi::sdk::cred::Parts) put on the wire, in order.
+#[must_use]
+pub fn parts_bytes(parts: &crate::abi::sdk::cred::Parts) -> Vec<u8> {
+    parts.assembled().to_vec()
+}
