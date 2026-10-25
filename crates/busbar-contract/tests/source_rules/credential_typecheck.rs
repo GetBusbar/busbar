@@ -338,7 +338,10 @@ fn report(findings: &[Finding]) -> String {
 
 #[test]
 fn credential_typecheck_reports_what_it_finds() {
-    let found: Vec<Finding> = walk::production(&["crates"]).iter().flat_map(scan).collect();
+    let found: Vec<Finding> = walk::production(&["crates"])
+        .iter()
+        .flat_map(scan)
+        .collect();
     let text = report(&found);
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("credential-typecheck.txt");
     let _ = std::fs::write(&out, &text);
