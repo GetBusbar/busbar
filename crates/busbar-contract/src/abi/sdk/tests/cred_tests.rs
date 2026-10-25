@@ -94,6 +94,7 @@ fn url_userinfo_and_query_passwords_are_split_out() {
     let u = split("mysql://u:12?abc@h/db");
     assert_eq!(u.public(), "mysql://u@h/db");
     assert_eq!(pw(&u).as_deref(), Some(&b"12?abc"[..]));
+    assert_eq!(u.password_at(), Some(super::PasswordAt::UserinfoUnencoded));
 
     let u = split("valkey+unix:///run/v.sock?db=2&pass=s%3Dc+ret");
     assert_eq!(u.public(), "valkey+unix:///run/v.sock?db=2");

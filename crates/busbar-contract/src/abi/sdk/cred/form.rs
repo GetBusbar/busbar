@@ -23,6 +23,8 @@ pub struct CredUrl {
 pub enum PasswordAt {
     /// `user:password@` in a URL's authority.
     Userinfo,
+    /// The same, with a `?` written unencoded inside it: a WHATWG URL reader splits the URL there.
+    UserinfoUnencoded,
     /// A URL query parameter of this name (`password` or `pass`).
     Query(&'static str),
     /// `password=` in a key=value connection string.
@@ -94,10 +96,16 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Found>), &
     let head = &text[..scheme_end + 3];
     let rest = &text[scheme_end + 3..];
     let pre_query = rest.find('?').unwrap_or(rest.len());
-    let at = rest[..pre_query].rfind('@').or_else(|| {
+    let strict = rest[..pre_query].rfind('@');
+    let at = strict.or_else(|| {
         rest.rfind('@')
             .filter(|&a| !rest[..a].contains('/') && rest[..a].contains(':'))
     });
+    let userinfo_at = if strict.is_some() {
+        PasswordAt::Userinfo
+    } else {
+        PasswordAt::UserinfoUnencoded
+    };
     let mut public = String::with_capacity(text.len());
     public.push_str(head);
     let mut password = None;
@@ -106,7 +114,7 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Found>), &
             let userinfo = &rest[..a];
             match userinfo.split_once(':') {
                 Some((user, pass)) => {
-                    password = Some((decode(pass), PasswordAt::Userinfo));
+                    password = Some((decode(pass), userinfo_at));
                     if !user.is_empty() {
                         public.push_str(user);
                         public.push('@');
