@@ -57,7 +57,7 @@
 //! # Dedupe (every slot that carries an [`OpId`])
 //!
 //! Every additive or appending write carries an [`OpId`] and uses [`DeadlineClass::WriteBehind`].
-//! The rule, the same on every such slot (S1-S4):
+//! The rule, the same on every such slot (S1-S5):
 //! * S1 REPLAY: the same `op_id` replayed with the same body applies nothing and returns the
 //!   ORIGINAL `out`.
 //! * S2 SAME BODY means the op's VALUE fields only: the cells or records and the window fields.
@@ -70,6 +70,11 @@
 //! * S4 RETENTION: dedupe is DURABLE (it survives a store restart) and an `op_id` is remembered at
 //!   least [`OP_ID_RETENTION_SECS`] (24 h). The kernel never re-issues an `op_id` older than that,
 //!   and a store treats an `op_id` it does not know as new.
+//! * S5 WHAT AN ANSWER PROVES: REFUSED is decided before commit and PROVES nothing applied (a value
+//!   the store cannot hold, a constraint, a script error before any write). FAILED proves nothing:
+//!   a store answers FAILED whenever it cannot know whether its commit landed (a lost commit or EXEC
+//!   reply, a dropped session), so the host replays the same `op_id` with the same body until READY
+//!   or REFUSED, and only a REFUSED write is ever split or re-sent under a new `op_id`.
 
 pub mod check;
 pub mod ledger;

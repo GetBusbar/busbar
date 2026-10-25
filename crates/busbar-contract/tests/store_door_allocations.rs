@@ -31,7 +31,9 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, O
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::conn::Host;
-use busbar_contract::abi::sdk::store::{Op as StoreOp, OpResult, Scanned, Step, StoreSlots, Tail};
+use busbar_contract::abi::sdk::store::{
+    Op as StoreOp, OpRefused, OpResult, Scanned, Step, StoreSlots, Tail,
+};
 use busbar_contract::abi::store::{
     slot, AppendPlaneRecordIn, GetPlaneRecordIn, HostBlobs, HostBuf, HostBytesOut, HostListOut,
     HostRecords, IdIn, KindIdIn, LeasedBlobOut, LeasedListOut, ListPlaneRecordsIn, OpId, Ops,
@@ -123,6 +125,9 @@ const DOWN: &str = "down";
 /// The store's failure text.
 const DOWN_TEXT: &str = "the backend is down";
 
+/// The store's refusal text: decided before commit, nothing applied (S5).
+const REFUSED_TEXT: &str = "a cell the backend cannot hold";
+
 fn down<T>() -> RecordStoreResult<T> {
     Err(RecordStoreError(DOWN_TEXT.to_string()))
 }
@@ -146,9 +151,15 @@ impl StoreSlots for Canned {
         &self,
         _: &mut StoreOp<'_>,
         _: OpId,
-        _: PlaneRecordRef<'_>,
+        record: PlaneRecordRef<'_>,
     ) -> Step<OpResult<()>> {
-        Step::Ready(Ok(()))
+        Step::Ready(unwitnessed(|| {
+            if record.kind == DOWN {
+                Err(OpRefused::Refused(REFUSED_TEXT.to_string()))
+            } else {
+                Ok(())
+            }
+        }))
     }
     fn record_put(
         &self,
@@ -776,6 +787,21 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
             |o| o.error,
         ),
         measure(
+            "append_plane_record store REFUSED",
+            t.append_plane_record,
+            inst,
+            AppendPlaneRecordIn {
+                head: in_head::<AppendPlaneRecordIn>(slot::APPEND_PLANE_RECORD),
+                op_id: OpId::from_parts(1, 3),
+                record: PlaneRecordRow {
+                    kind: s(DOWN.as_bytes()),
+                    ..row
+                },
+            },
+            head_out,
+            |o| o.error,
+        ),
+        measure(
             "list_plane_records SELECT_PARENT READY",
             t.list_plane_records,
             inst,
@@ -799,7 +825,7 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
     ];
 
     // The answers are the door's, unchanged: outcome and every error text byte for byte.
-    let want: [(Outcome, &str); 19] = [
+    let want: [(Outcome, &str); 20] = [
         (Outcome::Ready, ""),
         (Outcome::Failed, ""),
         (Outcome::Failed, DOWN_TEXT),
@@ -823,6 +849,7 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         ),
         (Outcome::Ready, ""),
         (Outcome::Ready, ""),
+        (Outcome::Refused, REFUSED_TEXT),
         (Outcome::Ready, ""),
         (Outcome::Ready, ""),
     ];

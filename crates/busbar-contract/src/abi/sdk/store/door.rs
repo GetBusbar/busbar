@@ -408,6 +408,7 @@ fn op_answer<B: StoreSlots>(
         Ok(()) => Outcome::Ready,
         Err(OpRefused::Conflict) => conflict(out),
         Err(OpRefused::Failed(t)) => failed(s, out, t),
+        Err(OpRefused::Refused(t)) => refused(s, out, Text::Owned(t)),
     }
 }
 

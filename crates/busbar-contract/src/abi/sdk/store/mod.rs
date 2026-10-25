@@ -44,8 +44,14 @@ pub enum OpRefused {
     /// [`DIAG_OPID_CONFLICT`](crate::abi::store::DIAG_OPID_CONFLICT), nothing applied.
     Conflict,
     /// The write could not be applied (a fork at a used `seq`, a backend error): FAILED with this
-    /// text, nothing applied, nothing recorded under the `op_id`.
+    /// text, nothing applied, nothing recorded under the `op_id`. A host cannot tell this from a
+    /// commit whose answer was lost, so it replays the same `op_id` (S5).
     Failed(String),
+    /// The write was decided before commit and refused (a value its columns cannot hold, a
+    /// constraint, a script error before any write): REFUSED with this text, PROVABLY nothing
+    /// applied and nothing recorded under the `op_id` (S3, S5). A host may split or re-send the
+    /// write under a new `op_id`.
+    Refused(String),
 }
 
 /// An `op_id`-carrying write's answer.
