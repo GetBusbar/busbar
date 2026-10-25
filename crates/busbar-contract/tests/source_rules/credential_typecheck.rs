@@ -3,10 +3,9 @@
 
 //! THE CREDENTIAL TYPECHECK (CREDENTIAL-LOCKDOWN Phase 0, P0.1): a mechanical, type-level
 //! inventory of every place core's production source holds, prints or copies credential material
-//! outside the sealed types. It is MEASUREMENT ONLY and runs in REPORT MODE: the run lists what it
-//! finds against the checked-in baseline (`credential_typecheck.baseline`, today's violations, the
-//! burn-down list) and passes either way. Each rule's own planted case below is strict, so a rule
-//! that stops finding what it names fails.
+//! outside the sealed types. The run prints what it finds and passes; chip row 9 makes it assert
+//! that it finds nothing. Each rule's own planted case below is strict, so a rule that stops
+//! finding what it names fails.
 //!
 //! The rules (the finding key is `rule<TAB>file<TAB>item`, no line numbers, so an unrelated edit
 //! moves nothing):
@@ -25,8 +24,6 @@
 //!   material and never calls `set_sensitive`.
 //! - `url-in-sink`: a log or print macro names a `*url`/`dsn` value.
 //!
-//! Regenerate the baseline (only ever to shrink it, or with the owner's word for a new row):
-//! `CREDENTIAL_TYPECHECK_WRITE=1 cargo test -p busbar-contract --test source_rules credential_typecheck`.
 //! The report of each run is written to `$CARGO_TARGET_TMPDIR/credential-typecheck.txt` and
 //! printed on stdout.
 
@@ -36,8 +33,6 @@ use proc_macro2::TokenTree;
 use syn::visit::Visit;
 
 use crate::walk::{self, Source};
-
-const BASELINE: &str = "crates/busbar-contract/tests/source_rules/credential_typecheck.baseline";
 
 const STRONG: &[&str] = &[
     "api_key",
@@ -319,87 +314,35 @@ fn scan(src: &Source) -> Vec<Finding> {
     out
 }
 
-/// A multiset of findings, rendered one per line.
-fn count(findings: impl IntoIterator<Item = Finding>) -> BTreeMap<String, usize> {
-    let mut m = BTreeMap::new();
-    for (rule, file, item) in findings {
-        *m.entry(format!("{rule}\t{file}\t{item}")).or_insert(0) += 1;
+/// The findings, one per line, grouped by rule.
+fn report(findings: &[Finding]) -> String {
+    let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
+    for (rule, _, _) in findings {
+        *by_rule.entry(rule).or_insert(0) += 1;
     }
-    m
-}
-
-fn render(m: &BTreeMap<String, usize>) -> String {
-    let mut s = String::from(
-        "# The credential typecheck baseline (CREDENTIAL-LOCKDOWN P0.1): today's violations, the\n\
-         # burn-down list. rule<TAB>file<TAB>item, one line per occurrence. It may only shrink.\n",
-    );
-    for (k, n) in m {
-        for _ in 0..*n {
-            s.push_str(k);
-            s.push('\n');
-        }
+    let mut out = format!("credential typecheck: {} findings\n", findings.len());
+    for (rule, n) in &by_rule {
+        out.push_str(&format!("  {rule}: {n}\n"));
     }
-    s
-}
-
-fn parse(text: &str) -> BTreeMap<String, usize> {
-    let mut m = BTreeMap::new();
-    for l in text.lines() {
-        if l.is_empty() || l.starts_with('#') {
-            continue;
-        }
-        *m.entry(l.to_string()).or_insert(0) += 1;
-    }
-    m
-}
-
-/// `a` minus `b`, as a multiset.
-fn minus(a: &BTreeMap<String, usize>, b: &BTreeMap<String, usize>) -> Vec<String> {
-    let mut out = Vec::new();
-    for (k, n) in a {
-        let have = b.get(k).copied().unwrap_or(0);
-        for _ in have..*n {
-            out.push(k.clone());
-        }
+    let mut lines: Vec<String> = findings
+        .iter()
+        .map(|(r, f, i)| format!("{r}\t{f}\t{i}"))
+        .collect();
+    lines.sort();
+    for l in lines {
+        out.push_str(&l);
+        out.push('\n');
     }
     out
 }
 
 #[test]
-fn credential_typecheck_reports_against_the_baseline() {
-    let found = count(walk::production(&["crates"]).iter().flat_map(scan));
-    let path = walk::repo().join(BASELINE);
-    if std::env::var_os("CREDENTIAL_TYPECHECK_WRITE").is_some() {
-        std::fs::write(&path, render(&found)).expect("write the baseline");
-    }
-    let base = parse(&std::fs::read_to_string(&path).unwrap_or_default());
-    let new = minus(&found, &base);
-    let gone = minus(&base, &found);
-    let mut by_rule: BTreeMap<&str, usize> = BTreeMap::new();
-    for (k, n) in &found {
-        *by_rule
-            .entry(k.split('\t').next().unwrap_or(""))
-            .or_insert(0) += n;
-    }
-    let mut report = format!(
-        "credential typecheck (report mode): {} findings, {} in the baseline, {} new, {} gone\n",
-        found.values().sum::<usize>(),
-        base.values().sum::<usize>(),
-        new.len(),
-        gone.len()
-    );
-    for (rule, n) in &by_rule {
-        report.push_str(&format!("  {rule}: {n}\n"));
-    }
-    for k in &new {
-        report.push_str(&format!("NEW  {k}\n"));
-    }
-    for k in &gone {
-        report.push_str(&format!("GONE {k} (shrink the baseline)\n"));
-    }
+fn credential_typecheck_reports_what_it_finds() {
+    let found: Vec<Finding> = walk::production(&["crates"]).iter().flat_map(scan).collect();
+    let text = report(&found);
     let out = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("credential-typecheck.txt");
-    let _ = std::fs::write(&out, &report);
-    println!("{report}");
+    let _ = std::fs::write(&out, &text);
+    println!("{text}");
 }
 
 fn planted(text: &str) -> Vec<String> {
