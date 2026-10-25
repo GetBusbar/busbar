@@ -799,7 +799,7 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
     ];
 
     // The answers are the door's, unchanged: outcome and every error text byte for byte.
-    let want: [(Outcome, &str); 20] = [
+    let want: [(Outcome, &str); 19] = [
         (Outcome::Ready, ""),
         (Outcome::Failed, ""),
         (Outcome::Failed, DOWN_TEXT),
@@ -815,7 +815,6 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         (Outcome::Ready, ""),
         (Outcome::Ready, ""),
         (Outcome::Ready, ""),
-        (Outcome::Ready, ""),
         (Outcome::Failed, DOWN_TEXT),
         (Outcome::Ready, ""),
         (
@@ -827,6 +826,7 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         (Outcome::Ready, ""),
         (Outcome::Ready, ""),
     ];
+    assert_eq!(got.len(), want.len(), "one answer per measured case");
     for (m, (outcome, error)) in got.iter().zip(want) {
         assert_eq!(
             (m.outcome, m.error.as_str()),

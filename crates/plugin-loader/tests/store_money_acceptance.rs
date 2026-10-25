@@ -603,23 +603,14 @@ fn a_1_5_5_metering_row_reads_the_same_counts() {
     assert_eq!((r.priced_from_ms, r.usage_units.len()), (0, 0));
 }
 
-/// The audit record shape is unchanged since 1.5.5: bytes in are bytes out, on every door, so a
-/// hash chain written by 1.5.5 verifies after the upgrade.
+/// The audit record shape is unchanged since 1.5.5: bytes in are bytes out, so a hash chain written
+/// by 1.5.5 and read back through `list_audit` verifies after the upgrade. (No store op appends one
+/// any more: 1.6.0 writes its audit as plane records.)
 #[test]
 fn an_audit_record_round_trips_byte_identical_to_1_5_5() {
     let v155 = r#"{"seq":1,"ts":1790000000,"action":"key.create","resource":"key:k","outcome":"applied","principal":"admin","prev_hash":"","hash":"ab12"}"#;
     let rec: AuditRecord = serde_json::from_str(v155).expect("a 1.5.5 record decodes");
-    for s in subjects() {
-        s.store.append_audit(&rec).expect("append");
-        let back = s.store.list_audit().expect("list");
-        assert_eq!(back.len(), 1, "{}", s.door);
-        assert_eq!(
-            serde_json::to_string(&back[0]).expect("encode"),
-            v155,
-            "{}",
-            s.door
-        );
-    }
+    assert_eq!(serde_json::to_string(&rec).expect("encode"), v155);
 }
 
 // ── money invariants (money-invariants gate rows, held at runtime over what the store carries) ──
