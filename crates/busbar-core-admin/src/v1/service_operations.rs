@@ -1821,42 +1821,36 @@ fn validate_config_blocking(
         Ok(root) => root,
         Err(errors) => return ConfigValidateView { ok: false, errors },
     };
-    if let Err(errors) = busbar_kernel::config_validate::validate(&root) {
-        return ConfigValidateView { ok: false, errors };
-    }
-    // The composition root's rules, as an apply's build judges them first: a dry run never answers
-    // green for a configuration the apply would refuse.
-    if let Err(e) = rules.check(&root) {
-        return ConfigValidateView {
-            ok: false,
-            errors: vec![e],
-        };
-    }
-    // SECURITY (R3-B): the pre-flight below SCANS `plugins.dir` — `fs::read_dir` plus a read of
-    // every tarball it finds (`plugins_preflight` → `scan_and_validate`). On THIS endpoint
-    // `deploy` is CALLER-SUPPLIED, so honoring its `plugins.dir` turned validation into an
-    // arbitrary-path readability + directory-enumeration oracle for any token that can reach it
-    // (`plugins.dir: /root/.ssh` reports whether that path is readable and what it contains).
-    // PIN the scanned directory to the RUNNING install's plugins dir before preflight: the scan
-    // can no longer be steered off the real install, while validation still lints every
-    // store/auth/hook/secret REFERENCE against the plugins that are ACTUALLY installed — the
-    // meaningful check, and the CI dry-run use case (does this config resolve against what is
-    // deployed?). The caller's `plugins.dir` string was already structurally checked by
-    // `config_validate::validate` above (no FS access); only the SCAN is pinned.
+    // SECURITY (R3-B): the plugin pre-flight SCANS `plugins.dir` — `fs::read_dir` plus a read of
+    // every tarball it finds. On THIS endpoint `deploy` is CALLER-SUPPLIED, so honoring its
+    // `plugins.dir` turned validation into an arbitrary-path readability + directory-enumeration
+    // oracle for any token that can reach it (`plugins.dir: /root/.ssh`). PIN the scanned directory
+    // to the RUNNING install's plugins dir: every store/auth/hook/secret REFERENCE is still linted
+    // against the plugins that are ACTUALLY installed — the CI dry-run use case.
     deploy.plugins.dir = plugins_dir;
-    // The SAME post-resolve pre-flight `--validate` runs. Without it this endpoint answered
-    // `ok: true` for configs the CLI rejects -- a plugin whose trust posture or store reference
-    // does not resolve, a `secrets:` entry naming no `kind: secret` plugin, a secret REFERENCE
-    // whose module is neither built-in nor installed -- so an operator could dry-run a config
-    // green here and then watch boot fail on it. Manifest-only: nothing is `dlopen`ed.
-    if let Err(e) = busbar_kernel::preflight_plugins_and_secrets(&deploy, &root) {
-        return ConfigValidateView {
-            ok: false,
-            errors: vec![e],
-        };
-    }
-    ConfigValidateView {
-        ok: true,
-        errors: Vec::new(),
-    }
+    // THE ONE VALIDATOR (`config_validate::check`), the sequence boot and `--validate` run, with the
+    // composition root's rules an apply's build judges: a dry run never answers green for a
+    // configuration the apply or the CLI would refuse. Manifest-only: nothing is `dlopen`ed.
+    let root_rules = |c: &busbar_kernel::config::RootCfg| rules.check(c);
+    let checked = busbar_kernel::config_validate::check(
+        &root,
+        busbar_kernel::config_validate::Check {
+            plugins: &deploy.plugins,
+            unset_env_vars: &[],
+            root: &root_rules,
+            fetch: None,
+            resolve_builtins: false,
+        },
+    );
+    let ok = checked.is_ok();
+    let errors = match checked {
+        Ok(_) => Vec::new(),
+        Err(busbar_kernel::config_validate::Refusal::Config(errors)) => errors,
+        Err(
+            busbar_kernel::config_validate::Refusal::Root(e)
+            | busbar_kernel::config_validate::Refusal::Plugins(e)
+            | busbar_kernel::config_validate::Refusal::Unresolved(e),
+        ) => vec![e],
+    };
+    ConfigValidateView { ok, errors }
 }

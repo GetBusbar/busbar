@@ -422,7 +422,7 @@ auth:
         "boot reads no identity-provider token from this config, so the boot-resolved walk must \
          report none; got: {boot:?}"
     );
-    crate::preflight::validate_builtin_secrets_resolve(&cfg).unwrap_or_else(|e| {
+    super::builtins_resolve(&cfg).unwrap_or_else(|e| {
         panic!("--validate refused a config boot serves (the unset env var is never read): {e}")
     });
 
@@ -460,7 +460,7 @@ auth:
         vec![&format!("auth.admin_auth.{op}.token")],
         "exactly the operator credential boot resolves must be reported; got: {boot:?}"
     );
-    let err = crate::preflight::validate_builtin_secrets_resolve(&cfg)
+    let err = super::builtins_resolve(&cfg)
         .expect_err("the referenced operator token cannot resolve and must be refused");
     assert!(
         err.starts_with(&format!("auth.admin_auth.{op}.token: "))

@@ -33,10 +33,7 @@
 //! reads the plane and protocol lists and every axis must be installed before any reader.
 
 use busbar_kernel::{config, config_validate, diagnostics};
-use busbar_kernel::{
-    load_config_from_disk, preflight_plugins_and_secrets, validate_builtin_secrets_resolve,
-    DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS,
-};
+use busbar_kernel::{load_config_from_disk, DEFAULT_CONFIG_PATH, ENV_CONFIG, ENV_PROVIDERS};
 
 use crate::{build_info_line, safe_mode_requested};
 
@@ -366,34 +363,53 @@ fn validate_config_command() -> i32 {
     if let Some(doc) = loaded.overlay_doc.take() {
         config::overlay::merge_into(&mut cfg, doc);
     }
-    if let Err(errs) = config_validate::validate_with_unset(&cfg, &unset_env_vars) {
-        eprintln!(
-            "[error] {}: config validation failed:\n  - {}",
-            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
-            errs.join("\n  - ")
-        );
-        return 1;
-    }
-    // THE DESTINATION GUARD, as boot builds it: a bad `advanced.allow_destinations` entry fails
-    // here as it fails the boot.
-    if let Err(e) = crate::root::connector::guard_for(&cfg.destinations()) {
-        eprintln!(
-            "[error] {}: config validation failed:\n  - {e}",
-            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
-        );
-        return 1;
-    }
-    // PLUGIN PRE-FLIGHT — the EXACT pipeline boot runs (`plugins_preflight` is shared with
-    // `build_app_from_config`), so a clean `--validate` means the plugin half of boot succeeds too:
-    // consistency (plugins.enabled vs store.module), trust-policy resolution, the three-phase
-    // scan of every tarball (structural -> trust -> conflict), and store resolution. Manifest-only:
-    // nothing is `dlopen`ed, no store is opened — zero side effects.
-    let registry = match preflight_plugins_and_secrets(&loaded.deploy, &cfg) {
+    // THE ONE VALIDATOR (`config_validate::check`), the sequence boot and the admin dry run run:
+    // the semantic pass; the destination guard as boot builds it (a bad `advanced.allow_destinations`
+    // entry fails here as it fails the boot); the plugin pre-flight boot shares (consistency, trust,
+    // the three-phase tarball scan, store resolution); and every secret module and reference
+    // against that registry. Manifest-only: nothing is `dlopen`ed, no store is opened, nothing is
+    // fetched. `--validate` alone also RESOLVES every built-in secret: boot and the admin paths warn
+    // on an unresolvable secret by design, but an operator asking whether the config is good gets
+    // the strict answer.
+    let destination_guard =
+        |c: &config::RootCfg| crate::root::connector::guard_for(&c.destinations()).map(|_| ());
+    let registry = match config_validate::check(
+        &cfg,
+        config_validate::Check {
+            plugins: &loaded.deploy.plugins,
+            unset_env_vars: &unset_env_vars,
+            root: &destination_guard,
+            fetch: None,
+            resolve_builtins: true,
+        },
+    ) {
         Ok(r) => r,
-        Err(e) => {
+        Err(config_validate::Refusal::Config(errs)) => {
+            eprintln!(
+                "[error] {}: config validation failed:\n  - {}",
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+                errs.join("\n  - ")
+            );
+            return 1;
+        }
+        Err(config_validate::Refusal::Root(e)) => {
+            eprintln!(
+                "[error] {}: config validation failed:\n  - {e}",
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+            );
+            return 1;
+        }
+        Err(config_validate::Refusal::Plugins(e)) => {
             eprintln!(
                 "[error] {}: {e}",
                 diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+            );
+            return 1;
+        }
+        Err(config_validate::Refusal::Unresolved(e)) => {
+            eprintln!(
+                "[error] {}: {e}",
+                diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
             );
             return 1;
         }
@@ -407,17 +423,6 @@ fn validate_config_command() -> i32 {
         );
         return 1;
     };
-
-    // STRICT SECRETS, `--validate` only. The pre-flight above is shared with boot and admin apply,
-    // where an unresolvable secret WARNS by design. Here the operator is asking whether the config
-    // is good, so an env var that is not set is an answer, not a footnote.
-    if let Err(e) = validate_builtin_secrets_resolve(&cfg) {
-        eprintln!(
-            "[error] {}: {e}",
-            diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
-        );
-        return 1;
-    }
     // STAGES 0-2 (BUSBAR-1.6.0.md §3: `--validate` runs Plan, Discover and Select, and nothing is
     // opened): what the configuration uses, each dropped-in plugin's stated facts, the plugins it
     // selects, and the version refusal for a selected plugin built for another host.
