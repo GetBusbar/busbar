@@ -1144,7 +1144,7 @@ fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
 }
 
 /// A SESSION'S FEE IS REFUNDED WHEN ITS OPEN FAILS, AS ITS OWN FEE UNIT (ARCHITECT Q-L5-FEE (A);
-/// Q17-6; TODO row 17): a session plane declares `per_session` as its fee unit and a billable class.
+/// Q17-6): a session plane declares `per_session` as its fee unit and a billable class.
 /// A session whose far end never answered reports no fee unit, and its end gives back ONE
 /// `per_session` from the plane's fee lane; a session whose far end answered reports it `1` and
 /// keeps its fee. The fee unit is never ledgered as usage.

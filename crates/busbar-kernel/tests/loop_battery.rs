@@ -512,7 +512,7 @@ fn running_past_the_reservation_posts_the_overdraft_rather_than_refusing() {
     }
 }
 
-/// ONE FIGURE SETTLES THE HOLD (TODO L1689). The exit spent the hold by the rig's meter and settled
+/// ONE FIGURE SETTLES THE HOLD. The exit spent the hold by the rig's meter and settled
 /// it by the reported `amount`: two numbers, so an end that settled 80 inside a reservation of 100
 /// posted an OVERDRAFT of 50 the meter alone ran up. The hold is now spent by the figure it settles
 /// at, so a second count — whatever it reads — cannot move the posting.
@@ -591,7 +591,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
 /// A `?` in a function that is holding a reservation is a path where the hold is dropped instead of
 /// settled. This reads the source and says so.
 ///
-/// THE SCAN READS TOKENS, NOT SPELLINGS (TODO l.3055 #286). It searched for `"return "` with a
+/// THE SCAN READS TOKENS, NOT SPELLINGS. It searched for `"return "` with a
 /// trailing space and for `"?;"`, so the bare `return;` that sat in `draw_lease` and every `?.`,
 /// `?)`, `?,` were invisible and the cell was green over the defect it names. It now blanks comments
 /// and string/char literals and looks for the `return` KEYWORD and the `?` OPERATOR wherever they

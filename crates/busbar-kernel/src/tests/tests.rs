@@ -989,8 +989,8 @@ fn a_linked_rows_refusals_print_its_key() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN, "Plugins" and the plugin ABI; TODO
-/// step 28). `env` and `file` are secret plugins the kernel reaches through the root's
+/// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN, "Plugins" and the
+/// plugin ABI). `env` and `file` are secret plugins the kernel reaches through the root's
 /// `SecretAxis`, not rows of the cold-kind registry and not a name the resolver matches: the
 /// registry holds no secret row for either, and a resolution's failure text is the plugin's own,
 /// unwrapped (1.5.5's). A dropped-in cold plugin spelling `env` does not take the name: the resolver
