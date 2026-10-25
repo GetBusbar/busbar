@@ -286,7 +286,7 @@ impl std::fmt::Display for AsBuildError {
 
 impl AsPlane {
     /// Build the plane, holding nothing yet (see [`Self::build_carrying`]): a fixture's server.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn build(
         identity: AsIdentity,
         key_material: Option<&str>,

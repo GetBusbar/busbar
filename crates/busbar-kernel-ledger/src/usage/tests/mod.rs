@@ -5,5 +5,4 @@
 //! absence from it.
 
 mod dated_tests;
-mod one_table_tests;
 mod source_tests;

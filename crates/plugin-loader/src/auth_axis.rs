@@ -159,7 +159,7 @@ impl AuthRows {
             },
         };
         let loaded = match row.door() {
-            Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Auth>(&r, bind)),
+            Some(door) => LinkedRow::of_raw(door).and_then(|r| load_linked::<Auth>(&r, bind)),
             None => match row.manifest.stated_rendering().map_err(refused)? {
                 None => return Err(refused(NO_DOOR.to_string())),
                 Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
@@ -177,7 +177,7 @@ impl AuthRows {
     /// Statement is one a bind refuses.
     fn stated(&self, row: &LoadablePlugin) -> Option<AuthFacts> {
         match row.door() {
-            Some(door) => crate::dispatch::kinds::auth::stated_facts(door).ok(),
+            Some(door) => crate::dispatch::kinds::auth::stated_facts_raw(door).ok(),
             None => row
                 .manifest
                 .stated_rendering()
@@ -351,6 +351,7 @@ impl AuthRows {
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
+        let name = row.manifest.name.clone();
         let Door::Memory(plugin, sink) = self.load(row, label, true)?;
         let kinds = plugin
             .context::<AuthFacts>()
@@ -367,7 +368,7 @@ impl AuthRows {
             text.as_bytes(),
             secrets,
         )
-        .map_err(|e| format!("auth plugin '{module}': {e}"))?;
+        .map_err(|e| format!("plugin '{name}' open failed: {e}"))?;
         Ok(Arc::new(opened))
     }
 
@@ -418,7 +419,7 @@ impl AuthRows {
 /// A rendering that does not read back names nothing here; the load refuses it.
 fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
     let stated = match row.door() {
-        Some(door) => LinkedRow::of(door).ok().map(|r| r.statement),
+        Some(door) => LinkedRow::of_raw(door).ok().map(|r| r.statement),
         None => row.manifest.stated_rendering().ok().flatten(),
     };
     stated

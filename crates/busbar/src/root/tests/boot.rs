@@ -362,7 +362,7 @@ fn red_the_roots_listeners_head_the_one_list_of_listeners() {
 
 use busbar_contract::plugin::Kind;
 
-/// RED (TODO step 9): at 3g each seat is dealt only its own section, reserved sub-keys stripped,
+/// RED: at 3g each seat is dealt only its own section, reserved sub-keys stripped,
 /// and a plugin's validation refusal names the operator's file position in 1.5.5's form.
 #[test]
 fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
@@ -590,7 +590,7 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
         .plugins_dir(dir.clone())
-        .plugin_trust(trust_policy)
+        .plugin_admission(&crate::root::admission::ADMISSION)
         .build();
     let router = busbar_core_admin::build_router(app);
     let request = axum::http::Request::builder()
@@ -826,15 +826,8 @@ fn red_a_dry_runs_registry_build_leaves_the_live_dropped_secret_rows_alone() {
         !off.enabled,
         "the dry run's configuration turns the plugins directory off"
     );
-    crate::root::boot::registry(
-        RegistryIn {
-            linked: Vec::new(),
-            plugins: Some(&off),
-            data_dir: None,
-        },
-        &mut |_| {},
-    )
-    .expect("a build with the plugins directory off is the linked rows alone");
+    crate::root::boot::registry(Vec::new(), Some(&off), None, &mut |_| {})
+        .expect("a build with the plugins directory off is the linked rows alone");
     let answers = rows.answers("row159-live-vault");
     rows.set_dropped(std::iter::empty());
     assert!(
@@ -858,16 +851,12 @@ fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
     rows.set_dropped([dropped_secret("row159-stale-vault")]);
 
     let off = PluginsCfg::default();
-    let registry = crate::root::boot::registry(
-        RegistryIn {
-            linked: Vec::new(),
-            plugins: Some(&off),
-            data_dir: None,
-        },
-        &mut |_| {},
-    )
-    .expect("a build with the plugins directory off is the linked rows alone");
-    admit_secrets(&registry).expect("no dropped-in secret contests a word");
+    let registry = crate::root::boot::registry(Vec::new(), Some(&off), None, &mut |_| {})
+        .expect("a build with the plugins directory off is the linked rows alone");
+    // The app build's path: the kernel holds the registry as the contract's rows view and hands it
+    // to the install record's admission, which reads it back as the registry this root built.
+    let plugin_rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
+    admit_secrets(&plugin_rows).expect("no dropped-in secret contests a word");
     let answers = rows.answers("row159-stale-vault");
     rows.set_dropped(std::iter::empty());
     assert!(
