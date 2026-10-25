@@ -1217,6 +1217,8 @@ fn rows(resource: &str) -> Vec<String> {
 #[test]
 fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     use busbar_kernel::plane_driver::serve::{publish, serve, withdraw, Unserved};
+    // The audit stream a booted node registers: the route's audit rows are read back off it.
+    let _ = busbar_kernel::test_support::TestApp::new().build();
     let _one = PUBLISHED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);

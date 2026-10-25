@@ -1513,6 +1513,8 @@ fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::Audi
 #[test]
 fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
     const WHO: &str = "operator-cifollow-one-entry";
+    // The audit stream a booted node registers: the one ring is its read model.
+    let _ = busbar_kernel::test_support::TestApp::new().build();
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
         let ring = busbar_kernel::audit_ring::AUDIT.list_filtered(0, usize::MAX, None, None);
         let at = ring
