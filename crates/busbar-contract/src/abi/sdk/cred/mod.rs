@@ -146,6 +146,16 @@ impl Cred {
     }
 }
 
+/// Equality is constant-time over the bytes and answers only whether they match: a reload compares
+/// its settings with it.
+impl PartialEq for Cred {
+    fn eq(&self, other: &Self) -> bool {
+        *self.0 == *other.0
+    }
+}
+
+impl Eq for Cred {}
+
 /// A recipe's output: bytes that go to the wire through [`SealedWrite`] and nowhere else.
 #[allow(missing_debug_implementations)]
 pub struct Seal(pub(crate) Held<Bytes>);

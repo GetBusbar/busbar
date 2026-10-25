@@ -12,7 +12,7 @@ use super::Cred;
 /// with no password in it (a userinfo keeps its user and its `@`, so `:pw@` reads as an empty
 /// user, as a URL reader read it); the password is a [`Cred`].
 #[allow(missing_debug_implementations)]
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CredUrl {
     public: String,
     password: Option<Cred>,
@@ -24,7 +24,8 @@ pub struct CredUrl {
 pub enum PasswordAt {
     /// `user:password@` in a URL's authority.
     Userinfo,
-    /// The same, with a `?` written unencoded inside it: a WHATWG URL reader splits the URL there.
+    /// The same, with a `/`, `?` or `#` written unencoded inside it: a WHATWG URL reader ends the
+    /// authority there.
     UserinfoUnencoded,
     /// A URL query parameter of this name (`password` or `pass`).
     Query(&'static str),
@@ -102,10 +103,9 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Found>), &
         rest.rfind('@')
             .filter(|&a| !rest[..a].contains('/') && rest[..a].contains(':'))
     });
-    let userinfo_at = if strict.is_some() {
-        PasswordAt::Userinfo
-    } else {
-        PasswordAt::UserinfoUnencoded
+    let userinfo_at = match at {
+        Some(a) if strict.is_some() && !rest[..a].contains(['/', '#']) => PasswordAt::Userinfo,
+        _ => PasswordAt::UserinfoUnencoded,
     };
     let mut public = String::with_capacity(text.len());
     public.push_str(head);

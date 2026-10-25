@@ -110,6 +110,11 @@ fn url_userinfo_and_query_passwords_are_split_out() {
     assert!(u.password().is_none());
 
     assert!(CredUrl::split("a://u:x@h?password=y").is_err());
+    let u = split("https://u:123/x@siem.example/p");
+    assert_eq!(u.public(), "https://u@siem.example/p");
+    assert_eq!(u.password_at(), Some(super::PasswordAt::UserinfoUnencoded));
+    assert!(split("redis://:a@h") == split("redis://:a@h"));
+    assert!(split("redis://:a@h") != split("redis://:b@h"));
 }
 
 #[test]
