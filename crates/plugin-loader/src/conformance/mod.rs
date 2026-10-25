@@ -1195,14 +1195,16 @@ pub fn called(c: &Called) -> String {
     format!("{:?} lease={} {text}", c.outcome, c.lease != 0)
 }
 
-/// THE HOST'S SECRET LENDING, as the suite's host does it: each key the plugin's Statement names as a
-/// secret reference (`Plugin::secret_refs`, a `.`-separated settings path) has its value lent in
-/// `open`/`refresh`'s `secrets`, in the Statement's order: a string's bytes (the suite's test
-/// material stands in for the material the kernel would resolve the reference to); an absent or
-/// non-string value lends empty bytes, which the plugin refuses. `keep`: the key stays in the
-/// settings, as the secret kind's host (`secret_calls`) leaves it; otherwise it is taken out, as
-/// the boot's and the auth axis's hosts take it (`boot::resolve_secrets`,
-/// `auth_door::split_secrets`). Settings with no such key pass through unchanged.
+/// THE HOST'S SECRET LENDING, as the suite's host does it: each EXACT path the plugin's Statement
+/// names as a secret reference (`Plugin::secret_refs`, a `.`-separated settings path) has its
+/// value lent in `open`/`refresh`'s `secrets`, in the Statement's order: a string's bytes (the
+/// suite's test material stands in for the material the kernel would resolve the reference to);
+/// an absent or non-string value lends empty bytes, which the plugin refuses. Then each WILDCARD
+/// path's (`*` = any key or index) string matches, in document order, each replaced in the
+/// settings by its `{"$secret": <index>}` marker (`busbar_contract::secret_fields::lend`). `keep`:
+/// an exact key stays in the settings, as the secret kind's host (`secret_calls`) leaves it;
+/// otherwise it is taken out, as the auth hosts take it (`boot::resolve_secrets`,
+/// `auth_door::split_secrets`). Settings with no such path pass through unchanged.
 #[must_use]
 pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, Vec<Vec<u8>>) {
     if refs.is_empty() {
@@ -1211,29 +1213,64 @@ pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, V
     let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(settings) else {
         return (settings.to_vec(), vec![Vec::new(); refs.len()]);
     };
-    let secrets = refs
-        .iter()
-        .map(|path| {
-            let (parent, last) = match path.rsplit_once('.') {
-                Some((head, last)) => (head.split('.').try_fold(&mut v, |v, k| v.get_mut(k)), last),
-                None => (Some(&mut v), path.as_str()),
-            };
-            let object = parent.and_then(serde_json::Value::as_object_mut);
-            let value = if keep {
-                object.and_then(|o| o.get(last).cloned())
-            } else {
-                object.and_then(|o| o.remove(last))
-            };
-            match value {
-                Some(serde_json::Value::String(s)) => s.into_bytes(),
-                _ => Vec::new(),
-            }
-        })
-        .collect();
-    if keep {
+    let as_bytes = |v: Option<serde_json::Value>| match v {
+        Some(serde_json::Value::String(s)) => s.into_bytes(),
+        _ => Vec::new(),
+    };
+    let secrets = busbar_contract::secret_fields::lend(
+        &mut v,
+        refs,
+        keep,
+        |_, v| Ok::<_, std::convert::Infallible>(as_bytes(v)),
+        |_, v| Ok(as_bytes(Some(v))),
+    )
+    .unwrap_or_else(|e| match e {});
+    if keep
+        && !refs
+            .iter()
+            .any(|p| busbar_contract::secret_fields::is_wildcard(p))
+    {
         return (settings.to_vec(), secrets);
     }
     (v.to_string().into_bytes(), secrets)
+}
+
+/// What kind `K`'s host hands `open`/`refresh` over `settings`: the auth kind's hosts take the
+/// declared secrets out and lend them, the secret kind's host lends them and leaves the exact
+/// keys in place ([`lend_secrets`]); every other kind's host (store, hook, export, plane) lends
+/// nothing, its settings already resolved by the kernel at the declared paths
+/// ([`settings_as_the_kernel_resolves`]).
+fn host_lends<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+    match K::CODE {
+        KindCode::Auth => lend_secrets(p.secret_refs(), settings, false),
+        KindCode::Secret => lend_secrets(p.secret_refs(), settings, true),
+        _ => (settings.to_vec(), Vec::new()),
+    }
+}
+
+/// `settings` (one JSON object) AS THE KERNEL RESOLVES THEM before they cross to `p`
+/// (`busbar_contract::secret_fields::resolve_declared`): a secret reference at a position `p`'s
+/// Statement does not declare secret is refused in the kernel's sentence; each one at a declared
+/// position is replaced by the string `resolve` answers for it. A plugin's suite proves its
+/// declared fields with it: `{env: VAR}` at a declared field resolves; anywhere else, it is
+/// refused.
+///
+/// # Errors
+/// The settings are not a JSON document, the refusal, or `resolve`'s error.
+pub fn settings_as_the_kernel_resolves<K: Kind>(
+    p: &Plugin<K>,
+    settings: &[u8],
+    resolve: impl FnMut(&str, &busbar_contract::secret_ref::SecretRef) -> Result<String, String>,
+) -> Result<Vec<u8>, String> {
+    let mut tree: serde_json::Value = serde_json::from_slice(settings)
+        .map_err(|e| format!("the settings are not a JSON document: {e}"))?;
+    busbar_contract::secret_fields::resolve_declared(
+        &mut tree,
+        p.secret_refs(),
+        p.name(),
+        resolve,
+    )?;
+    Ok(tree.to_string().into_bytes())
 }
 
 /// The blobs `open`/`refresh` lend over `secrets`.
@@ -1274,10 +1311,9 @@ pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// the kind's check FAULTs an `open` whose `out` cannot hold it); every other kind's is the
 /// lifecycle's `OpenIn`/`OpenOut`.
 ///
-/// The keys the Statement names as secret references are taken out of the settings and their
-/// material lent in `secrets` ([`lend_secrets`]), as the host lends them.
+/// The settings and the secrets are what kind `K`'s host hands `open` (`host_lends`).
 pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
-    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let (settings, secrets) = host_lends(p, settings);
     let blobs = secret_blobs(&secrets);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
@@ -1301,7 +1337,7 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// ([`OpenLend`]), never this call's stack.
 pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
     let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
-    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let (settings, secrets) = host_lends(p, settings);
     let blobs = secret_blobs(&secrets);
     let lend = OpenLend {
         settings,
@@ -1432,7 +1468,7 @@ const OPEN_DEADLINE: Duration = Duration::from_secs(30);
 
 /// `refresh` over `settings`, generation 2.
 pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
-    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let (settings, secrets) = host_lends(p, settings);
     let blobs = secret_blobs(&secrets);
     let mut f: Frame<RefreshIn, OutHead> = Frame::new(input(), output());
     f.input.settings = json(&settings);
@@ -2424,3 +2460,7 @@ macro_rules! conformance_suite {
 #[cfg(test)]
 #[path = "../tests/conformance_suite_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/conformance_declared_tests.rs"]
+mod declared_tests;
