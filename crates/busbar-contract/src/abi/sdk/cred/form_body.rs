@@ -120,6 +120,7 @@ impl FormBody {
     /// A signature could not be made.
     pub fn encoded(&self) -> Result<SealedWrite, crate::abi::sdk::chip::Refused> {
         let mut out = Zeroizing::new(Vec::new());
+        let mut secure = false;
         for (i, (name, value)) in self.pairs.iter().enumerate() {
             if i > 0 {
                 out.push(b'&');
@@ -128,16 +129,20 @@ impl FormBody {
             out.push(b'=');
             match value {
                 FormValue::Public(v) => encode(&mut out, v.as_bytes()),
-                FormValue::Sealed(c) => encode(&mut out, c.wire()),
+                FormValue::Sealed(c) => {
+                    secure |= c.secure_required();
+                    encode(&mut out, c.wire());
+                }
                 #[cfg(feature = "chip-jws")]
                 FormValue::JwsRs256 { key, signing_input } => {
                     let sig = key.jws_rs256(signing_input.as_bytes())?;
+                    secure |= sig.secure_required();
                     encode(&mut out, signing_input.as_bytes());
                     encode(&mut out, b".");
                     encode(&mut out, sig.wire());
                 }
             }
         }
-        Ok(SealedWrite::from_bytes(out))
+        Ok(SealedWrite::from_bytes(out, secure))
     }
 }

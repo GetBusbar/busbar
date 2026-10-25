@@ -55,6 +55,7 @@ pub use form::{CredUrl, PasswordAt, UserinfoUrl};
 pub use form_body::{FormBody, FormValue};
 pub use settings::{settings, SettingsError};
 pub use settings::{settings_lent, SECRET_MARKER};
+pub(crate) use write::confirm_secure;
 pub use write::{Parts, SealedWrite};
 
 /// Zeroizing material with no way out of this crate: no getter, no `Debug`, no `Display`, no
@@ -105,13 +106,72 @@ type Bytes = Zeroizing<Vec<u8>>;
 /// bytes never leave it. See the module docs.
 #[allow(missing_debug_implementations)]
 #[derive(Clone)]
-pub struct Cred(pub(crate) std::sync::Arc<Held<Bytes>>);
+pub struct Cred {
+    held: std::sync::Arc<Held<Bytes>>,
+    secure: bool,
+}
+
+/// The URL schemes whose connection is secured from the first byte: a credential the operator
+/// wrote with one of them never goes out on a connection that is not.
+const SECURE_SCHEMES: &[&str] = &["https", "wss", "rediss", "ldaps", "grpcs", "mqtts", "amqps"];
+
+/// Whether `url`'s scheme is one of [`SECURE_SCHEMES`] (case-insensitive).
+pub(crate) fn secure_scheme(url: &str) -> bool {
+    url.split_once("://").is_some_and(|(scheme, _)| {
+        SECURE_SCHEMES
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(scheme))
+    })
+}
 
 impl Cred {
     /// A credential this plugin captured itself (a token from a reply it decoded), taken by value so
     /// no copy stays behind.
     pub fn captured(bytes: Zeroizing<Vec<u8>>) -> Self {
-        Self(std::sync::Arc::new(Held::new(bytes)))
+        Self {
+            held: std::sync::Arc::new(Held::new(bytes)),
+            secure: false,
+        }
+    }
+
+    /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4): this credential goes out only on a connection
+    /// the host connector reports secured. Set from the operator's URL, never relaxed: a
+    /// [`CredUrl`] or [`UserinfoUrl`] whose scheme or parameters ask for a secure connection sets
+    /// it itself; a credential configured beside its URL takes it with [`Cred::secure_for`].
+    #[must_use]
+    pub fn secure_required(&self) -> bool {
+        self.secure
+    }
+
+    /// This credential, required to go out secured when the operator's `url` names a secure
+    /// scheme (`https`, `wss`, `rediss`, `ldaps`, …). A requirement already set stays.
+    #[must_use]
+    pub fn secure_for(mut self, url: &str) -> Self {
+        self.secure |= secure_scheme(url);
+        self
+    }
+
+    /// This credential, required to go out secured.
+    #[must_use]
+    pub fn require_secure(mut self) -> Self {
+        self.secure = true;
+        self
+    }
+
+    /// A credential derived from this one (a signing key from a secret): it carries the requirement.
+    pub(crate) fn derived(&self, bytes: Bytes) -> Self {
+        Self {
+            held: std::sync::Arc::new(Held::new(bytes)),
+            secure: self.secure,
+        }
+    }
+
+    /// A seal of `bytes` this credential made: it carries the credential's requirement.
+    pub(crate) fn seal(&self, bytes: Bytes) -> Seal {
+        Seal {
+            held: Held::new(bytes),
+            secure: self.secure,
+        }
     }
 
     /// Take a credential setting out of a parsed settings document, wiping the string where it
@@ -135,17 +195,17 @@ impl Cred {
     }
 
     pub(crate) fn wire(&self) -> &[u8] {
-        self.0.wire()
+        self.held.wire()
     }
 
     /// The length in bytes.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.held.len()
     }
 
     /// Whether the credential is empty (an empty password).
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.held.is_empty()
     }
 
     /// Whether it is UTF-8 text (a client that sends only text leaves out one that is not).
@@ -166,7 +226,7 @@ impl Cred {
 /// its settings with it.
 impl PartialEq for Cred {
     fn eq(&self, other: &Self) -> bool {
-        *self.0 == *other.0
+        *self.held == *other.held
     }
 }
 
@@ -174,27 +234,35 @@ impl Eq for Cred {}
 
 /// A recipe's output: bytes that go to the wire through [`SealedWrite`] and nowhere else.
 #[allow(missing_debug_implementations)]
-pub struct Seal(pub(crate) Held<Bytes>);
+pub struct Seal {
+    held: Held<Bytes>,
+    secure: bool,
+}
 
 impl Seal {
-    pub(crate) fn new(bytes: Bytes) -> Self {
-        Self(Held::new(bytes))
-    }
-
     pub(crate) fn wire(&self) -> &[u8] {
-        self.0.wire()
+        self.held.wire()
     }
 
     /// The length in bytes (public: a framer needs it for a length prefix).
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.held.len()
     }
 
     /// Whether the seal is empty.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.held.is_empty()
+    }
+
+    /// Whether the credential it was made from goes out only secured ([`Cred::secure_required`]).
+    pub fn secure_required(&self) -> bool {
+        self.secure
     }
 }
+
+/// The refusal a credential that must go out secured meets on a connection that is not.
+pub const NOT_SECURE: &str = "a credential the operator's URL requires a secure connection \
+     for was not sent: the host connector reports this connection is not secured";
 
 #[cfg(test)]
 #[path = "../tests/cred_tests.rs"]
