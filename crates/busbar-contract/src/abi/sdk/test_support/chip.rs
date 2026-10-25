@@ -12,3 +12,9 @@ use crate::abi::sdk::cred::Seal;
 pub fn sealed_bytes(seal: &Seal) -> Vec<u8> {
     seal.wire().to_vec()
 }
+
+/// A credential holding `text`, as a test configures one.
+#[must_use]
+pub fn cred(text: &str) -> crate::abi::sdk::cred::Cred {
+    crate::abi::sdk::cred::Cred::captured(zeroize::Zeroizing::new(text.as_bytes().to_vec()))
+}
