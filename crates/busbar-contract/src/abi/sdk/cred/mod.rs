@@ -122,6 +122,11 @@ impl Cred {
         Some(Self::from_bytes(bytes))
     }
 
+    /// No credential (an empty password): every recipe answers as the protocol does for one.
+    pub fn empty() -> Self {
+        Self::from_bytes(Zeroizing::new(Vec::new()))
+    }
+
     pub(crate) fn from_bytes(bytes: Bytes) -> Self {
         Self::captured(bytes)
     }
