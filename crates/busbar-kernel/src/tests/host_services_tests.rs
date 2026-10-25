@@ -72,6 +72,16 @@ use crate::trust::section::{DeclaredPin, TrustEntry};
 struct Mem(Arc<MemoryStore>);
 
 impl RecordRows for Mem {
+    fn claim(&self, token: &str, expires_at: u64, now: u64) -> Result<bool, StoreError> {
+        busbar_contract::records::RecordStore::redeem_plane_token(
+            &*self.0,
+            crate::host_records::CLAIM_KIND,
+            token,
+            expires_at,
+            now,
+        )
+        .map_err(|e| StoreError::Rejected(e.0))
+    }
     fn record_put(
         &self,
         schema: RecordSchemaId,
@@ -900,6 +910,10 @@ struct Gauge {
 }
 
 impl RecordRows for Gauge {
+    /// One writer in this test: every claim is the first.
+    fn claim(&self, _token: &str, _expires_at: u64, _now: u64) -> Result<bool, StoreError> {
+        Ok(true)
+    }
     fn record_put(
         &self,
         _schema: RecordSchemaId,
@@ -1223,6 +1237,10 @@ impl Gate {
 }
 
 impl RecordRows for Gate {
+    /// One writer in this test: every claim is the first.
+    fn claim(&self, _token: &str, _expires_at: u64, _now: u64) -> Result<bool, StoreError> {
+        Ok(true)
+    }
     fn record_put(
         &self,
         _schema: RecordSchemaId,
@@ -1297,6 +1315,10 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
 struct Refusing(Mem);
 
 impl RecordRows for Refusing {
+    /// One writer in this test: every claim is the first.
+    fn claim(&self, _token: &str, _expires_at: u64, _now: u64) -> Result<bool, StoreError> {
+        Ok(true)
+    }
     fn record_put(
         &self,
         _schema: RecordSchemaId,

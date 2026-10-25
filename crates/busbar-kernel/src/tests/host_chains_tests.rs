@@ -23,6 +23,16 @@ use crate::governance::MemoryStore;
 struct Mem(Arc<MemoryStore>);
 
 impl RecordRows for Mem {
+    fn claim(&self, token: &str, expires_at: u64, now: u64) -> Result<bool, StoreError> {
+        busbar_contract::records::RecordStore::redeem_plane_token(
+            &*self.0,
+            crate::host_records::CLAIM_KIND,
+            token,
+            expires_at,
+            now,
+        )
+        .map_err(|e| StoreError::Rejected(e.0))
+    }
     fn record_put(
         &self,
         schema: RecordSchemaId,
@@ -453,4 +463,30 @@ fn services_with_plain_kind(store: &Arc<MemoryStore>) -> KernelServices {
     )
     .unwrap();
     s
+}
+
+/// **TWO NODES APPENDING TO ONE CHAIN CONTINUE EACH OTHER'S RECORDS, NEVER OVERWRITE THEM.** Two
+/// services over one store hold their own position caches. Node `b` appends after node `a`; node
+/// `a`'s cached position is then stale, and its next append must take the position after `b`'s
+/// record rather than store over it.
+///
+/// RED while an append stored at its cached position unclaimed: node `a` wrote its record over
+/// node `b`'s, which was lost without a word.
+#[test]
+fn two_nodes_appending_to_one_chain_continue_each_other_and_never_overwrite() {
+    let store = Arc::new(MemoryStore::new());
+    let a = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
+    let b = services_over(&store, CHAIN_PIPE_SEPARATED, CHAIN_DIGESTS_SCOPE);
+    append(&a, b"t1", b"|1|a").unwrap();
+    append(&b, b"t1", b"|2|b").unwrap();
+    append(&a, b"t1", b"|3|a").unwrap();
+    assert_eq!(
+        listed(&a, b"t1/"),
+        vec![
+            (record_of("t1", 1), b"|1|a".to_vec()),
+            (record_of("t1", 2), b"|2|b".to_vec()),
+            (record_of("t1", 3), b"|3|a".to_vec()),
+        ],
+        "every node's record is kept, in one chain that verifies"
+    );
 }

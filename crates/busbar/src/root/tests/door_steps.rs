@@ -3212,6 +3212,21 @@ pub(crate) mod tool_door {
     struct StoreRows(Arc<busbar_kernel::governance::MemoryStore>);
 
     impl busbar_kernel::host_records::RecordRows for StoreRows {
+        fn claim(
+            &self,
+            token: &str,
+            expires_at: u64,
+            now: u64,
+        ) -> Result<bool, busbar_contract::kinds::StoreError> {
+            busbar_contract::records::RecordStore::redeem_plane_token(
+                &*self.0,
+                busbar_kernel::host_records::CLAIM_KIND,
+                token,
+                expires_at,
+                now,
+            )
+            .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
+        }
         fn record_put(
             &self,
             schema: busbar_contract::ids::RecordSchemaId,
@@ -3257,6 +3272,15 @@ pub(crate) mod tool_door {
     );
 
     impl busbar_kernel::host_records::RecordRows for Rows {
+        /// One writer in this test: every claim is the first.
+        fn claim(
+            &self,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> Result<bool, busbar_contract::kinds::StoreError> {
+            Ok(true)
+        }
         fn record_put(
             &self,
             schema: busbar_contract::ids::RecordSchemaId,

@@ -26,6 +26,16 @@ use crate::host_units::UnitRecord;
 struct Mem(Arc<MemoryStore>);
 
 impl RecordRows for Mem {
+    fn claim(&self, token: &str, expires_at: u64, now: u64) -> Result<bool, StoreError> {
+        busbar_contract::records::RecordStore::redeem_plane_token(
+            &*self.0,
+            crate::host_records::CLAIM_KIND,
+            token,
+            expires_at,
+            now,
+        )
+        .map_err(|e| StoreError::Rejected(e.0))
+    }
     fn record_put(
         &self,
         schema: RecordSchemaId,
