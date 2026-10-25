@@ -111,6 +111,17 @@ impl Cred {
         Self(std::sync::Arc::new(Held::new(bytes)))
     }
 
+    /// Take a credential setting out of a parsed settings document, wiping the string where it
+    /// was. `None`: `v` is not a string (left as it was).
+    pub fn take(v: &mut serde_json::Value) -> Option<Self> {
+        let serde_json::Value::String(s) = v else {
+            return None;
+        };
+        let bytes = Zeroizing::new(core::mem::take(s).into_bytes());
+        *v = serde_json::Value::Null;
+        Some(Self::from_bytes(bytes))
+    }
+
     pub(crate) fn from_bytes(bytes: Bytes) -> Self {
         Self::captured(bytes)
     }

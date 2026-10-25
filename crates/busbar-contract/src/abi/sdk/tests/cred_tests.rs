@@ -137,3 +137,18 @@ fn a_sealed_write_assembles_in_order() {
     assert_eq!(&s.buf[..], b"authorization: Bearer k\r\n");
     assert!(!s.finished());
 }
+
+#[test]
+fn take_wipes_the_setting_where_it_was() {
+    let mut doc = serde_json::json!({"url": "redis://:pw@h", "key": "k", "n": 1});
+    let u = CredUrl::take(&mut doc["url"])
+        .expect("string")
+        .expect("splits");
+    assert_eq!(u.public(), "redis://h");
+    assert!(doc["url"].is_null());
+    let k = Cred::take(&mut doc["key"]).expect("string");
+    assert_eq!(k.wire(), b"k");
+    assert!(doc["key"].is_null());
+    assert!(Cred::take(&mut doc["n"]).is_none());
+    assert_eq!(doc["n"], 1);
+}

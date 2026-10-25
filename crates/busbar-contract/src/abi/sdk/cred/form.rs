@@ -28,6 +28,25 @@ impl CredUrl {
         self.password.as_ref()
     }
 
+    /// Split `text` (a URL or connection string the plugin already holds).
+    ///
+    /// # Errors
+    /// The text carries two passwords, or is a malformed key=value connection string.
+    pub fn parse(text: &str) -> Result<Self, &'static str> {
+        Self::split(text)
+    }
+
+    /// Take a URL setting out of a parsed settings document: split it, and wipe the string where
+    /// it was. `None`: `v` is not a string (left as it was).
+    pub fn take(v: &mut serde_json::Value) -> Option<Result<Self, &'static str>> {
+        let serde_json::Value::String(s) = v else {
+            return None;
+        };
+        let text = Zeroizing::new(core::mem::take(s));
+        *v = serde_json::Value::Null;
+        Some(Self::split(&text))
+    }
+
     pub(crate) fn split(text: &str) -> Result<Self, &'static str> {
         let (public, password) = if let Some(i) = text.find("://") {
             split_url(text, i)?
