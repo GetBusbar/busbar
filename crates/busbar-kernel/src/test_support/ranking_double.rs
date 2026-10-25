@@ -194,19 +194,22 @@ pub struct Open;
 
 impl HookOpen for Open {
     fn open(settings: &str) -> Result<Box<dyn Hook>, String> {
-        // `hook-ranking/src/door.rs`, `open`: "<door>: the settings are not JSON: {e}".
-        let v: serde_json::Value = serde_json::from_str(settings)
-            .map_err(|e| format!("{NAME}: the settings are not JSON: {e}"))?;
-        // `hook-ranking/src/door.rs`, `open`: "<door>: settings.policy is required".
-        let word = v
-            .get("policy")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| format!("{NAME}: settings.policy is required"))?;
-        // `hook-ranking/src/door.rs`, `open`: "<door>: no strategy '{word}' (one of {WORDS:?})".
-        let strategy = Strategy::of(word)
-            .ok_or_else(|| format!("{NAME}: no strategy '{word}' (one of {WORDS:?})"))?;
-        Ok(Box::new(Ranking(strategy)))
+        Ok(Box::new(Ranking(strategy_of(settings)?)))
     }
+}
+
+/// The strategy `settings` names, parsed as the door parses it.
+fn strategy_of(settings: &str) -> Result<Strategy, String> {
+    // `hook-ranking/src/door.rs`, `open`: "<door>: the settings are not JSON: {e}".
+    let v: serde_json::Value = serde_json::from_str(settings)
+        .map_err(|e| format!("{NAME}: the settings are not JSON: {e}"))?;
+    // `hook-ranking/src/door.rs`, `open`: "<door>: settings.policy is required".
+    let word = v
+        .get("policy")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("{NAME}: settings.policy is required"))?;
+    // `hook-ranking/src/door.rs`, `open`: "<door>: no strategy '{word}' (one of {WORDS:?})".
+    Strategy::of(word).ok_or_else(|| format!("{NAME}: no strategy '{word}' (one of {WORDS:?})"))
 }
 
 busbar_contract::hook_door! {
@@ -355,15 +358,7 @@ impl HookAxis for RankingAxis {
             return Err(format!("no `kind: hook` plugin answers to '{module}'"));
         }
         let text = serde_json::to_string(settings).map_err(|e| e.to_string())?;
-        let v: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|e| format!("{NAME}: the settings are not JSON: {e}"))?;
-        let word = v
-            .get("policy")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| format!("{NAME}: settings.policy is required"))?;
-        let strategy = Strategy::of(word)
-            .ok_or_else(|| format!("{NAME}: no strategy '{word}' (one of {WORDS:?})"))?;
-        Ok(Arc::new(RankingCalls(strategy)))
+        Ok(Arc::new(RankingCalls(strategy_of(&text)?)))
     }
 
     fn linked(&self, module: &str) -> bool {

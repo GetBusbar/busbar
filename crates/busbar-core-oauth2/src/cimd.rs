@@ -347,7 +347,7 @@ pub(crate) struct ConnectorFetch {
 
 /// The fetch of a server built with no connection table ([`crate::NoConnections`]): every document
 /// fetch fails closed, so every metadata-document client is unknown.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) fn unconnected() -> Arc<dyn CimdFetch> {
     Arc::new(ConnectorFetch {
         table: <crate::NoConnections as crate::Connections>::table,

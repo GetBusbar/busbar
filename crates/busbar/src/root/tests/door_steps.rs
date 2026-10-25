@@ -1246,7 +1246,7 @@ fn the_signing_region_is_read_off_the_host_the_request_dials() {
     }
 }
 
-// ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
+// ── the minted credential of a member bound under an OAuth grant ─────────────────
 
 /// One open's head fields: `(name, value)`, in the order received.
 type HeadFields = Vec<(String, Vec<u8>)>;
@@ -2095,7 +2095,7 @@ fn a_registration_member_is_reached_at_its_own_target() {
 }
 
 /// THE TOOL DOOR, SERVED END TO END (the fold's flip; BUSBAR-1.6.0.md Part 3 section 12,
-/// "The switch"; TODO P3) — the tool plane's root leg (`qa/teller-steps.json`): a
+/// "The switch") — the tool plane's root leg (`qa/teller-steps.json`): a
 /// `tools/call` the tool door claims reaches that plane's driver through its route on the data
 /// router (mounted at the router's construction), behind the deployment's auth gate, is admitted
 /// and charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
