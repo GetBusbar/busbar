@@ -43,3 +43,12 @@ pub fn cred_bytes(cred: &crate::abi::sdk::cred::Cred) -> Vec<u8> {
 pub fn parts_bytes(parts: &crate::abi::sdk::cred::Parts) -> Vec<u8> {
     parts.assembled().to_vec()
 }
+
+/// The bytes a [`FormBody`](crate::abi::sdk::cred::FormBody) encodes to.
+///
+/// # Panics
+/// A signature in it could not be made.
+#[must_use]
+pub fn form_bytes(body: &crate::abi::sdk::cred::FormBody) -> Vec<u8> {
+    body.encoded().expect("the form encodes").buf.to_vec()
+}
