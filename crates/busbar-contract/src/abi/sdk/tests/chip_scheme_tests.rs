@@ -69,3 +69,16 @@ fn a_sealed_authorization_frames_the_head_the_plain_one_framed() {
         assert_eq!(new.framed_fields()[1].1, b"<sealed>");
     }
 }
+
+#[test]
+fn a_scheme_seal_carries_the_credentials_secure_requirement() {
+    assert!(!cred("t").scheme("Bearer").secure_required());
+    assert!(cred("t")
+        .secure_for("https://hooks.example/")
+        .scheme("Bearer")
+        .secure_required());
+    assert!(Cred::empty()
+        .secure_for("https://hooks.example/")
+        .scheme("Basic")
+        .secure_required());
+}

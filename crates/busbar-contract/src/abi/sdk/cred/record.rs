@@ -9,6 +9,8 @@
 //! line for a log, an assert message, a `to_value`) the field REFUSES with [`REFUSED`], so the
 //! whole serialization fails and quotes nothing. Reading back is open: a [`Cred`] is captured from
 //! the record's string and the string the deserializer handed over is wiped.
+//! The record keeps the bytes only, not [`Cred::secure_required`]: the reader states it again
+//! ([`Cred::secure_for`] over the URL the credential goes to).
 //!
 //! THE RESIDUAL, STATED. Plane host records are plain bytes: no plane-reachable host service seals
 //! a record field at rest (the chip design's at-rest key, `credentials.at_rest`, is not a

@@ -20,7 +20,7 @@ impl Cred {
             v.push(b' ');
             v.extend_from_slice(self.wire());
         }
-        Seal::new(v)
+        self.seal(v)
     }
 }
 
