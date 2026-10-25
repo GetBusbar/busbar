@@ -6,7 +6,7 @@
 //!
 //! The plugin scan floors a dropped-in first-party plugin at the highest version of its name this
 //! deployment has loaded, from the marks kept beside a data directory
-//! (`busbar_plugin_loader::HighWaterMarks`). Without a data directory those marks lived in memory,
+//! (`crate::root::loader::HighWaterMarks`). Without a data directory those marks lived in memory,
 //! so a restart forgot them and a genuine but OLD signed release dropped into `plugins.dir` loaded
 //! again with no warning. The store opens after the scan, so the floor the store keeps is held here,
 //! once the store is open: every loadable dropped-in first-party plugin is checked against the mark
