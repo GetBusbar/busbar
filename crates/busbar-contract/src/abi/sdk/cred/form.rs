@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 
 use super::Cred;
 
-/// A URL (`scheme://user:pass@host/...?password=...`) or key/value connection string
+/// A URL (`scheme://user:pass@host/...?password=...`, or `?pass=`) or key/value connection string
 /// (`host=h password='p'`) with its password taken out and sealed. [`CredUrl::public`] is the text
 /// with no password in it; the password is a [`Cred`].
 #[allow(missing_debug_implementations)]
@@ -88,7 +88,10 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Bytes>), &
             };
             let mut kept = Vec::new();
             for pair in fragment_free.split('&') {
-                if let Some(v) = pair.strip_prefix("password=") {
+                if let Some(v) = pair
+                    .strip_prefix("password=")
+                    .or_else(|| pair.strip_prefix("pass="))
+                {
                     if password.is_some() {
                         return Err(TWO);
                     }

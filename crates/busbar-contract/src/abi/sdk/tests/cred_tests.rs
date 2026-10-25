@@ -95,6 +95,10 @@ fn url_userinfo_and_query_passwords_are_split_out() {
     assert_eq!(u.public(), "mysql://u@h/db");
     assert_eq!(pw(&u).as_deref(), Some(&b"12?abc"[..]));
 
+    let u = split("valkey+unix:///run/v.sock?db=2&pass=s%3Dcret");
+    assert_eq!(u.public(), "valkey+unix:///run/v.sock?db=2");
+    assert_eq!(pw(&u).as_deref(), Some(&b"s=cret"[..]));
+
     let u = split("https://h/path?email=a@b.c");
     assert_eq!(u.public(), "https://h/path?email=a@b.c");
     assert!(u.password().is_none());
