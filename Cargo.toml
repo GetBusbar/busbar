@@ -128,7 +128,7 @@ busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
 # double (`busbar_kernel::test_support::store_double`), and the root's `linked_store_double` tests
 # prove the double states what this door states.
-busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "1367f8c318f2fb58e2f57ef4ab7aa5e4407c4220" }
+busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "4af52d193d00255bb4648655a2ae0f21cfb0a911" }
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
@@ -141,7 +141,7 @@ busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-deci
 # plane's door row (`plane-a2a-door`, `busbar_plane_a2a::agent_door::door`), whose own root cells it
 # states under its `links` name. Its dropped-in cdylib twin (`busbar-plane-a2a-plugin`) and its gates
 # live in that repo's plugin CI.
-busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "fafb021f9f5ff4f109da47a9ea711353a003d26e" }
+busbar-plane-a2a = { git = "https://github.com/GetBusbar/busbar-plane-a2a", rev = "f4948049b9e5a9cabda6968ad1bc20732d1d564a" }
 # THE STREAMING PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # streaming plane's door row (`plane-streaming`, `busbar_plane_streaming::door::door`), whose own root
 # cells it states under its `links` name, and the voice conformance harness drives. Its dropped-in

@@ -11,19 +11,13 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::services::{Later, Ran, Stored};
 
 use super::*;
+use crate::host_services::tests::verdict_now as now;
 
 /// A [`Later`] that keeps what it is answered.
 fn kept() -> (Later, Arc<Mutex<Option<Stored>>>) {
     let got = Arc::new(Mutex::new(None));
     let g = Arc::clone(&got);
     (Box::new(move |s| *g.lock().unwrap() = Some(s)), got)
-}
-
-fn now(r: Ran) -> Stored {
-    match r {
-        Ran::Now(s) => s,
-        Ran::Later => panic!("pended"),
-    }
 }
 
 fn label(s: &str) -> Arc<str> {

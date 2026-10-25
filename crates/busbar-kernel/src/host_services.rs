@@ -1735,12 +1735,7 @@ impl HostServices for KernelServices {
                     return Ran::Now(Stored::refused(NOT_A_COUNTERPARTY))
                 }
             };
-        let answer = Stored::ready(match sight {
-            Sight::New => svc::TRUST_NEW,
-            Sight::Same => svc::TRUST_SAME,
-            Sight::Drifted => svc::TRUST_DRIFTED,
-            Sight::Quarantined => svc::TRUST_QUARANTINED,
-        });
+        let answer = Stored::ready(sight_code(sight));
         let Some((d, pool)) = durable.filter(|_| effect != Effect::None) else {
             return Ran::Now(answer);
         };
@@ -2383,7 +2378,7 @@ const fn absent_span() -> Span {
 
 #[cfg(test)]
 #[path = "tests/host_services_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "tests/trust_verify_tests.rs"]

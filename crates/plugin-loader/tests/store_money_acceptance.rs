@@ -1,23 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE MONEY ACCEPTANCE SUITE: the store kind's money contract.
+//! THE STORE MONEY ACCEPTANCE SUITE: the store kind's count contract (the ledger money derives from).
 //!
 //! Written BEFORE the store v3 table exists, as the contract its implementer must meet. Every
 //! money-relevant store behaviour has a test here:
 //!
 //! - **Runs today** against the build's store on every door it has — the
-//!   LINKED row, the DROPPED-IN cdylib over the C ABI, and the store adapter the root binds — and
-//!   against the adapter's node-local slice shim. These pin what 1.5.5 did and 1.6.0 must keep.
-//! - **The store v3 money slots** (`v3_*`), through the store v3 table on the build's store's
-//!   compiled-in door ([`v3::bind`]): `op_id` dedupe on the coalesced batches, `reserve` with its
-//!   fixed cells (`UnitCell`, the ruled `bb_units[]`), the window caps, `slice_release` and the
-//!   epoch. The wire has no "duplicate" answer (a replay answers the ORIGINAL answer), so a
-//!   replay is asserted as the same answer with the counts unchanged; what a slice still holds is
-//!   read through `reserve` against the window's cap; the memory store is EPHEMERAL (its tail says
-//!   so), so the restart and stale-epoch arms assert that statement, and the durable arm is the
-//!   store conformance suite's, run by the durable siblings (ARCHITECT rulings Q4 and M4c,
-//!   2026-09-29).
+//!   LINKED row, the DROPPED-IN cdylib over the C ABI, and the store adapter the root binds. These
+//!   pin what 1.5.5 did and 1.6.0 must keep.
+//! - **The count batches** (`v3_*`), through the store v3 table on the build's store's compiled-in
+//!   door ([`v3::bind`]): `op_id` dedupe on the coalesced batches. The wire has no "duplicate"
+//!   answer (a replay answers the ORIGINAL answer), so a replay is asserted as the same answer with
+//!   the counts unchanged; the memory store is EPHEMERAL (its tail says so), so the restart arm
+//!   asserts that statement, and the durable arm is the store conformance suite's.
+//!
+//! No store holds money: money is counts x the rate card, derived in core.
 //!
 //! The 1.5.5 source these pin is cited per test (`v1.5.5:crates/busbar/src/governance/state.rs`
 //! `flush_metering`/`record_metering`, `v1.5.5:crates/api/src/store.rs`, `v1.5.5:crates/store-memory`).
@@ -30,7 +28,6 @@ use busbar_contract::records::{
     UsageLedger, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };
 // The build's store, named once: every subject below reaches it through this alias.
-use busbar_contract::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -606,23 +603,14 @@ fn a_1_5_5_metering_row_reads_the_same_counts() {
     assert_eq!((r.priced_from_ms, r.usage_units.len()), (0, 0));
 }
 
-/// The audit record shape is unchanged since 1.5.5: bytes in are bytes out, on every door, so a
-/// hash chain written by 1.5.5 verifies after the upgrade.
+/// The audit record shape is unchanged since 1.5.5: bytes in are bytes out, so a hash chain written
+/// by 1.5.5 and read back through `list_audit` verifies after the upgrade. (No store op appends one
+/// any more: 1.6.0 writes its audit as plane records.)
 #[test]
 fn an_audit_record_round_trips_byte_identical_to_1_5_5() {
     let v155 = r#"{"seq":1,"ts":1790000000,"action":"key.create","resource":"key:k","outcome":"applied","principal":"admin","prev_hash":"","hash":"ab12"}"#;
     let rec: AuditRecord = serde_json::from_str(v155).expect("a 1.5.5 record decodes");
-    for s in subjects() {
-        s.store.append_audit(&rec).expect("append");
-        let back = s.store.list_audit().expect("list");
-        assert_eq!(back.len(), 1, "{}", s.door);
-        assert_eq!(
-            serde_json::to_string(&back[0]).expect("encode"),
-            v155,
-            "{}",
-            s.door
-        );
-    }
+    assert_eq!(serde_json::to_string(&rec).expect("encode"), v155);
 }
 
 // ── money invariants (money-invariants gate rows, held at runtime over what the store carries) ──
@@ -692,56 +680,6 @@ fn money_records_name_no_plugin_or_plane() {
     assert!(bad.is_empty(), "plugin-keyed money field(s): {bad:?}");
 }
 
-// ── slices through the adapter the root binds (today: the node-local shim) ────────────────────
-
-fn slice(wanted: u64, epoch: u64) -> SliceRequest {
-    SliceRequest {
-        bucket: bucket_all("team-a"),
-        dimension: CapDimension::Requests,
-        wanted,
-        epoch: Epoch(epoch),
-    }
-}
-
-/// Reserve grants at most what was wanted; `release` gives back the unspent part, and the adapter's
-/// net holding is granted minus what came back.
-#[test]
-fn reserve_grants_at_most_wanted_and_release_returns_the_unspent() {
-    let a = StoreAdapter::native(fresh());
-    let g1 = a.reserve(&slice(100, 0)).expect("reserve");
-    let g2 = a.reserve(&slice(50, 0)).expect("reserve");
-    assert!(g1.granted <= 100 && g2.granted <= 50);
-    assert_ne!(g1.id, g2.id, "each reservation is its own slice");
-    assert_eq!(a.shim_state().slices_granted, g1.granted + g2.granted);
-    a.release(g1.id, 40).expect("release");
-    assert_eq!(a.shim_state().slices_outstanding, 1);
-    assert_eq!(a.shim_state().slices_granted, g1.granted + g2.granted - 40);
-}
-
-/// Money invariant: a release can never hand back more than its slice was granted, and a second
-/// release of the same slice moves nothing (it is already closed).
-#[test]
-fn release_is_clamped_to_the_grant_and_closes_the_slice() {
-    let a = StoreAdapter::native(fresh());
-    let keep = a.reserve(&slice(30, 0)).expect("reserve");
-    let g = a.reserve(&slice(10, 0)).expect("reserve");
-    a.release(g.id, 1_000).expect("over-release");
-    assert_eq!(a.shim_state().slices_granted, keep.granted);
-    a.release(g.id, 5).expect("second release");
-    assert_eq!(a.shim_state().slices_granted, keep.granted);
-}
-
-/// A release naming a slice this adapter never granted is accepted and moves nothing.
-#[test]
-fn releasing_an_unknown_slice_moves_nothing() {
-    let a = StoreAdapter::native(fresh());
-    let g = a.reserve(&slice(7, 0)).expect("reserve");
-    a.release(SliceId(g.id.0 + 999), 7)
-        .expect("unknown release");
-    assert_eq!(a.shim_state().slices_granted, g.granted);
-    assert_eq!(a.shim_state().slices_outstanding, 1);
-}
-
 /// The adapter's published money ops reach the ONE loaded store: a flush through the adapter is
 /// read back from the store itself, figure for figure.
 #[test]
@@ -766,15 +704,14 @@ fn the_adapter_passes_money_through_to_the_loaded_store() {
     assert_eq!(inner.list_metering(DAY).expect("list")[0].requests, 2);
 }
 
-// ── store v3: the money slots through the table ────────────────────────────────────────────────
+// ── store v3: the count batches through the table ──────────────────────────────────────────────
 
-/// The store v3 money slots, bound to the build's store through the ONE loader and the store v3
-/// table (M3 store table; m3-inputs "store v3 money slots").
+/// The store v3 count batches, bound to the build's store through the ONE loader and the store v3
+/// table.
 mod v3 {
     use std::sync::Arc;
 
     use super::store_fixture;
-    use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension, Grant};
     use busbar_contract::records::{
         MeteringDelta, MeteringRow, RecordStore, UsageDelta, UsageLedger,
     };
@@ -843,19 +780,6 @@ mod v3 {
         LoadedStore::open(p, d, b"{}", mint).expect("open")
     }
 
-    /// The window every `v3_*` test draws in (ms), and its bucket.
-    pub const WINDOW: u64 = 1_790_000_000_000;
-
-    /// A requests cell of `bucket` in [`WINDOW`].
-    pub fn requests(bucket: &'static str) -> CellKey<'static> {
-        CellKey {
-            bucket,
-            pool: None,
-            dimension: Dimension::Requests,
-            window_start: WINDOW,
-        }
-    }
-
     /// One store, bound, with a runtime to await its calls on.
     pub struct Bound {
         pub store: LoadedStore,
@@ -896,33 +820,6 @@ mod v3 {
         pub fn list_metering(&self, bucket: u64) -> Vec<MeteringRow> {
             RecordStore::list_metering(&self.store, bucket).expect("list_metering")
         }
-        pub fn cap(&self, op: OpId, key: CellKey<'_>, cap: u64) {
-            self.rt
-                .block_on(self.store.window_caps(
-                    op,
-                    &[Cap {
-                        key,
-                        cap,
-                        config_gen: 1,
-                    }],
-                ))
-                .expect("window_caps");
-        }
-        pub fn reserve(
-            &self,
-            op: OpId,
-            epoch: u64,
-            cells: &[Cell<'_>],
-        ) -> Result<Vec<Grant>, StoreFailure> {
-            self.rt.block_on(self.store.reserve(op, epoch, cells))
-        }
-        pub fn slice_release(
-            &self,
-            op: OpId,
-            items: &[(u64, u64)],
-        ) -> Result<Vec<u64>, StoreFailure> {
-            self.rt.block_on(self.store.slice_release(op, 0, items))
-        }
         /// Close and reopen: a process restart. The memory store states it is ephemeral, so the
         /// reopened store holds nothing, its dedupe log included.
         pub fn restart(self) -> Bound {
@@ -935,18 +832,10 @@ mod v3 {
     }
 }
 
-use busbar_contract::abi::sdk::store::{Cell, ReserveRefused};
 use busbar_contract::store_calls::StoreFailure;
 
 fn op(n: u8) -> v3::OpId {
     v3::OpId([n; 16])
-}
-
-fn draw(bucket: &'static str, amount: u64) -> [Cell<'static>; 1] {
-    [Cell {
-        key: v3::requests(bucket),
-        amount,
-    }]
 }
 
 /// A duplicate batch (a flush retried after a lost ack) applies ONCE — every cell in it. 1.5.5 was
@@ -1047,92 +936,4 @@ fn v3_a_duplicate_metering_batch_applies_once_after_restart() {
     assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
     assert_eq!(s.add_metering_batch(op(6), &rows), Ok(()));
     assert_eq!(total(&s), 4);
-}
-
-/// Reserve carries fixed cells (`UnitCell`, the ruled `bb_units[]`) and grants each cell's WHOLE
-/// amount (S5, 1.5.5 never granted part of a draw); what is drawn holds the window's headroom.
-#[test]
-fn v3_reserve_grants_at_most_wanted_per_unit() {
-    let s = v3::bind();
-    s.cap(op(100), v3::requests("k"), 10);
-    let g = s.reserve(op(7), 0, &draw("k", 6)).expect("reserve");
-    assert_eq!(g.len(), 1);
-    assert_eq!(g[0].granted, 6, "the whole amount, never part of it");
-    assert_eq!(
-        s.reserve(op(8), 0, &draw("k", 5)),
-        Err(StoreFailure::Reserve(ReserveRefused::Exhausted { cell: 0 })),
-        "6 are held: 5 more do not fit a cap of 10"
-    );
-    s.reserve(op(9), 0, &draw("k", 4)).expect("4 do");
-}
-
-/// A reserve replayed under its op_id returns the SAME grants and draws nothing more.
-#[test]
-fn v3_a_replayed_reserve_does_not_draw_twice() {
-    let s = v3::bind();
-    s.cap(op(100), v3::requests("k"), 10);
-    let a = s.reserve(op(8), 0, &draw("k", 10)).expect("reserve");
-    let b = s.reserve(op(8), 0, &draw("k", 10)).expect("replay");
-    assert_eq!(a, b);
-    assert_eq!(
-        s.reserve(op(9), 0, &draw("k", 1)),
-        Err(StoreFailure::Reserve(ReserveRefused::Exhausted { cell: 0 })),
-        "only the first draw holds the window"
-    );
-}
-
-/// A node fenced out by a newer epoch cannot draw on a store that holds a fleet epoch. The memory
-/// store is node-local (ephemeral): it holds one constant epoch and never answers a stale one
-/// (`ReserveIn`, "A node-local store"), so an older epoch still draws.
-#[test]
-fn v3_a_stale_epoch_reserve_is_refused() {
-    let s = v3::bind();
-    assert!(s.facts().ephemeral, "the fixture store is node-local");
-    s.cap(op(100), v3::requests("k"), 10);
-    s.reserve(op(9), 3, &draw("k", 1)).expect("epoch 3");
-    s.reserve(op(10), 2, &draw("k", 1))
-        .expect("a node-local store never answers a stale epoch");
-}
-
-/// `slice_release` returns the unspent part once, is deduped on its op_id, and never hands back
-/// more than the slice was granted.
-#[test]
-fn v3_slice_release_returns_the_unspent_once_and_never_more() {
-    let s = v3::bind();
-    s.cap(op(100), v3::requests("k"), 10);
-    let g = s.reserve(op(10), 0, &draw("k", 10)).expect("reserve");
-    let id = g[0].slice_id;
-    assert_eq!(s.slice_release(op(11), &[(id, 4)]), Ok(vec![4]));
-    assert_eq!(
-        s.slice_release(op(11), &[(id, 4)]),
-        Ok(vec![4]),
-        "the original answer"
-    );
-    s.reserve(op(12), 0, &draw("k", 4))
-        .expect("4 came back, once");
-    assert_eq!(
-        s.reserve(op(13), 0, &draw("k", 1)),
-        Err(StoreFailure::Reserve(ReserveRefused::Exhausted { cell: 0 }))
-    );
-    assert_eq!(
-        s.slice_release(op(14), &[(id, u64::MAX)]),
-        Ok(vec![6]),
-        "clamped to what the slice has left, never more"
-    );
-}
-
-/// Reserve → settle (usage batch of what was spent) → release of the rest: the ledger holds the
-/// spend and the window's headroom is whole again.
-#[test]
-fn v3_reserve_settle_release_leaves_only_the_spend() {
-    let s = v3::bind();
-    s.cap(op(100), v3::requests("k"), 100);
-    let g = s.reserve(op(13), 0, &draw("k", 100)).expect("reserve");
-    s.add_usage_batch(op(14), &[("k", DAY, delta(1, 1, "m", &[(UNIT_INPUT, 60)]))])
-        .expect("settle");
-    s.slice_release(op(15), &[(g[0].slice_id, g[0].granted)])
-        .expect("release");
-    assert_eq!(tier(&s.get_usage("k", DAY), "m", UNIT_INPUT), 60);
-    s.reserve(op(16), 0, &draw("k", 100))
-        .expect("nothing stays drawn");
 }

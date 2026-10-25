@@ -18,11 +18,9 @@
 //!   bridge) both run the SAME slots, so a call that answers PENDING on no ticket is FAULT on either
 //!   surface;
 //! * each answer is classed as the loader classes the door's: an `op_id` conflict
-//!   [`StoreFailure::Conflict`], a cap conflict [`StoreFailure::CapConflict`], a reserve refusal
-//!   [`StoreFailure::Reserve`], a store's text [`StoreFailure::Failed`]; the bridge carries a
+//!   [`StoreFailure::Conflict`], a store's text [`StoreFailure::Failed`]; the bridge carries a
 //!   FAILED op's text unchanged and every other failure in its typed words (the loader's `bridge`);
-//! * the bridge's additive 1.5.5 writes (`add_usage`, `add_metering`, `append_audit`,
-//!   `append_plane_record`) run the store's `op_id`-carrying slots under an `op_id` the kernel's
+//! * the bridge's additive 1.5.5 writes (`add_usage`, `add_metering`, `append_plane_record`) run the store's `op_id`-carrying slots under an `op_id` the kernel's
 //!   one allocator mints ([`crate::door::op_id`]).
 //!
 //! Every call crosses on no ticket ([`Op::detached`]): a store that answers PENDING there is a
@@ -34,11 +32,9 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::abi::sdk::store::{
-    Cap, CapsRefused, Cell, Grant, Op, OpRefused, OpResult, ReserveRefused, Step, StoreSlots,
-};
+use busbar_contract::abi::sdk::store::{Op, OpRefused, OpResult, Step, StoreSlots};
 use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::{Head, RecordBytes};
+use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
     PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger,
@@ -152,7 +148,8 @@ impl<S: StoreSlots> SlotStore<S> {
         }
     }
 
-    /// An `op_id`-carrying write: a conflict is [`StoreFailure::Conflict`], a refusal's text FAILED.
+    /// An `op_id`-carrying write: a conflict is [`StoreFailure::Conflict`], a failure's text FAILED,
+    /// a refusal's text REFUSED (S5).
     fn op<T: Send>(
         &self,
         slot: impl FnOnce(&S, &mut Op<'_>) -> Step<OpResult<T>> + Send,
@@ -160,6 +157,7 @@ impl<S: StoreSlots> SlotStore<S> {
         self.call(slot)?.map_err(|e| match e {
             OpRefused::Conflict => StoreFailure::Conflict,
             OpRefused::Failed(text) => StoreFailure::Failed(text),
+            OpRefused::Refused(text) => StoreFailure::Refused(text),
         })
     }
 
@@ -185,52 +183,12 @@ impl<S: StoreSlots> SlotStore<S> {
     }
 }
 
-/// `step`'s answer, mapped.
-fn then<T, U>(step: Step<T>, f: impl FnOnce(T) -> U) -> Step<U> {
-    match step {
-        Step::Ready(t) => Step::Ready(f(t)),
-        Step::Pending { wake_at_ns } => Step::Pending { wake_at_ns },
-    }
-}
-
 /// One call's answer, already in hand.
 fn ready<'a, T: Send + 'a>(answer: Result<T, StoreFailure>) -> StoreCall<'a, T> {
     Box::pin(std::future::ready(answer))
 }
 
 impl<S: StoreSlots> StoreCalls for SlotStore<S> {
-    fn reserve<'a>(
-        &'a self,
-        op: OpId,
-        epoch: u64,
-        cells: &'a [Cell<'a>],
-    ) -> StoreCall<'a, Vec<Grant>> {
-        let answer = self.call(|s, cx| {
-            let mut grants = Vec::with_capacity(cells.len());
-            let step = S::reserve(s, cx, op, epoch, cells.iter().copied(), &mut grants);
-            then(step, |r| r.map(|()| grants))
-        });
-        ready(answer.and_then(|r| {
-            r.map_err(|e| match e {
-                ReserveRefused::Conflict => StoreFailure::Conflict,
-                other => StoreFailure::Reserve(other),
-            })
-        }))
-    }
-
-    fn slice_release<'a>(
-        &'a self,
-        op: OpId,
-        epoch: u64,
-        items: &'a [(u64, u64)],
-    ) -> StoreCall<'a, Vec<u64>> {
-        ready(self.op(|s, cx| {
-            let mut released = Vec::with_capacity(items.len());
-            let step = S::slice_release(s, cx, op, epoch, items.iter().copied(), &mut released);
-            then(step, |r| r.map(|()| released))
-        }))
-    }
-
     fn add_usage_batch<'a>(
         &'a self,
         op: OpId,
@@ -245,51 +203,6 @@ impl<S: StoreSlots> StoreCalls for SlotStore<S> {
         deltas: &'a [MeteringDelta],
     ) -> StoreCall<'a, ()> {
         ready(self.op(|s, cx| S::add_metering_batch(s, cx, op, deltas)))
-    }
-
-    fn append_audit_batch<'a>(&'a self, op: OpId, entries: &'a [AuditRecord]) -> StoreCall<'a, ()> {
-        ready(self.op(|s, cx| S::append_audit_batch(s, cx, op, entries)))
-    }
-
-    fn window_caps<'a>(&'a self, op: OpId, caps: &'a [Cap<'a>]) -> StoreCall<'a, ()> {
-        let answer = self.call(|s, cx| S::window_caps(s, cx, op, caps));
-        ready(answer.and_then(|r| {
-            r.map_err(|e| match e {
-                CapsRefused::CapConflict { index } => StoreFailure::CapConflict(index),
-                CapsRefused::Conflict => StoreFailure::Conflict,
-                CapsRefused::Failed(text) => StoreFailure::Failed(text),
-            })
-        }))
-    }
-
-    fn append_batch<'a>(
-        &'a self,
-        op: OpId,
-        stream: &'a str,
-        records: &'a [RecordBytes],
-    ) -> StoreCall<'a, Head> {
-        ready(self.op(|s, cx| S::append_batch(s, cx, op, stream, records)))
-    }
-
-    fn heads(&self) -> StoreCall<'_, Vec<(String, Head)>> {
-        ready(self.text(S::heads))
-    }
-
-    fn session_put<'a>(
-        &'a self,
-        session: u64,
-        node: &'a str,
-        principal: &'a str,
-    ) -> StoreCall<'a, ()> {
-        ready(self.text(|s, cx| S::session_put(s, cx, session, node, principal)))
-    }
-
-    fn session_remove(&self, session: u64) -> StoreCall<'_, ()> {
-        ready(self.text(|s, cx| S::session_remove(s, cx, session)))
-    }
-
-    fn sessions_for<'a>(&'a self, principal: &'a str) -> StoreCall<'a, Vec<(u64, String)>> {
-        ready(self.text(|s, cx| S::sessions_for(s, cx, principal)))
     }
 
     fn record_put<'a>(
@@ -398,10 +311,6 @@ impl<S: StoreSlots> RecordStore for SlotStore<S> {
         bridge(self.record(|s, cx| S::delete_key(s, cx, id)))
     }
 
-    fn scrub_key(&self, id: &str) -> RecordStoreResult<()> {
-        bridge(self.record(|s, cx| S::scrub_key(s, cx, id)))
-    }
-
     fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
         bridge(self.record(|s, cx| S::list_keys_since(s, cx, since)))
     }
@@ -426,24 +335,17 @@ impl<S: StoreSlots> RecordStore for SlotStore<S> {
         delta: &UsageDelta,
     ) -> RecordStoreResult<()> {
         let op = self.mint();
-        bridge(self.op(|s, cx| S::add_usage_op(s, cx, op, bucket_id, window_start, delta)))
+        let cells = [(bucket_id, window_start, delta.clone())];
+        bridge(self.op(|s, cx| S::add_usage_batch(s, cx, op, &cells)))
     }
 
     fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
         let op = self.mint();
-        bridge(self.op(|s, cx| S::add_metering_op(s, cx, op, delta)))
+        bridge(self.op(|s, cx| S::add_metering_batch(s, cx, op, std::slice::from_ref(delta))))
     }
 
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         bridge(self.record(|s, cx| S::list_metering(s, cx, bucket)))
-    }
-
-    fn purge_windows_before(&self, before: u64) -> RecordStoreResult<u64> {
-        bridge(self.record(|s, cx| S::purge_windows_before(s, cx, before)))
-    }
-
-    fn purge_metering_before(&self, bucket: &str) -> RecordStoreResult<u64> {
-        bridge(self.record(|s, cx| S::purge_metering_before(s, cx, bucket)))
     }
 
     fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
@@ -462,14 +364,6 @@ impl<S: StoreSlots> RecordStore for SlotStore<S> {
         bridge(self.record(|s, cx| S::list_credentials(s, cx, key_id)))
     }
 
-    fn lookup_credential_secret(
-        &self,
-        kind: &str,
-        public_id: &str,
-    ) -> RecordStoreResult<Option<CredentialSecret>> {
-        bridge(self.record(|s, cx| S::lookup_credential_secret(s, cx, kind, public_id)))
-    }
-
     fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
         bridge(self.record(|s, cx| S::revoke_credential(s, cx, id, reason)))
     }
@@ -478,9 +372,11 @@ impl<S: StoreSlots> RecordStore for SlotStore<S> {
         bridge(self.record(|s, cx| S::list_credentials_since(s, cx, since)))
     }
 
-    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-        let op = self.mint();
-        bridge(self.op(|s, cx| S::append_audit_op(s, cx, op, entry)))
+    /// No store slot carries a 1.5.5 audit append: refused loudly, as the loader refuses it.
+    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
+        Err(RecordStoreError(
+            "append_audit is not a store op: 1.6.0 writes its audit as plane records".to_string(),
+        ))
     }
 
     fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {

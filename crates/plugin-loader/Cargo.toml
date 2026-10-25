@@ -89,7 +89,7 @@ crate-type = ["cdylib"]
 # THE MEMORY-ABI BOTH-WAYS FIXTURES (TODO ABI-b4; `door_both_ways`): each source compiled into the
 # test build as a module (the LINKED door) and built here as a `cdylib` (the DROPPED door). The
 # conforming hook door, and per kind a door that breaks its contract (the RED arms of
-# `{store,secret,hook}_door_conformance_tests`). Examples, not crates: `cargo test` builds them and
+# `{secret,hook}_door_conformance_tests`). Examples, not crates: `cargo test` builds them and
 # they never ship.
 [[example]]
 name = "secret_broken_door"
@@ -104,11 +104,6 @@ crate-type = ["cdylib"]
 [[example]]
 name = "hook_broken_door"
 path = "tests/fixtures/hook_broken_door.rs"
-crate-type = ["cdylib"]
-
-[[example]]
-name = "store_broken_door"
-path = "tests/fixtures/store_broken_door.rs"
 crate-type = ["cdylib"]
 
 # A 1.5.5-SHAPED PLUGIN (`lib_tests`' no-legacy-loading arm): an `auth` library exporting the JSON
