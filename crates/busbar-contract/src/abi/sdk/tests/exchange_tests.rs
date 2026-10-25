@@ -1027,3 +1027,39 @@ fn a_completed_exchange_reports_its_heads_status() {
     let status = r.answered.expect("the exchange completes").status;
     assert_eq!(r.state.head_status(), Some(status));
 }
+
+#[test]
+fn sealed_fields_go_in_at_their_place_and_never_read_back() {
+    use crate::abi::sdk::cred::Cred;
+    let key = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()));
+    let r = Request {
+        method: b"POST".to_vec(),
+        target: b"/hook".to_vec(),
+        fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+        body: b"{}".to_vec(),
+        timeout_ms: 0,
+    };
+    let ex = Exchange::request_sealed(
+        r,
+        vec![
+            (0, b"authorization".to_vec(), key.bearer()),
+            (9, b"x-api-key".to_vec(), key.field()),
+        ],
+    )
+    .expect("frames");
+    let seen = ex.framed_fields();
+    assert_eq!(
+        seen,
+        vec![
+            (&b"authorization"[..], &b"<sealed>"[..]),
+            (&b"content-type"[..], &b"application/json"[..]),
+            (&b"x-api-key"[..], &b"<sealed>"[..]),
+        ]
+    );
+    let Sending::Framed { head, .. } = &ex.sending else {
+        panic!("framed")
+    };
+    let head = String::from_utf8_lossy(head);
+    assert!(head.contains("authorization: Bearer sk-CANARY"), "{head}");
+    assert!(head.contains("x-api-key: sk-CANARY"), "{head}");
+}

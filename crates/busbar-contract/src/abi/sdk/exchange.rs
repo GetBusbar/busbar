@@ -162,6 +162,8 @@ pub struct Exchange {
     /// replays, which do not apply a piece again, so the replayed read fails the exchange again
     /// and its close is issued on the same handle.
     refused_read: Option<(u32, &'static str)>,
+    /// The field lines ([`Exchange::framed_fields`]'s indices) whose values are sealed.
+    sealed_lines: Vec<usize>,
     /// What closes `stream` should the exchange be dropped before it closed it: set when
     /// [`Op::exchange`] parks it, so a parked exchange its op gives up does not leave its host
     /// connection open.
@@ -211,6 +213,7 @@ impl Exchange {
             stream: None,
             reply_ceiling: REPLY_MAX,
             refused_read: None,
+            sealed_lines: Vec::new(),
             closer: None,
         }
     }
@@ -297,7 +300,29 @@ impl Exchange {
     /// `request` is the SDK's from here: what it carried is wiped when it goes, framed or refused.
     /// The head is allocated once at its exact length, so no outgrown copy of a field is left.
     pub fn request(request: Request) -> Result<Self, ConnFailure> {
+        Self::request_sealed(request, Vec::new())
+    }
+
+    /// [`Exchange::request`] with SEALED fields (`abi::sdk::chip`: an `authorization` value, an API
+    /// key header): each `(at, name, seal)` goes in before the request's field `at` (its length:
+    /// last), so the field order is the caller's. Their values reach only the head the SDK frames
+    /// and wipes; [`Exchange::framed_fields`] shows them as `<sealed>`.
+    ///
+    /// # Errors
+    /// As [`Exchange::request`].
+    pub fn request_sealed(
+        request: Request,
+        sealed: Vec<(usize, Vec<u8>, crate::abi::sdk::cred::Seal)>,
+    ) -> Result<Self, ConnFailure> {
         let mut request = Zeroizing::new(request);
+        for (_, name, _) in &sealed {
+            if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
+                return Err(ConnFailure::Refused(format!(
+                    "the sealed request field `{}` is a pseudo-field or carries a line break",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+        }
         for (name, value) in &request.fields {
             if name.first() == Some(&b':') {
                 return Err(ConnFailure::Refused(format!(
@@ -313,22 +338,40 @@ impl Exchange {
             }
         }
         let (m, t) = (request.method.len(), request.target.len());
+        let line = |name: &[u8], value: &[u8]| {
+            name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len()
+        };
         let block: usize = request
             .fields
             .iter()
-            .map(|(name, value)| {
-                name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len()
-            })
+            .map(|(name, value)| line(name, value))
+            .chain(sealed.iter().map(|(_, name, seal)| line(name, seal.wire())))
             .sum();
         let mut head = Zeroizing::new(Vec::with_capacity(m + t + block));
         head.extend_from_slice(&request.method);
         head.extend_from_slice(&request.target);
         let block_at = head.len();
-        for (name, value) in &request.fields {
+        let mut sealed_lines = Vec::new();
+        let put = |head: &mut Vec<u8>, name: &[u8], value: &[u8]| {
             head.extend_from_slice(name);
             head.extend_from_slice(fields::SEPARATOR);
             head.extend_from_slice(value);
             head.extend_from_slice(fields::LINE_END);
+        };
+        let mut index = 0;
+        for at in 0..=request.fields.len() {
+            for (_, name, seal) in sealed
+                .iter()
+                .filter(|(s_at, ..)| (*s_at).min(request.fields.len()) == at)
+            {
+                put(&mut head, name, seal.wire());
+                sealed_lines.push(index);
+                index += 1;
+            }
+            if let Some((name, value)) = request.fields.get(at) {
+                put(&mut head, name, value);
+                index += 1;
+            }
         }
         let head_piece = Box::new(RequestPiece {
             kind: REQUEST_HEAD,
@@ -338,14 +381,16 @@ impl Exchange {
             timeout_ms: request.timeout_ms,
             ..RequestPiece::ZERO
         });
-        Ok(Self::over(Sending::Framed {
+        let mut ex = Self::over(Sending::Framed {
             head,
             head_piece,
             body: Zeroizing::new(std::mem::take(&mut request.body)),
             body_piece: piece(REQUEST_BODY),
             end_piece: piece(REQUEST_END),
             timeout_ms: request.timeout_ms,
-        }))
+        });
+        ex.sealed_lines = sealed_lines;
+        Ok(ex)
     }
 
     /// An exchange sending `bytes` as they are, over any transport ([`send_and_ack`]).
@@ -362,7 +407,16 @@ impl Exchange {
         match &self.sending {
             Sending::Framed {
                 head, head_piece, ..
-            } => fields::lines(spanned(&head[..], head_piece.fields)).collect(),
+            } => fields::lines(spanned(&head[..], head_piece.fields))
+                .enumerate()
+                .map(|(i, (name, value))| {
+                    if self.sealed_lines.contains(&i) {
+                        (name, &b"<sealed>"[..])
+                    } else {
+                        (name, value)
+                    }
+                })
+                .collect(),
             Sending::Raw(_) => Vec::new(),
         }
     }
