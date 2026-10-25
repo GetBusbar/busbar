@@ -452,11 +452,9 @@ fn overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with() 
 ///
 /// So this reads every mention of the two variants (under any enum and any path) and separates the
 /// ones in a PATTERN — an arm or an alternation, which reads a reason and makes none — from the ones
-/// in value position. There is exactly one value today: `SliceError::reason` answers
-/// `ReasonCode::StaleSlice` for a stale epoch. That function is reached only through a `SliceError`,
-/// which only a `SliceStore` hands out, and the only production file that touches either outside
-/// the defining module is the store adapter that IMPLEMENTS the trait and never asks an error its
-/// reason. The one other place a reason value is read back out of nothing — the cancel token's
+/// in value position. There is none: the slice ABI (`SliceError`, whose `reason` answered
+/// `ReasonCode::StaleSlice`, and `SliceStore`) was deleted with the store money slots (busbar #1667),
+/// so no production file holds a value of either reason, and nothing reaches a slice error. The one other place a reason value is read back out of nothing — the cancel token's
 /// `ReasonCode::ALL.get(index)` — decodes an index its own `trip` stored from a reason it was handed,
 /// so it can return no reason that was not already a value.
 #[test]
@@ -505,10 +503,7 @@ fn every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale
     }
     assert_eq!(
         values,
-        BTreeSet::from([(
-            "busbar-contract/src/slice.rs".to_string(),
-            "ReasonCode::StaleSlice".to_string()
-        )]),
+        BTreeSet::new(),
         "a production value of the ceiling or stale-slice reason appeared; a carried refusal could \
          now be one of them"
     );
@@ -524,12 +519,8 @@ fn every_value_a_computed_refusal_could_carry_excludes_the_ceiling_and_the_stale
         .collect();
     assert_eq!(
         slice_reach,
-        BTreeSet::from([
-            "busbar-contract/src/slice.rs",
-            "plugin-loader/src/store_adapter.rs"
-        ]),
-        "something outside the slice module and its one implementor now reaches a SliceError, \
-         and SliceError::reason is the tree's one StaleSlice value"
+        BTreeSet::new(),
+        "the slice ABI is deleted: nothing may reach a SliceError or a SliceStore again"
     );
     for (file, text) in &sources {
         if slice_reach.contains(file.as_str()) {
@@ -589,11 +580,11 @@ fn the_census_reads_a_broken_or_path_qualified_construction_as_the_same_site() {
     );
 }
 
-/// The ceiling verdict is named in one file: the module that defines the rule.
+/// The ceiling verdict is named nowhere.
 ///
-/// `Overdraft::Ceiling` is what `slice::overdraft(_, at_ceiling)` answers when a bucket is at its
-/// ceiling. Nothing outside the rule's own module names that verdict, so no shipped path branches
-/// on it and no shipped path can end a unit by it: the ceiling is unbounded in force, and the
+/// `Overdraft::Ceiling` was what `slice::overdraft(_, at_ceiling)` answered when a bucket was at its
+/// ceiling; the rule was deleted with the store money slots (busbar #1667). Nothing names that
+/// verdict, so no shipped path branches on it and no shipped path can end a unit by it: the ceiling is unbounded in force, and the
 /// operator verb that would set one (`KernelVerb::SetOverdraftCeiling`) is carried in the
 /// vocabulary with no dispatch arm behind it — flag-only, exactly as the binding says.
 #[test]
@@ -611,12 +602,10 @@ fn the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on() {
     }
     assert_eq!(
         namers,
-        // The rule's own module is `busbar-contract/src/slice.rs` since b544c8bbf moved the slice
-        // ABI types out of the kernel (#38, to break the core-absorption cycle). The PROPERTY is
-        // unchanged and is what this pin is about: exactly ONE file — the module that defines
-        // `overdraft()` — names the verdict it returns.
-        BTreeSet::from(["busbar-contract/src/slice.rs".to_string()]),
-        "only the rule's own module may name the ceiling verdict"
+        // The rule (`slice::overdraft`) was deleted with the store money slots (busbar #1667), so
+        // no file may name the verdict it returned.
+        BTreeSet::<String>::new(),
+        "the overdraft rule is deleted: nothing may name the ceiling verdict"
     );
 
     // And the verb that would arm one carries no value anywhere in the tree.
