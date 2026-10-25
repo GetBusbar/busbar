@@ -339,6 +339,24 @@ pub trait DeclaredConns: Conns {
         Err(ConnError::Refused)
     }
 
+    /// WHETHER `conn`'s DIAL HAS LANDED: the far end took the connect. An open answers with its
+    /// dial still in flight; `ESTABLISH` (`abi::host::conn::connector::service::ESTABLISH`: "dial
+    /// the need's endpoints ... and answer the stream") answers a raw stream only once it has
+    /// landed, so a far end that refuses the connect is the establish's own answer, and a plugin
+    /// trying an endpoint list in order (open; on reject close and try the next) moves on. `Ok`
+    /// once it has landed, [`ConnError::Pending`] with interest under `ticket` while it connects.
+    /// A table whose opens land before they answer (or that cannot tell) answers `Ok`.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Pending`]; the connect's failure ([`ConnError::Refused`],
+    /// [`ConnError::Timeout`], ...), its cause readable through [`DeclaredConns::cause`];
+    /// [`ConnError::NotOwner`], [`ConnError::Closed`].
+    fn landed(&self, caller: InstanceId, conn: ConnId, ticket: Ticket) -> Result<(), ConnError> {
+        let _ = (caller, conn, ticket);
+        Ok(())
+    }
+
     /// Whether `owner`'s `need` is carried over a FRAMED transport (a framer composed over a
     /// carrier, http's kind): its request goes out as one opening message, head words, fields and
     /// body, so the host opens it when the request is whole. A raw byte stream, or a need never
