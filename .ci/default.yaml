@@ -16,6 +16,12 @@ on:
   # All five on every move (OWNER 2026-10-24: busbar uses the app; no hand-run oracle passes). D-1
   # is re-signed at 510 cells.
   move: [fmt, clippy, test, deny, oracle]
+# Step 5: dist/default is its own workspace and embeds core's source, so a change to it or to
+# crates/busbar runs every scoped check whole (the dist half carries no -p to narrow by).
+affected:
+  whole_run_paths:
+    - "dist/**"
+    - "crates/busbar/**"
 env:
   # The oracle's judge, as bin/oracle reads it under ModernCI (only from the config's env, never the
   # candidate's pin): testing/shadow-oracle/oracle-rust.pin on dev; fetched with BUSBAR_RELEASE_TOKEN.
@@ -178,11 +184,14 @@ checks:
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo fmt --all -- --check
+      # The default distribution (dist/default, its own workspace) from step 5 on.
+      if [ -f dist/default/Cargo.toml ]; then cargo fmt --manifest-path dist/default/Cargo.toml --all -- --check; fi
   clippy:
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
+      if [ -f dist/default/Cargo.toml ]; then cargo clippy --manifest-path dist/default/Cargo.toml --workspace --all-targets --all-features --locked --keep-going --target-dir target -- -D warnings; fi
     scope: affected
     baseline: target
   test:
@@ -190,39 +199,79 @@ checks:
     # dlopen built first), the feature-gated suites, the loom models, then the doctests.
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
-      meta=$(cargo metadata --format-version 1 --locked)
-      cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
-      # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
-      # door and the other door fixtures, which busbar's and the connector's tests load too) and
-      # busbar's test plane. A run scoped to `busbar` alone builds no other package's examples, and a
-      # test whose fixture is absent fails rather than skips; no variable tells this step the
-      # affected set, so the build does not wait on one.
-      cargo build --locked -p busbar-plugin-loader --examples
-      cargo build --locked -p busbar --examples
-      plugin() {
-        man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
-        if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
-        ws="$(dirname "$man")/Cargo.toml"
-        pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
-        if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
-        if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
-          cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
-        else
-          cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
-        fi
-      }
-      plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
-      plugin busbar-transport-http busbar-transport-http-plugin dropped-in
-      plugin busbar-secret-env busbar-secret-env-plugin optional
-      plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
-      cargo build --workspace --locked
-      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
-      # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
-      cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
-      cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
-      cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
-      timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
-      cargo test --workspace --doc --locked --no-fail-fast
+      if [ -f dist/default/Cargo.toml ]; then
+        # STEP 5 LAYOUT. Core (this workspace) links no plugin: its suites, the loader's example
+        # cdylibs its tests dlopen, the feature-gated kernel/admin suites, loom and doctests.
+        meta=$(cargo metadata --format-version 1 --locked)
+        cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+        cargo build --locked -p busbar-plugin-loader --examples
+        cargo build --workspace --locked
+        cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
+        # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
+        cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
+        cargo nextest run --locked --no-fail-fast -p busbar-kernel -p busbar-core-admin --features busbar-kernel/timing,busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema -E 'binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/))'
+        cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+        timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+        cargo test --workspace --doc --locked --no-fail-fast
+        # The default distribution (dist/default): core's source with the standard plugins linked,
+        # the root's tests, and the dropped-in plugins they load built first. One target dir.
+        D=dist/default/Cargo.toml
+        dmeta=$(cargo metadata --format-version 1 --locked --manifest-path "$D")
+        cargo build --locked --manifest-path "$D" --examples --target-dir target
+        plugin() {
+          man=$(echo "$dmeta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
+          if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "the distribution resolves no $1"; return 1; fi
+          ws="$(dirname "$man")/Cargo.toml"
+          pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
+          if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
+          if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
+            cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
+          else
+            cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
+          fi
+        }
+        plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
+        plugin busbar-transport-http busbar-transport-http-plugin dropped-in
+        plugin busbar-secret-env busbar-secret-env-plugin optional
+        plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
+        cargo build --locked --manifest-path "$D" --target-dir target
+        cargo nextest run --locked --manifest-path "$D" --target-dir target --workspace --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
+        cargo nextest run --locked --manifest-path "$D" --target-dir target --no-fail-fast --features test-harness,transport-webrtc,openapi-schema -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | (package(busbar-default) & test(/(serve_tests|secret_source|connector|boot)::/))'
+      else
+        meta=$(cargo metadata --format-version 1 --locked)
+        cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+        # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
+        # door and the other door fixtures, which busbar's and the connector's tests load too) and
+        # busbar's test plane. A run scoped to `busbar` alone builds no other package's examples, and a
+        # test whose fixture is absent fails rather than skips; no variable tells this step the
+        # affected set, so the build does not wait on one.
+        cargo build --locked -p busbar-plugin-loader --examples
+        cargo build --locked -p busbar --examples
+        plugin() {
+          man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
+          if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
+          ws="$(dirname "$man")/Cargo.toml"
+          pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
+          if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
+          if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
+            cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
+          else
+            cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
+          fi
+        }
+        plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
+        plugin busbar-transport-http busbar-transport-http-plugin dropped-in
+        plugin busbar-secret-env busbar-secret-env-plugin optional
+        plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
+        cargo build --workspace --locked
+        cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
+        # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
+        cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
+        cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
+        cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+        timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+        cargo test --workspace --doc --locked --no-fail-fast
+      fi
     scope: affected
     baseline: target
     requires: [cc]
@@ -250,6 +299,10 @@ checks:
         fi
       fi
       PATH="$VD/bin:$PATH" cargo vet
+      if [ -f dist/default/Cargo.toml ]; then
+        cargo deny --manifest-path dist/default/Cargo.toml check
+        (cd dist/default && PATH="$VD/bin:$PATH" cargo vet)
+      fi
     baseline: target
     requires: [cc]
   oracle:
@@ -259,6 +312,7 @@ checks:
     baseline: target
     inputs:
       - crates/**
+      - dist/**
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -289,7 +343,12 @@ checks:
       else
         echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
       fi
-      cargo build --locked --release -p busbar --bin busbar
+      # From step 5 the shipped binary is the default distribution (core plus the pinned plugins).
+      if [ -f dist/default/Cargo.toml ]; then
+        cargo build --locked --release --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target
+      else
+        cargo build --locked --release -p busbar --bin busbar
+      fi
       ./bin/oracle fetch-golden
       # The store-persist cells for postgres, mysql and valkey boot their store against a LIVE
       # backend, gated on BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL; with none set
