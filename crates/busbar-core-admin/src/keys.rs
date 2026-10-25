@@ -1395,7 +1395,10 @@ pub(crate) async fn list_keys(
 /// What the rotate's blocking section settled.
 enum RotateOutcome {
     /// Re-minted: the key's state and the new credential.
-    Rotated(&'static str, Box<busbar_kernel::governance::RotatedCredential>),
+    Rotated(
+        &'static str,
+        Box<busbar_kernel::governance::RotatedCredential>,
+    ),
     /// No live key under that id.
     Unknown,
     /// The key's binding is past the caller's mint ceiling; nothing was re-minted.
@@ -1532,7 +1535,9 @@ pub(crate) async fn rotate_key(
             // rotate at all, see `GovState::rotate_key`), so `gov.is_revoked` is genuinely needed,
             // not just `enabled`.
             Ok(match gov.rotate_key(&gid, now.saturating_add(ttl))? {
-                Some(rotated) => RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated)),
+                Some(rotated) => {
+                    RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
+                }
                 None => RotateOutcome::Unknown,
             })
         },
