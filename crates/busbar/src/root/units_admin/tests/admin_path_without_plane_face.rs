@@ -154,41 +154,23 @@ fn a_recording_surface(log: Arc<SurfaceLog>) -> axum::Router {
     ))
 }
 
-/// A node whose book this cell holds the other half of.
-///
-/// The book is built HERE rather than inside `ProductionUnits::admin_only` so that the rows the
-/// ledger dual-writes onto are rows this cell can read back. Same value, two holders.
+/// A node whose journal this cell holds.
 #[cfg(feature = "root-admin")]
 struct ANodeWhoseChainThisCellReads {
     router: axum::Router,
-    rows: busbar_kernel_ledger::legacy::RecordingRows,
     surface: Arc<SurfaceLog>,
-}
-
-#[cfg(feature = "root-admin")]
-impl ANodeWhoseChainThisCellReads {
-    /// Every money posting the node's book has taken, which for an administrative walk must be none.
-    ///
-    /// Read off the write half the node was built over, which is the half the ledger dual-writes
-    /// onto. A count taken anywhere else would be a count of something the walk does not touch.
-    fn postings(&self) -> usize {
-        self.rows.written().len()
-    }
 }
 
 /// Compose the real mount over the real loop, exactly as `main.rs` composes it for `admin_listen`.
 #[cfg(feature = "root-admin")]
 fn a_node() -> ANodeWhoseChainThisCellReads {
     let surface = Arc::new(SurfaceLog::default());
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows.clone());
     // The SAME ingress cap `main.rs` hands the wrap, so the body read below is the one a deployment
     // configured rather than one this cell invented.
     let router = mount(
@@ -200,7 +182,6 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
                 dispatch,
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
-                read,
                 None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
@@ -208,11 +189,7 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
             ))
         },
     );
-    ANodeWhoseChainThisCellReads {
-        router,
-        rows,
-        surface,
-    }
+    ANodeWhoseChainThisCellReads { router, surface }
 }
 
 /// The REAL administrative surface, twice: bare (the leg a node without the root serves, which
@@ -244,15 +221,12 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
     let mounted = mount(
         bare.clone(),
         crate::root::kernel::new_kernel(),
@@ -262,7 +236,6 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
                 dispatch,
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
-                read,
                 None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
@@ -578,15 +551,12 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
     let mounted = mount(
         bare,
         crate::root::kernel::new_kernel(),
@@ -596,7 +566,6 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
                 dispatch,
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
-                read,
                 None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
@@ -810,15 +779,12 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
     let mounted = mount(
         bare,
         crate::root::kernel::new_kernel(),
@@ -828,7 +794,6 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
                 dispatch,
                 crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
                 held,
-                read,
                 None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
@@ -911,7 +876,6 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
 #[tokio::test]
 async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
     let node = a_node();
-    assert_eq!(node.postings(), 0, "a fresh book has taken no rows");
 
     let (status, body, _headers) =
         over_the_listener(&node, "GET", "/api/v1/admin/audit", b"").await;
@@ -929,12 +893,6 @@ async fn an_admin_verb_still_meters_to_nothing_and_posts_nothing() {
     )
     .await;
     assert_eq!(status, 200, "and so did the mutation");
-
-    assert_eq!(
-        node.postings(),
-        0,
-        "an administrative walk posts no money, on either side of the read/write split"
-    );
 }
 
 /// A PATH THE CLOSED TABLE DOES NOT DECLARE NEVER ENTERS THE LOOP AT ALL.
@@ -1038,15 +996,12 @@ fn a_q71_node_trusting(
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
     )
     .expect("a memory-buffered journal cannot fail to open");
     let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&kept);
     let mounted = mount(
@@ -1058,7 +1013,6 @@ fn a_q71_node_trusting(
                 dispatch,
                 crate::root::units_admin::door_of_chain(door),
                 held,
-                read,
                 None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
