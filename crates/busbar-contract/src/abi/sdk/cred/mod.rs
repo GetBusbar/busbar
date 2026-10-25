@@ -50,7 +50,7 @@ mod write;
 
 use zeroize::{Zeroize, Zeroizing};
 
-pub use form::{CredUrl, PasswordAt};
+pub use form::{CredUrl, PasswordAt, UserinfoUrl};
 pub use settings::{settings, SettingsError};
 pub use write::{Parts, SealedWrite};
 
@@ -143,6 +143,19 @@ impl Cred {
     /// Whether the credential is empty (an empty password).
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Whether it is UTF-8 text (a client that sends only text leaves out one that is not).
+    pub fn is_text(&self) -> bool {
+        std::str::from_utf8(self.wire()).is_ok()
+    }
+
+    /// Whether it may stand as a header field value: tab, space, visible ASCII and non-ASCII bytes,
+    /// no other control byte and no DEL (RFC 9110).
+    pub fn is_field_value(&self) -> bool {
+        self.wire()
+            .iter()
+            .all(|&b| b == b'\t' || (b >= 0x20 && b != 0x7f))
     }
 }
 

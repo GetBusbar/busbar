@@ -11,7 +11,7 @@ use serde::forward_to_deserialize_any;
 use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
 
-use super::{Cred, CredUrl};
+use super::{Cred, CredUrl, UserinfoUrl};
 
 /// Why settings did not parse: the field path and what was wrong, never the value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,5 +337,29 @@ impl<'de> Visitor<'de> for CredUrlVisitor {
 impl<'de> de::Deserialize<'de> for CredUrl {
     fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         d.deserialize_string(CredUrlVisitor)
+    }
+}
+
+struct UserinfoUrlVisitor;
+
+impl<'de> Visitor<'de> for UserinfoUrlVisitor {
+    type Value = UserinfoUrl;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a URL")
+    }
+    fn visit_str<E: de::Error>(self, s: &str) -> Result<UserinfoUrl, E> {
+        CredUrl::parse_userinfo(s)
+            .map(UserinfoUrl)
+            .map_err(|why| E::invalid_value(Unexpected::Other("a string"), &why))
+    }
+    fn visit_string<E: de::Error>(self, s: String) -> Result<UserinfoUrl, E> {
+        let s = Zeroizing::new(s);
+        self.visit_str(&s)
+    }
+}
+
+impl<'de> de::Deserialize<'de> for UserinfoUrl {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_string(UserinfoUrlVisitor)
     }
 }

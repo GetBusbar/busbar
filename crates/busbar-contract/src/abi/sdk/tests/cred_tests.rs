@@ -166,3 +166,23 @@ fn take_wipes_the_setting_where_it_was() {
     assert!(Cred::take(&mut doc["n"]).is_none());
     assert_eq!(doc["n"], 1);
 }
+
+#[test]
+fn a_userinfo_only_split_leaves_the_query_as_written() {
+    let u = CredUrl::parse_userinfo("https://bot:t0k@h/hook?password=part-of-the-target")
+        .expect("splits");
+    assert_eq!(u.public(), "https://bot@h/hook?password=part-of-the-target");
+    assert_eq!(pw(&u).as_deref(), Some(&b"t0k"[..]));
+    let doc = br#"{"u": "https://:x@h/p?pass=keep"}"#;
+    #[derive(serde::Deserialize)]
+    struct S {
+        u: super::UserinfoUrl,
+    }
+    let s: S = settings(doc).expect("parses");
+    assert_eq!(s.u.public(), "https://@h/p?pass=keep");
+    let c = Cred::captured(zeroize::Zeroizing::new(b"a\x01b".to_vec()));
+    assert!(!c.is_field_value());
+    assert!(c.is_text());
+    let c = Cred::captured(zeroize::Zeroizing::new(vec![0xff]));
+    assert!(c.is_field_value() && !c.is_text());
+}

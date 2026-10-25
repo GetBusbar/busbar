@@ -68,10 +68,23 @@ impl CredUrl {
         Some(Self::split(&text))
     }
 
+    /// [`CredUrl::parse`] taking only a userinfo password: a query parameter is the target's own (a
+    /// webhook's `?password=` is part of where it posts, not this plugin's credential).
+    ///
+    /// # Errors
+    /// As [`CredUrl::parse`].
+    pub fn parse_userinfo(text: &str) -> Result<Self, &'static str> {
+        Self::split_with(text, false)
+    }
+
     pub(crate) fn split(text: &str) -> Result<Self, &'static str> {
+        Self::split_with(text, true)
+    }
+
+    fn split_with(text: &str, query: bool) -> Result<Self, &'static str> {
         let (public, found) = if let Some(i) = text.find("://") {
-            split_url(text, i)?
-        } else if looks_keyword(text) {
+            split_url(text, i, query)?
+        } else if query && looks_keyword(text) {
             let (p, pw) = split_keyword(text)?;
             (p, pw.map(|b| (b, PasswordAt::Keyword)))
         } else {
@@ -94,7 +107,11 @@ type Found = (Bytes, PasswordAt);
 
 const TWO: &str = "a URL with one password (userinfo or `password=`, not both)";
 
-fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Found>), &'static str> {
+fn split_url(
+    text: &str,
+    scheme_end: usize,
+    query: bool,
+) -> Result<(String, Option<Found>), &'static str> {
     let head = &text[..scheme_end + 3];
     let rest = &text[scheme_end + 3..];
     let pre_query = rest.find('?').unwrap_or(rest.len());
@@ -128,7 +145,7 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Found>), &
         }
         None => rest,
     };
-    match after.split_once('?') {
+    match after.split_once('?').filter(|_| query) {
         None => public.push_str(after),
         Some((path, query)) => {
             public.push_str(path);
@@ -275,4 +292,17 @@ fn decode(s: &str) -> Bytes {
         i += 1;
     }
     out
+}
+
+/// A URL setting whose userinfo password is sealed at parse and whose query is left as written
+/// ([`CredUrl::parse_userinfo`]).
+#[allow(missing_debug_implementations)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct UserinfoUrl(pub CredUrl);
+
+impl core::ops::Deref for UserinfoUrl {
+    type Target = CredUrl;
+    fn deref(&self) -> &CredUrl {
+        &self.0
+    }
 }
