@@ -2414,6 +2414,7 @@ fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
         svc::TRUST_SAME,
         "node b applies the approval node a kept"
     );
+}
 
 /// A store that is down: every plane-record call fails.
 struct DownStore;

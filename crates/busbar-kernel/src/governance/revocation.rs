@@ -80,7 +80,8 @@ pub(crate) struct RevocationSync {
 }
 
 /// What a re-sync calls to reload the node's key caches from the store.
-pub(crate) type KeyReload = Box<dyn Fn() -> busbar_contract::records::RecordStoreResult<()> + Send + Sync>;
+pub(crate) type KeyReload =
+    Box<dyn Fn() -> busbar_contract::records::RecordStoreResult<()> + Send + Sync>;
 
 impl RevocationSync {
     /// A denylist seeded with the boot-time hydration (`initial`), stamped fresh at `now`.
