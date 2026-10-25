@@ -758,7 +758,8 @@ pub const REFUSAL_ANY_DIALECT: u32 = u32::MAX;
 /// [`RefusalIn::reason`]). Every number is written out and the table is APPEND-ONLY: a code never
 /// changes meaning, and a reason the kernel's vocabulary gains takes the next number here. The
 /// kernel's vocabulary maps to and from it ([`reason_code`], [`reason_of`]) by name, derived from
-/// its one table (`caps::ReasonCode`), so a new reason cannot be left off. This crate's tests pin every code to its word.
+/// its one table (`caps::ReasonCode`), so a new reason cannot be left off. This crate's tests pin
+/// every code to its word.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RefusalCode {
@@ -1116,13 +1117,14 @@ impl RefusalCode {
     }
 }
 
-/// The class of a kernel refusal reason ([`RefusalCode::class`] of its wire code).
+/// The class of a kernel refusal reason: its row of the reason table, which [`RefusalCode::class`]
+/// reads too.
 #[must_use]
 pub const fn class_of(reason: ReasonCode) -> RefusalClass {
     reason.class()
 }
 
-/// The class of a refusal as a plane is handed it ([`RefusalCode::class`] of its wire code).
+/// The class of a refusal as a plane is handed it: [`class_of`] of the kernel reason it spells.
 #[must_use]
 pub fn class_of_refusal(reason: crate::unit::RefusalReason) -> RefusalClass {
     class_of(ReasonCode::from(reason))
