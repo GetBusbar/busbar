@@ -25,6 +25,13 @@
 //!   (`PLANE_JOURNAL_ROW_UNREADABLE`), never allowed to drop the rest.
 //! * A record is stored under `record_key(instance, chain_key(scope, seq))` as [`encode`]'s body:
 //!   a version byte, the sequence, the previous and own digests, then the plane's bytes.
+//! * ONE WRITER PER POSITION ACROSS THE FLEET. Before a record is stored its position is CLAIMED in
+//!   the store ([`RecordRows::claim`]): the instance, the kind, the scope, the chain's life, the
+//!   sequence and the previous digest. A node that loses the claim, or finds the slot already
+//!   holding a record (its cached position is stale: another node wrote there), forgets its
+//!   position, resumes from the store's tail and seals again, so two nodes appending to one chain
+//!   continue each other's records instead of overwriting them. The chain's LIFE is how many
+//!   tombstones its scope holds, so a chain dropped and begun again never meets its old claims.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -63,6 +70,13 @@ pub const CHAIN_OVERHEAD: usize = 1 + 8 + 1 + 64 + 1 + 64;
 /// The most chain positions held in memory; past it the least recently written is resumed from
 /// the store on its next append.
 pub const POSITIONS_CAP: usize = 65_536;
+
+/// How long a position's claim is held, in seconds: it only has to outlive the write it guards.
+const CLAIM_SECS: u64 = 60;
+
+/// How many times an append resumes from the store's tail after losing its position to another
+/// writer before it answers [`WRITE_FAILED`].
+const CLAIM_ATTEMPTS: usize = 8;
 
 /// A chained record kind's declaration, as the host frames it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,13 +166,19 @@ type Position = (Arc<str>, String, String);
 /// One stored row, `(key, bytes)`.
 type Row = (Vec<u8>, Vec<u8>);
 
+/// A chain's position and its life (how many tombstones its scope held when it was resumed).
+type Held = (Chain<StreamRecord>, u64);
+
 /// Every chain's position, the least recently written first.
-type Positions = IndexMap<Position, Chain<StreamRecord>>;
+type Positions = IndexMap<Position, Held>;
 
 /// THE CHAIN POSITIONS of every instance's chained kinds, the flush's to keep.
 #[derive(Default)]
 pub struct ChainBook {
     positions: Mutex<Positions>,
+    /// The position claims this node won and has not yet stored a record under: a write the store
+    /// refused after its claim was won is retried under the claim it already holds.
+    claimed: Mutex<std::collections::HashSet<String>>,
 }
 
 impl std::fmt::Debug for ChainBook {
@@ -174,8 +194,27 @@ impl ChainBook {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Whether this node won `token` and has not yet stored under it.
+    fn holds(&self, token: &str) -> bool {
+        self.claimed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(token)
+    }
+
+    /// Remember (`true`) or let go of (`false`) a claim this node won. Bounded like the positions:
+    /// a claim past the bound is simply retaken, or lapses.
+    fn hold(&self, token: &str, held: bool) {
+        let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
+        if !held {
+            claimed.remove(token);
+        } else if claimed.len() < POSITIONS_CAP {
+            claimed.insert(token.to_string());
+        }
+    }
+
     /// Keep `chain` as the position at `at`, the most recently written.
-    fn commit(&self, at: Position, chain: Chain<StreamRecord>) {
+    fn commit(&self, at: Position, chain: Held) {
         let mut positions = self.lock();
         positions.shift_remove(&at);
         positions.insert(at, chain);
@@ -189,9 +228,9 @@ impl ChainBook {
     ///
     /// # Errors
     ///
-    /// [`WRITE_FAILED`] when the store refused the read that resumes the chain or the record;
-    /// [`CHAIN_RECORD_TOO_LARGE`] when the sealed record exceeds the ceiling. The position is left
-    /// where it was.
+    /// [`WRITE_FAILED`] when the store refused the read that resumes the chain, the claim or the
+    /// record, or other writers kept taking the chain's next position; [`CHAIN_RECORD_TOO_LARGE`]
+    /// when the sealed record exceeds the ceiling. The position is left where it was.
     pub(crate) fn append(
         &self,
         rows: &dyn RecordRows,
@@ -206,22 +245,51 @@ impl ChainBook {
             schema.as_str().to_string(),
             scope.to_string(),
         );
-        let cached = self.lock().get(&at).cloned();
-        let mut chain = match cached {
-            Some(chain) => chain,
-            None => resume(rows, instance, schema, scope, f)?,
-        };
-        let record = chain.append(
-            scope,
-            StreamInput::new(content.to_vec(), f.framing, f.digests_scope),
+        for _ in 0..CLAIM_ATTEMPTS {
+            let cached = self.lock().get(&at).cloned();
+            let (mut chain, life) = match cached {
+                Some(held) => held,
+                None => resume(rows, instance, schema, scope, f)?,
+            };
+            let record = chain.append(
+                scope,
+                StreamInput::new(content.to_vec(), f.framing, f.digests_scope),
+            );
+            let body = encode(&record).ok_or(CHAIN_RECORD_TOO_LARGE)?;
+            let body = RecordBytes::new(body).map_err(|_| CHAIN_RECORD_TOO_LARGE)?;
+            let key = record_key(instance, &chain_key(scope.as_bytes(), record.seq()));
+            let now = busbar_kernel::store::now();
+            let token = position_token(instance, schema, scope, life, &record);
+            let won = self.holds(&token)
+                || rows
+                    .claim(&token, now.saturating_add(CLAIM_SECS), now)
+                    .map_err(|_| WRITE_FAILED)?;
+            let ours = won
+                && rows
+                    .record_get(schema, &key)
+                    .map_err(|_| WRITE_FAILED)?
+                    .is_none_or(|held| held.as_slice().is_empty());
+            if !ours {
+                // Another writer holds this position: read the chain back and seal at its tail.
+                self.lock().shift_remove(&at);
+                continue;
+            }
+            self.hold(&token, true);
+            rows.record_put(schema, &key, &body)
+                .map_err(|_| WRITE_FAILED)?;
+            self.hold(&token, false);
+            self.commit(at, (chain, life));
+            return Ok(());
+        }
+        crate::diagnostics::diag_error!(
+            crate::diagnostics::PLANE_JOURNAL_RESUME_CHAIN_BROKEN,
+            instance = %instance,
+            stream = %schema.as_str(),
+            break_detail = "other writers kept taking the chain's next position",
+            "a plane record chain append could not take a position: the write is refused, not \
+             stored over another writer's record"
         );
-        let body = encode(&record).ok_or(CHAIN_RECORD_TOO_LARGE)?;
-        let body = RecordBytes::new(body).map_err(|_| CHAIN_RECORD_TOO_LARGE)?;
-        let key = record_key(instance, &chain_key(scope.as_bytes(), record.seq()));
-        rows.record_put(schema, &key, &body)
-            .map_err(|_| WRITE_FAILED)?;
-        self.commit(at, chain);
-        Ok(())
+        Err(WRITE_FAILED)
     }
 
     /// DROP `instance`'s chain `scope` of `schema`: a tombstone over each of its records, and its
@@ -286,15 +354,35 @@ fn held(
         .map_err(|_| WRITE_FAILED)
 }
 
+/// The claim token of the position `record` takes in `instance`'s chain `scope` of `schema`, in its
+/// life `life`: every field length-prefixed, then digested.
+fn position_token(
+    instance: &str,
+    schema: RecordSchemaId,
+    scope: &str,
+    life: u64,
+    record: &StreamRecord,
+) -> String {
+    let mut framed = Vec::new();
+    for field in [instance, schema.as_str(), scope, record.prev_hash()] {
+        framed.extend_from_slice(&(field.len() as u64).to_be_bytes());
+        framed.extend_from_slice(field.as_bytes());
+    }
+    framed.extend_from_slice(&life.to_be_bytes());
+    framed.extend_from_slice(&record.seq().to_be_bytes());
+    busbar_contract::redacted::sha256_hex(&framed)
+}
+
 /// RESUME `instance`'s chain `scope` from the store: its records read back, VERIFIED, and the
-/// position taken from the tail; a break is reported and the chain continued from its tail.
+/// position taken from the tail; a break is reported and the chain continued from its tail. Beside
+/// it, the chain's life: how many tombstones its scope holds.
 fn resume(
     rows: &dyn RecordRows,
     instance: &str,
     schema: RecordSchemaId,
     scope: &str,
     f: ChainFraming,
-) -> Result<Chain<StreamRecord>, &'static str> {
+) -> Result<Held, &'static str> {
     let unscoped = record_key(instance, &[]).len();
     let mut stored: Vec<Row> = held(rows, instance, schema, scope)?
         .into_iter()
@@ -302,11 +390,12 @@ fn resume(
         .filter(|(k, _)| chain_key_parts(k).is_some_and(|(s, _)| s == scope.as_bytes()))
         .collect();
     stored.sort();
+    let life = stored.iter().filter(|(_, body)| body.is_empty()).count() as u64;
     let records: Vec<StreamRecord> = decoded(instance, schema, scope, &stored, f)
         .into_iter()
         .map(|(_, r)| r)
         .collect();
-    Ok(match Chain::from_persisted(&records) {
+    let chain = match Chain::from_persisted(&records) {
         Ok(chain) => chain,
         Err(brk) => {
             crate::diagnostics::diag_error!(
@@ -320,7 +409,8 @@ fn resume(
             );
             Chain::from_persisted_unverified(&records)
         }
-    })
+    };
+    Ok((chain, life))
 }
 
 /// The live records among `stored` (`(chain key, body)` of one chain, in key order), decoded and
