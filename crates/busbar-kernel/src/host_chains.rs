@@ -72,7 +72,7 @@ pub const CHAIN_OVERHEAD: usize = 1 + 8 + 1 + 64 + 1 + 64;
 pub const POSITIONS_CAP: usize = 65_536;
 
 /// How long a position's claim is held, in seconds: it only has to outlive the write it guards.
-const CLAIM_SECS: u64 = 600;
+const CLAIM_SECS: u64 = 60;
 
 /// How many times an append resumes from the store's tail after losing its position to another
 /// writer before it answers [`WRITE_FAILED`].
@@ -176,6 +176,9 @@ type Positions = IndexMap<Position, Held>;
 #[derive(Default)]
 pub struct ChainBook {
     positions: Mutex<Positions>,
+    /// The position claims this node won and has not yet stored a record under: a write the store
+    /// refused after its claim was won is retried under the claim it already holds.
+    claimed: Mutex<std::collections::HashSet<String>>,
 }
 
 impl std::fmt::Debug for ChainBook {
@@ -189,6 +192,25 @@ impl std::fmt::Debug for ChainBook {
 impl ChainBook {
     fn lock(&self) -> MutexGuard<'_, Positions> {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether this node won `token` and has not yet stored under it.
+    fn holds(&self, token: &str) -> bool {
+        self.claimed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(token)
+    }
+
+    /// Remember (`true`) or let go of (`false`) a claim this node won. Bounded like the positions:
+    /// a claim past the bound is simply retaken, or lapses.
+    fn hold(&self, token: &str, held: bool) {
+        let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
+        if !held {
+            claimed.remove(token);
+        } else if claimed.len() < POSITIONS_CAP {
+            claimed.insert(token.to_string());
+        }
     }
 
     /// Keep `chain` as the position at `at`, the most recently written.
@@ -238,9 +260,11 @@ impl ChainBook {
             let key = record_key(instance, &chain_key(scope.as_bytes(), record.seq()));
             let now = busbar_kernel::store::now();
             let token = position_token(instance, schema, scope, life, &record);
-            let ours = rows
-                .claim(&token, now.saturating_add(CLAIM_SECS), now)
-                .map_err(|_| WRITE_FAILED)?
+            let won = self.holds(&token)
+                || rows
+                    .claim(&token, now.saturating_add(CLAIM_SECS), now)
+                    .map_err(|_| WRITE_FAILED)?;
+            let ours = won
                 && rows
                     .record_get(schema, &key)
                     .map_err(|_| WRITE_FAILED)?
@@ -250,8 +274,10 @@ impl ChainBook {
                 self.lock().shift_remove(&at);
                 continue;
             }
+            self.hold(&token, true);
             rows.record_put(schema, &key, &body)
                 .map_err(|_| WRITE_FAILED)?;
+            self.hold(&token, false);
             self.commit(at, (chain, life));
             return Ok(());
         }
