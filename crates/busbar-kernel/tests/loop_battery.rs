@@ -512,7 +512,7 @@ fn running_past_the_reservation_posts_the_overdraft_rather_than_refusing() {
     }
 }
 
-/// ONE FIGURE SETTLES THE HOLD (TODO L1689). The exit spent the hold by the rig's meter and settled
+/// ONE FIGURE SETTLES THE HOLD. The exit spent the hold by the rig's meter and settled
 /// it by the reported `amount`: two numbers, so an end that settled 80 inside a reservation of 100
 /// posted an OVERDRAFT of 50 the meter alone ran up. The hold is now spent by the figure it settles
 /// at, so a second count — whatever it reads — cannot move the posting.

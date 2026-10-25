@@ -362,7 +362,7 @@ fn red_the_roots_listeners_head_the_one_list_of_listeners() {
 
 use busbar_contract::plugin::Kind;
 
-/// RED (TODO step 9): at 3g each seat is dealt only its own section, reserved sub-keys stripped,
+/// RED: at 3g each seat is dealt only its own section, reserved sub-keys stripped,
 /// and a plugin's validation refusal names the operator's file position in 1.5.5's form.
 #[test]
 fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {

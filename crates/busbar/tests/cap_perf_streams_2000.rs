@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `cap.perf.streams-2000` (BUSBAR-1.6.0.md l.663; the plane ABI review's "a cap.perf cell with 2000
-//! concurrent streams", l.4426; TODO step 23: "streams-2000 as a correctness check, every stream
-//! completes, no speed threshold"): the shipped binary carries 2,000 streamed answers AT ONCE, and
+//! concurrent streams", l.4426; a correctness check, every stream
+//! completes, no speed threshold): the shipped binary carries 2,000 streamed answers AT ONCE, and
 //! every one of them reaches its caller whole.
 //!
 //! The stand-in upstream holds every stream open after its first events until all 2,000 have

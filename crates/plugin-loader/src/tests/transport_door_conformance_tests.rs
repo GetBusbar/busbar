@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: transport`, BOTH WAYS, THROUGH THE ONE DISPATCHER, OVER THE SHIPPED DOOR** (TODO
-//! ABI-b4 for the transport kind; M6/contract: exact crossing counts).
+//! **`kind: transport`, BOTH WAYS, THROUGH THE ONE DISPATCHER, OVER THE SHIPPED DOOR**
+//! (M6/contract: exact crossing counts).
 //!
 //! The subject is the shipped plugin of the table's `transport` row, not a fixture: its door LINKED (the
 //! `linked::door` a busbar build holds, reached by KIND through the both-ways table's `transport`

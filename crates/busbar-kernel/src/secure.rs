@@ -3,8 +3,7 @@
 
 //! THE CONNECTOR'S TLS WRAP, AS THE KERNEL REACHES IT. TLS stays in the connector (BUSBAR-1.6.0.md
 //! THE DESIGN, the connections section: "the connector composes carrier → [secure layer] →
-//! framer; the secure layer is ONE core-owned slot"; 1.6.0-TODO P2: "TLS lives only in the
-//! connector (drop rustls from the kernel …)"). This crate names no TLS library: the egress
+//! framer; the secure layer is ONE core-owned slot"). This crate names no TLS library: the egress
 //! engine's https arm, the duplex dial's `wss` arm and the client-identity PEM parse each ask this
 //! seam, and `busbar-core-connector` (which depends on this crate, never the other way) answers it.
 //!
