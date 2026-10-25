@@ -126,3 +126,18 @@ fn a_plain_fetch_url_is_printed_byte_for_byte() {
         }]
     );
 }
+
+/// H10, the kernel's line: the recorded `Warned { url, error }` is what the kernel logs as
+/// `plugins.fetch: miss on reload` (PLUGINS_FETCH_RELOAD_MISS); it carries the printable URL too.
+#[test]
+fn the_recorded_reload_miss_carries_no_url_userinfo_or_query() {
+    let (_, outcomes) = reload_miss(SECRET_URL);
+    let shown = "https://plugins.example.test:8443/p/x.tar.gz?<redacted>";
+    assert_eq!(
+        outcomes,
+        vec![FetchOutcome::Warned {
+            url: shown.to_string(),
+            error: format!("download failed: GET {shown}: error sending request for url ({shown})"),
+        }]
+    );
+}
