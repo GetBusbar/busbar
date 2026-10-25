@@ -17,7 +17,7 @@
 // It lives under `fixtures/` rather than under `src/` because a plugin author never names any of
 // it; it is included into the crate's test module and nowhere else.
 //
-// The rule DATA is not in this file. It is `lint_rules.txt` beside it (ARCHITECT ruling Q-GG2): the
+// The rule DATA is not in this file. It is `lint_rules.txt` beside it: the
 // list has to spell the constructors it confines, and as Rust source those spellings were read by
 // the construction gate's `token-sealed` scan as forged mints. As data the gate never walks, they
 // are what they always were, a specification. This file keeps the types and the parser.

@@ -4,7 +4,7 @@
 //! THE SANS-IO `hyper` DRIVE, AS AN SDK MACRO: [`hyper_io!`](crate::hyper_io) expands, inside a
 //! framer plugin, the pipe, executor, host-clock timer and sink fill that run `hyper` over the
 //! host's bytes. It is a macro, not a module of this crate, so that the contract depends on neither
-//! `hyper` nor a byte-buffer crate (ARCHITECT ruling 2026-09-30 (c)): no plugin's resolved tree
+//! `hyper` nor a byte-buffer crate: no plugin's resolved tree
 //! gains them through the contract, and a framer's closure stays the contract alone (#40(a)). The
 //! framer that expands it already depends on `hyper`, and names the buffer type its bodies yield.
 

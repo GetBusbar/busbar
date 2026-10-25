@@ -15,7 +15,7 @@
 //! * [`ordering`] (linked only) — the conforming plugin whose `decide` answers PREFER, for the
 //!   proof that a hook which declared `hook.orders: false` is refused when it orders.
 //! * [`untailed`] (linked only) — the conforming plugin whose Statement states no hook tail, which
-//!   the host refuses at load (ARCHITECT Q-SO8).
+//!   the host refuses at load.
 //! * [`panicking`] (linked only) — the same plugin whose `decide` PANICS: the SDK's door catches
 //!   it and answers FAULT, which the hook axis answers as broken, never a verdict (PB-81).
 //!
@@ -23,7 +23,7 @@
 //! Every other hook op is REFUSED. The settings are `{"reject_over_messages": <n>}`, plus an
 //! optional `"sleep_ms"` the conforming `decide` sleeps before it answers (a slow gate, for the
 //! loader's own budget and `max_inflight` proofs), and an optional `"reject_session": "<octets>"`
-//! (the request view's opaque session, ARCHITECT RULING 2026-10-03).
+//! (the request view's opaque session).
 #![allow(dead_code)]
 
 use std::marker::PhantomData;

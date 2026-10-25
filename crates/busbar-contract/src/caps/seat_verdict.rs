@@ -217,17 +217,17 @@ reasons! {
     /// The unit ran past its maximum duration.
     DeadlineExceeded => "deadline_exceeded", DeadlineExceeded,
     /// The kernel's Approve step judged the trust facts the plane stated and does not trust the
-    /// counterparty or capability the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
+    /// counterparty or capability the unit rests on (trust is the kernel's
     /// Approve step; a plane only states facts).
     Untrusted => "untrusted", Untrusted,
     /// The member's own credential, re-resolved for this request, is unavailable (it no longer
     /// resolves, or its new value would not bind): nothing was dialled.
     CredentialUnavailable => "credential_unavailable", CredentialUnavailable,
     /// The request's method is one no route at its path takes: the kernel's own refusal, decided
-    /// before any unit (ARCHITECT ruling 2026-10-16, 3b B).
+    /// before any unit.
     MethodNotAllowed => "method_not_allowed", MethodNotAllowed,
     /// The node failed in a way it names to no caller (a request handler panicked): the kernel's
-    /// own refusal, decided before any unit (ARCHITECT ruling 2026-10-16, 3b B).
+    /// own refusal, decided before any unit.
     Internal => "internal", Internal,
 }
 

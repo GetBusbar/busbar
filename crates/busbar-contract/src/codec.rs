@@ -392,7 +392,7 @@ pub trait OperationHandler: Send + Sync {
     /// Value-level codec bridge (request) — for engine seams that already hold a PARSED JSON body
     /// (the streaming chat engine parses once for shim/intent reads). Default round-trips through the
     /// byte reader; chat overrides to call its proto reader directly (no re-serialize on the hot
-    /// path). The WRITE half of the old bridge inverted onto the handle at the G6 A4b dissolve
+    /// path). The WRITE half of the old bridge inverted onto the handle
     /// (`IrHandle::write_egress_request`/`write_ingress_response`), so only the read side remains here.
     fn read_request_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, IngressReject> {
         let bytes = serde_json::to_vec(v).map_err(|e| IngressReject::BadRequest(e.to_string()))?;

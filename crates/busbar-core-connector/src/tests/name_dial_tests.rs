@@ -366,7 +366,7 @@ impl Resolve for Flaky {
     }
 }
 
-/// RED (ARCHITECT parity ruling A1; 1.5.5 `otlp_resolves_to_internal`, v1.5.5
+/// RED (1.5.5 `otlp_resolves_to_internal`, v1.5.5
 /// `crates/busbar/src/observability.rs:588-590`, test `:1482-1490`: "A resolution FAILURE is not a
 /// rejection. A collector whose DNS is briefly down is an availability event, not a security one
 /// ... disabling trace export over a transient blip would be the wrong trade"): a loopback-allowed
@@ -655,7 +655,7 @@ fn the_same_name_dials_when_allowlisted() {
     });
 }
 
-/// THE DESIGN §5 egress-class table, owner-signed 2026-09-27: the same name, when the need's
+/// THE DESIGN §5 egress-class table: the same name, when the need's
 /// CONFIG names it (`target_from`, a store/secret/auth plugin's connection), is the operator's own
 /// destination and dials with no allowlist; the name a plugin names per open (above) stays refused.
 #[test]
@@ -679,7 +679,7 @@ fn a_config_named_target_on_loopback_is_trusted() {
     });
 }
 
-/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14: "refused unless allowlisted"
+/// RED (THE DESIGN §5 destination guard: "refused unless allowlisted"
 /// holds for the provider class): a PROVIDER need whose config names a target on loopback is not
 /// lifted to operator infrastructure; it is refused before any socket until the allowlist names it.
 #[test]
