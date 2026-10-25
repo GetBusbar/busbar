@@ -1877,7 +1877,7 @@ impl<K: Kind> Plugin<K> {
         } else {
             DeadlineClass::Connection
         };
-        match self.admit(s, size_of::<I>(), size_of::<O>()) {
+        match self.admit(s, size_of::<I>(), size_of::<O>(), false) {
             Ok(admitted) => self.cross_admitted(&admitted, s, frame, ticket, resume, class),
             Err(o) => Called::from(Crossed::host(o)),
         }
@@ -1891,6 +1891,7 @@ impl<K: Kind> Plugin<K> {
         s: u32,
         in_size: usize,
         out_size: usize,
+        drainable: bool,
     ) -> Result<Admitted, Outcome> {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, in_size, out_size) {
@@ -1906,10 +1907,14 @@ impl<K: Kind> Plugin<K> {
             }
             return Err(Outcome::Refused);
         };
+        if drainable {
+            inst.drainable.fetch_add(1, Ordering::AcqRel);
+        }
         Ok(Admitted {
             inst: Arc::clone(&self.inner),
             units,
             lifecycle,
+            drainable,
             watch: Duration::ZERO,
         })
     }
@@ -1958,10 +1963,14 @@ impl<K: Kind> Plugin<K> {
         ticket: Ticket,
         class: DeadlineClass,
         unit: Option<u64>,
-    ) -> Outcome {
+    ) -> Cancelled {
         let inst = &*self.inner;
         if inst.faulted.load(Ordering::Acquire) {
-            return Outcome::Fault;
+            return Cancelled {
+                outcome: Outcome::Fault,
+                disposition: None,
+                writes: Vec::new(),
+            };
         }
         let mut frame = (inst.cancel_frame)();
         frame.name_unit(unit.unwrap_or(0));
@@ -1976,7 +1985,29 @@ impl<K: Kind> Plugin<K> {
         // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
         let crossed = unsafe { inst.cross(slot::CANCEL, input, out, out_size) };
         inst.lock_calls().retain(|c| c.id != id);
-        crossed.outcome
+        let ready = crossed.outcome == Outcome::Ready;
+        Cancelled {
+            outcome: crossed.outcome,
+            disposition: ready.then(|| frame.disposition()),
+            writes: if ready { frame.writes() } else { Vec::new() },
+        }
+    }
+
+    /// The unit op `s` serves, read off its `in` (`Kind::unit_of`).
+    pub(crate) fn unit_of(&self, s: u32, input: *const InHead, in_size: usize) -> Option<u64> {
+        (self.inner.unit_of)(s, input, in_size)
+    }
+
+    /// TEST ONLY: the ops a reload drain would wait for now.
+    #[cfg(test)]
+    pub(crate) fn drainable_for_tests(&self) -> u32 {
+        self.inner.drainable.load(Ordering::Acquire)
+    }
+
+    /// TEST ONLY: fault the instance, as the watchdog's quarantine does.
+    #[cfg(test)]
+    pub(crate) fn fault_for_tests(&self) {
+        self.inner.faulted.store(true, Ordering::Release);
     }
 
     /// One crossing of the op `admitted` admitted, on `ticket` (`resume`: the same op again), its
@@ -2019,6 +2050,19 @@ impl<K: Kind> Plugin<K> {
     }
 }
 
+/// What a `cancel` answered: its outcome and, on READY, the disposition and record writes its
+/// kind's frame carried.
+#[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "the disposition and writes are read by the store and plane stages"
+)]
+pub(crate) struct Cancelled {
+    pub(crate) outcome: Outcome,
+    pub(crate) disposition: Option<u32>,
+    pub(crate) writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+}
+
 /// One crossing in progress, as the watchdog judges it: past the longer of its class budget and
 /// its own watch budget, it is a breach.
 #[derive(Debug, Clone, Copy)]
@@ -2048,6 +2092,8 @@ pub(crate) struct Admitted {
     inst: Arc<Instance>,
     units: u32,
     lifecycle: bool,
+    /// It counts in the instance's `drainable` (a reload drain waits for it).
+    drainable: bool,
     /// A longer watch budget its crossings get from the watchdog than their class's (a hook's
     /// `timeout_ms`).
     pub(crate) watch: Duration,
@@ -2058,6 +2104,9 @@ impl Drop for Admitted {
         self.inst.release(self.units);
         if self.lifecycle {
             self.inst.leave_lifecycle();
+        }
+        if self.drainable {
+            self.inst.drainable.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }

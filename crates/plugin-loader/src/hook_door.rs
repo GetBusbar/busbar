@@ -386,7 +386,13 @@ impl Inner {
                 )
                 .await;
                 let (done, frame, answered_lent) = match ran {
-                    Ran::TimedOut => return Err(Answered::TimedOut),
+                    Ran::TimedOut { .. } => return Err(Answered::TimedOut),
+                    Ran::NoTicket => {
+                        return Err(Answered::Broken(format!(
+                            "hook '{}' could not be called: no ticket",
+                            self.name
+                        )))
+                    }
                     Ran::Answered {
                         called,
                         frame,
@@ -780,7 +786,7 @@ struct Held<T>(T);
 // life; one thread touches the future at a time.
 unsafe impl<T> Send for Held<T> {}
 // SAFETY: as `Send`; it is only ever copied out of, never written through.
-unsafe impl<T> Sync for Held<T> {}
+unsafe impl<T: Copy> Sync for Held<T> {}
 impl<T: Copy> Held<T> {
     /// The value, copied (a method, so a closure captures the whole `Held`, never its field).
     fn get(&self) -> T {
