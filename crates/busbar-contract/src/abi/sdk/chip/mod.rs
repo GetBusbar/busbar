@@ -8,6 +8,7 @@
 //! Until row 4 the recipes run in the plugin's own image; from row 4 the same calls cross the ABI
 //! to the secret plugin and nothing a plugin wrote against this module changes.
 
+pub mod aws4;
 pub(crate) mod digests;
 #[cfg(feature = "chip-rsa")]
 pub(crate) mod rsa;
