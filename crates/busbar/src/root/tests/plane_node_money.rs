@@ -2258,10 +2258,9 @@ async fn drive_to_end(node: &Node, post: &NodeEndPost) -> Ended {
         admin_listener: false,
         kernel_verb_only: false,
     };
-    let borrowed = Borrowed { units: &unit, post };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &borrowed,
+        &unit,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -2270,8 +2269,9 @@ async fn drive_to_end(node: &Node, post: &NodeEndPost) -> Ended {
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(post),
         },
-        &borrowed,
+        &unit,
     )
     .await;
     node.inflight.remove(key);

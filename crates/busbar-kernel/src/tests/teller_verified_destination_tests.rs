@@ -232,6 +232,7 @@ fn route_and_meter_consume_the_destinations_verify_sealed() {
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
 
     // RED before the fix: `Units::route`/`Units::meter` had no `destinations` parameter to record

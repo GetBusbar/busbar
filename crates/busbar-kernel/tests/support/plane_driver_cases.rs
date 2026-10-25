@@ -532,6 +532,7 @@ pub(crate) async fn drive(units: &PlaneUnits<'_, TestUnits, Far, Caller>) -> Out
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
     match run_unit_async(&kernel, units, &ctx(7), run, units).await {
         Ended::Settled { end, .. } => end.outcome(),
@@ -1919,6 +1920,7 @@ fn open_unit_drives_the_same_steps() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             };
             let opened = open_unit(&kernel, &units, &ctx(9), run);
             assert_eq!(

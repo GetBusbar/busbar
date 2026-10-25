@@ -368,11 +368,14 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 /// none reached (the admin plane was the one plane registered) — and the admin steps' twenty-one
 /// `SeatVerdict` refusals, which now answer a bare `ReasonCode` at the same step with the same
 /// reason; the two carried `verbs_reason(refusal.reason)` were pinned below until then. None is a
-/// money reason. The population is thirty-three since; the floor is re-armed there. A population
-/// that falls because code was DELETED
+/// money reason. The population was thirty-three since. S-2 then made the root's door steps plain
+/// answers the plane driver stamps at its seats, deleting their three seats the driver answers
+/// itself (decode, route, encode: one `HandoffMismatch` each, never reached). None is a money
+/// reason. The population is thirty since; the floor is re-armed there. A population that falls
+/// because code was DELETED
 /// re-arms this floor in the same commit as the deletion, naming the sites; a population that falls
 /// with no deletion is the scanner regression this floor exists to catch.
-const MIN_REFUSAL_SITES: usize = 33;
+const MIN_REFUSAL_SITES: usize = 30;
 
 /// THE SITES WHOSE REASON IS CARRIED, NOT WRITTEN — pinned, file by file, at today's measurement.
 ///

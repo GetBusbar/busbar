@@ -51,6 +51,7 @@ impl ParentExitsMidRoute<'_> {
                 gauge: &gauge,
                 canary: &Canary::new(),
                 meter: &meter,
+                taps: None,
             },
             Outcome::Completed,
             true,
@@ -187,6 +188,7 @@ fn child_outliving_its_parent(door_backs: Option<ReasonCode>) -> (Ended, HoldCel
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
     );
     assert_eq!(parent.state(), HoldCellState::Taken, "the parent exited");
@@ -268,6 +270,7 @@ fn run_on(
             gauge: &gauge,
             canary,
             meter: &units.meter,
+            taps: None,
         },
     )
 }

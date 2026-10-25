@@ -84,9 +84,10 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate, Consumption, Decode,
-    Dial, Encode, Grant, HoldAccrual, Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode,
-    Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
+    Admission, Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate,
+    Authenticated, Consumption, Decode, Dial, Encode, Grant, HoldAccrual, Meter, OpClassId,
+    Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, SeatVerdict as StepAnswer,
+    Usage, VerifiedDestination, Verify,
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
@@ -680,9 +681,83 @@ pub fn sticky_hash(key: &[u8]) -> u64 {
     })
 }
 
-/// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the loop's
-/// [`Units`], told once what the plane's `arrive` decided, before identity and scope run.
-pub trait DriverSteps: Units {
+/// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the
+/// deployment's answers at the kernel's seats — who is calling, where the unit may go, whether it
+/// may, the door, what it cost and what its record says — told once what the plane's `arrive`
+/// decided, before identity and scope run.
+///
+/// PLAIN ANSWERS, NOT SEATS. [`PlaneUnits`] is the one implementor of the loop's [`Units`] for a
+/// plane's unit: it asks these in the loop's order and stamps each answer at its own seat, so a
+/// refusal here is the seat's refusal. The plane's own seats (decode, route, encode) are the
+/// driver's and never reach these steps.
+pub trait DriverSteps {
+    /// The kernel's own gate, for a unit the data listener's gates already admitted: proceeds with
+    /// an empty arrival record by default.
+    fn arrival(&self, _ctx: &UnitCtx) -> Result<busbar_contract::ArrivalRecord, Refusal> {
+        Ok(busbar_contract::ArrivalRecord {
+            source: String::new(),
+            port: 0,
+            alpn: None,
+            sni: None,
+            peer_cert: None,
+            transport_chain: Vec::new(),
+        })
+    }
+
+    /// Who is calling.
+    fn authenticate(&self, ctx: &UnitCtx) -> Result<Authenticated, Refusal>;
+
+    /// Where the unit may go: the destinations sealed with the lent `trust` grant.
+    fn verify(
+        &self,
+        trust: &Grant<Dial>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> Result<Vec<VerifiedDestination>, Refusal>;
+
+    /// Whether the caller may do this at all.
+    fn approve(
+        &self,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> Result<busbar_contract::ScopeFacts, Refusal>;
+
+    /// The door (see [`Units::admit`]).
+    fn admit(
+        &self,
+        admit: &Grant<Admittance>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
+    ) -> Result<Admission, Refusal>;
+
+    /// What the unit consumed, as usage lines reported with the lent `usage` grant.
+    fn meter(
+        &self,
+        usage: &Grant<Consumption>,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+        destinations: &[VerifiedDestination],
+    ) -> Result<Usage, Refusal>;
+
+    /// The facts the record of a unit that passed the door seals.
+    fn audit(&self, ctx: &UnitCtx, outcome: &Outcome) -> busbar_contract::AuditFacts;
+
+    /// The facts the record of a unit refused at or before the door seals.
+    fn audit_refused(&self, ctx: &UnitCtx, refusal: &Refusal) -> busbar_contract::AuditFacts;
+
+    /// What the settlement table reads (see [`Units::evidence`]): nothing, by default.
+    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+        Evidence::default()
+    }
+
+    /// A child's parent exited while it ran (see [`Units::at_parent_exit`]).
+    fn at_parent_exit(&self, _ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
+        Ok(accrual.amount())
+    }
+
     /// The unit `ctx` decoded to operation class `op`, routing over the entry its `arrive` named
     /// (`None` = none named) as a pool or directly (`route`, `ROUTE_*`). Called once, when decode
     /// proceeds.
@@ -1474,24 +1549,46 @@ fn failed(token: &Pass<Route>, reason: ReasonCode) -> StepAnswer<Route> {
     StepAnswer::refuse(token, Refusal::new(reason))
 }
 
-/// The seats the kernel's own steps answer, forwarded to `self.steps` unchanged: one line per
-/// seat, so the plane's own seats (decode, verify, route, encode) are the only bodies in the impl.
-macro_rules! forward_to_steps {
-    ($($seat:ident($($arg:ident: $ty:ty),* $(,)?) -> $answer:ty;)*) => {$(
-        fn $seat(&self, $($arg: $ty),*) -> $answer {
-            self.steps.$seat($($arg),*)
-        }
-    )*};
+/// A plain answer of the steps, stamped at the seat that asked for it.
+fn seated<S: busbar_contract::caps::Step>(
+    token: &Pass<S>,
+    answer: Result<S::Facts, Refusal>,
+) -> StepAnswer<S> {
+    match answer {
+        Ok(facts) => StepAnswer::proceed(token, facts),
+        Err(refusal) => StepAnswer::refuse(token, refusal),
+    }
 }
 
 impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
-    forward_to_steps! {
-        arrival(token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep>;
-        authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
-        meter(token: &Pass<Meter>, usage: &Grant<Consumption>, ctx: &UnitCtx, provisional: &Outcome,
-            destinations: &[VerifiedDestination]) -> StepAnswer<Meter>;
-        evidence(ctx: &UnitCtx) -> Evidence;
-        at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal>;
+    fn arrival(&self, token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep> {
+        seated(token, self.steps.arrival(ctx))
+    }
+
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate> {
+        seated(token, self.steps.authenticate(ctx))
+    }
+
+    fn meter(
+        &self,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+        destinations: &[VerifiedDestination],
+    ) -> StepAnswer<Meter> {
+        seated(
+            token,
+            self.steps.meter(usage, ctx, provisional, destinations),
+        )
+    }
+
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        self.steps.evidence(ctx)
+    }
+
+    fn at_parent_exit(&self, ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal> {
+        self.steps.at_parent_exit(ctx, accrual)
     }
 
     /// The unit's audit, after the steps are told how its answer went ([`DriverSteps::answered`]).
@@ -1502,7 +1599,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
             (st.facts.content && success, st.facts.cut)
         };
         self.steps.answered(ctx, streamed, cut);
-        self.steps.audit(token, ctx, outcome)
+        StepAnswer::proceed(token, self.steps.audit(ctx, outcome))
     }
 
     /// The refused unit's audit, after the driver keeps the wait its refusal carries (ARCHITECT
@@ -1519,7 +1616,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
             .retry_after_secs()
             .filter(|secs| *secs != 0)
             .map(|secs| (refusal.reason(), secs));
-        self.steps.audit_refused(token, ctx, refusal)
+        StepAnswer::proceed(token, self.steps.audit_refused(ctx, refusal))
     }
 
     /// The kernel's admission, unless the plane's `arrive` refused the unit about the entry it
@@ -1538,8 +1635,11 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         if self.lock().declined.is_some() {
             return StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
         }
-        self.steps
-            .admit(token, admit, ctx, principal, destinations, leases)
+        seated(
+            token,
+            self.steps
+                .admit(admit, ctx, principal, destinations, leases),
+        )
     }
 
     /// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06: trust is the kernel's Approve step; a plane
@@ -1557,14 +1657,13 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> StepAnswer<Approve> {
-        let granted = self.steps.approve(token, ctx, principal, destinations);
-        let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
-        let Some(t) = stated else {
-            return granted;
-        };
-        let facts = match granted.into_result(&crate::seal::acquire()) {
+        let facts = match self.steps.approve(ctx, principal, destinations) {
             Ok(facts) => facts,
             Err(refusal) => return StepAnswer::refuse(token, refusal),
+        };
+        let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
+        let Some(t) = stated else {
+            return StepAnswer::proceed(token, facts);
         };
         let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
         let (counterparty, item, digest) = (
@@ -1620,7 +1719,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         // The verified principal: the hooks the unit binds read it, and the unit's audit row is
         // written under it (never a plane input).
         self.lock().principal = Some(principal.clone());
-        self.steps.verify(token, trust, ctx, principal)
+        seated(token, self.steps.verify(trust, ctx, principal))
     }
 
     /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class

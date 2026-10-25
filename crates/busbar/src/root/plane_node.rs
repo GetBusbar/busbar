@@ -831,10 +831,9 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        let borrowed = Borrowed { units, post };
         let ended = busbar_kernel::teller::run_unit_async(
             &self.kernel,
-            &borrowed,
+            units,
             &ctx,
             busbar_kernel::teller::Run {
                 cell: slot.cell(),
@@ -843,8 +842,9 @@ impl Node {
                 gauge: &self.gauge,
                 canary: &self.canary,
                 meter: &meter,
+                taps: Some(post),
             },
-            &borrowed,
+            units,
         )
         .await;
         // How the unit ended, for the caller's close (a framed stream's final status); `None` when
@@ -936,10 +936,9 @@ impl Node {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        let borrowed = Borrowed { units, post };
         let opened = busbar_kernel::teller::open_unit(
             &self.kernel,
-            &borrowed,
+            units,
             &ctx,
             busbar_kernel::teller::Run {
                 cell: slot.cell(),
@@ -948,6 +947,7 @@ impl Node {
                 gauge: &self.gauge,
                 canary: &self.canary,
                 meter: &meter,
+                taps: Some(post),
             },
         );
         // The destination set the open sealed is where the session goes: its record names it.
@@ -1155,6 +1155,7 @@ impl Node {
                         gauge: &self.gauge,
                         canary: &self.canary,
                         meter: &meter,
+                        taps: None,
                     },
                     &driven,
                 )
@@ -2139,146 +2140,6 @@ impl RouteAwait for Driven<'_> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The borrowed unit
-// ---------------------------------------------------------------------------------------------
-
-/// A BORROWED UNIT, as the loop drives it ([`Node::drive_borrowed`]): every seat the unit's own,
-/// and its audit door's facts and pass held on the posting site with the unit's other facts, so its
-/// one record is sealed where its one line is written, whichever way it ends.
-struct Borrowed<'b, U> {
-    units: &'b U,
-    post: &'b NodeEndPost,
-}
-
-impl<U: Units> Units for Borrowed<'_, U> {
-    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
-        self.units.arrival(token, ctx)
-    }
-
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
-        self.units.decode(token, ctx)
-    }
-
-    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
-        self.units.authenticate(token, ctx)
-    }
-
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        trust: &Grant<Dial>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-    ) -> SeatVerdict<Verify> {
-        self.units.verify(token, trust, ctx, principal)
-    }
-
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Approve> {
-        self.units.approve(token, ctx, principal, destinations)
-    }
-
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        admit: &Grant<Admittance>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-        leases: &GroupLeaseSlip,
-    ) -> SeatVerdict<Admit> {
-        self.units
-            .admit(token, admit, ctx, principal, destinations, leases)
-    }
-
-    fn route(
-        &self,
-        token: &Pass<Route>,
-        ctx: &UnitCtx,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Route> {
-        self.units.route(token, ctx, destinations)
-    }
-
-    fn meter(
-        &self,
-        token: &Pass<Meter>,
-        usage: &Grant<Consumption>,
-        ctx: &UnitCtx,
-        provisional: &Outcome,
-        destinations: &[VerifiedDestination],
-    ) -> SeatVerdict<Meter> {
-        self.units
-            .meter(token, usage, ctx, provisional, destinations)
-    }
-
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        self.units.audit(token, ctx, outcome)
-    }
-
-    fn audit_refused(
-        &self,
-        token: &Pass<Audit>,
-        ctx: &UnitCtx,
-        refusal: &Refusal,
-    ) -> SeatVerdict<Audit> {
-        self.units.audit_refused(token, ctx, refusal)
-    }
-
-    fn encode(
-        &self,
-        token: &Pass<Encode>,
-        ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> SeatVerdict<Encode> {
-        self.post.ended_as(ctx.key, *outcome);
-        self.units.encode(token, ctx, outcome)
-    }
-
-    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
-        self.units.evidence(ctx)
-    }
-
-    fn audited(&self, ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
-        self.post.audited(ctx.key, facts, pass);
-    }
-
-    fn at_parent_exit(
-        &self,
-        ctx: &UnitCtx,
-        accrual: &busbar_contract::caps::HoldAccrual,
-    ) -> Result<u64, Refusal> {
-        self.units.at_parent_exit(ctx, accrual)
-    }
-}
-
-impl<U: RouteAwait> RouteAwait for Borrowed<'_, U> {
-    fn route_leg<'a>(
-        &'a self,
-        token: &'a Pass<Route>,
-        ctx: &'a UnitCtx,
-        destinations: &'a [VerifiedDestination],
-    ) -> RouteLeg<'a> {
-        self.post.routed(ctx.key, destinations);
-        self.units.route_leg(token, ctx, destinations)
-    }
-
-    fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
-        self.units.abandoned(ctx, ended);
-    }
-
-    /// The borrowed units' own screen before the door, forwarded (SEAM-4j).
-    fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
-        self.units.screen(ctx)
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
 // The driven plane's abandoned end
 // ---------------------------------------------------------------------------------------------
 
@@ -2311,6 +2172,23 @@ pub struct NodeEndPost {
 impl std::fmt::Debug for NodeEndPost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NodeEndPost").finish_non_exhaustive()
+    }
+}
+
+/// THE BORROWED UNIT'S TAPS: its audit door's facts and pass, how it ended and where Route was lent
+/// to go, kept on its open facts here, so its one record is sealed where its one line is written,
+/// whichever way it ends.
+impl busbar_kernel::teller::UnitTaps for NodeEndPost {
+    fn audited(&self, ctx: &UnitCtx, facts: busbar_contract::caps::AuditFacts, pass: Pass<Audit>) {
+        NodeEndPost::audited(self, ctx.key, facts, pass);
+    }
+
+    fn ended_as(&self, ctx: &UnitCtx, outcome: Outcome) {
+        NodeEndPost::ended_as(self, ctx.key, outcome);
+    }
+
+    fn routed(&self, ctx: &UnitCtx, destinations: &[VerifiedDestination]) {
+        NodeEndPost::routed(self, ctx.key, destinations);
     }
 }
 

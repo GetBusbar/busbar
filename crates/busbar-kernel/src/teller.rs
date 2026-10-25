@@ -497,7 +497,6 @@ impl<U: Units> RouteAwait for Blocking<'_, U> {
 }
 
 /// Everything one run of the loop borrows.
-#[derive(Debug)]
 pub struct Run<'r> {
     /// The unit's hold cell, in the in-flight table.
     pub cell: &'r HoldCell,
@@ -519,6 +518,36 @@ pub struct Run<'r> {
     pub canary: &'r Canary,
     /// A test rig's spend count. The exit does not read it: it settles by the one reported figure.
     pub meter: &'r AccrualMeter,
+    /// Who keeps the unit's record-to-be as it runs ([`UnitTaps`]): handed its audit door's facts
+    /// and pass, how it ended, and where Route was lent to go. `None` hands the audit door's facts
+    /// back to the units themselves ([`Units::audited`]).
+    pub taps: Option<&'r dyn UnitTaps>,
+}
+
+impl std::fmt::Debug for Run<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Run")
+            .field("cell", &self.cell)
+            .field("parent", &self.parent)
+            .field("leases", &self.leases)
+            .field("gauge", &self.gauge)
+            .field("canary", &self.canary)
+            .field("meter", &self.meter)
+            .field("taps", &self.taps.is_some())
+            .finish()
+    }
+}
+
+/// THE UNIT'S RECORD-TO-BE, KEPT BY WHOEVER DRIVES IT: the three facts the loop hands its driver
+/// as the unit runs, so a node keeps its units' records without standing a wrapper in front of
+/// every seat.
+pub trait UnitTaps: Sync {
+    /// The audit door sealed these facts with this pass (in place of [`Units::audited`]).
+    fn audited(&self, ctx: &UnitCtx, facts: AuditFacts, pass: Pass<Audit>);
+    /// The unit ended as `outcome`: told just before its bytes are encoded.
+    fn ended_as(&self, ctx: &UnitCtx, outcome: Outcome);
+    /// Route is about to be lent `destinations`, the set Verify sealed.
+    fn routed(&self, ctx: &UnitCtx, destinations: &[VerifiedDestination]);
 }
 
 /// How a unit finished, from the loop's point of view.
@@ -624,13 +653,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             // from a decision at all, and the door is the last step it could have been raised at.
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let pass = audit_pass(seal, ctx.call);
-            if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
-                units.audited(ctx, facts, pass);
-            }
-            let _bytes = units
-                .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
-                .into_result(seal);
+            sealed_end(seal, units, run.taps, ctx, &outcome, Some(&refusal));
             exit(kernel, units, ctx, run, outcome, false)
         }
         // The door answered, and its answer decides exactly two things: whether a hold goes into the
@@ -688,6 +711,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 None => {
                     // THE ONE AWAIT is inside this scope, and so is the only place a caller that
                     // goes away can drop the loop. The guard owns the terminal for the length of it.
+                    let taps = run.taps;
                     let mut abandoned = Abandoned {
                         kernel,
                         units,
@@ -695,7 +719,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                         ctx,
                         ending: Some((run, settling)),
                     };
-                    let outcome = under_hold(kernel, units, route, ctx, &destinations).await;
+                    let outcome = under_hold(kernel, units, route, taps, ctx, &destinations).await;
                     abandoned.reached(outcome)
                 }
             }
@@ -986,13 +1010,7 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         Err(refusal) => {
             let outcome =
                 Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
-            let pass = audit_pass(seal, ctx.call);
-            if let Ok(facts) = units.audit_refused(&pass, ctx, &refusal).into_result(seal) {
-                units.audited(ctx, facts, pass);
-            }
-            let _bytes = units
-                .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
-                .into_result(seal);
+            sealed_end(seal, units, run.taps, ctx, &outcome, Some(&refusal));
             SessionOpen::Refused
         }
         // The door passed at ZeroHold. Record the admission (success-audit + encode) and hand the
@@ -1000,13 +1018,7 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
         // `under_hold`, no `exit`.
         Ok((_admission, destinations)) => {
             let outcome = Outcome::Completed;
-            let pass = audit_pass(seal, ctx.call);
-            if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
-                units.audited(ctx, facts, pass);
-            }
-            let _bytes = units
-                .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
-                .into_result(seal);
+            sealed_end(seal, units, run.taps, ctx, &outcome, None);
             SessionOpen::Admitted {
                 route: Pass::<Route>::mint_bound(seal, ctx.call),
                 destinations,
@@ -1208,13 +1220,7 @@ fn terminal<U: Units>(
         },
         other => (outcome, other),
     };
-    let pass = audit_pass(seal, ctx.call);
-    if let Ok(facts) = units.audit(&pass, ctx, &outcome).into_result(seal) {
-        units.audited(ctx, facts, pass);
-    }
-    let _bytes = units
-        .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, &outcome)
-        .into_result(seal);
+    sealed_end(seal, units, run.taps, ctx, &outcome, None);
     match settling {
         Settling::Exit(reached_admitted) => {
             exit(kernel, units, ctx, run, outcome, reached_admitted)
@@ -1282,6 +1288,7 @@ async fn under_hold<U: Units, R: RouteAwait>(
     kernel: &Kernel,
     units: &U,
     route: &R,
+    taps: Option<&dyn UnitTaps>,
     ctx: &UnitCtx,
     destinations: &[VerifiedDestination],
 ) -> Outcome {
@@ -1292,6 +1299,9 @@ async fn under_hold<U: Units, R: RouteAwait>(
     if !presented(&token, ctx) {
         Outcome::Failed(StepName::Route, ReasonCode::Replayed)
     } else {
+        if let Some(taps) = taps {
+            taps.routed(ctx, destinations);
+        }
         let leg = route.route_leg(&token, ctx, destinations).await;
         match leg.into_result(seal) {
             Err(refusal) => {
@@ -1317,6 +1327,36 @@ async fn under_hold<U: Units, R: RouteAwait>(
             }
         }
     }
+}
+
+/// THE AUDIT DOOR AND THE BYTES THAT LEAVE, for every end: the audit step seals the end (the refused
+/// door for a unit `refused` at or before Admit), its facts and pass go to the taps or back to the
+/// units, the taps are told how it ended, and the unit's bytes are encoded.
+fn sealed_end<U: Units>(
+    seal: &KernelSeal,
+    units: &U,
+    taps: Option<&dyn UnitTaps>,
+    ctx: &UnitCtx,
+    outcome: &Outcome,
+    refused: Option<&Refusal>,
+) {
+    let pass = audit_pass(seal, ctx.call);
+    let sealed = match refused {
+        Some(refusal) => units.audit_refused(&pass, ctx, refusal),
+        None => units.audit(&pass, ctx, outcome),
+    };
+    if let Ok(facts) = sealed.into_result(seal) {
+        match taps {
+            Some(taps) => taps.audited(ctx, facts, pass),
+            None => units.audited(ctx, facts, pass),
+        }
+    }
+    if let Some(taps) = taps {
+        taps.ended_as(ctx, *outcome);
+    }
+    let _bytes = units
+        .encode(&Pass::<Encode>::mint_bound(seal, ctx.call), ctx, outcome)
+        .into_result(seal);
 }
 
 /// THE AUDIT PASS, minted here and at no other site in the kernel.

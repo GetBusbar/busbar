@@ -1531,6 +1531,7 @@ async fn drive_screened_by(
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: None,
         },
         &driven,
     )
@@ -4530,6 +4531,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: None,
         },
         &driven,
     )
@@ -5575,6 +5577,7 @@ async fn drive_reading_the_tap(rig: &Rig) -> Reached {
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: None,
         },
         &driven,
     )
@@ -5829,6 +5832,7 @@ async fn serve_rerank(
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: None,
         },
         &driven,
     )

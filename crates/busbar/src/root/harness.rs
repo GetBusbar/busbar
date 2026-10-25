@@ -134,6 +134,7 @@ pub fn run<U: Units>(
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
     );
 

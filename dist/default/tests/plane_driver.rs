@@ -1513,6 +1513,7 @@ where
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
     let ctx = common::ctx(key);
     let SessionOpen::Admitted {
