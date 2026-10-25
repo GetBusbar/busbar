@@ -314,3 +314,40 @@ ijJ7b5W7pYuuReJdv9h481JKwwV75KY1M6dRf7kpYFOCA4Zo8xgdso69qxPTVUXL
         assert!(cred("pw").mysql_rsa_packet(4, b"", PEM).is_err());
     }
 }
+
+/// Byte for byte what `mysql_common` 0.37.3 (the 1.5.5 driver's codec) serializes for the same
+/// inputs: `HandshakeResponse::new(native scramble, (8, 0, 36), alice, db, native, caps, attrs,
+/// 16 MiB)`, and `scramble_323` over the nonce's first 8 bytes.
+#[test]
+fn mysql_messages_match_the_driver_byte_for_byte() {
+    let c = cred("s3cr3t-pw");
+    let nonce: Vec<u8> = (1..=20).collect();
+    let h = MysqlHandshake {
+        seq: 1,
+        capabilities: 0x0020_8000 | 0x0000_0200,
+        max_packet: 16_777_216,
+        collation: 45,
+        user: b"alice",
+        database: Some(b"db"),
+        auth: MysqlAuth::Native,
+        nonce: &nonce,
+        attrs: &[(b"_client_name", b"busbar")],
+    };
+    let seal = c.mysql_handshake_response(&h).expect("response");
+    assert_eq!(
+        hex::encode(&seal.wire()[4..]),
+        "08823800000000012d0000000000000000000000000000000000000000000000616c6963650014568193bda62da86a7bd3e297f5d17dc3063744db6462006d7973716c5f6e61746976655f70617373776f726400140c5f636c69656e745f6e616d6506627573626172"
+    );
+    let old = c
+        .mysql_auth_switch_response(3, MysqlAuth::Old, &nonce)
+        .expect("old");
+    assert_eq!(hex::encode(&old.wire()[4..]), "5e4f5a585d44525000");
+    let clear = c
+        .mysql_auth_switch_response(3, MysqlAuth::Clear, &nonce)
+        .expect("clear");
+    assert_eq!(&clear.wire()[4..], b"s3cr3t-pw\0");
+    let empty = cred("")
+        .mysql_auth_switch_response(3, MysqlAuth::Clear, &nonce)
+        .expect("empty");
+    assert_eq!(empty.wire(), &[0, 0, 0, 3]);
+}

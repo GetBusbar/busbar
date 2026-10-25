@@ -65,6 +65,12 @@ pub enum MysqlAuth {
     Native,
     /// `caching_sha2_password`: SHA-256 scramble.
     CachingSha2,
+    /// `mysql_old_password` (pre-4.1; a plugin allows it only when the operator turned
+    /// `secure_auth` off).
+    Old,
+    /// `mysql_clear_password`: the password itself (a plugin allows it only when the operator
+    /// enabled the cleartext plugin).
+    Clear,
 }
 
 impl MysqlAuth {
@@ -72,6 +78,8 @@ impl MysqlAuth {
         match self {
             Self::Native => b"mysql_native_password",
             Self::CachingSha2 => b"caching_sha2_password",
+            Self::Old => b"mysql_old_password",
+            Self::Clear => b"mysql_clear_password",
         }
     }
 }
@@ -395,6 +403,16 @@ impl Cred {
                 let h3 = digests::sha256(&[&h2[..], nonce]);
                 Zeroizing::new(h1.iter().zip(h3.iter()).map(|(a, b)| a ^ b).collect())
             }
+            MysqlAuth::Old => {
+                let mut out = scramble_323(&nonce[..nonce.len().min(8)], pw);
+                out.push(0);
+                out
+            }
+            MysqlAuth::Clear => {
+                let mut out = Zeroizing::new(pw.to_vec());
+                out.push(0);
+                out
+            }
         }
     }
 
@@ -514,6 +532,41 @@ impl Cred {
         let ct = rsa::oaep_sha1(&plain, server_key_pem, &seed)?;
         mysql_packet(seq, &ct).map(Seal::new)
     }
+}
+
+fn hash_323(bytes: &[u8]) -> [u32; 2] {
+    let (mut nr, mut add, mut nr2) = (1_345_345_333_u32, 7_u32, 0x1234_5671_u32);
+    for &x in bytes.iter().filter(|b| **b != b' ' && **b != b'\t') {
+        let tmp = u32::from(x);
+        nr ^= (nr & 63)
+            .wrapping_add(add)
+            .wrapping_mul(tmp)
+            .wrapping_add(nr << 8);
+        nr2 = nr2.wrapping_add((nr2 << 8) ^ nr);
+        add = add.wrapping_add(tmp);
+    }
+    [nr & 0x7fff_ffff, nr2 & 0x7fff_ffff]
+}
+
+/// The pre-4.1 `mysql_old_password` scramble (8 bytes), as the 1.5.5 driver computed it.
+fn scramble_323(nonce: &[u8], password: &[u8]) -> Bytes {
+    const MAX: u32 = 0x3FFF_FFFF;
+    let (hp, hm) = (hash_323(password), hash_323(nonce));
+    let (mut s1, mut s2) = ((hp[0] ^ hm[0]) % MAX, (hp[1] ^ hm[1]) % MAX);
+    let mut rnd = || {
+        s1 = (s1 * 3 + s2) % MAX;
+        s2 = (s1 + s2 + 33) % MAX;
+        f64::from(s1) / f64::from(MAX)
+    };
+    let mut out = Zeroizing::new(vec![0_u8; 8]);
+    for x in out.iter_mut() {
+        *x = ((rnd() * 31.0).floor() + 64.0) as u8;
+    }
+    let extra = (rnd() * 31.0).floor() as u8;
+    for x in out.iter_mut() {
+        *x ^= extra;
+    }
+    out
 }
 
 fn pg_message(body: &[u8]) -> Seal {
