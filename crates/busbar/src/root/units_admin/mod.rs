@@ -2684,9 +2684,8 @@ pub(crate) fn door_of_chain(chain: busbar_kernel_identity::AuthChain) -> AdminDo
 
 /// Everything the admin steps are composed over.
 ///
-/// Held by [`crate::root::kernel::ProductionUnits`] as one field, so that the steps
-/// read one thing rather than five. The dispatch is the seam to where the verbs' bodies live; the
-/// units table is where an in-flight request waits between steps.
+/// Held by [`crate::root::kernel::ProductionUnits`] as one field, so that the steps read one thing
+/// rather than five. The dispatch is the seam to where the verbs' bodies live.
 pub struct AdminBinding {
     /// The seam an operation's body is reached through.
     pub dispatch: Arc<dyn AdminDispatch>,
