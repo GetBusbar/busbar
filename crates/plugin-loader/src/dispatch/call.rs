@@ -56,11 +56,14 @@ pub(crate) struct Opts {
     pub(crate) lane: Option<Arc<Lane>>,
 }
 
+/// One crossing waiting on a lane.
+type Job = Box<dyn FnOnce() + Send>;
+
 /// An ORDERED LANE: the crossings put on it run one at a time, in the order they were put (an
 /// export instance's deliveries start in queue order, as they did on the one worker they shared).
 #[derive(Default)]
 pub(crate) struct Lane {
-    jobs: Mutex<(std::collections::VecDeque<Box<dyn FnOnce() + Send>>, bool)>,
+    jobs: Mutex<(std::collections::VecDeque<Job>, bool)>,
 }
 
 impl std::fmt::Debug for Lane {
@@ -71,7 +74,7 @@ impl std::fmt::Debug for Lane {
 
 impl Lane {
     /// Put `job` on the lane: it runs on a plugin thread after every job put before it.
-    fn put(self: &Arc<Self>, job: Box<dyn FnOnce() + Send>) {
+    fn put(self: &Arc<Self>, job: Job) {
         let start = {
             let mut j = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
             j.0.push_back(job);
@@ -124,6 +127,10 @@ pub(crate) enum Ran<I, O> {
 /// The regrow after a SHORT answer: a new frame over bigger buffers and what it lends, or `None`.
 pub(crate) type Regrow<'r, I, O> =
     &'r mut (dyn FnMut(&Frame<I, O>) -> Option<(Frame<I, O>, Lent)> + Send);
+
+/// A [`Regrow`] the op owns (a write-behind op outlives its caller).
+pub(crate) type OwnedRegrow<I, O> =
+    Box<dyn FnMut(&Frame<I, O>) -> Option<(Frame<I, O>, Lent)> + Send>;
 
 /// Call op `s` of `plugin` over `frame` (lending `lent`).
 pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
@@ -658,7 +665,7 @@ pub(crate) fn call_write_behind<K: Kind, I: InFrame, O: OutFrame>(
     frame: Frame<I, O>,
     lent: Lent,
     lane: Arc<Lane>,
-    mut regrow: Box<dyn FnMut(&Frame<I, O>) -> Option<(Frame<I, O>, Lent)> + Send>,
+    mut regrow: OwnedRegrow<I, O>,
 ) -> impl Future<Output = Ran<I, O>> + Send {
     let watched = Arc::new(Mutex::new(Watch::<I, O> {
         ran: None,
