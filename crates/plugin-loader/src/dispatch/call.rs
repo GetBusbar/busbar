@@ -34,7 +34,7 @@ use super::worker::Lent;
 use super::{in_head, out_head, Frame, InFrame, Kind, OutFrame};
 
 /// How one op is called.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct Opts {
     /// The deadline class stamped in the op's head.
     pub(crate) class: DeadlineClass,
@@ -47,6 +47,48 @@ pub(crate) struct Opts {
     /// hook kind's frozen 1.5.5 rule). Otherwise a crossing is always waited for, and only an op
     /// still PENDING at the deadline is cancelled.
     pub(crate) leave: bool,
+    /// The ordered lane the op's crossings run on (`None`: any free plugin thread).
+    pub(crate) lane: Option<Arc<Lane>>,
+}
+
+/// An ORDERED LANE: the crossings put on it run one at a time, in the order they were put (an
+/// export instance's deliveries start in queue order, as they did on the one worker they shared).
+#[derive(Default)]
+pub(crate) struct Lane {
+    jobs: Mutex<(std::collections::VecDeque<Box<dyn FnOnce() + Send>>, bool)>,
+}
+
+impl std::fmt::Debug for Lane {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Lane").finish_non_exhaustive()
+    }
+}
+
+impl Lane {
+    /// Put `job` on the lane: it runs on a plugin thread after every job put before it.
+    fn put(self: &Arc<Self>, job: Box<dyn FnOnce() + Send>) {
+        let start = {
+            let mut j = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
+            j.0.push_back(job);
+            !std::mem::replace(&mut j.1, true)
+        };
+        if start {
+            let lane = Arc::clone(self);
+            crate::ffi_thread::spawn_on_plugin_thread(move || loop {
+                let job = {
+                    let mut j = lane.jobs.lock().unwrap_or_else(PoisonError::into_inner);
+                    match j.0.pop_front() {
+                        Some(job) => job,
+                        None => {
+                            j.1 = false;
+                            return;
+                        }
+                    }
+                };
+                job();
+            });
+        }
+    }
 }
 
 /// What one op answered.
@@ -92,6 +134,7 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
     let ticket = plugin.inline_ticket();
     let op = Arc::new(Op {
         plugin: Arc::clone(plugin),
+        lane: opts.lane.clone(),
         s,
         class: opts.class,
         ticket: ticket.as_ref().map_or(Ticket::NONE, InlineTicket::ticket),
@@ -142,6 +185,8 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
 /// One op in flight, shared by its caller and the plugin thread crossing it.
 struct Op<K: Kind, I, O> {
     plugin: Arc<Plugin<K>>,
+    /// The ordered lane its crossings run on; `None`: any free plugin thread.
+    lane: Option<Arc<Lane>>,
     s: u32,
     class: DeadlineClass,
     ticket: Ticket,
@@ -192,8 +237,14 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
             st.crossing = true;
             st.answered = None;
         }
-        let op = Arc::clone(op);
-        crate::ffi_thread::spawn_on_plugin_thread(move || op.run(resume));
+        let job = {
+            let op = Arc::clone(op);
+            move || op.run(resume)
+        };
+        match &op.lane {
+            Some(lane) => lane.put(Box::new(job)),
+            None => crate::ffi_thread::spawn_on_plugin_thread(job),
+        }
     }
 
     /// The crossing, on a plugin thread. A caller gone before it starts gets none: a fresh op is
@@ -406,4 +457,100 @@ pub(crate) fn release<K: Kind>(plugin: &Plugin<K>, lease: u64) {
         out_head(),
     );
     let _ = plugin.call(life::RELEASE, &mut f);
+}
+
+/// A WRITE-BEHIND op (`DeadlineClass::WriteBehind`): never cancelled, by a deadline, a dropped
+/// caller or a reload. It runs on the write-behind runner (one permanent thread polling every such
+/// op), so the caller only watches it: dropping the returned future leaves the op running to its
+/// end, woken by its own wakes, and its frame and lent memory go with it.
+pub(crate) fn call_write_behind<K: Kind, I: InFrame, O: OutFrame>(
+    plugin: Arc<Plugin<K>>,
+    s: u32,
+    frame: Frame<I, O>,
+    lent: Lent,
+    lane: Arc<Lane>,
+    mut regrow: Box<dyn FnMut(&Frame<I, O>) -> Option<(Frame<I, O>, Lent)> + Send>,
+) -> impl Future<Output = Ran<I, O>> + Send {
+    let watched = Arc::new(Mutex::new(Watch::<I, O> {
+        ran: None,
+        waker: None,
+    }));
+    let report = Arc::clone(&watched);
+    write_behind::spawn(Box::pin(async move {
+        let opts = Opts {
+            class: DeadlineClass::WriteBehind,
+            deadline: Instant::now() + NEVER,
+            watch: Duration::ZERO,
+            leave: false,
+            lane: Some(lane),
+        };
+        let ran = call(&plugin, s, frame, lent, opts, &mut *regrow).await;
+        let mut w = report.lock().unwrap_or_else(PoisonError::into_inner);
+        w.ran = Some(ran);
+        if let Some(waker) = w.waker.take() {
+            waker.wake();
+        }
+    }));
+    std::future::poll_fn(move |cx| {
+        let mut w = watched.lock().unwrap_or_else(PoisonError::into_inner);
+        match w.ran.take() {
+            Some(ran) => Poll::Ready(ran),
+            None => {
+                w.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    })
+}
+
+/// A write-behind op has no deadline: this far ahead is never reached by a running process.
+const NEVER: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+
+struct Watch<I, O> {
+    ran: Option<Ran<I, O>>,
+    waker: Option<Waker>,
+}
+
+/// THE WRITE-BEHIND RUNNER: one permanent thread polling every write-behind op to its end.
+mod write_behind {
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    use std::task::Poll;
+
+    use futures::channel::mpsc::{unbounded, UnboundedSender};
+    use futures::stream::{FuturesUnordered, StreamExt};
+
+    type Op = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    fn runner() -> &'static Mutex<UnboundedSender<Op>> {
+        static RUNNER: OnceLock<Mutex<UnboundedSender<Op>>> = OnceLock::new();
+        RUNNER.get_or_init(|| {
+            let (tx, mut rx) = unbounded::<Op>();
+            std::thread::Builder::new()
+                .name("busbar-plugin-write-behind".to_string())
+                .spawn(move || {
+                    let mut running = FuturesUnordered::new();
+                    futures::executor::block_on(std::future::poll_fn(|cx| loop {
+                        while let Poll::Ready(Some(op)) = rx.poll_next_unpin(cx) {
+                            running.push(op);
+                        }
+                        match running.poll_next_unpin(cx) {
+                            Poll::Ready(Some(())) => {}
+                            Poll::Ready(None) | Poll::Pending => return Poll::<()>::Pending,
+                        }
+                    }));
+                })
+                .expect("spawn the plugin write-behind runner");
+            Mutex::new(tx)
+        })
+    }
+
+    /// Run `op` to its end on the runner.
+    pub(super) fn spawn(op: Op) {
+        let _ = runner()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .unbounded_send(op);
+    }
 }

@@ -6,16 +6,18 @@
 //! once at bind, through the kind's own `check_tail` / `check_tail_entries`, into [`ExportFacts`].
 
 use busbar_contract::abi::export::{
-    self, slot, validate, CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
+    self, validate, CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
     StatusOut, Tail,
 };
-use busbar_contract::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome};
+use busbar_contract::abi::mechanism::call::{AbiStr, Outcome};
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use busbar_contract::abi::mechanism::KindCode;
 
-use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
+use crate::dispatch::{
+    declared_check, declared_name, declared_short, Answer, Context, InFrame, Kind, OutFrame,
+};
 
 /// WHAT AN EXPORT INSTANCE STATES, copied out once at bind: the streams it carries, the routes it
 /// serves, and each metric family's name, kind and label keys (what its envelope's metrics are
@@ -149,35 +151,14 @@ impl Kind for Export {
     }
 
     fn op_name(s: u32) -> &'static str {
-        match s {
-            slot::DELIVER => "deliver",
-            slot::SCRAPE => "scrape",
-            slot::STATUS => "status",
-            slot::CHECK => "check",
-            slot::SERVE => "serve",
-            _ => lifecycle_name(s),
-        }
+        declared_name::<export::Ops>(s)
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {
-        match a.slot {
-            slot::DELIVER => validate::check_deliver(a.out::<OutHead>()?),
-            slot::SCRAPE => {
-                validate::check_scrape(a.out::<ScrapeOut>()?, a.input::<ScrapeIn>()?.cap)
-            }
-            slot::STATUS => {
-                a.input::<InHead>()?;
-                validate::check_status(a.out::<StatusOut>()?)
-            }
-            slot::CHECK => validate::check_check(a.out::<CheckOut>()?),
-            slot::SERVE => validate::check_serve(a.out::<ServeOut>()?),
-            _ => Ok(()),
-        }
+        declared_check::<export::Ops>(a)
     }
 
     fn short(a: &Answer) -> bool {
-        a.slot == slot::SCRAPE
-            && a.outcome == Outcome::Failed
-            && a.out::<ScrapeOut>().is_ok_and(|o| o.needed != 0)
+        declared_short::<export::Ops>(a)
     }
 }

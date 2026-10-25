@@ -185,12 +185,23 @@ fn check_arm(op: &OpDecl, cl: &ExprClosure) -> syn::Result<Tokens> {
     let outcome = pats.get(2).map(|p| quote!(let #p = outcome;));
     let body = &cl.body;
     let (gi, go) = (format_ident!("__in"), format_ident!("__out"));
-    Ok(quote! {
-        slot::#konst => {
+    // `|_, out|`: the check never reads the op's `in`, so its size is not judged either.
+    let frames = if matches!(pi, Pat::Wild(_)) {
+        quote! {
+            // SAFETY: the host's frames for this slot's crossing (the trait's contract).
+            let #go = unsafe { frames.out::<#o>() }?;
+        }
+    } else {
+        quote! {
             // SAFETY: the host's frames for this slot's crossing (the trait's contract).
             let (#gi, #go) = unsafe { frames.get::<#i, #o>() }?;
             #[allow(unused_variables)]
             let #pi: &#i = #gi;
+        }
+    };
+    Ok(quote! {
+        slot::#konst => {
+            #frames
             #[allow(unused_variables)]
             let #po: &#o = #go;
             #outcome

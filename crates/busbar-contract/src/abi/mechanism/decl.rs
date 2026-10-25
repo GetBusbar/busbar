@@ -38,6 +38,21 @@ impl Frames {
         // SAFETY: sizes checked above; liveness is the caller's.
         Ok(unsafe { (&*self.input.cast::<I>(), &*self.out.cast::<O>()) })
     }
+
+    /// The `out` alone, read as `O` (an op whose check never reads its `in`).
+    ///
+    /// # Errors
+    /// FAULT (`Rule::Foreign`) when the `out` is smaller than `O`.
+    ///
+    /// # Safety
+    /// As [`Frames::get`].
+    pub unsafe fn out<'a, O: AbiOut>(self) -> Result<&'a O, Fault> {
+        if self.out_size < size_of::<O>() {
+            return Err(fault(Rule::Foreign, "out"));
+        }
+        // SAFETY: size checked above; liveness is the caller's.
+        Ok(unsafe { &*self.out.cast::<O>() })
+    }
 }
 
 /// One kind's ops as its declaration states them. Implemented only by `kind!`.

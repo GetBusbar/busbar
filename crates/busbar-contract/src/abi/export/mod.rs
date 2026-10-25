@@ -59,73 +59,64 @@
 //! - No Statement tail beyond `streams[]` is stated for export; `check`'s phases (`limits` /
 //!   `instances`, 1.5.5 `CheckPhase`) are carried as a `u32` `in` field rather than a new type.
 
-use super::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead};
+use super::mechanism::call::{AbiStr, Blob, InHead, OutHead};
 use serde::{Deserialize, Serialize};
 
 pub mod validate;
 use super::mechanism::door::KindTailHead;
-use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
+use super::mechanism::lifecycle::LIFECYCLE_SLOTS;
 
 /// The export kind's ABI version: v1.5.5 shipped `2` (`EXPORT_ABI_VERSION`), so 1.6.0 ships `3`.
 pub const ABI_VERSION: u32 = 3;
 
-/// [`InHead::op`] values the export kind adds after the shared lifecycle, in table order.
-///
-/// # Examples
-/// ```
-/// use busbar_contract::abi::export::{slot, SLOTS};
-/// use busbar_contract::abi::mechanism::lifecycle::LIFECYCLE_SLOTS;
-/// assert_eq!(slot::DELIVER, LIFECYCLE_SLOTS + 0);
-/// assert_eq!(slot::SCRAPE, LIFECYCLE_SLOTS + 1);
-/// assert_eq!(slot::STATUS, LIFECYCLE_SLOTS + 2);
-/// assert_eq!(slot::CHECK, LIFECYCLE_SLOTS + 3);
-/// assert_eq!(slot::SERVE, LIFECYCLE_SLOTS + 4);
-/// assert_eq!(SLOTS, LIFECYCLE_SLOTS + 5);
-/// ```
-pub mod slot {
-    use super::LIFECYCLE_SLOTS;
-
-    /// `deliver`.
-    pub const DELIVER: u32 = LIFECYCLE_SLOTS;
-    /// `scrape`.
-    pub const SCRAPE: u32 = LIFECYCLE_SLOTS + 1;
-    /// `status`.
-    pub const STATUS: u32 = LIFECYCLE_SLOTS + 2;
-    /// `check`.
-    pub const CHECK: u32 = LIFECYCLE_SLOTS + 3;
-    /// `serve`.
-    pub const SERVE: u32 = LIFECYCLE_SLOTS + 4;
+busbar_abi_macros::kind! {
+    kind: Export,
+    lifecycle: crate::abi::sdk::door::Lifecycle,
+    ops: {
+        /// `deliver`.
+        ///
+        /// Hand one already-projected batch for a declared stream to the sink. In [`DeliverIn`],
+        /// out [`OutHead`] (nothing to read back).
+        DELIVER deliver: DeliverIn => OutHead {
+            class: WriteBehind, pend,
+            check: |_, o| validate::check_deliver(o),
+        },
+        /// `scrape`.
+        ///
+        /// Render the host recorder's snapshot as this sink's exposition text. In [`ScrapeIn`],
+        /// out [`ScrapeOut`].
+        SCRAPE scrape: ScrapeIn => ScrapeOut {
+            class: Call, pend, request,
+            check: |i, o| validate::check_scrape(o, i.cap),
+            short: |o| o.needed != 0,
+        },
+        /// `status`.
+        ///
+        /// What the sink has to report when the host renders its status exposition. In
+        /// [`InHead`], out [`StatusOut`] (the 1.5.5 status blob, unchanged).
+        STATUS status: InHead => StatusOut {
+            class: Call,
+            check: |_i, o| validate::check_status(o),
+        },
+        /// `check`.
+        ///
+        /// The sink's own configuration/operational checks. In [`CheckIn`], out [`CheckOut`].
+        CHECK check: CheckIn => CheckOut {
+            class: Call,
+            check: |_, o| validate::check_check(o),
+        },
+        /// `serve`.
+        ///
+        /// The sink's own HTTP surface (`/exports/<name>/*`). In [`ServeIn`], out [`ServeOut`].
+        SERVE serve: ServeIn => ServeOut {
+            class: Call, pend,
+            check: |_, o| validate::check_serve(o),
+        },
+    },
 }
 
 /// How many slots the export kind's whole table holds (the lifecycle plus its five own ops).
-pub const SLOTS: u32 = LIFECYCLE_SLOTS + 5;
-
-/// The export kind's ops table. Leads with the shared [`OpsHead`]; kind op `k` is at slot index
-/// [`LIFECYCLE_SLOTS`]` + k` ([`slot`]).
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct Ops {
-    /// The lifecycle.
-    pub head: OpsHead,
-    /// Hand one already-projected batch for a declared stream to the sink. OFF-PATH, `may_pend`,
-    /// [`DeadlineClass::WriteBehind`](super::mechanism::call::DeadlineClass::WriteBehind). In
-    /// [`DeliverIn`], out [`OutHead`] (nothing to read back).
-    pub deliver: Option<Op>,
-    /// Render the host recorder's snapshot as this sink's exposition text. REQUEST-PATH,
-    /// `may_pend`, [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call). In
-    /// [`ScrapeIn`], out [`ScrapeOut`].
-    pub scrape: Option<Op>,
-    /// What the sink has to report when the host renders its status exposition. OFF-PATH, not
-    /// `may_pend`. In [`InHead`], out [`StatusOut`] (the 1.5.5 status blob, unchanged).
-    pub status: Option<Op>,
-    /// The sink's own configuration/operational checks. OFF-PATH, not `may_pend`. In
-    /// [`CheckIn`], out [`CheckOut`].
-    pub check: Option<Op>,
-    /// The sink's own HTTP surface (`/exports/<name>/*`). OFF-PATH, `may_pend`,
-    /// [`DeadlineClass::Call`](super::mechanism::call::DeadlineClass::Call). In [`ServeIn`], out
-    /// [`ServeOut`].
-    pub serve: Option<Op>,
-}
+pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
 /// `deliver`'s `in`.
 #[repr(C)]
@@ -957,48 +948,40 @@ unsafe impl super::sdk::door::AbiOut for StatusOut {}
 unsafe impl super::sdk::door::AbiOut for CheckOut {}
 unsafe impl super::sdk::door::AbiOut for ServeOut {}
 
-super::sdk::door::slot_structs!(
-    /// Each export kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
-    /// A plugin wiring a slot to another op's structs does not compile:
-    ///
-    /// ```compile_fail,E0271
-    /// use busbar_contract::abi::export::{CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut};
-    /// use busbar_contract::abi::export::{ServeIn, ServeOut, StatusOut};
-    /// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
-    /// use busbar_contract::abi::mechanism::lifecycle::*;
-    /// use busbar_contract::abi::sdk::door::Slot;
-    /// # use std::ffi::c_void;
-    /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
-    /// #     struct $n;
-    /// #     impl Slot for $n { type In = $i; type Out = $o;
-    /// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
-    /// # } }
-    /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
-    /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
-    /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-    /// # ready!(Deliver, DeliverIn, OutHead); ready!(Status, InHead, StatusOut);
-    /// # ready!(Check, CheckIn, CheckOut); ready!(Serve, ServeIn, ServeOut);
-    /// ready!(Scrape, DeliverIn, OutHead); // `deliver`'s structs on `scrape`: refused
-    /// busbar_contract::plugin_door! {
-    ///     ops: busbar_contract::abi::export::Ops,
-    ///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
-    ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
-    ///                  cancel: Cn, release: Rl, close: Cl },
-    ///     kind_ops: { deliver: Deliver, scrape: Scrape, status: Status, check: Check, serve: Serve },
-    /// }
-    /// # fn main() { let _ = door(); }
-    /// ```
-    ///
-    /// With `Scrape` reading [`ScrapeIn`] and writing [`ScrapeOut`] the same plugin compiles
-    /// (`abi/sdk/tests/door_tests.rs`, `an_export_plugin_wires_every_kind_op`).
-    Ops {
-        slot::DELIVER => DeliverIn, OutHead;
-        slot::SCRAPE => ScrapeIn, ScrapeOut;
-        slot::STATUS => InHead, StatusOut;
-        slot::CHECK => CheckIn, CheckOut;
-        slot::SERVE => ServeIn, ServeOut;
-    }
-);
+/// Each export kind op's `in`/`out` for [`plugin_door!`](crate::plugin_door), per [`Ops`]' docs.
+/// A plugin wiring a slot to another op's structs does not compile:
+///
+/// ```compile_fail,E0271
+/// use busbar_contract::abi::export::{CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut};
+/// use busbar_contract::abi::export::{ServeIn, ServeOut, StatusOut};
+/// use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+/// use busbar_contract::abi::mechanism::lifecycle::*;
+/// use busbar_contract::abi::sdk::door::Slot;
+/// # use std::ffi::c_void;
+/// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
+/// #     struct $n;
+/// #     impl Slot for $n { type In = $i; type Out = $o;
+/// #         fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
+/// # } }
+/// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
+/// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
+/// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
+/// # ready!(Deliver, DeliverIn, OutHead); ready!(Status, InHead, StatusOut);
+/// # ready!(Check, CheckIn, CheckOut); ready!(Serve, ServeIn, ServeOut);
+/// ready!(Scrape, DeliverIn, OutHead); // `deliver`'s structs on `scrape`: refused
+/// busbar_contract::plugin_door! {
+///     ops: busbar_contract::abi::export::Ops,
+///     statement: busbar_contract::abi::sdk::door::statement("wrong", "0", 1),
+///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
+///                  cancel: Cn, release: Rl, close: Cl },
+///     kind_ops: { deliver: Deliver, scrape: Scrape, status: Status, check: Check, serve: Serve },
+/// }
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// With `Scrape` reading [`ScrapeIn`] and writing [`ScrapeOut`] the same plugin compiles
+/// (`abi/sdk/tests/door_tests.rs`, `an_export_plugin_wires_every_kind_op`).
+impl Ops {}
 
 #[cfg(test)]
 #[path = "tests/stream_tests.rs"]

@@ -380,6 +380,7 @@ impl Inner {
                         deadline,
                         watch: budget,
                         leave: true,
+                        lane: None,
                     },
                     &mut regrown,
                 )

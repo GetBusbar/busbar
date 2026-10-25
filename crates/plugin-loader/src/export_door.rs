@@ -26,7 +26,7 @@
 //!   leased answer is copied, then its lease released.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
@@ -39,15 +39,15 @@ use busbar_contract::abi::export::{
     ScrapeOut, ScrapeSample, ServeIn, ServeOut, StatusOut, SCRAPE_FLAG_HOOK_FAMILIES,
 };
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, DeadlineClass, InHead, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
+    AbiStr, Blob, InHead, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_JSONL, BLOB_OCTETS,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as lc, OpenIn, OpenOut, ReleaseIn, ValidateIn,
 };
 use busbar_contract::abi::mechanism::route::Route;
-use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
 
+use crate::dispatch::call::{self, Ran};
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::{in_head, out_head, Dispatcher, Frame, Plugin, NO_BLOB};
 
@@ -220,7 +220,9 @@ struct Line {
 
 /// What the instance's flusher shares with its callers.
 struct Shared {
-    plugin: Plugin<Export>,
+    plugin: Arc<Plugin<Export>>,
+    /// The ordered lane every delivery crosses on: batches start in queue order.
+    lane: Arc<call::Lane>,
     dispatcher: Arc<Dispatcher>,
     facts: ExportFacts,
     queue: Mutex<VecDeque<Line>>,
@@ -281,24 +283,12 @@ impl Shared {
         Some((stream, lines))
     }
 
-    /// Offer one batch on a ticket of its own, minted on `worker` and recycled once it answered,
-    /// so the host-service results and connections one delivery made (stored under `(ticket, n)`,
-    /// its handles counting from 0) are never redeemed by another; a FAILED answer is retried with
-    /// the same `op_id`. The batch rides with the job: a crossing the watchdog answered still owns
-    /// it until it returns. Awaited, never waited on: a pending delivery holds no thread. Dropped
-    /// unanswered (the flusher abandoned it), its reply's drop is a client drop: the WriteBehind op
-    /// runs on with nobody waiting, still owning the batch, and its ticket is recycled once it ends.
-    async fn deliver(self: Arc<Self>, worker: u32, stream: u8, lines: Vec<Line>) {
-        let workers = self.dispatcher.workers().max(1);
-        let ticket = (0..workers).find_map(|i| self.dispatcher.mint((worker + i) % workers));
-        let Some(ticket) = ticket else {
-            tracing::warn!(
-                plugin = %self.plugin.name(),
-                "no ticket could be minted for an export batch; it is dropped"
-            );
-            return;
-        };
-        let _minted = Minted(&self.dispatcher, ticket);
+    /// Offer one batch on the one call path, as a WRITE-BEHIND op: a ticket of its own (so the
+    /// host-service results and connections one delivery made are never redeemed by another), a
+    /// FAILED answer retried with the same `op_id`. Awaited, never waited on: a pending delivery
+    /// holds no thread. Dropped unanswered (the flusher abandoned it), the op runs on with nobody
+    /// waiting, still owning the batch, never cancelled.
+    async fn deliver(self: Arc<Self>, stream: u8, lines: Vec<Line>) {
         let mut batch = Vec::with_capacity(lines.iter().map(|l| l.bytes.len() + 1).sum());
         for l in &lines {
             batch.extend_from_slice(&l.bytes);
@@ -314,46 +304,42 @@ impl Shared {
                 _reserved: [0; 7],
                 batch: blob(&batch, BLOB_JSONL),
             };
-            // Submitted with no deadline, the op is answered by the plugin, or ended by the
-            // watchdog; a delivery the flusher abandons drops this reply (a client drop).
-            let done = self
-                .dispatcher
-                .submit_lent(
-                    &self.plugin,
-                    ticket,
-                    slot::DELIVER,
-                    Frame::new(input, out_head()),
-                    DeadlineClass::WriteBehind,
-                    0,
-                    batch.clone(),
-                )
-                .await;
-            match done.outcome {
+            let ran = call::call_write_behind(
+                Arc::clone(&self.plugin),
+                slot::DELIVER,
+                Frame::new(input, out_head()),
+                batch.clone(),
+                Arc::clone(&self.lane),
+                Box::new(|_: &Frame<DeliverIn, _>| None),
+            )
+            .await;
+            let (outcome, error) = match ran {
+                Ran::Answered { called, .. } => (called.outcome, called.error),
+                Ran::TimedOut => (Outcome::Failed, None),
+            };
+            match outcome {
                 Outcome::Ready => break,
                 Outcome::Failed if attempt < DELIVER_ATTEMPTS => continue,
                 o => {
                     tracing::warn!(
                         plugin = %self.plugin.name(),
                         lines = lines.len(),
-                        error = %why(o, done.error),
+                        error = %why(o, error),
                         "an export batch was not delivered and is dropped"
                     );
                     break;
                 }
             }
         }
-        // The lines' holds are released here: the batch has answered. The ticket is recycled as
-        // `_minted` drops.
+        // The lines' holds are released here: the batch has answered.
         drop(lines);
     }
 
-    /// THE FLUSHER: up to the instance's `max_inflight` deliveries at once, every batch started on
-    /// one worker in queue order; on stop, what is still queued is shed and the deliveries in
-    /// flight answer, until the stop's grace runs out ([`Shared::abandon`]): then the flusher
-    /// returns, and the deliveries still in flight are dropped, each abandoned to the dispatcher.
+    /// THE FLUSHER: up to the instance's `max_inflight` deliveries at once, every batch started in
+    /// queue order; on stop, what is still queued is shed and the deliveries in flight answer,
+    /// until the stop's grace runs out ([`Shared::abandon`]): then the flusher returns, and the
+    /// deliveries still in flight run on to their end with nobody waiting (write-behind).
     fn flush(self: Arc<Self>) {
-        static NEXT_WORKER: AtomicU32 = AtomicU32::new(0);
-        let worker = NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % self.dispatcher.workers().max(1);
         let cap = self.plugin.max_inflight().max(1) as usize;
         let mut inflight = FuturesUnordered::new();
         futures::executor::block_on(futures::future::poll_fn(|cx| loop {
@@ -373,7 +359,7 @@ impl Shared {
                 let Some((stream, lines)) = self.take(cap - inflight.len()) else {
                     break;
                 };
-                inflight.push(self.clone().deliver(worker, stream, lines));
+                inflight.push(self.clone().deliver(stream, lines));
                 started = true;
             }
             if !started {
@@ -387,16 +373,6 @@ impl Shared {
                 "export deliveries still in flight when the instance was dropped are abandoned"
             );
         }
-    }
-}
-
-/// A delivery's ticket, recycled when the delivery ends, answered or abandoned (the dispatcher
-/// recycles a ticket whose op is still in flight once that op ends).
-struct Minted<'a>(&'a Arc<Dispatcher>, Ticket);
-
-impl Drop for Minted<'_> {
-    fn drop(&mut self) {
-        self.0.recycle(self.1);
     }
 }
 
@@ -486,7 +462,8 @@ impl ExportInstance {
         }
         let facts = plugin.context::<ExportFacts>().cloned().unwrap_or_default();
         let shared = Arc::new(Shared {
-            plugin,
+            plugin: Arc::new(plugin),
+            lane: Arc::default(),
             dispatcher,
             facts,
             queue: Mutex::new(VecDeque::new()),
