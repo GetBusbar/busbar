@@ -235,9 +235,6 @@ pub(crate) fn install_io_reactor() {
     busbar_core_connector::io::install_process_reactor(io_reactor());
 }
 
-// TRANSITIONAL: the connector's own I/O thread exists because synchronous governance callers wait
-// on the control runtime's thread (ARCHITECT ruling 2026-10-03 on Q-L16-3, the Q-L16-1 row); drains
-// with that wait (D2/D3; 1.6.0-TODO.md).
 /// A ROOT TEST'S OWN DISPATCHER on the connector's I/O runtime, as [`boot`] installs the process's:
 /// its workers' crossings run inside that runtime, and a socket armed off a task goes on its
 /// reactor. Without it a worker enters no runtime, and a dial made on a worker is refused.
