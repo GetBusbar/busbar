@@ -538,6 +538,23 @@ pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSin
 /// SHA-256 of the body the first call carried and the packed answer it produced.
 pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], Vec<u8>)>;
 
+/// The configured store a key is claimed in, read when the claim is taken.
+pub type ReplayStore =
+    Arc<dyn Fn() -> Option<Arc<dyn busbar_contract::records::RecordStore>> + Send + Sync>;
+
+/// THE PRODUCTION REPLAY STORE: the live configuration's governance store.
+#[must_use]
+pub fn live_replay_store(app: Arc<busbar_kernel::state::AppHandle>) -> ReplayStore {
+    Arc::new(move || app.load().governance.as_ref().map(|gov| gov.store()))
+}
+
+/// A first answer as the store keeps it: the body's digest, then the packed answer.
+fn stored_answer(digest: &[u8; 32], packed: &[u8]) -> Vec<u8> {
+    let mut bytes = digest.to_vec();
+    bytes.extend_from_slice(packed);
+    bytes
+}
+
 /// The request header carrying the client-chosen idempotency token (names arrive lowercased).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
@@ -551,6 +568,7 @@ const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// existing `409 conflict` "a request with this Idempotency-Key is already in flight".
 pub(crate) fn replayable(
     cache: &ReplayCache,
+    store: Option<&ReplayStore>,
     verb: busbar_core_admin::KernelVerb,
     actor: &str,
     unit: &super::AdminRequest,
@@ -572,31 +590,74 @@ pub(crate) fn replayable(
     let digest: [u8; 32] = busbar_kernel_ledger::digest::sha256(body);
     // Scoped to the resolved PRINCIPAL, as the key mint's is: two principals sharing a key value
     // never replay each other's answer.
-    match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {
-        Probe::Replay((first, answer)) if first == digest => Ok(answer),
-        Probe::Replay(_) => Ok(refused(
+    use busbar_core_admin::idempotency::durable::{self, Refused, Settled};
+
+    let other_body = || {
+        Ok(refused(
             409,
             "conflict",
             "this Idempotency-Key was already used with a different request body",
         )
-        .pack()),
-        Probe::InFlight => Ok(refused(
+        .pack())
+    };
+    let in_flight = || {
+        Ok(refused(
             409,
             "conflict",
             "a request with this Idempotency-Key is already in flight",
         )
-        .pack()),
+        .pack())
+    };
+    match cache.probe((actor.to_string(), format!("{name}:{header}")), unit.at) {
+        Probe::Replay((first, answer)) if first == digest => Ok(answer),
+        Probe::Replay(_) => other_body(),
+        Probe::InFlight => in_flight(),
         Probe::NoKey => effect().map(|a| a.pack()),
-        Probe::Reserved(reservation) => match effect() {
-            Ok(answer) if (200..300).contains(&answer.status) => {
-                let packed = answer.pack();
-                reservation.commit((digest, packed.clone()), unit.at);
-                Ok(packed)
+        Probe::Reserved(reservation) => {
+            // Claimed in the store before the effect runs, so a retry after a restart or on another
+            // node replays the first answer or is refused: it never runs the effect again.
+            let store = store.and_then(|store| store());
+            let claim = match &store {
+                Some(store) => match durable::claim(&**store, reservation.key(), unit.at) {
+                    Ok(claim) => Some(claim),
+                    Err(Refused::Answer(kept)) if kept.len() >= 32 => {
+                        return if kept[..32] == digest {
+                            Ok(kept[32..].to_vec())
+                        } else {
+                            other_body()
+                        };
+                    }
+                    Err(Refused::Unavailable(why)) => {
+                        tracing::error!(reason = %why, "an Idempotency-Key could not be claimed in the store");
+                        return Ok(journal_unavailable(
+                            "the store could not record this Idempotency-Key; nothing was done",
+                        )
+                        .pack());
+                    }
+                    Err(Refused::InFlight | Refused::Applied(_) | Refused::Answer(_)) => {
+                        return in_flight();
+                    }
+                },
+                None => None,
+            };
+            let (answer, settled) = match effect() {
+                Ok(answer) if (200..300).contains(&answer.status) => {
+                    let packed = answer.pack();
+                    let settled = Settled::Answer(stored_answer(&digest, &packed));
+                    reservation.commit((digest, packed.clone()), unit.at);
+                    (Ok(packed), settled)
+                }
+                other => {
+                    reservation.clear();
+                    (other.map(|a| a.pack()), Settled::Released)
+                }
+            };
+            if let (Some(store), Some(claim)) = (&store, &claim) {
+                if let Err(why) = durable::settle(&**store, claim, unit.at, &settled) {
+                    tracing::error!(reason = %why, "the store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
+                }
             }
-            other => {
-                reservation.clear();
-                other.map(|a| a.pack())
-            }
-        },
+            answer
+        }
     }
 }

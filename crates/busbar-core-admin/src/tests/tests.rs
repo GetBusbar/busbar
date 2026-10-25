@@ -10536,98 +10536,14 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **THE EXIT TEST FOR ITEM 271's PRODUCTION HOOKUP, AT THE LIVE CACHE.** Item 271's writer side
-/// (`RootClaimJournal`, `IdempotencyCache::with_journal`) was proven in isolation
-/// (`units_admin.rs`'s `an_idempotency_key_on_a_durable_node_journals_exactly_one_claim`), and the
-/// root's binding of it onto `AdminBinding::claims` was proven too
-/// (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`) — but NEITHER exercises the
-/// surface a real `POST /keys` actually reaches. `keys::create_key`/`rotate_key` replay against the
-/// node's `KeyReplayCache`, which the composition root builds once with the claim journal bound
-/// (`with_journal`) and inserts as a request extension on every request (`RouterDispatch::call`).
-///
-/// This is the seam's production shape, reproduced directly: the extension the composition root's
-/// wrap inserts on every request is layered here the identical way — a `POST /keys` with a repeated
-/// `Idempotency-Key` journals the claim exactly once (first sighting only — never on the replay) and
-/// the replayed response is byte-for-byte the first, exactly as v1.5.5.
+/// A repeated-key `POST /keys` inside one process replays the first response byte for byte,
+/// exactly as v1.5.5.
 #[tokio::test]
-async fn a_durable_node_journals_exactly_one_claim_for_a_repeated_key_post_keys() {
+async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app().governance(gov).build();
-    let router = crate::build_router(app);
-
-    #[derive(Default, Clone)]
-    struct RecordingJournal {
-        calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
-    }
-    impl RecordingJournal {
-        fn calls(&self) -> Vec<(String, String)> {
-            self.calls.lock().unwrap().clone()
-        }
-    }
-    impl crate::idempotency::ClaimJournal for RecordingJournal {
-        fn journal_claim(&self, key: &(String, String), _now: u64) {
-            self.calls.lock().unwrap().push(key.clone());
-        }
-    }
-    let journal = RecordingJournal::default();
-    let ext: Arc<crate::keys::KeyReplayCache> = Arc::new(
-        crate::keys::KeyReplayCache::with_journal(Arc::new(journal.clone())),
-    );
-    // The SAME wiring `RouterDispatch::call` performs: the node's replay cache, journal bound,
-    // riding as a request extension, which `create_key`'s `Extension<_>` parameter reads.
-    // `Router::layer` inserts it on every request the same way `http::Request::builder()
-    // .extension(..)` does at the root — this is not a stand-in for the production seam, it is the
-    // same extension slot the production seam fills.
-    let router = router.layer(axum::Extension(ext));
-
-    let (addr, handle, client) = spin_up(router).await;
-    let mint = || {
-        client
-            .post(format!("http://{addr}/api/v1/admin/keys"))
-            .header("x-admin-token", "admintok")
-            .header("content-type", "application/json")
-            .header("idempotency-key", "durable-271")
-            .body(serde_json::json!({"name": "k"}).to_string())
-            .send()
-    };
-
-    let first = mint().await.unwrap();
-    assert_eq!(first.status().as_u16(), 201);
-    let first_body = first.bytes().await.unwrap();
-
-    let second = mint().await.unwrap();
-    assert_eq!(second.status().as_u16(), 201);
-    let second_body = second.bytes().await.unwrap();
-
-    assert_eq!(
-        first_body, second_body,
-        "a replay must return the first response byte for byte, exactly as v1.5.5"
-    );
-    assert_eq!(
-        journal.calls(),
-        vec![("admin".to_string(), "durable-271".to_string())],
-        "exactly one claim journalled — the first sighting only, never the replay"
-    );
-
-    handle.abort();
-}
-
-/// **THE MEMORY-ONLY HALF OF THE SAME EXIT TEST.** A node with no data directory binds no claim
-/// journal (`the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only`), so
-/// `ClaimJournalCell` is set to `None` and the node's replay cache journals nothing — the exact
-/// shape every OTHER admin test in this file already exercises (none of them layers an extension, so
-/// the router supplies its own cache, journal-less). This test pins it explicitly: a repeated-key `POST /keys` through an UNWRAPPED router
-/// still replays correctly (byte-identical, 1.5.5 behaviour is unchanged either way) and journals
-/// nothing, because there is nothing here for it to journal to.
-#[tokio::test]
-async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
-    busbar_kernel::snapshot::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = crate::new_test_app().governance(gov).build();
-    // NO `.layer(Extension(..))` here — the memory-buffered-node shape: the router's own cache.
     let router = crate::build_router(app);
 
     let (addr, handle, client) = spin_up(router).await;
@@ -10649,10 +10565,134 @@ async fn a_memory_only_node_journals_no_claim_for_a_repeated_key_post_keys() {
     let second_body = second.bytes().await.unwrap();
     assert_eq!(
         first_body, second_body,
-        "replay is unaffected by the absent journal — 1.5.5 behaviour, unchanged"
+        "a replay returns the first response byte for byte"
     );
 
     handle.abort();
+}
+
+/// One node's process over `store`: a fresh governance state, app, router and replay cache, the
+/// way a restart (or a sibling node of the fleet) starts on the same configured store.
+async fn node_over(
+    store: &Arc<MemoryStore>,
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+    reqwest::Client,
+) {
+    let gov = gov_with_signer(store.clone(), Some("admintok".to_string()));
+    let app = crate::new_test_app().governance(gov).build();
+    spin_up(crate::build_router(app)).await
+}
+
+/// **AN IDEMPOTENT MINT RETRIED AFTER A RESTART IS REFUSED, NOT MINTED TWICE.** The replay cache
+/// is process memory, so after a restart it has never seen the key. The claim in the store has:
+/// the retry is refused 409, naming the key the first request made, and the store holds one key.
+///
+/// RED while the claim lived only in the process: the retry minted a second key and the first
+/// response's secret was silently dead.
+#[tokio::test]
+async fn an_idempotent_mint_retried_after_a_restart_is_refused_not_minted_twice() {
+    busbar_kernel::snapshot::init();
+    let store = Arc::new(MemoryStore::new());
+    let mint = |addr: std::net::SocketAddr, client: reqwest::Client| async move {
+        client
+            .post(format!("http://{addr}/api/v1/admin/keys"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .header("idempotency-key", "restart-mint")
+            .body(serde_json::json!({"name": "once"}).to_string())
+            .send()
+            .await
+            .unwrap()
+    };
+
+    let (addr, before, client) = node_over(&store).await;
+    let first = mint(addr, client).await;
+    assert_eq!(first.status().as_u16(), 201);
+    let first: serde_json::Value = first.json().await.unwrap();
+    before.abort();
+
+    let (addr, after, client) = node_over(&store).await;
+    let retry = mint(addr, client).await;
+    assert_eq!(
+        retry.status().as_u16(),
+        409,
+        "a retry after a restart must not mint again"
+    );
+    let retry: serde_json::Value = retry.json().await.unwrap();
+    let id = first["id"].as_str().expect("the mint names its key");
+    assert!(
+        retry.to_string().contains(id),
+        "the refusal names the key the first request made: {retry}"
+    );
+    let minted = busbar_kernel::governance::RecordStore::list_keys(&*store)
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.name == "once")
+        .count();
+    assert_eq!(minted, 1, "exactly one key exists for one Idempotency-Key");
+    after.abort();
+}
+
+/// **AN IDEMPOTENT ROTATE RETRIED AFTER A RESTART IS REFUSED, NOT ROTATED TWICE.** A second rotate
+/// would kill the token the first response handed out.
+#[tokio::test]
+async fn an_idempotent_rotate_retried_after_a_restart_is_refused_not_rotated_twice() {
+    busbar_kernel::snapshot::init();
+    let store = Arc::new(MemoryStore::new());
+
+    let (addr, before, client) = node_over(&store).await;
+    let created: serde_json::Value = client
+        .post(format!("http://{addr}/api/v1/admin/keys"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "rotated"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"].as_str().unwrap().to_string();
+    let rotate = |addr: std::net::SocketAddr, client: reqwest::Client, id: String| async move {
+        client
+            .post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate"))
+            .header("x-admin-token", "admintok")
+            .header("idempotency-key", "restart-rotate")
+            .send()
+            .await
+            .unwrap()
+    };
+    let first = rotate(addr, client, id.clone()).await;
+    assert_eq!(first.status().as_u16(), 200);
+    let first: serde_json::Value = first.json().await.unwrap();
+    before.abort();
+
+    let (addr, after, client) = node_over(&store).await;
+    let retry = rotate(addr, client.clone(), id.clone()).await;
+    assert_eq!(
+        retry.status().as_u16(),
+        409,
+        "a retry after a restart must not rotate again"
+    );
+    // The first rotate's token is still the key's live credential.
+    let token = first["token"]
+        .as_str()
+        .expect("the rotate hands out a token");
+    let got = client
+        .get(format!("http://{addr}/api/v1/admin/keys/{id}"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(got.status().as_u16(), 200);
+    let gov = gov_with_signer(store.clone(), None);
+    assert!(
+        gov.verify_token(token, busbar_kernel::store::now(), None)
+            .is_some(),
+        "the first rotate's token still authenticates: no second rotate ran"
+    );
+    after.abort();
 }
 
 /// **A MINT THAT HAS NOT ANSWERED IS REFUSED TO A RETRY HOWEVER OLD ITS SENTINEL.** The served

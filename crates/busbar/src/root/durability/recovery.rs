@@ -198,8 +198,7 @@ fn now_secs() -> u64 {
 }
 
 /// THE VERB STORE THE ADMIN UNIT'S DISASTER-RECOVERY VERBS REACH: the node's journal for the chain
-/// break, the configured store for the epoch floor, and the loader adapter over that same store for
-/// the sealed new-verb replay cache. Holds no state of its own.
+/// break and the configured store for the epoch floor. Holds no state of its own.
 struct NodeRecovery {
     /// The node's one book: the chain an operator break is sealed onto.
     book: Arc<Mutex<Durability>>,
@@ -209,7 +208,7 @@ struct NodeRecovery {
     calls: Arc<dyn StoreCalls>,
     /// The configured store's name, which the floor is keyed by.
     store: String,
-    /// The loader adapter over the same store: the slice epoch and the sealed replay cache.
+    /// The loader adapter over the same store: the slice epoch.
     adapter: StoreAdapter,
 }
 
@@ -299,18 +298,6 @@ impl busbar_contract::verb_store::Store for NodeRecovery {
             )),
             Err(why) => Err(refused("reseal_epoch_floor", &why)),
         }
-    }
-
-    fn replay_new_verb(&self, key: &(String, String)) -> Result<Option<Vec<u8>>, VerbStoreError> {
-        self.adapter.replay_new_verb(key)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        key: &(String, String),
-        response: &[u8],
-    ) -> Result<(), VerbStoreError> {
-        self.adapter.commit_new_verb_replay(key, response)
     }
 }
 

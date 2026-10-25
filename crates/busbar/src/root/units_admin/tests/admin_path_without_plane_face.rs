@@ -522,21 +522,6 @@ impl busbar_contract::verb_store::Store for AnApplyingStore {
     ) -> Result<(), busbar_contract::verb_store::StoreError> {
         Ok(())
     }
-
-    fn replay_new_verb(
-        &self,
-        _key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        Ok(None)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        Ok(())
-    }
 }
 
 /// The served rows for one resource that the operator (`admin`) is attributed, as
@@ -670,8 +655,7 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
 /// refused `503` — the store has no restore operation (row 187). RED (the defect this
 /// replaced): the composition held a refusing stand-in, so each answered the store failure on a
 /// node whose store was right there; drop the book's store, or the units' binding of it, and this
-/// goes red. Then break -> restore -> reseal -> replay over the SAME store: a replay slot committed
-/// before them survives all three, and answers its first bytes.
+/// goes red.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_book() {
@@ -692,20 +676,10 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
         .governance(gov)
         .build();
     let book = crate::root::boot::book(&booted, "test-store").expect("the boot book opens");
-    let store = book
-        .verb_store
-        .clone()
-        .expect("a node with a configured store carries it on its book");
-
-    // A replay slot committed BEFORE the recovery sequence.
-    let key = (
-        "idem-row-113".to_string(),
-        "POST /api/v1/admin/keys".to_string(),
+    assert!(
+        book.verb_store.is_some(),
+        "a node with a configured store carries it on its book"
     );
-    assert_eq!(store.replay_new_verb(&key).expect("the slot reads"), None);
-    store
-        .commit_new_verb_replay(&key, b"first answer")
-        .expect("the slot commits");
 
     let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![])
@@ -756,13 +730,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
              operation"
         );
     }
-
-    // The slot survived the restore and the reseal, and replays the first answer's bytes.
-    assert_eq!(
-        store.replay_new_verb(&key).expect("the slot reads"),
-        Some(b"first answer".to_vec()),
-        "a committed replay slot survives break -> restore -> reseal"
-    );
 }
 
 /// The 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)`. Empty since owner answer

@@ -103,16 +103,6 @@ impl Store for FakeStore {
     fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
         Ok(())
     }
-    fn replay_new_verb(&self, _key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(None)
-    }
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
 }
 
 fn admin() -> Grant<AdminVerb> {
@@ -851,16 +841,6 @@ impl Store for RecordingStore {
     }
     fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
         self.0.lock().unwrap().push("reseal_epoch_floor");
-        Ok(())
-    }
-    fn replay_new_verb(&self, _key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(None)
-    }
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), StoreError> {
         Ok(())
     }
 }

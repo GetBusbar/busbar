@@ -457,27 +457,9 @@ impl busbar_contract::verb_store::Store for ReachedStore {
         self.note("reseal_epoch_floor".to_string());
         Ok(())
     }
-
-    fn replay_new_verb(
-        &self,
-        key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
-        self.note(format!("replay_new_verb {} {}", key.0, key.1));
-        Ok(None)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), busbar_contract::verb_store::StoreError> {
-        self.note(format!("commit_new_verb_replay {} {}", key.0, key.1));
-        Ok(())
-    }
 }
 
-/// ROW 113: THE ADMIN UNITS OVER A BOOK REACH THAT BOOK'S STORE, for every recovery primitive and
-/// the replay slot.
+/// ROW 113: THE ADMIN UNITS OVER A BOOK REACH THAT BOOK'S STORE, for every recovery primitive.
 ///
 /// `ProductionUnits::admin_over_book` is the one composition `main` serves the admin listener
 /// through, and the `route` step hands `units.store` to the verbs unit. So the store the units hold
@@ -502,10 +484,6 @@ fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() 
         .as_ref()
         .expect("units over a book with a configured store hold a store");
 
-    let key = (
-        "idem-row-113".to_string(),
-        "POST /api/v1/admin/keys".to_string(),
-    );
     store
         .chain_break(&units.admin_token)
         .expect("chain_break applies");
@@ -515,10 +493,6 @@ fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() 
     store
         .reseal_epoch_floor(&units.admin_token)
         .expect("reseal_epoch_floor applies");
-    store
-        .commit_new_verb_replay(&key, b"first answer")
-        .expect("the replay slot commits");
-    store.replay_new_verb(&key).expect("the replay slot reads");
 
     assert_eq!(
         configured.reached(),
@@ -526,10 +500,8 @@ fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() 
             "chain_break".to_string(),
             "store_restore nightly".to_string(),
             "reseal_epoch_floor".to_string(),
-            "commit_new_verb_replay idem-row-113 POST /api/v1/admin/keys".to_string(),
-            "replay_new_verb idem-row-113 POST /api/v1/admin/keys".to_string(),
         ],
-        "every recovery primitive and the replay slot landed on the book's configured store"
+        "every recovery primitive landed on the book's configured store"
     );
 }
 

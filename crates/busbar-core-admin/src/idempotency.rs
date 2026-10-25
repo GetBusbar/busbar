@@ -15,9 +15,12 @@
 //!
 //! Generic over the cached value `V`: the served key handlers ([`crate::keys`]) cache the response
 //! object they replay verbatim.
+//!
+//! Unlike 1.5.5 the claim also lives in the configured store ([`durable`]), so a retry after a
+//! restart or on another node never runs the mutation twice: it replays, or it is refused.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 // The replay window (600 s) is the store face's own constant now — pulled forward to the ONE ABI
 // crate (DECISIONS #38/#40) so the loader's sealed store cache and this in-process
@@ -52,33 +55,13 @@ pub(crate) fn rotate_replay_key(id: &str, header: &str) -> String {
 /// requiring a JSON value type).
 type Slot<V> = (u64, Option<V>);
 
-/// The durability seam this crate exposes for an idempotency claim (item 271's writer side).
-///
-/// This crate has no dependency on `busbar` (the composition root that owns `Durability` — naming
-/// it here would be the cycle `busbar` -> `busbar-core-admin` -> `busbar` that Cargo already
-/// refuses) and no dependency on the kernel's audit chain. So the record itself is never this
-/// crate's shape: the root binds an impl that closes over ITS OWN `Durability`/`Settling` plumbing
-/// and calls `Durability::journal_claim` from inside [`journal_claim`](ClaimJournal::journal_claim).
-/// A node with no data dir binds nothing (`IdempotencyCache::new`, no journal), so it behaves
-/// exactly as it did before this seam existed — the whole reason
-/// [`IdempotencyCache::with_journal`] is an opt-in constructor rather than a mandatory argument.
-pub trait ClaimJournal: Send + Sync {
-    /// A reservation was just taken for `key` at `now` (unix seconds) — the same instant
-    /// [`IdempotencyCache::probe`] used to insert the in-flight sentinel. Called exactly once per
-    /// first sighting of a key (never on a replay, never on an in-flight refusal, never a second
-    /// time for the same reservation), and under the cache's own lock hold has already been
-    /// released — a slow or failing journal write never holds up the next probe.
-    fn journal_claim(&self, key: &(String, String), now: u64);
-}
-
 /// The cache itself. `(String, String)` is `(actor, header)` for a mint or `(actor, <framed id and
 /// header>)` for a rotate — the caller builds the key, this type only stores it.
+///
+/// It is this process's view only. What outlives the process — that a key was claimed, and what
+/// the claim settled to — is the configured store's, through [`durable`].
 pub struct IdempotencyCache<V> {
     slots: Mutex<HashMap<(String, String), Slot<V>>>,
-    /// `None` on a node with no data dir (or any composition root that never bound one): the cache
-    /// then behaves exactly as it did before this seam existed. `Some` on a durable node, bound by
-    /// the composition root through [`IdempotencyCache::with_journal`].
-    journal: Option<Arc<dyn ClaimJournal>>,
 }
 
 /// The result of probing the cache before starting a mutating verb.
@@ -99,23 +82,10 @@ pub enum Probe<'a, V: Clone> {
 }
 
 impl<V: Clone> IdempotencyCache<V> {
-    /// A fresh, empty cache with no claim journal bound — a node with no data dir, or any caller
-    /// that has not opted into durable claim records, behaves exactly as before this seam existed.
+    /// A fresh, empty cache.
     pub fn new() -> Self {
         IdempotencyCache {
             slots: Mutex::new(HashMap::new()),
-            journal: None,
-        }
-    }
-
-    /// A fresh, empty cache that journals every claim it takes through `journal` (item 271's
-    /// writer side). The composition root calls this instead of [`IdempotencyCache::new`] on a
-    /// durable node; a node with no data dir keeps calling `new` and this cache never differs from
-    /// today's.
-    pub fn with_journal(journal: Arc<dyn ClaimJournal>) -> Self {
-        IdempotencyCache {
-            slots: Mutex::new(HashMap::new()),
-            journal: Some(journal),
         }
     }
 
@@ -139,39 +109,9 @@ impl<V: Clone> IdempotencyCache<V> {
     /// path — so a leaked sentinel is bounded by real work in flight, never by a header a client
     /// chooses, and this is not a way to grow the map without limit.
     ///
-    /// The claim's journal write (a durable append) runs on the calling thread: this is for a
-    /// caller already off the async workers. An async handler takes [`Self::probe_off_worker`].
+    /// What a restart or another node must also see is not taken here: the caller claims the key in
+    /// the store ([`durable::claim`]) before its mutation becomes irreversible.
     pub fn probe(&self, key: (String, String), now: u64) -> Probe<'_, V> {
-        let probe = self.reserve(key, now);
-        if let (Probe::Reserved(r), Some(journal)) = (&probe, &self.journal) {
-            journal.journal_claim(&r.key, now);
-        }
-        probe
-    }
-
-    /// [`Self::probe`] for an ASYNC caller: the same reservation, taken at once under the cache's
-    /// lock, and the claim's journal write — an append and a sync on the node's durable journal —
-    /// on a blocking thread, awaited before the reservation is handed back, so the claim is durable
-    /// before the mutation runs exactly as on the synchronous path, and no runtime worker is held
-    /// through the write.
-    pub async fn probe_off_worker(&self, key: (String, String), now: u64) -> Probe<'_, V> {
-        let probe = self.reserve(key, now);
-        if let (Probe::Reserved(r), Some(journal)) = (&probe, &self.journal) {
-            let journal = Arc::clone(journal);
-            let key = r.key.clone();
-            // A write that panicked is a claim the journal never took, as a failed write is (the
-            // journal never refuses the mutation that took the claim); the reservation stands.
-            let _ = tokio::task::spawn_blocking(move || journal.journal_claim(&key, now)).await;
-        }
-        probe
-    }
-
-    /// The reservation half of a probe: sweep, then replay, refuse in flight, or reserve. The claim
-    /// is taken (a durable record of it — never a replay, an in-flight refusal, or a second
-    /// sighting of the same key) by the caller, outside the lock: the sentinel is already visible
-    /// to every other prober, so a slow or failing journal write never holds up the next probe. A
-    /// node with no journal bound (no data dir) takes no journal call at all.
-    fn reserve(&self, key: (String, String), now: u64) -> Probe<'_, V> {
         let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain(|_, (t, v)| v.is_none() || now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
         match guard.get(&key) {
@@ -210,6 +150,11 @@ pub struct Reservation<'a, V: Clone> {
 }
 
 impl<'a, V: Clone> Reservation<'a, V> {
+    /// The key this reservation holds, for the store claim ([`durable::claim`]).
+    pub fn key(&self) -> &(String, String) {
+        &self.key
+    }
+
     /// Commit the real value, replacing the sentinel. A later replay of this key returns exactly
     /// this value.
     pub fn commit(mut self, value: V, now: u64) {
@@ -254,6 +199,207 @@ impl<'a, V: Clone> Drop for Reservation<'a, V> {
         if self.live {
             self.clear_inner();
         }
+    }
+}
+
+/// THE CLAIM THAT OUTLIVES THE PROCESS: an `Idempotency-Key` taken in the configured store, so a
+/// retry after a restart, or on another node of the fleet, never runs the mutation a second time.
+///
+/// The cache above answers for this process. A key it has never seen is not proof that nobody ran
+/// the mutation: the node may have restarted, or a sibling node may have run it. So before the
+/// mutation becomes irreversible the caller [`claim`]s the key in the store, a single-use
+/// test-and-set (`redeem_plane_token`) that one caller wins fleet-wide and across restarts. When
+/// the mutation answers the caller [`settle`]s the claim (an upserted plane record under
+/// [`REPLAY_KIND`]), and a later claimer that loses the test-and-set reads that record:
+///
+/// - [`Settled::Answer`]: the answer itself, which the caller replays verbatim;
+/// - [`Settled::Applied`]: the mutation ran, but its answer carried a once-shown secret, which the
+///   store never holds, so the caller refuses rather than run it again;
+/// - [`Settled::Released`]: the mutation refused with nothing done, so the next generation of the
+///   claim is open and the retry runs;
+/// - nothing yet: the winner is still running, or died between claiming and settling. Refused as in
+///   flight until the claim lapses with the replay window.
+///
+/// A store that cannot answer refuses the mutation ([`Refused::Unavailable`]): a claim nobody can
+/// check is not taken on trust.
+pub mod durable {
+    use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, RecordStore};
+
+    use super::IDEMPOTENCY_TTL_SECS;
+
+    /// The plane-record kind (and single-use token kind) every idempotency claim lives under.
+    pub const REPLAY_KIND: &str = "busbar.admin-idempotency";
+
+    /// The most generations one claim walks past released predecessors before it calls the key in
+    /// flight. Each generation is one refused attempt inside the replay window.
+    const MAX_GENERATIONS: u32 = 64;
+
+    /// The record layout this build writes.
+    const LAYOUT: u8 = 1;
+
+    /// What a claimed key settled to.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Settled {
+        /// Refused with nothing done: the next claim may run.
+        Released,
+        /// Ran; names what it made (e.g. `key:vk_…`). Its answer is not kept.
+        Applied(String),
+        /// Ran; this is its answer, replayable byte for byte.
+        Answer(Vec<u8>),
+    }
+
+    /// Why a claim was not granted.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Refused {
+        /// An earlier call with this key ran and made this; its answer cannot be replayed.
+        Applied(String),
+        /// An earlier call with this key ran; this is its answer.
+        Answer(Vec<u8>),
+        /// An earlier call with this key has not settled.
+        InFlight,
+        /// The store could not answer.
+        Unavailable(String),
+    }
+
+    /// A claim this caller holds, to [`settle`].
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Claim {
+        id: String,
+        generation: u32,
+    }
+
+    /// The record id of `key`: a digest, so neither the actor nor the client's header is stored.
+    fn record_id(key: &(String, String)) -> String {
+        let framed = format!("{}:{}:{}", key.0.len(), key.0, key.1);
+        busbar_contract::redacted::sha256_hex(framed.as_bytes())
+    }
+
+    fn token(id: &str, generation: u32) -> String {
+        format!("{id}:{generation}")
+    }
+
+    fn encode(generation: u32, written_at: u64, settled: &Settled) -> Vec<u8> {
+        let mut bytes = vec![LAYOUT];
+        bytes.extend_from_slice(&generation.to_be_bytes());
+        bytes.extend_from_slice(&written_at.to_be_bytes());
+        match settled {
+            Settled::Released => bytes.push(0),
+            Settled::Applied(what) => {
+                bytes.push(1);
+                bytes.extend_from_slice(what.as_bytes());
+            }
+            Settled::Answer(answer) => {
+                bytes.push(2);
+                bytes.extend_from_slice(answer);
+            }
+        }
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Option<(u32, u64, Settled)> {
+        let (&layout, rest) = bytes.split_first()?;
+        if layout != LAYOUT || rest.len() < 13 {
+            return None;
+        }
+        let generation = u32::from_be_bytes(rest[..4].try_into().ok()?);
+        let written_at = u64::from_be_bytes(rest[4..12].try_into().ok()?);
+        let body = &rest[13..];
+        let settled = match rest[12] {
+            0 => Settled::Released,
+            1 => Settled::Applied(String::from_utf8(body.to_vec()).ok()?),
+            2 => Settled::Answer(body.to_vec()),
+            _ => return None,
+        };
+        Some((generation, written_at, settled))
+    }
+
+    /// The settled record for `id`, if one was written inside the replay window.
+    fn read(
+        store: &dyn RecordStore,
+        id: &str,
+        now: u64,
+    ) -> Result<Option<(u32, Settled)>, Refused> {
+        let Some(bytes) = store
+            .get_plane_record(REPLAY_KIND, id)
+            .map_err(|e| Refused::Unavailable(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let Some((generation, written_at, settled)) = decode(&bytes) else {
+            return Err(Refused::Unavailable(format!(
+                "the idempotency record `{id}` in the store is not one this build wrote"
+            )));
+        };
+        if now.saturating_sub(written_at) >= IDEMPOTENCY_TTL_SECS {
+            return Ok(None);
+        }
+        Ok(Some((generation, settled)))
+    }
+
+    /// CLAIM `key` in the store at `now`, before the mutation it guards becomes irreversible.
+    ///
+    /// # Errors
+    ///
+    /// Not granted, and why ([`Refused`]).
+    pub fn claim(
+        store: &dyn RecordStore,
+        key: &(String, String),
+        now: u64,
+    ) -> Result<Claim, Refused> {
+        let id = record_id(key);
+        let expires_at = now.saturating_add(IDEMPOTENCY_TTL_SECS);
+        let mut generation = 0;
+        while generation < MAX_GENERATIONS {
+            let first = store
+                .redeem_plane_token(REPLAY_KIND, &token(&id, generation), expires_at, now)
+                .map_err(|e| Refused::Unavailable(e.to_string()))?;
+            if first {
+                return Ok(Claim { id, generation });
+            }
+            match read(store, &id, now)? {
+                Some((held, Settled::Released)) if held >= generation => {
+                    generation = held.saturating_add(1)
+                }
+                Some((_, Settled::Applied(what))) => return Err(Refused::Applied(what)),
+                Some((_, Settled::Answer(answer))) => return Err(Refused::Answer(answer)),
+                _ => return Err(Refused::InFlight),
+            }
+        }
+        Err(Refused::InFlight)
+    }
+
+    /// SETTLE a held claim: what its mutation came to, kept for the replay window. Records older
+    /// than the window are swept on the way; a sweep the store refuses is logged and retried by the
+    /// next settle.
+    ///
+    /// # Errors
+    ///
+    /// The store did not keep the record. The caller logs it: a later retry of this key then reads
+    /// the claim as in flight until it lapses, never as free to run again.
+    pub fn settle(
+        store: &dyn RecordStore,
+        claim: &Claim,
+        now: u64,
+        settled: &Settled,
+    ) -> Result<(), String> {
+        let body = encode(claim.generation, now, settled);
+        store
+            .upsert_plane_record(PlaneRecordRef {
+                kind: REPLAY_KIND,
+                id: &claim.id,
+                parent: None,
+                seq: 0,
+                ts: now,
+                disposition: PlaneDisposition::Terminal,
+                body: &body,
+            })
+            .map_err(|e| e.to_string())?;
+        if let Err(e) =
+            store.purge_plane_records_before(REPLAY_KIND, now.saturating_sub(IDEMPOTENCY_TTL_SECS))
+        {
+            tracing::warn!(error = %e, "expired idempotency records were not swept; the next settle retries");
+        }
+        Ok(())
     }
 }
 
