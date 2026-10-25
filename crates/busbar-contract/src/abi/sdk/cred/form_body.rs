@@ -42,6 +42,26 @@ impl core::fmt::Debug for FormBody {
     }
 }
 
+// The public values travel with the credential (an authorization code, a PKCE verifier): wiped
+// on drop with it.
+impl Drop for FormBody {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        for (name, value) in &mut self.pairs {
+            name.zeroize();
+            if let FormValue::Public(v) = value {
+                v.zeroize();
+            }
+            #[cfg(feature = "chip-jws")]
+            if let FormValue::JwsRs256 { signing_input, .. } = value {
+                signing_input.zeroize();
+            }
+        }
+    }
+}
+
+impl zeroize::ZeroizeOnDrop for FormBody {}
+
 const fn kept(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'*' | b'-' | b'.' | b'_')
 }
