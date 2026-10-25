@@ -43,6 +43,10 @@ pub const REPLY_MAX: usize = 16 * 1024 * 1024;
 /// own way matches on it.
 pub const REPLY_OVER_BOUND: &str = "the reply passed the exchange's bound";
 
+/// A sealed request field: before which of the request's fields it goes (their count: last), its
+/// name, and its sealed value ([`Exchange::request_sealed`]).
+pub type SealedField = (usize, Vec<u8>, crate::abi::sdk::cred::Seal);
+
 /// ONE REQUEST, as [`exchange`] sends it through a framed need.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {
@@ -310,10 +314,7 @@ impl Exchange {
     ///
     /// # Errors
     /// As [`Exchange::request`].
-    pub fn request_sealed(
-        request: Request,
-        sealed: Vec<(usize, Vec<u8>, crate::abi::sdk::cred::Seal)>,
-    ) -> Result<Self, ConnFailure> {
+    pub fn request_sealed(request: Request, sealed: Vec<SealedField>) -> Result<Self, ConnFailure> {
         let mut request = Zeroizing::new(request);
         for (_, name, _) in &sealed {
             if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
