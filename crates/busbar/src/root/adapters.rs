@@ -377,16 +377,31 @@ pub fn check_label_banks() -> Result<(), LabelDrift> {
     use busbar_kernel_breaker::port::label;
     use busbar_kernel_egress::ports::disposition;
 
-    for (breaker, egress) in [
+    let pairs = [
         (label::TRANSIENT_UPSTREAM, disposition::TRANSIENT),
         (label::HARD_DOWN, disposition::HARD_DOWN),
         (label::CONTEXT_LENGTH, disposition::CONTEXT_LENGTH),
-    ] {
+    ];
+    // A test drives the boot seal over a drift by planting one more pair on its own thread; the
+    // banks themselves are other crates' constants and cannot be bent from here.
+    #[cfg(test)]
+    let pairs = pairs
+        .into_iter()
+        .chain(PLANTED_PAIR.with(std::cell::Cell::get));
+    for (breaker, egress) in pairs {
         if breaker != egress {
             return Err(LabelDrift { breaker, egress });
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// One extra `(breaker, egress)` pair [`check_label_banks`] compares on this thread, so a test
+    /// can show the boot seal refusing a drift (item 248). Test builds only.
+    static PLANTED_PAIR: std::cell::Cell<Option<(&'static str, &'static str)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]

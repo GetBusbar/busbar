@@ -393,6 +393,42 @@ fn a_label_drift_refuses_the_boot_and_todays_banks_seal() {
     );
 }
 
+/// THE BOOT SEAL RUNS THE LABEL-BANK CHECK (item 248).
+///
+/// The comparison once existed and passed and nothing ran it: its only caller was the test that
+/// shows it passes, so a rename on one side would ship with the binary booting clean. Driven as
+/// behaviour: a drift is planted where the check reads its pairs, and the seal itself must refuse
+/// with `BootRefusal::LabelDrift` naming both spellings. Moving the call out of the seal makes the
+/// seal answer `Ok` here, and this goes red.
+#[cfg(linked_axis_transport_door)]
+#[test]
+fn the_boot_seal_refuses_a_planted_label_drift() {
+    struct Unplant;
+    impl Drop for Unplant {
+        fn drop(&mut self) {
+            super::PLANTED_PAIR.with(|p| p.set(None));
+        }
+    }
+    let _unplant = Unplant;
+    super::PLANTED_PAIR.with(|p| p.set(Some(("transient_upstream", "transient-upstream"))));
+
+    match crate::root::registry::seal(
+        &crate::LINKED,
+        crate::root::registry::Dropped::NONE,
+        Default::default(),
+    ) {
+        Err(crate::root::registry::BootRefusal::LabelDrift(drift)) => assert_eq!(
+            drift,
+            LabelDrift {
+                breaker: "transient_upstream",
+                egress: "transient-upstream",
+            }
+        ),
+        Err(other) => panic!("the seal refused for another reason: {other}"),
+        Ok(_) => panic!("the boot seal sealed over a label drift: it does not run the check"),
+    }
+}
+
 /// ONE CELL SET ON THE NODE. The root's breaker is bound to the kernel's own unit through the live
 /// snapshot, so a pool observation made through the root adapter is the cell the kernel's admission
 /// reads, and a trip the kernel records is the one the adapter answers with. A second unit would
