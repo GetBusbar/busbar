@@ -61,7 +61,7 @@ pub fn axis() -> Arc<dyn AuthAxis> {
 }
 
 /// A test build's AUTH AXIS over `registry` (installed in place of the root's opener,
-/// [`crate::preflight::install_auth_axis`]): the build's linked auth rows answered in process, the
+/// [`crate::test_support::install_root_auth_axis`]): the build's linked auth rows answered in process, the
 /// registry's dropped-in auth rows refused at their open, and this double for every outbound style
 /// (see the module doc).
 #[must_use]
