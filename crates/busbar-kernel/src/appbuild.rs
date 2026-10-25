@@ -2113,5 +2113,5 @@ struct LaneModelFacts {
 }
 
 #[cfg(test)]
-#[path = "tests/static_seams_drained_tests.rs"]
-mod static_seams_drained_tests;
+#[path = "tests/root_rules_hearing_tests.rs"]
+mod root_rules_hearing_tests;

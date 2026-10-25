@@ -7,6 +7,5 @@
 
 mod config;
 mod credential_typecheck;
-mod money;
 mod secrets;
 mod walk;
