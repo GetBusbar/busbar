@@ -54,6 +54,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub use form::{CredUrl, PasswordAt, UserinfoUrl};
 pub use form_body::{FormBody, FormValue};
 pub use settings::{settings, SettingsError};
+pub use settings::{settings_lent, SECRET_MARKER};
 pub use write::{Parts, SealedWrite};
 
 /// Zeroizing material with no way out of this crate: no getter, no `Debug`, no `Display`, no
