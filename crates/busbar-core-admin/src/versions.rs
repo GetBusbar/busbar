@@ -47,12 +47,6 @@ pub struct VersionLog {
 }
 
 impl VersionLog {
-    pub fn new() -> Self {
-        Self {
-            entries: std::sync::Mutex::new(std::collections::VecDeque::new()),
-        }
-    }
-
     /// Record the snapshot a successful mutation produced. Never fails (poisoned lock recovered —
     /// version history must not take down a mutation that already committed).
     pub fn record(

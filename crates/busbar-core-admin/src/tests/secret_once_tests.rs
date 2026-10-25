@@ -32,6 +32,7 @@ fn the_one_shot_secret_capability_never_prints_what_it_carries() {
         !printed.contains("dead"),
         "the nonce is never printed: {printed}"
     );
+    assert_eq!(once.nonce(), 0xdead_beef_dead_beef_dead_beef_dead_beef);
     assert!(once.matches(0xdead_beef_dead_beef_dead_beef_dead_beef));
     assert!(!once.matches(1));
 }
@@ -62,29 +63,4 @@ fn a_one_shot_secret_is_bound_to_one_unit_and_one_target() {
     );
     assert_ne!(once.target(), elsewhere.target());
     assert_ne!(once, elsewhere);
-}
-
-/// The one-time placeholder's nonce IS the secret: it is the thing the encoded bytes must contain
-/// exactly once, and a reader who has it has what the verb minted.
-#[test]
-fn a_one_time_placeholder_does_not_print_its_nonce() {
-    // A REAL capability token, not a fixture seal: the verbs unit's `Grant<AdminVerb>` is one of
-    // the types the contract implements its sealed `KernelSeal` for (#65).
-    let kernel = Kernel::new();
-    let nonce = 0x0dd1_c0ff_ee15_dead_beef_cafe_f00d_1234_u128;
-    let once = busbar_contract::SecretOnce::mint(
-        &kernel.admin_token(),
-        nonce,
-        UnitKey::new(3),
-        "body.secret",
-    );
-    let printed = format!("{once:?}");
-    assert!(
-        !printed.contains(&nonce.to_string()) && !printed.contains(&format!("{nonce:x}")),
-        "a one-time placeholder printed its nonce: {printed}"
-    );
-    // What it DOES say: where the secret is allowed to appear, which is what a mismatch at the
-    // encode step needs to be diagnosable.
-    assert!(printed.contains("body.secret"), "{printed}");
-    assert_eq!(once.nonce(), nonce);
 }

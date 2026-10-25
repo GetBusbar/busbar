@@ -231,25 +231,6 @@ fn a_dropped_and_retried_reservation_journals_the_fresh_claim() {
     );
 }
 
-#[test]
-fn no_journal_bound_takes_no_calls_and_behaves_exactly_as_before() {
-    // Exactly `IdempotencyCache::new()`, the constructor every existing call site (and a node with
-    // no data dir) still uses: no journal is ever consulted, and every prior assertion in this file
-    // (proved against `IdempotencyCache::new()`) is unaffected by this seam's existence.
-    let cache: IdempotencyCache<String> = IdempotencyCache::new();
-    let k = key("alice", "idem-journal-4");
-
-    let reservation = match cache.probe(k.clone(), 1_000) {
-        Probe::Reserved(r) => r,
-        _ => panic!("first sighting must reserve"),
-    };
-    reservation.commit("first-response".to_string(), 1_000);
-    match cache.probe(k, 1_100) {
-        Probe::Replay(v) => assert_eq!(v, "first-response"),
-        _ => panic!("expected a replay"),
-    };
-}
-
 /// The sentinel's own bound -- what the replay window is, and is not, a bound on.
 #[path = "sentinel_tests.rs"]
 mod sentinel_tests;

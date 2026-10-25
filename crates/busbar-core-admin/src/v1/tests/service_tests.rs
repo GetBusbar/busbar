@@ -6,7 +6,7 @@
 use super::*;
 use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
-fn hook(kind: HookKind, global: bool) -> HookCfg {
+pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
         kind,
         plugin: "test-hook".to_string(),

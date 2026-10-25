@@ -10,14 +10,6 @@ fn cannot_restart_when_no_channel_is_published() {
     );
 }
 
-/// A composition with an exit path takes the drain OUT of the handler: the ask is recorded, and the
-/// exit path releases it once. "Once" is the property that matters — a second release would be a
-/// second drain for one restart, and a release with nothing asked must not drain a process nobody
-/// asked to restart.
-///
-/// Safe to declare in this shared-process binary: no test publishes a shutdown channel (the test
-/// above pins that), so `begin_drain` moves nothing either way here, and the exit-path release is
-/// the only observer of the ask.
 /// The ask cell is one process-wide cell, so the tests that write it take turns. Without this they
 /// would be testing each other's writes — which is the very fault the keyed ask exists to stop, and
 /// not something to reproduce in the harness that proves it.
