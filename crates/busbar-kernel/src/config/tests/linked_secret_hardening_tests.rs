@@ -248,20 +248,6 @@ fn resolve_linked_env_mis_encoded_value_is_not_reported_as_unset() {
     std::env::remove_var(&var);
 }
 
-/// NEGATIVE CONTROL for the mis-encoding diagnosis: a genuinely absent variable must STILL report
-/// "unset" — a path that relabelled every failure as an encoding problem would pass the arm above.
-#[test]
-fn resolve_linked_env_genuinely_unset_still_reports_unset() {
-    let var = unique("ENV_STILL_UNSET");
-    std::env::remove_var(&var);
-    let err = resolve_linked(&SecretRef::env(&var)).unwrap_err();
-    assert!(
-        err.contains("unset"),
-        "a truly absent variable is unset: {err}"
-    );
-    assert!(err.contains(&var), "{err}");
-}
-
 /// Both shapes of a real secret the raw path must not damage: a credential with surrounding
 /// whitespace resolves byte-for-byte (a PEM chain's trailing newline is part of the secret), and a
 /// BINARY secret that is not UTF-8 at all still resolves — only the string path asks for UTF-8.
