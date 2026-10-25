@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 use busbar_contract::abi::mechanism::door::DoorFn;
 
 use super::{check, check_statements, read, store_row, DoorRoot, Stated};
-use busbar_plugin_loader::root_door_fixtures as busbar_plugin_loader_fixtures;
+use busbar_test_kit::root_door_fixtures as busbar_plugin_loader_fixtures;
 
 /// The cells the rows below read their doors into, one per row: a test owns its own range.
 static CELLS: [OnceLock<Stated>; 64] = [const { OnceLock::new() }; 64];

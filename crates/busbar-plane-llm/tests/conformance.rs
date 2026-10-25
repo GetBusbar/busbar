@@ -1430,7 +1430,7 @@ fn the_fee_is_decided_by_the_leg_and_the_client_facing_status() {
 // that reports a class (Anthropic server tools, an OpenAI stated total, Cohere billed units, three
 // Bedrock guardrail traces, an OpenAI per-image answer, a whisper duration), each wanting its
 // counts exactly, so every billable class the tail declares is reported by a case (TODO L-R22).
-busbar_plugin_loader::conformance_suite! {
+busbar_test_kit::conformance_suite! {
     door: busbar_plane_llm::plane_door::MACRO_DOOR,
     cdylib: "llm_door",
     inputs: include_str!("conformance.json"),

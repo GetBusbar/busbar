@@ -312,6 +312,7 @@ dependencies = [
  "busbar-secret-env",
  "busbar-secret-file",
  "busbar-store-memory",
+ "busbar-test-kit",
  "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-stdio",
@@ -805,6 +806,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-plugin-loader",
+ "busbar-test-kit",
  "bytes",
  "getrandom 0.3.4",
  "serde",
@@ -915,6 +917,19 @@ source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=1367f8c318f2f
 dependencies = [
  "busbar-contract",
  "sha2",
+]
+
+[[package]]
+name = "busbar-test-kit"
+version = "1.5.0"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

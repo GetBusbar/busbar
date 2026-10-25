@@ -527,6 +527,6 @@ fn starts(o: Outcome) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, busbar_loader_suite))]
 #[path = "../tests/conformance_datagram_tests.rs"]
 mod tests;

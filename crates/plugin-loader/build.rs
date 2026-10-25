@@ -47,6 +47,10 @@ const STORE_ROWS: &[&str] = &["store"];
 const PACKAGING_SUFFIX: &str = "_plugin";
 
 fn main() {
+    // The core test kit's suite source is compiled into this crate's test build by path (`lib.rs`),
+    // where its own tests run over this crate's fixtures.
+    println!("cargo::rustc-check-cfg=cfg(busbar_loader_suite)");
+    println!("cargo:rustc-cfg=busbar_loader_suite");
     println!("cargo:rerun-if-changed=Cargo.toml");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
     let mut out = String::from(

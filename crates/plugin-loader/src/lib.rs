@@ -28,13 +28,6 @@ pub mod auth_door;
 /// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
 pub mod boot;
-/// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
-/// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
-/// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
-/// transport row through it too (`transport_door_conformance_tests`).
-#[cfg(any(test, feature = "conformance"))]
-#[allow(unsafe_code)] // REVIEWED: the published suite drives raw doors and plants faults
-pub mod conformance;
 /// THE ONE DISPATCHER of the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, §11): one loader path, one
 /// crossing, tickets, wakes, deadlines and the watchdog, generic over the kind.
 #[allow(unsafe_code)] // REVIEWED: THE ONE DISPATCHER: every crossing of the memory ABI
@@ -57,11 +50,6 @@ pub mod highwater;
 #[allow(unsafe_code)] // REVIEWED: lends the hook door its frame
 pub mod hook_door;
 mod host;
-/// NEVER SHIPPED: the framed connection-table stand-in with in-process far ends (`test-support`,
-/// and the published conformance suite's `far_ends`), for a build that cannot link the process's
-/// connector. No TLS library: TLS stays in the connector.
-#[cfg(any(test, feature = "test-support", feature = "conformance"))]
-pub mod https_conns;
 pub mod observe;
 pub mod open_once;
 pub mod registry;
@@ -79,38 +67,28 @@ mod needs_restated;
 pub mod sign;
 #[allow(unsafe_code)] // REVIEWED: the staged image's `memfd` and its file descriptors
 mod stage;
-/// NEVER SHIPPED: the facts the test connection tables stand in for, read from data
-/// (`stand_in.json`), so no Rust source of this crate names a transport.
-#[cfg(any(test, feature = "test-support", feature = "conformance"))]
-pub mod stand_in;
 pub mod store_adapter;
 #[allow(unsafe_code)] // REVIEWED: lends the store door its request (`Lend`)
 pub mod store_v3;
 pub mod tarball;
-/// TEST ONLY: the test connection table. Also the published conformance suite's (`conformance`):
-/// a plugin repo names this crate only as a dev-dependency, so it reaches no shipped closure.
-#[cfg(any(test, feature = "test-support", feature = "conformance"))]
+// THE CORE TEST KIT'S SUITE AND DOUBLES (`busbar-test-kit`), compiled into this crate's test build
+// by path: its own tests drive it over this crate's fixtures and doors, at this crate's paths.
+#[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: the published suite drives raw doors and plants faults
+#[path = "../../busbar-test-kit/src/conformance/mod.rs"]
+pub mod conformance;
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/https_conns.rs"]
+pub mod https_conns;
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/stand_in.rs"]
+pub mod stand_in;
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/tcp_conns.rs"]
 pub mod tcp_conns;
-/// TEST ONLY: a local token issuer (an ES256 key, its JWKS, signed tokens) for the tests of a host
-/// that loads a token-verifying auth plugin (`test-support`).
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
+#[path = "../../busbar-test-kit/src/test_issuer.rs"]
 pub mod test_issuer;
-/// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
-/// Compiled for this crate's tests and under the `test-support` feature, which only
-/// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-#[path = "tests/test_support.rs"]
-pub mod test_support;
-
-/// TEST ONLY: the composition root's door fixtures (status row 195): doors built by the contract's
-/// door macro, whose expansion writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no
-/// such expansion. Under `test-support`, which only the root's `[dev-dependencies]` turns on.
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-#[allow(unsafe_code)] // TEST ONLY: plugin_door! fixtures the composition root's tests drive
-#[path = "../tests/fixtures/root_door_fixtures.rs"]
-pub mod root_door_fixtures;
 
 /// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
 pub mod rows;

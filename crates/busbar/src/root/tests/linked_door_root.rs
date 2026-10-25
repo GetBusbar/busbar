@@ -16,7 +16,7 @@ use crate::root::linked::linked_transport;
 use crate::root::registry::{compose, Dropped};
 // The door-root crates in miniature, built in the loader's test fixtures: the root holds no door
 // macro (status row 195).
-use busbar_plugin_loader::root_door_fixtures::{layered, misnamed, wire};
+use busbar_test_kit::root_door_fixtures::{layered, misnamed, wire};
 
 /// GREEN: A DOOR-ROOT ROW LINKS WITH THE KEY, LAYERS AND SESSION ITS STATEMENT STATES. The row is
 /// built by the macro the generated linked table expands for every `transport` row, from the bare

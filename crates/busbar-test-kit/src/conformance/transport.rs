@@ -1117,9 +1117,9 @@ pub(super) fn contract(fold: &Fold, want: &[(String, Want)]) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, busbar_loader_suite))]
 #[path = "../tests/conformance_transport_opening_tests.rs"]
 mod opening_tests;
-#[cfg(test)]
+#[cfg(all(test, busbar_loader_suite))]
 #[path = "../tests/conformance_transport_role_tests.rs"]
 mod role_tests;

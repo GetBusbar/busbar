@@ -1441,6 +1441,6 @@ fn contract(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, busbar_loader_suite))]
 #[path = "../../tests/conformance_auth_form_tests.rs"]
 mod form_tests;

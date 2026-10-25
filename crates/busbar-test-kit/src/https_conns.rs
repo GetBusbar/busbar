@@ -153,7 +153,6 @@ impl HttpsConns {
     }
 
     /// Serve a test issuer's JWKS at its URL, under its certificate.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn serve_issuer(&self, issuer: &crate::test_issuer::Issuer) {
         self.serve(
             issuer.jwks_url(),

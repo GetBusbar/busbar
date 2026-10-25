@@ -16,6 +16,7 @@ members = [
     "crates/busbar-kernel-audit",
     "crates/busbar-plane-llm",
     "crates/plugin-loader",
+    "crates/busbar-test-kit",
     "testing/ws-conformance/subject",
     "testing/voice-conformance/harness",
     "testing/webrtc-conformance/subject",

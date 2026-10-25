@@ -128,7 +128,7 @@ fn text(s: AbiStr) -> Option<String> {
 
 /// What a READY `begin_login` answered, copied out of the plugin memory its lease holds; `None`
 /// when malformed. The one reading of an answer: the auth conformance suite spells it from here.
-pub(crate) fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
+pub fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
     match out.shape {
         BEGIN_AUTHORIZE => text(out.authorize_url)
             .filter(|u| !u.is_empty())

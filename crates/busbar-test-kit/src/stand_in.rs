@@ -70,6 +70,6 @@ impl FramedFacts {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, busbar_loader_suite))]
 #[path = "tests/stand_in_tests.rs"]
 mod tests;
