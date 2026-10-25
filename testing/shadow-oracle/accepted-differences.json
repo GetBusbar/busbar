@@ -4073,8 +4073,8 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "cells": "^store\\.boot\\|postgres\\|(key-value|loopback|sslmode-disable|sslmode-require|url-options)$",
-      "expected_cells": 5,
+      "cells": "^store\\.boot\\|postgres\\|(key-value|localhost|loopback|multi-host|sslmode-disable|sslmode-require|url-options)$",
+      "expected_cells": 7,
       "classes": [
         "body"
       ],
@@ -4082,7 +4082,7 @@
         "cell": "store.boot|postgres|key-value",
         "body_contains": "plugin load failed"
       },
-      "rationale": "OWNER 2026-10-24 (in session): signed as an improvement (busbar-store-postgres render_pg_error)."
+      "rationale": "OWNER 2026-10-24 (in session): signed as an improvement (busbar-store-postgres render_pg_error). SCOPE 5 -> 7 (OWNER 2026-10-25, ORACLE-SIGNOFF G10): localhost (dialled since a074d076c5) and multi-host (dialled again since #1676) now reach the capture mock and print the same `28000: ...` server text as their five siblings; recorded on Linux at 351d7ee81f."
     },
     {
       "id": "DRIFT the webrequest hook status reports no false drift",
@@ -4148,8 +4148,8 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "cells": "^(boot\\.refusal\\|(BOOT-136|BOOT-137a|BOOT-139a|BOOT-162)\\|boot|boot\\.refusal\\|BOOT-150\\|validate|admin\\.ops\\|(PostPluginsInspect\\|ok|PostPluginsRollback\\|(ok|if-match-stale))@hooks-webrequest)$",
-      "expected_cells": 8,
+      "cells": "^(boot\\.refusal\\|(BOOT-136|BOOT-137a|BOOT-139a|BOOT-162)\\|boot|boot\\.warning\\|BOOT-W23\\|boot|boot\\.refusal\\|BOOT-150\\|validate|admin\\.ops\\|(PostPluginsInspect\\|ok|PostPluginsRollback\\|(ok|if-match-stale))@hooks-webrequest)$",
+      "expected_cells": 9,
       "classes": [
         "body",
         "effects.stderr"
@@ -4158,7 +4158,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "DECISION: Part 2 #34; OWNER 2026-10-24 (in session) for these cells. The transform rewrites only the plugin's name back to 1.5.5's.",
+      "rationale": "DECISION: Part 2 #34; OWNER 2026-10-24 (in session) for these cells. The transform rewrites only the plugin's name back to 1.5.5's. SCOPE 8 -> 9 (OWNER 2026-10-25, ORACLE-SIGNOFF G11): boot.warning|BOOT-W23|boot, whose UNVERIFIED line is 1.5.5's again since the operator-trust loopback fix (81e3062956), differs only by this plugin name (and D-1's diag code); recorded on Linux at 351d7ee81f.",
       "transform": {
         "candidate": [
           [
