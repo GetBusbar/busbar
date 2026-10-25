@@ -195,6 +195,8 @@ impl Seal {
     }
 }
 
+mod json;
 #[cfg(test)]
 #[path = "../tests/cred_tests.rs"]
 mod tests;
+pub use json::{json_reply, JsonFailure, JsonReplyError, NotJsonText, SealedJson};

@@ -189,3 +189,23 @@ impl SealedWrite {
         c.write_request(stream, piece, &self.buf)
     }
 }
+
+/// THE ANSWER PATH OF A KIND THAT ANSWERS INTO A HOST BUFFER (a plane's `on_piece` reply). The
+/// buffer takes plain bytes, so the sealed bytes leave the SDK here: copied straight from this
+/// write's zeroizing buffer into the host's, never through a plugin `Vec` or `String`. That copy
+/// is the in-process residual the destination requires (`cred::json`).
+impl SealedWrite {
+    /// Write what is left into `buf`, as much as there is room for (backpressure: the host
+    /// flushes it and calls again). Answers how many bytes went in; [`SealedWrite::finished`]
+    /// once every byte is taken.
+    pub fn stream_into(&mut self, buf: &mut crate::abi::sdk::HostBuf<'_, u8>) -> usize {
+        let n = buf.stream(&self.buf[self.done..]);
+        self.done += n;
+        n
+    }
+
+    /// The bytes not yet taken (a length is public).
+    pub fn remaining(&self) -> usize {
+        self.buf.len().saturating_sub(self.done)
+    }
+}
