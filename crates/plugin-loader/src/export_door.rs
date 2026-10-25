@@ -316,6 +316,8 @@ impl Shared {
             let (outcome, error) = match ran {
                 Ran::Answered { called, .. } => (called.outcome, called.error),
                 Ran::TimedOut { .. } => (Outcome::Failed, None),
+                // The watchdog judged the delivery a breach: the plugin's FAULT, never retried.
+                Ran::Faulted => (Outcome::Fault, None),
                 Ran::NoTicket => {
                     tracing::warn!(
                         plugin = %self.plugin.name(),

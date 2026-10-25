@@ -1076,6 +1076,50 @@ async fn a_host_panic_inside_a_crossing_answers_fault_and_frees_the_op() {
     assert_eq!(units_come_back(&h).await, 0);
 }
 
+/// A WEDGED CROSSING IS ANSWERED AT THE BREACH, NOT WHEN IT RETURNS: an op whose caller does not
+/// leave at its deadline, whose crossing outlives its class's watch budget, is judged a breach by the
+/// watchdog; the caller is answered FAULT then, while the wedged crossing runs on — never kept until
+/// the plugin returns.
+#[tokio::test]
+async fn a_crossing_the_watchdog_judges_a_breach_is_answered_fault_while_it_runs() {
+    use crate::dispatch::call::{self, Opts, Ran};
+    use crate::dispatch::Frame;
+    use busbar_contract::abi::hook::slot;
+    use busbar_contract::abi::mechanism::call::DeadlineClass;
+    let h = opened(br#"{"reject_over_messages": 3, "sleep_ms": 4500}"#);
+    let plugin = live(&h);
+    let f = frame(2);
+    let started = std::time::Instant::now();
+    let ran = call::call(
+        &plugin,
+        slot::DECIDE,
+        Frame::new(
+            f.input(),
+            super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
+        ),
+        Arc::clone(&f) as crate::dispatch::Lent,
+        Opts {
+            class: DeadlineClass::Call,
+            deadline: Some(std::time::Instant::now() + Duration::from_secs(60)),
+            watch: Duration::ZERO,
+            leave: false,
+            lane: None,
+        },
+        &mut |_| None,
+    )
+    .await;
+    let took = started.elapsed();
+    assert!(
+        matches!(ran, Ran::Faulted),
+        "a breached crossing is answered FAULT: {ran:?}"
+    );
+    assert!(
+        took < Duration::from_millis(4_000),
+        "answered at the breach, not when the wedged plugin returns: {took:?}"
+    );
+    assert!(plugin.is_faulted(), "the breach quarantined the instance");
+}
+
 /// THE DEADLINE RIDES THE HEAD (round 3 M1): every crossing's `InHead.deadline_ns` states the op's
 /// deadline.
 #[tokio::test]

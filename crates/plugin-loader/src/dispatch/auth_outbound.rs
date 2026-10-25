@@ -490,7 +490,9 @@ impl OutboundAuth for OutboundInstance {
                     );
                     settled(called.outcome, &lent, &frame.out)
                 }
-                super::call::Ran::TimedOut { .. } | super::call::Ran::NoTicket => Fields::Failed,
+                super::call::Ran::TimedOut { .. }
+                | super::call::Ran::Faulted
+                | super::call::Ran::NoTicket => Fields::Failed,
             }
         };
         Box::new(Waiting {

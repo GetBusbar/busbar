@@ -108,23 +108,28 @@ fn ticketless(pool: &Pool) {
         // Each hung call is ONE breach, however many scans see it hung: only calls at or above
         // the instance's counted mark are new.
         let from = inst.ticketless_counted.load(Ordering::Acquire);
-        let fresh: Vec<u64> = inst
+        let fresh: Vec<(u64, Option<super::plugin::Breach>)> = inst
             .lock_calls()
             .iter()
             .filter(|c| {
                 c.id >= from
                     && c.started.elapsed() > pool.env.budgets.of(c.slot, c.class).max(c.watch)
             })
-            .map(|c| c.id)
+            .map(|c| (c.id, c.breach.clone()))
             .collect();
-        let Some(&last) = fresh.iter().max() else {
+        let Some(last) = fresh.iter().map(|(id, _)| *id).max() else {
             continue;
         };
         inst.ticketless_counted
             .fetch_max(last + 1, Ordering::AcqRel);
         let mut quarantined = false;
-        for _ in &fresh {
+        for (_, told) in &fresh {
             quarantined = breach(pool, &inst);
+            // The breached crossing's op is answered FAULT now; the crossing runs on, owning what
+            // it was lent, and ends the op when it returns.
+            if let Some(tell) = told {
+                tell();
+            }
         }
         if quarantined {
             // A quarantined instance never crosses again: its connector streams go now.

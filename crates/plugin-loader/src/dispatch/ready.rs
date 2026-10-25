@@ -79,6 +79,8 @@ impl<K: Kind> Plugin<K> {
                 return Err(failed(format!("{:?}", K::TIMEOUT)));
             }
             Some(super::call::Ran::NoTicket) => return Err(failed("no ticket is free".into())),
+            // The watchdog judged the crossing a breach: the plugin's FAULT.
+            Some(super::call::Ran::Faulted) => return Err(failed(format!("{:?}", Outcome::Fault))),
             None => return Err(failed(format!("no answer within {deadline:?}"))),
         };
         match (done.outcome, done.error) {
