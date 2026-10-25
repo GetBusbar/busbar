@@ -258,18 +258,37 @@ impl LoadedStore {
         let s = r.slot();
         let class = OPS[(s - LIFECYCLE_SLOTS) as usize].deadline;
         let r = Lend::new(r);
-        let ran = call::call(
-            &self.plugin,
-            s,
-            r.frame(),
-            r.lent(),
-            opts(class),
-            &mut |f| {
-                r.grow(&f.out);
-                Some((r.frame(), r.lent()))
-            },
-        )
-        .await;
+        let ran = if class == DeadlineClass::WriteBehind {
+            // NEVER CANCELLED: the op runs on the write-behind runner, to its end, whether or not
+            // this caller still waits for it.
+            let grown = Arc::clone(&r);
+            call::call_write_behind(
+                Arc::clone(&self.plugin),
+                s,
+                r.frame(),
+                r.lent(),
+                Arc::default(),
+                Box::new(move |f| {
+                    grown.grow(&f.out);
+                    Some((grown.frame(), grown.lent()))
+                }),
+                None,
+            )
+            .await
+        } else {
+            call::call(
+                &self.plugin,
+                s,
+                r.frame(),
+                r.lent(),
+                opts(class),
+                &mut |f| {
+                    r.grow(&f.out);
+                    Some((r.frame(), r.lent()))
+                },
+            )
+            .await
+        };
         let ran = match ran {
             call::Ran::Answered { called, frame, .. } => Ran {
                 outcome: called.outcome,

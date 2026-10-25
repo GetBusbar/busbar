@@ -1234,6 +1234,177 @@ async fn a_pending_hook_with_a_slow_cancel_is_answered_at_its_budget() {
     assert_eq!(units_come_back(&h).await, 0);
 }
 
+/// A WAITED-FOR CANCEL THAT HANGS IS ANSWERED AT ITS BREACH (PR 2 review M2): a caller that waits
+/// out its deadline for the op's `cancel` is answered FAULT once the watchdog judges that cancel a
+/// breach, never left waiting while the plugin holds it.
+#[tokio::test]
+async fn a_waited_cancel_the_watchdog_judges_a_breach_answers_fault() {
+    use crate::dispatch::call::{self, Opts, Ran};
+    use crate::dispatch::Frame;
+    use busbar_contract::abi::hook::slot;
+    use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true, "slow_cancel_ms": 6000}"#);
+    let plugin = live(&h);
+    let f = frame(2);
+    let started = std::time::Instant::now();
+    let ran = tokio::time::timeout(
+        Duration::from_secs(5),
+        call::call(
+            &plugin,
+            slot::DECIDE,
+            Frame::new(
+                f.input(),
+                super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
+            ),
+            Arc::clone(&f) as crate::dispatch::Lent,
+            Opts {
+                class: DeadlineClass::Call,
+                deadline: Some(std::time::Instant::now() + Duration::from_millis(100)),
+                watch: Duration::ZERO,
+                leave: false,
+                lane: None,
+                admission: crate::dispatch::plugin::Admission::Cap,
+                ticket: None,
+                inline: false,
+                cancel: None,
+            },
+            &mut |_| None,
+        ),
+    )
+    .await
+    .expect("the caller is answered at the cancel's breach, not when the cancel returns");
+    assert!(
+        matches!(&ran, Ran::TimedOut { cancelled: Some(c) } if c.outcome == Outcome::Fault),
+        "a breached cancel answers FAULT: {ran:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+/// ONE OP AT A TIME ON A HELD TICKET (PR 2 review M3; the mechanism: ops on one ticket never
+/// overlap): an op whose caller dropped it while it pended is cancelled on a plugin thread, and the
+/// next op on the same ticket does not cross until that `cancel` has returned. RED: the next op
+/// crossed at once, beside the dropped op's `cancel`.
+#[tokio::test]
+async fn the_next_op_on_a_held_ticket_waits_for_the_dropped_ops_cancel() {
+    use crate::dispatch::call::{self, CancelRequest, Opts};
+    use crate::dispatch::Frame;
+    use busbar_contract::abi::hook::slot;
+    use busbar_contract::abi::mechanism::call::DeadlineClass;
+    use std::sync::atomic::Ordering;
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true, "slow_cancel_ms": 600}"#);
+    let plugin = live(&h);
+    let held = plugin.inline_ticket().expect("a held ticket");
+    let t = held.ticket();
+    let f = frame(2);
+    let op = |cancel: Arc<CancelRequest>| {
+        let plugin = Arc::clone(&plugin);
+        let f = Arc::clone(&f);
+        async move {
+            call::call(
+                &plugin,
+                slot::DECIDE,
+                Frame::new(
+                    f.input(),
+                    super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
+                ),
+                Arc::clone(&f) as crate::dispatch::Lent,
+                Opts {
+                    class: DeadlineClass::Call,
+                    deadline: None,
+                    watch: Duration::ZERO,
+                    leave: false,
+                    lane: None,
+                    admission: crate::dispatch::plugin::Admission::Cap,
+                    ticket: Some(t),
+                    inline: false,
+                    cancel: Some(cancel),
+                },
+                &mut |_| None,
+            )
+            .await
+        }
+    };
+    let first = Arc::new(CancelRequest::default());
+    let task = tokio::spawn(op(Arc::clone(&first)));
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while !first.waiting() && std::time::Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(first.waiting(), "the first op pends");
+    // The caller goes away: its op is cancelled on a plugin thread (the cancel takes 600 ms).
+    task.abort();
+    let _ = task.await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let crossed = plugin.inner.crossings.load(Ordering::SeqCst);
+    let second = tokio::spawn(op(Arc::new(CancelRequest::default())));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        plugin.inner.crossings.load(Ordering::SeqCst),
+        crossed,
+        "the next op crossed beside the dropped op's cancel"
+    );
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while plugin.inner.crossings.load(Ordering::SeqCst) == crossed
+        && std::time::Instant::now() < until
+    {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        plugin.inner.crossings.load(Ordering::SeqCst) > crossed,
+        "the next op crosses once the cancel returned"
+    );
+    second.abort();
+    drop(held);
+}
+
+/// NO BARE RESUME (PR 2 review m6; the mechanism: an op is resumed on its wake or its
+/// `wake_at_ns`, never on a bare re-poll): a pending op with no deadline on a healthy instance is
+/// looked at every second (a faulted instance's op is answered then), but never resumed by a look.
+/// RED: each look re-crossed the op with `FLAG_RESUME`.
+#[tokio::test]
+async fn a_pending_op_with_no_deadline_is_never_resumed_by_a_look() {
+    use crate::dispatch::call::{self, Opts};
+    use crate::dispatch::Frame;
+    use busbar_contract::abi::hook::slot;
+    use busbar_contract::abi::mechanism::call::DeadlineClass;
+    use std::sync::atomic::Ordering;
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true}"#);
+    let plugin = live(&h);
+    let f = frame(2);
+    let resumes = plugin.inner.resumes.load(Ordering::SeqCst);
+    let waited = tokio::time::timeout(
+        Duration::from_millis(2_500),
+        call::call(
+            &plugin,
+            slot::DECIDE,
+            Frame::new(
+                f.input(),
+                super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
+            ),
+            Arc::clone(&f) as crate::dispatch::Lent,
+            Opts {
+                class: DeadlineClass::Call,
+                deadline: None,
+                watch: Duration::ZERO,
+                leave: false,
+                lane: None,
+                admission: crate::dispatch::plugin::Admission::Cap,
+                ticket: None,
+                inline: false,
+                cancel: None,
+            },
+            &mut |_| None,
+        ),
+    )
+    .await;
+    assert!(waited.is_err(), "nothing woke the op");
+    assert_eq!(
+        plugin.inner.resumes.load(Ordering::SeqCst),
+        resumes,
+        "a look resumed a healthy instance's op"
+    );
+}
+
 /// A HOST PANIC INSIDE A WAITED-FOR CANCEL (round 4) answers the caller FAULT; it never waits for
 /// ever.
 #[tokio::test]

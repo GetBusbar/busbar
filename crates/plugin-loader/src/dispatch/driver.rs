@@ -188,6 +188,9 @@ struct State {
     ticks_held: u32,
     /// The ticks waiting for the ticket (another crossing runs) or for a held slot (parked).
     waiting: VecDeque<Waker>,
+    /// The watchdog judged a crossing on the ticket a breach: it may never return, so every tick
+    /// waiting on it, and every later one, is answered FAULT.
+    breached: bool,
 }
 
 impl Driver {
@@ -237,6 +240,12 @@ impl Driver {
     /// The instance can no longer cross: every waiting tick is answered rather than left waiting.
     fn gone(&self) -> bool {
         self.inst.faulted.load(Ordering::Acquire) || !self.inst.is_open()
+    }
+
+    /// No tick can be answered by a crossing on this ticket any more: the instance can no longer
+    /// cross, or a crossing on the ticket was judged a breach.
+    fn dead(&self) -> bool {
+        self.gone() || self.lock().breached
     }
 
     /// Wake every waiting tick: each looks again.
@@ -290,7 +299,7 @@ impl Driver {
             let ticket = self.ticket();
             let heads = frame.prepare(ticket, flags);
             self.services.held.enter(ticket, false);
-            let c = self.cross(slot::DRIVE, heads, DeadlineClass::Connection);
+            let c = self.cross(slot::DRIVE, heads, DeadlineClass::Connection, None);
             self.services.held.leave(ticket);
             if c.outcome == Outcome::Ready {
                 self.inst.driven.name(frame.named());
@@ -333,6 +342,7 @@ impl Driver {
             u32,
         ),
         class: DeadlineClass,
+        also: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Crossed {
         if self.inst.faulted.load(Ordering::Acquire) {
             return Crossed::host(Outcome::Fault);
@@ -341,8 +351,13 @@ impl Driver {
         let me = self.me.clone();
         self.inst.lock_calls().push(Watched {
             breach: Some(Arc::new(move || {
+                if let Some(also) = &also {
+                    also();
+                }
                 if let Some(d) = me.upgrade() {
-                    Self::release_waiting(&mut d.lock());
+                    let mut st = d.lock();
+                    st.breached = true;
+                    Self::release_waiting(&mut st);
                 }
             })),
             ..Watched::new(id, s, Duration::ZERO, class)
@@ -365,11 +380,20 @@ impl Driver {
         }
         let ticket = self.ticket();
         // The ticket, once free; then whether this tick starts a cycle or keeps one.
+        let mut look = Box::pin(sleep_until(Instant::now() + LOOK));
         let kept = std::future::poll_fn(|cx| {
             if self.gone() {
                 return Poll::Ready(None);
             }
+            // Looked at again every `LOOK`: an instance quarantined or closed meanwhile, by another
+            // op, answers a waiting tick.
+            while look.as_mut().poll(cx).is_ready() {
+                look = Box::pin(sleep_until(Instant::now() + LOOK));
+            }
             let mut st = self.lock();
+            if st.breached {
+                return Poll::Ready(None);
+            }
             if st.busy {
                 st.waiting.push_back(cx.waker().clone());
                 return Poll::Pending;
@@ -405,7 +429,18 @@ impl Driver {
         {
             let me = Arc::clone(&self);
             let ticked = Arc::clone(&ticked);
+            // The tick counts for a reload drain until it returns, or until the watchdog judges it a
+            // breach, whichever is first.
             self.inst.drainable.fetch_add(1, Ordering::AcqRel);
+            let drained = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let undrain: Arc<dyn Fn() + Send + Sync> = {
+                let inst = Arc::clone(&self.inst);
+                Arc::new(move || {
+                    if !drained.swap(true, Ordering::AcqRel) {
+                        inst.drainable.fetch_sub(1, Ordering::AcqRel);
+                    }
+                })
+            };
             crate::ffi_thread::spawn_on_plugin_thread(move || {
                 let mut frame = Frame::new(
                     TickIn {
@@ -428,9 +463,14 @@ impl Driver {
                     h.deadline_ns = 0;
                 }
                 me.services.held.enter(ticket, kept);
-                let c = me.cross(slot::TICK, heads, DeadlineClass::Call);
+                let c = me.cross(
+                    slot::TICK,
+                    heads,
+                    DeadlineClass::Call,
+                    Some(Arc::clone(&undrain)),
+                );
                 me.services.held.leave(ticket);
-                me.inst.drainable.fetch_sub(1, Ordering::AcqRel);
+                undrain();
                 let owed = {
                     let mut st = me.lock();
                     // A tick that answered PENDING ends; what pended inside it is held and goes on
@@ -457,8 +497,12 @@ impl Driver {
                 }
             });
         }
+        let mut look = Box::pin(sleep_until(Instant::now() + LOOK));
         std::future::poll_fn(|cx| {
-            let answered = ticked.poll(cx, || self.gone());
+            while look.as_mut().poll(cx).is_ready() {
+                look = Box::pin(sleep_until(Instant::now() + LOOK));
+            }
+            let answered = ticked.poll(cx, || self.dead());
             if answered.is_pending() {
                 // A breach of the tick's crossing wakes the waiting: this caller is answered then.
                 self.lock().waiting.push_back(cx.waker().clone());
@@ -516,6 +560,9 @@ impl Answer {
         Poll::Pending
     }
 }
+
+/// How often a waiting tick looks whether its instance can still cross.
+const LOOK: Duration = Duration::from_secs(1);
 
 /// The instant `ns` (the dispatcher's clock) names.
 fn at(ns: u64) -> Instant {

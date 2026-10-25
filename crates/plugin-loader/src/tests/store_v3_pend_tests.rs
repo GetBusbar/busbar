@@ -184,6 +184,46 @@ mod commits_then_pends {
         64
     );
 }
+/// A usage batch that pends once (200 ms) and records that its RESUME came: a write-behind op runs
+/// on to its end whatever its caller does.
+struct PendsThenRecords;
+
+static RESUMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+impl Hooks for PendsThenRecords {
+    fn add_usage_batch(
+        inner: &MemoryStore,
+        cx: &mut Op<'_>,
+        op: OpId,
+        cells: &[(&str, u64, UsageDelta)],
+    ) -> Step<OpResult<()>> {
+        if let Some(Kept(t)) = cx.resume::<Kept<OpResult<()>>>() {
+            RESUMED.store(true, std::sync::atomic::Ordering::SeqCst);
+            return Step::Ready(t);
+        }
+        let mut d = Op::detached();
+        let answer = ready(<MemoryStore as StoreSlots>::add_usage_batch(
+            inner, &mut d, op, cells,
+        ));
+        if !cx.can_pend() {
+            return Step::Ready(answer);
+        }
+        cx.park(Kept(answer));
+        Step::Pending {
+            wake_at_ns: now_ns().saturating_add(200_000_000),
+        }
+    }
+}
+
+mod pends_then_records {
+    busbar_contract::store_door!(
+        super::Wrapped<super::PendsThenRecords>,
+        "pends-then-records",
+        "0",
+        64
+    );
+}
+
 mod pends_on_nothing {
     busbar_contract::store_door!(
         super::Wrapped<super::PendsOnNothing>,
@@ -308,6 +348,37 @@ fn a_usage_batch_cancelled_after_its_write_retries_counted_once() {
         .expect("the retry of the same op_id answers");
     let counted = RecordStore::get_usage(&s, CANCELLED, 60).expect("read");
     assert_eq!(counted.requests, 4, "counted once, not twice");
+}
+
+/// WRITE-BEHIND IS NEVER CANCELLED (PR 2 review M1; `abi/store`: a write-behind op is never
+/// cancelled on a client drop): a usage batch whose caller drops it while it pends runs on to its
+/// end, resumed on its own wake, never cancelled. RED: the dropped call cancelled it, and its
+/// resume never came.
+#[test]
+fn a_dropped_write_behind_store_op_runs_on_to_its_end() {
+    let s = open(pends_then_records::door);
+    let rt = rt();
+    let cells = [(
+        "wb",
+        60u64,
+        UsageDelta {
+            requests: 1,
+            billable_requests: 1,
+            models: Vec::new(),
+        },
+    )];
+    let dropped = rt.block_on(async {
+        tokio::time::timeout(Duration::from_millis(50), s.add_usage_batch(mint(), &cells)).await
+    });
+    assert!(dropped.is_err(), "the batch pends when its caller drops it");
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while !RESUMED.load(std::sync::atomic::Ordering::SeqCst) && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        RESUMED.load(std::sync::atomic::Ordering::SeqCst),
+        "the dropped write-behind op was cancelled, never resumed"
+    );
 }
 
 /// The raw door: its open, and a `delete_key` entry on `ticket` with `flags`.

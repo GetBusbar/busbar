@@ -293,12 +293,13 @@ fn on_plugin_thread_in<F: FnOnce() -> R, R>(
 /// Run `f` on a permanent worker WITHOUT waiting for it: the worker is borrowed for `f` alone and
 /// returned to the idle list when `f` ends. `f` owns everything it touches (`'static`), so the
 /// caller may go on (or go away) at once. A panic in `f` is caught on the worker and dropped.
-pub(crate) fn spawn_on_plugin_thread(f: impl FnOnce() + Send + 'static) {
+/// `false`: no thread could be had for it, and `f` was dropped unrun.
+pub(crate) fn spawn_on_plugin_thread(f: impl FnOnce() + Send + 'static) -> bool {
     let Some(lease) = try_acquire(pool()) else {
         // No thread could be had for it: the job is dropped (what it owns is freed with it), and
         // said; never a panic, as this runs from `Drop` too.
         tracing::error!("no plugin thread could be started; a plugin job is dropped");
-        return;
+        return false;
     };
     let tx = lease.tx.clone();
     let job = move || {
@@ -319,6 +320,7 @@ pub(crate) fn spawn_on_plugin_thread(f: impl FnOnce() + Send + 'static) {
         done,
     })
     .expect("a plugin FFI worker never exits, so its receiver is always live");
+    true
 }
 
 #[cfg(test)]

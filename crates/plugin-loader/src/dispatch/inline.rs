@@ -45,6 +45,10 @@ pub(crate) struct Slot {
     /// How many times the slot was handed out; only grows (read lock-free by the judgement).
     count: AtomicU32,
     held: Mutex<Held>,
+    /// ONE OP AT A TIME on a ticket its owner holds: the generation whose op holds the turn (`0`:
+    /// none), and the ops waiting for it ([`InlineTickets::turn`]). A recycled slot's next
+    /// generation never waits on the last one's op.
+    turn: Mutex<(u32, Vec<Waker>)>,
 }
 
 /// THE SLOT'S SECTION: the generation it holds (`0` once RETIRED: no ticket is handed out on it
@@ -208,6 +212,7 @@ impl InlineTickets {
                     .filter(|i| *i <= MAX_INDEX)?;
                 held.0.push(Arc::new(Slot {
                     count: AtomicU32::new(1),
+                    turn: Mutex::default(),
                     held: Mutex::new(Held {
                         generation: ticket_generation(self.key, INLINE_WORKER, i, 1),
                         waker: None,
@@ -248,6 +253,24 @@ impl InlineTickets {
             let held = slot.section();
             held.generation == t.generation && held.short == Some(s)
         })
+    }
+
+    /// THE TICKET'S TURN for one op on the held ticket `t`: an op waits until the ticket's last op
+    /// has ended (its answer, or its `cancel` or crossing on a plugin thread after its caller
+    /// left), so two ops on one ticket never overlap. `None` for a ticket no slot holds.
+    pub(crate) async fn turn(&self, t: Ticket) -> Option<Turn> {
+        let slot = self.lookup(t)?;
+        std::future::poll_fn(|cx| {
+            let mut turn = slot.turn.lock().unwrap_or_else(PoisonError::into_inner);
+            if turn.0 == t.generation {
+                turn.1.push(cx.waker().clone());
+                return std::task::Poll::Pending;
+            }
+            turn.0 = t.generation;
+            std::task::Poll::Ready(())
+        })
+        .await;
+        Some(Turn(slot, t.generation))
     }
 
     /// Register `waker` as the task an op pending on `t` (a ticket its owner holds) wakes.
@@ -354,6 +377,26 @@ impl InlineTickets {
         Ticket {
             slot: t.slot,
             generation: g,
+        }
+    }
+}
+
+/// One op's turn on a held ticket ([`InlineTickets::turn`]): the next op's begins when it drops.
+pub(crate) struct Turn(Arc<Slot>, u32);
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        let waiting = {
+            let mut turn = self.0.turn.lock().unwrap_or_else(PoisonError::into_inner);
+            if turn.0 != self.1 {
+                // The slot went on to another generation, whose op holds the turn now.
+                return;
+            }
+            turn.0 = 0;
+            std::mem::take(&mut turn.1)
+        };
+        for w in waiting {
+            w.wake();
         }
     }
 }

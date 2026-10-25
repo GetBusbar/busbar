@@ -304,8 +304,10 @@ struct Inst {
     invocations: AtomicU32,
     cancels: AtomicU32,
     drives: AtomicU32,
-    /// [`DRIVE_HANGS`]: the next `drive` hangs until `unhang:drive`.
+    /// [`DRIVE_HANGS`]: the next `drive` hangs until `unhang:<key>` (`drive`, or the key the mode
+    /// names after a `:`, so tests that run at once hang on keys of their own).
     drive_hangs: AtomicBool,
+    drive_key: Mutex<Vec<u8>>,
     /// A hanging `drive` is inside its crossing.
     drive_entered: AtomicBool,
     /// [`CLOSE_FAULTS`]: `close` frees the instance and answers FAULT.
@@ -396,6 +398,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             cancels: AtomicU32::new(0),
             drives: AtomicU32::new(0),
             drive_hangs: AtomicBool::new(false),
+            drive_key: Mutex::new(b"drive".to_vec()),
             drive_entered: AtomicBool::new(false),
             close_faults: AtomicBool::new(false),
         });
@@ -413,7 +416,8 @@ extern "C" fn drive(instance: *mut c_void, _: *const c_void, out: *mut c_void) -
         let me = inst(instance);
         if me.drive_hangs.load(Ordering::SeqCst) {
             me.drive_entered.store(true, Ordering::SeqCst);
-            hang_until(b"drive");
+            let key = me.drive_key.lock().unwrap().clone();
+            hang_until(&key);
         }
         me.drives.fetch_add(1, Ordering::SeqCst);
         say(out, Outcome::Ready)
@@ -525,7 +529,10 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             (me.wake)(forged, tin.head.ticket);
             return say(out, Outcome::Ready);
         }
-        if mode == DRIVE_HANGS {
+        if let Some(rest) = mode.strip_prefix(DRIVE_HANGS) {
+            if let Some(key) = rest.strip_prefix(b":") {
+                *me.drive_key.lock().unwrap() = key.to_vec();
+            }
             me.drive_hangs.store(true, Ordering::SeqCst);
             return say(out, Outcome::Ready);
         }

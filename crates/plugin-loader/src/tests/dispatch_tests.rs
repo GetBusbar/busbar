@@ -2469,6 +2469,40 @@ fn red_close_is_refused_while_a_drive_is_mid_crossing() {
     assert!(!p.is_open());
 }
 
+/// A TICK BEHIND A BREACHED DRIVE IS ANSWERED (PR 2 review M4): a `drive` the watchdog judges a
+/// breach, below the quarantine count (the instance keeps serving), may never return; the tick
+/// waiting behind it on the driver ticket is answered FAULT at the breach, never left waiting.
+#[test]
+fn a_tick_behind_a_breached_drive_is_answered_fault() {
+    let d = Dispatcher::new(DispatchConfig {
+        budgets: Budgets {
+            connection: Duration::from_millis(200),
+            ..config().budgets
+        },
+        quarantine_after: 2,
+        ..config()
+    });
+    let (p, _sink) = opened(&d);
+    let (other, _s) = opened(&d);
+    let drv = d.driver(&p).unwrap();
+    assert_eq!(
+        p.call(TICK, &mut frame(b"drivehangs:tickbreach")).outcome,
+        Outcome::Ready
+    );
+    crate::dispatch::ticket::host_wake(p.inner.ctx(), drv);
+    until("the drive is inside its crossing", || {
+        p.call(TICK, &mut frame(plug::DRIVE_ENTERED)).outcome == Outcome::Ready
+    });
+    let ticked = crate::dispatch::call::wait(d.tick(&p, drv, now_ns()), WAIT)
+        .expect("the tick behind the breached drive is answered");
+    assert_eq!(ticked.outcome, Outcome::Fault);
+    assert!(!p.is_faulted(), "one breach of two does not quarantine");
+    assert_eq!(
+        other.call(TICK, &mut frame(b"unhang:tickbreach")).outcome,
+        Outcome::Ready
+    );
+}
+
 #[test]
 fn red_a_kind_check_judges_every_outcome_in_its_bound_context() {
     let d = Dispatcher::new(config());

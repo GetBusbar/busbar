@@ -1948,6 +1948,11 @@ impl<K: Kind> Plugin<K> {
             .is_some_and(|tickets| tickets.is_recall(t, s))
     }
 
+    /// The turn of one op on the held ticket `t`: it waits until the ticket's last op has ended.
+    pub(crate) async fn ticket_turn(&self, t: Ticket) -> Option<super::inline::Turn> {
+        self.inline_tickets()?.turn(t).await
+    }
+
     /// After the `cancel` of a pending `open`: the half-open box it left, if any, is closed here,
     /// once (a later caller's `close` finds nothing and is refused).
     pub(crate) fn close_cancelled_open(&self) {
@@ -1997,6 +2002,7 @@ impl<K: Kind> Plugin<K> {
         ticket: Ticket,
         class: DeadlineClass,
         unit: Option<u64>,
+        breach: Option<Breach>,
     ) -> Cancelled {
         let inst = &*self.inner;
         if inst.faulted.load(Ordering::Acquire) {
@@ -2010,12 +2016,10 @@ impl<K: Kind> Plugin<K> {
         frame.name_unit(unit.unwrap_or(0));
         let (input, out, out_size) = frame.prepare(ticket, class as u8);
         let id = inst.next_call.fetch_add(1, Ordering::Relaxed);
-        inst.lock_calls().push(Watched::new(
-            id,
-            slot::CANCEL,
-            Duration::ZERO,
-            DeadlineClass::Call,
-        ));
+        inst.lock_calls().push(Watched {
+            breach,
+            ..Watched::new(id, slot::CANCEL, Duration::ZERO, DeadlineClass::Call)
+        });
         // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
         let crossed = unsafe { inst.cross(slot::CANCEL, input, out, out_size) };
         inst.lock_calls().retain(|c| c.id != id);

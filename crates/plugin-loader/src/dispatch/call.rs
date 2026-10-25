@@ -92,7 +92,7 @@ impl Lane {
         };
         if start {
             let lane = Arc::clone(self);
-            crate::ffi_thread::spawn_on_plugin_thread(move || loop {
+            let started = crate::ffi_thread::spawn_on_plugin_thread(move || loop {
                 let job = {
                     let mut j = lane.jobs.lock().unwrap_or_else(PoisonError::into_inner);
                     match j.0.pop_front() {
@@ -106,6 +106,11 @@ impl Lane {
                 // A host panic in one job never stops the lane: the next job still runs.
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
             });
+            if !started {
+                // No thread for the lane now: its jobs stay queued, and the next job put starts
+                // the lane afresh (never a lane marked running with nothing running it).
+                self.jobs.lock().unwrap_or_else(PoisonError::into_inner).1 = false;
+            }
         }
     }
 }
@@ -172,6 +177,15 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
         },
     };
     let held_ticket = owned.is_none();
+    // ONE OP AT A TIME on a held ticket: this op waits until the ticket's last op has ended, its
+    // `cancel` or its still-running crossing included.
+    let turn = match held_ticket {
+        true => match wait_turn(plugin, ticket, &opts).await {
+            Some(turn) => turn,
+            None => return Ran::TimedOut { cancelled: None },
+        },
+        false => None,
+    };
     let drainable = opts.class != DeadlineClass::WriteBehind;
     let mut admitted =
         match plugin.admit(s, size_of::<I>(), size_of::<O>(), drainable, opts.admission) {
@@ -189,17 +203,18 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
         let left = d.saturating_duration_since(Instant::now());
         now_ns().saturating_add(u64::try_from(left.as_nanos()).unwrap_or(u64::MAX))
     });
-    let op = Arc::new_cyclic(|op: &std::sync::Weak<Op<K, I, O>>| {
-        let op = op.clone();
+    let op = Arc::new_cyclic(|me: &std::sync::Weak<Op<K, I, O>>| {
+        let op = me.clone();
         let back = admitted.back();
         admitted.breach = Some(Arc::new(move || {
-            // A breached op holds nothing on its instance any more, whatever the crossing does.
-            back.give();
-            if let Some(op) = op.upgrade() {
-                op.breached();
+            // A breached op holds nothing on its instance any more, whatever the crossing does;
+            // a crossing that returned meanwhile was no breach.
+            if op.upgrade().is_some_and(|op| op.breached()) {
+                back.give();
             }
         }));
         Op {
+            me: me.clone(),
             plugin: Arc::clone(plugin),
             lane: opts.lane.clone(),
             s,
@@ -220,6 +235,7 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
                 unit: None,
                 admitted: Some(admitted),
                 ticket: owned,
+                turn,
                 waker: None,
                 breached: false,
             }),
@@ -290,6 +306,54 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
         };
         ever_woken |= by_wake;
         resume = true;
+    }
+}
+
+/// The turn of an op on the held `ticket`, waited for until the ticket's last op has ended.
+/// `Some(None)`: the instance was faulted meanwhile (the op goes on to its FAULT without a turn: a
+/// faulted instance is never crossed). `None`: the op's deadline passed, or its caller asked to
+/// cancel it, before its turn came.
+async fn wait_turn<K: Kind>(
+    plugin: &Plugin<K>,
+    ticket: Ticket,
+    opts: &Opts,
+) -> Option<Option<super::inline::Turn>> {
+    let mut turn = std::pin::pin!(plugin.ticket_turn(ticket));
+    loop {
+        if plugin.is_faulted() {
+            return Some(None);
+        }
+        let look = Instant::now() + FAULT_LOOK;
+        let until = opts.deadline.map_or(look, |d| d.min(look));
+        let mut sleep = std::pin::pin!(sleep_until(until));
+        let got = std::future::poll_fn(|cx| {
+            if let Poll::Ready(t) = turn.as_mut().poll(cx) {
+                return Poll::Ready(Some(t));
+            }
+            if let Some(c) = &opts.cancel {
+                *c.task.lock().unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
+                if c.requested.load(Ordering::Acquire) {
+                    return Poll::Ready(None);
+                }
+            }
+            if sleep.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(None);
+            }
+            Poll::Pending
+        })
+        .await;
+        match got {
+            Some(t) => return Some(t),
+            None if opts
+                .cancel
+                .as_ref()
+                .is_some_and(|c| c.requested.load(Ordering::Acquire)) =>
+            {
+                return None
+            }
+            None if opts.deadline.is_some_and(|d| Instant::now() >= d) => return None,
+            None => {}
+        }
     }
 }
 
@@ -378,6 +442,8 @@ impl Wake for Latch {
 
 /// One op in flight, shared by its caller and the plugin thread crossing it.
 struct Op<K: Kind, I, O> {
+    /// The op itself, for what the watchdog tells it.
+    me: std::sync::Weak<Op<K, I, O>>,
     plugin: Arc<Plugin<K>>,
     /// Cross on the caller's thread.
     inline: bool,
@@ -415,6 +481,8 @@ struct State<I, O> {
     admitted: Option<Admitted>,
     /// The op's ticket, recycled when the op ends.
     ticket: Option<InlineTicket>,
+    /// The op's turn on its held ticket, given to the ticket's next op when this one ends.
+    turn: Option<super::inline::Turn>,
     /// The caller's task, woken when a crossing or a `cancel` returns.
     waker: Option<Waker>,
     /// The watchdog judged the running crossing a breach.
@@ -427,13 +495,34 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
     }
 
     /// The watchdog judged the running crossing a breach: its caller is answered FAULT now.
-    fn breached(&self) {
+    /// `false`: no crossing runs any more (it returned meanwhile), and nothing is judged.
+    fn breached(&self) -> bool {
         let waker = {
             let mut st = self.lock();
             if !st.crossing {
-                return;
+                return false;
             }
             st.breached = true;
+            st.waker.take()
+        };
+        if let Some(w) = waker {
+            w.wake();
+        }
+        true
+    }
+
+    /// The op's `cancel` crossing was judged a breach: a caller waiting for it is answered FAULT.
+    fn cancel_breached(&self) {
+        let waker = {
+            let mut st = self.lock();
+            if st.cancelled.is_some() {
+                return;
+            }
+            st.cancelled = Some(Cancelled {
+                outcome: Outcome::Fault,
+                disposition: None,
+                writes: Vec::new(),
+            });
             st.waker.take()
         };
         if let Some(w) = waker {
@@ -476,9 +565,24 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
             let op = Arc::clone(op);
             move || op.run(resume)
         };
-        match &op.lane {
-            Some(lane) => lane.put(Box::new(job)),
+        let started = match &op.lane {
+            Some(lane) => {
+                lane.put(Box::new(job));
+                true
+            }
             None => crate::ffi_thread::spawn_on_plugin_thread(job),
+        };
+        if !started {
+            // No plugin thread could be had: the crossing is never made, and the op is FAULT.
+            let waker = {
+                let mut st = op.lock();
+                st.crossing = false;
+                st.answered = Some((Called::host(Outcome::Fault), 0));
+                st.waker.take()
+            };
+            if let Some(w) = waker {
+                w.wake();
+            }
         }
     }
 
@@ -571,7 +675,18 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
             let mut st = self.lock();
             (std::mem::take(&mut st.pending), st.unit)
         };
-        let cancelled = owed.then(|| self.plugin.cancel_inline(self.ticket, self.class, unit));
+        // A `cancel` the watchdog judges a breach answers its waiting caller FAULT then: the
+        // crossing runs on, and nobody waits for it.
+        let me = self.me.clone();
+        let told: super::plugin::Breach = Arc::new(move || {
+            if let Some(op) = me.upgrade() {
+                op.cancel_breached();
+            }
+        });
+        let cancelled = owed.then(|| {
+            self.plugin
+                .cancel_inline(self.ticket, self.class, unit, Some(told))
+        });
         // A cancelled `open` that left its half-open box: the host closes it, once, still inside
         // the open's lifecycle exclusion (given back by `end` below).
         if owed && self.s == life::OPEN {
@@ -588,15 +703,16 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
         cancelled
     }
 
-    /// Give back the op's units and ticket.
+    /// Give back the op's units, ticket and turn.
     fn end(&self) {
-        let (admitted, ticket) = {
+        let (admitted, ticket, turn) = {
             let mut st = self.lock();
             st.pending = false;
-            (st.admitted.take(), st.ticket.take())
+            (st.admitted.take(), st.ticket.take(), st.turn.take())
         };
         drop(admitted);
         drop(ticket);
+        drop(turn);
     }
 
     /// Wait for the crossing's answer: `false` = the deadline (`None`: none) came first (the caller
@@ -641,13 +757,16 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
             let left = wake_at_ns.saturating_sub(now_ns());
             Instant::now() + Duration::from_nanos(left)
         });
-        let until = match (wake_at, deadline) {
-            (Some(w), Some(d)) => w.min(d),
-            (Some(w), None) => w.min(Instant::now() + FAULT_LOOK),
-            (None, Some(d)) => d,
-            (None, None) => Instant::now() + FAULT_LOOK,
+        // The next look: the op's timer, its deadline, or the periodic look whether its instance
+        // was faulted (a faulted instance's op is resumed, and answered FAULT, never crossing).
+        let next = || {
+            [wake_at, deadline, Some(Instant::now() + FAULT_LOOK)]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or_else(Instant::now)
         };
-        let mut sleep = std::pin::pin!(sleep_until(until));
+        let mut sleep = Box::pin(sleep_until(next()));
         // Waiting from here until this wait ends, however it ends (its call dropped included).
         let _waiting = self.cancel.as_deref().map(Waiting::new);
         std::future::poll_fn(|cx| {
@@ -670,8 +789,16 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
             if self.latch.woke.swap(false, Ordering::AcqRel) {
                 return Poll::Ready(Some(true));
             }
-            if sleep.as_mut().poll(cx).is_ready() {
-                return Poll::Ready(deadline.is_none_or(|d| Instant::now() < d).then_some(false));
+            while sleep.as_mut().poll(cx).is_ready() {
+                let now = Instant::now();
+                if deadline.is_some_and(|d| now >= d) {
+                    return Poll::Ready(None);
+                }
+                // A bare look resumes nothing unless the instance was faulted.
+                if wake_at.is_some_and(|w| now >= w) || self.plugin.is_faulted() {
+                    return Poll::Ready(Some(false));
+                }
+                sleep = Box::pin(sleep_until(next()));
             }
             Poll::Pending
         })

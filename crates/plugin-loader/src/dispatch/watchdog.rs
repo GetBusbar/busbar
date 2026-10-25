@@ -100,7 +100,12 @@ fn scan(pool: &Pool) {
         inst.ticketless_counted
             .fetch_max(last + 1, Ordering::AcqRel);
         let mut quarantined = false;
-        for (_, told) in &fresh {
+        for (id, told) in &fresh {
+            // Looked at again, now: a crossing that returned since the scan copied it was no
+            // breach.
+            if !inst.lock_calls().iter().any(|c| c.id == *id) {
+                continue;
+            }
             quarantined = breach(pool, &inst);
             // The breached crossing's op is answered FAULT now; the crossing runs on, owning what
             // it was lent, and ends the op when it returns.
