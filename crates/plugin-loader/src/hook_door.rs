@@ -377,7 +377,7 @@ impl Inner {
                     Arc::clone(&lent),
                     Opts {
                         class: DeadlineClass::Call,
-                        deadline,
+                        deadline: Some(deadline),
                         watch: budget,
                         leave: true,
                         lane: None,

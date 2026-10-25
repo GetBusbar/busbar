@@ -315,7 +315,14 @@ impl Shared {
             .await;
             let (outcome, error) = match ran {
                 Ran::Answered { called, .. } => (called.outcome, called.error),
-                Ran::TimedOut { .. } | Ran::NoTicket => (Outcome::Failed, None),
+                Ran::TimedOut { .. } => (Outcome::Failed, None),
+                Ran::NoTicket => {
+                    tracing::warn!(
+                        plugin = %self.plugin.name(),
+                        "no ticket could be minted for an export batch; it is dropped"
+                    );
+                    break;
+                }
             };
             match outcome {
                 Outcome::Ready => break,

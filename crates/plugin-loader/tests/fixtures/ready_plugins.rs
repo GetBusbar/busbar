@@ -235,6 +235,26 @@ pub mod export {
     /// Every `ready` the export witness answered, in this process.
     pub static READIES: AtomicUsize = AtomicUsize::new(0);
 
+    /// The `deadline_ns` the last `deliver` head carried (`u64::MAX`: none seen yet).
+    pub static DELIVER_DEADLINE_NS: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(u64::MAX);
+
+    /// `deliver`: READY, recording the deadline its head stated.
+    pub struct Deliver;
+    impl SafeSlot for Deliver {
+        type In = DeliverIn;
+        type Out = OutHead;
+        type State = Held<Exports>;
+        fn call(
+            _: Instance<'_, Held<Exports>>,
+            input: Lent<'_, DeliverIn>,
+            _: Out<'_, OutHead>,
+        ) -> Outcome {
+            DELIVER_DEADLINE_NS.store(input.head.deadline_ns, Ordering::SeqCst);
+            Outcome::Ready
+        }
+    }
+
     /// The export witness's state: its settings (`err:<text>` refuses `ready`).
     pub struct Exports(super::Discovers);
 
@@ -290,13 +310,20 @@ pub mod export {
         ..busbar_contract::abi::export::Tail::ZERO
     };
 
-    /// Its Statement: the name, and the export tail.
-    const STATEMENT: busbar_contract::abi::mechanism::door::Statement =
+    /// A Statement of this witness's shape under `name`: the export tail.
+    #[allow(non_snake_case)]
+    pub const fn STATEMENT_OF(
+        name: &'static str,
+    ) -> busbar_contract::abi::mechanism::door::Statement {
         busbar_contract::abi::mechanism::door::Statement {
             kind_tail: (&TAIL as *const busbar_contract::abi::export::Tail)
                 .cast::<busbar_contract::abi::mechanism::door::KindTailHead>(),
-            ..busbar_contract::abi::sdk::door::statement(NAME, "0", 4)
-        };
+            ..busbar_contract::abi::sdk::door::statement(name, "0", 4)
+        }
+    }
+
+    /// Its Statement: the name, and the export tail.
+    const STATEMENT: busbar_contract::abi::mechanism::door::Statement = STATEMENT_OF(NAME);
 
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::export::Ops,
@@ -304,6 +331,34 @@ pub mod export {
         lifecycle: life(Exports, ready),
         kind_ops: {
             deliver: busbar_contract::abi::sdk::Safe<Answers<DeliverIn, OutHead>>,
+            scrape: busbar_contract::abi::sdk::Safe<Answers<ScrapeIn, ScrapeOut>>,
+            status: busbar_contract::abi::sdk::Safe<Answers<InHead, StatusOut>>,
+            check: busbar_contract::abi::sdk::Safe<Answers<CheckIn, CheckOut>>,
+            serve: busbar_contract::abi::sdk::Safe<Answers<ServeIn, ServeOut>>,
+        },
+    }
+}
+
+/// THE DELIVERY WITNESS: an export door with no `ready`, whose `deliver` records the deadline its
+/// head states (a test of its own, so it never counts another test's `ready`).
+pub mod export_deliver {
+    use super::export::{Answers, Deliver, STATEMENT_OF};
+    use busbar_contract::abi::export::{
+        CheckIn, CheckOut, ScrapeIn, ScrapeOut, ServeIn, ServeOut, StatusOut,
+    };
+    use busbar_contract::abi::mechanism::call::InHead;
+
+    /// Its Statement name.
+    pub const NAME: &str = "deliver-witness";
+
+    const STATEMENT: busbar_contract::abi::mechanism::door::Statement = STATEMENT_OF(NAME);
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::export::Ops,
+        statement: STATEMENT,
+        lifecycle: life(super::export::Exports),
+        kind_ops: {
+            deliver: busbar_contract::abi::sdk::Safe<Deliver>,
             scrape: busbar_contract::abi::sdk::Safe<Answers<ScrapeIn, ScrapeOut>>,
             status: busbar_contract::abi::sdk::Safe<Answers<InHead, StatusOut>>,
             check: busbar_contract::abi::sdk::Safe<Answers<CheckIn, CheckOut>>,

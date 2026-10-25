@@ -42,8 +42,9 @@ use super::{in_head, now_ns, out_head, Frame, InFrame, Kind, OutFrame};
 pub(crate) struct Opts {
     /// The deadline class stamped in the op's head.
     pub(crate) class: DeadlineClass,
-    /// When the caller stops waiting: a pending op is cancelled then.
-    pub(crate) deadline: Instant,
+    /// When the caller stops waiting: a pending op is cancelled then. `None`: never (a
+    /// write-behind op), and its head states no deadline (`0`).
+    pub(crate) deadline: Option<Instant>,
     /// The watchdog's budget for each crossing, when longer than the class's (a hook's
     /// `timeout_ms`).
     pub(crate) watch: Duration,
@@ -89,7 +90,8 @@ impl Lane {
                         }
                     }
                 };
-                job();
+                // A host panic in one job never stops the lane: the next job still runs.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
             });
         }
     }
@@ -147,14 +149,17 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
         }
     };
     admitted.watch = opts.watch;
-    let left = opts.deadline.saturating_duration_since(Instant::now());
+    let deadline_ns = opts.deadline.map_or(0, |d| {
+        let left = d.saturating_duration_since(Instant::now());
+        now_ns().saturating_add(u64::try_from(left.as_nanos()).unwrap_or(u64::MAX))
+    });
     let op = Arc::new(Op {
         plugin: Arc::clone(plugin),
         lane: opts.lane.clone(),
         s,
         class: opts.class,
         ticket: ticket.ticket(),
-        deadline_ns: now_ns().saturating_add(u64::try_from(left.as_nanos()).unwrap_or(u64::MAX)),
+        deadline_ns,
         latch: Arc::new(Latch::default()),
         state: Mutex::new(State {
             frame: Some(Box::new(frame)),
@@ -176,7 +181,7 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
     loop {
         op.register().await;
         Op::cross(&op, resume);
-        if !op.answered_by(opts.leave.then_some(opts.deadline)).await {
+        if !op.answered_by(opts.deadline.filter(|_| opts.leave)).await {
             return Ran::TimedOut { cancelled: None };
         }
         let (called, wake_at) = op.take_answer();
@@ -468,13 +473,18 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
     }
 
     /// Wait for the op's wake (its latch), its `wake_at_ns` or its deadline: `false` = the
-    /// deadline came first.
-    async fn woken_by(&self, wake_at_ns: u64, deadline: Instant) -> bool {
-        let until = if wake_at_ns == 0 {
-            deadline
-        } else {
+    /// deadline came first. An op with no deadline also looks every [`FAULT_LOOK`] whether its
+    /// instance was faulted, and is then resumed (and answered FAULT, never crossing).
+    async fn woken_by(&self, wake_at_ns: u64, deadline: Option<Instant>) -> bool {
+        let wake_at = (wake_at_ns != 0).then(|| {
             let left = wake_at_ns.saturating_sub(now_ns());
-            (Instant::now() + Duration::from_nanos(left)).min(deadline)
+            Instant::now() + Duration::from_nanos(left)
+        });
+        let until = match (wake_at, deadline) {
+            (Some(w), Some(d)) => w.min(d),
+            (Some(w), None) => w.min(Instant::now() + FAULT_LOOK),
+            (None, Some(d)) => d,
+            (None, None) => Instant::now() + FAULT_LOOK,
         };
         let mut sleep = std::pin::pin!(sleep_until(until));
         std::future::poll_fn(|cx| {
@@ -487,7 +497,7 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
                 return Poll::Ready(true);
             }
             if sleep.as_mut().poll(cx).is_ready() {
-                return Poll::Ready(Instant::now() < deadline);
+                return Poll::Ready(deadline.is_none_or(|d| Instant::now() < d));
             }
             Poll::Pending
         })
@@ -658,7 +668,7 @@ pub(crate) fn call_write_behind<K: Kind, I: InFrame, O: OutFrame>(
     write_behind::spawn(Box::pin(async move {
         let opts = Opts {
             class: DeadlineClass::WriteBehind,
-            deadline: Instant::now() + NEVER,
+            deadline: None,
             watch: Duration::ZERO,
             leave: false,
             lane: Some(lane),
@@ -682,8 +692,8 @@ pub(crate) fn call_write_behind<K: Kind, I: InFrame, O: OutFrame>(
     })
 }
 
-/// A write-behind op has no deadline: this far ahead is never reached by a running process.
-const NEVER: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+/// How often a pending op with no deadline looks whether its instance was faulted.
+const FAULT_LOOK: Duration = Duration::from_secs(1);
 
 struct Watch<I, O> {
     ran: Option<Ran<I, O>>,

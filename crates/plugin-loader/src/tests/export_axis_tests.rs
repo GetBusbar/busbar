@@ -281,3 +281,37 @@ fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
         "none stated: the default, within the declared concurrency"
     );
 }
+
+/// A WRITE-BEHIND DELIVERY STATES NO DEADLINE (round 4 M-A): its head's `deadline_ns` is `0`, as the
+/// dispatcher stated it (a delivery is never cut by one).
+#[test]
+fn a_delivery_states_no_deadline_in_its_head() {
+    use crate::dispatch::ready::ready_plugins::export::DELIVER_DEADLINE_NS;
+    use crate::dispatch::ready::ready_plugins::export_deliver::{door, NAME};
+    use std::sync::atomic::Ordering;
+    let registry = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
+        .expect("the linked witness admits");
+    let rows =
+        ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
+    let sink = rows
+        .open(
+            NAME,
+            "export.audit",
+            &serde_json::json!({ "ready": "fine" }),
+        )
+        .expect("the sink opens");
+    let stream = sink.streams()[0];
+    let _ = sink.deliver(stream, b"{\"n\":1}".to_vec(), Box::new(()));
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while DELIVER_DEADLINE_NS.load(Ordering::SeqCst) == u64::MAX
+        && std::time::Instant::now() < until
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        DELIVER_DEADLINE_NS.load(Ordering::SeqCst),
+        0,
+        "no deadline stated"
+    );
+}

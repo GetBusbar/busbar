@@ -1058,7 +1058,7 @@ async fn a_host_panic_inside_a_crossing_answers_fault_and_frees_the_op() {
             Arc::clone(&f) as crate::dispatch::Lent,
             Opts {
                 class: DeadlineClass::Call,
-                deadline: std::time::Instant::now() + Duration::from_secs(60),
+                deadline: Some(std::time::Instant::now() + Duration::from_secs(60)),
                 watch: Duration::ZERO,
                 leave: false,
                 lane: None,
@@ -1115,7 +1115,7 @@ async fn a_caller_that_waits_out_its_deadline_reads_the_cancels_answer() {
         Arc::clone(&f) as crate::dispatch::Lent,
         Opts {
             class: DeadlineClass::Call,
-            deadline: std::time::Instant::now() + Duration::from_millis(100),
+            deadline: Some(std::time::Instant::now() + Duration::from_millis(100)),
             watch: Duration::ZERO,
             leave: false,
             lane: None,
@@ -1203,7 +1203,7 @@ async fn a_host_panic_inside_a_waited_cancel_answers_fault() {
             Arc::clone(&f) as crate::dispatch::Lent,
             Opts {
                 class: DeadlineClass::Call,
-                deadline: std::time::Instant::now() + Duration::from_millis(100),
+                deadline: Some(std::time::Instant::now() + Duration::from_millis(100)),
                 watch: Duration::ZERO,
                 leave: false,
                 lane: None,
