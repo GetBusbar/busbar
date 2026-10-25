@@ -22,7 +22,7 @@ pub type Received = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 /// request on it is read and answered until the client closes it (or asks to, `connection: close`).
 /// The host's connector keeps an HTTP/1.1 line whose exchange finished whole and lends it to the
 /// next export to the same place (its per-worker pool, 1.5.5's pooled egress client), and an export
-/// whose bytes left on a line is never sent again (ARCHITECT ruling Q-L18-RETRY). A collector that
+/// whose bytes left on a line is never sent again. A collector that
 /// answered one request and then closed the connection unannounced lost every export the pool lent
 /// that line to before its close arrived: the request was written, the socket was dropped with it
 /// unread, and the batch's spans were gone — how often depended only on how late this thread ran.

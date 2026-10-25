@@ -117,7 +117,7 @@ fn opened(
     seen
 }
 
-/// THE ENTRY SPAN AN ARRIVAL OPENS (status row 173): the first fact of its verb the request meets,
+/// THE ENTRY SPAN AN ARRIVAL OPENS: the first fact of its verb the request meets,
 /// in the snapshot's order (an entry fact by its head fields and its path pattern, a raw affix by
 /// its affixes), else its routed claim's own. An entry fact that states no span ends the reading
 /// with none; a named path segment is recorded, percent-decoded, as the span's field. A fact is no

@@ -103,7 +103,7 @@ impl PluginAdmission for RootAdmission {
     /// memory; the manifest is complete, its sha256 binds the library, its ABI is supported) ->
     /// TRUST re-verified against the RUNNING posture (an untrusted upload is a conflict) -> CONFLICT
     /// with a DIFFERENT installed loadable plugin by any identifier -> THE ONE-VERSION RULE against
-    /// the rows this build links (ARCHITECT C'), after trust.
+    /// the rows this build links, after trust.
     fn admit_upload(
         &self,
         dir: &Path,

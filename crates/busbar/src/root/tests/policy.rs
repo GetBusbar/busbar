@@ -94,7 +94,7 @@ fn an_unset_body_cap_resolves_to_the_transport_default() {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/runtime_carry_tests.rs::a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it`
-/// (coverage map v2 row 603). 1.5.5: a hot config apply that changes nothing client-relevant REUSES
+/// 1.5.5: a hot config apply that changes nothing client-relevant REUSES
 /// the prior upstream client (its warm connection pool), and an apply that changes the upstream
 /// request timeout REBUILDS it, so the new timeout (here the prior + 7 s) takes effect without a
 /// restart.
@@ -104,7 +104,7 @@ fn an_unset_body_cap_resolves_to_the_transport_default() {
 /// byte-identical settings and the same posture; a changed timeout hands them a different blob
 /// carrying the new figure. It does not prove the doors are reopened on a hot apply: the served
 /// connector is built once at boot (`root/connector.rs`), and that half (the row's rebuild) is the
-/// egress lane's, with its own RED (coordinator ruling 2026-10-14 ~02:55Z).
+/// egress lane's, with its own RED.
 ///
 /// RED: an apply that changed nothing reads as a change, or a changed
 /// `limits.upstream_request_timeout_secs` never reaches the settings a door is opened with.

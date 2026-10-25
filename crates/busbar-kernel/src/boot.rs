@@ -3,7 +3,7 @@
 //!
 //! THE RULE: where the binary needs N internals to perform ONE boot action,
 //! expose one function here and leave the N internals crate-private. The alternative — widening
-//! `audit_ring::AUDIT`, its `set_sink`/`restore_from_store`, the `plane::taskstore::TASKS` static,
+//! the audit seam's `restore_from_store`, the `plane::taskstore::TASKS` static,
 //! `governance::signing::TokenSigner`, and the trust sweeper's
 //! machinery to `pub` — would put the one append-only hash chain's storage handle, the token
 //! master-key mint and the quarantine loop on the public surface of this crate, where a protocol
@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-/// DURABLE-STATE HYDRATION, whole and in order: the audit ring FIRST (core, the append-only chain),
+/// DURABLE-STATE HYDRATION, whole and in order: the audit chain FIRST (core, the append-only chain),
 /// then every registered plane's own durable state through its [`PlaneDecl::hydrate`] hook — each
 /// plane's own task/call-log/demotion/spent-approval records, whatever shape a given plane keeps.
 /// Called ONCE from

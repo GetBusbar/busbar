@@ -94,12 +94,10 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn audit_high_water_seq(&self) -> u64 {
-        crate::audit_ring::AUDIT
-            .export()
-            .iter()
-            .map(|e| e.seq)
-            .max()
-            .unwrap_or(0)
+        crate::audit::auditlog::AUDIT_LOG
+            .list_filtered(0, 1, None, None)
+            .first()
+            .map_or(0, |e| e.seq)
     }
 
     fn emit_admin_audit_now(&self, action: &str, resource: &str, outcome: &str, principal: &str) {

@@ -169,25 +169,25 @@ impl DemotionRecord {
     /// EVERY recorded demotion. Empty when no store is attached, when the backend keeps none, and
     /// when there genuinely are none — three situations that are indistinguishable from here and
     /// have the same correct outcome, which is that nothing is replayed.
-    pub fn list(&self) -> Vec<DemotionRow> {
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read. The caller refuses rather than re-open an upstream this
+    /// deployment demoted.
+    pub fn read(&self) -> Result<Vec<DemotionRow>, String> {
         let Some(store) = self.sink() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let read = store
+        store
             .list_plane_records(KIND_DEMOTION, &PlaneSelector::All)
-            .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect());
-        match read {
-            Ok(rows) => rows,
-            Err(e) => {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_DEMOTIONS_UNREAD,
-                    error = %e,
-                    "the durable demotion records could NOT be read at boot; any upstream this \
-                     deployment had demoted is re-opened until the first sweep looks again"
-                );
-                Vec::new()
-            }
-        }
+            .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect())
+            .map_err(|e| format!("the durable demotion records could not be read: {e}"))
+    }
+
+    /// [`Self::read`], for a test that holds a store which answers.
+    #[cfg(test)]
+    pub fn list(&self) -> Vec<DemotionRow> {
+        self.read().expect("the test store answers")
     }
 }
 
@@ -224,27 +224,20 @@ impl DemotionRecord {
             .map_err(|e| e.to_string())
     }
 
-    /// EVERY kept trust decision; empty when no store is attached or none was kept. A read failure
-    /// is reported and reads as none: the configured trust stands until the operator decides again.
-    pub fn decisions(&self) -> Vec<RulingRow> {
+    /// EVERY kept trust decision; empty when no store is attached or none was kept.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be read. The caller refuses rather than let the configured trust stand
+    /// over an operator's revoke it cannot see.
+    pub fn decisions(&self) -> Result<Vec<RulingRow>, String> {
         let Some(store) = self.sink() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let read = store
+        store
             .list_plane_records(KIND_TRUST_DECISION, &PlaneSelector::All)
-            .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect());
-        match read {
-            Ok(rows) => rows,
-            Err(e) => {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_DEMOTIONS_UNREAD,
-                    error = %e,
-                    "the durable trust decisions could NOT be read at boot; the configured trust \
-                     stands until the operator decides again"
-                );
-                Vec::new()
-            }
-        }
+            .and_then(|bodies| bodies.iter().map(|body| decode(body)).collect())
+            .map_err(|e| format!("the durable trust decisions could not be read: {e}"))
     }
 }
 

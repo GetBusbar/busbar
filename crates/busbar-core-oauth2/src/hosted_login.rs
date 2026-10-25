@@ -496,12 +496,6 @@ fn clear_cookie() -> String {
     format!("{LOGIN_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/auth/token; Max-Age=0")
 }
 
-/// Read the login cookie's raw value from the request `Cookie` header. Exposed so the POST handler
-/// (`exchange`) can detect a credential-form submission (login cookie present) and route it here.
-fn read_login_cookie(req: &Request<Body>) -> Option<String> {
-    read_cookie(req)
-}
-
 /// Read the login cookie's raw value from the request `Cookie` header.
 fn read_cookie(req: &Request<Body>) -> Option<String> {
     let raw = req.headers().get(header::COOKIE)?.to_str().ok()?;
@@ -550,12 +544,6 @@ fn parse_query(q: &str) -> Vec<(String, String)> {
             (pct_decode(k), pct_decode(v))
         })
         .collect()
-}
-
-/// Parse an `application/x-www-form-urlencoded` BODY (same grammar as a query string) into ordered
-/// key/value pairs. Used by the POST handler to read the credential form.
-fn parse_form_urlencoded(body: &str) -> Vec<(String, String)> {
-    parse_query(body)
 }
 
 /// Percent-decode a query component (`%XX` and `+` → space).
@@ -921,14 +909,14 @@ fn seam_browser(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<Response> 
 /// CI/BYOK IdP-bearer exchange has none).
 fn seam_credential_form(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<FormAnswer> {
     Box::pin(async move {
-        let Some(cookie) = read_login_cookie(&req) else {
+        let Some(cookie) = read_cookie(&req) else {
             return Err(Box::new(req));
         };
         // Small, bounded read of the form body (credential fields + the CSRF `__state`).
         let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
             .await
             .unwrap_or_default();
-        let form = parse_form_urlencoded(&String::from_utf8_lossy(&bytes));
+        let form = parse_query(&String::from_utf8_lossy(&bytes));
         let app = handle.load();
         Ok(credential_submit(&app, &handle, cookie, form).await)
     })

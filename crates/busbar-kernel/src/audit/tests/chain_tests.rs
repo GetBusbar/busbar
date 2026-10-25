@@ -506,7 +506,7 @@ fn a_scheme_one_admin_audit_digest_is_unchanged_by_the_unification() {
 /// THE OTHER HALF: the SAME fields, sealed through the REAL, unmodified `seal` path the in-process
 /// ring uses, produce a DIFFERENT digest — scheme 2, whose caller-supplied fields are length-prefixed.
 /// Its recipe is the one the durable seam seals a scheme-2 record under (the `prev_hash|seq` prelude,
-/// then the safe suffix), so a served scheme-2 record recomputes under its own tag (Q128 p12#1). A
+/// then the safe suffix), so a served scheme-2 record recomputes under its own tag. A
 /// fresh record's digest differing from scheme 1 is what closes the collision a caller-controlled
 /// `|` inside `resource` opens under scheme 1 (see `crates/busbar-kernel-audit`'s
 /// `digest_framing_tests` for the collision demonstrated end to end).

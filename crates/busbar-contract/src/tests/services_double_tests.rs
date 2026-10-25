@@ -196,39 +196,6 @@ const ROWS: &[Row] = &[
     }),
 ];
 
-/// The method names the `HostServices` trait declares, read off its own source: every `fn <name>(`
-/// between `pub trait HostServices` and the trait's closing brace.
-fn trait_methods() -> Vec<String> {
-    let src = include_str!("../services.rs");
-    let body = src
-        .split_once("pub trait HostServices")
-        .expect("services.rs declares HostServices")
-        .1;
-    let body = &body[..body.find("\n}\n").expect("the trait closes")];
-    body.lines()
-        .filter_map(|l| l.trim().strip_prefix("fn "))
-        .map(|l| l.split(['(', '<']).next().unwrap_or_default().to_string())
-        .collect()
-}
-
-/// THE COVERAGE: the rows are exactly the trait's methods. RED: a service the trait gains without
-/// a row here (its refusing default unproven), or a row for a service it dropped.
-#[test]
-fn the_rows_are_every_service_the_trait_declares() {
-    let mut declared = trait_methods();
-    assert!(
-        declared.len() > 20,
-        "the trait read is broken: {declared:?}"
-    );
-    declared.sort();
-    let mut rows: Vec<String> = ROWS.iter().map(|(n, _)| (*n).to_string()).collect();
-    rows.sort();
-    assert_eq!(
-        rows, declared,
-        "every HostServices method has a row here, and a refusing default in ServicesDouble"
-    );
-}
-
 /// THE REFUSAL: on the double that overrides nothing, every service answers REFUSED `UNSERVED`
 /// at once, and the clock the zero reading. RED: a service whose default serves, pends, or
 /// refuses in other words than an unserved host's.

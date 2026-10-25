@@ -4,7 +4,7 @@
 //! A HEALTH PROBE'S ANSWER reaches every cell of its destination, as 1.5.5's `health.rs`
 //! `probe_lane` folded it: a success recovers a tripped destination in the default cell and every
 //! pool's; a client fault records nothing; a transient failure is recorded under each pool's own
-//! configuration. Moved from `busbar-kernel-breaker`'s `src/tests/probe.rs` (#450): these drive the
+//! configuration. Moved from `busbar-kernel-breaker`'s `src/tests/probe.rs`: these drive the
 //! unit's public `Pass<Route>`-taking seam, and minting that token is the kernel's. The prober's
 //! trigger test (the crate-private cell census) stays in the breaker crate.
 
@@ -64,7 +64,7 @@ fn probe_n(unit: &BreakerUnit, d: DestinationId, outcome: Outcome, n: usize) {
     }
 }
 
-/// F25 row 225: rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_success_recorded_so_intermittent_failures_dont_trip.
+/// rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_success_recorded_so_intermittent_failures_dont_trip.
 /// Seven successful probes then five failing ones against a healthy destination under the default
 /// error-rate breaker (min_requests 5, threshold 0.5): the successes sit in every cell's window and
 /// dilute the failures to 5 of 12, so the default cell and the pool cell both stay Closed. The same
@@ -103,7 +103,7 @@ fn test_probe_success_recorded_so_intermittent_failures_dont_trip() {
     );
 }
 
-/// F25 row 226: rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_success_recorded_even_on_healthy_lane.
+/// rehomed from the retired engine crate's src/engine/tests/health_tests.rs::test_probe_success_recorded_even_on_healthy_lane.
 /// A successful probe of a never-tripped destination still enters the window: one success then four
 /// failures is 5 outcomes at 0.8 and trips the default cell Open. Without the success the window
 /// holds 4 failures, under min_requests (5), and stays Closed.

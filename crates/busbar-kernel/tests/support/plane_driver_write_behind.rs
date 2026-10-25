@@ -54,6 +54,15 @@ struct Gated {
 }
 
 impl RecordRows for Gated {
+    /// One writer in this test: every claim is the first.
+    fn claim(
+        &self,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> Result<bool, busbar_contract::kinds::StoreError> {
+        Ok(true)
+    }
     fn record_put(&self, s: RecordSchemaId, k: &[u8], v: &RecordBytes) -> Result<(), StoreError> {
         self.gate.pass();
         self.rows.record_put(s, k, v)

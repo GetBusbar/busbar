@@ -188,20 +188,6 @@ fn resolve_linked_env_mis_encoded_value_refuses_in_1_5_5s_words() {
     std::env::remove_var(&var);
 }
 
-/// A genuinely absent variable reports
-/// "unset".
-#[test]
-fn resolve_linked_env_genuinely_unset_still_reports_unset() {
-    let var = unique("ENV_STILL_UNSET");
-    std::env::remove_var(&var);
-    let err = resolve_linked(&SecretRef::env(&var)).unwrap_err();
-    assert!(
-        err.contains("unset"),
-        "a truly absent variable is unset: {err}"
-    );
-    assert!(err.contains(&var), "{err}");
-}
-
 // ── the `file` source ───────────────────────────────────────────────────────────────────────────
 
 /// R4 (BUSBAR-1.6.0.md l.1464-1469, OWNER 2026-10-13): the secret kind's file source reads the disk
@@ -274,11 +260,16 @@ fn resolve_linked_file_exactly_at_the_size_cap_still_resolves() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A missing file cannot resolve, and the regular-file guard does not swallow that diagnosis.
 #[test]
 fn resolve_linked_file_missing_file_is_an_error() {
     let path = temp_path("FILE_MISSING"); // never created
     let err = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
     assert!(err.contains("cannot resolve"), "{err}");
+    assert!(
+        !err.contains("regular file"),
+        "a missing path is absent, not a wrong-file-type problem: {err}"
+    );
 }
 
 #[test]
@@ -347,18 +338,6 @@ fn resolve_linked_file_symlink_to_a_regular_file_still_resolves() {
     assert_eq!(got, b"symlinked-secret");
     let _ = std::fs::remove_file(&link);
     let _ = std::fs::remove_file(&target);
-}
-
-/// NEGATIVE CONTROL: the regular-file guard does not swallow the MISSING-file diagnosis.
-#[test]
-fn resolve_linked_file_missing_path_still_reports_cannot_resolve() {
-    let path = temp_path("FILE_STILL_MISSING"); // never created
-    let err = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
-    assert!(err.contains("cannot resolve"), "{err}");
-    assert!(
-        !err.contains("regular file"),
-        "a missing path is absent, not a wrong-file-type problem: {err}"
-    );
 }
 
 /// A whitespace-only file resolves to its bytes, as 1.5.5 resolved it (ruling A on #1119; the

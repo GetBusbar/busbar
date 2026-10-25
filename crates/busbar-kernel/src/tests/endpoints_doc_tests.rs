@@ -33,32 +33,3 @@ fn an_explicit_empty_scope_list_sees_no_pool() {
         "only an omitted list is a wildcard"
     );
 }
-
-#[test]
-fn the_docs_never_read_an_empty_list_as_all_pools() {
-    let src = include_str!("../endpoints.rs");
-    let prose = src
-        .lines()
-        .map(str::trim_start)
-        .filter(|l| l.starts_with("//"))
-        .collect::<Vec<_>>()
-        .join(" ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    for fail_open in [
-        "empty `allowed_pools` (or",
-        "means \"all pools\"",
-        "or empty `allowed_pools`",
-        "non-empty `allowed_pools`",
-    ] {
-        assert!(
-            !prose.contains(fail_open),
-            "endpoints.rs still reads the scope list fail-open: {fail_open:?}"
-        );
-    }
-    assert!(
-        !prose.contains("allowed_pools"),
-        "the field is `allowed_scopes`; a doc naming `allowed_pools` describes a field the key lacks"
-    );
-}

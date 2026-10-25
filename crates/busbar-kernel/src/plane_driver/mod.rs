@@ -640,7 +640,7 @@ pub struct Arrival {
     /// The head fields.
     pub fields: HeadFields,
     /// The caller's body, kept for every attempt.
-    pub body: Arc<[u8]>,
+    pub body: bytes::Bytes,
 }
 
 /// What `arrive` said.
@@ -812,7 +812,7 @@ pub(crate) struct UnitState {
     /// A gate-first plane's hooks screened the unit before the door ([`RouteAwait::screen`]).
     screened: bool,
     /// The body a request-stage rewrite left, kept for every attempt; `None` = the caller's own.
-    body: Option<Arc<[u8]>>,
+    body: Option<bytes::Bytes>,
     /// The unit's hooks and the plane's view of its effective request, once the request stage ran.
     hooked: Option<(UnitHooks, hooks::Projection)>,
     /// The `response` stage tap has fired.

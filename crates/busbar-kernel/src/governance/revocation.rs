@@ -73,14 +73,42 @@ pub(crate) struct RevocationSync {
     /// inside `list_denylist` for this node, so a store that never returns costs one thread rather
     /// than one per window until the pool is gone.
     inflight: AtomicBool,
+    /// Reloads the node's key caches from the store after the denylist read, so a key another node
+    /// of the fleet minted, rotated, disabled or deleted is seen within the same window. `None` for
+    /// a denylist kept on its own.
+    reload_keys: Option<KeyReload>,
 }
+
+/// What a re-sync calls to reload the node's key caches from the store.
+pub(crate) type KeyReload =
+    Box<dyn Fn() -> busbar_contract::records::RecordStoreResult<()> + Send + Sync>;
 
 impl RevocationSync {
     /// A denylist seeded with the boot-time hydration (`initial`), stamped fresh at `now`.
+    #[cfg(test)]
     pub(crate) fn new(
         store: Arc<dyn RecordStore>,
         initial: HashSet<String>,
         now: u64,
+    ) -> Arc<Self> {
+        Self::with(store, initial, now, None)
+    }
+
+    /// A denylist as [`Self::new`], whose every successful re-sync also runs `reload_keys`.
+    pub(crate) fn reloading(
+        store: Arc<dyn RecordStore>,
+        initial: HashSet<String>,
+        now: u64,
+        reload_keys: KeyReload,
+    ) -> Arc<Self> {
+        Self::with(store, initial, now, Some(reload_keys))
+    }
+
+    fn with(
+        store: Arc<dyn RecordStore>,
+        initial: HashSet<String>,
+        now: u64,
+        reload_keys: Option<KeyReload>,
     ) -> Arc<Self> {
         Arc::new(Self {
             store,
@@ -88,6 +116,7 @@ impl RevocationSync {
             synced_at: AtomicU64::new(now),
             attempted_at: AtomicU64::new(now),
             inflight: AtomicBool::new(false),
+            reload_keys,
         })
     }
 
@@ -184,17 +213,25 @@ impl RevocationSync {
     /// access) and, crucially, leaves `synced_at` UNADVANCED, so the set is still correctly reported
     /// as stale and the next window retries.
     pub(crate) fn refresh_blocking(&self, now: u64) {
-        let result = self.store.list_denylist();
+        let denied = self.store.list_denylist();
+        // The key caches reload after a denylist read that answered; a revoke seen is merged even
+        // when the key reload fails, and only both together close the window.
+        let keys = match (&denied, &self.reload_keys) {
+            (Ok(_), Some(reload)) => reload(),
+            _ => Ok(()),
+        };
         // Release the bound BEFORE handling the result: every exit from here must clear it, or one
         // failed refresh would wedge re-syncing for the life of the process.
         self.inflight.store(false, Ordering::Release);
-        match result {
-            Ok(subs) => {
-                if !subs.is_empty() {
-                    let mut set = self.set.write().unwrap_or_else(|e| e.into_inner());
-                    set.extend(subs);
-                }
-                // Success — and ONLY success — closes the staleness window.
+        let result = denied.map(|subs| {
+            if !subs.is_empty() {
+                let mut set = self.set.write().unwrap_or_else(|e| e.into_inner());
+                set.extend(subs);
+            }
+        });
+        match result.and(keys) {
+            // Success — and ONLY success — closes the staleness window.
+            Ok(()) => {
                 self.synced_at.fetch_max(now, Ordering::Relaxed);
             }
             Err(e) => {
@@ -202,9 +239,9 @@ impl RevocationSync {
                     REVOCATION_RESYNC_FAILED,
                     error = %e,
                     synced_age_secs = now.saturating_sub(self.synced_at.load(Ordering::Relaxed)),
-                    "revocation denylist re-sync failed; keeping the previously-known revocations \
-                     (a peer's revoke may not be visible on this node until the next successful \
-                     sync)"
+                    "revocation denylist / key re-sync failed; keeping the previously-known \
+                     revocations and keys (a peer's revoke or key change may not be visible on this \
+                     node until the next successful sync)"
                 );
             }
         }

@@ -31,7 +31,6 @@ use std::sync::Arc;
 use axum::response::{IntoResponse, Response};
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_kernel::core_routes::CoreRouter;
-use busbar_kernel::state::AppHandle;
 
 /// The seam-typed mount (`busbar_kernel::oauth_as::seam::AsPlaneSeam::mount`): downcasts the
 /// type-erased plane object core hands in and defers to [`mount`]. Core cannot call [`mount`]
@@ -758,10 +757,6 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
 }
-
-/// Handlers take `Arc<AppHandle>` state through the `CurrentApp` extractor; naming the type here
-/// keeps the mount signature honest about what it is building against.
-type _State = Arc<AppHandle>;
 
 #[cfg(test)]
 #[path = "tests/percent_decode_tests.rs"]

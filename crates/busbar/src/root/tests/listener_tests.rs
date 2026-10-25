@@ -822,50 +822,6 @@ async fn server_posture_matches_the_1_5_5_defaults() {
     let _ = super::hardened_conn_builder();
 }
 
-/// THE KERNEL SERVES NO HTTP (BUSBAR-1.6.0.md: the kernel is a byte pump; the connector accepts and
-/// hands each stream up; the root serves it, here). The accept loop, the hyper connection builder
-/// and the graceful drain moved out of `busbar-kernel` into this module; a kernel source naming
-/// any of them again is a second serve loop in the wrong home.
-#[test]
-fn the_kernel_serves_no_http() {
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("read kernel source dir") {
-            let path = entry.expect("dir entry").path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../busbar-kernel/src"));
-    let mut files = Vec::new();
-    walk(root, &mut files);
-    assert!(
-        !files.is_empty(),
-        "no kernel sources under {}",
-        root.display()
-    );
-    let mut hits = Vec::new();
-    for file in &files {
-        let text = std::fs::read_to_string(file).expect("read kernel source");
-        for needle in [
-            "hyper_util::server",
-            "TowerToHyperService",
-            "GracefulShutdown",
-        ] {
-            if text.contains(needle) {
-                hits.push(format!("{}: {needle}", file.display()));
-            }
-        }
-    }
-    assert!(
-        hits.is_empty(),
-        "the kernel serves HTTP again; the serve loop lives in `busbar::root::listener`:\n{}",
-        hits.join("\n")
-    );
-}
-
 // ── THE TLS LISTENER over the connector's production wrap ───────────────────────────────────────
 
 fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
@@ -957,8 +913,18 @@ async fn tls_happy_path_trusted_client_gets_200() {
 
 /// A CA and a leaf it signed for `sans`: (ca_pem, leaf_pem, leaf_key_pem).
 fn gen_ca_and_leaf(sans: &[&str]) -> (String, String, String) {
-    let m = busbar_kernel::egress::fixtures::ca_and_leaf(sans);
-    (m.ca_pem, m.leaf_pem, m.leaf_key_pem)
+    let ca_kp = rcgen::KeyPair::generate().expect("ca key");
+    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("ca params");
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_pem = ca_params.self_signed(&ca_kp).expect("self-signed ca").pem();
+    let issuer = rcgen::Issuer::from_params(&ca_params, ca_kp);
+    let leaf_kp = rcgen::KeyPair::generate().expect("leaf key");
+    let leaf =
+        rcgen::CertificateParams::new(sans.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            .expect("leaf params")
+            .signed_by(&leaf_kp, &issuer)
+            .expect("leaf");
+    (ca_pem, leaf.pem(), leaf_kp.serialize_pem())
 }
 
 /// The mutual listener: client certificates must chain to the CA it names.

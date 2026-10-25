@@ -596,25 +596,10 @@ impl Guard {
     ///
     /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
     pub fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), Refusal> {
-        self.judge_answer_as(host, addrs, class, false)
+        self.judge_answer_with(host, addrs, class, false, false)
     }
 
-    /// [`Guard::judge_answer`], private reach refused whatever the deployment says when `strict`.
-    ///
-    /// # Errors
-    ///
-    /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
-    pub fn judge_answer_as(
-        &self,
-        host: &str,
-        addrs: &[IpAddr],
-        class: u32,
-        strict: bool,
-    ) -> Result<(), Refusal> {
-        self.judge_answer_with(host, addrs, class, strict, false)
-    }
-
-    /// [`Guard::judge_answer_as`] for a destination its need holds a private reach to
+    /// [`Guard::judge_answer`] for a destination its need holds a private reach to
     /// ([`Guard::judge_name_with`]).
     ///
     /// # Errors
