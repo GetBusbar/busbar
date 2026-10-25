@@ -48,7 +48,7 @@ const MONEY_REASONS: &[&str] = &[
 
 fn crates_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
+        .join("../../crates")
         .canonicalize()
         .expect("crates/ must exist")
 }

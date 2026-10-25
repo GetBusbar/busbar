@@ -78,7 +78,7 @@ fn openapi_operations_carry_stable_operation_ids() {
 #[cfg(feature = "openapi-schema")]
 const COMMITTED_OPENAPI_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../busbar-core-admin/src/v1/json/openapi.json"
+    "/../../crates/busbar-core-admin/src/v1/json/openapi.json"
 );
 
 /// Serialize the doc the way it is committed: pretty-printed + a trailing newline (POSIX text file).

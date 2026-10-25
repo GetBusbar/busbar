@@ -21,7 +21,7 @@ use std::path::Path;
 /// the tables were generated from.
 #[allow(dead_code)]
 mod generator {
-    include!("../src/linked_gen.rs");
+    include!("../../../crates/busbar/src/linked_gen.rs");
 }
 use generator::{ident, linked_source, metadata_map};
 
@@ -128,7 +128,8 @@ fn main_rs_names_no_crate_or_root_unit_the_linked_tables_list() {
         names.len() >= 10,
         "the linked tables list only {names:?} — a scan over (almost) nothing proves nothing"
     );
-    let main = read("src/main.rs");
+    let main = std::fs::read_to_string(Path::new(env!("BUSBAR_CORE_DIR")).join("src/main.rs"))
+        .expect("core's src/main.rs");
     assert!(
         main.contains(r#"include!(concat!(env!("OUT_DIR"), "/linked.rs"));"#),
         "main.rs does not include the generated linked tables, so it registers through something else"

@@ -14,12 +14,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The loader crate's path, as the source spells it: read off this crate's manifest, the one
+/// The loader crate's path, as the source spells it: read off core's manifest, the one
 /// dependency whose `path` is the loader's directory, so the test never spells the crate itself.
 fn needle() -> &'static str {
     static NEEDLE: OnceLock<String> = OnceLock::new();
     NEEDLE.get_or_init(|| {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let manifest = Path::new(env!("BUSBAR_CORE_DIR")).join("Cargo.toml");
         let text = std::fs::read_to_string(manifest).expect("read Cargo.toml");
         let dep = text
             .lines()
@@ -34,7 +34,7 @@ fn needle() -> &'static str {
 const LOADER: &str = "root/loader.rs";
 
 fn src() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    Path::new(env!("BUSBAR_CORE_DIR")).join("src")
 }
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -28,7 +28,7 @@
 mod plane;
 
 // This crate's one plugin fixture: the panic a missing `cdylib` raises.
-#[path = "common/plugins.rs"]
+#[path = "../../../crates/busbar/src/root/tests/test_plugins.rs"]
 mod fixture_plugins;
 
 use std::sync::Arc;

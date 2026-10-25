@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
-# The composition root (crates/busbar) is the DISTRIBUTION: its own workspace, where core meets the
-# pinned plugins. Core depends on no plugin.
-exclude = ["crates/busbar"]
+# Core. Its composition root (crates/busbar) depends on no plugin. The default distribution
+# (dist/default) is its own workspace, where core's source meets the pinned plugins.
+exclude = ["dist/default"]
 members = [
+    "crates/busbar",
     "crates/busbar-core-connector",
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",

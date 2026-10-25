@@ -17,7 +17,8 @@ use busbar_contract::transport::TransportSettings;
 include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 
 /// The shipped fold: `<wire key> <layer it was composed over, or ->`, in build order.
-const TRANSPORT_FOLD: &str = include_str!("../src/root/tests/fixtures/transport_fold.txt");
+const TRANSPORT_FOLD: &str =
+    include_str!("../../../crates/busbar/src/root/tests/fixtures/transport_fold.txt");
 
 fn shipped_fold() -> Vec<(&'static str, Option<&'static str>)> {
     TRANSPORT_FOLD

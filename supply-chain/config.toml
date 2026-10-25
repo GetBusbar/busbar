@@ -168,6 +168,10 @@ criteria = "safe-to-run"
 version = "0.9.6"
 criteria = "safe-to-deploy"
 
+[[exemptions.core_affinity]]
+version = "0.8.3"
+criteria = "safe-to-deploy"
+
 [[exemptions.cpufeatures]]
 version = "0.2.17"
 criteria = "safe-to-deploy"
@@ -396,6 +400,10 @@ criteria = "safe-to-deploy"
 version = "0.5.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.hermit-abi]]
+version = "0.5.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.hex]]
 version = "0.4.3"
 criteria = "safe-to-deploy"
@@ -608,6 +616,10 @@ criteria = "safe-to-deploy"
 version = "0.2.19"
 criteria = "safe-to-deploy"
 
+[[exemptions.num_cpus]]
+version = "1.17.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.oauth-as]]
 version = "1.0.0"
 criteria = "safe-to-deploy"
@@ -646,6 +658,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.parking_lot_core]]
 version = "0.9.12"
+criteria = "safe-to-deploy"
+
+[[exemptions.paste]]
+version = "1.0.15"
 criteria = "safe-to-deploy"
 
 [[exemptions.paste]]
@@ -1030,11 +1046,23 @@ criteria = "safe-to-deploy"
 
 [[exemptions.tikv-jemalloc-ctl]]
 version = "0.6.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.tikv-jemalloc-ctl]]
+version = "0.6.1"
 criteria = "safe-to-run"
 
 [[exemptions.tikv-jemalloc-sys]]
 version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
+criteria = "safe-to-deploy"
+
+[[exemptions.tikv-jemalloc-sys]]
+version = "0.6.1+5.3.0-1-ge13ca993e8ccb9ba9847cc330696e02839f328f7"
 criteria = "safe-to-run"
+
+[[exemptions.tikv-jemallocator]]
+version = "0.6.1"
+criteria = "safe-to-deploy"
 
 [[exemptions.tikv-jemallocator]]
 version = "0.6.1"

@@ -709,11 +709,11 @@ fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
         "main.rs no longer runs the root units' configuration steps, so the repricer's journal is \
          never armed"
     );
-    let manifest = include_str!("../../../Cargo.toml");
+    let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
     let callers: Vec<String> = root_unit_modules(manifest)
         .into_iter()
         .filter(|module| {
-            let path = format!("{}/src/root/{module}.rs", env!("CARGO_MANIFEST_DIR"));
+            let path = format!("{}/src/root/{module}.rs", env!("BUSBAR_CORE_DIR"));
             std::fs::read_to_string(&path)
                 .unwrap_or_else(|e| panic!("the manifest lists root unit `{module}`: {path}: {e}"))
                 .contains("on_config: Some(|_| crate::root::kernel::install_card_repricer())")

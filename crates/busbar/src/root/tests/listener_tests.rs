@@ -838,7 +838,7 @@ fn the_kernel_serves_no_http() {
             }
         }
     }
-    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../busbar-kernel/src"));
+    let root = std::path::Path::new(concat!(env!("BUSBAR_CORE_DIR"), "/../busbar-kernel/src"));
     let mut files = Vec::new();
     walk(root, &mut files);
     assert!(

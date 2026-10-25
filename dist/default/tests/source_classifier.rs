@@ -189,7 +189,7 @@ fn an_absent_item_is_absent_rather_than_the_whole_file() {
 /// out from under it is caught here rather than as nine silently-vacuous gates.
 #[test]
 fn the_classifier_reads_this_crate_s_own_root() {
-    let main = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
+    let main = Path::new(env!("BUSBAR_CORE_DIR")).join("src/main.rs");
     let lines = production_lines(&main);
     assert!(
         lines.len() > 50,

@@ -171,7 +171,7 @@ else
       aarch64-*-linux-*) LSE_FLAG="-Ctarget-feature=+lse" ;;
     esac
   fi
-  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" cargo build --release --locked -p busbar --target "$SPEC_TRIPLE"
+  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE"
   BIN="target/${SPEC_TRIPLE}/release/${SPEC_EXE}"
 fi
 [ -f "$BIN" ] || { echo "[release-build] the build produced no binary at $BIN" >&2; exit 1; }

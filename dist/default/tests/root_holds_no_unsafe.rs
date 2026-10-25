@@ -73,7 +73,7 @@ fn findings(src: &str) -> Vec<String> {
 
 /// The root's own sources, its build script and its generator.
 fn root_sources() -> Vec<PathBuf> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = Path::new(env!("BUSBAR_CORE_DIR"));
     let mut files = vec![dir.join("build.rs")];
     rust_files(&dir.join("src"), &mut files);
     files
@@ -81,7 +81,7 @@ fn root_sources() -> Vec<PathBuf> {
 
 #[test]
 fn the_composition_root_writes_no_unsafe() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = Path::new(env!("BUSBAR_CORE_DIR"));
     let main = std::fs::read_to_string(dir.join("src/main.rs")).expect("read main.rs");
     assert!(
         main.lines().any(|l| l.trim() == "#![forbid(unsafe_code)]"),
@@ -122,7 +122,7 @@ fn the_unsafe_scan_sees_what_it_forbids() {
 /// Every `#[macro_export]` macro of `busbar-contract` whose definition writes `unsafe`, or invokes
 /// one that does: `(name, body)` read off the contract's sources, closed over invocation.
 fn unsafe_arm_macros() -> Vec<String> {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../busbar-contract/src");
+    let dir = Path::new(env!("BUSBAR_CORE_DIR")).join("../busbar-contract/src");
     let mut files = Vec::new();
     rust_files(&dir, &mut files);
     let mut macros: Vec<(String, String)> = Vec::new();
@@ -195,7 +195,7 @@ fn the_composition_root_invokes_no_macro_that_writes_unsafe() {
         names.iter().any(|n| n == "plugin_door"),
         "the contract's door macro writes `unsafe` and is in the set: {names:?}"
     );
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = Path::new(env!("BUSBAR_CORE_DIR"));
     let mut files = Vec::new();
     rust_files(&dir.join("src"), &mut files);
     let mut found = Vec::new();

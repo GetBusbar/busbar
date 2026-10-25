@@ -642,7 +642,7 @@ fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// file's own declaration or from an attribute over the line.
 #[test]
 fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let src = std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("src");
     let root_mod = std::fs::read_to_string(src.join("root/mod.rs"))
         .expect("the composition root's own module file is where the gates are declared");
 
@@ -1342,7 +1342,7 @@ fn one_seal_after_two_reloads() {
 
     // (c) BOOK IS BOOT-ONLY: every call of `root::boot::book` in the crate's code (comments and the
     // test modules skipped) is the boot's one, in `main.rs`.
-    let calls = book_call_sites(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    let calls = book_call_sites(&std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("src"));
     assert_eq!(
         calls,
         vec!["main.rs".to_string()],
@@ -1409,13 +1409,16 @@ fn book_call_sites(src: &std::path::Path) -> Vec<String> {
 #[test]
 fn main_rs_doc_claims_match_the_code_beside_them() {
     const MAIN: &str = include_str!("../main.rs");
-    const MANIFEST: &str = include_str!("../../Cargo.toml");
+    const MANIFEST: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
 
     // 244: that plane IS registered — its crate is a linked row and `register_planes` registers
     // every linked entry — so its doc may not say otherwise.
     // The manifest's linked row for the plane the old doc said was not pushed — manifest data, kept
     // in a fixture so this test names no plane.
-    const PUSHED_ROW: &str = include_str!("../../tests/fixtures/pushed_plane_linked_row.txt");
+    const PUSHED_ROW: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/pushed_plane_linked_row.txt"
+    ));
     assert!(MANIFEST.contains(PUSHED_ROW.trim_end()));
     let register_planes = &MAIN[MAIN
         .find("\nfn register_planes() {")
@@ -1441,7 +1444,7 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
 
     // 259: exactly one root unit binds the boot book (the node's arm), so the book's doc may not claim
     // every plane settles onto it.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/root");
+    let root = std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("src/root");
     let binders = std::fs::read_dir(&root)
         .expect("the composition root")
         .map(|e| e.expect("a directory entry").path())

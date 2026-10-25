@@ -31,7 +31,7 @@ include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));
 // The plane-owned cases (`mod proofs`), generated from the manifest.
 include!(concat!(env!("OUT_DIR"), "/driver_proofs.rs"));
 
-#[path = "../../../busbar-kernel/tests/common/mod.rs"]
+#[path = "../../../../crates/busbar-kernel/tests/common/mod.rs"]
 mod common;
 
 mod rig;

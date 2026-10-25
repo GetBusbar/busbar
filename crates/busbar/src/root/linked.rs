@@ -202,7 +202,9 @@ pub type LayersOf = fn() -> &'static [&'static str];
 /// Statement's name held equal to its own claim, the tail's `composes_over`, the claim rows'
 /// `session`), and its build, claims, upgrade lines, first-line claims and offered points are read
 /// off the same door. The generated linked table expands one per `transport` row, so every
-/// transport, whatever its crate exports beside `door`, is linked through this one path.
+/// transport, whatever its crate exports beside `door`, is linked through this one path. Core alone
+/// links no transport, so it expands nowhere there.
+#[allow(unused_macros)]
 macro_rules! linked_transport {
     ($door:path) => {{
         fn facts() -> &'static $crate::root::doors::RowFacts {

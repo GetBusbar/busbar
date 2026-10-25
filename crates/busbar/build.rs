@@ -53,7 +53,16 @@ fn main() {
     // Re-run when the PGO signal or the rustflags change, so the stamp never goes stale.
     println!("cargo:rerun-if-env-changed=BUSBAR_PGO");
     println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
-    println!("cargo:rerun-if-changed=build.rs");
+    let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    let core = core_dir(&manifest);
+    println!("cargo:rerun-if-changed={}", core.join("build.rs").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        core.join("src/build_stamp.rs").display()
+    );
+    // Core's own directory, for the tests that read core's source; the default distribution compiles
+    // the same source from its own manifest directory.
+    println!("cargo:rustc-env=BUSBAR_CORE_DIR={}", core.display());
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "unknown".into());
     let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".into());
@@ -99,8 +108,10 @@ fn main() {
     // THE LINKED TABLES (see src/linked_gen.rs): which plugins this build links, read as data out of
     // the manifest and filtered by the cargo features cargo enabled for this build.
     println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-changed=src/linked_gen.rs");
-    let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    println!(
+        "cargo:rerun-if-changed={}",
+        core.join("src/linked_gen.rs").display()
+    );
     let on = |feature: &str| {
         let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
         env::var_os(var).is_some()
@@ -318,6 +329,16 @@ fn main() {
 /// `$OUT_DIR/test_operator_auth.rs` from `[package.metadata.busbar.test-linked] operator-auth`:
 /// `extern crate` per listed auth plugin, then a `for_each_operator_auth_row!($f)` macro calling
 /// `($f)(<crate>::door::door)` for each, in list order (the admin tests' operator credential row).
+/// Core's directory (`crates/busbar`): this package's own, or the one a distribution's manifest
+/// names under `[package.metadata.busbar.core] dir` when it compiles core's source.
+fn core_dir(manifest: &str) -> std::path::PathBuf {
+    let here = std::path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    match metadata_value(manifest, "package.metadata.busbar.core", "dir") {
+        Some(dir) => here.join(dir).canonicalize().expect("core dir"),
+        None => here,
+    }
+}
+
 fn test_operator_auth_source(manifest: &str) -> String {
     let idents: Vec<String> = test_linked_list(manifest, "operator-auth")
         .iter()
@@ -430,7 +451,8 @@ fn test_linked_source(manifest: &str) -> String {
 }
 
 /// The `key = [...]` string array under `[package.metadata.busbar.test-linked]`. Deliberately not a
-/// TOML parser: the array may span lines, entries are double-quoted crate names.
+/// TOML parser: the array may span lines, entries are double-quoted crate names. An absent key is no
+/// entries; a key stated with none is a build failure.
 fn test_linked_list(manifest: &str, key: &str) -> Vec<String> {
     let header = "[package.metadata.busbar.test-linked]";
     let (mut in_table, mut collecting, mut body) = (false, false, String::new());
@@ -454,6 +476,10 @@ fn test_linked_list(manifest: &str, key: &str) -> Vec<String> {
             break;
         }
     }
+    if !collecting {
+        // Core alone states no test-linked row: it links nothing.
+        return Vec::new();
+    }
     let list: Vec<String> = body
         .trim()
         .trim_start_matches('[')
@@ -466,7 +492,7 @@ fn test_linked_list(manifest: &str, key: &str) -> Vec<String> {
         .collect();
     assert!(
         !list.is_empty(),
-        "Cargo.toml: `{key}` under `{header}` is missing or empty"
+        "Cargo.toml: `{key}` under `{header}` is empty"
     );
     list
 }
@@ -995,9 +1021,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
     let mut source = source;
     source.push_str(&door_builds);
     {
-        let doors =
-            std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
-                .join("src/root/doors.rs");
+        let doors = core_dir(manifest).join("src/root/doors.rs");
         source.push_str(&format!(
             "/// The root's transport doors, mounted for this file's door rows.\n\
              #[allow(dead_code)]\n\

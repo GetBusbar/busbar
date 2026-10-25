@@ -28,6 +28,7 @@ pub mod credentials;
 pub mod lines;
 pub mod otlp;
 pub mod pinned_planes;
+#[path = "../../../../crates/busbar/src/root/tests/test_plugins.rs"]
 pub mod plugins;
 pub mod root_install;
 pub mod upstream;
@@ -514,7 +515,7 @@ pub fn operator_module() -> String {
 pub fn manifest_table(table: &str) -> Vec<(String, String)> {
     let manifest =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
-            .expect("read crates/busbar/Cargo.toml");
+            .expect("read dist/default/Cargo.toml");
     let header = format!("[{table}]");
     let mut in_table = false;
     let mut rows = Vec::new();

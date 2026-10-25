@@ -820,7 +820,7 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
-        .expect("crates/busbar sits two below the workspace root")
+        .expect("dist/default sits two below the workspace root")
         .to_path_buf()
 }
 

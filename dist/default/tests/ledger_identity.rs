@@ -62,7 +62,7 @@ use busbar_kernel_ledger::cost::{price, History, LaneClass, Posting, RateCard, S
 // way an integration test can reach it: by compiling the same source file into this test binary.
 // That is not a copy — it is the file the shipped binary compiles, at the same revision — so a
 // change to the check that broke this test could not be papered over by editing the test.
-#[path = "../src/root/ledger_identity.rs"]
+#[path = "../../../crates/busbar/src/root/ledger_identity.rs"]
 mod ledger_identity;
 
 use ledger_identity::{

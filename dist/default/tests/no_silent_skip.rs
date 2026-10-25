@@ -288,7 +288,10 @@ fn findings(src: &str) -> Vec<(usize, &'static str)> {
 fn no_root_crate_test_passes_by_skipping_its_subject() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
-    rs_files(&root.join("src/root/tests"), &mut files);
+    rs_files(
+        &Path::new(env!("BUSBAR_CORE_DIR")).join("src/root/tests"),
+        &mut files,
+    );
     rs_files(&root.join("tests"), &mut files);
     assert!(
         files.len() > 50,

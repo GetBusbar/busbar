@@ -185,7 +185,7 @@ impl busbar_kernel_egress::ports::Journal for Unwritten {
 /// no dialect).
 fn a_linked_dialect() -> String {
     let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
+        env!("BUSBAR_CORE_DIR"),
         "/src/root/tests/fixtures/plane_node_dialects.json"
     );
     let text = std::fs::read_to_string(path).expect("the dialect fixture reads");

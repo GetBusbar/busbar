@@ -46,7 +46,7 @@ struct KeysErrCase {
 /// The committed byte-for-byte snapshot of the keys error wire.
 const KEYS_ERROR_GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../busbar-core-admin/src/tests/keys_error_wire.json"
+    "/../../crates/busbar-core-admin/src/tests/keys_error_wire.json"
 );
 
 /// Terse constructor for a [`KeysErrCase`] row.
