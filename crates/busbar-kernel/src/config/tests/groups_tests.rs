@@ -191,7 +191,7 @@ fn limit_pool_and_downgrade_to_wire_shape_is_byte_identical_to_pre_generalizatio
     );
 }
 
-/// THE BUDGET MODES (KERNEL<>PLUGINS step 15; `BUSBAR-1.6.0.md` §7, #77(6)/(7)): `admission` and
+/// THE BUDGET MODES (`BUSBAR-1.6.0.md` §7): `admission` and
 /// `on_exhaustion` parse on a budget limit, default to `exact` and `finish-unit` when absent, and
 /// round-trip exactly.
 #[test]
@@ -265,7 +265,7 @@ fn budget_modes_refuse_on_a_non_budget_limit_and_an_unknown_mode() {
     .is_err());
 }
 
-/// `on_exhaust: downgrade` and `on_exhaustion: cut-stream` COEXIST (ARCHITECT 2026-09-30): the first
+/// `on_exhaust: downgrade` and `on_exhaustion: cut-stream` COEXIST: the first
 /// decides a unit arriving at an exhausted budget, at admission; the second a unit already running
 /// when the budget dries, mid-stream. Both set on one limit parse, and each keeps its own meaning.
 #[test]

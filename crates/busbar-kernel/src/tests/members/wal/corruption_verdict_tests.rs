@@ -68,7 +68,7 @@ fn quarantine_files(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// **ONE DAMAGED RECORD QUARANTINES ONLY ITSELF** (arch-audit u44, MEDIUM). Record two of four is
+/// **ONE DAMAGED RECORD QUARANTINES ONLY ITSELF**. Record two of four is
 /// altered on the medium. RED before the fix: the scan stopped at it for good, and records three and
 /// four — whole, verifying and acknowledged — were copied into the quarantine and cut off the log
 /// with it, so their postings left the book. Now the damaged record alone is set aside, left in
@@ -295,8 +295,8 @@ fn a_version_1_segment_is_quarantined_never_read() {
     );
 }
 
-/// A WHOLE final frame RELABELLED to version 1 is quarantined, never cut as a torn tail (Q128
-/// kernel-wal). Under a reader that still took version 1, the relabel skipped the header check and
+/// A WHOLE final frame RELABELLED to version 1 is quarantined, never cut as a torn tail.
+/// Under a reader that still took version 1, the relabel skipped the header check and
 /// the digest failure it caused read as a torn write, so an acknowledged record was cut silently.
 #[test]
 fn a_final_frame_relabelled_to_version_1_is_quarantined_not_cut() {
@@ -362,7 +362,7 @@ fn a_whole_final_frame_with_an_altered_header_is_quarantined_not_cut() {
     }
 }
 
-/// **A TEAR INSIDE A FRAME'S PAYLOAD IS A TORN TAIL, CUT SILENTLY** (Q128 kernel-wal 5). The write
+/// **A TEAR INSIDE A FRAME'S PAYLOAD IS A TORN TAIL, CUT SILENTLY**. The write
 /// got past the header and the digest and stopped in the payload, leaving zeros to the frame's end.
 /// The frame's end mark is one of those zeros, so the write that made it never completed: nothing
 /// in it was acknowledged, and an ordinary crash is not reported as corruption. RED before the fix:
@@ -417,7 +417,7 @@ fn lay_down_commits(dir: &Path, commits: &[Vec<Record>]) -> Vec<u8> {
     bytes[..usize::try_from(end).unwrap()].to_vec()
 }
 
-/// **A COMMIT WHOSE PAGES LANDED OUT OF ORDER IS A TORN TAIL, NOT CORRUPTION** (Q128 kernel-wal 5).
+/// **A COMMIT WHOSE PAGES LANDED OUT OF ORDER IS A TORN TAIL, NOT CORRUPTION**.
 ///
 /// A group commit spanning more than one page is written back in whatever order the kernel picks.
 /// A crash during its sync can land one page and not the page before it: frames that verify sit
@@ -931,7 +931,7 @@ fn a_gap_no_quarantine_names_still_breaks_the_chain() {
     ));
 }
 
-/// **DAMAGE BELOW THE TAIL SEGMENT IS QUARANTINED, REPORTED AND READ PAST** (arch-audit u44, MEDIUM).
+/// **DAMAGE BELOW THE TAIL SEGMENT IS QUARANTINED, REPORTED AND READ PAST**.
 /// The log has rolled, and a record in the closed segment below the tail is altered — in its middle,
 /// and at its end. RED before the fix: only the tail segment was ever recovered, so no quarantine
 /// was made or reported, no unit it named was held back, and `read_back` dropped the rest of that
