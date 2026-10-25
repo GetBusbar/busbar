@@ -21,9 +21,9 @@
 //! at its DEFAULT, unmodified body.
 
 use busbar_contract::records::{
-    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneRecord, PlaneRequestCtx, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult,
-    SecretForm, UsageLedger, VirtualKey,
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition, PlaneRecord,
+    PlaneRequestCtx, PlaneSelector, RecordStore, RecordStoreError, RecordStoreResult, SecretForm,
+    UsageLedger, VirtualKey,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -103,29 +103,7 @@ fn sample_credential() -> CredentialSecret {
     }
 }
 
-fn sample_audit(seq: u64) -> AuditRecord {
-    AuditRecord {
-        seq,
-        ts: 0,
-        action: "test.action".to_string(),
-        resource: "test:res".to_string(),
-        outcome: "applied".to_string(),
-        principal: "vk_1".to_string(),
-        prev_hash: String::new(),
-        hash: String::new(),
-    }
-}
-
 // ── Error-path defaults: a backend that has NOT implemented the surface must fail LOUD ──────────
-
-#[test]
-fn scrub_key_default_is_a_loud_error() {
-    let s = Bare::default();
-    let err = s
-        .scrub_key("vk_1")
-        .expect_err("default must error, never silently no-op");
-    assert!(!err.to_string().is_empty());
-}
 
 #[test]
 fn put_credential_default_is_a_loud_error() {
@@ -161,15 +139,6 @@ fn list_credentials_default_is_empty() {
 }
 
 #[test]
-fn lookup_credential_secret_default_is_none() {
-    let s = Bare::default();
-    assert_eq!(
-        s.lookup_credential_secret("generic", "AKIA_TEST").unwrap(),
-        None
-    );
-}
-
-#[test]
 fn list_credentials_since_default_is_empty() {
     let s = Bare::default();
     assert_eq!(s.list_credentials_since(0).unwrap(), Vec::new());
@@ -197,29 +166,6 @@ fn list_plane_record_parents_default_is_empty() {
 }
 
 // ── No-op / zero-count defaults ──────────────────────────────────────────────────────────────────
-
-#[test]
-fn purge_windows_before_default_is_zero() {
-    let s = Bare::default();
-    assert_eq!(s.purge_windows_before(u64::MAX).unwrap(), 0);
-}
-
-#[test]
-fn purge_metering_before_default_is_zero() {
-    let s = Bare::default();
-    assert_eq!(s.purge_metering_before("bucket").unwrap(), 0);
-}
-
-#[test]
-fn append_audit_default_is_ok_and_keeps_nothing() {
-    let s = Bare::default();
-    // Accepted...
-    s.append_audit(&sample_audit(1)).unwrap();
-    // ...and, consistently with every other plane/audit default, NOT actually retained: the
-    // (unmodified) `list_audit` default still reports empty, so a caller cannot be fooled into
-    // thinking this backend now has durable audit just because the write returned `Ok`.
-    assert_eq!(s.list_audit().unwrap(), Vec::new());
-}
 
 #[test]
 fn delete_plane_record_default_is_ok_and_idempotent() {

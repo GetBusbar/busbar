@@ -14,7 +14,6 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::sdk::store::{Cap, Cell, CellKey, Dimension};
 use busbar_contract::abi::store::OpId;
 use busbar_contract::records::VirtualKey;
 use busbar_contract::store_calls::{OpenedStore, StoreAxis, StoreDoor};
@@ -77,36 +76,23 @@ fn transcript(s: &OpenedStore) -> Vec<String> {
         s.records.get_key("vk-none").map(|k| k.is_some())
     ));
     let calls = s.calls.as_ref().expect("a door store has v3 calls");
-    let k = CellKey {
-        bucket: "b",
-        pool: None,
-        dimension: Dimension::Requests,
-        window_start: 60,
-    };
-    let caps = [Cap {
-        key: k,
-        cap: 5,
-        config_gen: 1,
-    }];
+    let cells = [(
+        "b",
+        60,
+        busbar_contract::records::UsageDelta {
+            requests: 3,
+            billable_requests: 3,
+            models: Vec::new(),
+        },
+    )];
     out.push(format!(
-        "caps {:?}",
-        block(calls.window_caps(OpId::from_parts(9, 1), &caps))
+        "usage batch {:?}",
+        block(calls.add_usage_batch(OpId::from_parts(9, 1), &cells))
     ));
-    let cells = [Cell { key: k, amount: 3 }];
-    let grants = block(calls.reserve(OpId::from_parts(9, 2), 1, &cells));
     out.push(format!(
-        "reserve {:?}",
-        grants
-            .as_ref()
-            .map(|g| g.iter().map(|g| g.granted).collect::<Vec<_>>())
+        "usage {:?}",
+        s.records.get_usage("b", 60).map(|u| u.requests)
     ));
-    if let Ok(g) = &grants {
-        let items = [(g[0].slice_id, 2)];
-        out.push(format!(
-            "release {:?}",
-            block(calls.slice_release(OpId::from_parts(9, 3), 1, &items))
-        ));
-    }
     out
 }
 

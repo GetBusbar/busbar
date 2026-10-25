@@ -10,8 +10,8 @@
 //! door's own work (the trampoline, the slot body, the host buffers, the error text ring), not
 //! the backend's.
 //!
-//! The slots measured are every request-path slot of the store table that is not money (`OPS`
-//! `request_path`, minus `reserve` and `slice_release`). The store traits take borrowed views
+//! The slots measured are every request-path slot of the store table (`OPS` `request_path`). The
+//! store traits take borrowed views
 //! (`PlaneRecordRef`, the record's `&[u8]`, `PlaneSelector::Parent` over the host's string), so the
 //! door hands the store the host's ABI memory as it is (ARCHITECT R7 2026-10-01); a store that
 //! keeps a record copies it itself.
@@ -31,18 +31,14 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, O
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::conn::Host;
-use busbar_contract::abi::sdk::store::{
-    Cap, CapsRefused, Cell as UnitCell, Grant, Op as StoreOp, OpResult, ReserveRefused, Scanned,
-    Step, StoreSlots, Tail,
-};
+use busbar_contract::abi::sdk::store::{Op as StoreOp, OpResult, Scanned, Step, StoreSlots, Tail};
 use busbar_contract::abi::store::{
     slot, AppendPlaneRecordIn, GetPlaneRecordIn, HostBlobs, HostBuf, HostBytesOut, HostListOut,
-    HostRecords, HostSessions, IdIn, KindIdIn, LeasedBlobOut, LeasedListOut, ListPlaneRecordsIn,
-    OpId, Ops, PlaneRecordRow, RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, SessionRow,
-    SessionsForIn, TokenIn, UpsertPlaneRecordIn, VerdictOut, DISPOSITION_ACTIVE, SELECT_ALL,
-    SELECT_PARENT,
+    HostRecords, IdIn, KindIdIn, LeasedBlobOut, LeasedListOut, ListPlaneRecordsIn, OpId, Ops,
+    PlaneRecordRow, RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, TokenIn,
+    UpsertPlaneRecordIn, VerdictOut, DISPOSITION_ACTIVE, SELECT_ALL, SELECT_PARENT,
 };
-use busbar_contract::kinds::{Head, RecordBytes};
+use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecordRef,
     PlaneSelector, RecordStoreError, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
@@ -146,27 +142,6 @@ impl StoreSlots for Canned {
     fn open(_: &[u8], _: Option<Host>) -> Result<Self, String> {
         Ok(Self)
     }
-    fn add_usage_op(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: OpId,
-        _: &str,
-        _: u64,
-        _: &UsageDelta,
-    ) -> Step<OpResult<()>> {
-        unreachable!("not a request-path slot")
-    }
-    fn add_metering_op(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: OpId,
-        _: &MeteringDelta,
-    ) -> Step<OpResult<()>> {
-        unreachable!("not a request-path slot")
-    }
-    fn append_audit_op(&self, _: &mut StoreOp<'_>, _: OpId, _: &AuditRecord) -> Step<OpResult<()>> {
-        unreachable!("not a request-path slot")
-    }
     fn append_plane_record_op(
         &self,
         _: &mut StoreOp<'_>,
@@ -174,39 +149,6 @@ impl StoreSlots for Canned {
         _: PlaneRecordRef<'_>,
     ) -> Step<OpResult<()>> {
         Step::Ready(Ok(()))
-    }
-    fn append_batch(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: OpId,
-        _: &str,
-        _: &[RecordBytes],
-    ) -> Step<OpResult<Head>> {
-        unreachable!("not a request-path slot")
-    }
-    fn heads(&self, _: &mut StoreOp<'_>) -> Step<Result<Vec<(String, Head)>, String>> {
-        unreachable!("not a request-path slot")
-    }
-    fn session_put(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: u64,
-        _: &str,
-        _: &str,
-    ) -> Step<Result<(), String>> {
-        unreachable!("not a request-path slot")
-    }
-    fn session_remove(&self, _: &mut StoreOp<'_>, _: u64) -> Step<Result<(), String>> {
-        unreachable!("not a request-path slot")
-    }
-    fn sessions_for(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: &str,
-    ) -> Step<Result<Vec<(u64, String)>, String>> {
-        Step::Ready(unwitnessed(|| {
-            Ok(vec![(7, "node-a".to_string()), (9, "node-b".to_string())])
-        }))
     }
     fn record_put(
         &self,
@@ -243,26 +185,6 @@ impl StoreSlots for Canned {
             Ok(vec![(b"k1".to_vec(), v()), (b"k2".to_vec(), v())])
         }))
     }
-    fn reserve<'c>(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: OpId,
-        _: u64,
-        _: impl Iterator<Item = UnitCell<'c>> + Clone,
-        _: &mut impl Extend<Grant>,
-    ) -> Step<Result<(), ReserveRefused>> {
-        unreachable!("money: not this witness")
-    }
-    fn slice_release(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: OpId,
-        _: u64,
-        _: impl Iterator<Item = (u64, u64)> + Clone,
-        _: &mut impl Extend<u64>,
-    ) -> Step<OpResult<()>> {
-        unreachable!("money: not this witness")
-    }
     fn add_usage_batch(
         &self,
         _: &mut StoreOp<'_>,
@@ -277,22 +199,6 @@ impl StoreSlots for Canned {
         _: OpId,
         _: &[MeteringDelta],
     ) -> Step<OpResult<()>> {
-        unreachable!("not a request-path slot")
-    }
-    fn append_audit_batch(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: OpId,
-        _: &[AuditRecord],
-    ) -> Step<OpResult<()>> {
-        unreachable!("not a request-path slot")
-    }
-    fn window_caps(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: OpId,
-        _: &[Cap<'_>],
-    ) -> Step<Result<(), CapsRefused>> {
         unreachable!("not a request-path slot")
     }
     fn put_key(&self, _: &mut StoreOp<'_>, _: &VirtualKey) -> Step<RecordStoreResult<()>> {
@@ -313,9 +219,6 @@ impl StoreSlots for Canned {
         })
     }
     fn delete_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<()>> {
-        unreachable!("not a request-path slot")
-    }
-    fn scrub_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<()>> {
         unreachable!("not a request-path slot")
     }
     fn list_keys_since(
@@ -349,12 +252,6 @@ impl StoreSlots for Canned {
     ) -> Step<RecordStoreResult<Vec<MeteringRow>>> {
         unreachable!("not a request-path slot")
     }
-    fn purge_windows_before(&self, _: &mut StoreOp<'_>, _: u64) -> Step<RecordStoreResult<u64>> {
-        unreachable!("not a request-path slot")
-    }
-    fn purge_metering_before(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<u64>> {
-        unreachable!("not a request-path slot")
-    }
     fn put_credential(
         &self,
         _: &mut StoreOp<'_>,
@@ -375,14 +272,6 @@ impl StoreSlots for Canned {
         _: &mut StoreOp<'_>,
         _: &str,
     ) -> Step<RecordStoreResult<Vec<CredentialMeta>>> {
-        unreachable!("not a request-path slot")
-    }
-    fn lookup_credential_secret(
-        &self,
-        _: &mut StoreOp<'_>,
-        _: &str,
-        _: &str,
-    ) -> Step<RecordStoreResult<Option<CredentialSecret>>> {
         unreachable!("not a request-path slot")
     }
     fn revoke_credential(
@@ -641,12 +530,6 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
     let mut body = [0u8; 64];
     let mut blobs = [Blob::ABSENT; 8];
     let mut list_bytes = [0u8; 64];
-    let no_session = SessionRow {
-        session: 0,
-        node: s(b""),
-    };
-    let mut sessions = [no_session; 4];
-    let mut session_bytes = [0u8; 64];
     let no_entry = RecordEntry {
         key: Blob::ABSENT,
         value: Blob::ABSENT,
@@ -672,7 +555,6 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
     // The host's buffers, as the `in`s name them: raw pointers, taken once.
     let body_buf = bytes_buf(&mut body);
     let list_buf = bytes_buf(&mut list_bytes);
-    let session_buf = bytes_buf(&mut session_bytes);
     let entry_buf = bytes_buf(&mut entry_bytes);
     let get = |kind: &'static [u8], cap: usize| GetPlaneRecordIn {
         head: in_head::<GetPlaneRecordIn>(slot::GET_PLANE_RECORD),
@@ -713,7 +595,6 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         _reserved: 0,
         body: octets(b"a row"),
     };
-    let (rows, rows_cap) = host(&mut sessions);
     let (ents, ents_cap) = host(&mut entries);
 
     let got = [
@@ -811,22 +692,6 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
             inst,
             token(slot::PLANE_TOKEN_LIVE),
             verdict_out,
-            |o| o.head.error,
-        ),
-        measure(
-            "sessions_for READY",
-            t.sessions_for,
-            inst,
-            SessionsForIn {
-                head: in_head::<SessionsForIn>(slot::SESSIONS_FOR),
-                principal: s(b"p"),
-                out: HostSessions {
-                    items: rows,
-                    items_cap: rows_cap,
-                    bytes: session_buf,
-                },
-            },
-            list_out,
             |o| o.head.error,
         ),
         measure(
@@ -973,7 +838,6 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
     // The rows landed where they say, in the host's buffers.
     assert_eq!(&body[..b"a value".len()], b"a value");
     assert_eq!(&list_bytes[..b"onetwothree".len()], b"onetwothree");
-    assert_eq!(&session_bytes[..b"node-anode-b".len()], b"node-anode-b");
     assert_eq!(&entry_bytes[..b"k1vk2v".len()], b"k1vk2v");
 
     let allocating: Vec<String> = got

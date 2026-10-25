@@ -658,8 +658,7 @@ pub enum RecordRefusal {
 
 /// Where a plane's kernel-held durable records actually go.
 ///
-/// The kernel binds to one of these and never to a store, exactly as it binds to
-/// [`crate::slice::SliceStore`] for a window and never to the backend behind it. The operation is
+/// The kernel binds to one of these and never to a store. The operation is
 /// passed through as the plane spelled it: the vocabulary is the plane's, the validation is the
 /// kernel's, and the mapping onto whatever verbs the backend publishes is the implementor's.
 pub trait RecordStore: Send + Sync {
