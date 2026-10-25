@@ -436,6 +436,17 @@ pub(crate) struct Book {
     pub(crate) sessions_ended: AtomicU64,
 }
 
+impl Book {
+    /// A book that also hands every call to `money` (the production money steps).
+    #[allow(dead_code)] // built by the kernel's driver suite only
+    pub(crate) fn forwarding(money: Arc<dyn MoneySeam>) -> Self {
+        Book {
+            forward: Some(money),
+            ..Book::default()
+        }
+    }
+}
+
 impl MoneySeam for Book {
     fn checkpoint(&self, ctx: &UnitCtx, units: &[UnitCount]) -> Checkpoint {
         if let Some(f) = &self.forward {

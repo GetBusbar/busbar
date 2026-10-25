@@ -1033,6 +1033,82 @@ fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
     assert!(refused.contains("record_chain.kind_twice"), "{refused}");
 }
 
+/// RED/GREEN: the tail's record retention rules are judged at bind and copied with its record
+/// kinds. A rule over a declared kind binds and is the instance's; an unknown rule, a kind past the
+/// list, or a kind named twice refuses the load. A tail whose `size` ends before the list (an older
+/// plane's) binds and declares none, even when the memory past its size holds one.
+#[test]
+fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{PlaneTail, RecordRetention, INGRESS_REQUEST_RESPONSE};
+    use busbar_contract::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    fn s(text: &'static str) -> AbiStr {
+        AbiStr {
+            ptr: text.as_ptr(),
+            len: text.len(),
+        }
+    }
+    let kinds: &'static [AbiStr] = Box::leak(Box::new([s("a"), s("b")]));
+    let bind = |rules: &'static [RecordRetention], size: usize| {
+        let mut tail: PlaneTail = z();
+        tail.head = KindTailHead {
+            size: size as u32,
+            _reserved: 0,
+        };
+        tail.ingress = INGRESS_REQUEST_RESPONSE;
+        tail.record_kinds = kinds.as_ptr();
+        tail.record_kinds_len = kinds.len();
+        tail.record_retentions = rules.as_ptr();
+        tail.record_retentions_len = rules.len();
+        let tail: &'static PlaneTail = Box::leak(Box::new(tail));
+        let sections: &'static [Section] = Box::leak(Box::new([Section {
+            name: s("door"),
+            flags: SECTION_DECLARING,
+            _reserved: 0,
+        }]));
+        let mut st: Statement = z();
+        st.kind_tail = &tail.head;
+        st.sections = sections.as_ptr();
+        st.sections_len = sections.len();
+        Plane::context(&st).map(|c| {
+            c.expect("a plane has a context")
+                .downcast::<PlaneFacts>()
+                .expect("the plane's facts")
+                .declared
+                .record_retentions
+                .clone()
+        })
+    };
+    let rule = |kind: u32, rule: u32| RecordRetention { kind, rule };
+    let whole = size_of::<PlaneTail>();
+    let good: &'static [RecordRetention] = Box::leak(Box::new([rule(0, RETENTION_TERMINAL_ONLY)]));
+    assert_eq!(
+        bind(good, whole).expect("a valid rule binds"),
+        vec![rule(0, RETENTION_TERMINAL_ONLY)]
+    );
+    let older = std::mem::offset_of!(PlaneTail, record_retentions);
+    assert_eq!(
+        bind(good, older).expect("a tail ending before the list binds"),
+        Vec::new(),
+        "a tail ending before the list declares no rule"
+    );
+    let unknown: &'static [RecordRetention] =
+        Box::leak(Box::new([rule(0, RETENTION_TERMINAL_ONLY + 1)]));
+    let refused = bind(unknown, whole).expect_err("an unknown rule refuses the load");
+    assert!(refused.contains("record_retention.rule"), "{refused}");
+    let past: &'static [RecordRetention] = Box::leak(Box::new([rule(2, RETENTION_AGE)]));
+    let refused = bind(past, whole).expect_err("a kind past the list refuses the load");
+    assert!(refused.contains("record_retention.kind"), "{refused}");
+    let twice: &'static [RecordRetention] = Box::leak(Box::new([
+        rule(1, RETENTION_TERMINAL_ONLY),
+        rule(1, RETENTION_AGE),
+    ]));
+    let refused = bind(twice, whole).expect_err("a kind named twice refuses the load");
+    assert!(refused.contains("record_retention.kind_twice"), "{refused}");
+}
+
 /// THE STREAM CEILING IS A TAIL ADDITION (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a tail of
 /// the whole size states its ceiling and the root is handed it; a tail whose `size` ends before the
 /// field still loads and states none (`0`), even when the memory past its size holds a value. RED:

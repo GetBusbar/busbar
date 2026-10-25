@@ -6126,7 +6126,8 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
     let (got, live) = gov.credential_secret(&signed_kind(), "AKIAdoesnotexist0000", now);
     assert_eq!(
         (got.expose(&crate::seal::lend()).as_str(), live),
-        (crate::auth::DUMMY_SECRET, false)
+        ("", false),
+        "an unknown pair answers an empty secret, not live: the verifier swaps in its own dummy"
     );
     gov.revoke(&key.id, "test").unwrap();
     assert!(

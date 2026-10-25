@@ -1020,11 +1020,19 @@ impl DurableHandleEngine {
         }
     }
 
-    /// COMPACT: ask the sink to purge terminal `kind` rows older than `before`, and drop any matching
-    /// terminal working-set entries. Returns how many durable rows went.
-    pub fn compact(&self, before: u64, kind: &str) -> RecordStoreResult<u64> {
+    /// COMPACT: ask the sink to purge `kind` rows older than `before` under `retention`, the rule
+    /// the kind's owner declared (a handle kind declares
+    /// [`Retention::TerminalOnly`](busbar_contract::records::Retention::TerminalOnly), so a live
+    /// handle's row survives), and drop any matching terminal working-set entries. The working set
+    /// never drops a live handle, whatever the rule. Returns how many durable rows went.
+    pub fn compact(
+        &self,
+        before: u64,
+        kind: &str,
+        retention: busbar_contract::records::Retention,
+    ) -> RecordStoreResult<u64> {
         let removed = match self.sink() {
-            Some(store) => store.purge_plane_records_before(kind, before)?,
+            Some(store) => store.purge_plane_records(kind, before, retention)?,
             None => 0,
         };
         let mut handles = self.lock();

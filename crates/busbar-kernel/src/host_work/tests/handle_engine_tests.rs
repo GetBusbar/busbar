@@ -138,10 +138,18 @@ impl PlaneStore for MemStore {
     fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
         Ok(Vec::new())
     }
-    fn purge_plane_records_before(&self, _kind: &str, before: u64) -> RecordStoreResult<u64> {
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
+        self.purge_plane_records(kind, before, busbar_contract::records::Retention::Age)
+    }
+    fn purge_plane_records(
+        &self,
+        _kind: &str,
+        before: u64,
+        retention: busbar_contract::records::Retention,
+    ) -> RecordStoreResult<u64> {
         let mut rows = self.rows.lock().unwrap();
         let before_count = rows.len();
-        rows.retain(|r| !(r.disposition == PlaneDisposition::Terminal && r.ts < before));
+        rows.retain(|r| !retention.drops(r.ts, before, r.disposition));
         Ok((before_count - rows.len()) as u64)
     }
     fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {

@@ -542,7 +542,11 @@ fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     // A cutoff safely BEFORE "now": a record written during this test must be newer than it.
     let cutoff = busbar_kernel::store::now().saturating_sub(3600);
     let purged = store
-        .purge_plane_records_before(KIND_NEUTRAL, cutoff)
+        .purge_plane_records(
+            KIND_NEUTRAL,
+            cutoff,
+            busbar_contract::records::Retention::Age,
+        )
         .expect("purge");
     assert_eq!(
         purged, 0,

@@ -255,3 +255,50 @@ fn a_member_need_is_declared_with_no_one_target_as_the_connector_declares_it() {
         Err(ConnError::Refused)
     );
 }
+
+/// RED: THE FAR-END TABLE REACHES ONLY WHAT IT DECLARES. A member need opens each URL the plugin
+/// names; a declared far end answers, and a URL or host the table does not declare is refused as
+/// an unreachable far end is, so no dial in a suite reaches anything its inputs did not state.
+#[test]
+fn an_undeclared_far_end_is_refused() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::{ConnError, Conns, InstanceId, NeedId, OpenDesc};
+    let table = crate::https_conns::HttpsConns::framing(FramedFacts::stand_in());
+    table.serve("https://far.example/doc", None, 200, "{}");
+    let need = ReadNeed {
+        direction: DIRECTION_OUTBOUND,
+        egress_class: 0,
+        transport: FramedFacts::stand_in().transport,
+        auth: String::new(),
+        target_from: "settings.*.url".into(),
+        trust_from: String::new(),
+        details: ReadBlob {
+            fmt: 0,
+            flags: 0,
+            bytes: Vec::new(),
+        },
+        timeout_ms: 0,
+    };
+    let (me, member) = (InstanceId(1), NeedId(0));
+    assert_eq!(table.declare(me, member, &need, None, None), Ok(()));
+    let open = |target: &str| {
+        table.open(
+            me,
+            member,
+            &OpenDesc {
+                target,
+                ..OpenDesc::default()
+            },
+        )
+    };
+    let reached = open("https://far.example/doc").expect("a declared far end answers");
+    table.close(me, reached).expect("closed");
+    for undeclared in ["https://far.example/other", "https://elsewhere.example/doc"] {
+        assert_eq!(
+            open(undeclared).map(|_| ()),
+            Err(ConnError::Refused),
+            "{undeclared}"
+        );
+    }
+}

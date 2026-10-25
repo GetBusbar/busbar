@@ -445,7 +445,7 @@ store_slots! {
     28 LIST_PLANE_RECORD_PARENTS list_plane_record_parents IdIn, LeasedStrListOut, Off, Call, HostCap,
         "`list_plane_record_parents` (records.rs:1524-1528). In [`IdIn`] (kind), out [`LeasedStrListOut`]. B.1 plane records; the boot enumeration.";
     29 PURGE_PLANE_RECORDS_BEFORE purge_plane_records_before KindBeforeIn, CountOut, Off, Call, Fixed,
-        "`purge_plane_records_before` (records.rs:1530-1538). In [`KindBeforeIn`], out [`CountOut`]. B.1 plane records; honours `disposition`.";
+        "`purge_plane_records_before` (records.rs:1530-1538). In [`KindBeforeIn`], out [`CountOut`]. B.1 plane records; honours `disposition` under the `retention` rule the host passes.";
     30 DELETE_PLANE_RECORD delete_plane_record KindIdIn, OutHead, Request, Call, Fixed,
         "`delete_plane_record` (records.rs:1540-1543). In [`KindIdIn`], out [`OutHead`]. B.1 plane records; absent is READY.";
     31 REDEEM_PLANE_TOKEN redeem_plane_token TokenIn, VerdictOut, Request, Call, Fixed,
