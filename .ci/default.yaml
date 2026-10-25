@@ -414,13 +414,16 @@ checks:
     # or forgiven by an owner-signed accepted difference.
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      echo "[oracle-phase] start $(date +%s)"
       ./bin/oracle tool-dir >/dev/null
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
         ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
       else
         echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
       fi
+      echo "[oracle-phase] build-1 $(date +%s)"
       cargo build --locked --release -p busbar --bin busbar
+      echo "[oracle-phase] fetch-golden $(date +%s)"
       ./bin/oracle fetch-golden
       # The store-persist cells for postgres, mysql and valkey boot their store against a LIVE
       # backend, gated on BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL; with none set
@@ -432,11 +435,14 @@ checks:
       export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
       export ORACLE_PG_PORT="$(free_port)"; export ORACLE_MY_PORT="$(free_port)"; export ORACLE_VK_PORT="$(free_port)"
       trap 'bash testing/shadow-oracle/scripts/oracle-box-store-services.sh down' EXIT
+      echo "[oracle-phase] stores $(date +%s)"
       . testing/shadow-oracle/scripts/oracle-box-store-services.sh up
       bash testing/shadow-oracle/scripts/oracle-box-store-services.sh wait || { echo "oracle: the store backends did not come up"; exit 1; }
       rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
-      ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
-      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+      echo "[oracle-phase] record $(date +%s)"
+      set -o pipefail; ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate 2>&1 | while IFS= read -r l; do echo "[$(date +%s)] $l"; done
+      echo "[oracle-phase] replay $(date +%s)"
+      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict; rc=$?; echo "[oracle-phase] end $(date +%s)"; exit $rc
     needs: [gates]
     # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
     # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
