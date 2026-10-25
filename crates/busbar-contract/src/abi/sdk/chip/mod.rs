@@ -209,10 +209,11 @@ impl Cred {
         Seal::new(v)
     }
 
-    /// `Basic base64(user:credential)` (RFC 7617).
-    pub fn basic(&self, user: &str) -> Seal {
+    /// `Basic base64(user:credential)` (RFC 7617; the user's octets as they are).
+    pub fn basic(&self, user: impl AsRef<[u8]>) -> Seal {
+        let user = user.as_ref();
         let mut pair = Zeroizing::new(Vec::with_capacity(user.len() + 1 + self.len()));
-        pair.extend_from_slice(user.as_bytes());
+        pair.extend_from_slice(user);
         pair.push(b':');
         pair.extend_from_slice(self.wire());
         let mut v = Zeroizing::new(b"Basic ".to_vec());
