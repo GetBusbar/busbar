@@ -34,9 +34,11 @@ pub type StoreCall<'a, T> = Pin<Box<dyn Future<Output = Result<T, StoreFailure>>
 /// Why a store call answered without its result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreFailure {
-    /// FAILED: nothing applied; the store's text.
+    /// FAILED: the store's text. For an `op_id`-carrying write this proves nothing (S5): the commit
+    /// may have landed, so the caller replays the same `op_id` with the same body.
     Failed(String),
-    /// REFUSED: the store would not take the op; its text.
+    /// REFUSED: the store would not take the op; its text. For an `op_id`-carrying write, decided
+    /// before commit: nothing applied and nothing recorded (S3, S5).
     Refused(String),
     /// The `op_id` was already used with different value fields (`STORE_OPID_CONFLICT`); nothing
     /// applied.
