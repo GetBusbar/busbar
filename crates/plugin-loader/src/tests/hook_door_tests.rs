@@ -1061,6 +1061,7 @@ async fn a_host_panic_inside_a_crossing_answers_fault_and_frees_the_op() {
                 deadline: std::time::Instant::now() + Duration::from_secs(60),
                 watch: Duration::ZERO,
                 leave: false,
+                lane: None,
             },
             &mut |_| None,
         ),
@@ -1117,6 +1118,7 @@ async fn a_caller_that_waits_out_its_deadline_reads_the_cancels_answer() {
             deadline: std::time::Instant::now() + Duration::from_millis(100),
             watch: Duration::ZERO,
             leave: false,
+            lane: None,
         },
         &mut |_| None,
     )

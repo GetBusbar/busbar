@@ -315,7 +315,7 @@ impl Shared {
             .await;
             let (outcome, error) = match ran {
                 Ran::Answered { called, .. } => (called.outcome, called.error),
-                Ran::TimedOut => (Outcome::Failed, None),
+                Ran::TimedOut { .. } | Ran::NoTicket => (Outcome::Failed, None),
             };
             match outcome {
                 Outcome::Ready => break,
