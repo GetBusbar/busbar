@@ -19,7 +19,7 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot, ReadyIn};
 
-use super::{in_head, now_ns, out_head, Dispatcher, Frame, Kind, Plugin};
+use super::{in_head, out_head, Dispatcher, Frame, Kind, Plugin};
 
 /// How long boot waits for one instance's `ready`: the lifecycle budget
 /// ([`super::Budgets::lifecycle`]'s default). At the deadline the dispatcher cancels the op and it
@@ -48,9 +48,7 @@ impl<K: Kind> Plugin<K> {
             return Ok(());
         }
         let failed = |reason: String| format!("plugin '{}' ready failed: {reason}", self.name());
-        let ticket = dispatcher
-            .mint(0)
-            .ok_or_else(|| failed("no ticket is free".into()))?;
+        let _ = dispatcher;
         let frame = Frame::new(
             ReadyIn {
                 head: in_head(),
@@ -58,14 +56,30 @@ impl<K: Kind> Plugin<K> {
             },
             out_head(),
         );
-        let until = now_ns().saturating_add(u64::try_from(deadline.as_nanos()).unwrap_or(u64::MAX));
-        let reply = dispatcher.submit(self, ticket, slot::READY, frame, DeadlineClass::Call, until);
-        let done = reply.wait(deadline + CANCEL_GRACE);
-        // An unanswered reply is a client drop: the op is cancelled, then the ticket recycled.
-        drop(reply);
-        dispatcher.recycle(ticket);
-        let Some(done) = done else {
-            return Err(failed(format!("no answer within {deadline:?}")));
+        let ran = super::call::wait(
+            super::call::call(
+                &self.shared(),
+                slot::READY,
+                frame,
+                std::sync::Arc::new(()),
+                super::call::Opts {
+                    class: DeadlineClass::Call,
+                    deadline: Some(std::time::Instant::now() + deadline),
+                    watch: Duration::ZERO,
+                    leave: false,
+                    lane: None,
+                },
+                &mut |_| None,
+            ),
+            deadline + CANCEL_GRACE,
+        );
+        let done = match ran {
+            Some(super::call::Ran::Answered { called, .. }) => called,
+            Some(super::call::Ran::TimedOut { .. }) => {
+                return Err(failed(format!("{:?}", K::TIMEOUT)));
+            }
+            Some(super::call::Ran::NoTicket) => return Err(failed("no ticket is free".into())),
+            None => return Err(failed(format!("no answer within {deadline:?}"))),
         };
         match (done.outcome, done.error) {
             (Outcome::Ready, _) => Ok(()),

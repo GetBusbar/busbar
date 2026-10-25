@@ -15,11 +15,10 @@
 //! `resolve` returns, so no plugin memory outlives the call. An instance is closed when its last
 //! handle drops.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::open_once::OpenOnce;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{
     Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
@@ -29,6 +28,7 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, 
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{
     slot, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
+    ERROR_KIND_UNSET,
 };
 use busbar_contract::config_time::{ConfigScope, RESOLVE_OFF_CONFIG_TIME};
 use busbar_contract::conn::DeclaredConns;
@@ -37,10 +37,11 @@ use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
 use busbar_contract::secret_ref::SecretRef;
 
 use crate::boot::{Candidate, Origin};
+use crate::dispatch::call::{self, Opts, Ran};
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{
-    in_head, load_dropped_bytes, load_linked, now_ns, out_head, Bind, ConnTable, Dispatcher,
-    EnvelopeSink, Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
+    in_head, load_dropped_bytes, load_linked, out_head, Bind, ConnTable, Dispatcher, EnvelopeSink,
+    Frame, NoSink, Plugin, PluginLogConfig, NO_BLOB,
 };
 
 /// How long a `resolve` may pend before the dispatcher cancels it (the Call budget).
@@ -73,14 +74,12 @@ enum Disk {
 /// drops (a lane job holds one).
 pub struct LoadedSecret {
     opened: Arc<Opened>,
-    dispatcher: Arc<Dispatcher>,
-    next_worker: AtomicU32,
     disk: Disk,
 }
 
 /// The opened instance itself, shared with a lane job running its `resolve`. Closed on drop.
 struct Opened {
-    plugin: Plugin<Secret>,
+    plugin: Arc<Plugin<Secret>>,
 }
 
 impl std::fmt::Debug for LoadedSecret {
@@ -167,9 +166,9 @@ impl LoadedSecret {
             return Err(c.open_failure(plugin.name()));
         }
         Ok(Self {
-            opened: Arc::new(Opened { plugin }),
-            dispatcher,
-            next_worker: AtomicU32::new(0),
+            opened: Arc::new(Opened {
+                plugin: Arc::new(plugin),
+            }),
             disk: Disk::No,
         })
     }
@@ -300,16 +299,7 @@ impl SecretCalls for LoadedSecret {
                 format!("secret module '{name}': {RESOLVE_OFF_CONFIG_TIME}"),
             ));
         }
-        let plugin = &self.opened.plugin;
-        let workers = self.dispatcher.workers().max(1);
-        let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
-        let Some(ticket) = self.dispatcher.mint(worker) else {
-            return Err(refused(
-                ERROR_KIND_INTERNAL,
-                format!("secret module '{name}' could not be called: no ticket"),
-            ));
-        };
-        // The settings ride with the job: a crossing the watchdog answered still owns them until
+        // The settings ride with the op: a crossing the watchdog answered still owns them until
         // it returns.
         let owned: Arc<Vec<u8>> = Arc::new(settings.to_vec());
         let frame = Frame::new(
@@ -324,27 +314,48 @@ impl SecretCalls for LoadedSecret {
                 _reserved: 0,
             },
         );
-        let deadline = now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64);
-        let done = self
-            .dispatcher
-            .submit_lent(
-                plugin,
-                ticket,
+        let ran = call::wait(
+            call::call(
+                &self.opened.plugin,
                 slot::RESOLVE,
                 frame,
-                DeadlineClass::Call,
-                deadline,
                 owned,
-            )
-            .wait(WAIT);
-        self.dispatcher.recycle(ticket);
-        let Some(done) = done else {
-            return Err(refused(
-                ERROR_KIND_INTERNAL,
-                format!("secret module '{name}' did not answer its resolve"),
-            ));
+                Opts {
+                    class: DeadlineClass::Call,
+                    deadline: Some(Instant::now() + CALL_DEADLINE),
+                    watch: Duration::ZERO,
+                    leave: false,
+                    lane: None,
+                },
+                &mut |_| None,
+            ),
+            WAIT,
+        );
+        let done = match ran {
+            Some(Ran::Answered { called, frame, .. }) => (called, frame),
+            Some(Ran::TimedOut { .. }) => {
+                // Cut at its deadline: the Call budget's FAILED, with the kind the host zeroed
+                // before the crossing that pended.
+                return Err(refused(
+                    ERROR_KIND_UNSET,
+                    format!("secret module '{name}' failed to resolve"),
+                ));
+            }
+            Some(Ran::NoTicket) => {
+                return Err(refused(
+                    ERROR_KIND_INTERNAL,
+                    format!("secret module '{name}' could not be called: no ticket"),
+                ))
+            }
+            None => {
+                return Err(refused(
+                    ERROR_KIND_INTERNAL,
+                    format!("secret module '{name}' did not answer its resolve"),
+                ))
+            }
         };
-        match (done.outcome, done.frame.as_deref()) {
+        let (done, f) = done;
+        match (done.outcome, Some(&*f)) {
             (Outcome::Ready, Some(f)) => {
                 let b = f.out.secret;
                 // SAFETY: a READY resolve's `secret` names plugin memory held under the answer's

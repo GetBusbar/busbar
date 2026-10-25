@@ -750,3 +750,24 @@ mod write_behind {
             .unbounded_send(op);
     }
 }
+
+/// A SYNC caller's wait: `op` run to its answer on the calling thread (no runtime needed), given
+/// up after `cap`; `None` then, and the op is left as a dropped call is (cancelled on a plugin
+/// thread).
+pub(crate) fn wait<T>(op: impl Future<Output = T>, cap: Duration) -> Option<T> {
+    let until = Instant::now() + cap;
+    futures::executor::block_on(async {
+        let mut op = std::pin::pin!(op);
+        let mut cap = std::pin::pin!(sleep_until(until));
+        std::future::poll_fn(|cx| {
+            if let Poll::Ready(v) = op.as_mut().poll(cx) {
+                return Poll::Ready(Some(v));
+            }
+            if cap.as_mut().poll(cx).is_ready() {
+                return Poll::Ready(None);
+            }
+            Poll::Pending
+        })
+        .await
+    })
+}

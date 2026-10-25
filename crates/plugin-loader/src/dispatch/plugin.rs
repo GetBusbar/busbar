@@ -1993,6 +1993,15 @@ impl<K: Kind> Plugin<K> {
         }
     }
 
+    /// A second handle on this same instance, for an op the call path owns (the instance stays
+    /// one: the handles share it, and recall tokens name it, not the handle).
+    pub(crate) fn shared(&self) -> Arc<Self> {
+        Arc::new(Self {
+            inner: Arc::clone(&self.inner),
+            _k: PhantomData,
+        })
+    }
+
     /// The unit op `s` serves, read off its `in` (`Kind::unit_of`).
     pub(crate) fn unit_of(&self, s: u32, input: *const InHead, in_size: usize) -> Option<u64> {
         (self.inner.unit_of)(s, input, in_size)
