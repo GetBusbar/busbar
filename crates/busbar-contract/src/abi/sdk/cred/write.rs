@@ -24,6 +24,7 @@ enum Part {
 #[derive(Default)]
 pub struct Parts {
     parts: Vec<Part>,
+    secure: bool,
 }
 
 impl Parts {
@@ -42,6 +43,7 @@ impl Parts {
     /// Append a sealed piece.
     #[must_use]
     pub fn sealed(mut self, seal: Seal) -> Self {
+        self.secure |= seal.secure_required();
         self.parts.push(Part::Sealed(seal));
         self
     }
@@ -81,6 +83,28 @@ impl Parts {
 pub struct SealedWrite {
     pub(crate) buf: Zeroizing<Vec<u8>>,
     done: usize,
+    /// It carries a credential that goes out only secured ([`super::Cred::secure_required`]).
+    pub(crate) secure: bool,
+    /// The connection was confirmed secured before the first byte.
+    confirmed: bool,
+    /// The connection was found in the clear: every later poll refuses (a replayed `FACTS` writes
+    /// nothing, so only this remembers it).
+    refused: bool,
+}
+
+/// Before a credential that must go out secured is written on `stream`: whether the host connector
+/// reports it secured ([`Connector::facts`]). A host that offers no facts, or a stream it reports
+/// in the clear, refuses ([`super::NOT_SECURE`]). `None` facts are a replayed call's: the entry
+/// that first made it decided.
+pub(crate) fn confirm_secure(c: &mut Connector<'_>, stream: u64) -> Answer<()> {
+    match c.facts(stream) {
+        Poll::Pending => Poll::Pending,
+        Poll::Ready(Ok(Some(o))) if o.secure => Poll::Ready(Ok(())),
+        Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
+        Poll::Ready(Ok(Some(_)) | Err(_)) => Poll::Ready(Err(
+            crate::abi::sdk::conn::ConnFailure::Refused(super::NOT_SECURE.into()),
+        )),
+    }
 }
 
 impl SealedWrite {
@@ -93,11 +117,44 @@ impl SealedWrite {
                 Part::Sealed(s) => buf.extend_from_slice(s.wire()),
             }
         }
-        Self { buf, done: 0 }
+        Self {
+            buf,
+            done: 0,
+            secure: wire.secure,
+            confirmed: false,
+            refused: false,
+        }
     }
 
-    pub(crate) fn from_bytes(buf: Zeroizing<Vec<u8>>) -> Self {
-        Self { buf, done: 0 }
+    pub(crate) fn from_bytes(buf: Zeroizing<Vec<u8>>, secure: bool) -> Self {
+        Self {
+            buf,
+            done: 0,
+            secure,
+            confirmed: false,
+            refused: false,
+        }
+    }
+
+    /// Whether it carries a credential that goes out only secured.
+    pub fn secure_required(&self) -> bool {
+        self.secure
+    }
+
+    fn confirm(&mut self, c: &mut Connector<'_>, stream: u64) -> Answer<()> {
+        if self.secure && !self.confirmed {
+            match confirm_secure(c, stream) {
+                Poll::Ready(Ok(())) if !self.refused => self.confirmed = true,
+                Poll::Pending if !self.refused => return Poll::Pending,
+                _ => {
+                    self.refused = true;
+                    return Poll::Ready(Err(crate::abi::sdk::conn::ConnFailure::Refused(
+                        super::NOT_SECURE.into(),
+                    )));
+                }
+            }
+        }
+        Poll::Ready(Ok(()))
     }
 
     /// A whole auth message, written alone.
@@ -122,6 +179,7 @@ impl SealedWrite {
 
     /// Write what is left on a connector `stream`: `Ready(Ok(()))` once every byte is taken.
     pub fn poll(&mut self, c: &mut Connector<'_>, stream: u64) -> Answer<()> {
+        std::task::ready!(self.confirm(c, stream))?;
         while !self.finished() {
             match c.write(stream, &self.buf[self.done..]) {
                 Poll::Pending => return Poll::Pending,
@@ -134,7 +192,15 @@ impl SealedWrite {
     }
 
     /// Write what is left on an I/O `handle`: `Ready(Ok(()))` once every byte is taken.
+    ///
+    /// An I/O handle reports no connection security, so a credential that must go out secured is
+    /// refused here.
     pub fn poll_io(&mut self, io: &mut Io<'_>, handle: u64) -> Poll<IoAnswer<()>> {
+        if self.secure {
+            return Poll::Ready(Err(crate::abi::sdk::io::IoFailure::Refused(
+                super::NOT_SECURE.into(),
+            )));
+        }
         while !self.finished() {
             match io.write(handle, &self.buf[self.done..]) {
                 Poll::Pending => return Poll::Pending,
@@ -169,6 +235,7 @@ impl SealedWrite {
         stream: u64,
         piece: &RequestPiece,
     ) -> Answer<()> {
+        std::task::ready!(self.confirm(c, stream))?;
         while !self.finished() {
             match c.write_request(stream, piece, &self.buf[self.done..]) {
                 Poll::Pending | Poll::Ready(Ok(0)) => return Poll::Pending,
@@ -186,6 +253,7 @@ impl SealedWrite {
         stream: u64,
         piece: &RequestPiece,
     ) -> Answer<usize> {
+        std::task::ready!(self.confirm(c, stream))?;
         c.write_request(stream, piece, &self.buf)
     }
 }

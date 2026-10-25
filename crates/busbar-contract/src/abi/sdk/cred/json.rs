@@ -194,7 +194,11 @@ impl SealedJson {
         let mut buf = Zeroizing::new(Vec::with_capacity(counted.0));
         self.write(&mut *buf)?;
         debug_assert_eq!(buf.len(), buf.capacity());
-        Ok(SealedWrite::from_bytes(buf))
+        let secure = self.members.iter().any(|(_, m)| match m {
+            Member::Sealed(c) => c.secure_required(),
+            Member::Public(_) => false,
+        });
+        Ok(SealedWrite::from_bytes(buf, secure))
     }
 
     fn write(&self, out: &mut impl std::io::Write) -> Result<(), NotJsonText> {
