@@ -1206,6 +1206,7 @@ async fn a_host_panic_inside_a_waited_cancel_answers_fault() {
                 deadline: std::time::Instant::now() + Duration::from_millis(100),
                 watch: Duration::ZERO,
                 leave: false,
+                lane: None,
             },
             &mut |_| None,
         ),
