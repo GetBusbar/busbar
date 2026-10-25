@@ -288,7 +288,7 @@ pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
     }));
     let plugin = load(way, &dispatcher);
     let book = Arc::new(book);
-    let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1));
+    let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher));
     let refusal_statuses = calls.refusal_statuses();
     assert_eq!(
         refusal_statuses,
@@ -340,7 +340,7 @@ fn a_plane_driven_through_its_driver_ticket_answers_under_its_own_frame() {
         let dispatcher = Dispatcher::new(DispatchConfig::default());
         let gauges = Arc::new(Gauges::default());
         let plugin = load_with(way, &dispatcher, gauges.clone());
-        let t = dispatcher.driver(&*plugin, 0).expect("a driver ticket");
+        let t = dispatcher.driver(&*plugin).expect("a driver ticket");
         wake(&plugin, t);
         let until = Instant::now() + Duration::from_secs(5);
         while gauges.0.lock().unwrap().is_empty() && Instant::now() < until {
@@ -448,7 +448,7 @@ fn ticked(plugin: &Plugin<Plane>) -> [u64; plane::TICKED] {
 
 /// The kernel's driver of `plugin`'s instance, on the dispatcher's one worker (worker 0).
 fn driver_of(plugin: &Arc<Plugin<Plane>>, dispatcher: Arc<Dispatcher>) -> PlaneDriver {
-    let calls = Arc::new(PlaneInstance::new(Arc::clone(plugin), dispatcher, 0));
+    let calls = Arc::new(PlaneInstance::new(Arc::clone(plugin), dispatcher));
     let refusal_statuses = calls.refusal_statuses();
     PlaneDriver::new(
         calls,
@@ -962,25 +962,29 @@ async fn a_tick_parked_at_the_cap_runs_when_a_slot_frees_without_a_poke() {
         let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let far = Arc::new(Far::default());
         let plugin = load_capped(way, &dispatcher, &far, 2);
-        let drv = dispatcher.driver(&*plugin, 0).expect("a driver ticket");
+        let drv = dispatcher.driver(&*plugin).expect("a driver ticket");
         let t = |c: plane::Ticked| ticked(&plugin)[c as usize];
         for _ in 0..3 {
             arrive_at(&plugin, "/tick-hold");
         }
         for k in 1..=2 {
-            let done = dispatcher
-                .tick(&*plugin, drv, now_ns())
-                .wait(Duration::from_secs(5))
-                .expect("a held set under its cap answers the tick");
+            let done = tokio::time::timeout(
+                Duration::from_secs(5),
+                dispatcher.tick(&*plugin, drv, now_ns()),
+            )
+            .await
+            .expect("a held set under its cap answers the tick");
             assert_eq!(
                 done.outcome,
                 AbiOutcome::Pending,
                 "{way:?}: exchange {k} is held"
             );
         }
-        let parked = dispatcher.tick(&*plugin, drv, now_ns());
+        let mut parked = Box::pin(dispatcher.tick(&*plugin, drv, now_ns()));
         assert!(
-            parked.wait(Duration::from_millis(200)).is_none(),
+            tokio::time::timeout(Duration::from_millis(200), &mut parked)
+                .await
+                .is_err(),
             "{way:?}: at the cap the tick is parked, unanswered"
         );
         assert_eq!(t(plane::Ticked::HoldStarted), 2, "{way:?}: not crossed");
@@ -988,8 +992,8 @@ async fn a_tick_parked_at_the_cap_runs_when_a_slot_frees_without_a_poke() {
         far.ready.lock().unwrap().insert(first, b"first".to_vec());
         // The far end's own readiness wake: the held exchange ends in the `drive` it runs.
         wake(&plugin, drv);
-        let done = parked
-            .wait(Duration::from_secs(5))
+        let done = tokio::time::timeout(Duration::from_secs(5), parked)
+            .await
             .expect("the freed slot woke the parked tick");
         assert_eq!(
             done.outcome,
@@ -1162,7 +1166,7 @@ fn serve_table(
     let table = ServeTable {
         instance: instance.to_string(),
         audit_kind: "testkind".to_string(),
-        calls: Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1)),
+        calls: Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher)),
         caps: BufferCaps::default(),
         routes,
         records: None,
@@ -1801,7 +1805,7 @@ async fn a_session_is_refused_while_its_money_is_unstated() {
             ..DispatchConfig::default()
         }));
         let plugin = load(way, &dispatcher);
-        let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1));
+        let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher));
         let refusal_statuses = calls.refusal_statuses();
         let driver = PlaneDriver::new(
             calls,

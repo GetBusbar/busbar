@@ -1680,11 +1680,7 @@ pub(crate) fn compose_planes_over(
         crate::root::door_steps::owned_anchors_refusal(&served_facts.need_trust, sections)
             .map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
-        let calls = Arc::new(PlaneInstance::new(
-            plugin.clone(),
-            Arc::clone(dispatcher),
-            0,
-        ));
+        let calls = Arc::new(PlaneInstance::new(plugin.clone(), Arc::clone(dispatcher)));
         let plane_money = money();
         let config = DriverConfig {
             caps: BufferCaps::default(),

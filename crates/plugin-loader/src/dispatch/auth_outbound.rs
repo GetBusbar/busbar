@@ -33,14 +33,12 @@ use busbar_contract::redacted::Secret;
 use super::kinds::auth::{Auth, AuthFacts, OutboundStyle};
 use super::{in_head, out_head, Dispatcher, Frame, Plugin};
 
-/// One open auth instance, the dispatcher that adopted it, and the worker a waiting `fields` is
-/// submitted on. The instance is shared, never copied: a [`Plugin`] is `!Clone`, so the tick
+/// One open auth instance and the dispatcher that adopted it. The instance is shared, never copied: a [`Plugin`] is `!Clone`, so the tick
 /// schedule this instance runs shares the same `Arc`.
 #[derive(Debug, Clone)]
 pub struct OutboundInstance {
     plugin: Arc<Plugin<Auth>>,
     dispatcher: Arc<Dispatcher>,
-    worker: u32,
 }
 
 /// THE OUTBOUND STYLES `plugin`'s tail states (THE DESIGN §6 step 3: the auth plugin that serves
@@ -55,17 +53,11 @@ pub fn outbound_styles(plugin: &Plugin<Auth>) -> Vec<OutboundStyle> {
 }
 
 impl OutboundInstance {
-    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`, a waiting `fields`
-    /// submitted on `worker`.
-    pub fn new(
-        plugin: impl Into<Arc<Plugin<Auth>>>,
-        dispatcher: Arc<Dispatcher>,
-        worker: u32,
-    ) -> Self {
+    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`.
+    pub fn new(plugin: impl Into<Arc<Plugin<Auth>>>, dispatcher: Arc<Dispatcher>) -> Self {
         OutboundInstance {
             plugin: plugin.into(),
             dispatcher,
-            worker,
         }
     }
 
@@ -80,7 +72,6 @@ impl OutboundInstance {
     pub fn open_with(
         plugin: Plugin<Auth>,
         dispatcher: Arc<Dispatcher>,
-        worker: u32,
         settings: &[u8],
     ) -> Result<Self, String> {
         use busbar_contract::abi::mechanism::lifecycle::{slot as lc, OpenIn, OpenOut, ValidateIn};
@@ -124,14 +115,14 @@ impl OutboundInstance {
         if called.outcome != Outcome::Ready {
             return Err(named("open", called.outcome));
         }
-        Ok(Self::new(plugin, dispatcher, worker))
+        Ok(Self::new(plugin, dispatcher))
     }
 
     /// THE INSTANCE'S TICK SCHEDULE (THE DESIGN §6.5: a minted credential refreshes ahead of
     /// expiry on `tick`): the one auth schedule, [`super::auth_ticks::ticks`], holding the instance
     /// for as long as it runs.
     pub async fn ticks(self: Arc<Self>) {
-        super::auth_ticks::ticks(&self.plugin, &self.dispatcher, self.worker).await;
+        super::auth_ticks::ticks(&self.plugin, &self.dispatcher).await;
     }
 }
 

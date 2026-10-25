@@ -578,7 +578,7 @@ impl Rig {
             pools.push(f);
         }
         let plugin = Arc::new(door(&dispatcher, &settings(&pools)));
-        let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1));
+        let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher));
         let refusal_statuses = calls.refusal_statuses();
         let served = plugin.served();
         let dialects: Vec<String> = served.dialects.iter().map(|d| (*d).to_string()).collect();

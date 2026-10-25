@@ -374,6 +374,12 @@ impl InlineTicket {
         self.ticket
     }
 
+    /// Note that `instance`'s ops run on this ticket: its kept connector answers under the ticket
+    /// go with the ticket.
+    pub(crate) fn note(&self, instance: InstanceId) {
+        self.slot.section().instance = Some(instance);
+    }
+
     /// Register `waker` as the task an op pending on this ticket wakes (in the slot's section: the
     /// ticket is held, so the slot holds its generation).
     pub fn register(&self, waker: &Waker) {

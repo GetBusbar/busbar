@@ -80,7 +80,7 @@ fn fold_over(s: &Subject, leg: Leg, url: Option<&str>, all: &Value) -> Fold {
         caller_ref: Some(b"c0ffee".to_vec()),
         host: None,
     };
-    let driver = d.driver(&p, 0);
+    let driver = d.driver(&p);
     sessions(&mut r, (&p, &d, driver), &Session::all(all), &carried);
     r.fold()
 }
@@ -402,7 +402,7 @@ fn red_a_cancel_naming_no_session_ticket_ends_nothing() {
         caller_ref: None,
         host: None,
     };
-    let driver = d.driver(&p, 0);
+    let driver = d.driver(&p);
     sessions(&mut r, (&p, &d, driver), &Session::all(&all), &carried);
     r.line("cancel", 1, || {
         cancel(&p, busbar_contract::abi::mechanism::ticket::Ticket::NONE)
@@ -483,7 +483,7 @@ fn served_fold(leg: Leg, host: &str, all: &Value) -> Fold {
         caller_ref: None,
         host: None,
     };
-    let driver = d.driver(&p, 0);
+    let driver = d.driver(&p);
     sessions(&mut r, (&p, &d, driver), &Session::all(all), &carried);
     r.fold()
 }

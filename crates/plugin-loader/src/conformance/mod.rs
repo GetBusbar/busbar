@@ -1417,6 +1417,16 @@ pub(crate) fn answered<I, O>(done: &Done<I, O>) -> Called {
     }
 }
 
+/// A `tick`'s answer as the host reads it.
+pub(crate) fn ticked(t: &crate::dispatch::driver::Ticked) -> Called {
+    Called {
+        outcome: t.outcome,
+        error: t.error.clone(),
+        lease: t.lease,
+        recall: None,
+    }
+}
+
 /// How long the suite waits for one resumed `open`: the store bridge's call deadline.
 const OPEN_DEADLINE: Duration = Duration::from_secs(30);
 

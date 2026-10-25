@@ -945,12 +945,10 @@ fn at(buf: &[u8], sp: Span) -> &[u8] {
 
 /// `tick` at `now_ns` on the instance's driver ticket, awaited: its outcome and `next_tick_ns`.
 fn tick_driver(p: &Plugin<Auth>, d: &Dispatcher, driver: Ticket, now_ns: u64) -> (String, u64) {
-    let reply = d.tick(p, driver, now_ns);
-    let Some(done) = reply.wait(TICK_WAIT) else {
+    let Some(done) = crate::dispatch::call::wait(d.tick(p, driver, now_ns), TICK_WAIT) else {
         return ("no answer".to_string(), 0);
     };
-    let next = done.frame.as_ref().map_or(0, |f| f.out.next_tick_ns);
-    (format!("{:?}", done.outcome), next)
+    (format!("{:?}", done.outcome), done.next_tick_ns)
 }
 
 // ---- the script ----
@@ -1031,7 +1029,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                 let od = m.on_demand.as_ref().expect("on demand");
                 let counter = crossings(&p);
                 let driver = d
-                    .driver(&p, 0)
+                    .driver(&p)
                     .expect("the instance's driver ticket is minted");
                 // SINGLE-FLIGHT: two calls wait on S before anything drives the exchange.
                 let first = r.step(&label("fields on a ticket, before any exchange"), 1, || {
@@ -1098,7 +1096,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
             (Some(m), Some(e)) => {
                 r.line(&label("fields before the first mint"), 1, signed);
                 let driver = d
-                    .driver(&p, 0)
+                    .driver(&p)
                     .expect("the instance's driver ticket is minted");
                 let next = r.step(&label("tick: the first mint"), 1, || {
                     let (line, next) = tick_driver(&p, &d, driver, T0);
@@ -1168,7 +1166,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                 open_outbound(&q, x)
             });
             let driver = d
-                .driver(&q, 0)
+                .driver(&q)
                 .expect("the instance's driver ticket is minted");
             rq.line(&label("failing endpoint: tick"), 1, || {
                 let (line, _) = tick_driver(&q, &d, driver, T0);
@@ -1204,7 +1202,7 @@ pub(super) fn fold(s: &Subject, leg: Leg, door: RawDoorFn, st: &Stated) -> Fold 
                 open_outbound(&q, x)
             });
             let driver = d
-                .driver(&q, 0)
+                .driver(&q)
                 .expect("the instance's driver ticket is minted");
             rq.line(&label("failing endpoint: tick"), 1, || {
                 let (line, _) = tick_driver(&q, &d, driver, T0);

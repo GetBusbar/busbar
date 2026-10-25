@@ -493,7 +493,7 @@ pub(crate) struct Instance {
     pub(crate) resumes: AtomicU64,
     /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
     pub(crate) calls: Mutex<Vec<Watched>>,
-    next_call: AtomicU64,
+    pub(crate) next_call: AtomicU64,
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
     pub(crate) drainable: AtomicU32,
@@ -523,7 +523,7 @@ pub(crate) struct Instance {
     /// it was lent), then handed to the caller as the reason. Empty at any other time.
     open_reason: Mutex<Vec<u8>>,
     /// What its driver ticket's READY `drive` answers named, until the host collects them.
-    pub(crate) driven: super::worker::Driven,
+    pub(crate) driven: super::driver::Driven,
     /// Last: the library outlives everything above.
     _lib: Option<Lib>,
 }
@@ -1691,7 +1691,7 @@ impl<K: Kind> Plugin<K> {
                 wake,
                 tables,
                 open_reason: Mutex::new(Vec::new()),
-                driven: super::worker::Driven::default(),
+                driven: super::driver::Driven::default(),
                 _lib: lib,
             }),
             _k: PhantomData,
@@ -2137,7 +2137,7 @@ impl std::fmt::Debug for Watched {
 }
 
 impl Watched {
-    fn new(id: u64, slot: u32, watch: Duration, class: DeadlineClass) -> Self {
+    pub(crate) fn new(id: u64, slot: u32, watch: Duration, class: DeadlineClass) -> Self {
         Self {
             id,
             started: Instant::now(),

@@ -290,7 +290,7 @@ fn opened() -> OutboundInstance {
         .expect("open answers");
     d.recycle(t);
     assert_eq!(done.outcome, Outcome::Ready, "the test door opens");
-    OutboundInstance::new(p, d, 0)
+    OutboundInstance::new(p, d)
 }
 
 fn request() -> FieldsRequest {

@@ -403,7 +403,7 @@ impl AuthRows {
             };
             let settings = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
             let auth =
-                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &settings)?;
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), &settings)?;
             return Ok(Some(busbar_contract::auth_calls::OutboundServing {
                 auth: Arc::new(auth),
                 flags: decl.flags,

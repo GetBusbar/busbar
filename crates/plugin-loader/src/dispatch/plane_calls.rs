@@ -30,8 +30,7 @@ use super::kinds::plane::Plane;
 use super::plugin::Admission;
 use super::{in_head, now_ns, Dispatcher, Frame, InFrame, OutFrame, Plugin};
 
-/// One open plane instance, the dispatcher that adopted it, and the worker its driver ticket is
-/// minted on. Its units' tickets are inline tickets the instance holds until the kernel recycles
+/// One open plane instance and the dispatcher that adopted it. Its units' tickets are inline tickets the instance holds until the kernel recycles
 /// them; their ops run on the one call path, on the caller's thread. The instance is shared,
 /// never copied: a [`Plugin`] is `!Clone`, so a holder that keeps the plugin beside this one shares
 /// the same `Arc`.
@@ -39,7 +38,6 @@ use super::{in_head, now_ns, Dispatcher, Frame, InFrame, OutFrame, Plugin};
 pub struct PlaneInstance {
     plugin: Arc<Plugin<Plane>>,
     dispatcher: Arc<Dispatcher>,
-    worker: u32,
     /// The units' tickets, held until the kernel recycles them.
     tickets: Arc<Mutex<HashMap<Ticket, Held>>>,
 }
@@ -55,17 +53,11 @@ struct Held {
 }
 
 impl PlaneInstance {
-    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`, its driver ticket
-    /// minted on `worker` and its unit tickets on every worker in turn from `worker` on.
-    pub fn new(
-        plugin: impl Into<Arc<Plugin<Plane>>>,
-        dispatcher: Arc<Dispatcher>,
-        worker: u32,
-    ) -> Self {
+    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`.
+    pub fn new(plugin: impl Into<Arc<Plugin<Plane>>>, dispatcher: Arc<Dispatcher>) -> Self {
         PlaneInstance {
             plugin: plugin.into(),
             dispatcher,
-            worker,
             tickets: Arc::default(),
         }
     }
@@ -277,7 +269,7 @@ impl PlaneCalls for PlaneInstance {
     }
 
     fn driver(&self) -> Option<Ticket> {
-        self.dispatcher.driver(&*self.plugin, self.worker)
+        self.dispatcher.driver(&*self.plugin)
     }
 
     fn woke(&self) -> Pin<Box<dyn Future<Output = bool> + Send>> {
@@ -307,12 +299,10 @@ impl PlaneCalls for PlaneInstance {
         driver: Ticket,
         now_ns: u64,
     ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>> {
-        let reply = self.dispatcher.tick(&*self.plugin, driver, now_ns);
+        let ticked = self.dispatcher.tick(&*self.plugin, driver, now_ns);
         Box::pin(async move {
-            let done = reply.await;
-            matches!(done.outcome, Outcome::Ready | Outcome::Pending)
-                .then(|| done.frame.map(|f| f.out.next_tick_ns))
-                .flatten()
+            let done = ticked.await;
+            matches!(done.outcome, Outcome::Ready | Outcome::Pending).then_some(done.next_tick_ns)
         })
     }
 

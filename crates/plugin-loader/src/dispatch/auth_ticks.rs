@@ -23,8 +23,8 @@ use super::{Dispatcher, Plugin};
 /// The driver ticket is RECYCLED when the schedule ends, and when its task is aborted (the
 /// instance retired or replaced): the slab entry holds the instance, so a ticket never recycled
 /// would keep every reloaded auth instance, and its library, alive for the life of the process.
-pub async fn ticks(plugin: &Plugin<Auth>, dispatcher: &Dispatcher, worker: u32) {
-    let Some(driver) = dispatcher.driver(plugin, worker) else {
+pub async fn ticks(plugin: &Plugin<Auth>, dispatcher: &Dispatcher) {
+    let Some(driver) = dispatcher.driver(plugin) else {
         return;
     };
     let _recycled = Recycled { dispatcher, driver };
@@ -35,8 +35,8 @@ pub async fn ticks(plugin: &Plugin<Auth>, dispatcher: &Dispatcher, worker: u32) 
             tokio::time::sleep(std::time::Duration::from_nanos(at - now)).await;
         }
         let done = dispatcher.tick(plugin, driver, super::now_ns()).await;
-        match (done.outcome, done.frame.map(|f| f.out.next_tick_ns)) {
-            (Outcome::Ready | Outcome::Pending, Some(next)) if next != 0 => at = next,
+        match (done.outcome, done.next_tick_ns) {
+            (Outcome::Ready | Outcome::Pending, next) if next != 0 => at = next,
             _ => return,
         }
     }
@@ -62,10 +62,9 @@ impl Drop for Recycled<'_> {
 pub fn spawn(
     plugin: Arc<Plugin<Auth>>,
     dispatcher: Arc<Dispatcher>,
-    worker: u32,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let runtime = tokio::runtime::Handle::try_current().ok()?;
-    Some(runtime.spawn(async move { ticks(&plugin, &dispatcher, worker).await }))
+    Some(runtime.spawn(async move { ticks(&plugin, &dispatcher).await }))
 }
 
 #[cfg(test)]

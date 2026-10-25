@@ -2592,11 +2592,12 @@ fn red_a_connector_buffer_over_the_byte_cap_is_refused_before_any_slice() {
 
 /// RED (THE DESIGN §11.13 M1, "No plugin code (`dlclose` included) runs under a host lock"; audit
 /// PL1 #2): an instance whose last reference is its driver ticket is let go by the recycle that
-/// drops that ticket on its worker. Its drop closes the connection a held stream had open, and that
-/// close reaches a transport door. The door double here parks in its close: while it is parked,
-/// a ticket is still minted on that worker, because the worker's state lock is not held across it.
+/// drops that ticket. Its drop closes the connection a held stream had open, and that close reaches
+/// a transport door. The door double here parks in its close: while it is parked, the recycle has
+/// returned and another driver ticket is still minted, because neither the recycling caller nor the
+/// dispatcher's drivers lock is held across it.
 #[test]
-fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
+fn red_an_instances_last_drop_closes_with_no_host_lock_held() {
     let table = Arc::new(Scripted {
         framed: true,
         ..Scripted::default()
@@ -2613,19 +2614,27 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
         ),
         "the whole request is open on the table"
     );
-    let driver = d.driver(&p, 0).expect("a driver ticket");
+    let other = bound_over_by(&table, d.adopter());
+    assert_eq!(open_with(&other, b"{}"), Outcome::Ready);
+    let driver = d.driver(&p).expect("a driver ticket");
     // The driver ticket now holds the instance's last reference.
     drop(p);
     table.close_gate.armed.store(true, AtomicOrdering::SeqCst);
+    let started = std::time::Instant::now();
     d.recycle(driver);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the recycle waited for the plugin's close"
+    );
     let parked = table
         .close_gate
         .entered_within(std::time::Duration::from_secs(10));
     let minted = std::thread::scope(|s| {
         let (tx, rx) = std::sync::mpsc::channel();
         let d = &d;
+        let other = &other;
         s.spawn(move || {
-            let _ = tx.send(d.mint(0));
+            let _ = tx.send(d.driver(other));
         });
         let minted = rx.recv_timeout(std::time::Duration::from_secs(5));
         // Released whatever happened, so the scope's join never waits on the parked close.
@@ -2640,8 +2649,8 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
         "the dropped instance's close never reached the table"
     );
     let minted = minted.expect(
-        "a mint on the worker blocked while a transport close ran: the instance was let go under \
-         the worker's state lock",
+        "a driver mint blocked while a transport close ran: the instance was let go under the \
+         drivers' lock",
     );
     let t = minted.expect("a ticket");
     d.recycle(t);

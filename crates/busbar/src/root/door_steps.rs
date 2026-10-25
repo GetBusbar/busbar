@@ -2528,7 +2528,6 @@ impl OutboundAuths {
                         OutboundInstance::open_with(
                             plugin,
                             Arc::clone(&self.dispatcher),
-                            0,
                             &open_with,
                         )
                     })?;
@@ -2852,7 +2851,7 @@ impl OutboundAuths {
             };
             let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
             let instance =
-                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &bytes)?;
+                OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), &bytes)?;
             return Ok(
                 match instance.open_outbound_raw(style, credential, settings) {
                     Ok(_) => Vec::new(),

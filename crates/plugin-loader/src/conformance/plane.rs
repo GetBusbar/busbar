@@ -146,7 +146,7 @@ use serde_json::Value;
 
 use super::{
     answered, called, close, crossings, dispatcher, input, json, load, on_ticket_frame, output,
-    ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
+    ready_step, release, submit_on, ticked, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
 use crate::dispatch::{now_ns, Called, DispatchConfig, Dispatcher, Frame, Lent, Plugin};
@@ -1082,13 +1082,12 @@ fn tick_on_driver(
     };
     let driven = &p.inner.driven;
     let seen = driven.answers();
-    let done = d.tick(p, driver, now_ns).wait_done();
+    let done = futures::executor::block_on(d.tick(p, driver, now_ns));
     if wakes {
         let _ = driven.answered_after(seen, WAKE_WAIT);
         let _ = driven.drain();
     }
-    let next = done.frame.as_ref().map_or(0, |f| f.out.next_tick_ns);
-    format!("{} next={next}", called(&answered(&done)))
+    format!("{} next={}", called(&ticked(&done)), done.next_tick_ns)
 }
 
 /// `cancel` of the op on `ticket` (a session's): its disposition and the record writes it carried.
@@ -1375,7 +1374,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("open again", 0, || open(&p, &settings, url));
     // The instance's DRIVER ticket, as the kernel mints it once the instance is open: `drive` and
     // `tick` are submitted on it.
-    let driver = d.driver(&p, 0);
+    let driver = d.driver(&p);
     r.line("hydrate", 1, || generation(&p, slot::HYDRATE, 1));
     r.line("start", 1, || generation(&p, slot::START, 1));
     r.line("arrive claimed", 1, || arrive(&p, &k.claimed, &k.request));
@@ -1553,9 +1552,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("release none", 1, || called(&release(&p, 0)));
     r.line("tick", 1, || match driver {
         Some(driver) => {
-            let done = d.tick(&p, driver, 1_000).wait_done();
-            let next = done.frame.as_ref().map_or(0, |f| f.out.next_tick_ns);
-            format!("{} next={next}", called(&answered(&done)))
+            let done = futures::executor::block_on(d.tick(&p, driver, 1_000));
+            format!("{} next={}", called(&ticked(&done)), done.next_tick_ns)
         }
         None => "Refused lease=false no driver ticket next=0".to_string(),
     });

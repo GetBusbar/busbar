@@ -679,8 +679,7 @@ impl AuthInstance {
         // ITS TICK SCHEDULE, on the runtime the composition runs on, as an outbound instance's: it
         // shares the instance (a `Plugin` is `!Clone`).
         let plugin = Arc::new(plugin);
-        let schedule =
-            crate::dispatch::auth_ticks::spawn(Arc::clone(&plugin), dispatcher.clone(), 0);
+        let schedule = crate::dispatch::auth_ticks::spawn(Arc::clone(&plugin), dispatcher.clone());
         Ok(Self {
             shared: Arc::new(Shared { plugin, dispatcher }),
             sink,

@@ -48,6 +48,7 @@ pub mod auth_outbound;
 pub mod auth_ticks;
 pub(crate) mod call;
 pub mod conn_services;
+pub(crate) mod driver;
 pub mod handle;
 pub(crate) mod held;
 pub mod inline;

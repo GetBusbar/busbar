@@ -545,7 +545,7 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
     );
 
     // A driver ticket: three wakes, three drives, outside max_inflight.
-    let drv = d.driver(&p, 0).expect("a driver ticket");
+    let drv = d.driver(&p).expect("a driver ticket");
     let armed = p.call(TICK, &mut frame(arm(drv))).outcome;
     // The plugin issues exactly three wakes, each only after the previous drive ran, and a wake
     // is at most one drive: three is final the moment it is seen.
@@ -1855,7 +1855,7 @@ fn red_close_is_refused_while_an_op_is_in_flight() {
 fn red_after_close_a_late_wake_and_every_op_fault_without_crossing() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
-    let drv = d.driver(&p, 0).unwrap();
+    let drv = d.driver(&p).unwrap();
     assert_eq!(
         p.call(slot::CLOSE, &mut close_frame()).outcome,
         Outcome::Ready
@@ -2054,7 +2054,7 @@ fn an_unload_runs_on_the_reaper_never_under_a_worker_lock() {
     let d = Dispatcher::new(config());
     let p = dropped(quiet());
     assert_eq!(open(&d, &p, 0), Outcome::Ready);
-    let drv = d.driver(&p, 0).unwrap();
+    let drv = d.driver(&p).unwrap();
     let gone = std::sync::Arc::downgrade(&p.inner);
     let unloads0 = UNLOADS.load(SeqCst);
     // The driver holds the last reference; a recycle drops it on the worker, under its lock. The
@@ -2271,7 +2271,7 @@ fn red_close_is_refused_while_a_drive_is_mid_crossing() {
     let (p, _sink) = opened(&d);
     // Opened before the drive wedges worker 0 (its crossing holds that worker).
     let (other, _s) = opened(&d);
-    let drv = d.driver(&p, 0).unwrap();
+    let drv = d.driver(&p).unwrap();
     assert_eq!(
         p.call(TICK, &mut frame(plug::DRIVE_HANGS)).outcome,
         Outcome::Ready

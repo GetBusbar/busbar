@@ -3822,7 +3822,7 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
         .collect();
     let audit_kind = plane.served().audit_kind.to_string();
     let calls = Arc::new(
-        busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher, 0),
+        busbar_plugin_loader::dispatch::plane_calls::PlaneInstance::new(plane, dispatcher),
     );
     busbar_kernel::plane_driver::serve::publish(
         busbar_kernel::plane_driver::serve::ServeTable {

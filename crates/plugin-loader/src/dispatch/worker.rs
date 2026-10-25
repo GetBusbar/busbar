@@ -56,7 +56,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
-use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
+use busbar_contract::abi::mechanism::lifecycle::slot;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::InstanceId;
 
@@ -210,7 +210,7 @@ pub(crate) struct Stats {
     pub(crate) replacements: AtomicU64,
     pub(crate) quarantined: AtomicU64,
     write_behind_late: AtomicU64,
-    driver_kept_high: AtomicU64,
+    pub(crate) driver_kept_high: AtomicU64,
     deadline_without_wake: AtomicU64,
 }
 
@@ -253,6 +253,8 @@ pub(crate) struct Env {
     /// reveal is refused.
     pub(crate) seal:
         std::sync::OnceLock<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>>,
+    /// The driver tickets minted and not yet recycled ([`Dispatcher::driver`]).
+    pub(crate) drivers: Mutex<std::collections::HashMap<Ticket, Arc<super::driver::Driver>>>,
 }
 
 impl Env {
@@ -641,100 +643,6 @@ pub(crate) struct Current {
     /// A `tick` on a driver ticket whose held set is full, not yet crossed: it waits, PENDING, for
     /// a held exchange to end ([`Worker::unpark`]), and then crosses.
     parked: bool,
-}
-
-/// THE NAMES A DRIVER TICKET'S READY `drive` ANSWERED (a plane's ready sessions), held for the
-/// host until it collects them ([`Driven::take`]): each once, at most [`Driven::HELD`] at a time
-/// (a plane that names more before the host collects is told nothing new until it wakes again).
-#[derive(Debug, Default)]
-pub(crate) struct Driven {
-    names: Mutex<Vec<u64>>,
-    told: tokio::sync::Notify,
-    /// How many `drive` crossings answered, and the last one's outcome: what a synchronous host
-    /// that woke the driver waits on ([`Driven::answered_after`]; the published conformance suite
-    /// drives `drive` this way, as a wake, THE DESIGN §11.4).
-    answers: Mutex<(u64, Option<Outcome>)>,
-    answered: Condvar,
-    /// A wake's `drive` ran: the host re-polls `tick` (R-PUSH).
-    woke: tokio::sync::Notify,
-}
-
-impl Driven {
-    /// The most names held uncollected.
-    const HELD: usize = 1024;
-
-    fn name(&self, names: &[u64]) {
-        let mut held = self.names.lock().unwrap_or_else(|e| e.into_inner());
-        for n in names {
-            if !held.contains(n) && held.len() < Self::HELD {
-                held.push(*n);
-            }
-        }
-        drop(held);
-        if !names.is_empty() {
-            self.told.notify_one();
-        }
-    }
-
-    /// A `drive` crossing answered `outcome`.
-    fn answer(&self, outcome: Outcome) {
-        let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
-        *a = (a.0 + 1, Some(outcome));
-        drop(a);
-        self.answered.notify_all();
-    }
-
-    /// How many `drive` crossings have answered so far.
-    #[cfg(any(test, feature = "conformance"))]
-    pub(crate) fn answers(&self) -> u64 {
-        self.answers.lock().unwrap_or_else(|e| e.into_inner()).0
-    }
-
-    /// The first outcome other than PENDING a `drive` answered after the `seen`th answer, waited
-    /// for up to `timeout` (a synchronous caller; it blocks this thread). `None` past it.
-    #[cfg(any(test, feature = "conformance"))]
-    pub(crate) fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
-        let until = Instant::now() + timeout;
-        let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
-        loop {
-            if a.0 > seen && a.1 != Some(Outcome::Pending) {
-                return a.1;
-            }
-            let left = until.checked_duration_since(Instant::now())?;
-            a = self
-                .answered
-                .wait_timeout(a, left)
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
-        }
-    }
-
-    /// Every name held now, taken (none when none is); never waits.
-    #[cfg(any(test, feature = "conformance"))]
-    pub(crate) fn drain(&self) -> Vec<u64> {
-        std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-
-    /// A wake of the driver ticket has run its `drive`.
-    fn drove(&self) {
-        self.woke.notify_one();
-    }
-
-    /// Waits until a wake's `drive` has run, once per run; never parks a thread.
-    pub(crate) async fn woken(&self) {
-        self.woke.notified().await;
-    }
-
-    /// Every name held, once one is; never parks a thread.
-    pub(crate) async fn take(&self) -> Vec<u64> {
-        loop {
-            let names = std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()));
-            if !names.is_empty() {
-                return names;
-            }
-            self.told.notified().await;
-        }
-    }
 }
 
 pub(crate) struct Driver {
@@ -2003,6 +1911,7 @@ impl Dispatcher {
             ticket_key,
             latch: std::sync::OnceLock::new(),
             seal: std::sync::OnceLock::new(),
+            drivers: Mutex::default(),
         });
         let mut started = Vec::new();
         let slots = (0..n)
@@ -2182,6 +2091,20 @@ impl Dispatcher {
     /// Recycle `t`: its generation is bumped at once when idle, else when its last op ends. Late
     /// wakes for it are dropped from then on.
     pub fn recycle(&self, t: Ticket) {
+        let driver = self
+            .pool
+            .env
+            .drivers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&t);
+        if let Some(driver) = driver {
+            // Let go on a plugin thread, never the caller's nor under the drivers' lock: the
+            // instance it may hold last closes there (plugin code). Its ticket goes once no
+            // crossing on it runs (the crossing holds the driver).
+            crate::ffi_thread::spawn_on_plugin_thread(move || drop(driver));
+            return;
+        }
         self.pool.send(t, Msg::Recycle(t));
     }
 
@@ -2191,22 +2114,27 @@ impl Dispatcher {
         self.pool.send(t, Msg::DropClient(t));
     }
 
-    /// A DRIVER TICKET for `plugin` on `worker`: persistent until recycled, owned by the instance,
-    /// outside `max_inflight`. Every wake on it calls `drive`.
-    pub fn driver<K: Kind>(&self, plugin: &Plugin<K>, worker: u32) -> Option<Ticket> {
+    /// A DRIVER TICKET for `plugin`: persistent until recycled, owned by the instance, outside
+    /// `max_inflight`. Every wake on it calls `drive` ([`super::driver`]).
+    pub fn driver<K: Kind>(&self, plugin: &Plugin<K>) -> Option<Ticket> {
         let inst = &plugin.inner;
         if !self.adopt(inst) || !inst.is_open() || inst.faulted.load(Ordering::Acquire) {
             return None;
         }
-        let driver = self.worker(worker)?.mint(Some(Driver {
-            instance: inst.clone(),
-            frame: Some(K::drive_frame()),
-            pending: false,
-            wake_at_ns: 0,
-            ticks_held: 0,
-        }))?;
-        self.pool.env.services.held.track(driver);
-        Some(driver)
+        let env = &self.pool.env;
+        let d = super::driver::Driver::new(
+            Arc::clone(inst),
+            env.inline.mint()?,
+            K::drive_frame(),
+            Arc::clone(&env.services),
+            Arc::clone(&env.stats),
+        );
+        let t = d.ticket();
+        env.drivers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(t, d);
+        Some(t)
     }
 
     /// Submit op `s` on `ticket`. Answers at once, WITHOUT calling the plugin, when: the ticket is
@@ -2326,38 +2254,35 @@ impl Dispatcher {
 
     /// `tick` at `now_ns` on `driver`, the instance's driver ticket ([`Dispatcher::driver`]). The
     /// head carries `driver`, so a service that pends inside `tick` registers on it and its wake
-    /// calls `drive`. Outside `max_inflight`, as every op on a driver ticket: it never holds a
-    /// slot. The caller owns the schedule (`TickOut::next_tick_ns`); this is one crossing of it.
+    /// calls `drive`. Outside `max_inflight`: it never holds a slot. The caller owns the schedule
+    /// ([`super::driver::Ticked::next_tick_ns`]); this is one crossing of it. FAULT for a ticket
+    /// that is no driver of `plugin`.
     pub fn tick<K: Kind>(
         &self,
         plugin: &Plugin<K>,
         driver: Ticket,
         now_ns: u64,
-    ) -> Reply<TickIn, TickOut> {
-        let frame = Frame::new(
-            TickIn {
-                head: in_head(),
-                now_ns,
-            },
-            TickOut {
-                head: out_head(),
-                next_tick_ns: 0,
-            },
-        );
-        let mut reply = self.submit_with(
-            plugin,
-            driver,
-            slot::TICK,
-            frame,
-            DeadlineClass::Call,
-            0,
-            None,
-            Duration::ZERO,
-            Admit::Driver,
-        );
-        // Dropping it cancels nothing: a client drop would end the instance's driver ticket.
-        reply.owner = None;
-        reply
+    ) -> impl Future<Output = super::driver::Ticked> + Send + 'static {
+        let d = self
+            .pool
+            .env
+            .drivers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&driver)
+            .filter(|d| d.is_of(&plugin.inner))
+            .cloned();
+        async move {
+            match d {
+                Some(d) => d.tick(now_ns).await,
+                None => super::driver::Ticked {
+                    outcome: Outcome::Fault,
+                    error: None,
+                    lease: 0,
+                    next_tick_ns: 0,
+                },
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
