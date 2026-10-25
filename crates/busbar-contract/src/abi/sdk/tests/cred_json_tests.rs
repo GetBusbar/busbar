@@ -240,3 +240,14 @@ fn a_secure_required_credential_is_refused_into_a_host_buffer() {
     assert_eq!(w.remaining(), w.len());
     assert_eq!(room, [0u8; 64]);
 }
+
+/// RED: a captured token's public format marker (a provider's `ek_`) is checked without a getter:
+/// the answer is whether it matches, nothing else.
+#[test]
+fn a_credential_answers_whether_it_starts_with_a_marker() {
+    let m: Minted = json_reply(format!(r#"{{"value":"{CANARY}"}}"#).as_bytes()).expect("reads");
+    assert!(m.value.starts_with(b"ek_"));
+    assert!(m.value.starts_with(b""));
+    assert!(!m.value.starts_with(b"sk-"));
+    assert!(!cred("ek").starts_with(b"ek_"));
+}

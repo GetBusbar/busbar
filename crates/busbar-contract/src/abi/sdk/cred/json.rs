@@ -108,6 +108,15 @@ pub fn json_reply<T: DeserializeOwned>(body: &[u8]) -> Result<T, JsonReplyError>
     })
 }
 
+impl Cred {
+    /// Whether it begins with `prefix`: a public format marker (a provider's `ek_` on the tokens it
+    /// mints), checked on a captured token with no getter. Answers only that.
+    #[must_use]
+    pub fn starts_with(&self, prefix: &[u8]) -> bool {
+        self.wire().starts_with(prefix)
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum Member {
     Public(serde_json::Value),
