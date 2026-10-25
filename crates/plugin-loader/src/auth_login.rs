@@ -196,6 +196,10 @@ pub(super) fn begin(shared: &Arc<Shared>, request: BeginLogin) -> Box<dyn LoginC
                 watch: Duration::ZERO,
                 leave: false,
                 lane: None,
+                admission: crate::dispatch::plugin::Admission::Cap,
+                ticket: None,
+                inline: false,
+                cancel: None,
             },
             &mut |_| None,
         )
@@ -384,6 +388,10 @@ pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn 
                 watch: Duration::ZERO,
                 leave: false,
                 lane: None,
+                admission: crate::dispatch::plugin::Admission::Cap,
+                ticket: None,
+                inline: false,
+                cancel: None,
             },
             &mut regrow,
         )

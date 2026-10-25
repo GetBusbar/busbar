@@ -32,7 +32,7 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use super::inline::InlineTicket;
-use super::plugin::{Admitted, Called, Cancelled, Plugin};
+use super::plugin::{Admission, Admitted, Called, Cancelled, Plugin};
 use super::timer::sleep_until;
 use super::worker::Lent;
 use super::{in_head, now_ns, out_head, Frame, InFrame, Kind, OutFrame};
@@ -54,6 +54,16 @@ pub(crate) struct Opts {
     pub(crate) leave: bool,
     /// The ordered lane the op's crossings run on (`None`: any free plugin thread).
     pub(crate) lane: Option<Arc<Lane>>,
+    /// How the op is admitted against its instance's `max_inflight`.
+    pub(crate) admission: Admission,
+    /// The ticket the op runs on, held by its caller (a plane unit's); `None`: a ticket of its
+    /// own, minted for the op and recycled when it ends.
+    pub(crate) ticket: Option<Ticket>,
+    /// Cross on the caller's thread (a request op of a kind that pends rather than blocks), not
+    /// on a plugin thread.
+    pub(crate) inline: bool,
+    /// The caller's request to cancel the op while it waits (a plane's client drop).
+    pub(crate) cancel: Option<Arc<CancelRequest>>,
 }
 
 /// One crossing waiting on a lane.
@@ -141,20 +151,26 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
     opts: Opts,
     regrow: Regrow<'_, I, O>,
 ) -> Ran<I, O> {
-    let Some(ticket) = plugin.inline_ticket() else {
-        return Ran::NoTicket;
+    let (ticket, owned) = match opts.ticket {
+        Some(t) => (t, None),
+        None => match plugin.inline_ticket() {
+            Some(it) => (it.ticket(), Some(it)),
+            None => return Ran::NoTicket,
+        },
     };
+    let held_ticket = owned.is_none();
     let drainable = opts.class != DeadlineClass::WriteBehind;
-    let mut admitted = match plugin.admit(s, size_of::<I>(), size_of::<O>(), drainable) {
-        Ok(a) => a,
-        Err(o) => {
-            return Ran::Answered {
-                called: Called::host(o),
-                frame: Box::new(frame),
-                lent,
+    let mut admitted =
+        match plugin.admit(s, size_of::<I>(), size_of::<O>(), drainable, opts.admission) {
+            Ok(a) => a,
+            Err(o) => {
+                return Ran::Answered {
+                    called: Called::host(o),
+                    frame: Box::new(frame),
+                    lent,
+                }
             }
-        }
-    };
+        };
     admitted.watch = opts.watch;
     let deadline_ns = opts.deadline.map_or(0, |d| {
         let left = d.saturating_duration_since(Instant::now());
@@ -165,7 +181,9 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
         lane: opts.lane.clone(),
         s,
         class: opts.class,
-        ticket: ticket.ticket(),
+        ticket,
+        inline: opts.inline,
+        cancel: opts.cancel.clone(),
         deadline_ns,
         latch: Arc::new(Latch::default()),
         state: Mutex::new(State {
@@ -178,13 +196,15 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
             gone: false,
             unit: None,
             admitted: Some(admitted),
-            ticket: Some(ticket),
+            ticket: owned,
             waker: None,
         }),
     });
     let mut held = Held(Some(Arc::clone(&op)));
     let mut resume = false;
-    let mut regrown = false;
+    // On a held ticket, the op may itself be the one re-call its caller makes after a SHORT
+    // answer: a second short answer is then FAULT.
+    let mut regrown = held_ticket && plugin.is_recall(ticket, s);
     loop {
         op.register().await;
         Op::cross(&op, resume);
@@ -234,6 +254,29 @@ pub(crate) static PANIC_IN_RUN_FOR: std::sync::atomic::AtomicUsize =
 pub(crate) static PANIC_IN_CANCEL_FOR: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// A caller's request to cancel its op while it waits: answered as a deadline is (the op's
+/// `cancel` crosses and the call answers TimedOut with what it said).
+#[derive(Debug, Default)]
+pub(crate) struct CancelRequest {
+    requested: AtomicBool,
+    task: Mutex<Option<Waker>>,
+}
+
+impl CancelRequest {
+    /// Ask for the cancel.
+    pub(crate) fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+        let task = self
+            .task
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(t) = task {
+            t.wake();
+        }
+    }
+}
+
 /// The op's own waker: a wake sets it and wakes the task waiting on the op.
 #[derive(Default)]
 struct Latch {
@@ -262,6 +305,10 @@ impl Wake for Latch {
 /// One op in flight, shared by its caller and the plugin thread crossing it.
 struct Op<K: Kind, I, O> {
     plugin: Arc<Plugin<K>>,
+    /// Cross on the caller's thread.
+    inline: bool,
+    /// The caller's cancel request.
+    cancel: Option<Arc<CancelRequest>>,
     /// The ordered lane its crossings run on; `None`: any free plugin thread.
     lane: Option<Arc<Lane>>,
     s: u32,
@@ -313,8 +360,10 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
             self.latch.woke.store(false, Ordering::Release);
-            if let Some(t) = &self.lock().ticket {
-                t.register(&Waker::from(Arc::clone(&self.latch)));
+            let waker = Waker::from(Arc::clone(&self.latch));
+            match &self.lock().ticket {
+                Some(t) => t.register(&waker),
+                None => self.plugin.register_on(self.ticket, &waker),
             }
             Poll::Ready(())
         })
@@ -327,6 +376,10 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
             let mut st = op.lock();
             st.crossing = true;
             st.answered = None;
+        }
+        if op.inline {
+            op.run(resume);
+            return;
         }
         let job = {
             let op = Arc::clone(op);
@@ -500,6 +553,12 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
                 .task
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
+            if let Some(c) = &self.cancel {
+                *c.task.lock().unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
+                if c.requested.load(Ordering::Acquire) {
+                    return Poll::Ready(false);
+                }
+            }
             if self.latch.woke.swap(false, Ordering::AcqRel) {
                 return Poll::Ready(true);
             }
@@ -679,6 +738,10 @@ pub(crate) fn call_write_behind<K: Kind, I: InFrame, O: OutFrame>(
             watch: Duration::ZERO,
             leave: false,
             lane: Some(lane),
+            admission: crate::dispatch::plugin::Admission::Cap,
+            ticket: None,
+            inline: false,
+            cancel: None,
         };
         let ran = call(&plugin, s, frame, lent, opts, &mut *regrow).await;
         let mut w = report.lock().unwrap_or_else(PoisonError::into_inner);

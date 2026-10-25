@@ -236,6 +236,28 @@ impl InlineTickets {
 
     /// The waker of `t`'s task, bound to `t`'s generation ([`GenerationWaker`]); `None` for a
     /// ticket the slot does not hold now, or a foreign one.
+    /// Whether a new op `s` on `t` is the one re-call its last op's SHORT answer earned.
+    pub(crate) fn is_recall(&self, t: Ticket, s: u32) -> bool {
+        self.lookup(t).is_some_and(|slot| {
+            let held = slot.section();
+            held.generation == t.generation && held.short == Some(s)
+        })
+    }
+
+    /// Register `waker` as the task an op pending on `t` (a ticket its owner holds) wakes.
+    pub(crate) fn register(&self, t: Ticket, waker: &Waker) {
+        let Some(slot) = self.lookup(t) else {
+            return;
+        };
+        let mut held = slot.section();
+        if held.generation == 0 || held.generation != t.generation {
+            return;
+        }
+        if !held.waker.as_ref().is_some_and(|w| w.will_wake(waker)) {
+            held.waker = Some(waker.clone());
+        }
+    }
+
     pub(crate) fn waker_of(&self, t: Ticket) -> Option<Waker> {
         let slot = self.lookup(t)?;
         let generation = slot.generation();

@@ -1877,7 +1877,7 @@ impl<K: Kind> Plugin<K> {
         } else {
             DeadlineClass::Connection
         };
-        match self.admit(s, size_of::<I>(), size_of::<O>(), false) {
+        match self.admit(s, size_of::<I>(), size_of::<O>(), false, Admission::Cap) {
             Ok(admitted) => self.cross_admitted(&admitted, s, frame, ticket, resume, class),
             Err(o) => Called::from(Crossed::host(o)),
         }
@@ -1892,6 +1892,7 @@ impl<K: Kind> Plugin<K> {
         in_size: usize,
         out_size: usize,
         drainable: bool,
+        admission: Admission,
     ) -> Result<Admitted, Outcome> {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, in_size, out_size) {
@@ -1901,7 +1902,12 @@ impl<K: Kind> Plugin<K> {
         if lifecycle && !inst.enter_lifecycle() {
             return Err(Outcome::Refused);
         }
-        let Some(units) = inst.acquire(s) else {
+        // An op of an admitted unit holds no `max_inflight` unit.
+        let units = match admission {
+            Admission::Cap => inst.acquire(s),
+            Admission::Unit => Some(0),
+        };
+        let Some(units) = units else {
             if lifecycle {
                 inst.leave_lifecycle();
             }
@@ -1910,11 +1916,17 @@ impl<K: Kind> Plugin<K> {
         if drainable {
             inst.drainable.fetch_add(1, Ordering::AcqRel);
         }
+        // An admitted unit's op is IN FLIGHT until it ends: `close` is refused while one is.
+        let unit = admission == Admission::Unit;
+        if unit {
+            inst.unit_ops.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(Admitted {
             inst: Arc::clone(&self.inner),
             units,
             lifecycle,
             drainable,
+            unit,
             watch: Duration::ZERO,
         })
     }
@@ -1949,6 +1961,18 @@ impl<K: Kind> Plugin<K> {
             .get()
             .and_then(std::sync::Weak::upgrade)
             .and_then(|route| route.inline())
+    }
+
+    /// Whether a new op `s` on the held ticket `t` is the re-call a SHORT answer earned.
+    pub(crate) fn is_recall(&self, t: Ticket, s: u32) -> bool {
+        self.inline_tickets().is_some_and(|tickets| tickets.is_recall(t, s))
+    }
+
+    /// Register `waker` as what an op pending on the held ticket `t` wakes.
+    pub(crate) fn register_on(&self, t: Ticket, waker: &std::task::Waker) {
+        if let Some(tickets) = self.inline_tickets() {
+            tickets.register(t, waker);
+        }
     }
 
     /// A fresh inline ticket for one op; `None` before a dispatcher adopted the instance.
@@ -2059,6 +2083,16 @@ impl<K: Kind> Plugin<K> {
     }
 }
 
+/// How an op is admitted against its instance's `max_inflight`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// It takes a unit, or is REFUSED when none is free.
+    Cap,
+    /// A piece of an admitted unit: never refused for the cap (refused mid-answer, it would end a
+    /// stream its caller was already answered on), counted in `unit_ops`.
+    Unit,
+}
+
 /// What a `cancel` answered: its outcome and, on READY, the disposition and record writes its
 /// kind's frame carried.
 #[derive(Debug)]
@@ -2103,6 +2137,8 @@ pub(crate) struct Admitted {
     lifecycle: bool,
     /// It counts in the instance's `drainable` (a reload drain waits for it).
     drainable: bool,
+    /// It is an admitted unit's op, counted in the instance's `unit_ops`.
+    unit: bool,
     /// A longer watch budget its crossings get from the watchdog than their class's (a hook's
     /// `timeout_ms`).
     pub(crate) watch: Duration,
@@ -2116,6 +2152,9 @@ impl Drop for Admitted {
         }
         if self.drainable {
             self.inst.drainable.fetch_sub(1, Ordering::AcqRel);
+        }
+        if self.unit {
+            self.inst.unit_ops.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }

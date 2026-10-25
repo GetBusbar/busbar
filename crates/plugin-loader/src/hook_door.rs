@@ -381,6 +381,10 @@ impl Inner {
                         watch: budget,
                         leave: true,
                         lane: None,
+                        admission: crate::dispatch::plugin::Admission::Cap,
+                        ticket: None,
+                        inline: false,
+                        cancel: None,
                     },
                     &mut regrown,
                 )

@@ -2299,6 +2299,7 @@ impl Dispatcher {
     /// each), and a piece refused mid-answer would cut a stream already answered to its caller.
     /// Everything else is [`Dispatcher::submit_lent`]'s: the instance's own refusals, the drain
     /// count, the lent memory and the watchdog.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)] // `submit_lent`'s seven
     pub(crate) fn submit_unit<K: Kind, I: InFrame, O: OutFrame>(
         &self,

@@ -834,6 +834,10 @@ impl AuthCalls for AuthInstance {
                     watch: Duration::ZERO,
                     leave: false,
                     lane: None,
+                    admission: crate::dispatch::plugin::Admission::Cap,
+                    ticket: None,
+                    inline: false,
+                    cancel: None,
                 },
                 &mut regrow,
             )

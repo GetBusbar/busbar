@@ -8,10 +8,9 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
-use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::slot as life;
@@ -26,20 +25,33 @@ use busbar_contract::plane_calls::{
 };
 
 use super::kinds::plane::Plane;
-use super::{in_head, now_ns, Dispatcher, Done, Frame, InFrame, OutFrame, Plugin, Reply};
+use super::call::{self, CancelRequest, Opts, Ran};
+use super::inline::InlineTicket;
+use super::plugin::Admission;
+use super::{in_head, now_ns, Dispatcher, Frame, InFrame, OutFrame, Plugin};
 
 /// One open plane instance, the dispatcher that adopted it, and the worker its driver ticket is
-/// minted on. Its unit tickets are spread over every worker of the dispatcher, from that one on
-/// (the slab is per instance and worker, `BUSBAR-1.6.0.md` A.4.1): one worker would cross every
-/// piece of every unit of the plane in turn. The instance is shared, never copied: a [`Plugin`] is
-/// `!Clone`, so a holder that keeps the plugin beside this one shares the same `Arc`.
+/// minted on. Its units' tickets are inline tickets the instance holds until the kernel recycles
+/// them; their ops run on the one call path, on the caller's thread. The instance is shared,
+/// never copied: a [`Plugin`] is `!Clone`, so a holder that keeps the plugin beside this one shares
+/// the same `Arc`.
 #[derive(Debug, Clone)]
 pub struct PlaneInstance {
     plugin: Arc<Plugin<Plane>>,
     dispatcher: Arc<Dispatcher>,
     worker: u32,
-    /// How many unit tickets were minted: the next one's worker, counted on from `worker`.
-    minted: Arc<AtomicU32>,
+    /// The units' tickets, held until the kernel recycles them.
+    tickets: Arc<Mutex<HashMap<Ticket, Held>>>,
+}
+
+/// One unit ticket the instance holds for the kernel.
+#[derive(Debug)]
+struct Held {
+    _ticket: InlineTicket,
+    /// The op in flight on it: what a client drop asks to cancel.
+    flight: Option<Arc<CancelRequest>>,
+    /// Its client dropped: every later op on it is REFUSED until it is recycled.
+    dropped: bool,
 }
 
 impl PlaneInstance {
@@ -54,15 +66,69 @@ impl PlaneInstance {
             plugin: plugin.into(),
             dispatcher,
             worker,
-            minted: Arc::new(AtomicU32::new(0)),
+            tickets: Arc::default(),
         }
     }
 
-    /// The worker the next unit ticket is minted on: every worker of the dispatcher in turn.
-    fn next_worker(&self) -> u32 {
-        let workers = self.dispatcher.workers().max(1);
-        let turn = self.minted.fetch_add(1, Ordering::Relaxed) % workers;
-        (self.worker % workers + turn) % workers
+    fn tickets(&self) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
+        self.tickets.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Op `s` of a unit on its `ticket`, on the one call path: crossed on the caller's thread,
+    /// never refused for the instance's cap, cancelled at the kernel's client drop. A ticket whose
+    /// client dropped answers every later op REFUSED, with no crossing, until it is recycled.
+    fn unit_op<I: InFrame, O: OutFrame>(
+        &self,
+        ticket: Ticket,
+        s: u32,
+        class: DeadlineClass,
+        frame: Frame<I, O>,
+        lent: Lent,
+    ) -> InFlight<I, O> {
+        let cancel = Arc::new(CancelRequest::default());
+        let dropped = match self.tickets().get_mut(&ticket) {
+            Some(held) => {
+                held.flight = Some(Arc::clone(&cancel));
+                held.dropped
+            }
+            None => false,
+        };
+        if dropped {
+            return InFlight::settled(Answered {
+                outcome: Outcome::Refused,
+                short: false,
+                disposition: None,
+            });
+        }
+        let plugin = Arc::clone(&self.plugin);
+        let op = async move {
+            call::call(
+                &plugin,
+                s,
+                frame,
+                lent,
+                Opts {
+                    class,
+                    deadline: None,
+                    watch: std::time::Duration::ZERO,
+                    leave: false,
+                    lane: None,
+                    admission: Admission::Unit,
+                    ticket: Some(ticket),
+                    inline: true,
+                    cancel: Some(cancel),
+                },
+                &mut |_| None,
+            )
+            .await
+        };
+        let mut flight = InFlight {
+            op: Some(Box::pin(op)),
+            done: None,
+        };
+        // Started at once: its first crossing runs now, as a submitted op's was queued now.
+        let _ = flight.settled_now();
+        flight
     }
 
     /// The refusal statuses the plane's tail states, for the driver's config.
@@ -172,21 +238,37 @@ impl PlaneCalls for PlaneInstance {
     }
 
     fn mint(&self) -> Option<Ticket> {
-        self.dispatcher.mint(self.next_worker())
+        let it = self.plugin.inline_ticket()?;
+        let t = it.ticket();
+        self.tickets().insert(
+            t,
+            Held {
+                _ticket: it,
+                flight: None,
+                dropped: false,
+            },
+        );
+        Some(t)
     }
 
-    /// On the worker `beside` was minted on: one unit's tickets cross on one worker.
-    fn mint_beside(&self, beside: Ticket) -> Option<Ticket> {
-        let (worker, _) = super::ticket::decode(beside.slot);
-        self.dispatcher.mint(worker)
+    /// One unit's two tickets are independent: beside one is any other.
+    fn mint_beside(&self, _beside: Ticket) -> Option<Ticket> {
+        self.mint()
     }
 
     fn recycle(&self, ticket: Ticket) {
-        self.dispatcher.recycle(ticket);
+        let gone = self.tickets().remove(&ticket);
+        drop(gone);
     }
 
     fn drop_client(&self, ticket: Ticket) {
-        self.dispatcher.drop_client(ticket);
+        let flight = self.tickets().get_mut(&ticket).and_then(|h| {
+            h.dropped = true;
+            h.flight.clone()
+        });
+        if let Some(c) = flight {
+            c.request();
+        }
     }
 
     fn declared(&self) -> InstanceDecl {
@@ -241,20 +323,17 @@ impl PlaneCalls for PlaneInstance {
         lent: Lent,
     ) -> Box<dyn PieceInFlight> {
         input.head = in_head();
-        // The unit's buffers ride with the job: a crossing the watchdog answered FAULT still owns
+        // The unit's buffers ride with the op: a crossing the watchdog answered FAULT still owns
         // them until it returns. A piece of an admitted unit is never refused for the instance's
-        // `max_inflight` ([`Dispatcher::submit_unit`]): refused mid-answer, it would end a stream
-        // its caller was already answered on.
-        let reply = self.dispatcher.submit_unit(
-            &*self.plugin,
+        // `max_inflight`: refused mid-answer, it would end a stream its caller was already
+        // answered on.
+        Box::new(self.unit_op(
             ticket,
             slot::ON_PIECE,
-            Frame::new(input, out),
             DeadlineClass::Stream,
-            0,
+            Frame::new(input, out),
             lent,
-        );
-        Box::new(InFlight { reply, done: None })
+        ))
     }
 
     fn serve(
@@ -265,31 +344,62 @@ impl PlaneCalls for PlaneInstance {
         lent: Lent,
     ) -> Box<dyn ServeInFlight> {
         input.head = in_head();
-        // As `on_piece`'s: the request's buffers ride with the job, on its admitted unit's ticket.
-        let reply = self.dispatcher.submit_unit(
-            &*self.plugin,
+        // As `on_piece`'s: the request's buffers ride with the op, on its admitted unit's ticket.
+        Box::new(self.unit_op(
             ticket,
             slot::SERVE,
-            Frame::new(input, out),
             DeadlineClass::Call,
-            0,
+            Frame::new(input, out),
             lent,
-        );
-        Box::new(InFlight { reply, done: None })
+        ))
     }
 }
 
-/// A ticketed op in flight (`on_piece`, `serve`): its reply, then its answer.
+/// A unit op in flight (`on_piece`, `serve`) on the one call path: its answer once it has one.
 struct InFlight<I, O> {
-    reply: Reply<I, O>,
-    done: Option<Done<I, O>>,
+    op: Option<Pin<Box<dyn Future<Output = Ran<I, O>> + Send>>>,
+    done: Option<Done<O>>,
 }
 
-fn answered<I, O>(d: &Done<I, O>) -> Answered {
-    Answered {
-        outcome: d.outcome,
-        short: d.short,
-        disposition: d.disposition,
+// SAFETY: as `Frame`'s (`InFrame`/`OutFrame` promise a frame may move between threads): the
+// answer's `out` points only into the host buffers and lent memory of the op, and one thread
+// touches the flight at a time.
+unsafe impl<I: InFrame, O: OutFrame> Send for InFlight<I, O> {}
+
+// Nothing in a flight is pinned in place: its op is boxed.
+impl<I, O> Unpin for InFlight<I, O> {}
+
+/// A unit op's settled answer.
+struct Done<O> {
+    answered: Answered,
+    out: Option<O>,
+    writes: Vec<CancelWrite>,
+}
+
+impl<I: InFrame, O: OutFrame> InFlight<I, O> {
+    /// An op answered with no crossing (a frame-less settle).
+    fn settled(answered: Answered) -> Self {
+        Self {
+            op: None,
+            done: Some(Done {
+                answered,
+                out: None,
+                writes: Vec::new(),
+            }),
+        }
+    }
+
+    /// Poll once with no waker: the answer if it has arrived; never waits.
+    fn settled_now(&mut self) -> Option<Answered> {
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        match Pin::new(self).poll(&mut cx) {
+            Poll::Ready(a) => Some(a),
+            Poll::Pending => None,
+        }
+    }
+
+    fn answer_out(&self) -> Option<O> {
+        self.done.as_ref().and_then(|d| d.out)
     }
 }
 
@@ -298,25 +408,71 @@ impl<I: InFrame, O: OutFrame> Future for InFlight<I, O> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Answered> {
         if let Some(d) = &self.done {
-            return Poll::Ready(answered(d));
+            return Poll::Ready(d.answered.clone());
         }
-        match Pin::new(&mut self.reply).poll(cx) {
-            Poll::Ready(d) => {
-                let a = answered(&d);
-                self.done = Some(d);
-                Poll::Ready(a)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-}
-
-impl<I: InFrame, O: OutFrame> InFlight<I, O> {
-    fn answer_out(&self) -> Option<O> {
-        self.done
-            .as_ref()
-            .and_then(|d| d.frame.as_deref())
-            .map(|f| f.out)
+        let Some(op) = self.op.as_mut() else {
+            return Poll::Ready(Answered {
+                outcome: Outcome::Fault,
+                short: false,
+                disposition: None,
+            });
+        };
+        let ran = std::task::ready!(op.as_mut().poll(cx));
+        self.op = None;
+        let done = match ran {
+            Ran::Answered { called, frame, .. } => Done {
+                answered: Answered {
+                    outcome: called.outcome,
+                    short: called.recall.is_some(),
+                    disposition: None,
+                },
+                out: Some(frame.out),
+                writes: Vec::new(),
+            },
+            // Ended by its client drop's `cancel`: the plane's timeout with what the cancel said;
+            // a cancel that FAULTed makes the op FAULT, with no disposition.
+            Ran::TimedOut { cancelled } => match cancelled {
+                Some(c) if c.outcome == Outcome::Ready => Done {
+                    answered: Answered {
+                        outcome: <Plane as super::Kind>::TIMEOUT,
+                        short: false,
+                        disposition: c.disposition,
+                    },
+                    out: None,
+                    writes: c.writes,
+                },
+                Some(c) if c.outcome == Outcome::Fault => Done {
+                    answered: Answered {
+                        outcome: Outcome::Fault,
+                        short: false,
+                        disposition: None,
+                    },
+                    out: None,
+                    writes: Vec::new(),
+                },
+                _ => Done {
+                    answered: Answered {
+                        outcome: <Plane as super::Kind>::TIMEOUT,
+                        short: false,
+                        disposition: None,
+                    },
+                    out: None,
+                    writes: Vec::new(),
+                },
+            },
+            Ran::NoTicket => Done {
+                answered: Answered {
+                    outcome: Outcome::Fault,
+                    short: false,
+                    disposition: None,
+                },
+                out: None,
+                writes: Vec::new(),
+            },
+        };
+        let a = done.answered.clone();
+        self.done = Some(done);
+        Poll::Ready(a)
     }
 }
 
@@ -328,10 +484,7 @@ impl ServeInFlight for InFlight<ServeIn, ServeOut> {
 
 impl PieceInFlight for InFlight<OnPieceIn, OnPieceOut> {
     fn settled(&mut self) -> Option<Answered> {
-        if self.done.is_none() {
-            self.done = self.reply.wait(Duration::ZERO);
-        }
-        self.done.as_ref().map(answered)
+        self.settled_now()
     }
 
     fn out(&self) -> Option<OnPieceOut> {
@@ -341,7 +494,7 @@ impl PieceInFlight for InFlight<OnPieceIn, OnPieceOut> {
     fn cancel_writes(&self) -> Vec<CancelWrite> {
         self.done
             .as_ref()
-            .map(|d| d.cancel_writes.clone())
+            .map(|d| d.writes.clone())
             .unwrap_or_default()
     }
 }
