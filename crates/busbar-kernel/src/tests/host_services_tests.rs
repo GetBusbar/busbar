@@ -2414,4 +2414,98 @@ fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
         svc::TRUST_SAME,
         "node b applies the approval node a kept"
     );
+
+/// A store that is down: every plane-record call fails.
+struct DownStore;
+
+impl crate::store::plane_view::PlaneStore for DownStore {
+    fn upsert_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(down())
+    }
+    fn get_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Err(down())
+    }
+    fn append_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(down())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        Err(down())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Err(down())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _kind: &str,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Err(down())
+    }
+    fn delete_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(down())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Err(down())
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Err(down())
+    }
+}
+
+fn down() -> busbar_contract::records::RecordStoreError {
+    busbar_contract::records::RecordStoreError("store down (test)".to_string())
+}
+
+/// **AN INSTANCE WHOSE TRUST RECORDS CANNOT BE READ IS NOT ADMITTED.** The demotions and the
+/// operator's trust decisions are kept in the store; a restart whose store will not hand them back
+/// must refuse the instance, not admit it with the configured trust standing over a revoke or a
+/// quarantine it cannot see.
+///
+/// RED while an unreadable read was taken for "none kept": the instance was admitted.
+#[test]
+fn an_instance_whose_trust_records_cannot_be_read_is_not_admitted() {
+    let record = DemotionRecord::default();
+    record.set_sink(Arc::new(DownStore));
+    let restarted = KernelServices::new()
+        .with_demotions(Arc::new(record), SECTION_KEY)
+        .with_pool(Arc::new(Inline));
+    match restarted.admit("inst", trusting(Some("fp"))) {
+        Err(AdmitRefused::TrustUnread(why)) => {
+            assert!(why.contains("store down"), "{why}")
+        }
+        other => panic!("an unreadable trust record must refuse the admit, got {other:?}"),
+    }
 }
