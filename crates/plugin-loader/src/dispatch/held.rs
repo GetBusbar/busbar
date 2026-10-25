@@ -24,8 +24,6 @@ use std::sync::{Mutex, MutexGuard};
 
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 
-use super::ticket::decode;
-
 /// One driver ticket's handles in its current cycle.
 #[derive(Debug, Default)]
 struct Cycle {
@@ -58,11 +56,6 @@ impl Held {
     /// Stop tracking `ticket` (it was recycled).
     pub(crate) fn untrack(&self, ticket: Ticket) {
         self.lock().remove(&ticket);
-    }
-
-    /// Stop tracking every ticket of worker `worker` (it was replaced).
-    pub(crate) fn untrack_worker(&self, worker: u32) {
-        self.lock().retain(|t, _| decode(t.slot).0 != worker);
     }
 
     /// A new cycle on `driver`: nothing is held or issued.

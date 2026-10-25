@@ -293,7 +293,6 @@ fn open_over(
     conns: impl FnOnce(&Dispatcher) -> Arc<dyn busbar_contract::conn::DeclaredConns>,
 ) -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 4,
         ..DispatchConfig::default()
     }));
     let conns = conns(&d);

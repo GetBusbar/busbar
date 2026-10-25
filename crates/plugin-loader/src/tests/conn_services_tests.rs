@@ -657,11 +657,10 @@ fn an_owned_trust_from_resolves_against_the_owned_sections_alone() {
 /// RED (Q-FC7): two instances, each on its own dispatcher, whose first tickets collide (fresh
 /// dispatchers mint identical first tickets). Recycling one's ticket forgets only its own kept
 /// answers: the other's re-issued `ESTABLISH` redeems its stored stream and is never run a second
-/// time, while the recycled instance's re-issue is a new call. A replaced worker forgets only its
-/// own instances' answers in the same way.
+/// time, while the recycled instance's re-issue is a new call.
 #[test]
 fn recycling_one_instances_ticket_never_replays_anothers_establish() {
-    use super::{forget, forget_worker};
+    use super::forget;
     let first = Ticket {
         slot: 0,
         generation: 1,
@@ -703,14 +702,6 @@ fn recycling_one_instances_ticket_never_replays_anothers_establish() {
         "the recycled instance's re-issue is a new call"
     );
     assert_ne!(rerun.value, one_stream.value);
-
-    forget_worker(&[one.instance()], 0);
-    let _ = establish_on(&two, 0, "127.0.0.1:9", first);
-    assert_eq!(
-        opens(&two_table),
-        1,
-        "a replaced worker forgets only its own instances"
-    );
 }
 
 /// RED (ARCHITECT round 4 (e)): a need whose `target_from` names a PROGRAM in the settings
@@ -2073,7 +2064,7 @@ fn red_a_forged_ticket_through_a_connection_slot_quarantines_its_supplier() {
     let p = bound_over_by(&table, d.adopter());
     let est = opened_stream(&p, 0);
     assert!(ready(&est), "{}", error_text(&est));
-    let t = d.mint(0).expect("a ticket");
+    let t = d.mint().expect("a ticket");
     let forged = Ticket {
         slot: t.slot,
         generation: t.generation ^ 0x5a5a_5a5a,

@@ -73,6 +73,17 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
+    /// What this route's dispatcher counts; `None` = nothing is counted.
+    fn stats(&self) -> Option<std::sync::Arc<super::dispatcher::Stats>> {
+        None
+    }
+
+    /// The process's runtime this route's dispatcher was given, which a crossing off any runtime
+    /// enters; `None` = none installed.
+    fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        None
+    }
+
     /// The INLINE tickets of this route's dispatcher (`super::inline`); `None` = none.
     fn inline(&self) -> Option<std::sync::Arc<super::inline::InlineTickets>> {
         None

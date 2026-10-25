@@ -33,11 +33,11 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome, FLAG_RESUME}
 use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
+use super::dispatcher::Stats;
 use super::inline::InlineTicket;
 use super::plugin::{Crossed, Instance, Watched};
 use super::services::ServiceStore;
 use super::timer::{sleep_until, Sleep};
-use super::worker::Stats;
 use super::{in_head, now_ns, out_head, DriveFrame, Frame};
 
 /// THE NAMES A DRIVER TICKET'S READY `drive` ANSWERED (a plane's ready sessions), held for the

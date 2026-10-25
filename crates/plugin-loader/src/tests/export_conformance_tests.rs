@@ -1709,9 +1709,9 @@ impl Drop for Released {
 /// **K9c — A SINK'S DELIVERIES IN FLIGHT ARE BOUNDED BY ITS ADMISSION ALONE** (ARCHITECT ruling
 /// MAX-INFLIGHT 2026-10-03). The request-log WEBHOOK sink, every delivery a host-carried POST,
 /// LINKED and DROPPED IN, its instance configured with an in-flight bound of 600
-/// (`max_inflight_deliveries`) — above the runtime's 512 blocking threads, on a dispatcher of ONE
-/// worker. With the far end holding every request, 600 deliveries are in flight at once, each
-/// pending on the host's connection table with no thread waiting, and never more: the 601st waits
+/// (`max_inflight_deliveries`) — above the runtime's 512 blocking threads. With the far end holding
+/// every request, 600 deliveries are in flight at once, each pending on the host's connection table
+/// with no thread waiting (far fewer plugin threads are started than deliveries), and never more: the 601st waits
 /// its turn in the instance's queue and is carried once the far end answers. The effective
 /// concurrency is the configured bound, as the 1.5.5 webhook's async deliveries were. (RED: one
 /// batch at a time per instance holds 1; a delivery that holds a thread while the far end answers
@@ -1732,11 +1732,7 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
     });
     let [linked, dropped] = doors.map(|registry| {
         let d = dispatcher();
-        assert_eq!(
-            d.workers(),
-            1,
-            "one worker: far fewer threads than deliveries"
-        );
+        let threads = crate::ffi_thread::threads();
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
         let sink = ExportRows::new(&registry, d)
@@ -1752,6 +1748,10 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
         until("every admitted delivery in flight", || {
             far.stalled() == BOUND
         });
+        assert!(
+            crate::ffi_thread::threads() - threads < BOUND / 2,
+            "a pending delivery holds no thread: far fewer threads than deliveries"
+        );
         // Held a moment longer: nothing beyond the bound joins.
         std::thread::sleep(Duration::from_millis(300));
         let in_flight = far.stalled();

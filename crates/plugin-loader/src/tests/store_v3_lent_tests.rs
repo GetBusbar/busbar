@@ -161,7 +161,6 @@ mod wedged {
 /// A store on a dispatcher whose watchdog faults a Call-class crossing past 50 ms.
 fn open() -> LoadedStore {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
         budgets: Budgets {
             call: Duration::from_millis(50),
             ..Budgets::default()

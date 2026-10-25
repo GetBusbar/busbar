@@ -282,10 +282,7 @@ impl Rig {
 }
 
 pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
-        ..DispatchConfig::default()
-    }));
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let plugin = load(way, &dispatcher);
     let book = Arc::new(book);
     let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher));
@@ -1148,10 +1145,7 @@ fn serve_table(
     busbar_kernel::plane_driver::serve::ServeTable,
 ) {
     use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable};
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
-        ..DispatchConfig::default()
-    }));
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let (plugin, snapshot) = load_open(way, &dispatcher, Arc::new(NoSink), ConnTable::Probe);
     let routes = snapshot
         .admin_routes
@@ -1800,10 +1794,7 @@ impl busbar_kernel::plane_driver::MoneySeam for Unstated {
 #[tokio::test]
 async fn a_session_is_refused_while_its_money_is_unstated() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-            workers: 2,
-            ..DispatchConfig::default()
-        }));
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let plugin = load(way, &dispatcher);
         let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher));
         let refusal_statuses = calls.refusal_statuses();

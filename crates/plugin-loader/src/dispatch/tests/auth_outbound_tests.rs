@@ -240,7 +240,6 @@ impl EnvelopeSink for Quiet {
 /// The test door, linked, adopted by a fresh dispatcher and opened: the instance under test.
 fn opened() -> OutboundInstance {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 1,
         budgets: Budgets {
             call: Duration::from_millis(400),
             ..Budgets::default()
@@ -260,9 +259,9 @@ fn opened() -> OutboundInstance {
         },
     )
     .expect("the test auth door loads");
-    let t = d.mint(0).expect("a ticket");
-    let done = d
-        .submit(
+    let t = d.mint().expect("a ticket");
+    let done = crate::dispatch::call::wait(
+        d.call_on(
             &p,
             t,
             life::OPEN,
@@ -283,11 +282,13 @@ fn opened() -> OutboundInstance {
                     err_len: 0,
                 },
             ),
-            DeadlineClass::Call,
-            0,
-        )
-        .wait(Duration::from_secs(10))
-        .expect("open answers");
+            (DeadlineClass::Call, 0),
+            Arc::new(()) as crate::dispatch::Lent,
+            Duration::ZERO,
+        ),
+        Duration::from_secs(10),
+    )
+    .expect("open answers");
     d.recycle(t);
     assert_eq!(done.outcome, Outcome::Ready, "the test door opens");
     OutboundInstance::new(p, d)

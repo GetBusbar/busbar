@@ -67,7 +67,7 @@ pub use busbar_contract::services::{
     Stored,
 };
 
-use super::ticket::{decode, InstanceWake, Waking};
+use super::ticket::{InstanceWake, Waking};
 
 /// The error text of a caller-scoped service called from an instance the host states no caller for.
 pub const NO_CALLER: &str = "no caller is bound to this instance";
@@ -225,11 +225,6 @@ impl ServiceStore {
         self.lock()
             .remove(&ticket)
             .map_or(0, |held| held.entries.len())
-    }
-
-    /// Forget every result of worker `worker` (it was replaced).
-    pub(crate) fn forget_worker(&self, worker: u32) {
-        self.lock().retain(|t, _| decode(t.slot).0 != worker);
     }
 
     /// TEST ONLY: a READY result kept under `ticket`'s handle `seq`, as a service an op on the

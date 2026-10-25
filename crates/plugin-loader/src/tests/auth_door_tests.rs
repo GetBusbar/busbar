@@ -151,7 +151,6 @@ mod judge {
 
 fn dispatcher() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
         budgets: Budgets::default(),
         watchdog_period: Duration::from_millis(20),
         ..DispatchConfig::default()
@@ -1063,7 +1062,6 @@ mod ticketed {
             .link(vec![LinkedPlugin::auth_door("proves", door::door)])
             .expect("the linked door registers");
         let config = DispatchConfig {
-            workers: 2,
             watchdog_period: Duration::from_millis(20),
             ..DispatchConfig::default()
         };

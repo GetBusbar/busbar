@@ -624,7 +624,7 @@ impl Unit {
     /// When no ticket is free.
     fn mint(d: &Dispatcher, reply_cap: usize) -> Self {
         Self {
-            ticket: d.mint(0).expect("a unit's ticket is minted"),
+            ticket: d.mint().expect("a unit's ticket is minted"),
             reply_cap,
         }
     }

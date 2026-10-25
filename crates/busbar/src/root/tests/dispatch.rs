@@ -5,18 +5,11 @@ use super::*;
 
 #[test]
 fn the_dispatcher_is_built_once_and_every_caller_shares_it() {
-    let a = boot(3, crate::root::serve::LateServices::new());
+    let a = boot(crate::root::serve::LateServices::new());
     let b = dispatcher();
-    let c = boot(9, crate::root::serve::LateServices::new());
+    let c = boot(crate::root::serve::LateServices::new());
     assert!(Arc::ptr_eq(&a, &b), "one dispatcher per process");
     assert!(Arc::ptr_eq(&a, &c), "the first build stands");
-    assert!(a.workers() >= 1);
-}
-
-#[test]
-fn one_plugin_worker_per_data_worker() {
-    assert_eq!(config(4).workers, 4);
-    assert_eq!(config(0).workers, 1, "never zero workers");
 }
 
 /// THE BINARY'S DISPATCHER SERVES THE KERNEL'S HOST SERVICES, booted as `run()` boots it: the
@@ -71,7 +64,9 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
         Stored::ready(svc::DEST_METADATA)
     );
     assert!(
-        Dispatcher::new(config(1)).host_services().is_none(),
+        Dispatcher::new(DispatchConfig::default())
+            .host_services()
+            .is_none(),
         "RED arm: a dispatcher built with no provider serves no host service"
     );
 }

@@ -1550,7 +1550,7 @@ fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
 #[test]
 fn a_recycled_ticket_drops_its_stored_service_results() {
     let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
-    let t = d.mint(0).expect("a ticket");
+    let t = d.mint().expect("a ticket");
     let store = d.service_store();
     let runs = AtomicUsize::new(0);
     let heads = [

@@ -165,7 +165,7 @@ pub struct Bind {
     /// // missing field `dispatcher`: there is no unwatched production bind
     /// let _ = busbar_plugin_loader::dispatch::Bind { instance: "a".into(), max_inflight_cap: 1, sink };
     /// ```
-    pub dispatcher: super::worker::Adopter,
+    pub dispatcher: super::dispatcher::Adopter,
     /// The host's ONE connection table, or why the bind has none, stated at every call site
     /// ([`ConnTable`]). An instance whose Statement declares a need is declared on the table at bind
     /// (each need under its Statement index) and handed the connector slots
@@ -297,10 +297,6 @@ pub(crate) struct Crossed {
     pub(crate) wake_at_ns: u64,
     /// A FAILED answer the kind calls short ([`Kind::short`]).
     pub(crate) short: bool,
-    /// `cancel`'s `CancelOut.disposition`, when the op ended through `cancel`.
-    pub(crate) disposition: Option<u32>,
-    /// The record writes that `cancel` carried (a plane's, SEAM-L(r)).
-    pub(crate) cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
 }
 
 impl Crossed {
@@ -311,8 +307,6 @@ impl Crossed {
             lease: 0,
             wake_at_ns: 0,
             short: false,
-            disposition: None,
-            cancel_writes: Vec::new(),
         }
     }
 }
@@ -502,7 +496,6 @@ pub(crate) struct Instance {
     pub(crate) unit_ops: AtomicU32,
     pub(crate) cap: u32,
     lifecycle_busy: AtomicBool,
-    pub(crate) timeout: Outcome,
     /// [`Kind::check`] of the bound kind.
     check: fn(&Answer) -> Result<(), Fault>,
     /// [`Kind::short`] of the bound kind.
@@ -633,6 +626,15 @@ impl Instance {
 
     /// The instance's handle (#74): what the plugin is handed and hands back, verified by the host
     /// on every call ([`super::handle::resolve`]).
+    /// The process's runtime the dispatcher that adopted this instance was given, if any.
+    fn runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.wake
+            .route
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|route| route.runtime())
+    }
+
     pub(crate) fn ctx(&self) -> HostCtx {
         self.tables.0.ctx
     }
@@ -949,35 +951,6 @@ impl Instance {
         crossed
     }
 
-    /// `cancel` of the op on `ticket` (deadline class `class`, serving `unit`), which the host
-    /// abandoned with no worker to resume it on (a replaced worker's orphan): a TICKET-LESS crossing,
-    /// listed in [`Instance::calls`] so the watchdog judges one that hangs, made on a permanent FFI
-    /// worker ([`crate::ffi_thread`]) since its caller's thread retires. The kind's own frame, as
-    /// the worker's `cancel` sends it.
-    pub(crate) fn cancel_abandoned(
-        &self,
-        ticket: Ticket,
-        class: DeadlineClass,
-        unit: Option<u64>,
-    ) -> Outcome {
-        let mut frame = (self.cancel_frame)();
-        frame.name_unit(unit.unwrap_or(0));
-        let (input, out, out_size) = frame.prepare(ticket, class as u8);
-        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
-        self.lock_calls().push(Watched::new(
-            id,
-            slot::CANCEL,
-            Duration::ZERO,
-            DeadlineClass::Call,
-        ));
-        // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
-        let crossed = crate::ffi_thread::on_plugin_thread(|| unsafe {
-            self.cross(slot::CANCEL, input, out, out_size)
-        });
-        self.lock_calls().retain(|c| c.id != id);
-        crossed.map_or(Outcome::Fault, |c| c.outcome)
-    }
-
     /// CLOSE THE LIVE BOX OF AN `open` THE HOST JUDGED FAULT: the plugin answered READY or PENDING,
     /// so it freed nothing and holds a live box, but the op is over (no RESUME will come). The host
     /// sends it `close` (the `close` a half-open box admits), so nothing dangles and nothing leaks.
@@ -1124,15 +1097,14 @@ impl Instance {
             // touches its thread-locals and `close` runs its `Drop`; either on a thread that
             // exits after the library is unmapped runs the plugin's thread-local destructor out
             // of unmapped memory. What the crossing's thread states for the host services the
-            // plugin calls goes with it: the unit it serves, the dispatcher worker it acts for and
-            // the runtime that thread is inside.
-            let acting = super::worker::worker_mark();
-            let runtime = tokio::runtime::Handle::try_current().ok();
+            // plugin calls goes with it: the unit it serves and the runtime that thread is inside.
+            let runtime = tokio::runtime::Handle::try_current()
+                .ok()
+                .or_else(|| self.runtime());
             let (input, output): (*const c_void, *mut c_void) =
                 (input.cast_const().cast(), out.cast());
             let routed = crate::ffi_thread::on_plugin_thread(|| {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
-                let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
                 let _ticket = super::services::crossing(ticket);
                 with_crossing(Some(self), || {
@@ -1146,6 +1118,12 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
+            // A crossing off any runtime (a plugin thread) runs inside the process's installed one.
+            let runtime = tokio::runtime::Handle::try_current()
+                .is_err()
+                .then(|| self.runtime())
+                .flatten();
+            let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
             with_crossing(Some(self), || {
                 op(instance, input.cast_const().cast(), out.cast())
             })
@@ -1264,8 +1242,6 @@ impl Instance {
                 0
             },
             short,
-            disposition: None,
-            cancel_writes: Vec::new(),
         }
     }
 
@@ -1674,7 +1650,6 @@ impl<K: Kind> Plugin<K> {
                 unit_ops: AtomicU32::new(0),
                 cap: st.max_inflight.clamp(1, bind.max_inflight_cap.max(1)),
                 lifecycle_busy: AtomicBool::new(false),
-                timeout: K::TIMEOUT,
                 check: K::check,
                 short: K::short,
                 op_name: K::op_name,
@@ -1922,11 +1897,14 @@ impl<K: Kind> Plugin<K> {
             inst.unit_ops.fetch_add(1, Ordering::SeqCst);
         }
         Ok(Admitted {
-            inst: Arc::clone(&self.inner),
-            units,
-            lifecycle,
-            drainable,
-            unit,
+            back: Arc::new(GiveBack {
+                inst: Arc::clone(&self.inner),
+                units,
+                lifecycle,
+                drainable,
+                unit,
+                given: AtomicBool::new(false),
+            }),
             watch: Duration::ZERO,
             breach: None,
         })
@@ -1970,10 +1948,40 @@ impl<K: Kind> Plugin<K> {
             .is_some_and(|tickets| tickets.is_recall(t, s))
     }
 
+    /// After the `cancel` of a pending `open`: the half-open box it left, if any, is closed here,
+    /// once (a later caller's `close` finds nothing and is refused).
+    pub(crate) fn close_cancelled_open(&self) {
+        let inst = &*self.inner;
+        if inst.half_open() && !inst.faulted.load(Ordering::Acquire) {
+            inst.close_half_open();
+        }
+    }
+
+    /// The op `s` on the held ticket `t` spent its one re-call: the ticket's next op is a new one.
+    pub(crate) fn recall_spent(&self, t: Ticket, s: u32) {
+        if let Some(tickets) = self.inline_tickets() {
+            tickets.ended(t, s, false);
+        }
+    }
+
     /// Register `waker` as what an op pending on the held ticket `t` wakes.
     pub(crate) fn register_on(&self, t: Ticket, waker: &std::task::Waker) {
         if let Some(tickets) = self.inline_tickets() {
             tickets.register(t, waker);
+        }
+    }
+
+    /// Count on what the dispatcher that adopted this instance counts (nothing before one did).
+    pub(crate) fn count(&self, what: impl FnOnce(&super::dispatcher::Stats)) {
+        if let Some(stats) = self
+            .inner
+            .wake
+            .route
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|route| route.stats())
+        {
+            what(&stats);
         }
     }
 
@@ -2057,7 +2065,7 @@ impl<K: Kind> Plugin<K> {
         class: DeadlineClass,
     ) -> Called {
         let inst = &*self.inner;
-        debug_assert!(std::ptr::eq(inst, &*admitted.inst));
+        debug_assert!(std::ptr::eq(inst, &*admitted.back.inst));
         let (i, o, out_size) = frame.heads();
         let id = inst.next_call.fetch_add(1, Ordering::Relaxed);
         inst.lock_calls().push(Watched {
@@ -2150,15 +2158,10 @@ impl Watched {
 }
 
 /// One admitted op: its instance's `max_inflight` units and, for a lifecycle op, the lifecycle
-/// exclusion, given back when it drops.
+/// exclusion, given back when it drops, or when the watchdog judges one of its crossings a breach
+/// (the op is FAULT then, while the crossing runs on).
 pub(crate) struct Admitted {
-    inst: Arc<Instance>,
-    units: u32,
-    lifecycle: bool,
-    /// It counts in the instance's `drainable` (a reload drain waits for it).
-    drainable: bool,
-    /// It is an admitted unit's op, counted in the instance's `unit_ops`.
-    unit: bool,
+    back: Arc<GiveBack>,
     /// A longer watch budget its crossings get from the watchdog than their class's (a hook's
     /// `timeout_ms`).
     pub(crate) watch: Duration,
@@ -2166,8 +2169,38 @@ pub(crate) struct Admitted {
     pub(crate) breach: Option<Breach>,
 }
 
+impl Admitted {
+    /// What gives the op's holds back, once: for the watchdog's breach of one of its crossings.
+    pub(crate) fn back(&self) -> Arc<GiveBack> {
+        Arc::clone(&self.back)
+    }
+}
+
 impl Drop for Admitted {
     fn drop(&mut self) {
+        self.back.give();
+    }
+}
+
+/// An admitted op's holds on its instance, given back ONCE: when the op ends, or when the watchdog
+/// judges one of its crossings a breach, whichever comes first.
+pub(crate) struct GiveBack {
+    inst: Arc<Instance>,
+    units: u32,
+    lifecycle: bool,
+    /// It counts in the instance's `drainable` (a reload drain waits for it).
+    drainable: bool,
+    /// It is an admitted unit's op, counted in the instance's `unit_ops`.
+    unit: bool,
+    given: AtomicBool,
+}
+
+impl GiveBack {
+    /// Give the holds back, if not given already.
+    pub(crate) fn give(&self) {
+        if self.given.swap(true, Ordering::AcqRel) {
+            return;
+        }
         self.inst.release(self.units);
         if self.lifecycle {
             self.inst.leave_lifecycle();

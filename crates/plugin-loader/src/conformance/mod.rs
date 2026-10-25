@@ -1360,7 +1360,7 @@ pub fn on_ticket_frame<K: Kind, I: InFrame, O: OutFrame>(
     deadline_ns: u64,
     lent: Lent,
 ) -> (Called, Option<Box<Frame<I, O>>>) {
-    let Some(ticket) = d.mint(0) else {
+    let Some(ticket) = d.mint() else {
         let refused = Called {
             outcome: Outcome::Refused,
             error: None,
@@ -1402,8 +1402,7 @@ pub(crate) fn submit_on<K: Kind, I: InFrame, O: OutFrame>(
     lent: Lent,
     watch: Duration,
 ) -> Done<I, O> {
-    d.submit_watched(p, ticket, s, f, class, deadline_ns, lent, watch)
-        .wait_done()
+    futures::executor::block_on(d.call_on(p, ticket, s, f, (class, deadline_ns), lent, watch))
 }
 
 /// A submitted op's answer as the host reads it (a ticketed op earns no re-call token: its short

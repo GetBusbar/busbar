@@ -48,6 +48,7 @@ pub mod auth_outbound;
 pub mod auth_ticks;
 pub(crate) mod call;
 pub mod conn_services;
+pub mod dispatcher;
 pub(crate) mod driver;
 pub mod handle;
 pub(crate) mod held;
@@ -65,7 +66,6 @@ pub mod ticket;
 mod timer;
 pub mod validate;
 mod watchdog;
-pub mod worker;
 
 use std::mem::{offset_of, size_of};
 use std::sync::OnceLock;
@@ -85,6 +85,10 @@ use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
 
 pub use answer::{Answer, Context};
+pub use dispatcher::{
+    Adopter, Budgets, CounterFamily, DispatchConfig, DispatchStats, Dispatcher, Done, Lent,
+    DEADLINE_WITHOUT_WAKE_TOTAL, DEFAULT_QUARANTINE_AFTER, QUARANTINED_TOTAL,
+};
 pub use inline::{InlineTicket, InlineTickets};
 pub use kinds::plane::PlaneCancel;
 pub use load::{
@@ -99,10 +103,6 @@ pub use plugin::{
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use validate::Violation;
-pub use worker::{
-    Adopter, Budgets, CounterFamily, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply,
-    DEADLINE_WITHOUT_WAKE_TOTAL, DEFAULT_QUARANTINE_AFTER, QUARANTINED_TOTAL,
-};
 
 /// A kind, as the dispatcher sees it: its code, its table and its timeout outcome. Implemented once
 /// per kind ([`kinds`]); `Ops` is that kind's `abi/<kind>/Ops`.

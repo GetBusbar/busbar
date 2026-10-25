@@ -311,6 +311,7 @@ impl Shared {
                 batch.clone(),
                 Arc::clone(&self.lane),
                 Box::new(|_: &Frame<DeliverIn, _>| None),
+                None,
             )
             .await;
             let (outcome, error) = match ran {

@@ -87,7 +87,6 @@ fn stated(door: busbar_contract::abi::mechanism::door::DoorFn) -> crate::sign::M
 
 fn dispatcher() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
         budgets: Budgets::default(),
         watchdog_period: Duration::from_millis(20),
         ..DispatchConfig::default()

@@ -146,6 +146,12 @@ std::thread_local! {
     static PERMANENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// TEST ONLY: how many permanent workers the process's pool has started (it never shrinks).
+#[cfg(test)]
+pub(crate) fn threads() -> usize {
+    pool().lock().unwrap_or_else(|p| p.into_inner()).all.len()
+}
+
 /// Whether the calling thread is one of this module's permanent workers.
 pub(crate) fn on_permanent_worker() -> bool {
     PERMANENT.with(std::cell::Cell::get)

@@ -569,10 +569,7 @@ pub struct Rig {
 
 impl Rig {
     pub fn new(primary: Pool, fallback: Option<Pool>, hooks: Hooks) -> Self {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-            workers: 2,
-            ..DispatchConfig::default()
-        }));
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let mut pools = vec![&primary];
         if let Some(f) = &fallback {
             pools.push(f);

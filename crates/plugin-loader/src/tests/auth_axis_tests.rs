@@ -12,7 +12,6 @@ use crate::PluginRegistry;
 
 fn empty() -> AuthRows {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 1,
         budgets: Budgets::default(),
         watchdog_period: Duration::from_millis(20),
         ..DispatchConfig::default()
@@ -114,7 +113,6 @@ mod markless_default {
 /// The auth rows over `doors`, each linked under its name.
 fn linking(doors: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)]) -> AuthRows {
     let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 1,
         budgets: Budgets::default(),
         watchdog_period: Duration::from_millis(20),
         ..DispatchConfig::default()
@@ -294,7 +292,6 @@ fn dropping(alias: &str, door: busbar_contract::abi::mechanism::door::DoorFn) ->
         "the dropped-in row is loadable"
     );
     let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 1,
         budgets: Budgets::default(),
         watchdog_period: Duration::from_millis(20),
         ..DispatchConfig::default()

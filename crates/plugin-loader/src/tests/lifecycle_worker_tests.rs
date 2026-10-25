@@ -167,7 +167,6 @@ fn lifecycle_on_permanent_workers_dropped_store_200_rounds() {
                 .spawn(move || {
                     for round in (t..ROUNDS).step_by(THREADS) {
                         let d = Arc::new(Dispatcher::new(DispatchConfig {
-                            workers: 2,
                             ..DispatchConfig::default()
                         }));
                         let p = load_dropped::<Store>(&path, &stated, bind(&d))

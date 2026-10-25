@@ -120,7 +120,7 @@ use super::super::{
 use super::{secret, stated, undeclared, Stated};
 use crate::dispatch::kinds::auth::Auth;
 use crate::dispatch::{
-    load_linked, now_ns, Bind, ConnTable, Dispatcher, Frame, Lent, LinkedRow, Plugin, Reply,
+    load_linked, now_ns, Bind, ConnTable, Dispatcher, Frame, Lent, LinkedRow, Plugin,
 };
 
 /// The suite's tick clock at the first `tick` (any instant; the plugin's schedule is read back).
@@ -845,7 +845,7 @@ fn sign(p: &Plugin<Auth>, handle: u64, h: &Head, flags: u32, point: u32) -> Stri
 /// ONE `fields` call ON A TICKET (as the host submits a call the plugin may make wait): minted on
 /// the dispatcher, its memory lent to the op. Its reply, and the memory to read the answer from.
 struct OnTicket {
-    reply: Reply<FieldsIn, FieldsOut>,
+    reply: std::sync::mpsc::Receiver<crate::dispatch::Done<FieldsIn, FieldsOut>>,
     lend: Arc<Lend>,
     /// The answer, when it came before the suite asked whether the call waits.
     early: Option<String>,
@@ -862,21 +862,29 @@ fn submit_fields(
     flags: u32,
     point: u32,
 ) -> OnTicket {
-    let ticket = d.mint(0).expect("a request ticket is minted");
+    let ticket = d.mint().expect("a request ticket is minted");
     let mut lend = Lend::new(h);
     let input = lend.input(handle, h, flags, point);
     let lend: Arc<Lend> = Arc::from(lend);
     let deadline =
         now_ns().saturating_add(u64::try_from(FIELDS_DEADLINE.as_nanos()).unwrap_or(u64::MAX));
-    let reply = d.submit_lent(
-        p,
+    // Submitted at once, as the host submits it: the op runs to its answer on a thread of its
+    // own, and the suite reads that answer when it asks.
+    let (tx, reply) = std::sync::mpsc::channel();
+    let op = crate::dispatch::dispatcher::submitted(
+        p.shared(),
         ticket,
         slot::FIELDS,
         Frame::new(input, output()),
-        DeadlineClass::Call,
-        deadline,
+        (DeadlineClass::Call, deadline),
         Arc::clone(&lend) as Lent,
+        Duration::ZERO,
+        None,
+        crate::dispatch::plugin::Admission::Cap,
     );
+    std::thread::spawn(move || {
+        let _ = tx.send(futures::executor::block_on(op));
+    });
     OnTicket {
         reply,
         lend,
@@ -887,9 +895,9 @@ fn submit_fields(
 impl OnTicket {
     /// Whether the call is still waiting (PENDING); an answer that already came is kept.
     fn waiting(&mut self) -> bool {
-        match self.reply.wait(Duration::ZERO) {
-            None => true,
-            Some(done) => {
+        match self.reply.try_recv() {
+            Err(_) => true,
+            Ok(done) => {
                 self.early = Some(self.read(&done));
                 false
             }
@@ -910,13 +918,10 @@ impl OnTicket {
         if let Some(a) = self.early {
             return a;
         }
-        match self.reply.wait(TICK_WAIT) {
-            None => {
-                // The op runs on; its memory stays with it.
-                self.reply.detach();
-                "no answer".to_string()
-            }
-            Some(done) => self.read(&done),
+        match self.reply.recv_timeout(TICK_WAIT) {
+            // The op runs on; its memory stays with it.
+            Err(_) => "no answer".to_string(),
+            Ok(done) => self.read(&done),
         }
     }
 }

@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PROCESS'S ONE DISPATCHER (BUSBAR-1.6.0.md THE DESIGN, §11.2: one entry point per plugin,
-//! one loading path, one dispatcher). The composition root builds it at boot, one plugin worker per
-//! data worker, and every kind's wiring reaches its plugins through it: the root opens each kind's
+//! one loading path, one dispatcher). The composition root builds it at boot, and every kind's
+//! wiring reaches its plugins through it: the root opens each kind's
 //! instances on it and hands the kernel contract-level per-kind handles (`busbar_contract::*_calls`),
 //! so the kernel never names the loader or this dispatcher.
 //!
@@ -18,39 +18,31 @@ use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 
 static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
 
-/// The dispatcher's shape for `workers` data workers: one plugin worker each, the default watchdog
-/// budgets. Host services are bound when the kernel serves them (BUSBAR-1.6.0.md THE DESIGN, §11.5,
-/// `abi/host/`).
-#[must_use]
-pub fn config(workers: usize) -> DispatchConfig {
-    DispatchConfig {
-        workers: u32::try_from(workers).unwrap_or(u32::MAX).max(1),
-        ..DispatchConfig::default()
-    }
+/// Build the process's dispatcher, at boot, before any plugin loads, serving `services` (the
+/// composition's [`crate::root::serve::LateServices`], installed once the configuration loads), on
+/// the default watchdog budgets. Host services are bound when the kernel serves them
+/// (BUSBAR-1.6.0.md THE DESIGN, §11.5, `abi/host/`). The first build stands; a later call answers
+/// it.
+pub fn boot(services: Arc<dyn HostServices>) -> Arc<Dispatcher> {
+    Arc::clone(DISPATCHER.get_or_init(|| Arc::new(build(1, services))))
 }
 
-/// Build the process's dispatcher for `workers` data workers, at boot, before any plugin loads,
-/// serving `services` (the composition's [`crate::root::serve::LateServices`], installed once the
-/// configuration loads). The first build stands; a later call answers it.
-pub fn boot(workers: usize, services: Arc<dyn HostServices>) -> Arc<Dispatcher> {
-    Arc::clone(DISPATCHER.get_or_init(|| Arc::new(build(workers, services))))
-}
-
-/// The dispatcher [`boot`] builds, for `workers` data workers, serving `services`, lent the
-/// kernel's seal (Part 2 #54: a door it binds reveals a resolved `Secret` it hands a plugin only
-/// under it).
+/// The dispatcher [`boot`] builds, serving `services`, lent the kernel's seal (Part 2 #54: a door
+/// it binds reveals a resolved `Secret` it hands a plugin only under it). `_workers` is read no
+/// more (no plugin worker exists); the plane-a2a census mount (`tests/root/mod.rs`) still passes
+/// it until that repo re-pins.
 #[must_use]
-pub fn build(workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
-    let dispatcher = Dispatcher::with_services(config(workers), services);
+pub fn build(_workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
+    let dispatcher = Dispatcher::with_services(DispatchConfig::default(), services);
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     dispatcher
 }
 
-/// The process's dispatcher (built at boot; built with one worker and no installed services on
-/// first use where no boot ran).
+/// The process's dispatcher (built at boot; built with no installed services on first use where no
+/// boot ran).
 #[must_use]
 pub fn dispatcher() -> Arc<Dispatcher> {
-    boot(1, crate::root::serve::LateServices::new())
+    boot(crate::root::serve::LateServices::new())
 }
 
 /// THE AUTH AXIS of one build: that build's registry's auth rows, opened on the process's dispatcher

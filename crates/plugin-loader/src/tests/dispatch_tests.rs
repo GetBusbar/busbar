@@ -11,8 +11,8 @@
 //! latched —, spurious, stale generations, `wake_at_ns`), a Call deadline and a client drop (both
 //! `cancel` then the timeout outcome), `max_inflight` (REFUSED without a call), a WriteBehind op
 //! (never cancelled, detached at its deadline, a reload drain that does not wait on it, a late
-//! completion), a driver ticket, and a hung op (the watchdog faults the instance, every ticket on
-//! its worker FAULTs, a fresh worker serves the next instance).
+//! completion), a driver ticket, and a hung op (the watchdog answers it FAULT and quarantines its
+//! instance, whose other pending op FAULTs too; the next instance serves).
 //!
 //! RED ARMS, kept: each rule also has its own test below, the door refusals included, and a panic
 //! in a hand-written slot is shown to ABORT the process (in a subprocess).
@@ -285,11 +285,155 @@ fn open_frame() -> Frame<OpenIn, OpenOut> {
 
 const WAIT: Duration = Duration::from_secs(10);
 
-/// `open` on a fresh ticket of `worker`.
-fn open(d: &Dispatcher, p: &Plugin<TestKind>, worker: u32) -> Outcome {
-    let t = d.mint(worker).expect("a ticket");
-    let done = d
-        .submit(p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0)
+/// One op SUBMITTED on a held ticket: started at once (admitted, its first crossing begun, as the
+/// host's submit starts it) and run to its answer on a thread of its own. Dropped before its
+/// answer, it is a client drop: the op is cancelled; [`Sub::detach`] lets it run on instead.
+struct Sub<I, O> {
+    answer: std::sync::mpsc::Receiver<crate::dispatch::Done<I, O>>,
+    keep: Option<futures::channel::oneshot::Sender<()>>,
+}
+
+impl<I, O> Sub<I, O> {
+    /// The answer, waited for up to `timeout`.
+    fn wait(&self, timeout: Duration) -> Option<crate::dispatch::Done<I, O>> {
+        self.answer.recv_timeout(timeout).ok()
+    }
+
+    /// Stop waiting without dropping the op: it runs on to its end.
+    fn detach(mut self) {
+        if let Some(keep) = self.keep.take() {
+            let _ = keep.send(());
+        }
+    }
+}
+
+/// Op `s` of `p` over `f` on the held ticket `t` (`NONE`: one of its own), in deadline class and
+/// deadline `class`/`deadline_ns` (0 = none), lending `lent`, down the one call path
+/// ([`Dispatcher::call_on`]).
+#[allow(clippy::too_many_arguments)] // the op, its ticket, frame, deadline and lend
+fn submit_lent<K: Kind, I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
+    d: &Dispatcher,
+    p: &Plugin<K>,
+    t: Ticket,
+    s: u32,
+    f: Frame<I, O>,
+    class: DeadlineClass,
+    deadline_ns: u64,
+    lent: crate::dispatch::Lent,
+) -> Sub<I, O> {
+    started(d.call_on(p, t, s, f, (class, deadline_ns), lent, Duration::ZERO))
+}
+
+/// `op` started at once (its admission and first crossing) and run to its answer on a thread of
+/// its own.
+fn started<I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
+    op: impl std::future::Future<Output = crate::dispatch::Done<I, O>> + Send + 'static,
+) -> Sub<I, O> {
+    use std::future::Future;
+    use std::task::Poll;
+    let mut op = Box::pin(op);
+    let (tx, answer) = std::sync::mpsc::channel();
+    let (keep, mut kept) = futures::channel::oneshot::channel::<()>();
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    if let Poll::Ready(done) = op.as_mut().poll(&mut cx) {
+        let _ = tx.send(done);
+        return Sub { answer, keep: None };
+    }
+    std::thread::spawn(move || {
+        let mut detached = false;
+        let done = futures::executor::block_on(std::future::poll_fn(|cx| {
+            if let Poll::Ready(done) = op.as_mut().poll(cx) {
+                return Poll::Ready(Some(done));
+            }
+            if !detached {
+                match std::pin::Pin::new(&mut kept).poll(cx) {
+                    Poll::Ready(Ok(())) => detached = true,
+                    // The submitter dropped it: a client drop, the op dropped with its call.
+                    Poll::Ready(Err(_)) => return Poll::Ready(None),
+                    Poll::Pending => {}
+                }
+            }
+            Poll::Pending
+        }));
+        if let Some(done) = done {
+            let _ = tx.send(done);
+        }
+    });
+    Sub {
+        answer,
+        keep: Some(keep),
+    }
+}
+
+/// [`submit_lent`] lending nothing.
+fn submit<K: Kind, I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
+    d: &Dispatcher,
+    p: &Plugin<K>,
+    t: Ticket,
+    s: u32,
+    f: Frame<I, O>,
+    class: DeadlineClass,
+    deadline_ns: u64,
+) -> Sub<I, O> {
+    submit_lent(d, p, t, s, f, class, deadline_ns, Arc::new(()))
+}
+
+/// The suite's submits as the dispatcher's own methods were spelt.
+trait Submits {
+    fn submit<K: Kind, I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
+        &self,
+        p: &Plugin<K>,
+        t: Ticket,
+        s: u32,
+        f: Frame<I, O>,
+        class: DeadlineClass,
+        deadline_ns: u64,
+    ) -> Sub<I, O>;
+
+    #[allow(clippy::too_many_arguments)] // as `submit_lent`
+    fn submit_lent<K: Kind, I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
+        &self,
+        p: &Plugin<K>,
+        t: Ticket,
+        s: u32,
+        f: Frame<I, O>,
+        class: DeadlineClass,
+        deadline_ns: u64,
+        lent: crate::dispatch::Lent,
+    ) -> Sub<I, O>;
+}
+
+impl Submits for Dispatcher {
+    fn submit<K: Kind, I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
+        &self,
+        p: &Plugin<K>,
+        t: Ticket,
+        s: u32,
+        f: Frame<I, O>,
+        class: DeadlineClass,
+        deadline_ns: u64,
+    ) -> Sub<I, O> {
+        submit(self, p, t, s, f, class, deadline_ns)
+    }
+
+    fn submit_lent<K: Kind, I: crate::dispatch::InFrame, O: crate::dispatch::OutFrame>(
+        &self,
+        p: &Plugin<K>,
+        t: Ticket,
+        s: u32,
+        f: Frame<I, O>,
+        class: DeadlineClass,
+        deadline_ns: u64,
+        lent: crate::dispatch::Lent,
+    ) -> Sub<I, O> {
+        submit_lent(self, p, t, s, f, class, deadline_ns, lent)
+    }
+}
+
+/// `open` on a fresh ticket.
+fn open(d: &Dispatcher, p: &Plugin<TestKind>) -> Outcome {
+    let t = d.mint().expect("a ticket");
+    let done = submit(d, p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0)
         .wait(WAIT)
         .expect("open answers");
     d.recycle(t);
@@ -331,7 +475,6 @@ fn until(what: &str, f: impl Fn() -> bool) {
 
 fn config() -> DispatchConfig {
     DispatchConfig {
-        workers: 2,
         budgets: Budgets {
             call: Duration::from_millis(400),
             ..Budgets::default()
@@ -369,10 +512,10 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
     let before = p.call(TICK, &mut frame(answer(1))).outcome;
     say(format!("answer before open {before:?}"), &sink);
     say(
-        format!("open {:?} is_open={}", open(&d, &p, 0), p.is_open()),
+        format!("open {:?} is_open={}", open(&d, &p), p.is_open()),
         &sink,
     );
-    say(format!("open again {:?}", open(&d, &p, 0)), &sink);
+    say(format!("open again {:?}", open(&d, &p)), &sink);
 
     // Each outcome, ticket-less; PENDING on NONE is a FAULT.
     for arg in [1, 3, 4, 2, 0] {
@@ -396,18 +539,18 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
         ("timer", plug::PEND_TIMER),
     ] {
         let stale0 = d.stats().stale_wakes;
-        let t = d.mint(1).expect("a ticket");
-        let done = d
-            .submit(
-                &p,
-                t,
-                TICK,
-                frame(mode),
-                DeadlineClass::Call,
-                now_ns() + 5_000_000_000,
-            )
-            .wait(WAIT)
-            .expect("pend answers");
+        let t = d.mint().expect("a ticket");
+        let done = submit(
+            &d,
+            &p,
+            t,
+            TICK,
+            frame(mode),
+            DeadlineClass::Call,
+            now_ns() + 5_000_000_000,
+        )
+        .wait(WAIT)
+        .expect("pend answers");
         d.recycle(t);
         let f = done.frame.expect("the frame comes back");
         say(
@@ -424,18 +567,18 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
     }
 
     // A Call deadline, then a client drop: `cancel`, then the kind's timeout outcome.
-    let t = d.mint(1).expect("a ticket");
-    let done = d
-        .submit(
-            &p,
-            t,
-            TICK,
-            frame(plug::PEND_HOLD),
-            DeadlineClass::Call,
-            now_ns() + 50_000_000,
-        )
-        .wait(WAIT)
-        .expect("the deadline answers");
+    let t = d.mint().expect("a ticket");
+    let done = submit(
+        &d,
+        &p,
+        t,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Call,
+        now_ns() + 50_000_000,
+    )
+    .wait(WAIT)
+    .expect("the deadline answers");
     d.recycle(t);
     say(
         format!(
@@ -445,8 +588,9 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
         ),
         &sink,
     );
-    let t = d.mint(0).expect("a ticket");
-    let reply = d.submit(
+    let t = d.mint().expect("a ticket");
+    let reply = submit(
+        &d,
         &p,
         t,
         TICK,
@@ -469,10 +613,34 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
 
     // max_inflight: over the cap, REFUSED without a call.
     let calls0 = count(&p, &sink).0;
-    let (a, b, c) = (d.mint(0).unwrap(), d.mint(1).unwrap(), d.mint(0).unwrap());
-    let ra = d.submit(&p, a, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
-    let rb = d.submit(&p, b, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
-    let rc = d.submit(&p, c, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    let (a, b, c) = (d.mint().unwrap(), d.mint().unwrap(), d.mint().unwrap());
+    let ra = submit(
+        &d,
+        &p,
+        a,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Call,
+        0,
+    );
+    let rb = submit(
+        &d,
+        &p,
+        b,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Call,
+        0,
+    );
+    let rc = submit(
+        &d,
+        &p,
+        c,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Call,
+        0,
+    );
     let over = rc.wait(WAIT).expect("over the cap answers at once").outcome;
     let none_over = p.call(TICK, &mut frame(plug::COUNT)).outcome;
     until("two held ops", || d.is_pending(a) && d.is_pending(b));
@@ -493,8 +661,9 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
 
     // WriteBehind: never cancelled; detached at its deadline; a drain does not wait on it.
     let (cancels0, late0) = (count(&p, &sink).1, d.stats().write_behind_late);
-    let w = d.mint(1).expect("a ticket");
-    let rw = d.submit(
+    let w = d.mint().expect("a ticket");
+    let rw = submit(
+        &d,
         &p,
         w,
         TICK,
@@ -505,28 +674,28 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
     let dw = rw.wait(WAIT).expect("the caller stops waiting");
     d.drop_client(w);
     let drained = d.drain(&p, Duration::from_secs(2));
-    let rt = d.mint(0).expect("a ticket");
-    let refresh = d
-        .submit(
-            &p,
-            rt,
-            slot::REFRESH,
-            Frame::new(
-                RefreshIn {
-                    head: in_head(),
-                    generation: 2,
-                    settings: NO_BLOB,
-                    secrets: std::ptr::null(),
-                    secrets_len: 0,
-                },
-                out_head(),
-            ),
-            DeadlineClass::Call,
-            0,
-        )
-        .wait(WAIT)
-        .expect("refresh answers")
-        .outcome;
+    let rt = d.mint().expect("a ticket");
+    let refresh = submit(
+        &d,
+        &p,
+        rt,
+        slot::REFRESH,
+        Frame::new(
+            RefreshIn {
+                head: in_head(),
+                generation: 2,
+                settings: NO_BLOB,
+                secrets: std::ptr::null(),
+                secrets_len: 0,
+            },
+            out_head(),
+        ),
+        DeadlineClass::Call,
+        0,
+    )
+    .wait(WAIT)
+    .expect("refresh answers")
+    .outcome;
     d.recycle(rt);
     let kick = p.call(TICK, &mut frame(plug::KICK)).outcome;
     until("the late write-behind", || {
@@ -560,9 +729,11 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
     );
     d.recycle(drv);
 
-    // The watchdog: a hung op faults its instance and replaces its worker.
-    let held = d.mint(1).expect("a ticket");
-    let rh = d.submit(
+    // The watchdog: a hung op is answered FAULT and quarantines its instance, whose other pending
+    // op FAULTs too; the next instance serves.
+    let held = d.mint().expect("a ticket");
+    let rh = submit(
+        &d,
         &p,
         held,
         TICK,
@@ -570,8 +741,9 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
         DeadlineClass::Call,
         0,
     );
-    let hung = d.mint(1).expect("a ticket");
-    let rg = d.submit(
+    let hung = d.mint().expect("a ticket");
+    let rg = submit(
+        &d,
         &p,
         hung,
         TICK,
@@ -584,54 +756,48 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
         rg.wait(WAIT).expect("hung answers"),
     );
     let after = p.call(TICK, &mut frame(answer(1))).outcome;
-    let stale = d
-        .submit(
-            &p,
-            held,
-            TICK,
-            frame(plug::PEND_HOLD),
-            DeadlineClass::Call,
-            0,
-        )
-        .wait(WAIT)
-        .expect("a stale ticket answers")
-        .outcome;
+    let again = submit(
+        &d,
+        &p,
+        held,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Call,
+        0,
+    )
+    .wait(WAIT)
+    .expect("a later op answers")
+    .outcome;
+    d.recycle(held);
+    d.recycle(hung);
     let p2 = load(sink.clone());
-    let fresh = d.mint(1).expect("the fresh worker mints");
-    let fresh_stale = crate::dispatch::handle::ticket_count(
-        d.ticket_key(),
-        1,
-        crate::dispatch::ticket::decode(fresh.slot).1,
-        fresh.generation,
-    ) > 1;
-    d.recycle(fresh);
-    let opened2 = open(&d, &p2, 1);
+    let opened2 = open(&d, &p2);
     let unhang = p2.call(TICK, &mut frame(b"unhang:script")).outcome;
     say(
         format!(
-            "watchdog: hung={:?} frame={} held={:?} faulted={} after={after:?} stale_ticket={stale:?} inflight={} replaced={} fresh_generation_bumped={fresh_stale} next_instance_open={opened2:?} unhang={unhang:?}",
+            "watchdog: hung={:?} frame={} held={:?} faulted={} after={after:?} again={again:?} inflight={} quarantined={} next_instance_open={opened2:?} unhang={unhang:?}",
             dg.outcome,
             dg.frame.is_some(),
             dh.outcome,
             p.is_faulted(),
             p.inflight(),
-            d.stats().replacements,
+            d.stats().quarantined,
         ),
         &sink,
     );
-    let t = d.mint(0).expect("a ticket");
-    let closed = d
-        .submit(
-            &p2,
-            t,
-            slot::CLOSE,
-            Frame::new(in_head(), out_head()),
-            DeadlineClass::Call,
-            0,
-        )
-        .wait(WAIT)
-        .expect("close answers")
-        .outcome;
+    let t = d.mint().expect("a ticket");
+    let closed = submit(
+        &d,
+        &p2,
+        t,
+        slot::CLOSE,
+        Frame::new(in_head(), out_head()),
+        DeadlineClass::Call,
+        0,
+    )
+    .wait(WAIT)
+    .expect("close answers")
+    .outcome;
     d.recycle(t);
     say(format!("close {closed:?} is_open={}", p2.is_open()), &sink);
     out
@@ -682,7 +848,7 @@ const EXPECTED: &[&str] = &[
     "max_inflight: third Refused, ticket-less Refused, dropped Failed, kick Ready, kicked Ready, calls+3",
     "write_behind -> Failed detached=true drained=true refresh=Ready kick=Ready cancels+0 late+1",
     "driver armed=Ready drives=3 inflight=0",
-    "watchdog: hung=Fault frame=false held=Fault faulted=true after=Fault stale_ticket=Fault inflight=0 replaced=1 fresh_generation_bumped=true next_instance_open=Ready unhang=Ready",
+    "watchdog: hung=Fault frame=false held=Fault faulted=true after=Fault again=Fault inflight=0 quarantined=1 next_instance_open=Ready unhang=Ready",
     "close Ready is_open=false",
 ];
 
@@ -707,7 +873,7 @@ fn quiet() -> Arc<Recorder> {
 fn opened(d: &Dispatcher) -> (Plugin<TestKind>, Arc<Recorder>) {
     let sink = quiet();
     let p = linked(sink.clone());
-    assert_eq!(open(d, &p, 0), Outcome::Ready);
+    assert_eq!(open(d, &p), Outcome::Ready);
     (p, sink)
 }
 
@@ -755,8 +921,8 @@ mod open_faults_on_its_resume {
     use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket, WakeFn};
 
     use super::{
-        bind, close_frame, config, crossings, frame, open_frame, plug, quiet, until, TestKind,
-        TICK, WAIT,
+        bind, close_frame, config, crossings, frame, open_frame, plug, quiet, until, Submits,
+        TestKind, TICK, WAIT,
     };
     use crate::dispatch::{load_linked, Dispatcher, LinkedRow};
 
@@ -863,13 +1029,13 @@ mod open_faults_on_its_resume {
         let row = LinkedRow::of_raw(door).expect("the restated door states itself");
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
 
-        let t = d.mint(0).expect("a ticket");
+        let t = d.mint().expect("a ticket");
         let reply = d.submit(&p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0);
         until("the open pends", || d.is_pending(t));
         // While it is in flight (asserted last, so the FAULT arm below is the one a regression
         // names first).
         let open_in_flight = p.is_open();
-        let other = d.mint(1).expect("a ticket");
+        let other = d.mint().expect("a ticket");
         let ticked_in_flight = d
             .submit(&p, other, TICK, frame(plug::COUNT), DeadlineClass::Call, 0)
             .wait(WAIT)
@@ -946,7 +1112,9 @@ mod open_left_live_is_closed {
     use busbar_contract::abi::mechanism::lifecycle::{slot, OpsHead};
     use busbar_contract::abi::mechanism::ticket::Ticket;
 
-    use super::{bind, close_frame, config, open_frame, plug, quiet, until, TestKind, WAIT};
+    use super::{
+        bind, close_frame, config, open_frame, plug, quiet, until, Submits, TestKind, WAIT,
+    };
     use crate::dispatch::{load_linked, now_ns, Dispatcher, LinkedRow, Plugin};
 
     /// One test at a time over the shared counts.
@@ -1064,7 +1232,7 @@ mod open_left_live_is_closed {
         // A ticketed `open` that answers READY under a mirror that disagrees: the host FAULTs it.
         MODE.store(MISMATCH, Ordering::SeqCst);
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
-        let t = d.mint(0).expect("a ticket");
+        let t = d.mint().expect("a ticket");
         let done = d
             .submit(&p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0)
             .wait(WAIT)
@@ -1090,7 +1258,7 @@ mod open_left_live_is_closed {
         MODE.store(PEND, Ordering::SeqCst);
         let row = LinkedRow::of_raw(door).expect("the restated door states itself");
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
-        let t = d.mint(0).expect("a ticket");
+        let t = d.mint().expect("a ticket");
         (p, t)
     }
 
@@ -1161,7 +1329,7 @@ mod open_left_live_is_closed {
         let stale = STALE.load(Ordering::SeqCst);
 
         // The caller that never got an instance closes anyway, on a ticket and without one.
-        let t = d.mint(1).expect("a ticket");
+        let t = d.mint().expect("a ticket");
         let closed = d
             .submit(&p, t, slot::CLOSE, close_frame(), DeadlineClass::Call, 0)
             .wait(WAIT)
@@ -1214,7 +1382,7 @@ fn red_over_max_inflight_is_refused_without_a_call() {
     let d = Dispatcher::new(config());
     let (p, sink) = opened(&d);
     let calls0 = count(&p, &sink).0;
-    let (a, b, c) = (d.mint(0).unwrap(), d.mint(0).unwrap(), d.mint(1).unwrap());
+    let (a, b, c) = (d.mint().unwrap(), d.mint().unwrap(), d.mint().unwrap());
     let ra = d.submit(&p, a, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
     let rb = d.submit(&p, b, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
     let rc = d.submit(&p, c, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
@@ -1236,20 +1404,21 @@ fn red_over_max_inflight_is_refused_without_a_call() {
 fn red_a_stale_generation_wake_is_dropped() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
-    let old = d.mint(0).unwrap();
+    let old = d.mint().unwrap();
     d.recycle(old);
     // The slot comes back once the recycle landed, one generation on.
     let t = loop {
-        let t = d.mint(0).unwrap();
+        let t = d.mint().unwrap();
         if t.slot == old.slot {
             break t;
         }
     };
     // One mint on: the generation is the slot's next COUNT, permuted (#74), never the next integer.
+    const INLINE: u32 = crate::dispatch::inline::INLINE_WORKER;
     let idx = crate::dispatch::ticket::decode(t.slot).1;
     assert_eq!(
-        crate::dispatch::handle::ticket_count(d.ticket_key(), 0, idx, t.generation),
-        crate::dispatch::handle::ticket_count(d.ticket_key(), 0, idx, old.generation) + 1
+        crate::dispatch::handle::ticket_count(d.ticket_key(), INLINE, idx, t.generation),
+        crate::dispatch::handle::ticket_count(d.ticket_key(), INLINE, idx, old.generation) + 1
     );
     assert_ne!(t.generation, old.generation);
     let reply = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
@@ -1283,7 +1452,7 @@ fn red_a_stale_generation_wake_is_dropped() {
 fn red_a_reload_drain_does_not_wait_on_a_pending_write_behind() {
     let d = Dispatcher::new(config());
     let (p, sink) = opened(&d);
-    let w = d.mint(0).unwrap();
+    let w = d.mint().unwrap();
     let rw = d.submit(
         &p,
         w,
@@ -1299,7 +1468,7 @@ fn red_a_reload_drain_does_not_wait_on_a_pending_write_behind() {
         "the drain waited on a WriteBehind op"
     );
     // The RED twin: a Call-class op holds the drain.
-    let t = d.mint(1).unwrap();
+    let t = d.mint().unwrap();
     let rt = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
     until("the call pends", || d.is_pending(t));
     assert!(
@@ -1636,7 +1805,7 @@ fn panic_child() {
         linked(quiet())
     };
     let d = Dispatcher::new(config());
-    assert_eq!(open(&d, &p, 0), Outcome::Ready);
+    assert_eq!(open(&d, &p), Outcome::Ready);
     let _ = p.call(TICK, &mut frame(plug::PANIC));
     // Unreachable: the panic escapes a C-ABI slot and the process aborts.
     std::process::exit(0);
@@ -1720,7 +1889,7 @@ fn red_the_kinds_validator_refuses_an_answer_as_fault() {
 fn red_one_recall_a_second_short_answer_is_fault() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
-    let t = d.mint(0).unwrap();
+    let t = d.mint().unwrap();
     let ask = |mode| {
         d.submit(&p, t, TICK, frame(mode), DeadlineClass::Call, 0)
             .wait(WAIT)
@@ -1828,7 +1997,7 @@ fn close_frame() -> Frame<busbar_contract::abi::mechanism::call::InHead, OutHead
 fn red_close_is_refused_while_an_op_is_in_flight() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
-    let t = d.mint(0).unwrap();
+    let t = d.mint().unwrap();
     let held = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
     until("the held op", || d.is_pending(t));
     let n = crossings(&p);
@@ -1836,7 +2005,7 @@ fn red_close_is_refused_while_an_op_is_in_flight() {
         p.call(slot::CLOSE, &mut close_frame()).outcome,
         Outcome::Refused
     );
-    let c = d.mint(1).unwrap();
+    let c = d.mint().unwrap();
     let ticketed = d.submit(&p, c, slot::CLOSE, close_frame(), DeadlineClass::Call, 0);
     assert_eq!(ticketed.wait(WAIT).unwrap().outcome, Outcome::Refused);
     assert_eq!(crossings(&p), n, "a refused close never crossed");
@@ -1864,7 +2033,7 @@ fn red_after_close_a_late_wake_and_every_op_fault_without_crossing() {
     // A late wake on the driver, then a ticketed op on the same worker: the worker handles its
     // messages in order, so when the op answers the wake has been handled.
     crate::dispatch::ticket::host_wake(p.inner.ctx(), drv);
-    let t = d.mint(0).unwrap();
+    let t = d.mint().unwrap();
     let after = d.submit(&p, t, TICK, frame(answer(1)), DeadlineClass::Call, 0);
     assert_eq!(after.wait(WAIT).unwrap().outcome, Outcome::Fault);
     assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
@@ -2017,7 +2186,7 @@ fn cancel_carries_the_disposition_and_a_fault_on_cancel_is_fault() {
         (&b"pend:hold:2"[..], (Outcome::Failed, Some(2))),
         (&b"pend:hold:f"[..], (Outcome::Fault, None)),
     ] {
-        let t = d.mint(0).unwrap();
+        let t = d.mint().unwrap();
         let r = d.submit(&p, t, TICK, frame(mode), DeadlineClass::Call, 0);
         until("the held op", || d.is_pending(t));
         d.drop_client(t);
@@ -2053,7 +2222,7 @@ fn an_unload_runs_on_the_reaper_never_under_a_worker_lock() {
     use std::sync::atomic::Ordering::SeqCst;
     let d = Dispatcher::new(config());
     let p = dropped(quiet());
-    assert_eq!(open(&d, &p, 0), Outcome::Ready);
+    assert_eq!(open(&d, &p), Outcome::Ready);
     let drv = d.driver(&p).unwrap();
     let gone = std::sync::Arc::downgrade(&p.inner);
     let unloads0 = UNLOADS.load(SeqCst);
@@ -2092,10 +2261,10 @@ fn red_a_hanging_unload_faults_no_innocent_instance() {
     std::thread::sleep(config().budgets.call * 2);
     assert!(!p.is_faulted());
     assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Ready);
-    let t = d.mint(0).unwrap();
+    let t = d.mint().unwrap();
     let r = d.submit(&p, t, TICK, frame(answer(1)), DeadlineClass::Call, 0);
     assert_eq!(r.wait(WAIT).unwrap().outcome, Outcome::Ready);
-    assert_eq!(d.stats().replacements, 0, "no worker was replaced");
+    assert_eq!(d.stats().quarantined, 0, "no instance was quarantined");
     release.send(()).unwrap();
 }
 
@@ -2201,7 +2370,7 @@ fn red_a_ticketless_short_answer_is_re_called_once() {
         "only a short answer earns one"
     );
     // Ticketed: the reply says short; the dispatcher enforces the one re-call on the ticket.
-    let t = d.mint(0).unwrap();
+    let t = d.mint().unwrap();
     let done = d
         .submit(
             &p,
@@ -2321,6 +2490,24 @@ fn red_a_kind_check_judges_every_outcome_in_its_bound_context() {
 
 // ── THE ASYNC COMPLETION ─────────────────────────────────────────────────────────────────────────
 
+/// `tick` over `f` on the held ticket `t`, down the one call path: the call itself, to await.
+fn call(
+    d: &Dispatcher,
+    p: &Plugin<TestKind>,
+    t: Ticket,
+    f: Frame<TickIn, TickOut>,
+) -> impl std::future::Future<Output = crate::dispatch::Done<TickIn, TickOut>> + Send + 'static {
+    d.call_on(
+        p,
+        t,
+        TICK,
+        f,
+        (DeadlineClass::Call, 0),
+        Arc::new(()),
+        Duration::ZERO,
+    )
+}
+
 /// A runtime with ONE thread: an await that blocked it would deadlock.
 fn one_thread() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -2335,31 +2522,24 @@ fn an_await_on_a_one_thread_runtime_completes() {
     let (p, _sink) = opened(&d);
     let rt = one_thread();
     // A pend that completes only on a wake from another thread, awaited on the one thread.
-    let t = d.mint(0).unwrap();
-    let reply = d.submit(&p, t, TICK, frame(plug::PEND_AFTER), DeadlineClass::Call, 0);
+    let t = d.mint().unwrap();
+    let reply = call(&d, &p, t, frame(plug::PEND_AFTER));
     let done = rt.block_on(async {
         tokio::time::timeout(WAIT, reply)
             .await
             .expect("the awaited reply completes")
     });
     assert_eq!(done.outcome, Outcome::Ready);
-    // Two ops awaited together on the one thread, each answered by a worker.
-    let (a, b) = (d.mint(0).unwrap(), d.mint(1).unwrap());
-    let ra = d.submit(&p, a, TICK, frame(plug::PEND_AFTER), DeadlineClass::Call, 0);
-    let rb = d.submit(
-        &p,
-        b,
-        TICK,
-        frame(plug::PEND_BEFORE),
-        DeadlineClass::Call,
-        0,
-    );
+    // Two ops awaited together on the one thread, each answered on a plugin thread.
+    let (a, b) = (d.mint().unwrap(), d.mint().unwrap());
+    let ra = call(&d, &p, a, frame(plug::PEND_AFTER));
+    let rb = call(&d, &p, b, frame(plug::PEND_BEFORE));
     let (da, db) = rt
         .block_on(async { tokio::time::timeout(WAIT, async { (ra.await, rb.await) }).await })
         .expect("both complete");
     assert_eq!((da.outcome, db.outcome), (Outcome::Ready, Outcome::Ready));
     // The sync path reads the same slot.
-    let c = d.mint(1).unwrap();
+    let c = d.mint().unwrap();
     let rc = d.submit(&p, c, TICK, frame(answer(1)), DeadlineClass::Call, 0);
     assert_eq!(rc.wait(WAIT).unwrap().outcome, Outcome::Ready);
 }
@@ -2369,8 +2549,8 @@ fn red_dropping_a_pending_reply_cancels_and_a_late_wake_is_a_no_op() {
     let d = Dispatcher::new(config());
     let (p, sink) = opened(&d);
     let rt = one_thread();
-    let t = d.mint(0).unwrap();
-    let reply = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
+    let t = d.mint().unwrap();
+    let reply = call(&d, &p, t, frame(plug::PEND_HOLD));
     // Poll it once on the one thread (it registers its waker and pends), then drop the future.
     let polled = rt.block_on(async {
         tokio::time::timeout(Duration::from_millis(20), reply)
@@ -2388,7 +2568,7 @@ fn red_dropping_a_pending_reply_cancels_and_a_late_wake_is_a_no_op() {
     // A wake after the drop: nothing crosses.
     let n = p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst);
     crate::dispatch::ticket::host_wake(p.inner.ctx(), t);
-    let probe = d.mint(0).unwrap();
+    let probe = d.mint().unwrap();
     assert_eq!(
         d.submit(&p, probe, TICK, frame(answer(1)), DeadlineClass::Call, 0)
             .wait(WAIT)
@@ -2402,7 +2582,7 @@ fn red_dropping_a_pending_reply_cancels_and_a_late_wake_is_a_no_op() {
         n + 1
     );
     // The GREEN twin: a detached reply is not a client drop.
-    let w = d.mint(1).unwrap();
+    let w = d.mint().unwrap();
     d.submit(&p, w, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0)
         .detach();
     until("the detached op pends", || d.is_pending(w));
@@ -2457,7 +2637,7 @@ fn red_a_dropped_reply_keeps_its_lent_memory_until_the_crossing_returns() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
     let (owner, dropped) = lent(b"hang:lent");
-    let t = d.mint(0).unwrap();
+    let t = d.mint().unwrap();
     let reply = d.submit_lent(
         &p,
         t,
@@ -2472,10 +2652,10 @@ fn red_a_dropped_reply_keeps_its_lent_memory_until_the_crossing_returns() {
     });
     drop(reply);
     drop(owner);
-    // Past the watchdog's 400ms budget: the instance is faulted and the worker replaced, while the
-    // hung thread still reads the lent blob.
-    until("the watchdog replaced the hung worker", || {
-        d.stats().replacements == 1
+    // Past the watchdog's 400ms budget: the instance is quarantined, while the hung thread still
+    // reads the lent blob.
+    until("the watchdog quarantined the hung instance", || {
+        d.stats().quarantined == 1
     });
     std::thread::sleep(Duration::from_millis(50));
     assert!(
@@ -2500,7 +2680,7 @@ fn a_dropped_pending_reply_keeps_its_lent_memory_until_the_cancel() {
     let d = Dispatcher::new(config());
     let (p, sink) = opened(&d);
     let (owner, dropped) = lent(plug::PEND_HOLD);
-    let t = d.mint(0).unwrap();
+    let t = d.mint().unwrap();
     let reply = d.submit_lent(
         &p,
         t,
@@ -2812,7 +2992,7 @@ fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_un
 fn a_forged_context_quarantines_the_instance_that_forged_it() {
     let d = Dispatcher::new(config());
     let honest = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    assert_eq!(open(&d, &honest), Outcome::Ready);
     assert_eq!(
         honest.call(TICK, &mut frame(plug::COUNT)).outcome,
         Outcome::Ready
@@ -2820,7 +3000,7 @@ fn a_forged_context_quarantines_the_instance_that_forged_it() {
     assert!(!honest.is_faulted(), "an honest instance was faulted");
 
     let forger = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    assert_eq!(open(&d, &forger), Outcome::Ready);
     assert_eq!(
         forger.call(TICK, &mut frame(plug::FORGE)).outcome,
         Outcome::Fault,
@@ -2859,7 +3039,7 @@ fn a_forged_context_quarantines_the_instance_that_forged_it() {
 fn inside_a_crossing_another_instances_handle_quarantines_the_crossing() {
     let d = Dispatcher::new(config());
     let crossing = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &crossing, 0), Outcome::Ready);
+    assert_eq!(open(&d, &crossing), Outcome::Ready);
     let other = linked(Arc::new(Recorder::default()));
     let (own_ctx, other_ctx) = (crossing.inner.ctx(), other.inner.ctx());
     // The other instance revoked first: a revoked handle of ANOTHER instance is still a forgery.
@@ -2904,7 +3084,7 @@ fn inside_a_crossing_another_instances_handle_quarantines_the_crossing() {
 fn a_forgery_inside_an_inline_slot_leaves_the_outer_crossing_alone() {
     let d = Dispatcher::new(config());
     let outer = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &outer, 0), Outcome::Ready);
+    assert_eq!(open(&d, &outer), Outcome::Ready);
     let forged = busbar_contract::abi::mechanism::ticket::HostCtx {
         handle: outer.inner.ctx().handle ^ (1 << crate::dispatch::handle::HANDLE_ID_BITS),
     };
@@ -2942,10 +3122,10 @@ fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
     let resolves = |ctx| crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some();
 
     let closed = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &closed, 0), Outcome::Ready);
+    assert_eq!(open(&d, &closed), Outcome::Ready);
     let ctx = closed.inner.ctx();
     assert!(resolves(ctx));
-    let t = d.mint(0).expect("a ticket");
+    let t = d.mint().expect("a ticket");
     let _ = d
         .submit(
             &closed,
@@ -2966,9 +3146,9 @@ fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
     assert!(!resolves(ctx), "a dropped instance's handle still names it");
 
     let hung = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &hung, 1), Outcome::Ready);
+    assert_eq!(open(&d, &hung), Outcome::Ready);
     let ctx = hung.inner.ctx();
-    let t = d.mint(1).expect("a ticket");
+    let t = d.mint().expect("a ticket");
     let reply = d.submit(
         &hung,
         t,
@@ -2985,7 +3165,7 @@ fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
         "a watchdog-faulted instance's handle still names it"
     );
     let releaser = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &releaser, 0), Outcome::Ready);
+    assert_eq!(open(&d, &releaser), Outcome::Ready);
     let _ = releaser.call(TICK, &mut frame(b"unhang:revoked"));
     let _ = reply.wait(WAIT);
 
@@ -3007,7 +3187,7 @@ fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
         ..bind(Arc::new(Recorder::default()))
     };
     let hung = load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
-    assert_eq!(open(&d, &hung, 0), Outcome::Ready);
+    assert_eq!(open(&d, &hung), Outcome::Ready);
     let ctx = hung.inner.ctx();
     let latch = crate::dispatch::handle::Latch::new();
     assert!(crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some());
@@ -3022,7 +3202,7 @@ fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
         );
         let releaser =
             load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
-        assert_eq!(open(&d, &releaser, 0), Outcome::Ready);
+        assert_eq!(open(&d, &releaser), Outcome::Ready);
         let _ = releaser.call(TICK, &mut frame(b"unhang:ticketless"));
         let _ = caller.join();
     });
@@ -3060,10 +3240,10 @@ fn a_boot_whose_entropy_fails_is_refused() {
 fn a_forged_ticket_generation_quarantines_the_instance_that_woke_it() {
     let d = Dispatcher::new(config());
     let honest = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    assert_eq!(open(&d, &honest), Outcome::Ready);
     let forger = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
-    let t = d.mint(0).expect("a ticket");
+    assert_eq!(open(&d, &forger), Outcome::Ready);
+    let t = d.mint().expect("a ticket");
     let _ = d
         .submit(
             &forger,
@@ -3108,10 +3288,10 @@ fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
 
     let d = Dispatcher::new(config());
     let supplier = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &supplier, 0), Outcome::Ready);
+    assert_eq!(open(&d, &supplier), Outcome::Ready);
     let bystander = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &bystander, 0), Outcome::Ready);
-    let t = d.mint(0).expect("a ticket");
+    assert_eq!(open(&d, &bystander), Outcome::Ready);
+    let t = d.mint().expect("a ticket");
     let head = ServiceHead {
         size: 0,
         op: op::RECORDS_GET,
@@ -3155,10 +3335,10 @@ fn red_an_off_crossing_forged_ticket_counts_toward_the_latch() {
         Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
     d.judge_against(latch);
     let honest = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    assert_eq!(open(&d, &honest), Outcome::Ready);
     let forger = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
-    let t = d.mint(0).expect("a ticket");
+    assert_eq!(open(&d, &forger), Outcome::Ready);
+    let t = d.mint().expect("a ticket");
 
     // The root's own identity on the connector: no instance supplied the ticket.
     (d.conn_waker())(
@@ -3213,9 +3393,9 @@ fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
         "a held inline ticket's generation is a small counter"
     );
     let guesser = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &guesser, 0), Outcome::Ready);
+    assert_eq!(open(&d, &guesser), Outcome::Ready);
     let prober = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &prober, 0), Outcome::Ready);
+    assert_eq!(open(&d, &prober), Outcome::Ready);
     crate::dispatch::ticket::host_wake(
         guesser.inner.ctx(),
         Ticket {
@@ -3255,7 +3435,7 @@ fn red_an_inline_slot_whose_counter_is_spent_is_retired() {
     let d = Dispatcher::new(config());
     let latch = own_latch(&d);
     let waker = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &waker, 0), Outcome::Ready);
+    assert_eq!(open(&d, &waker), Outcome::Ready);
     let held = d.inline_ticket().expect("an inline ticket");
     let seeded = d.inline_tickets().seed_count(held.ticket(), u32::MAX - 1);
     drop(held);
@@ -3381,19 +3561,19 @@ fn red_a_wake_interleaved_with_recycle_and_re_mint_does_not_reach_the_new_task()
     );
 }
 
-/// RED (#74, A WORKER THE DISPATCHER DOES NOT RUN): a wake for `encode(n, 0)`, `n` past the
-/// dispatcher's workers and short of the inline worker, names a slot nothing minted: a forgery,
-/// blamed on its supplier, not merely a stale wake.
+/// RED (#74, A SLOT NO TABLE HOLDS): a wake for `encode(n, 0)`, `n` short of the inline tickets'
+/// worker index, names a slot nothing minted: a forgery, blamed on its supplier, not merely a
+/// stale wake.
 #[test]
 fn red_a_wake_for_a_worker_the_dispatcher_does_not_run_is_a_forgery() {
     let d = Dispatcher::new(config());
     let latch = own_latch(&d);
     let forger = linked(Arc::new(Recorder::default()));
-    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    assert_eq!(open(&d, &forger), Outcome::Ready);
     crate::dispatch::ticket::host_wake(
         forger.inner.ctx(),
         Ticket {
-            slot: crate::dispatch::ticket::encode(d.workers(), 0),
+            slot: crate::dispatch::ticket::encode(0, 0),
             generation: 1,
         },
     );
@@ -3407,7 +3587,7 @@ fn red_a_wake_for_a_worker_the_dispatcher_does_not_run_is_a_forgery() {
 /// RED (#74, COUNTER WRAP): a slot whose mint counter is spent is RETIRED, never handed out again:
 /// a counter that wrapped would re-mint generations the slot already handed out, and a plugin that
 /// kept one would wake the slot's next op. Seeded one short of `u32::MAX`; the slot's last mint is
-/// at `u32::MAX`; after it the worker takes fresh slots, and a wake on the retired slot's last
+/// at `u32::MAX`; after it the dispatcher takes fresh slots, and a wake on the retired slot's last
 /// generation is a late wake, not a forgery.
 #[test]
 fn red_a_slot_whose_counter_is_spent_is_retired() {
@@ -3415,20 +3595,17 @@ fn red_a_slot_whose_counter_is_spent_is_retired() {
     let latch: &'static crate::dispatch::handle::Latch =
         Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
     d.judge_against(latch);
-    let t = d.mint(0).expect("a ticket");
-    let t = d.seed_count(t, u32::MAX - 1);
+    let t = d.mint().expect("a ticket");
+    let seeded = d.inline_tickets().seed_count(t, u32::MAX - 1);
     d.recycle(t);
-    until("the recycle lands", || d.slot_state(t).1);
-    let last = d.mint(0).expect("a ticket");
-    assert_eq!(last.slot, t.slot, "the slot's last count is handed out");
-    assert_eq!(d.slot_state(last).2, u32::MAX);
+    let last = d.mint().expect("a ticket");
+    assert_eq!(
+        last.slot, seeded.slot,
+        "the slot's last count is handed out"
+    );
     d.recycle(last);
-    until("the last recycle lands", || !d.slot_state(last).0);
-    let (_, free, count) = d.slot_state(last);
-    assert!(!free, "a spent slot went back on the free list");
-    assert_eq!(count, u32::MAX, "a spent counter wrapped");
     for _ in 0..8 {
-        let n = d.mint(0).expect("a fresh slot");
+        let n = d.mint().expect("a fresh slot");
         assert_ne!(n.slot, last.slot, "a retired slot was handed out again");
     }
     let stale0 = d.stats().stale_wakes;
@@ -3756,14 +3933,14 @@ impl crate::dispatch::CancelFrame for Naming {
 fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
     let d = Dispatcher::new(config());
     let p = load_linked::<UnitKind>(&row(), bind(quiet())).expect("the linked door loads");
-    let t = d.mint(0).expect("a ticket");
+    let t = d.mint().expect("a ticket");
     let opened = d
         .submit(&p, t, slot::OPEN, open_frame(), DeadlineClass::Call, 0)
         .wait(WAIT)
         .expect("open answers");
     d.recycle(t);
     assert_eq!(opened.outcome, Outcome::Ready);
-    let t = d.mint(0).expect("a ticket");
+    let t = d.mint().expect("a ticket");
     let held = frame(plug::PEND_HOLD);
     let unit = held.input.now_ns;
     assert_ne!(unit, 0);
@@ -3782,7 +3959,7 @@ fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
 
 /// RED (audit loader-src PL1#7; THE DESIGN `docs/design/BUSBAR-1.6.0.md` §11.13 M1, l.1652-1653:
 /// "`close` is refused while units are in flight"): an admitted unit's op (a plane's `on_piece` or
-/// `serve`, [`Dispatcher::submit_unit`]) holds no `max_inflight` unit, yet while one is in flight
+/// `serve`, `Admission::Unit`) holds no `max_inflight` unit, yet while one is in flight
 /// `close` is REFUSED and never crosses, called or submitted. RED: the unit op left `inflight` at 0,
 /// so `close` took every unit and closed the instance under a pending unit, whose resume then
 /// answered FAULT and cut a stream already answered to its caller. The GREEN twin: once the unit's
@@ -3791,16 +3968,17 @@ fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
 fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
-    let t = d.mint(0).unwrap();
-    let held = d.submit_unit(
+    let t = d.mint().unwrap();
+    let held = started(d.call_admitted(
         &p,
         t,
         TICK,
         frame(plug::PEND_HOLD),
-        DeadlineClass::Stream,
-        0,
+        (DeadlineClass::Stream, 0),
         Arc::new(()),
-    );
+        Duration::ZERO,
+        crate::dispatch::plugin::Admission::Unit,
+    ));
     until("the unit's held op", || d.is_pending(t));
     let n = crossings(&p);
     assert_eq!(
@@ -3808,7 +3986,7 @@ fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
         Outcome::Refused,
         "close crossed while a unit's op was in flight"
     );
-    let c = d.mint(1).unwrap();
+    let c = d.mint().unwrap();
     let ticketed = d.submit(&p, c, slot::CLOSE, close_frame(), DeadlineClass::Call, 0);
     assert_eq!(ticketed.wait(WAIT).unwrap().outcome, Outcome::Refused);
     assert_eq!(crossings(&p), n, "a refused close never crossed");
@@ -3823,18 +4001,18 @@ fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
 }
 
 /// RED (audit loader-src PL1#8; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.324-325: "The memory a
-/// call lends a plugin lives until that call completes, abandoned or not, for every kind"): when
-/// one plugin wedges a worker and the watchdog replaces it, a HEALTHY instance's op that was
-/// PENDING on that worker is sent `cancel` before its frame and lent memory go, so the plugin
-/// learns its op ended (a store op's checked-out connection is released on `cancel`). Its caller is
-/// answered FAULT, and the lent memory goes only after the `cancel`. RED: the replacement dropped
-/// the op with no `cancel`, and the plugin was never told.
+/// call lends a plugin lives until that call completes, abandoned or not, for every kind"): one
+/// plugin wedging its crossing reaches no HEALTHY instance's op. With no worker shared between them
+/// (each crossing runs on a plugin thread of its own), the healthy instance's PENDING op is neither
+/// cancelled nor faulted when the watchdog quarantines the wedger: it answers when its own wake
+/// comes, and its lent memory goes only after that. (Under the worker scheduler the op shared the
+/// wedged worker and was cancelled with it, PL1#8's arm.)
 #[test]
-fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_its_memory_goes() {
+fn a_wedged_instance_reaches_no_healthy_instances_pending_op() {
     let d = Dispatcher::new(config());
     let (healthy, sink) = opened(&d);
     let (owner, dropped) = lent(plug::PEND_HOLD);
-    let t = d.mint(0).unwrap();
+    let t = d.mint().unwrap();
     let held = d.submit_lent(
         &healthy,
         t,
@@ -3847,7 +4025,7 @@ fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_i
     drop(owner);
     until("the healthy op pends", || d.is_pending(t));
     let (wedger, _) = opened(&d);
-    let h = d.mint(0).unwrap();
+    let h = d.mint().unwrap();
     let hung = d.submit(
         &wedger,
         h,
@@ -3856,14 +4034,22 @@ fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_i
         DeadlineClass::Call,
         0,
     );
-    until("the watchdog replaced the wedged worker", || {
-        d.stats().replacements == 1
+    until("the watchdog quarantined the wedger", || {
+        d.stats().quarantined == 1
     });
-    until("the healthy instance's orphaned op is cancelled", || {
-        count(&healthy, &sink).1 >= 1
-    });
-    assert_eq!(held.wait(WAIT).unwrap().outcome, Outcome::Fault);
-    until("the orphan's lent memory goes after its cancel", || {
+    assert!(!healthy.is_faulted(), "the healthy instance was faulted");
+    assert!(d.is_pending(t), "the healthy op was ended by the wedge");
+    assert_eq!(count(&healthy, &sink).1, 0, "the healthy op was cancelled");
+    assert!(
+        !dropped.load(std::sync::atomic::Ordering::SeqCst),
+        "the pending op's lent memory went before it answered"
+    );
+    assert_eq!(
+        healthy.call(TICK, &mut frame(plug::KICK)).outcome,
+        Outcome::Ready
+    );
+    assert_eq!(held.wait(WAIT).unwrap().outcome, Outcome::Ready);
+    until("the op's lent memory goes once it answered", || {
         dropped.load(std::sync::atomic::Ordering::SeqCst)
     });
     // Release the hang from a third instance (the wedger is faulted).

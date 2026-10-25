@@ -761,16 +761,6 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
         .map_or(0, |issued| issued.len())
 }
 
-/// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.
-/// Another dispatcher's worker of the same index is not touched.
-pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
-    let gone = |(id, t): &(InstanceId, Ticket)| {
-        ids.contains(id) && super::ticket::decode(t.slot).0 == worker
-    };
-    kept_reads().retain(|k, _| !gone(k));
-    kept_answers().retain(|k, _| !gone(k));
-}
-
 /// FORGET EVERYTHING instance `id` holds on the connector's process-wide maps — its held streams
 /// and their facts, its kept answers — and close on `table` every connection a held stream had open.
 /// Made when the instance can never cross again: the watchdog faulted it, or it is dropped (a

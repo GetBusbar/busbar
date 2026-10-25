@@ -191,6 +191,12 @@ impl InlineTickets {
         }
     }
 
+    /// TEST ONLY: the key the generations are permuted under.
+    #[cfg(test)]
+    pub(crate) fn key(&self) -> TicketKey {
+        self.key
+    }
+
     /// Mint a ticket; `None` when every slot is held.
     pub(crate) fn mint(self: &Arc<Self>) -> Option<InlineTicket> {
         let mut held = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
@@ -298,7 +304,7 @@ impl InlineTickets {
     /// spent, the slot is RETIRED (generation `0`, never back on the free list), so no generation of
     /// it is ever minted twice.
     fn recycle(&self, index: u32, slot: &Slot) {
-        let next = super::worker::next_count(slot.count.load(Ordering::Acquire));
+        let next = super::dispatcher::next_count(slot.count.load(Ordering::Acquire));
         // The count first: a late wake for the generation being retired always inverts to a count
         // the slot has reached.
         if let Some(c) = next {
@@ -350,12 +356,6 @@ impl InlineTickets {
             generation: g,
         }
     }
-}
-
-/// Whether `t` is an inline ticket.
-#[must_use]
-pub(crate) fn is_inline(t: Ticket) -> bool {
-    decode(t.slot).0 == INLINE_WORKER
 }
 
 /// ONE INLINE TICKET, held by the side of a connection that drives ops on it. Dropping it recycles

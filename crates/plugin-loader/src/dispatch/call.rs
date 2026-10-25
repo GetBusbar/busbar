@@ -31,10 +31,10 @@ use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 
+use super::dispatcher::Lent;
 use super::inline::InlineTicket;
 use super::plugin::{Admission, Admitted, Called, Cancelled, Plugin};
 use super::timer::sleep_until;
-use super::worker::Lent;
 use super::{in_head, now_ns, out_head, Frame, InFrame, Kind, OutFrame};
 
 /// How one op is called.
@@ -191,7 +191,10 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
     });
     let op = Arc::new_cyclic(|op: &std::sync::Weak<Op<K, I, O>>| {
         let op = op.clone();
+        let back = admitted.back();
         admitted.breach = Some(Arc::new(move || {
+            // A breached op holds nothing on its instance any more, whatever the crossing does.
+            back.give();
             if let Some(op) = op.upgrade() {
                 op.breached();
             }
@@ -227,6 +230,9 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
     // On a held ticket, the op may itself be the one re-call its caller makes after a SHORT
     // answer: a second short answer is then FAULT.
     let mut regrown = held_ticket && plugin.is_recall(ticket, s);
+    // Whether a wake ever resumed the op: one its deadline settles never woken is counted
+    // (`bb_deadline_without_wake_total`).
+    let mut ever_woken = false;
     loop {
         op.register().await;
         Op::cross(&op, resume);
@@ -243,6 +249,11 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
         let (called, wake_at) = op.take_answer();
         if called.recall.is_some() {
             if regrown {
+                // Short again on its one re-call: FAULT, and the op is over; the ticket's next op
+                // is a fresh one, which may be short once more.
+                if held_ticket {
+                    plugin.recall_spent(ticket, s);
+                }
                 return held.finish(Called::host(Outcome::Fault));
             }
             if let Some((frame, lent)) = op.with_frame(|f| regrow(f)) {
@@ -256,7 +267,16 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
         if called.outcome != Outcome::Pending {
             return held.finish(called);
         }
-        if !op.woken_by(wake_at, opts.deadline).await {
+        let Some(by_wake) = op.woken_by(wake_at, opts.deadline).await else {
+            let dropped = opts
+                .cancel
+                .as_ref()
+                .is_some_and(|c| c.requested.load(Ordering::Acquire));
+            if !ever_woken && !dropped {
+                plugin.count(|s| {
+                    s.deadline_without_wake.fetch_add(1, Ordering::Relaxed);
+                });
+            }
             if opts.leave {
                 // The caller is answered at its deadline; the `cancel` runs after, on a plugin
                 // thread (a slow or hung one never holds the caller).
@@ -267,7 +287,8 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
             return Ran::TimedOut {
                 cancelled: Some(cancelled),
             };
-        }
+        };
+        ever_woken |= by_wake;
         resume = true;
     }
 }
@@ -289,9 +310,17 @@ pub(crate) static PANIC_IN_CANCEL_FOR: std::sync::atomic::AtomicUsize =
 pub(crate) struct CancelRequest {
     requested: AtomicBool,
     task: Mutex<Option<Waker>>,
+    /// The op answered PENDING and waits for its wake.
+    waiting: AtomicBool,
 }
 
 impl CancelRequest {
+    /// Whether the op answered PENDING and waits for its wake now.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self) -> bool {
+        self.waiting.load(Ordering::Acquire)
+    }
+
     /// Ask for the cancel.
     pub(crate) fn request(&self) {
         self.requested.store(true, Ordering::Release);
@@ -303,6 +332,22 @@ impl CancelRequest {
         if let Some(t) = task {
             t.wake();
         }
+    }
+}
+
+/// An op's wait for its wake, witnessed on its cancel request while it lasts.
+struct Waiting<'a>(&'a CancelRequest);
+
+impl<'a> Waiting<'a> {
+    fn new(c: &'a CancelRequest) -> Self {
+        c.waiting.store(true, Ordering::Release);
+        Self(c)
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.waiting.store(false, Ordering::Release);
     }
 }
 
@@ -527,6 +572,11 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
             (std::mem::take(&mut st.pending), st.unit)
         };
         let cancelled = owed.then(|| self.plugin.cancel_inline(self.ticket, self.class, unit));
+        // A cancelled `open` that left its half-open box: the host closes it, once, still inside
+        // the open's lifecycle exclusion (given back by `end` below).
+        if owed && self.s == life::OPEN {
+            self.plugin.close_cancelled_open();
+        }
         if let Some(c) = cancelled.as_ref().filter(|c| c.outcome != Outcome::Ready) {
             tracing::warn!(
                 plugin = %self.plugin.name(),
@@ -582,10 +632,11 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
         .await
     }
 
-    /// Wait for the op's wake (its latch), its `wake_at_ns` or its deadline: `false` = the
-    /// deadline came first. An op with no deadline also looks every [`FAULT_LOOK`] whether its
-    /// instance was faulted, and is then resumed (and answered FAULT, never crossing).
-    async fn woken_by(&self, wake_at_ns: u64, deadline: Option<Instant>) -> bool {
+    /// Wait for the op's wake (its latch), its `wake_at_ns` or its deadline: `None` = the deadline
+    /// (or the caller's cancel request) came first; `Some(true)` = a wake, `Some(false)` = its
+    /// timer. An op with no deadline also looks every [`FAULT_LOOK`] whether its instance was
+    /// faulted, and is then resumed (and answered FAULT, never crossing).
+    async fn woken_by(&self, wake_at_ns: u64, deadline: Option<Instant>) -> Option<bool> {
         let wake_at = (wake_at_ns != 0).then(|| {
             let left = wake_at_ns.saturating_sub(now_ns());
             Instant::now() + Duration::from_nanos(left)
@@ -597,23 +648,30 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
             (None, None) => Instant::now() + FAULT_LOOK,
         };
         let mut sleep = std::pin::pin!(sleep_until(until));
+        // Waiting from here until this wait ends, however it ends (its call dropped included).
+        let _waiting = self.cancel.as_deref().map(Waiting::new);
         std::future::poll_fn(|cx| {
             *self
                 .latch
                 .task
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
-            if let Some(c) = &self.cancel {
+            // A client drop ends any op but a write-behind one, which is never cancelled.
+            if let Some(c) = self
+                .cancel
+                .as_ref()
+                .filter(|_| self.class != DeadlineClass::WriteBehind)
+            {
                 *c.task.lock().unwrap_or_else(PoisonError::into_inner) = Some(cx.waker().clone());
                 if c.requested.load(Ordering::Acquire) {
-                    return Poll::Ready(false);
+                    return Poll::Ready(None);
                 }
             }
             if self.latch.woke.swap(false, Ordering::AcqRel) {
-                return Poll::Ready(true);
+                return Poll::Ready(Some(true));
             }
             if sleep.as_mut().poll(cx).is_ready() {
-                return Poll::Ready(deadline.is_none_or(|d| Instant::now() < d));
+                return Poll::Ready(deadline.is_none_or(|d| Instant::now() < d).then_some(false));
             }
             Poll::Pending
         })
@@ -775,6 +833,7 @@ pub(crate) fn call_write_behind<K: Kind, I: InFrame, O: OutFrame>(
     lent: Lent,
     lane: Arc<Lane>,
     mut regrow: OwnedRegrow<I, O>,
+    witness: Option<Arc<CancelRequest>>,
 ) -> impl Future<Output = Ran<I, O>> + Send {
     let watched = Arc::new(Mutex::new(Watch::<I, O> {
         ran: None,
@@ -791,9 +850,16 @@ pub(crate) fn call_write_behind<K: Kind, I: InFrame, O: OutFrame>(
             admission: crate::dispatch::plugin::Admission::Cap,
             ticket: None,
             inline: false,
-            cancel: None,
+            // A write-behind op is never cancelled: a request only witnesses its wait.
+            cancel: witness,
         };
         let ran = call(&plugin, s, frame, lent, opts, &mut *regrow).await;
+        // Its caller stopped watching first: a write-behind op that completed late.
+        if Arc::strong_count(&report) == 1 {
+            plugin.count(|s| {
+                s.write_behind_late.fetch_add(1, Ordering::Relaxed);
+            });
+        }
         let mut w = report.lock().unwrap_or_else(PoisonError::into_inner);
         w.ran = Some(ran);
         if let Some(waker) = w.waker.take() {

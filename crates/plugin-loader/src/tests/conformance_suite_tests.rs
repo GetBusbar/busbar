@@ -977,7 +977,6 @@ mod lent_ops {
     #[test]
     fn red_an_abandoned_op_keeps_the_memory_it_was_lent_until_its_crossing_returns() {
         let d = Dispatcher::new(DispatchConfig {
-            workers: 2,
             budgets: Budgets {
                 call: Duration::from_millis(300),
                 ..Budgets::default()

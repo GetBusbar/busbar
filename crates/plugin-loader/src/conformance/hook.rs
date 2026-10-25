@@ -427,7 +427,7 @@ fn cross(
 
 /// A ticket of `d`'s for one request (`None` when none is free: the step answers REFUSED).
 fn ticket(d: &Dispatcher) -> Option<Ticket> {
-    d.mint(0)
+    d.mint()
 }
 
 const NO_TICKET: &str = "Refused lease=false no ticket";

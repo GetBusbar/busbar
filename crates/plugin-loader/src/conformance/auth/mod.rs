@@ -522,7 +522,7 @@ fn verify_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &Presented) -> Strin
     let mut lend = case.again();
     let f = lend.frame(true);
     let lend: Arc<Presented> = Arc::from(lend);
-    let ticket = d.mint(0).expect("a ticket is free");
+    let ticket = d.mint().expect("a ticket is free");
     let done = submit_verify(p, d, ticket, f, &lend);
     d.recycle(ticket);
     submitted_answer(&lend, &done)
@@ -536,7 +536,7 @@ fn verify_short_submitted(p: &Plugin<Auth>, d: &Dispatcher, case: &Presented) ->
     let f = lend.frame(false);
     let full = lend.buf(true);
     let lend: Arc<Presented> = Arc::from(lend);
-    let ticket = d.mint(0).expect("a ticket is free");
+    let ticket = d.mint().expect("a ticket is free");
     let first = submit_verify(p, d, ticket, f, &lend);
     let short = first.short;
     let answer = match first {
