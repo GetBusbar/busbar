@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PROXY ENVIRONMENT, AS THE CONNECTOR HONOURS IT (status row 130 E5a), held to 1.5.5's
+//! THE PROXY ENVIRONMENT, AS THE CONNECTOR HONOURS IT, held to 1.5.5's
 //! semantics: reqwest 0.12's implicit proxy environment, as the kernel engine's owned tunnel
 //! re-provided it (`busbar-kernel` `egress/engine/tests/engine_tests.rs`, whose rows these port):
 //! per-scheme slot resolution (`HTTPS_PROXY` / `HTTP_PROXY`, `ALL_PROXY` as the fallback for both),

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PROXY ROUTE CHOICE: which proxy, if any, a dial goes through (status row 130 E5a). A shape,
+//! THE PROXY ROUTE CHOICE: which proxy, if any, a dial goes through. A shape,
 //! shared: the connector reads the process environment into it once (`busbar_core_connector::proxy`,
 //! the one parser) and every dial it makes asks it; the composition root hands the same value to
 //! the kernel's remaining egress engine, which reads no environment of its own.

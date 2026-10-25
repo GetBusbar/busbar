@@ -86,7 +86,7 @@ fn one_class_has_one_server() {
     );
 }
 
-/// ARCHITECT RULING (b): a plane keeps exactly the record kinds it declares — the verdict the
+/// A plane keeps exactly the record kinds it declares — the verdict the
 /// administrative `plane_record_write` verb takes before it writes.
 #[test]
 fn a_plane_declares_the_record_kinds_it_keeps_and_no_other() {

@@ -26,8 +26,7 @@ pub enum PathSeg {
     Tail,
     /// ONE OR MORE segments of any value, spelled `{name+}`: a placeholder that spans the arriving
     /// path's own `/` (a raw one, as an unencoded identifier carries, or none, as an encoded one
-    /// does), then hands the rest of the pattern what follows. At most one per pattern (ARCHITECT
-    /// ruling 2026-10-16, 3b A).
+    /// does), then hands the rest of the pattern what follows. At most one per pattern.
     Plus,
 }
 

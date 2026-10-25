@@ -11,7 +11,7 @@
 use crate::hooks::{Candidate, RoutingContext, RoutingRequest};
 use serde::Serialize;
 
-/// The REPLY side: what the host reads back of a hook's 1.5.5 JSON (P2 D4).
+/// The REPLY side: what the host reads back of a hook's 1.5.5 JSON.
 pub mod reply;
 
 /// PER-REQUEST message kinds — the explicit `op` discriminator every per-request payload carries

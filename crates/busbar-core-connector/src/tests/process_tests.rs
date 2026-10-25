@@ -102,8 +102,8 @@ fn every_egress_class_is_judged_by_the_one_guard() {
 
 /// RED: under the default, the provider class and a request-data class (the default class,
 /// open-web) refuse a private and a loopback address unless allowlisted (THE DESIGN §5 destination
-/// guard, ARCHITECT ruling CRATES-14); operator infrastructure is allowed them (§5 egress-class
-/// table, owner 2026-09-27); metadata is refused in all.
+/// guard); operator infrastructure is allowed them (§5 egress-class
+/// table); metadata is refused in all.
 #[test]
 fn a_private_address_is_refused_for_providers_and_request_data_unless_allowlisted() {
     let strict = process_judge(&[], vec![]);

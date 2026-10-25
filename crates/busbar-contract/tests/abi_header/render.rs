@@ -949,7 +949,7 @@ impl Resolver<'_> {
                 Ok(Ty::Array(Box::new(self.map_type(&a.elem, f)?), n))
             }
             // A shared `'static` reference is the C pointer it is laid out as, never NULL: the
-            // sealed door function answers one (`DoorFn`, status row 195), and C reads it as
+            // sealed door function answers one (`DoorFn`), and C reads it as
             // `const T *`. Any other reference has no C mapping.
             syn::Type::Reference(r)
                 if r.mutability.is_none()
@@ -1124,7 +1124,7 @@ pub fn render_sources(srcs: &[Src<'_>], golden: &str) -> Result<String, String> 
 }
 
 /// [`render_sources`], and every emitted struct is pinned by the golden: one it does not record
-/// fails the render, naming it (audit contract-include #1).
+/// fails the render, naming it.
 ///
 /// # Errors
 ///

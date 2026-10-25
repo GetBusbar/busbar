@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The v1 JSON error/OK ENVELOPE PRIMITIVES — the frozen `{"error":{"code","message"}}` projection
-//! of an [`AdminError`] and its `ok_json` twin. Moved here from the kernel's `admin::v1::json` (P2 D4,
-//! ARCHITECT Q-D4-ADMIN (b) 2026-10-04): the kernel keeps only the neutral envelope for the answers it
+//! of an [`AdminError`] and its `ok_json` twin. Moved here from the kernel's `admin::v1::json`: the kernel keeps only the neutral envelope for the answers it
 //! gives itself (`busbar_kernel::admin::gate`), and every error here is framed by that same
 //! construction (`gate::error_envelope`), so the bytes cannot differ.
 

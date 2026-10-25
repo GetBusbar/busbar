@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE UPSTREAM LEG OF A HELD SESSION (ARCHITECT rulings, row 132, "pairing"): the connection
+//! THE UPSTREAM LEG OF A HELD SESSION: the connection
 //! table's composed open over a datagram framer's need, for the unit its walk serves
 //! (`OpenDesc::unit`), whose caller leg the root registered under that unit key
 //! ([`crate::Connector::pair`]).
@@ -436,7 +436,7 @@ impl Dialled {
     }
 }
 
-/// THE EXCHANGE BODY OF A COMPOSED OPEN (row 132, the ARCHITECT ticket ruling, item 4): what goes
+/// THE EXCHANGE BODY OF A COMPOSED OPEN: what goes
 /// to the far end beside the dialling association's own `description`.
 ///
 /// - An open with no body sends the description as the whole body.

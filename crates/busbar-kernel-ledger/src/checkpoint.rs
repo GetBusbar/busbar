@@ -214,7 +214,7 @@ pub struct Checkpoint {
 /// A SEALED CHECKPOINT WITHOUT ITS BALANCES: everything [`Checkpoint`] holds but the totals, and
 /// how many balances it sealed.
 ///
-/// What a node keeps of the checkpoints it sealed (Q128 kernel-ledger HIGH 1, ARCHITECT ruling A1):
+/// What a node keeps of the checkpoints it sealed:
 /// a full copy of the book per kept checkpoint is what grew memory with uptime, so the totals are
 /// not kept. A reader that needs them re-derives them from the chain, and [`Self::with_totals`]
 /// rejoins them to this head; the body digest then says whether the re-derived figures are the
@@ -394,7 +394,7 @@ impl Checkpoint {
     }
 
     /// VERIFY THE SEAL: the figures hash to the stored digest, and the signature over the signed
-    /// body verifies against the keyset (Q71(3): the #82 audit keyset, one keyset).
+    /// body verifies against the keyset (the audit keyset, one keyset).
     ///
     /// The digest first, because a signature checked over a body nobody re-derived from the figures
     /// is a signature over bytes, not over a checkpoint.
