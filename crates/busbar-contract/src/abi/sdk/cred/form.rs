@@ -95,7 +95,7 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Bytes>), &
                     if password.is_some() {
                         return Err(TWO);
                     }
-                    password = Some(decode(v));
+                    password = Some(decode_form(v));
                 } else {
                     kept.push(pair);
                 }
@@ -201,6 +201,11 @@ fn hex(c: u8) -> Option<u8> {
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     }
+}
+
+fn decode_form(s: &str) -> Bytes {
+    let spaced = Zeroizing::new(s.replace('+', " "));
+    decode(&spaced)
 }
 
 fn decode(s: &str) -> Bytes {

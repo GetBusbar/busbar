@@ -52,7 +52,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub use form::CredUrl;
 pub use settings::{settings, SettingsError};
-pub use write::{SealedWrite, Wire};
+pub use write::{Parts, SealedWrite};
 
 /// Zeroizing material with no way out of this crate: no getter, no `Debug`, no `Display`, no
 /// `Serialize`. Equality is constant-time.

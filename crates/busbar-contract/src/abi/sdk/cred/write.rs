@@ -22,11 +22,11 @@ enum Part {
 /// stream's auth message is one whole [`Seal`]: write it with [`SealedWrite::message`].
 #[allow(missing_debug_implementations)]
 #[derive(Default)]
-pub struct Wire {
+pub struct Parts {
     parts: Vec<Part>,
 }
 
-impl Wire {
+impl Parts {
     /// An empty wire.
     pub fn new() -> Self {
         Self::default()
@@ -73,7 +73,7 @@ pub struct SealedWrite {
 
 impl SealedWrite {
     /// The assembled wire.
-    pub fn new(wire: Wire) -> Self {
+    pub fn new(wire: Parts) -> Self {
         let mut buf = Zeroizing::new(Vec::with_capacity(wire.len()));
         for p in &wire.parts {
             match p {
@@ -86,7 +86,7 @@ impl SealedWrite {
 
     /// A whole auth message, written alone.
     pub fn message(seal: Seal) -> Self {
-        Self::new(Wire::new().sealed(seal))
+        Self::new(Parts::new().sealed(seal))
     }
 
     /// The total length in bytes.

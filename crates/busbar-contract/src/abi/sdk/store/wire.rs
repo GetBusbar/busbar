@@ -235,6 +235,21 @@ impl Wire {
         self.ask(Ask::Write).await.map(|_| ())
     }
 
+    /// Write a sealed auth message whole (`abi::sdk::chip`). The buffer it passed through is
+    /// wiped once the connector took it, or on failure.
+    ///
+    /// # Errors
+    /// The connector's failure.
+    pub async fn write_sealed(
+        &self,
+        seal: &crate::abi::sdk::cred::Seal,
+    ) -> Result<(), ConnFailure> {
+        self.state().out.extend_from_slice(seal.wire());
+        let written = self.ask(Ask::Write).await.map(|_| ());
+        zeroize::Zeroize::zeroize(&mut self.state().out);
+        written
+    }
+
     /// Read more bytes onto the input ([`Wire::input`]): how many arrived; `0` = the far end
     /// closed the connection.
     ///

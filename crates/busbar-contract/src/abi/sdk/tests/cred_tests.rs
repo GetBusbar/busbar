@@ -3,7 +3,7 @@
 
 use serde::Deserialize;
 
-use super::{settings, Cred, CredUrl, SealedWrite, Wire};
+use super::{settings, Cred, CredUrl, Parts, SealedWrite};
 
 const CANARY: &str = "CANARY-cred-5f3a9c";
 
@@ -95,9 +95,9 @@ fn url_userinfo_and_query_passwords_are_split_out() {
     assert_eq!(u.public(), "mysql://u@h/db");
     assert_eq!(pw(&u).as_deref(), Some(&b"12?abc"[..]));
 
-    let u = split("valkey+unix:///run/v.sock?db=2&pass=s%3Dcret");
+    let u = split("valkey+unix:///run/v.sock?db=2&pass=s%3Dc+ret");
     assert_eq!(u.public(), "valkey+unix:///run/v.sock?db=2");
-    assert_eq!(pw(&u).as_deref(), Some(&b"s=cret"[..]));
+    assert_eq!(pw(&u).as_deref(), Some(&b"s=c ret"[..]));
 
     let u = split("https://h/path?email=a@b.c");
     assert_eq!(u.public(), "https://h/path?email=a@b.c");
@@ -128,7 +128,7 @@ fn plain_text_passes_through() {
 #[test]
 fn a_sealed_write_assembles_in_order() {
     let c = Cred::captured(zeroize::Zeroizing::new(b"k".to_vec()));
-    let w = Wire::new()
+    let w = Parts::new()
         .public(b"authorization: ")
         .sealed(c.bearer())
         .public(b"\r\n");
