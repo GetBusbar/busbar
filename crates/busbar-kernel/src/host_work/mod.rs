@@ -522,13 +522,6 @@ impl WorkBook {
     }
 }
 
-/// THE NEUTRAL DURABLE-HANDLE ENGINE: the plane-agnostic async-handle / durable-session capability
-/// (registry of cross-request handles, durable write-through, retention sweep, boot rehydrate,
-/// inbound-push cursor, scoped anti-enumeration read). It names no plane: a plane's row is held
-/// opaquely behind `Arc<dyn Any>` beside a neutral `HandleMeta` projection, and the plane supplies
-/// its shape, statuses, vocab and digest through the entry-point callbacks.
-pub mod handle_engine;
-
 #[cfg(test)]
 #[path = "tests/host_work_tests.rs"]
 mod tests;

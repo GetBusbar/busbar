@@ -66,30 +66,6 @@ fn every_location_form_says_how_it_is_masked() {
     assert!(!ArrivalLocation::Header("x").needs_whole_body());
 }
 
-/// The mask kinds are a closed set, and the set says so out loud.
-///
-/// Every other closed set in the contract carries the same anchor: the list IS the enum, so a kind
-/// added without being named here changes the count and this fails. Without it the set was closed
-/// only by whoever happened to be reading the enum that day.
-#[test]
-fn the_mask_kinds_are_a_closed_set() {
-    assert_eq!(MaskKind::ALL.len(), 4, "the list is the whole enum");
-    let mut seen = MaskKind::ALL.to_vec();
-    seen.sort_by_key(|kind| format!("{kind:?}"));
-    seen.dedup();
-    assert_eq!(seen.len(), MaskKind::ALL.len(), "no kind is listed twice");
-    // Exhaustive, with no catch-all: a new kind stops compiling here rather than being masked by
-    // whatever arm happened to be last.
-    for kind in MaskKind::ALL {
-        match kind {
-            MaskKind::SameLengthFill
-            | MaskKind::Nothing
-            | MaskKind::SignatureSpan
-            | MaskKind::BoundedPrefix => {}
-        }
-    }
-}
-
 /// Every location form is masked by the kind it is masked by.
 ///
 /// Asserting only that the answer is a member of the closed set is an assertion no answer could

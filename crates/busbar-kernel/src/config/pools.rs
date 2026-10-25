@@ -695,31 +695,3 @@ pub struct CandidatePoolCfg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub breaker: Option<BreakerCfg>,
 }
-
-impl CandidatePoolCfg {
-    /// MAY THIS OPERATION BE PERFORMED TWICE? The one reader of `repeatable:`, so the default can
-    /// never be got wrong by a second caller spelling the lookup differently.
-    // Read only by the per-call dispatch path a protocol plane drives; a plane whose relay never
-    // repeats a dispatch has no caller here. Unconditional allow — the neutral seam names no plane
-    // feature.
-    #[allow(dead_code)]
-    pub fn repeatability(&self, operation: &str) -> Repeatable {
-        if self.repeatable.iter().any(|o| o == operation) {
-            Repeatable::Yes
-        } else {
-            Repeatable::No
-        }
-    }
-}
-
-/// MAY THIS OPERATION BE PERFORMED TWICE? A property of the operation the caller named, declared by
-/// the operator who vouched for it — never inferred, and never a property of the transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Repeatable {
-    /// The DEFAULT for everything an operator has not spoken about. A second execution may have a
-    /// second effect, so an after-dispatch hop (the failover walk's
-    /// `Stage::AfterDispatch`) is refused.
-    No,
-    /// The operator declared this operation safe to perform twice (a read, a search, a query).
-    Yes,
-}

@@ -343,7 +343,6 @@ impl HookCalls for DoubleCalls {
 pub struct HookAxisDouble {
     rows: Vec<String>,
     linked: Arc<dyn HookAxis>,
-    opens: AtomicU64,
 }
 
 impl std::fmt::Debug for HookAxisDouble {
@@ -363,14 +362,7 @@ impl HookAxisDouble {
         Arc::new(Self {
             rows: modules.iter().map(|m| m.to_string()).collect(),
             linked,
-            opens: AtomicU64::new(0),
         })
-    }
-
-    /// How many instances the double has opened.
-    #[must_use]
-    pub fn opens(&self) -> u64 {
-        self.opens.load(Ordering::Relaxed)
     }
 
     fn answers(&self, module: &str) -> bool {
@@ -419,7 +411,6 @@ impl HookAxis for HookAxisDouble {
                 format!("hook plugin '{module}': invalid hook double settings: {e}")
             })?,
         };
-        self.opens.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(DoubleCalls {
             gate: Arc::new(Gate {
                 b,
