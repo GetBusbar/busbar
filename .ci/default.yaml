@@ -205,16 +205,8 @@ checks:
         meta=$(cargo metadata --format-version 1 --locked)
         cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
         cargo build --locked -p busbar-plugin-loader --examples
-        cargo build --workspace --locked
-        cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
-        # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
-        cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
-        cargo nextest run --locked --no-fail-fast -p busbar-kernel -p busbar-core-admin --features busbar-kernel/timing,busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema -E 'binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/))'
-        cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
-        timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
-        cargo test --workspace --doc --locked --no-fail-fast
-        # The default distribution (dist/default): core's source with the standard plugins linked,
-        # the root's tests, and the dropped-in plugins they load built first. One target dir.
+        # The dropped-in plugins the core and distribution tests dlopen (the pinned http transport
+        # the connector's suites drive among them), resolved through the distribution, into target/.
         D=dist/default/Cargo.toml
         dmeta=$(cargo metadata --format-version 1 --locked --manifest-path "$D")
         cargo build --locked --manifest-path "$D" --examples --target-dir target
@@ -234,6 +226,16 @@ checks:
         plugin busbar-transport-http busbar-transport-http-plugin dropped-in
         plugin busbar-secret-env busbar-secret-env-plugin optional
         plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
+        cargo build --workspace --locked
+        cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
+        # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
+        cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
+        cargo nextest run --locked --no-fail-fast -p busbar-kernel -p busbar-core-admin --features busbar-kernel/timing,busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema -E 'binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/))'
+        cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+        timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+        cargo test --workspace --doc --locked --no-fail-fast
+        # The default distribution (dist/default): core's source with the standard plugins linked,
+        # the root's tests, and the dropped-in plugins they load built first. One target dir.
         cargo build --locked --manifest-path "$D" --target-dir target
         cargo nextest run --locked --manifest-path "$D" --target-dir target --workspace --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
         cargo nextest run --locked --manifest-path "$D" --target-dir target --no-fail-fast --features test-harness,transport-webrtc,openapi-schema -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | (package(busbar-default) & test(/(serve_tests|secret_source|connector|boot)::/))'
