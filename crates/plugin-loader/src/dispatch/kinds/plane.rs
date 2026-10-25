@@ -625,7 +625,7 @@ pub fn linked_cli_help(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<Option<&'static str>, String> {
     let (door, _) = crate::dispatch::load::read_door(
-        crate::dispatch::load::enter_door(door),
+        crate::dispatch::load::enter_door(crate::dispatch::load::raw(door)),
         Some(KindCode::Plane),
     )
     .map_err(|e| format!("{e:?}"))?;
@@ -636,6 +636,41 @@ pub fn linked_cli_help(
         unsafe { crate::dispatch::plugin::kind_tail(&st, "a plane", PLANE_TAIL_FROZEN) }?;
     check_tail(&tail).map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     let help = kept(tail.cli_help);
+    Ok((!help.is_empty()).then_some(help))
+}
+
+/// THE COMMAND-LINE HELP A DROPPED-IN PLANE STATES: its tail's `cli_help`, read off its SIGNED
+/// MANIFEST's Statement rendering with no dlopen, as [`linked_cli_help`] reads a linked door's off
+/// its tail (BUSBAR-1.6.0.md l.2179, Part 2 #2: compiled in or dropped in, one loading path; the
+/// rendering carries the whole kind tail, and admitting the plane compares its door's Statement
+/// with it). `None` when the tail states none.
+///
+/// # Errors
+///
+/// The rendering does not read back, is not a plane Statement's, or states no tail.
+pub fn rendered_cli_help(rendering: &[u8]) -> Result<Option<String>, String> {
+    use busbar_contract::abi::mechanism::rendering::{read, read_plane_cli_help};
+    let r = read(rendering).map_err(|e| {
+        format!(
+            "the plane Statement rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })?;
+    if r.kind != KindCode::Plane as u32 {
+        return Err(format!(
+            "the Statement rendering states kind {}, not plane",
+            r.kind
+        ));
+    }
+    if r.kind_tail_size == 0 {
+        return Err("a plane states no kind tail".to_string());
+    }
+    let help = read_plane_cli_help(&r.kind_tail).map_err(|e| {
+        format!(
+            "the plane tail's rendering does not read back: byte {} is not {}",
+            e.at, e.what
+        )
+    })?;
     Ok((!help.is_empty()).then_some(help))
 }
 
@@ -650,7 +685,7 @@ pub fn linked_declaring_section(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<Option<&'static str>, String> {
     let (door, _) = crate::dispatch::load::read_door(
-        crate::dispatch::load::enter_door(door),
+        crate::dispatch::load::enter_door(crate::dispatch::load::raw(door)),
         Some(KindCode::Plane),
     )
     .map_err(|e| format!("{e:?}"))?;
@@ -681,6 +716,13 @@ pub fn linked_declaring_section(
 pub fn stated_facts(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<(String, PlaneFacts), String> {
+    stated_facts_raw(crate::dispatch::load::raw(door))
+}
+
+/// [`stated_facts`] over a door the loader already holds raw (a [`crate::dispatch::LinkedRow`]'s).
+fn stated_facts_raw(
+    door: busbar_contract::abi::sdk::door::RawDoorFn,
+) -> Result<(String, PlaneFacts), String> {
     let v = crate::dispatch::load::validate::<Plane>(door).map_err(|e| e.to_string())?;
     let name = crate::dispatch::plugin::str_bytes(v.statement.name)
         .map(|n| String::from_utf8_lossy(n).into_owned())
@@ -705,7 +747,7 @@ pub fn stated_registration(
 ) -> Result<busbar_contract::plane_calls::PlaneRegistration, String> {
     match &candidate.origin {
         crate::boot::Origin::Linked(row) => {
-            let (name, facts) = stated_facts(row.door)?;
+            let (name, facts) = stated_facts_raw(row.door)?;
             Ok(registered(
                 &name,
                 &facts.served,

@@ -19,7 +19,10 @@ use busbar_contract::hooks::{
 };
 use busbar_kernel::config::PolicyOnError;
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy};
-use busbar_kernel::plane_driver::{BoundHooks, BufferCaps, CallerFacts, CallerKey, StageTaps};
+use busbar_kernel::plane_driver::{
+    BoundHooks, BufferCaps, CallerFacts, CallerKey, HookJournal, HooksRan, StageTaps,
+};
+use busbar_kernel_audit::{HookApplied, HookHead};
 
 use super::cases::{arrival, drive, Book, Caller, Far};
 use super::common::TestUnits;
@@ -367,9 +370,9 @@ async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503()
 fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
     let env = busbar_kernel::test_support::test_hook_env(
         &["test-hook"],
-        busbar_plugin_loader::sign::HookNeeds {
-            prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-            user: busbar_plugin_loader::sign::NeedLevel::Ro,
+        busbar_kernel::test_support::HookNeeds {
+            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+            user: busbar_contract::plugin_rows::NeedLevel::Ro,
         },
     );
     let hook: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
@@ -1186,4 +1189,90 @@ async fn a_gate_first_unmarked_fault_with_a_configured_rewrite_is_the_shared_500
         );
         assert!(far.sent().is_empty(), "{target}: never dialled");
     }
+}
+
+/// Every hook report the stage made, as the node would be handed it.
+#[derive(Default)]
+struct Reports(Mutex<Vec<HooksRan>>);
+
+impl HookJournal for Reports {
+    fn hooks_ran(&self, record: &HooksRan) {
+        self.0.lock().unwrap().push(record.clone());
+    }
+}
+
+/// One hook that ran, keyed `hook`.
+fn ran(hook: &str, head: HookHead, failed: bool) -> HookApplied {
+    HookApplied {
+        hook: hook.to_string(),
+        head,
+        failed,
+    }
+}
+
+/// Drive one unit through `hooks` with the stage reporting to a [`Reports`], and hand back what it
+/// reported.
+async fn reported(hooks: BoundHooks) -> Vec<HooksRan> {
+    let mut r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(hooks),
+    );
+    let reports = Arc::new(Reports::default());
+    r.driver = r
+        .driver
+        .with_hook_journal(Arc::clone(&reports) as Arc<dyn HookJournal>);
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, arrival("/call", b"user:hello"), 0);
+    let _ = drive(&units).await;
+    let out = reports.0.lock().unwrap().clone();
+    out
+}
+
+/// THE STAGE REPORTS EACH HOOK THAT RAN (audit root#3; THE DESIGN §1: the record's "controls (...
+/// hooks applied)"): once for the unit, under its key, in the order the hooks ran, each by its key
+/// with its decision head. The rewrite changed the request; the gate after it let it through.
+#[tokio::test]
+async fn the_stage_reports_each_hook_that_ran_in_order_with_its_head() {
+    let (_, g) = gate(None);
+    let reports = reported(bound(
+        vec![(Duration::from_millis(500), Arc::new(Rewriter))],
+        vec![(0, g)],
+    ))
+    .await;
+    assert_eq!(
+        reports,
+        vec![HooksRan {
+            unit: busbar_contract::UnitKey::new(7),
+            hooks: vec![
+                ran("rewriter", HookHead::Modify, false),
+                ran("gate", HookHead::Pass, false),
+            ],
+        }],
+    );
+}
+
+/// A HOOK THAT FAILED IS REPORTED FAILED, never dropped: the load-bearing rewrite that could not
+/// answer stopped the unit, and the report names it as the veto it became, failed.
+#[tokio::test]
+async fn the_stage_reports_a_hook_that_failed_as_failed() {
+    let reports = reported(bound(
+        vec![(Duration::from_millis(500), Arc::new(LoadBearingDown))],
+        Vec::new(),
+    ))
+    .await;
+    assert_eq!(
+        reports,
+        vec![HooksRan {
+            unit: busbar_contract::UnitKey::new(7),
+            hooks: vec![ran("load-bearing-down", HookHead::Veto, true)],
+        }],
+    );
 }

@@ -721,7 +721,8 @@ async fn connect_deadline_expiry_classifies_err_net_timeout_via_owned_pool() {
 /// Dial-error cause QUALITY is legacy parity: a refused handshake renders the TLS layer's own cause
 /// through both clients — never a vague "channel closed" (the h1 err_rx correlation). The far end
 /// refuses with the words the real wrap's trust refusal carries; that the real wrap's refusal reads
-/// so through this engine is the connector's `tls/engine_tests.rs`.
+/// so is the connector's `tests/connector_tests.rs`
+/// `a_trust_refusal_names_its_cause_and_the_trusted_twin_is_reached`.
 #[tokio::test]
 async fn tls_refused_dial_renders_the_real_cause_on_both_clients() {
     use crate::egress::fixtures::{spawn_double, DoublePeer};

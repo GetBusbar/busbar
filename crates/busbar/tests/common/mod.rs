@@ -29,6 +29,7 @@ pub mod lines;
 pub mod otlp;
 pub mod pinned_planes;
 pub mod plugins;
+pub mod root_install;
 pub mod upstream;
 
 use std::path::{Path, PathBuf};
@@ -552,40 +553,9 @@ pub fn linked_plane_crates() -> Vec<(String, String)> {
         .collect()
 }
 
-/// The rows of `tests/fixtures/plane_doctrine.txt` whose first word is `kind`, each the remaining
-/// whitespace-split words, leaked once (the doctrine is pinned for the process's life).
-pub fn doctrine_rows(kind: &str) -> Vec<Vec<&'static str>> {
-    static ROWS: std::sync::OnceLock<Vec<Vec<&'static str>>> = std::sync::OnceLock::new();
-    ROWS.get_or_init(|| {
-        fixture_lines("plane_doctrine.txt")
-            .into_iter()
-            .map(|l| {
-                let l: &'static str = Box::leak(l.into_boxed_str());
-                l.split_whitespace().collect()
-            })
-            .collect()
-    })
-    .iter()
-    .filter(|r| r[0] == kind)
-    .map(|r| r[1..].to_vec())
-    .collect()
-}
-
 /// The cargo features this build enabled (build.rs publishes them as `BUSBAR_ENABLED_FEATURES`).
 pub fn enabled_features() -> std::collections::BTreeSet<&'static str> {
     env!("BUSBAR_ENABLED_FEATURES").split_whitespace().collect()
-}
-
-/// THE ROOT LEGS THIS BUILD CARRIES: each doctrine `root-leg <leg> <feature>` row whose feature is
-/// enabled. A door-served plane's leg is the kernel-loop rider that plane is SERVED through, so the
-/// feature that links the plane gates them, not a `root-*` feature of their own.
-pub fn compiled_root_legs() -> std::collections::BTreeSet<&'static str> {
-    let on = enabled_features();
-    doctrine_rows("root-leg")
-        .into_iter()
-        .filter(|r| on.contains(r[1]))
-        .map(|r| r[0])
-        .collect()
 }
 
 /// [`linked_plane_crates`] whose entry module is the crate's OWN `linked` module (no

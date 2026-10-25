@@ -41,7 +41,7 @@ use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec, PLANE_LANE_SE
 #[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
 #[cfg(feature = "plane-decisions")]
-use busbar_plane_decisions::door as decisions_door;
+use busbar_plane_decisions::plane_door::door as decisions_door;
 #[cfg(feature = "plane-decisions")]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -807,9 +807,9 @@ pub(super) mod session_door {
     fn hook_env() -> busbar_kernel::hooks::HookEnv {
         busbar_kernel::test_support::test_hook_env(
             &["test-hook"],
-            busbar_plugin_loader::sign::HookNeeds {
-                prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-                user: busbar_plugin_loader::sign::NeedLevel::Ro,
+            busbar_kernel::test_support::HookNeeds {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
         )
     }
@@ -1157,6 +1157,7 @@ pub(super) mod session_door {
                 })
             },
             gov: Arc::clone(&gov),
+            journal: None,
         });
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
@@ -4488,34 +4489,18 @@ async fn serve_configured(
 const STATES_NO_BENCH: &str = r#"{"breaker":{"bench_below_trip_threshold":false}}"#;
 
 #[cfg(feature = "plane-decisions")]
-/// Whether `door` is the decisions door: its Statement states the decisions door's name.
-fn is_decisions(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
-    LinkedRow::of(door)
-        .ok()
-        .and_then(|row| busbar_contract::abi::mechanism::rendering::read(&row.statement).ok())
-        .is_some_and(|read| read.name == decisions_name())
-}
-
-#[cfg(feature = "plane-decisions")]
-/// The linked table with the decisions door's Statement read as stating `declares` `$json`
-/// (`Linked::declares_of`, the root's one reader of a door's `declares`); every other door's as it
-/// states it.
-macro_rules! declaring {
-    ($json:expr) => {{
-        fn declares_of(
-            door: busbar_contract::abi::mechanism::door::DoorFn,
-        ) -> Result<Option<String>, String> {
-            if is_decisions(door) {
-                Ok(Some($json.to_string()))
-            } else {
-                crate::root::linked::stated_declares(door)
-            }
-        }
-        crate::root::linked::Linked {
-            declares_of,
-            ..crate::LINKED
-        }
-    }};
+/// The linked table with the decisions door's row stating `declares` (the
+/// `[package.metadata.busbar.linked-declares]` row a plane's door crate names).
+fn declaring(declares: &'static str) -> crate::root::linked::Linked {
+    crate::root::linked::Linked {
+        plane_door_declares: vec![(
+            "busbar-plane-decisions",
+            decisions_door as busbar_contract::abi::mechanism::door::DoorFn,
+            declares,
+        )]
+        .leak(),
+        ..crate::LINKED
+    }
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -4554,7 +4539,7 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-breaker-stated";
     let _published = Published(instance);
-    let linked = declaring!(STATES_NO_BENCH);
+    let linked = declaring(STATES_NO_BENCH);
     assert_eq!(
         crate::root::linked::door_breaker(&linked, None, &decisions_name())
             .expect("the fact reads"),
@@ -4564,7 +4549,7 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
         "the root reads the fact off the door's declares, by its Statement name"
     );
     let with_needs =
-        declaring!(r#"{"needs":["scheme-a"],"breaker":{"bench_below_trip_threshold":false}}"#);
+        declaring(r#"{"needs":["scheme-a"],"breaker":{"bench_below_trip_threshold":false}}"#);
     assert_eq!(
         crate::root::linked::door_breaker(&with_needs, None, &decisions_name())
             .expect("the fact reads beside `needs`"),
@@ -4572,10 +4557,11 @@ async fn a_plane_stating_no_bench_below_the_trip_keeps_its_sole_member_through_o
             bench_below_trip_threshold: false
         })
     );
-    let malformed = declaring!(r#"{"needs":"scheme-a"}"#);
+    let malformed = declaring(r#"{"needs":"scheme-a"}"#);
     let refused = crate::root::linked::door_breaker(&malformed, None, &decisions_name())
         .expect_err("a `needs` that is not a list");
-    assert!(refused.contains(&decisions_name()), "{refused}");
+    let row = malformed.plane_door_declares[0].0;
+    assert!(refused.contains(row), "{refused}");
     let (port, mut heard) = far_end_failing_first(1).await;
     let serving = serve_over(&linked, instance, port).await;
 
@@ -4607,7 +4593,7 @@ async fn a_plane_stating_no_breaker_fact_keeps_the_default_bench() {
     let _published = Published(instance);
     // The door's row states a `declares` section without the fact; the shipped table has no row
     // for it (the MCP door's row states the fact for the MCP plane alone).
-    let silent = declaring!("{}");
+    let silent = declaring("{}");
     assert_eq!(
         crate::root::linked::door_breaker(&silent, None, &decisions_name()).expect("it reads"),
         None
@@ -4941,6 +4927,74 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.chat().await.0, 200);
     let _ = rig.ledger_after(1).await;
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
+}
+
+/// AUDIT-CHAIN, ON ONE TAMPER-EVIDENT CHAIN (Law 10, status row 178): every unit the pools door
+/// answers, served (a dispatched completion) or refused inside the loop (a key whose budget the
+/// first unit spent), seals ONE record on the node's audit chain, the second the first's
+/// successor; the chain walks clean, and a record altered after its seal (the served unit re-told
+/// as the refused one) breaks the walk. This is the claim the node-axis cell made, on the door
+/// path CI's test build runs.
+/// RED: a door whose audit pass never reaches the node seals nothing; a refusal sealed off the
+/// chain leaves one record, or two that are not linked.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident_chain() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-pools-audit-chain";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            budget_cents: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200, "the first unit is served");
+    let _ = rig.ledger_after(1).await;
+    assert_eq!(
+        rig.chat().await.0,
+        429,
+        "the second is refused: its budget is spent"
+    );
+    assert_eq!(far.served(), 1, "the refused unit dialled nothing");
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while rig.audit_records() < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let records = rig.records();
+    assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+    let (served, refused) = (&records[0], &records[1]);
+    assert_eq!(
+        served.outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed,
+        "the served unit: {served:?}"
+    );
+    assert!(
+        matches!(
+            refused.outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(..)
+        ),
+        "the refusal is chained as one: {:?}",
+        refused.outcome
+    );
+    assert_eq!(refused.seq, served.seq + 1, "contiguous");
+    assert_eq!(
+        refused.prev_hash, served.hash,
+        "linked to the record before"
+    );
+    assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
+
+    let mut forged = records.clone();
+    forged[0].outcome.unit_end = refused.outcome.unit_end;
+    assert!(
+        busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
+        "a record altered after its seal breaks the chain"
+    );
 }
 
 /// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
@@ -10040,7 +10094,7 @@ async fn a_failing_decisions_provider_records_into_its_breaker_cell_until_the_ce
     let instance = "serve-door-breaker-trip";
     let _published = Published(instance);
     let (port, mut heard) = far_end_failing_first(MAX_FAILURES).await;
-    let serving = serve_over(&declaring!(STATES_NO_BENCH), instance, port).await;
+    let serving = serve_over(&declaring(STATES_NO_BENCH), instance, port).await;
     assert!(serving.ready(), "the member's cell starts closed");
     let trips = counted(
         &serving.scrape().await,
@@ -10086,7 +10140,7 @@ async fn a_tripped_decisions_provider_is_refused_before_the_dial_at_once() {
         }
     }))
     .await;
-    let serving = serve_over(&declaring!(STATES_NO_BENCH), instance, port).await;
+    let serving = serve_over(&declaring(STATES_NO_BENCH), instance, port).await;
     trip(&serving, &mut heard).await;
 
     // From here a dialled far end never answers: only the breaker can answer the next unit.

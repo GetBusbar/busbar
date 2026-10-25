@@ -2413,3 +2413,63 @@ fn a_back_dated_correction_survives_a_restart_over_the_store() {
     );
     assert_eq!(holder.len(), 2, "the opening card and the correction");
 }
+
+/// **A CHAIN THAT DOES NOT VERIFY NEVER DISARMS THE CARD JOURNAL** (audit root r4 A-5; MONEY-AUDIT
+/// D-6, "JOURNAL FIRST, PUBLISH SECOND"; #79 DATE EVERYTHING, BUSBAR-1.6.0.md l.3941). A node with
+/// no data directory keeps its chain in the store; a record of it is edited there behind the node.
+/// The boot handed the rebuild no records for that chain, the same `None` a node with no chain at
+/// all hands it, so the holder was disarmed: every later card apply was published and never
+/// journalled, and after the next restart those eras were missing from the rebuilt history. The
+/// boot refuses instead, naming the break, and the holder is left as the boot armed it.
+///
+/// RED before the fix: the build answered `Ok` and left the holder `CardJournal::Off`.
+#[test]
+fn a_stored_chain_that_does_not_verify_never_disarms_the_card_journal() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    {
+        let holder = process_holder();
+        apply_at(holder, 3.0, BOOT_A);
+        let book = boot_book_on_store(holder, &slots);
+        assert!(
+            book.lock()
+                .expect("the book")
+                .lane()
+                .expect("a lane")
+                .drain(std::time::Duration::from_secs(5)),
+            "the store takes the chain"
+        );
+    }
+    slots.corrupt(
+        crate::root::durability::JOURNAL_SCHEMA,
+        &crate::root::durability::part_key(7, 1, 0),
+    );
+
+    let holder = process_holder();
+    apply_at(holder, 3.0, REBOOT);
+    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
+        .expect("the lane starts");
+    let refused = crate::root::durability::build_on_store(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        7,
+        lane,
+        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        Box::new(move || holder.pin()),
+        Some(holder),
+    )
+    .err()
+    .map(|e| e.to_string());
+    assert!(
+        refused
+            .as_deref()
+            .is_some_and(|why| why.contains("does not verify")),
+        "a stored chain that does not verify must refuse the boot, naming the break; the build \
+         answered {refused:?}"
+    );
+    assert!(
+        matches!(
+            *holder.journal.lock().unwrap_or_else(|p| p.into_inner()),
+            CardJournal::Armed(_)
+        ),
+        "the card journal is left armed, never disarmed by a chain the boot could not verify"
+    );
+}

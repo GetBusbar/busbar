@@ -702,9 +702,9 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
     let position = |key: &str| built.iter().position(|k| *k == key);
     let mut last = None;
     for entry in crate::LINKED.transports {
+        let key = (entry.key)();
         // Every linked entry is built, after the entries the table puts before it (no layer
         // reorders them: no transport names another) …
-        let key = (entry.key)();
         let at = position(key).unwrap_or_else(|| panic!("`{key}` is not built"));
         assert!(
             last.is_none_or(|l| l < at),
@@ -1067,8 +1067,8 @@ fn the_wires_linked_row() -> LinkedTransport {
 #[test]
 fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
     let (a, b) = (
-        crate::root::doors::row_bind("first-row"),
-        crate::root::doors::row_bind("second-row"),
+        crate::root::doors::row_bind("first-row").expect("the row binds"),
+        crate::root::doors::row_bind("second-row").expect("the row binds"),
     );
     assert_eq!(
         &*a.instance, "first-row",
@@ -1191,4 +1191,39 @@ fn the_upgrade_lines_are_read_off_the_door_statements() {
             "no session wire, no upgrade line: {lines:?}"
         );
     }
+}
+
+/// A LINKED TRANSPORT ROW WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2, "Plugin
+/// logging": "all plugins should log to their plugin's log file ... compiled in or dropped in ...
+/// The HOST writes it to that plugin instance's own log file").
+///
+/// RED before a linked transport row was bound to its instance's log file: every row took the
+/// transport lane's `NoSink`, so a log record the door's call carried went nowhere.
+#[test]
+fn a_linked_transport_row_logs_to_its_own_plugin_log_file() {
+    use crate::root::loader::dispatch::Diagnostic;
+    let row = format!("transport-log-row-{}", std::process::id());
+    let bound = crate::root::doors::row_bind(&row).expect("the row binds");
+    bound.sink.diag(Diagnostic {
+        id: busbar_contract::abi::mechanism::call::DIAG_LOG,
+        name: b"",
+        severity: 0,
+        text: b"the linked transport logged a frame",
+    });
+    let path = crate::root::boot::plugin_logs().path_for(&row);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut text = String::new();
+    while std::time::Instant::now() < deadline {
+        text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("the linked transport logged a frame") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        text.contains("the linked transport logged a frame"),
+        "the row's plugin log file {} holds no record of its own: {text:?}",
+        path.display()
+    );
 }

@@ -22,7 +22,6 @@ use busbar_core_connector::pool::PoolPosture;
 use busbar_core_connector::registry::Entry;
 use busbar_core_connector::{process, Connector};
 use busbar_kernel::config::{Destinations, RootCfg};
-use busbar_kernel::egress::trust::{install_egress_trust_host, GuardedEgressTrust};
 use busbar_kernel::host_services::DestJudge;
 
 use crate::root::loader::dispatch::{
@@ -76,22 +75,24 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
     }
 }
 
-/// The framer entries of `doors` (each linked row's door, the only item its row names), each
-/// loaded and opened on the process's one dispatcher with the deployment's value of every setting
-/// it declares (`settings`: the h2c prior-knowledge and http1-only keys, the request timeout and
-/// body cap, at their 1.5.5 paths). A door that will not load or open refuses with the reason; one
-/// that opens is named by its Statement.
+/// The framer entries of `doors` (key, door), each loaded and opened on the process's one
+/// dispatcher with the deployment's value of every setting it declares (`settings`: the h2c
+/// prior-knowledge and http1-only keys, the request timeout and body cap, at their 1.5.5 paths). A
+/// door that will not load or open is named in the refusal.
 ///
 /// # Errors
 ///
 /// The first door that would not load or open.
-pub fn entries(doors: &[DoorFn], settings: &TransportSettings) -> Result<Vec<Entry>, String> {
+pub fn entries(
+    doors: &[(&str, DoorFn)],
+    settings: &TransportSettings,
+) -> Result<Vec<Entry>, String> {
     doors
         .iter()
-        .map(|door| {
+        .map(|(key, door)| {
             let plugin = LinkedRow::of(*door)
                 .and_then(|row| load_linked::<TransportKind>(&row, crate::root::doors::bind()))
-                .map_err(|e| format!("a linked transport door: {e}"))?;
+                .map_err(|e| format!("transport `{key}`: {e}"))?;
             let door: Arc<dyn FramerDoor> =
                 Arc::new(crate::root::doors::Dispatched::open(plugin, settings)?);
             Ok(Entry {
@@ -132,8 +133,8 @@ pub fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'stat
 }
 
 /// THE DEPLOYMENT'S ONE DESTINATION GUARD (OWNER ruling DESTINATION GUARD), built at boot from
-/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Once [`install_egress_trust`] puts
-/// it behind the egress-trust capability it hears every config commit: its metadata lists
+/// `cfg`'s `advanced` keys and the 1.5.5 keys that still load. Held by the root's rules
+/// (`root::door_steps::Rules::hearing`), it hears every config commit: its metadata lists
 /// (`security.*`, `providers.<p>.allow_metadata_hosts`) are re-read at each one, as 1.5.5 re-read
 /// them at every reload. An allowlist entry the guard cannot read refuses the boot, naming it.
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
@@ -150,21 +151,6 @@ pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
 /// An `advanced.allow_destinations` entry the guard cannot read.
 pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {
     process::dest_judge(d)
-}
-
-/// Install the deployment's one destination guard behind the egress-trust capability (ARCHITECT
-/// ruling (C), DEST-GUARD), once, at boot, before any kernel pooled client dials and before the boot
-/// build commits: every config commit is raised to it there. The same capability carries the one
-/// TLS wrap every kernel outbound connection is secured with — the connector's
-/// (`busbar_core_connector::tls::engine::Layer`; THE DESIGN: TLS stays in the connector, and the
-/// kernel names no TLS library), and the one name lookup every kernel resolve-then-pin asks
-/// (`busbar_core_connector::hostio::SystemNames`; row 130 E2: the kernel resolves no name itself).
-pub fn install_egress_trust(dest: Arc<dyn DestJudge>) {
-    install_egress_trust_host(Arc::new(GuardedEgressTrust(
-        dest,
-        Arc::new(busbar_core_connector::tls::engine::Layer),
-        Arc::new(busbar_core_connector::hostio::SystemNames),
-    )));
 }
 
 /// The connector's pool posture off the deployment's transport settings: 1.5.5's
@@ -191,7 +177,7 @@ pub fn spawn_secret_resolver() -> busbar_core_connector::spawn_env::SpawnSecretF
 /// the same settings' pool posture, and install it. A connector that cannot be built refuses the
 /// boot, as an unsealed composition does.
 pub fn boot(
-    doors: &[DoorFn],
+    doors: &[(&str, DoorFn)],
     settings: &TransportSettings,
     dest: Arc<dyn DestJudge>,
     listens: &[&str],

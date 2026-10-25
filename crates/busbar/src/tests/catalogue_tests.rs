@@ -39,28 +39,20 @@ fn declared_by_linked_plugins() -> Vec<&'static Diagnostic> {
         )
     };
     let mut out = Vec::new();
-    // Each export door on `export-doors`, then every other non-plane linked door (an auth, hook,
-    // secret, store or transport row's), states its `declares`.
-    let mut doors: Vec<_> = LINKED.export_doors.iter().map(|d| d.door).collect();
-    doors.extend(crate::root::linked::stated_doors(
-        &LINKED,
-        LINKED_TRANSPORT_DOORS,
-    ));
-    let rows = doors.into_iter().map(|door| {
-        let declares = (LINKED.declares_of)(door)
-            .expect("a linked door states its declares")
-            .unwrap_or_else(|| "{}".to_string());
-        (door, declares)
-    });
-    for (door, declares) in rows {
-        let decl: serde_json::Value = serde_json::from_str(&declares).unwrap_or_else(|e| {
-            let name = crate::root::loader::dispatch::rendering_of(door)
-                .ok()
-                .and_then(|r| busbar_contract::abi::mechanism::rendering::read(&r).ok())
-                .map(|r| r.name)
-                .unwrap_or_default();
-            panic!("linked plugin '{name}': its declares section: {e}")
-        });
+    // Each export door on `export-doors`, then every other non-plane linked door-root row (an auth,
+    // hook, secret, store or transport row's), states its `declares`.
+    let rows = LINKED
+        .export_doors
+        .iter()
+        .map(|d| (d.name, d.declares))
+        .chain(
+            crate::root::linked::stated_declares(&LINKED)
+                .into_iter()
+                .map(|(row, _, json)| (row, json)),
+        );
+    for (name, declares) in rows {
+        let decl: serde_json::Value = serde_json::from_str(declares)
+            .unwrap_or_else(|e| panic!("linked plugin '{name}': its declares section: {e}"));
         for d in decl["diagnostics"].as_array().into_iter().flatten() {
             let code = d["code"].as_u64().expect("a code") as u16;
             let severity = [

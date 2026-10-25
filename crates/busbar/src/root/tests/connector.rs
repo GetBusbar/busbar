@@ -193,24 +193,24 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
         busbar_kernel::test_support::neutral_fallback_plane(),
     ]);
-    // The loopback every fixture in this binary binds is listed, as an operator lists a loopback
-    // upstream: the guard installed here is process-wide (first install wins), and every other
-    // test's mock upstream is dialled through it by its loopback literal.
     let boot = deployment(
         &[],
         "security:\n  allow_metadata_hosts: [169.254.169.254]\n\
          advanced:\n  allow_destinations: [\"127.0.0.1\", \"::1\"]\n",
     );
     let judge = dest_judge(&boot);
-    // The boot path's own step: the guard goes behind the egress-trust capability, which is what
-    // hears a commit (no other test in this binary installs one).
-    crate::root::connector::install_egress_trust(judge.clone());
+    // The boot path's own step: the root's rules hold the guard, and every build judged by them
+    // raises its commit to it.
+    let rules: Arc<dyn busbar_kernel::appbuild::RootRules> = Arc::new(
+        crate::root::door_steps::Rules::hearing(judge.clone() as Arc<dyn DestJudge>),
+    );
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         None,
         "the boot config carves it out"
     );
-    busbar_kernel::test_support::build_once(deployment(&[], ""), None).expect("the reload builds");
+    busbar_kernel::test_support::build_once_under(deployment(&[], ""), None, &rules)
+        .expect("the reload builds");
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
         Some(DEST_METADATA),
@@ -355,12 +355,11 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             }
         };
         let mut line_framed = Vec::new();
-        for (n, door) in (0u32..).zip(doors) {
-            let key = crate::root::doors::name_of(*door);
+        for (n, (key, _)) in (0u32..).zip(doors.iter()) {
             let need = ReadNeed {
                 direction: DIRECTION_OUTBOUND,
                 egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
-                transport: key.to_owned(),
+                transport: (*key).to_owned(),
                 auth: String::new(),
                 target_from: "settings.server".to_owned(),
                 trust_from: String::new(),
@@ -387,7 +386,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
                     Some(b"again:{\"id\":1}".as_slice()),
                     "a message is one line to the program; its answer one frame back"
                 );
-                line_framed.push(key);
+                line_framed.push(*key);
             }
             c.close(owner, conn).expect("closes");
         }

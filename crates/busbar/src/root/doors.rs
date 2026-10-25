@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use super::loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
-    OutFrame, Plugin,
+    OutFrame, Plugin, PluginLogConfig,
 };
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -53,6 +53,30 @@ pub fn dispatcher() -> &'static Dispatcher {
     })
 }
 
+/// Where a linked row's plugin log file is opened: the composition root's `plugins.logs`
+/// ([`install_plugin_logs`]). A value, not a reader: the root's config follows an apply in place
+/// (`root::boot::follow_plugin_logs`), so every sink opened from it takes the applied words.
+static LOGS: OnceLock<&'static PluginLogConfig> = OnceLock::new();
+
+/// Hand the doors the composition root's configured `plugins.logs` (`root::boot`), once it is read
+/// and before any linked row binds; the first install stands. A mount of this file with no
+/// composition root (a test, the conformance subject) logs under the defaults.
+pub fn install_plugin_logs(logs: &'static PluginLogConfig) {
+    let _ = LOGS.set(logs);
+}
+
+/// The `plugins.logs` a linked row's plugin log file is opened under.
+fn plugin_logs() -> &'static PluginLogConfig {
+    static DEFAULTS: OnceLock<PluginLogConfig> = OnceLock::new();
+    match LOGS.get() {
+        Some(logs) => logs,
+        None => DEFAULTS.get_or_init(|| {
+            PluginLogConfig::from_words(None, None, &std::collections::BTreeMap::new(), None, None)
+                .expect("the plugins.logs defaults resolve")
+        }),
+    }
+}
+
 /// What a transport door is bound to. The instance label is the transport lane's own; every door
 /// is relabelled as it opens: a linked row with its row name ([`row_bind`]), a dropped-in door
 /// with its plugin's name (the registry), so the label is unique per instance.
@@ -70,12 +94,25 @@ pub fn bind() -> Bind {
 }
 
 /// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
-/// key), so two linked rows are two instances to the host services.
-pub fn row_bind(row: &str) -> Bind {
-    Bind {
+/// key), so two linked rows are two instances to the host services, and logging to that row's own
+/// plugin log file under the configured `plugins.logs` (THE DESIGN §11.2, "Plugin logging": every
+/// plugin, compiled in or dropped in; a dropped-in door's is opened by the registry).
+///
+/// # Errors
+///
+/// The row's plugin log file cannot be opened.
+pub fn row_bind(row: &str) -> Result<Bind, String> {
+    let bound = bind();
+    let sink = plugin_logs().sink(
+        row,
+        busbar_contract::abi::mechanism::KindCode::Transport,
+        bound.sink.clone(),
+    )?;
+    Ok(Bind {
         instance: Arc::from(row),
-        ..bind()
-    }
+        sink: Arc::new(sink),
+        ..bound
+    })
 }
 
 /// One transport door, opened, as the connector reaches it.
@@ -407,58 +444,83 @@ pub fn build(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> Arc<HostWire> {
     LinkedRow::of(door)
-        .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
+        .and_then(|linked| {
+            load_linked::<TransportKind>(&linked, row_bind(row)?).map_err(|e| e.to_string())
+        })
         .and_then(|plugin| Dispatched::open(plugin, settings))
         .and_then(|door| HostWire::new(&door))
         .map(Arc::new)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
-/// WHAT A LINKED ROW'S DOOR STATES, read off its Statement and transport tail by the one reader a
-/// bind checks them with (no `validate` or `open` runs). Every fact the root holds about a linked
-/// transport row is read here: the row names its `door` and nothing else.
+/// A LINKED TRANSPORT ROW'S IDENTITY, read off its door's Statement and nothing else: the row's
+/// entry is its bare `door` (`BUSBAR-1.6.0.md` A.1, l.3560: the logic crate's only public item), and
+/// a linked row holds that door and reaches the same `'static` table a dropped-in copy does (l.3561),
+/// so its key, its layers and whether it carries a session are what that table states (A.2,
+/// l.3564-3577: the name, the claims and the kind tail), read by the one reader a load reads them by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowFacts {
+    /// The row's registry key: the door's own claim (its first), which is its Statement's name.
+    pub key: &'static str,
+    /// The layers its transport tail states it composes over (`TransportTail::composes_over`).
+    pub composes_over: Vec<&'static str>,
+    /// Whether a claim it answers carries a session (a claim row whose `session` is set).
+    pub session: bool,
+}
+
+/// [`RowFacts`] of a linked row's `door`, or the refusal: the door, its Statement or its tail is
+/// refused by the loader's checks, it claims no scheme, or its own claim is not its Statement's name
+/// (a row keyed by one and named by the other would register under a key no dropped-in copy of the
+/// same door answers to).
+///
+/// # Errors
+///
+/// The refusal, in words naming both spellings where they differ.
+pub fn stated_row(door: DoorFn) -> Result<RowFacts, String> {
+    let facts = super::loader::dispatch::kinds::transport::linked_facts(door)?;
+    let Some(&key) = facts.claims.first() else {
+        return Err(format!(
+            "the transport door `{}` claims no scheme: a linked row's key is its door's own claim",
+            facts.name
+        ));
+    };
+    if key != facts.name {
+        return Err(format!(
+            "the transport door's Statement is named `{}` but its own claim (its first) is `{key}`: \
+             a linked row's key is its door's own claim, and the two must be one",
+            facts.name
+        ));
+    }
+    Ok(RowFacts {
+        key,
+        composes_over: facts.composes_over,
+        session: !facts.sessions.is_empty(),
+    })
+}
+
+/// [`RowFacts`] of a linked row's `door`, as the boot seal reads them.
 ///
 /// # Panics
 ///
-/// The build's own door is refused, as [`build`] panics for it.
+/// The build's own door is refused ([`stated_row`]), as [`build`] panics for it: the binary was
+/// built with a broken plugin, which no configuration can repair, so the boot is refused.
 #[must_use]
-pub fn stated_of(door: DoorFn) -> TransportFacts {
-    super::loader::dispatch::kinds::transport::linked_facts(door)
-        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+pub fn row_facts(door: DoorFn) -> RowFacts {
+    stated_row(door).unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
-/// A linked row's registry key: its door's Statement `name`, the name its instance is bound under
-/// ([`row_bind`]) and the seal registers its wire under.
-///
-/// # Panics
-///
-/// The build's own door is refused, as [`build`] panics for it.
-#[must_use]
-pub fn name_of(door: DoorFn) -> &'static str {
-    stated_of(door).name
-}
-
-/// The layers a linked row's door declares, read off its tail's `composes_over` (empty: no
-/// transport names another, ARCHITECT Q128 U7).
-///
-/// # Panics
-///
-/// The build's own door is refused, as [`build`] panics for it.
-#[must_use]
-pub fn composes_over_of(door: DoorFn) -> Vec<&'static str> {
-    stated_of(door).composes_over
-}
-
-/// Every scheme a linked row's door claims, read off the door's Statement (ONE ENTRY PER PLUGIN:
-/// the schemes are its claims). The seal registers each under its own key.
+/// Every scheme a linked row's door claims, its own first, read off the door's Statement (ONE ENTRY
+/// PER PLUGIN: the schemes are its claims). The seal registers each under its own key.
 ///
 /// # Panics
 ///
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
 pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
-    stated_of(door).claims
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.claims)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
 /// The auth points a linked row's door offers, read off its Statement's `extensions`
@@ -469,7 +531,9 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
 pub fn offered_of(door: DoorFn) -> busbar_contract::abi::auth::AuthPoints {
-    stated_of(door).offered
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.offered)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
 /// The auth points a row that states no record offers (a row off the door axis states none).
@@ -486,7 +550,9 @@ pub fn offers_unstated() -> busbar_contract::abi::auth::AuthPoints {
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
 pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
-    stated_of(door).upgrades
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.upgrades)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
 /// The claims a linked row's door opens on their FIRST LINE (their row's `unit0_trigger`), read off
@@ -498,5 +564,7 @@ pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
 /// The build's own door is refused, as [`build`] panics for it.
 #[must_use]
 pub fn lines_of(door: DoorFn) -> Vec<&'static str> {
-    stated_of(door).lines
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.lines)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }

@@ -52,8 +52,9 @@ const TRANSPORT_TAIL_FROZEN: usize = std::mem::offset_of!(TransportTail, fault_r
 /// [`crate::dispatch::Plugin::context`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportFacts {
-    /// The Statement's `name` (interned): the entry's registry key, the name the seal registers it
-    /// under and its instance is labelled with.
+    /// The Statement's `name` (interned): what a LINKED row's key is held to, its own claim
+    /// (`BUSBAR-1.6.0.md` A.2, l.3567: the Statement carries the name; l.3561: a linked row reaches
+    /// the same table a dropped-in one does).
     pub name: &'static str,
     /// `ROLE_CARRIER` | `ROLE_FRAMER`.
     pub role: u32,
@@ -101,7 +102,8 @@ pub struct TransportFacts {
 pub fn stated(
     door_fn: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
-    let st = crate::dispatch::load::statement_of(door_fn).map_err(|e| e.to_string())?;
+    let st = crate::dispatch::load::statement_of(crate::dispatch::load::raw(door_fn))
+        .map_err(|e| e.to_string())?;
     tail_facts(&st)
 }
 
@@ -267,7 +269,8 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
 pub fn linked_facts(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
-    let v = crate::dispatch::load::validate::<Transport>(door).map_err(|e| e.to_string())?;
+    let v = crate::dispatch::load::validate::<Transport>(crate::dispatch::load::raw(door))
+        .map_err(|e| e.to_string())?;
     tail_facts(&v.statement)
 }
 

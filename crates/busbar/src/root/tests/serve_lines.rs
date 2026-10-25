@@ -6,7 +6,7 @@ use crate::root::linked::LinkedTransport;
 
 /// A transport row whose claims are `claims` and whose first-line claims are `lines`, built never.
 fn row(
-    key: fn() -> &'static str,
+    key: crate::root::linked::KeyOf,
     claims: fn() -> Vec<&'static str>,
     lines: fn() -> Vec<&'static str>,
 ) -> LinkedTransport {
