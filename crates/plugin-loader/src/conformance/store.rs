@@ -487,8 +487,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
 
     // ── audit and denylist ──
-    r.line("audit", LEASED, || ans(b.list_audit()));
-    r.line("audit tail 1", LEASED, || ans(b.list_audit_tail(1)));
+    // No 1.5.5 audit row is written (no slot appends one), so both reads are empty lists, which hold
+    // no lease: one crossing each.
+    r.line("audit", 1, || ans(b.list_audit()));
+    r.line("audit tail 1", 1, || ans(b.list_audit_tail(1)));
     r.line("deny x", 1, || ans(b.add_denylist("x", "why")));
     r.line("deny", LEASED, || {
         ans(b.list_denylist().map(|mut v| {
