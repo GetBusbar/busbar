@@ -697,6 +697,9 @@ prost = { workspace = true }
 hex = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
 criterion = { workspace = true }
+# The canary harness (`tests/canary/`) dlopens a dropped-in plugin's cdylib itself to wrap its door
+# in the recording shim; already the loader's dependency.
+libloading = { workspace = true }
 # The contract's `test-seal` (`busbar_contract::plugin::TestKernelSeal`, the one blessed fixture
 # implementor of the SEALED `KernelSeal` trait, #65) for the root's tests — dev-only and
 # feature-gated, so it is absent from every release build. Its user was tests/ws_composed_battery.rs,
@@ -727,6 +730,13 @@ harness = false
 name = "admin_cross_plane"
 path = "tests/admin_cross_plane/main.rs"
 required-features = ["auth-admin-tokens"]
+
+# THE CREDENTIAL CANARY HARNESS (measurement only): it plants canaries
+# through the linked auth rows and the request-log exports, so it needs them linked.
+[[test]]
+name = "canary"
+path = "tests/canary/main.rs"
+required-features = ["auth-admin-tokens", "auth-header", "auth-webhook-signature", "export-file", "export-webhook"]
 
 [[test]]
 name = "traces_stream_both_doors"

@@ -333,6 +333,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "idna_adapter",
+ "libloading",
  "metrics",
  "opentelemetry-proto",
  "prost",
