@@ -386,6 +386,15 @@ impl Inner {
                 .await;
                 let (done, frame, answered_lent) = match ran {
                     Ran::TimedOut { .. } => return Err(Answered::TimedOut),
+                    // The watchdog judged the crossing a breach and quarantined the instance:
+                    // the caller is answered as the plugin's FAULT, now, not when it returns.
+                    Ran::Faulted => {
+                        self.faulted(&plugin);
+                        return Err(Answered::Broken(format!(
+                            "hook '{}' broke the hook kind's contract (FAULT)",
+                            self.name
+                        )));
+                    }
                     Ran::NoTicket => {
                         return Err(Answered::Broken(format!(
                             "hook '{}' could not be called: no ticket",
