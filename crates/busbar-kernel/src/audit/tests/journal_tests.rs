@@ -402,9 +402,9 @@ fn neutral_failed_write_does_not_burn_a_sequence() {
         "the durable write failed, so append must surface it"
     );
     assert_eq!(
-        j.next_seq("acme"),
-        2,
-        "a failed write did NOT burn the sequence"
+        j.len(),
+        0,
+        "a failed write forgets the cached position: the next append reads the store's tail"
     );
 
     store.set_failing(false);
@@ -594,4 +594,47 @@ fn a_forgotten_scope_on_an_uncapped_stream_resumes_from_the_store_not_seq_one() 
     write_neutral(&bare, "acme", b"|one");
     bare.forget("acme");
     assert_eq!(write_neutral(&bare, "acme", b"|again").seq, 1);
+}
+
+/// **A CHAIN ANOTHER NODE ADVANCED IS CONTINUED, NOT FORKED.** Two nodes append to one scope over
+/// one store. The first node's cached position is stale once the second has written; the store
+/// refuses its append (a fork at a used sequence), and the next append must resume from the store's
+/// tail. The chain in the store verifies end to end.
+///
+/// RED while a refused write kept the stale position: the retry wrote the used sequence again and
+/// the stored chain broke (a store that refuses forks refused every append after, until restart).
+#[test]
+fn a_chain_another_node_advanced_is_continued_after_a_refused_write() {
+    let store = Arc::new(MockStore::new());
+    let a: Journal<NeutralRec> = Journal::new(usize::MAX);
+    a.set_sink(store.clone());
+    let b: Journal<NeutralRec> = Journal::new(usize::MAX);
+    b.set_sink(store.clone());
+    write_neutral(&a, "acme", b"|one");
+    // Node b has not seen the scope: it resumes from the store and writes the next sequence.
+    b.forget("acme");
+    assert_eq!(write_neutral(&b, "acme", b"|two").seq, 2);
+    // Node a's cached position is stale; the store refuses its write as a fork.
+    store.set_failing(true);
+    assert!(a
+        .append_scoped(
+            KIND_NEUTRAL,
+            "acme",
+            NeutralInput {
+                content: b"|three".to_vec(),
+            },
+            &neutral_reframe,
+        )
+        .is_err());
+    store.set_failing(false);
+    let three = write_neutral(&a, "acme", b"|three");
+    assert_eq!(three.seq, 3, "node a continued node b's chain");
+    let restored = Journal::<NeutralRec>::new(usize::MAX)
+        .restore_scoped(KIND_NEUTRAL, store.as_ref(), &neutral_reframe)
+        .unwrap();
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "no fork: {:?}",
+        restored.chain_breaks
+    );
 }
