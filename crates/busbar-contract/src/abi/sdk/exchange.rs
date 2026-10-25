@@ -315,7 +315,25 @@ impl Exchange {
     /// # Errors
     /// As [`Exchange::request`].
     pub fn request_sealed(request: Request, sealed: Vec<SealedField>) -> Result<Self, ConnFailure> {
+        Self::request_with(request, sealed, None)
+    }
+
+    /// [`Exchange::request_sealed`] whose body is `body` (a form with sealed values,
+    /// [`FormBody::encoded`](crate::abi::sdk::cred::FormBody::encoded)) in place of the request's
+    /// own.
+    ///
+    /// # Errors
+    /// As [`Exchange::request`].
+    pub fn request_with(
+        request: Request,
+        sealed: Vec<SealedField>,
+        body: Option<crate::abi::sdk::cred::SealedWrite>,
+    ) -> Result<Self, ConnFailure> {
         let mut request = Zeroizing::new(request);
+        if let Some(mut b) = body {
+            request.body.zeroize();
+            request.body = std::mem::take(&mut *b.buf);
+        }
         for (_, name, _) in &sealed {
             if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
                 return Err(ConnFailure::Refused(format!(

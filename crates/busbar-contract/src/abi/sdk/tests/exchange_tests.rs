@@ -1063,3 +1063,29 @@ fn sealed_fields_go_in_at_their_place_and_never_read_back() {
     assert!(head.contains("authorization: Bearer sk-CANARY"), "{head}");
     assert!(head.contains("x-api-key: sk-CANARY"), "{head}");
 }
+
+#[test]
+fn a_sealed_body_replaces_the_requests_own() {
+    use crate::abi::sdk::cred::{Cred, FormBody};
+    let secret = Cred::captured(zeroize::Zeroizing::new(b"s3c".to_vec()));
+    let body = FormBody::new()
+        .public("grant_type", "authorization_code")
+        .sealed("client_secret", &secret)
+        .encoded()
+        .expect("encodes");
+    let r = Request {
+        method: b"POST".to_vec(),
+        target: b"/token".to_vec(),
+        fields: vec![],
+        body: b"ignored".to_vec(),
+        timeout_ms: 0,
+    };
+    let ex = Exchange::request_with(r, Vec::new(), Some(body)).expect("frames");
+    let Sending::Framed { body, .. } = &ex.sending else {
+        panic!("framed")
+    };
+    assert_eq!(
+        &body[..],
+        b"grant_type=authorization_code&client_secret=s3c"
+    );
+}
