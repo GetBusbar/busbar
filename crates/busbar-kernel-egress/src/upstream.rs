@@ -51,7 +51,6 @@ pub fn set_max_upstream_buffered_bytes(bytes: usize) {
 /// contract's, which a plane reads.
 pub use busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT;
 
-
 /// Process-global egress translate-body cap (bytes). Seeded to the historical default so an
 /// UNINSTALLED read (unit tests, pre-boot) is byte-identical to core's
 /// `limits::translate_body_max_bytes()` fallback; core's `limits::install`/`InstallGuard` overwrite it
