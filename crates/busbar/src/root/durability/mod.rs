@@ -203,6 +203,10 @@ pub use audit::AuditWindowAt;
 mod recovery;
 pub use recovery::{boot_recovery, node_verb_store};
 
+/// The first-party anti-downgrade floor the store keeps per host.
+mod plugin_floor;
+pub use plugin_floor::hold as hold_plugin_floor;
+
 /// The money-book seam: the settling descriptor ([`Settling`], [`PostingStamp`]), what a settlement
 /// left ([`Settled`]), the [`MoneyBook`] trait an exit arm settles through and its one pass-through
 /// impl ([`SharedBook`]). Split out for `structure-lint`; a private child module, as `replay` is, its
