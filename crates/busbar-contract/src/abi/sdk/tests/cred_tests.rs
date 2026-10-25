@@ -74,7 +74,10 @@ fn a_settings_error_names_the_path() {
         .err()
         .expect("error");
     assert_eq!(e.path(), "port");
-    assert!(e.to_string().contains("expected u16"), "{e}");
+    assert_eq!(
+        e.to_string(),
+        "settings: invalid type: string \"***\", expected u16"
+    );
     let e = settings::<Settings>(br#"{"dsn":"x","name":"n"}"#)
         .err()
         .expect("error");

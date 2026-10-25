@@ -41,34 +41,52 @@ impl SettingsError {
     }
 }
 
+/// `settings: ` and serde's own words, every value in them written `***` ([`SettingsError::path`]
+/// names where).
 impl fmt::Display for SettingsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.path.is_empty() {
-            write!(f, "settings: {}", self.what)
-        } else {
-            write!(f, "settings.{}: {}", self.path, self.what)
-        }
+        write!(f, "settings: {}", self.what)
     }
 }
 
 impl std::error::Error for SettingsError {}
 
+/// serde's `Unexpected` words with the value written `***`.
 fn kind(u: &Unexpected<'_>) -> &'static str {
     match u {
-        Unexpected::Bool(_) => "a boolean",
-        Unexpected::Unsigned(_) | Unexpected::Signed(_) => "an integer",
-        Unexpected::Float(_) => "a number",
-        Unexpected::Char(_) | Unexpected::Str(_) => "a string",
-        Unexpected::Bytes(_) => "bytes",
-        Unexpected::Unit | Unexpected::Option => "null",
-        Unexpected::NewtypeStruct | Unexpected::NewtypeVariant => "a value",
-        Unexpected::Seq => "a list",
-        Unexpected::Map => "a map",
-        Unexpected::Enum
-        | Unexpected::UnitVariant
-        | Unexpected::TupleVariant
-        | Unexpected::StructVariant => "a variant",
+        Unexpected::Bool(_) => "boolean `***`",
+        Unexpected::Unsigned(_) | Unexpected::Signed(_) => "integer `***`",
+        Unexpected::Float(_) => "floating point `***`",
+        Unexpected::Char(_) => "character `***`",
+        Unexpected::Str(_) => "string \"***\"",
+        Unexpected::Bytes(_) => "byte array",
+        Unexpected::Unit => "unit value",
+        Unexpected::Option => "Option value",
+        Unexpected::NewtypeStruct => "newtype struct",
+        Unexpected::Seq => "sequence",
+        Unexpected::Map => "map",
+        Unexpected::Enum => "enum",
+        Unexpected::UnitVariant => "unit variant",
+        Unexpected::NewtypeVariant => "newtype variant",
+        Unexpected::TupleVariant => "tuple variant",
+        Unexpected::StructVariant => "struct variant",
         Unexpected::Other(_) => "a value",
+    }
+}
+
+/// serde's `one of` list.
+fn one_of(names: &'static [&'static str]) -> String {
+    match names {
+        [] => "there are no fields".to_owned(),
+        [one] => format!("expected `{one}`"),
+        [a, b] => format!("expected `{a}` or `{b}`"),
+        many => format!(
+            "expected one of {}",
+            many.iter()
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -86,10 +104,10 @@ impl de::Error for SettingsError {
         Self::new(format!("invalid length {len}, expected {exp}"))
     }
     fn unknown_variant(_: &str, expected: &'static [&'static str]) -> Self {
-        Self::new(format!("unknown variant, expected one of {expected:?}"))
+        Self::new(format!("unknown variant `***`, {}", one_of(expected)))
     }
-    fn unknown_field(field: &str, _: &'static [&'static str]) -> Self {
-        Self::new(format!("unknown field `{field}`"))
+    fn unknown_field(field: &str, expected: &'static [&'static str]) -> Self {
+        Self::new(format!("unknown field `{field}`, {}", one_of(expected)))
     }
     fn missing_field(field: &'static str) -> Self {
         Self::new(format!("missing field `{field}`"))
