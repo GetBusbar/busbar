@@ -103,8 +103,15 @@ impl Future for Sleep {
         due.seq += 1;
         let seq = due.seq;
         due.wakers.insert((self.at, seq), cx.waker().clone());
+        // The clock sleeps until its earliest entry: only a new earliest one moves that.
+        let earliest = due
+            .wakers
+            .first_key_value()
+            .is_some_and(|(k, _)| *k == (self.at, seq));
         drop(due);
-        c.changed.notify_one();
+        if earliest {
+            c.changed.notify_one();
+        }
         self.armed = Some((seq, cx.waker().clone()));
         Poll::Pending
     }

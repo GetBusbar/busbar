@@ -895,3 +895,262 @@ async fn a_dropped_call_on_a_waiting_hook_gives_its_unit_back() {
         "the dropped op gives its unit back"
     );
 }
+
+/// The live plugin of `h`.
+fn live(
+    h: &super::HookInstance,
+) -> Arc<crate::dispatch::Plugin<crate::dispatch::kinds::hook::Hook>> {
+    match &*h.inner.lock() {
+        super::State::Live(p) => Arc::clone(p),
+        _ => panic!("the instance is live"),
+    }
+}
+
+/// THE LATCHED WAKE (round 3 B1): a hook that wakes its own ticket inside the crossing that answers
+/// PENDING is resumed at once, never left to its deadline.
+#[tokio::test]
+async fn a_hook_woken_inside_the_crossing_that_pends_is_resumed_at_once() {
+    use busbar_contract::hook_calls::HookCalls;
+    let h = opened(br#"{"reject_over_messages": 3, "wake_self": true}"#);
+    let started = std::time::Instant::now();
+    let answered = h.decide(frame(2), Duration::from_secs(3)).await;
+    assert!(
+        matches!(
+            answered,
+            Answered::Answer {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
+                ..
+            }
+        ),
+        "the woken hook answers: {}",
+        decided(2, &answered)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "resumed at once, not at the deadline: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A hook woken later by its own thread is resumed then and answers.
+#[tokio::test]
+async fn a_hook_woken_later_is_resumed_and_answers() {
+    use busbar_contract::hook_calls::HookCalls;
+    let h = opened(br#"{"reject_over_messages": 3, "wake_in_ms": 50}"#);
+    let answered = h.decide(frame(5), Duration::from_secs(3)).await;
+    assert!(
+        matches!(
+            answered,
+            Answered::Answer {
+                outcome: busbar_contract::abi::mechanism::call::Outcome::Ready,
+                ..
+            }
+        ),
+        "the woken hook answers: {}",
+        decided(5, &answered)
+    );
+}
+
+/// THE FAULTED INSTANCE IS NEVER ENTERED AGAIN (round 3 B2): a pending hook woken after the
+/// watchdog faulted its instance is answered FAULT without a crossing.
+#[tokio::test]
+async fn a_pending_hook_woken_after_its_instance_faulted_never_crosses_again() {
+    use busbar_contract::hook_calls::HookCalls;
+    use hook_door_plugin::RESUMES;
+    use std::sync::atomic::Ordering;
+    let h = opened(br#"{"reject_over_messages": 3, "wake_in_ms": 300}"#);
+    let plugin = live(&h);
+    let call = {
+        let h = Arc::clone(&h);
+        tokio::spawn(async move {
+            let a = h.decide(frame(2), Duration::from_secs(3)).await;
+            matches!(a, Answered::Broken(_))
+                .then(String::new)
+                .unwrap_or_else(|| decided(2, &a))
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let resumes = RESUMES.load(Ordering::SeqCst);
+    plugin.fault_for_tests();
+    let answered = call.await.expect("the call ends");
+    assert!(
+        answered.is_empty(),
+        "a faulted instance's pending op answers FAULT: {answered}"
+    );
+    assert_eq!(
+        RESUMES.load(Ordering::SeqCst),
+        resumes,
+        "no resume crossed into the faulted instance"
+    );
+}
+
+/// A pending hook cut at its deadline has its `cancel` crossed: the wait it parked is dropped.
+#[tokio::test]
+async fn a_pending_hook_cut_at_its_deadline_is_cancelled_in_the_plugin() {
+    use busbar_contract::hook_calls::HookCalls;
+    use hook_door_plugin::CANCELLED_WAITS;
+    use std::sync::atomic::Ordering;
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true}"#);
+    let before = CANCELLED_WAITS.load(Ordering::SeqCst);
+    let answered = h.decide(frame(2), Duration::from_millis(100)).await;
+    assert!(matches!(answered, Answered::TimedOut));
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while CANCELLED_WAITS.load(Ordering::SeqCst) == before && std::time::Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        CANCELLED_WAITS.load(Ordering::SeqCst) > before,
+        "the cancel crossed and dropped the parked wait"
+    );
+}
+
+/// UNITS BEFORE THE ANSWER (round 3 M2): an op's `max_inflight` units are free once its crossing
+/// answered, before its caller is even polled again.
+#[test]
+fn an_answered_op_frees_its_units_before_its_caller_is_polled() {
+    use busbar_contract::hook_calls::HookCalls;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let _entered = rt.enter();
+    let h = opened(br#"{"reject_over_messages": 3}"#);
+    let mut call = h.decide(frame(2), BUDGET);
+    let waker = futures::task::noop_waker();
+    let mut cx = std::task::Context::from_waker(&waker);
+    assert!(
+        call.as_mut().poll(&mut cx).is_pending(),
+        "the crossing runs on a plugin thread"
+    );
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while held_units(&h) != 0 && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        held_units(&h),
+        0,
+        "the answered op's unit is free before its caller is polled"
+    );
+}
+
+/// A HOST PANIC INSIDE A CROSSING (round 3 M3) ends the op as FAULT and wakes its caller, who would
+/// otherwise wait for an answer forever (an op that does not leave at its deadline).
+#[tokio::test]
+async fn a_host_panic_inside_a_crossing_answers_fault_and_frees_the_op() {
+    use crate::dispatch::call::{self, Opts, Ran, PANIC_IN_RUN_FOR};
+    use crate::dispatch::Frame;
+    use busbar_contract::abi::hook::slot;
+    use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
+    use std::sync::atomic::Ordering;
+    let h = opened(br#"{"reject_over_messages": 3}"#);
+    let plugin = live(&h);
+    let f = frame(2);
+    PANIC_IN_RUN_FOR.store(Arc::as_ptr(&plugin) as usize, Ordering::SeqCst);
+    let ran = tokio::time::timeout(
+        Duration::from_secs(3),
+        call::call(
+            &plugin,
+            slot::DECIDE,
+            Frame::new(
+                f.input(),
+                super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
+            ),
+            Arc::clone(&f) as crate::dispatch::Lent,
+            Opts {
+                class: DeadlineClass::Call,
+                deadline: std::time::Instant::now() + Duration::from_secs(60),
+                watch: Duration::ZERO,
+                leave: false,
+            },
+            &mut |_| None,
+        ),
+    )
+    .await;
+    PANIC_IN_RUN_FOR.store(0, Ordering::SeqCst);
+    let ran = ran.expect("the caller is woken, not left waiting");
+    assert!(
+        matches!(&ran, Ran::Answered { called, .. } if called.outcome == Outcome::Fault),
+        "a host panic answers FAULT: {ran:?}"
+    );
+    assert_eq!(units_come_back(&h).await, 0);
+}
+
+/// THE DEADLINE RIDES THE HEAD (round 3 M1): every crossing's `InHead.deadline_ns` states the op's
+/// deadline.
+#[tokio::test]
+async fn a_hook_crossing_carries_its_deadline_in_its_head() {
+    use busbar_contract::hook_calls::HookCalls;
+    use hook_door_plugin::LAST_DEADLINE_NS;
+    use std::sync::atomic::Ordering;
+    let h = opened(br#"{"reject_over_messages": 3}"#);
+    LAST_DEADLINE_NS.store(0, Ordering::SeqCst);
+    let now = crate::dispatch::now_ns();
+    let _ = h.decide(frame(2), Duration::from_secs(2)).await;
+    let stamped = LAST_DEADLINE_NS.load(Ordering::SeqCst);
+    assert!(
+        stamped > now && stamped <= now + 3_000_000_000,
+        "the head states the deadline: {stamped} (now {now})"
+    );
+}
+
+/// THE CANCEL'S ANSWER COMES BACK (round 3 M4): a caller that waits out its deadline is answered
+/// with what the op's `cancel` said.
+#[tokio::test]
+async fn a_caller_that_waits_out_its_deadline_reads_the_cancels_answer() {
+    use crate::dispatch::call::{self, Opts, Ran};
+    use crate::dispatch::Frame;
+    use busbar_contract::abi::hook::slot;
+    use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true}"#);
+    let plugin = live(&h);
+    let f = frame(2);
+    let ran = call::call(
+        &plugin,
+        slot::DECIDE,
+        Frame::new(
+            f.input(),
+            super::blank_out::<busbar_contract::abi::hook::DecideOut>(),
+        ),
+        Arc::clone(&f) as crate::dispatch::Lent,
+        Opts {
+            class: DeadlineClass::Call,
+            deadline: std::time::Instant::now() + Duration::from_millis(100),
+            watch: Duration::ZERO,
+            leave: false,
+        },
+        &mut |_| None,
+    )
+    .await;
+    assert!(
+        matches!(&ran, Ran::TimedOut { cancelled: Some(c) } if c.outcome == Outcome::Ready),
+        "the cancel answered READY and the caller read it: {ran:?}"
+    );
+    assert_eq!(units_come_back(&h).await, 0);
+}
+
+/// A RELOAD DRAIN SEES IT (round 3 M5): a pending hook op counts in its instance's `drainable`
+/// until it ends.
+#[tokio::test]
+async fn a_pending_hook_op_counts_for_a_reload_drain_until_it_ends() {
+    use busbar_contract::hook_calls::HookCalls;
+    let h = opened(br#"{"reject_over_messages": 3, "pend": true}"#);
+    let plugin = live(&h);
+    let call = {
+        let h = Arc::clone(&h);
+        tokio::spawn(async move {
+            let _ = h.decide(frame(2), Duration::from_millis(300)).await;
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        plugin.drainable_for_tests(),
+        1,
+        "the pending op is drainable"
+    );
+    call.await.expect("the call ends");
+    let until = std::time::Instant::now() + Duration::from_secs(3);
+    while plugin.drainable_for_tests() != 0 && std::time::Instant::now() < until {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(plugin.drainable_for_tests(), 0, "an ended op is not");
+}

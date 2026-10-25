@@ -58,9 +58,29 @@ pub const REJECT_STATUS: u16 = 429;
 pub const MAX_INFLIGHT: u32 = 8;
 
 /// The instance: the most messages a request may carry before it is rejected, how long its
-/// `decide` sleeps first, the session whose requests it rejects, if any, and whether its `decide`
-/// waits forever (answers PENDING and never wakes).
-pub struct Gate(u64, u64, Option<Vec<u8>>, bool);
+/// `decide` sleeps first, the session whose requests it rejects, if any, whether its `decide`
+/// waits forever (answers PENDING and never wakes), whether it wakes its own ticket inside the
+/// crossing that answers PENDING, and after how many milliseconds a thread of its own wakes it
+/// (`0`: none). A woken `decide` answers as an unwaiting one does.
+pub struct Gate(u64, u64, Option<Vec<u8>>, bool, bool, u64);
+
+/// How many `decide` resumes (`FLAG_RESUME` entries) every instance of this image has seen.
+pub static RESUMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The `deadline_ns` the last `decide` entry's head carried.
+pub static LAST_DEADLINE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many parked waits every instance of this image has had dropped (a `cancel` clears them).
+pub static CANCELLED_WAITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// What a waiting `decide` parks: its drop is counted.
+struct Waiting;
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        CANCELLED_WAITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 impl Life for Gate {
     const CANCEL: u32 = cancel::ABORTED;
@@ -97,7 +117,15 @@ impl Gate {
             .get("pend")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
-        Ok(Gate(over, sleep_ms, session, pend))
+        let wake_self = settings
+            .get("wake_self")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let wake_in_ms = settings
+            .get("wake_in_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        Ok(Gate(over, sleep_ms, session, pend, wake_self, wake_in_ms))
     }
 }
 
@@ -118,7 +146,26 @@ impl SafeSlot for Decide {
             return Outcome::Refused;
         };
         let gate = held.life();
+        LAST_DEADLINE_NS.store(input.head.deadline_ns, std::sync::atomic::Ordering::SeqCst);
         if gate.3 {
+            instance.park(Waiting);
+            return Outcome::Pending;
+        }
+        if instance.resuming() {
+            RESUMES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        } else if gate.4 || gate.5 > 0 {
+            let (Some(host), ticket) = (held.host().copied(), instance.ticket()) else {
+                return Outcome::Refused;
+            };
+            if gate.4 {
+                host.wake(ticket);
+            } else {
+                let ms = gate.5;
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    host.wake(ticket);
+                });
+            }
             return Outcome::Pending;
         }
         if gate.1 > 0 {
