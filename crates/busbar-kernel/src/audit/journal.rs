@@ -398,8 +398,10 @@ impl<R: ChainedRecord> Journal<R> {
     /// cached position and to commit the new one: the resume read and the durable write cross the
     /// store with no host lock held. The claim is what keeps two appends to one scope from minting
     /// the same sequence; waiting for it is bounded ([`CLAIM_WAIT`]), and a refused claim fails the
-    /// append before anything is minted. A failed write commits nothing, so the next append reuses
-    /// the sequence.
+    /// append before anything is minted. A failed write commits nothing and FORGETS the scope's
+    /// cached position, so the next append resumes from the store's tail: the sequence is reused
+    /// when nothing else wrote, and a chain another node of the fleet advanced is continued rather
+    /// than refused as a fork on every append after.
     /// The scope may be evicted or forgotten while its write is in flight; the commit then puts the
     /// durable tail back as the most-recently-used position, the same position a resume would read.
     fn append_with(
@@ -418,9 +420,10 @@ impl<R: ChainedRecord> Journal<R> {
         let record = candidate.append(scope, input);
         if let Some(store) = self.sink() {
             let envelope = envelope(&record).map_err(JournalError::Store)?;
-            store
-                .append_plane_record(envelope.view())
-                .map_err(JournalError::Store)?;
+            if let Err(e) = store.append_plane_record(envelope.view()) {
+                self.forget(scope);
+                return Err(JournalError::Store(e));
+            }
         }
         self.commit(scope, candidate);
         Ok(record)

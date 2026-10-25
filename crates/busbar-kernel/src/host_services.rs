@@ -525,6 +525,9 @@ pub enum AdmitRefused {
         /// The declaration's framing word.
         framing: u32,
     },
+    /// The store could not be read for the demotions and the operator's trust decisions this
+    /// instance's trust stands on.
+    TrustUnread(String),
 }
 
 impl std::fmt::Display for AdmitRefused {
@@ -549,11 +552,26 @@ impl std::fmt::Display for AdmitRefused {
                 "the instance declares chained record kind {kind} with framing {framing}, which \
                  this host cannot chain: a declared chain is kept, never dropped to plain records"
             ),
+            Self::TrustUnread(why) => write!(
+                f,
+                "{why}; the instance is not admitted over trust it cannot read"
+            ),
         }
     }
 }
 
 impl std::error::Error for AdmitRefused {}
+
+/// The admit refusal for trust records the store would not hand back, reported where it happens.
+fn trust_unread(why: String) -> AdmitRefused {
+    crate::diagnostics::diag_error!(
+        crate::diagnostics::PLANE_DEMOTIONS_UNREAD,
+        error = %why,
+        "the durable trust records could NOT be read: the plane instance is refused rather than \
+         re-open a demoted upstream or stand over an operator's revoke"
+    );
+    AdmitRefused::TrustUnread(why)
+}
 
 /// The stores the records services reach.
 struct Records {
@@ -929,10 +947,15 @@ impl KernelServices {
             }
         }
         let key: Arc<str> = Arc::from(instance);
-        let (rows, default) = self.demotions.get().map_or_else(
-            || (Vec::new(), false),
-            |d| (d.record.list(), *d.default_instance == *instance),
-        );
+        // An unreadable trust record refuses the admit: re-opening an upstream this deployment
+        // demoted, or standing over a revoke the operator made, is not a degraded mode.
+        let (rows, default) = match self.demotions.get() {
+            Some(d) => (
+                d.record.read().map_err(trust_unread)?,
+                *d.default_instance == *instance,
+            ),
+            None => (Vec::new(), false),
+        };
         // The operator's kept trust decisions replay at the instance's FIRST admit only: a re-admit
         // keeps them in its state, and one whose declared pin changed is the operator's re-approval.
         // NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): the read is a store-plugin
@@ -940,13 +963,9 @@ impl KernelServices {
         // removed, so a label seen admitted here is still admitted under the lock below; one seen
         // absent is judged again there, and a racing first admit that won keeps its own replay.
         let first = !self.lock_instances().contains_key(instance);
-        let decided = if first {
-            self.demotions
-                .get()
-                .map(|d| d.record.decisions())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
+        let decided = match self.demotions.get() {
+            Some(d) if first => d.record.decisions().map_err(trust_unread)?,
+            _ => Vec::new(),
         };
         let mut instances = self.lock_instances();
         let decided = if instances.contains_key(instance) {

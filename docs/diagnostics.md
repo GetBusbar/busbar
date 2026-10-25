@@ -1719,7 +1719,7 @@ The durable plane demotion record for an upstream could NOT be cleared even thou
 - **Since:** 1.6.0
 - **Slug:** `plane-demotions-unread`
 
-The durable plane demotion records could NOT be read at boot, so any upstream this deployment had demoted is re-opened until the first sweep looks again. Usually a durable store-read outage.
+The durable plane demotion records or the operator's trust decisions could NOT be read when a plane instance was admitted, so the instance was refused rather than re-open an upstream this deployment demoted or stand over a revoke it cannot see. Usually a durable store-read outage.
 
 **What to do:** Restore the durable governance store's read path and restart so persisted demotions are re-applied before a listener binds.
 
