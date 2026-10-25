@@ -320,7 +320,7 @@ struct CredVisitor;
 impl<'de> Visitor<'de> for CredVisitor {
     type Value = Cred;
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("a credential string")
+        f.write_str("a string")
     }
     fn visit_str<E: de::Error>(self, s: &str) -> Result<Cred, E> {
         Ok(Cred::from_bytes(Zeroizing::new(s.as_bytes().to_vec())))
@@ -341,7 +341,7 @@ struct CredUrlVisitor;
 impl<'de> Visitor<'de> for CredUrlVisitor {
     type Value = CredUrl;
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("a URL or connection string")
+        f.write_str("a string")
     }
     fn visit_str<E: de::Error>(self, s: &str) -> Result<CredUrl, E> {
         CredUrl::split(s).map_err(|why| E::invalid_value(Unexpected::Other("a string"), &why))
@@ -363,7 +363,7 @@ struct UserinfoUrlVisitor;
 impl<'de> Visitor<'de> for UserinfoUrlVisitor {
     type Value = UserinfoUrl;
     fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("a URL")
+        f.write_str("a string")
     }
     fn visit_str<E: de::Error>(self, s: &str) -> Result<UserinfoUrl, E> {
         CredUrl::parse_userinfo(s)
