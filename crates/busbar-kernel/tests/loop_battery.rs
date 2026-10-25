@@ -591,7 +591,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
 /// A `?` in a function that is holding a reservation is a path where the hold is dropped instead of
 /// settled. This reads the source and says so.
 ///
-/// THE SCAN READS TOKENS, NOT SPELLINGS. It searched for `"return "` with a
+/// THE SCAN READS TOKENS, NOT SPELLINGS (TODO l.3055 #286). It searched for `"return "` with a
 /// trailing space and for `"?;"`, so the bare `return;` that sat in `draw_lease` and every `?.`,
 /// `?)`, `?,` were invisible and the cell was green over the defect it names. It now blanks comments
 /// and string/char literals and looks for the `return` KEYWORD and the `?` OPERATOR wherever they

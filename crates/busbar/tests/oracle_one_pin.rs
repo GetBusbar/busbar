@@ -3,7 +3,8 @@
 //! ONE ORACLE, ONE PIN: the shadow oracle is the Rust `busbar-oracle` engine named by
 //! `testing/shadow-oracle/oracle-rust.pin`, and its `mock` subcommand is the one upstream far end.
 //! A second pin file or a Python mock upstream reappearing means two judges (or two far ends) can
-//! drift, so either one fails here.
+//! drift, so either one fails here (docs/design/1.6.0-TODO.md, the stock-take defect "oracle.pin and
+//! the mock-upstream Python path").
 
 use std::path::{Path, PathBuf};
 
