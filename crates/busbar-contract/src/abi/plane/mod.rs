@@ -1036,8 +1036,8 @@ pub const fn nothing_sent(reason: u32) -> bool {
 /// 237-305`: rate 429 `rate_limit_error`, budget 429 `insufficient_quota`, frozen group 403
 /// `permission_error`), and none becomes a 500.
 ///
-/// So the reason-to-class grouping lives ONCE, in the reason table, and a plane holds only a class-to-wire table:
-/// its own codes and words. The grouping follows the one plane 1.5.5 shipped (owner correction
+/// So the reason-to-class grouping lives ONCE, in the reason table, and a plane holds only a
+/// class-to-wire table: its own codes and words. The grouping follows the one plane 1.5.5 shipped (owner correction
 /// 2026-09-28): each class has one kernel default status, and that default plus that plane's stated
 /// per-reason rows reproduce every status it answered, byte for byte, against the 1.5.5 golden
 /// cells.
