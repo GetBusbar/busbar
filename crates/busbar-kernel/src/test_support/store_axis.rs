@@ -148,7 +148,8 @@ impl<S: StoreSlots> SlotStore<S> {
         }
     }
 
-    /// An `op_id`-carrying write: a conflict is [`StoreFailure::Conflict`], a refusal's text FAILED.
+    /// An `op_id`-carrying write: a conflict is [`StoreFailure::Conflict`], a failure's text FAILED,
+    /// a refusal's text REFUSED (S5).
     fn op<T: Send>(
         &self,
         slot: impl FnOnce(&S, &mut Op<'_>) -> Step<OpResult<T>> + Send,
@@ -156,6 +157,7 @@ impl<S: StoreSlots> SlotStore<S> {
         self.call(slot)?.map_err(|e| match e {
             OpRefused::Conflict => StoreFailure::Conflict,
             OpRefused::Failed(text) => StoreFailure::Failed(text),
+            OpRefused::Refused(text) => StoreFailure::Refused(text),
         })
     }
 
