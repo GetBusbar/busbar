@@ -2463,9 +2463,9 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
     assert_eq!(caps.len(), 3, "one entry per NAMED provider: {caps:?}");
 }
 
-/// THE ROOT'S RULES RUN FIRST (`appbuild::RootRules`, passed to the build): a configuration the
-/// rules refuse is refused by the build itself, with the rules' words, before anything of it is
-/// built or installed, so an apply carrying it never reaches a swap; one they pass builds as before,
+/// THE ROOT'S RULES JUDGE EVERY BUILD (`appbuild::RootRules`, passed to the build and run by the one
+/// validator right after the semantic pass): a configuration the rules refuse is refused by the
+/// build itself, with the rules' words, before anything of it is built or installed, so an apply carrying it never reaches a swap; one they pass builds as before,
 /// and the built `App` keeps the rules it was built under, for every build after it to pass on.
 /// RED before the fix: the build had no root rules, so a configuration only the root could judge
 /// went live through an apply.

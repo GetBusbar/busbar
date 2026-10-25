@@ -691,7 +691,9 @@ pub fn build_app_from_config(
     // (`AppHandle::swap` / `InstalledLimits::keep` publish them). BUSBAR-1.6.0.md THE DESIGN §6 item
     // 8: a reload "swaps them in atomically ... and is refused, leaving the running generation
     // serving, if any check fails" — so a build refused at ANY subsequent step (plugin fetch, pre-flight,
-    // secret refs, store open, the root's persist) never had its limits in force anywhere.
+    // secret refs, store open, the root's persist) never had its limits in force anywhere. The
+    // semantic pass and the root's rules (the one validator below) run inside this scope too;
+    // neither reads `limits::installed()`, so entering it first changes nothing they decide.
     let _limits_scope = busbar_kernel::config::limits::BuildScope::enter(&cfg.limits);
     // The resolved `export:` block drives the built-in exporters' plugin-route table below. Captured
     // before `cfg`'s fields are consumed by the `App` struct literal.
