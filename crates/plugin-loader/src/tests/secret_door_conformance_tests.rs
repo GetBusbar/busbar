@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`kind: secret`, BOTH WAYS, THROUGH THE ONE DISPATCHER** (TODO ABI-b4; M6/contract). The
+//! **`kind: secret`, BOTH WAYS, THROUGH THE ONE DISPATCHER**. The
 //! secret kind's REAL plugin (the env source, from its own repo, reached by KIND through
 //! `[package.metadata.busbar.both-ways]`) is loaded LINKED (the logic crate's door, compiled into this build) and
 //! DROPPED IN (its `cdylib`, built from the same crate and `dlopen`ed) and driven over one script of
