@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE SHIPPED BINARY DELIVERS ITS SPANS TO AN OTLP COLLECTOR** (owner answer Q75: OTLP export
+//! **THE SHIPPED BINARY DELIVERS ITS SPANS TO AN OTLP COLLECTOR** (OTLP export
 //! never delivered in 1.5.5 — every batch's export thread panicked, "there is no reactor running",
 //! and shutdown printed "OTLP tracer shutdown failed" — and 1.6.0 fixes it as a bug fix).
 //!
@@ -301,7 +301,7 @@ fn unsafe_free_sigterm(pid: u32) {
         .status();
 }
 
-// ── status row 173: the request path's spans, as 1.5.5 named them ─────────────────────────────────
+// ── the request path's spans, as 1.5.5 named them ─────────────────────────────────
 
 /// One request of the fixture: the entry span it opens and the fields that span records, the
 /// `ingress` its `forward` carries, the head fields it adds, its path and its body.
@@ -384,8 +384,7 @@ fn under(spans: &[Span], span: &Span, names: &[&str]) -> bool {
     })
 }
 
-/// **THE REQUEST PATH'S SPANS REACH THE OTLP COLLECTOR AS 1.5.5 NAMED THEM** (status row 173;
-/// v1.5.5 `docs/observability.md` l.162-174). 1.5.5 opened, at the hot-path level (DEBUG, the OTLP
+/// **THE REQUEST PATH'S SPANS REACH THE OTLP COLLECTOR AS 1.5.5 NAMED THEM**. 1.5.5 opened, at the hot-path level (DEBUG, the OTLP
 /// floor), an ingress entry span with no field, chosen by the request's head fields first and its
 /// path's shape then (v1.5.5 `proto/detect.rs`), and beneath it, for a request it dispatched, the
 /// unit's `forward` span carrying `pool`, `ingress` and `op` (v1.5.5 `proxy/engine/mod.rs:120`).

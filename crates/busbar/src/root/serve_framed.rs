@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A STREAM FRAMED BY ITS CLAIM'S FRAMER, on the data listener (ARCHITECT 4l, 2026-10-05).
+//! A STREAM FRAMED BY ITS CLAIM'S FRAMER, on the data listener.
 //!
 //! One listener port carries every claim's streams, so the data listener's own framer keeps the
 //! connection and each stream's head. A door plane's claim whose carrier another framer answers
@@ -28,8 +28,7 @@ use tokio::sync::oneshot;
 use super::{refusal_status, stated, IngressCaller, Stated};
 
 /// The framer that frames a stream on `carrier`, where one does: the framer answering it, when its
-/// own claim rows state that `carrier` rides a stream (an upgrade or a session, `DoorFacts::duplex`;
-/// ARCHITECT ruling Q128 U7). A claim stating neither is a request and its answer, served on the
+/// own claim rows state that `carrier` rides a stream. A claim stating neither is a request and its answer, served on the
 /// data listener's own route, which frames the connection already. Judged per claim from the
 /// Statement, never by a transport's name.
 pub(super) fn stream_framer(

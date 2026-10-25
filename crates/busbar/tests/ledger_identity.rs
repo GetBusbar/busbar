@@ -273,9 +273,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         serde_json::from_slice(&first).expect("the usage response is JSON");
 
     // PB-16, the additive half: the legacy response carries the 1.5.5 shape and nothing the ledger
-    // put there, but the ONE member the owner ruled onto it: `rate_card_version` (Q93, OWNER ANSWERS
-    // 2026-09-27, option A: "serve the rate-card version on the usage and audit responses as an
-    // `additive` register entry"; accepted difference `Q93 ...`). Checked as a key set rather than
+    // put there, but the ONE member the owner ruled onto it: `rate_card_version` . Checked as a key set rather than
     // by eye, because an additive field is exactly the kind of change that reads as harmless in a
     // diff and breaks somebody's export script.
     let top: Vec<&str> = usage
@@ -954,8 +952,8 @@ fn oracle_shim() -> PathBuf {
 /// the same two budget groups, the same priced card, and the same unused pool the out-of-scope key
 /// is confined to. A flat fee is added, for the reason `FEE_CENTS` gives.
 /// Every open class the fallback plane (the one the `models:` lane falls through to) declares, at 0
-/// (owner LEDGER-100: each reported count is a declared class, and a present card configures every
-/// one, Q29/Q35), read off the plane's own declaration so the card follows it; the plane is found
+/// (each reported count is a declared class, and a present card configures every
+/// one), read off the plane's own declaration so the card follows it; the plane is found
 /// on the linked rows by its `fallback` flag, never by name.
 fn free_open_units() -> String {
     let fallback = linked::planes()

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE TWO WELL-KNOWN SCRAPE ROUTES ACROSS A RELOAD, AS 1.5.5 ANSWERED THEM** (ARCHITECT
-//! 2026-10-05, Q-U2-4 follow-up). `/metrics` and `/metrics/hooks` are the scrape sink's own routes
-//! now (owner law 2026-09-27: they left core), but the owner law moved their OWNER, not their
+//! **THE TWO WELL-KNOWN SCRAPE ROUTES ACROSS A RELOAD, AS 1.5.5 ANSWERED THEM**. `/metrics` and `/metrics/hooks` are the scrape sink's own routes
+//! now, but that moved their owner, not their
 //! behaviour. Through the shipped binary, booted with a `module: prometheus` instance:
 //!
 //! * a reload that REMOVES the instance (`config.yaml` edited, `POST /api/v1/admin/config/reload`)
@@ -307,7 +306,7 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_metrics_requires_auth_in_chain_mode`
-/// (coverage map v2 row 138). 1.5.5: with a data-plane auth chain configured, `GET /metrics` with
+/// 1.5.5: with a data-plane auth chain configured, `GET /metrics` with
 /// NO credential is refused `401` (the scrape is credential-gated, never exempt), while the same
 /// credential-less client still reaches the declared-open routes: `/healthz` answers with its own
 /// verdict (`200` or `503`, never the chain's `401`) and `GET /auth/token?logout=1` serves its

@@ -4,8 +4,8 @@
 //! THE RESIDUAL ENVELOPE, asserted against the REAL linked planes: a plane claims a path only when
 //! the operator's configuration mounts it.
 //!
-//! MOVED HERE from `crates/busbar-kernel/tests/` (kind-isolation, ARCHITECT: core names zero plane
-//! types, its tests included; the door flip's analogue of 02bcf8300d): the cell needs a
+//! MOVED HERE from `crates/busbar-kernel/tests/` (kind-isolation: core names zero plane
+//! types, its tests included): the cell needs a
 //! plane that mounts a path, and every such plane is now served through its door, which the
 //! composition root links and the kernel does not.
 //!
