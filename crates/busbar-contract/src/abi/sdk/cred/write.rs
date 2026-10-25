@@ -130,6 +130,21 @@ impl SealedWrite {
         Poll::Ready(Ok(()))
     }
 
+    #[cfg(any(test, feature = "test-seal"))]
+    pub(crate) fn drive<E>(
+        &mut self,
+        write: &mut impl FnMut(&[u8]) -> Poll<Result<usize, E>>,
+    ) -> Poll<Result<(), E>> {
+        while !self.finished() {
+            match write(&self.buf[self.done..]) {
+                Poll::Pending | Poll::Ready(Ok(0)) => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(n)) => self.done += n,
+            }
+        }
+        Poll::Ready(Ok(()))
+    }
+
     /// Write it as one request piece on a framed `stream` (`piece`'s spans index these bytes).
     pub fn request(
         &mut self,

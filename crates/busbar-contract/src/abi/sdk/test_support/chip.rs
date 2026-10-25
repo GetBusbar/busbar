@@ -18,3 +18,15 @@ pub fn sealed_bytes(seal: &Seal) -> Vec<u8> {
 pub fn cred(text: &str) -> crate::abi::sdk::cred::Cred {
     crate::abi::sdk::cred::Cred::captured(zeroize::Zeroizing::new(text.as_bytes().to_vec()))
 }
+
+/// Drive `w` over a test's own stand-in for the host's wire: `write` takes bytes and says how many
+/// it took.
+///
+/// # Errors
+/// What `write` answered.
+pub fn drive_sealed<E>(
+    w: &mut crate::abi::sdk::cred::SealedWrite,
+    mut write: impl FnMut(&[u8]) -> std::task::Poll<Result<usize, E>>,
+) -> std::task::Poll<Result<(), E>> {
+    w.drive(&mut write)
+}
