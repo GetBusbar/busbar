@@ -98,6 +98,11 @@ fn url_userinfo_and_query_passwords_are_split_out() {
     let u = split("valkey+unix:///run/v.sock?db=2&pass=s%3Dc+ret");
     assert_eq!(u.public(), "valkey+unix:///run/v.sock?db=2");
     assert_eq!(pw(&u).as_deref(), Some(&b"s=c ret"[..]));
+    assert_eq!(u.password_at(), Some(super::PasswordAt::Query("pass")));
+    assert_eq!(
+        split("redis://:x@h").password_at(),
+        Some(super::PasswordAt::Userinfo)
+    );
 
     let u = split("https://h/path?email=a@b.c");
     assert_eq!(u.public(), "https://h/path?email=a@b.c");

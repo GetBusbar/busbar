@@ -50,7 +50,7 @@ mod write;
 
 use zeroize::{Zeroize, Zeroizing};
 
-pub use form::CredUrl;
+pub use form::{CredUrl, PasswordAt};
 pub use settings::{settings, SettingsError};
 pub use write::{Parts, SealedWrite};
 

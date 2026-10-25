@@ -15,6 +15,18 @@ use super::Cred;
 pub struct CredUrl {
     public: String,
     password: Option<Cred>,
+    at: Option<PasswordAt>,
+}
+
+/// Where in the text the password was written (public: a plugin keeps its own URL rules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordAt {
+    /// `user:password@` in a URL's authority.
+    Userinfo,
+    /// A URL query parameter of this name (`password` or `pass`).
+    Query(&'static str),
+    /// `password=` in a key=value connection string.
+    Keyword,
 }
 
 impl CredUrl {
@@ -26,6 +38,11 @@ impl CredUrl {
     /// The password the text carried, sealed.
     pub fn password(&self) -> Option<&Cred> {
         self.password.as_ref()
+    }
+
+    /// Where the password was written.
+    pub fn password_at(&self) -> Option<PasswordAt> {
+        self.at
     }
 
     /// Split `text` (a URL or connection string the plugin already holds).
@@ -48,16 +65,22 @@ impl CredUrl {
     }
 
     pub(crate) fn split(text: &str) -> Result<Self, &'static str> {
-        let (public, password) = if let Some(i) = text.find("://") {
+        let (public, found) = if let Some(i) = text.find("://") {
             split_url(text, i)?
         } else if looks_keyword(text) {
-            split_keyword(text)?
+            let (p, pw) = split_keyword(text)?;
+            (p, pw.map(|b| (b, PasswordAt::Keyword)))
         } else {
             (text.to_owned(), None)
         };
+        let (password, at) = match found {
+            Some((b, at)) => (Some(Cred::from_bytes(b)), Some(at)),
+            None => (None, None),
+        };
         Ok(Self {
             public,
-            password: password.map(Cred::from_bytes),
+            password,
+            at,
         })
     }
 }
@@ -66,7 +89,10 @@ type Bytes = Zeroizing<Vec<u8>>;
 
 const TWO: &str = "a URL with one password (userinfo or `password=`, not both)";
 
-fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Bytes>), &'static str> {
+fn split_url(
+    text: &str,
+    scheme_end: usize,
+) -> Result<(String, Option<(Bytes, PasswordAt)>), &'static str> {
     let head = &text[..scheme_end + 3];
     let rest = &text[scheme_end + 3..];
     let pre_query = rest.find('?').unwrap_or(rest.len());
@@ -82,7 +108,7 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Bytes>), &
             let userinfo = &rest[..a];
             match userinfo.split_once(':') {
                 Some((user, pass)) => {
-                    password = Some(decode(pass));
+                    password = Some((decode(pass), PasswordAt::Userinfo));
                     if !user.is_empty() {
                         public.push_str(user);
                         public.push('@');
@@ -107,14 +133,15 @@ fn split_url(text: &str, scheme_end: usize) -> Result<(String, Option<Bytes>), &
             };
             let mut kept = Vec::new();
             for pair in fragment_free.split('&') {
-                if let Some(v) = pair
+                let named = pair
                     .strip_prefix("password=")
-                    .or_else(|| pair.strip_prefix("pass="))
-                {
+                    .map(|v| ("password", v))
+                    .or_else(|| pair.strip_prefix("pass=").map(|v| ("pass", v)));
+                if let Some((name, v)) = named {
                     if password.is_some() {
                         return Err(TWO);
                     }
-                    password = Some(decode_form(v));
+                    password = Some((decode_form(v), PasswordAt::Query(name)));
                 } else {
                     kept.push(pair);
                 }
