@@ -46,9 +46,9 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
     check_fee_units, check_metric_lanes, check_on_piece, check_pin_mechanisms, check_project,
-    check_record_chains, check_refusal, check_refusal_records, check_refusal_statuses,
-    check_route_cost, check_sections, check_serve, check_serve_records, check_snapshot, check_tail,
-    check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
+    check_record_chains, check_record_retentions, check_refusal, check_refusal_records,
+    check_refusal_statuses, check_route_cost, check_sections, check_serve, check_serve_records,
+    check_snapshot, check_tail, check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
@@ -262,6 +262,13 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     // load rather than reaching the host as a declaration it cannot keep.
     check_record_chains(
         &listed(tail.record_chains, tail.record_chains_len),
+        tail.record_kinds_len as u64,
+    )
+    .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    // Each retention rule names a kind the tail keeps, once, with a rule the host passes; a tail
+    // that ends before the list (an older plane's) reads none, so every kind is purged by age.
+    check_record_retentions(
+        &listed(tail.record_retentions, tail.record_retentions_len),
         tail.record_kinds_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
@@ -534,6 +541,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
         trust_keys,
         record_chains: listed(t.record_chains, t.record_chains_len),
+        record_retentions: listed(t.record_retentions, t.record_retentions_len),
     }
 }
 

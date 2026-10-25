@@ -881,6 +881,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                     reading: &mut reading,
                 };
                 let mut answer = std::mem::zeroed::<ServiceOut>();
+                answer.size = std::mem::size_of::<ServiceOut>() as u32;
                 if now(me.ctx, (&call as *const ClockNowIn).cast(), &mut answer).outcome()
                     != Outcome::Ready
                 {
@@ -1302,6 +1303,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
         },
     };
     let mut answer = std::mem::zeroed::<ServiceOut>();
+    answer.size = std::mem::size_of::<ServiceOut>() as u32;
     match slot(me.ctx, (&call as *const UnitNestIn).cast(), &mut answer).outcome() {
         Outcome::Pending => None,
         Outcome::Ready => {
@@ -1425,6 +1427,7 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
             continue;
         };
         let mut answer = std::mem::zeroed::<ServiceOut>();
+        answer.size = std::mem::size_of::<ServiceOut>() as u32;
         match slot(me.ctx, input, &mut answer).outcome() {
             Outcome::Pending => pending = true,
             Outcome::Ready => said.push(format!("{name}={}", answer.value)),
@@ -1460,6 +1463,7 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
                 ttl_ms: 0,
             };
             let mut answer = std::mem::zeroed::<ServiceOut>();
+            answer.size = std::mem::size_of::<ServiceOut>() as u32;
             me.count(Stat::HostCalls);
             let _ = store(me.ctx, (&call as *const VerifyStoreIn).cast(), &mut answer);
         }
@@ -1780,6 +1784,7 @@ unsafe fn conn_call<I>(
     };
     me.count(Stat::HostCalls);
     let mut out = std::mem::zeroed::<ServiceOut>();
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
     f(me.ctx, (input as *const I).cast(), &mut out);
     Some(out)
 }

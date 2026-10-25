@@ -175,6 +175,7 @@ fn rig() -> Rig {
             )],
             scope_kinds: vec!["group".into(), "item".into()],
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
         },
     )
     .unwrap();
@@ -729,6 +730,7 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
             trust: Vec::new(),
             scope_kinds: Vec::new(),
             record_chains: Vec::new(),
+            record_retentions: Vec::new(),
         },
     )
     .unwrap();
@@ -2207,6 +2209,77 @@ fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
         Ok(Outcome::Ready),
         "a host service of another instance answers while an admit is parked in the store plugin"
     );
+}
+
+/// RED/GREEN, THE DECLARED RETENTION RULE: a purge of a record kind the instance declared
+/// terminal-only keeps its active rows past the cutoff and drops its terminal ones; a kind it
+/// declared no rule for is purged by age, every older row gone. The kinds' names carry nothing: the
+/// rule is the declaration's.
+#[test]
+fn a_purge_runs_under_the_rule_the_instance_declared_for_the_kind() {
+    use busbar_contract::abi::plane::RecordRetention;
+    use busbar_contract::ids::RecordSchemaId;
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStore, Retention};
+    let s = KernelServices::new();
+    s.admit(
+        "inst",
+        InstanceFacts {
+            record_kinds: vec![RecordSchemaId::new("kept"), RecordSchemaId::new("aged")],
+            record_retentions: vec![RecordRetention {
+                kind: 0,
+                rule: Retention::TerminalOnly.code(),
+            }],
+            ..InstanceFacts::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(s.record_retention("inst", "kept"), Retention::TerminalOnly);
+    assert_eq!(s.record_retention("inst", "aged"), Retention::Age);
+    assert_eq!(s.record_retention("other", "kept"), Retention::Age);
+
+    let store = MemoryStore::new();
+    let rows = [
+        ("old-active", 10, PlaneDisposition::Active),
+        ("old-terminal", 10, PlaneDisposition::Terminal),
+        ("new-terminal", 200, PlaneDisposition::Terminal),
+    ];
+    for kind in ["kept", "aged"] {
+        for (id, ts, disposition) in rows {
+            let row = PlaneRecord {
+                kind: kind.into(),
+                id: id.into(),
+                parent: None,
+                seq: 0,
+                ts,
+                disposition,
+                body: b"{}".to_vec(),
+            };
+            store.upsert_plane_record(row.view()).unwrap();
+        }
+    }
+    let held = |kind: &str, id: &str| store.get_plane_record(kind, id).unwrap().is_some();
+
+    assert_eq!(
+        s.purge_records_before(&store, "inst", "kept", 100).unwrap(),
+        1
+    );
+    assert!(
+        held("kept", "old-active"),
+        "an active row outlives the cutoff"
+    );
+    assert!(!held("kept", "old-terminal"), "an older terminal row goes");
+    assert!(held("kept", "new-terminal"), "a row after the cutoff stays");
+
+    assert_eq!(
+        s.purge_records_before(&store, "inst", "aged", 100).unwrap(),
+        2
+    );
+    assert!(
+        !held("aged", "old-active"),
+        "by age, an older active row goes"
+    );
+    assert!(!held("aged", "old-terminal"));
+    assert!(held("aged", "new-terminal"));
 }
 
 /// A REPLAYED APPROVAL IS REFUSED THROUGH `records.claim` (§11.12: the ONE path for approval

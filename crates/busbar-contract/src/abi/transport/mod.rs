@@ -9,8 +9,10 @@
 //!
 //! * a **CARRIER** listens, accepts, dials, reads and writes a byte stream (kind ops `0..=7`);
 //! * a **FRAMER** is a sans-IO state machine over a carrier's bytes (kind ops `8..=17`): no socket,
-//!   no waker, no clock of its own (the host hands it the clock in every call), and no auth service
-//!   (the kernel makes the one outbound auth call before `encode`).
+//!   no waker and no clock of its own (the host hands it the clock in every call). It reaches its
+//!   bound auth only at its auth points, only through the host's auth service
+//!   ([`op::AUTH_CALL`](crate::abi::host::service::op::AUTH_CALL)), and only from a TICKETED op
+//!   (below).
 //!
 //! THE SOCKET IS THE HOST'S. A framer that composes over nothing (an empty
 //! [`TransportTail::composes_over`]) frames directly over the socket the connector holds; a framer
@@ -43,8 +45,27 @@
 //! buffer answers READY with [`YIELD_MORE`] and the host calls the same op again once it has
 //! drained them. That RE-CALL CARRIES NO NEW BYTES (an `ingest` or `emit` of length `0`): the bytes
 //! of the first call were taken whole, and the re-call answers only what the first could not hold,
-//! continuing where it stopped. A framer that answers any byte or piece twice is wrong. A framer op
-//! never pends.
+//! continuing where it stopped. A framer that answers any byte or piece twice is wrong.
+//!
+//! A FRAMER PENDS ONLY ON A TICKETED AUTH CALL. `begin`, `ingest` and `emit` are TICKETED ops (their
+//! contracts state `may_pend`, deadline class Stream): each runs on a ticket of its own and may call
+//! the host's auth service, which may pend. The service then answers NOT-READY on the call's handle
+//! `(ticket, seq)`, and the op answers PENDING. On the ticket's wake the host RE-ISSUES the same op
+//! on the same ticket (a resume), the framer re-issues the same handle, and the service answers its
+//! STORED result: one real auth call across the not-ready, never two. Until then the op yields
+//! nothing. A resume carries NO NEW BYTES (an `ingest` or `emit` of length `0`, as a `YIELD_MORE`
+//! re-call): the framer took the op's bytes whole when it first crossed and holds what it could not
+//! finish. Every other framer op never pends, and `encode` never calls the auth service.
+//!
+//! A PENDING ANSWER PARKS ONLY ITS OWN STREAM; the connection's other streams keep flowing. The
+//! host gives each parked op its own ticket and crosses every later op on another: a parked `begin`
+//! holds the whole framing (no other op crosses it until it completes); a parked `emit` holds its
+//! stream (the host emits nothing more on that stream until it completes) and no other; a parked
+//! `ingest` holds nothing of the host's: the host keeps reading and hands the far end's next bytes
+//! to a fresh `ingest` on another ticket, and the framer holds back only the stream whose auth it
+//! waits on, answering that stream's pieces when the parked op resumes and every other stream's as
+//! they come. `timer`, `refuse` and `finish` keep crossing too; `detach` waits until nothing is
+//! parked.
 //!
 //! A STREAM'S OWN BACKPRESSURE. A framer that queues a stream's emitted bytes until the far end is
 //! ready for them (a multiplexed wire whose peer grants room stream by stream) answers an `emit`
@@ -149,6 +170,9 @@ pub mod check;
 pub mod datagram;
 pub mod fields;
 pub mod route;
+
+/// A guest-list line an accepting transport is lent ([`BeginIn::lines`]).
+pub use route::LineEntry;
 
 pub use datagram::{
     DatagramLane, DatagramPath, DatagramRoute, DatagramYield, KeyingMaterial, RendezvousTerms,
@@ -280,9 +304,14 @@ pub struct Ops {
 /// least this (those ops have no short path).
 pub const MAX_ADDR: u64 = 256;
 
-/// Every kind op's contract, in slot order. Carrier I/O pends on its side's ticket (read or write) under the carrier's idle timeout ([`DeadlineClass::Connection`]); `listen` is boot-time and off-path. A
-/// framer is sans-IO: every framer op is request-path, never pends, and runs under the stream's
-/// deadline.
+/// Every kind op's contract, in slot order. Carrier I/O pends on its side's ticket (read or write)
+/// under the carrier's idle timeout ([`DeadlineClass::Connection`]); `listen` is boot-time and
+/// off-path. A framer is sans-IO: every framer op is request-path and runs under the stream's
+/// deadline. `begin`, `ingest` and `emit` are ticketed and may pend, only on an auth call they make
+/// through the host (the module's "a framer pends only on a ticketed auth call"); every other framer
+/// op never pends.
+///
+/// [`DeadlineClass::Connection`]: crate::abi::mechanism::call::DeadlineClass::Connection
 #[rustfmt::skip]
 pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
     contract!(LISTEN, false, true, ListenIn, ListenOut, Call),
@@ -294,9 +323,9 @@ pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
     contract!(SHUT, true, true, ShutIn, OutHead, Connection),
     contract!(ARRIVAL, true, false, ArrivalIn, ArrivalOut, Call),
     contract!(LOCATE, true, false, LocateIn, LocateOut, Call),
-    contract!(BEGIN, true, false, BeginIn, FramerOut, Stream),
-    contract!(INGEST, true, false, IngestIn, FramerOut, Stream),
-    contract!(EMIT, true, false, EmitIn, FramerOut, Stream),
+    contract!(BEGIN, true, true, BeginIn, FramerOut, Stream),
+    contract!(INGEST, true, true, IngestIn, FramerOut, Stream),
+    contract!(EMIT, true, true, EmitIn, FramerOut, Stream),
     contract!(ENCODE, true, false, EncodeIn, FramerOut, Stream),
     contract!(REFUSE, true, false, RefuseIn, FramerOut, Stream),
     contract!(FINISH, true, false, FinishIn, FramerOut, Stream),
@@ -328,11 +357,19 @@ pub const FRAMING_STREAM: u32 = 0;
 /// [`TransportTail::framing`]: datagrams.
 pub const FRAMING_DATAGRAM: u32 = 1;
 
-/// [`TransportTail::facts`]: the framer adds no signed field after the kernel's auth call
-/// (RED-tested at the kernel).
-pub const FACT_SIGNS_NOTHING_AFTER_AUTH: u32 = 1;
-/// [`TransportTail::facts`]: the framer decodes the payload.
+/// [`TransportTail::facts`]: the framer decodes the payload. (Bit 1 is retired: nothing is added to
+/// the head after the auth has run is a rule every transport keeps, proven by a RED in its own
+/// suite, not a fact one states.)
 pub const FACT_DECODES_PAYLOAD: u32 = 2;
+/// [`TransportTail::facts`]: the transport accepts: its framer begins on the accepting side.
+/// A zero declares nothing: a tail that states no op bit declares no op.
+pub const FACT_ACCEPTS: u32 = 4;
+/// [`TransportTail::facts`]: the transport dials: its framer begins on the dialling side.
+pub const FACT_DIALS: u32 = 8;
+/// [`TransportTail::facts`]: the transport detaches a live connection for a hand-off.
+pub const FACT_DETACHES: u32 = 16;
+/// [`TransportTail::facts`]: the transport adopts a connection handed to it.
+pub const FACT_ADOPTS: u32 = 32;
 
 /// THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states
 /// the auth points it offers (THE DESIGN, "Auth points and guest lists"; the blob's bytes are
@@ -1269,6 +1306,16 @@ pub struct LocateOut {
     pub defaults_written: u64,
     /// Short answer: the bytes `defaults_buf` needs.
     pub defaults_needed: u64,
+    /// `1` = the framer's head states its body's length, on a line of the framer's OWN: the host
+    /// hands the framer the body's length, and the framer writes `content-length: <that length>`
+    /// into its head itself, with its other own lines, BEFORE its auth call, so the auth signs the
+    /// complete head and nothing is added after it (THE DESIGN, "Auth points and guest lists",
+    /// item 5). The host never adds that line, nor any other, to the head. `0` = the framer frames
+    /// its body its own way. A framer that predates the field reads `0` (the host zeroes its whole
+    /// `out` before every crossing). A tail addition.
+    pub states_length: u8,
+    /// Alignment padding.
+    pub _reserved: [u8; 7],
 }
 
 /// Every framer op's `out`.
@@ -1294,24 +1341,61 @@ pub struct BeginIn {
     pub head: InHead,
     /// [`SIDE_ACCEPT`] | [`SIDE_DIAL`] | [`SIDE_ACCEPT_STREAM`].
     pub side: u32,
+    /// THE CONNECTION'S SCHEME, as a code
+    /// ([`SCHEME_*`](crate::abi::host::service::SCHEME_PLAIN)), set by the HOST on every side:
+    /// on [`SIDE_DIAL`] from the route's upstream (whether the dial runs the connector's
+    /// connection security), on [`SIDE_ACCEPT`] and [`SIDE_ACCEPT_STREAM`] from the listener
+    /// (whether the connector terminated connection security on it). The framer copies it into
+    /// every request view it builds for its auth call
+    /// ([`HeadView::scheme`](crate::abi::host::service::HeadView::scheme)); the host does not fill
+    /// that view's scheme itself. [`SCHEME_UNDECLARED`](crate::abi::host::service::SCHEME_UNDECLARED)
+    /// (`0`, a zeroed `in`) or an unknown code is REFUSED at `begin`
+    /// ([`check::check_begin_scheme`]): a zero never grants, and is never read as plain. Carved
+    /// from what was alignment padding; every other offset is unchanged.
+    pub scheme: u8,
     /// Alignment padding.
-    pub _reserved: u32,
+    pub _reserved: [u8; 3],
     /// The target ([`SIDE_ACCEPT_STREAM`]: the stream's path and query).
     pub target: AbiStr,
     /// What connection security established.
     pub facts: *const ConnFacts,
     /// The sink.
     pub sink: FramerSink,
-    /// [`SIDE_DIAL`]: the dial's OPENING head fields (the bound auth's fields and the request's
-    /// own, in order), for a framer whose wire carries them on its connection's opening (an
-    /// upgrade request) rather than on a message; a framer that renders them per message takes them
-    /// in `encode` too and ignores these (ARCHITECT Q-L5B-WS-DIAL 2026-10-03). A tail addition.
+    /// [`SIDE_DIAL`]: the dial's OPENING head fields, the request's own lines from the plane and
+    /// nothing else, for a framer whose wire carries them on its connection's opening (an upgrade
+    /// request) rather than on a message; a framer that renders them per message takes them in
+    /// `encode` too and ignores these (ARCHITECT Q-L5B-WS-DIAL 2026-10-03). The binding's auth
+    /// fields are never here: the framer adds its own lines, then calls the auth with
+    /// [`auth`](Self::auth) at [`points`](Self::points)
+    /// ([`op::AUTH_CALL`](crate::abi::host::service::op::AUTH_CALL)), then appends what the auth
+    /// answers, replacing any line of the same name, and adds nothing after. A tail addition.
     /// [`SIDE_ACCEPT_STREAM`]: the stream's head fields, as the caller sent them.
     pub fields: *const Field,
     /// How many.
     pub fields_len: usize,
     /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
     pub lane: *const DatagramLane,
+    /// [`SIDE_ACCEPT`] | [`SIDE_ACCEPT_STREAM`]: the listener's guest list, in match order, lent
+    /// for the framing's life ([`check::check_lines`]); NULL on [`SIDE_DIAL`]. A tail addition
+    /// (pre-tag v1).
+    pub lines: *const route::LineEntry,
+    /// How many, at most [`check::MAX_LINES`].
+    pub lines_len: usize,
+    /// [`SIDE_DIAL`]: the auth points the BINDING's auth needs (`POINT_*`, the line table's
+    /// vocabulary), `0` for a binding with no auth; `0` on an accepting side
+    /// ([`check::check_binding`]). With [`POINT_PEER`] the framer calls the auth at the peer point
+    /// ONCE per connection, at this `begin`, before any head; that answer is only continue or stop
+    /// (no field, never key material: a secured connection's client identity stays the
+    /// connector's). A tail addition (pre-tag v1).
+    pub points: u32,
+    /// Alignment padding.
+    pub _points_reserved: u32,
+    /// [`SIDE_DIAL`]: the binding's auth handle (THE DESIGN, Auth points and guest lists, item 5:
+    /// each outbound need's binding holds its auth handle and its pool, so every connection of the
+    /// pool begins with it), owner-scoped to this framer; the host refuses a `begin` whose handle
+    /// is not this framer's at the current generation. NONE exactly when `points` is `0`. A tail
+    /// addition (pre-tag v1).
+    pub auth: crate::abi::host::service::AuthRef,
 }
 
 /// `ingest`'s `in`.
@@ -1374,6 +1458,30 @@ pub struct EmitIn {
     pub status: u32,
     /// Alignment padding.
     pub _status_reserved: u32,
+    /// THE STREAM'S UNIT, on a DIALLED stream ([`SIDE_DIAL`]): the request the stream carries, so
+    /// a framer that calls the auth service at `emit` names it in
+    /// [`AuthCallIn::unit`](crate::abi::host::service::AuthCallIn::unit). The host resolves that
+    /// request's own auth context (its per-request handle, scope extensions, passthrough
+    /// credential and waiver) from the unit, kernel side: none of it crosses the connector, and
+    /// the caller's credential stays a secret on the unit. [`UnitRef::NONE`] on an accepting side
+    /// (the framer holds the unit the kernel minted at its own first auth call there) and where
+    /// the stream carries no unit. A tail addition (pre-tag v1).
+    ///
+    /// [`UnitRef::NONE`]: crate::abi::host::service::UnitRef::NONE
+    pub unit: crate::abi::host::service::UnitRef,
+    /// THE OPENING BODY'S LENGTH, on a DIALLED stream ([`SIDE_DIAL`]): on the emit that carries the
+    /// request's head (the op before its auth call), the length of the body the request opens with,
+    /// when the host holds it whole ([`body_len_known`](Self::body_len_known) `1`), so a framer
+    /// whose head states its body's length writes that line itself, before its auth call. A
+    /// streamed body states no length (`body_len_known` `0`, `body_len` `0`), and the framer
+    /// states none, as 1.5.5 did. `0` on every other emit, on its re-calls and resumes alike, and
+    /// on an accepting side ([`check::check_emit_body_len`]). A tail addition (pre-tag v1).
+    pub body_len: u64,
+    /// `1` = [`body_len`](Self::body_len) is the opening body's length; `0` = no length is stated
+    /// (a streamed body, or an emit that carries no request head). No other value.
+    pub body_len_known: u32,
+    /// Alignment padding.
+    pub _body_len_reserved: u32,
 }
 
 /// `encode`'s `in`. The rendered bytes go into `sink.wire`.
