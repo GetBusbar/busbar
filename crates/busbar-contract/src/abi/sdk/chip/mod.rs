@@ -14,6 +14,7 @@ pub(crate) mod digests;
 mod jws;
 #[cfg(feature = "chip-rsa")]
 pub(crate) mod rsa;
+mod scheme;
 
 use base64::Engine as _;
 use zeroize::Zeroizing;
