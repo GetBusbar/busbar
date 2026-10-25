@@ -15,21 +15,10 @@ use busbar_kernel_wal::journal::{
     decode_run, tail_of, verify, Entry, Journal, JournalBreakKind, JournalRecord, RecordClass,
     JOURNAL_HEADER_BYTES, JOURNAL_MAGIC, JOURNAL_VERSION, OVERFLOW_HISTORY_RECORDS,
 };
-use busbar_kernel_wal::ship::{NullShipper, ShipError, Shipper};
+use busbar_kernel_wal::ship::NullShipper;
 use busbar_kernel_wal::wal::{Mode, Wal};
 
-use super::fixtures::{durability_token, KeepingShipper, TempDir};
-
-/// A store that will not take anything. What a memory-buffered node's durability failure looks like
-/// from the log's side, and the only way to make the buffer grow at all.
-#[derive(Debug, Default)]
-struct RefusingShipper;
-
-impl Shipper<busbar_kernel_wal::record::Record> for RefusingShipper {
-    fn ship(&mut self, _records: &[busbar_kernel_wal::record::Record]) -> Result<(), ShipError> {
-        Err(ShipError::Unavailable("the store is not answering".into()))
-    }
-}
+use super::fixtures::{durability_token, KeepingShipper, RefusingShipper, TempDir};
 
 fn entries(class: RecordClass, n: usize, tag: u8) -> Vec<Entry> {
     (0..n)

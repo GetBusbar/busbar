@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33, TODO U6-U7): a request the decisions
+//! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33): a request the decisions
 //! plane's door claims reaches that plane's driver through its route on the data router (mounted at
 //! the router's construction, ARCHITECT Q-SW1), behind the deployment's auth gate, is admitted and
 //! charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
@@ -490,9 +490,15 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
+    // Composed with no egress, the host states no provider's protocol at open, so the model states
+    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            plane.served().dialects[0]
+        ))
+        .expect("a section"),
     );
     let served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -569,9 +575,15 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
+    // Composed with no egress, the host states no provider's protocol at open, so the model states
+    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            plane.served().dialects[0]
+        ))
+        .expect("a section"),
     );
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -807,9 +819,9 @@ pub(super) mod session_door {
     fn hook_env() -> busbar_kernel::hooks::HookEnv {
         busbar_kernel::test_support::test_hook_env(
             &["test-hook"],
-            busbar_plugin_loader::sign::HookNeeds {
-                prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-                user: busbar_plugin_loader::sign::NeedLevel::Ro,
+            busbar_kernel::test_support::HookNeeds {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
         )
     }
@@ -1157,6 +1169,7 @@ pub(super) mod session_door {
                 })
             },
             gov: Arc::clone(&gov),
+            journal: None,
         });
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
@@ -4926,6 +4939,74 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.chat().await.0, 200);
     let _ = rig.ledger_after(1).await;
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
+}
+
+/// AUDIT-CHAIN, ON ONE TAMPER-EVIDENT CHAIN (Law 10, status row 178): every unit the pools door
+/// answers, served (a dispatched completion) or refused inside the loop (a key whose budget the
+/// first unit spent), seals ONE record on the node's audit chain, the second the first's
+/// successor; the chain walks clean, and a record altered after its seal (the served unit re-told
+/// as the refused one) breaks the walk. This is the claim the node-axis cell made, on the door
+/// path CI's test build runs.
+/// RED: a door whose audit pass never reaches the node seals nothing; a refusal sealed off the
+/// chain leaves one record, or two that are not linked.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident_chain() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-pools-audit-chain";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            budget_cents: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200, "the first unit is served");
+    let _ = rig.ledger_after(1).await;
+    assert_eq!(
+        rig.chat().await.0,
+        429,
+        "the second is refused: its budget is spent"
+    );
+    assert_eq!(far.served(), 1, "the refused unit dialled nothing");
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while rig.audit_records() < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let records = rig.records();
+    assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+    let (served, refused) = (&records[0], &records[1]);
+    assert_eq!(
+        served.outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed,
+        "the served unit: {served:?}"
+    );
+    assert!(
+        matches!(
+            refused.outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(..)
+        ),
+        "the refusal is chained as one: {:?}",
+        refused.outcome
+    );
+    assert_eq!(refused.seq, served.seq + 1, "contiguous");
+    assert_eq!(
+        refused.prev_hash, served.hash,
+        "linked to the record before"
+    );
+    assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
+
+    let mut forged = records.clone();
+    forged[0].outcome.unit_end = refused.outcome.unit_end;
+    assert!(
+        busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
+        "a record altered after its seal breaks the chain"
+    );
 }
 
 /// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
@@ -9678,7 +9759,9 @@ mod pools_door_counts_and_routes {
             .await
             .expect("the request reaches its far end");
         let epoch_before = rig.app.store.probe_epoch_in("p", 0);
-        rig.app.store.record_success_in("p", 0);
+        rig.app
+            .store
+            .record_success_in("p", 0, busbar_kernel::store::now());
         rig.app.store.force_open_in("p", 0, 0);
         assert!(
             rig.app
@@ -9848,7 +9931,9 @@ mod pools_door_counts_and_routes {
             .store
             .record_transient_in("p", 0, "test", &cfg, None);
         for _ in 0..3 {
-            rig.app.store.record_success_in("p", 0);
+            rig.app
+                .store
+                .record_success_in("p", 0, busbar_kernel::store::now());
         }
         let _ = rig.chat().await;
         let bag = bag_of(&rig, "m0");
@@ -10534,7 +10619,8 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
     )
     .expect("the linked door binds");
     let facing = (reg.facing)(
-        br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#,
+        // No provider facts reach a bare facing probe, so each model states its own `protocol` (#51).
+        br#"{"decisions":{"models":{"b":{"provider":"typesafe","protocol":"jev"},"a":{"provider":"typesafe","protocol":"jev"}}}}"#,
         b"",
         None,
         &[],

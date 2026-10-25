@@ -124,11 +124,19 @@ pub(crate) fn render_help(ver: &str, planes: &[&[super::linked::CliHelpRow]]) ->
     out
 }
 
-/// Whether `arg` is a flag a linked plane declares — the first word of one of its `Flags:` rows.
 /// EVERY PLANE'S `busbar --help` ROWS: each linked row's (its `cli-help` axis), then each linked
-/// plane door's, read off its tail's `cli_help` without binding it, in the contract's grammar
-/// (`busbar_contract::abi::plane::cli_help`: its tagline, `Flags:` and `ENDPOINTS` rows), in manifest
-/// order. A door whose tail cannot be read contributes nothing here; its boot refuses it.
+/// plane door's, read off its tail's `cli_help` without binding it, then each plane door dropped
+/// into the configured `plugins.dir`, read off its signed manifest ([`dropped_help`]), in the
+/// contract's grammar (`busbar_contract::abi::plane::cli_help`: its tagline, `Flags:` and
+/// `ENDPOINTS` rows), in manifest order. A door whose tail cannot be read contributes nothing here;
+/// its boot refuses it.
+///
+/// COMPILED IN OR DROPPED IN, ONE PATH (BUSBAR-1.6.0.md l.2179, Part 2 #2; audit busbar-src r4
+/// S-2): the plane axis is installed before the command line is read (`main`'s
+/// `register_planes`, which discovers the dropped-in doors), so a dropped-in plane's flag is
+/// accepted, asks for the line serve and moves the logs to stderr exactly as the same plane's
+/// compiled in does. With no configuration to read there is no `plugins.dir`, and only the linked
+/// planes' rows are read.
 pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
     // The doors' rows, read once and kept for the process (the linked doors are fixed at build),
     // each door's lent out as one slice: nothing is leaked to give them their `'static` life.
@@ -150,9 +158,46 @@ pub(crate) fn help_rows() -> Vec<&'static [super::linked::CliHelpRow]> {
     });
     let mut rows: Vec<&'static [super::linked::CliHelpRow]> = crate::LINKED.cli_help.to_vec();
     rows.extend(door_rows.iter().map(Vec::as_slice));
+    rows.extend(dropped_rows().iter().map(Vec::as_slice));
     rows
 }
 
+/// The rows of the plane doors the boot discovered in the configured `plugins.dir`
+/// (`root::boot::discover_planes`), read once the discovery has run and kept for the process (the
+/// directory is scanned once per boot). Before the discovery there are none, and nothing is kept.
+fn dropped_rows() -> &'static [Vec<super::linked::CliHelpRow>] {
+    static TEXTS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    static ROWS: std::sync::OnceLock<Vec<Vec<super::linked::CliHelpRow>>> =
+        std::sync::OnceLock::new();
+    let Some(candidates) = crate::root::boot::DOOR_CANDIDATES.get() else {
+        return &[];
+    };
+    let texts = TEXTS.get_or_init(|| dropped_help(candidates));
+    ROWS.get_or_init(|| {
+        texts
+            .iter()
+            .map(|text| busbar_contract::abi::plane::cli_help::rows(text).collect())
+            .collect()
+    })
+}
+
+/// THE DROPPED-IN PLANES' HELP: each dropped-in candidate's tail `cli_help`, read off its SIGNED
+/// MANIFEST's Statement rendering with no dlopen
+/// (`loader::dispatch::kinds::plane::rendered_cli_help`), in discovery order. A linked candidate
+/// adds none (its rows are read off its door, above), and neither does a rendering that does not
+/// read back: admitting the plane refuses it.
+pub(crate) fn dropped_help(candidates: &[crate::root::loader::boot::Candidate]) -> Vec<String> {
+    use crate::root::loader::boot::Origin;
+    use crate::root::loader::dispatch::kinds::plane::rendered_cli_help;
+    candidates
+        .iter()
+        .filter(|c| matches!(c.origin, Origin::Dropped { .. }))
+        .filter_map(|c| rendered_cli_help(&c.stated).ok().flatten())
+        .collect()
+}
+
+/// Whether `arg` is a flag a plane declares, compiled in or dropped in — the first word of one of
+/// its `Flags:` rows.
 pub(crate) fn is_plane_flag(planes: &[&[super::linked::CliHelpRow]], arg: &str) -> bool {
     planes
         .iter()
@@ -234,10 +279,10 @@ pub(crate) fn handle_cli_flags() -> Option<i32> {
             }
             Some(0)
         }
-        // A flag a linked plane declares (its `Flags:` row) is not an exit-and-print flag: it
-        // proceeds to the ordinary boot and is read again inside `run()`, where the line-serve flag
-        // swaps the two listeners for the process's own stdin/stdout. Recognised here so it is not
-        // refused as an unknown argument.
+        // A flag a plane declares (its `Flags:` row), compiled in or dropped in, is not an
+        // exit-and-print flag: it proceeds to the ordinary boot and is read again inside `run()`,
+        // where the line-serve flag swaps the two listeners for the process's own stdin/stdout.
+        // Recognised here so it is not refused as an unknown argument.
         Some(arg) if is_plane_flag(&help_rows(), arg) => None,
         Some("--validate") => Some(validate_config_command()),
         Some("--generate-signing-key") => Some(generate_signing_key_command()),
@@ -352,6 +397,15 @@ fn validate_config_command() -> i32 {
             );
             return 1;
         }
+    };
+    // The kernel hands back the contract's view of the registry this root's build made
+    // (`root::boot::registry_rows`); the stages below read the registry itself.
+    let Some(registry) = crate::root::loader::rows::registry_arc(registry) else {
+        eprintln!(
+            "[error] {}: the plugin rows are not this root's registry",
+            diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+        );
+        return 1;
     };
 
     // STRICT SECRETS, `--validate` only. The pre-flight above is shared with boot and admin apply,

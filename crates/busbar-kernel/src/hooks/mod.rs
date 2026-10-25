@@ -42,6 +42,7 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 /// only as an [`busbar_contract::ir::facts::IrFacts`]. The MCP and A2A firing sites call it; the model plane's
 /// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
 pub mod gate;
+pub mod taps;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
 // (`RoutingRequest`, `Candidate`, `RoutingContext`, `RoutingDecision`, …) — lives in the
@@ -125,7 +126,7 @@ pub fn any_content_hook(hooks: &std::collections::HashMap<String, crate::config:
 /// normalizers). Cheap to clone (`Arc`-backed).
 #[derive(Clone)]
 pub struct HookEnv {
-    pub registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+    pub registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     /// THE HOOK AXIS over `registry`, as the composition root built it (`RootInstall::hook_axis`):
     /// every `kind: hook` row, compiled in or dropped in, opened on the hook kind's ABI over the
     /// process's one dispatcher. `None` = this build installs no axis: no hook opens.
@@ -158,7 +159,7 @@ impl HookEnv {
     /// The root's axis refuses the registry (a hook row that will not state itself — a 1.5.5 JSON
     /// hook plugin is refused here, naming the rebuild).
     pub fn new(
-        registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
     ) -> Result<Self, String> {
         let axis = match crate::preflight::root_rows().hook_axis {
@@ -179,7 +180,7 @@ impl HookEnv {
     /// by `test_support::hook_double`) rather than the one the root builds over `registry`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_axis(
-        registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         axis: std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>,
         secret_resolver: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
     ) -> Self {
@@ -507,7 +508,9 @@ pub fn resolve_pool_rewrites(
 /// `decide` is NOT intercepted: the read-only seat resolves `on_error` itself, and richer — it
 /// walks the configured FALLBACK CHAIN before it reaches a terminal. Both seats bottom out on the
 /// SAME rule (`busbar_kernel::hooks::failed_call_refuses`), which is what keeps them from
-/// drifting. Every other trait method is a transparent delegate.
+/// drifting. `refuses_failed_rewrite` answers the same rule for a rewrite the plane then refuses to
+/// apply, which every firing site that hands a rewrite back to a plane consults. Every other trait
+/// method is a transparent delegate.
 struct RewriteOnError {
     inner: Arc<dyn RoutingPolicy>,
     on_error: crate::config::PolicyOnError,
@@ -525,8 +528,12 @@ impl RoutingPolicy for RewriteOnError {
         self.inner.decide(req, candidates, ctx, budget).await
     }
 
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    fn name_arc(&self) -> std::sync::Arc<str> {
+        self.inner.name_arc()
     }
 
     async fn transform(
@@ -560,6 +567,12 @@ impl RoutingPolicy for RewriteOnError {
             }
             other => other,
         }
+    }
+
+    /// A rewrite the plane refuses to apply is this hook's failure: the same disposition, by the
+    /// same rule, as a failed call.
+    fn refuses_failed_rewrite(&self) -> bool {
+        busbar_kernel::hooks::failed_call_refuses(&self.on_error)
     }
 
     async fn configure(
@@ -659,7 +672,7 @@ fn hook_inert_gate_banner(
     name: &str,
     plugin: &str,
     kind: crate::config::HookKind,
-    needs_prompt: busbar_plugin_loader::sign::NeedLevel,
+    needs_prompt: busbar_contract::plugin_rows::NeedLevel,
 ) -> Option<String> {
     if kind != crate::config::HookKind::Gate {
         return None;
@@ -677,6 +690,19 @@ fn hook_inert_gate_banner(
     ))
 }
 
+/// A hook row's declared needs, as its signed manifest states them.
+struct Needs {
+    prompt: busbar_contract::plugin_rows::NeedLevel,
+    user: busbar_contract::plugin_rows::NeedLevel,
+}
+
+impl Needs {
+    /// Whether the manifest declares any need at all.
+    fn declares_any(&self) -> bool {
+        self.prompt.wants_read() || self.user.wants_read()
+    }
+}
+
 /// THE choke point for the belt-and-suspenders rule: effective access is the operator's grant MEET
 /// the plugin's signed-manifest `needs:`, on the ladder `no ⊂ ro ⊂ rw`. Read, rewrite and identity
 /// admission must all derive from here — a consumer that re-derives from `hook.prompt` bypasses the
@@ -690,14 +716,17 @@ fn effective_access(
     env: &HookEnv,
 ) -> (crate::config::PromptAccess, crate::config::UserAccess) {
     use crate::config::{PromptAccess, UserAccess};
-    use busbar_plugin_loader::sign::NeedLevel;
+    use busbar_contract::plugin_rows::NeedLevel;
 
     let grant_prompt = hook.prompt;
     let grant_user = hook.user;
     let Some(p) = env.registry.resolve(&hook.plugin) else {
         return (grant_prompt, grant_user);
     };
-    let needs = &p.manifest.needs;
+    let needs = Needs {
+        prompt: p.needs_prompt,
+        user: p.needs_user,
+    };
     // MEET on the ladder: the effective rung is the lower of the two declarations.
     let eff_prompt = match (grant_prompt, needs.prompt) {
         (PromptAccess::No, _) | (_, NeedLevel::No) => PromptAccess::No,
@@ -874,7 +903,7 @@ type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
 /// not O(size of the library). And this engine calls it on EVERY control-plane touch: per
 /// `push_configure`, per `fetch_status` (i.e. per `/metrics/hooks` scrape refresh, which a
 /// monitoring system performs on a fixed interval forever), per `fetch_schema`, per
-/// `resolve_on_error_chain`, per reload. `busbar_plugin_loader`'s own `intern_name` doc already
+/// `resolve_on_error_chain`, per reload. the loader's own `intern_name` doc already
 /// names that list as the reason a per-open allocation had to be interned; the load itself was left
 /// alone.
 ///
@@ -949,7 +978,7 @@ mod resolution {
         /// plugin set the operator has already replaced — the exact thing a `plugins refresh` or a
         /// config reload does to the old registry. Pinned by
         /// `a_reused_registry_address_never_inherits_a_dead_registrys_resolution`.
-        registry: std::sync::Weak<busbar_plugin_loader::PluginRegistry>,
+        registry: std::sync::Weak<dyn busbar_contract::plugin_rows::PluginRows>,
     }
 
     #[derive(Default)]
@@ -1062,7 +1091,7 @@ mod resolution {
     /// different registry, which is what makes the key's registry half mean "this registry".
     pub(super) fn admit(
         key: u64,
-        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     ) -> Admission {
         let (lock, cv) = state();
         let mut inner = lock.lock().unwrap_or_else(|p| p.into_inner());
@@ -1659,9 +1688,18 @@ pub fn resolve_gate_hooks(
 #[allow(unused_imports)]
 pub use busbar_kernel::config::plane_sections::attach_list;
 
+/// THE SECTION'S OWN SCOPE in a plane's per-container hook maps: the section-level attach
+/// (`<section>.hooks:`) resolved alone, keyed by the reserved word itself, which no registration
+/// can be named (`busbar_contract::section::RESERVED_SECTION_KEYS`). A ROUTED-order plane binds it to
+/// every unit beside the deployment's global hooks (`plane_driver::HostHooks`), so a
+/// section's own attach fires on a plane whose units name no container; a GATE-FIRST plane reads
+/// its entries, each of which already carries the section's list ([`attach_list`]).
+pub const SECTION_SCOPE: &str = busbar_contract::section::RESERVED_SECTION_KEYS[0];
+
 /// Resolve the per-CONTAINER gate chains for one plane's registry: for each `(container name, that
 /// container's own hook list)`, the effective attach ([`attach_list`]) resolved through
-/// [`resolve_gate_hooks`], keyed by container.
+/// [`resolve_gate_hooks`], keyed by container; and the section's own attach alone, under
+/// [`SECTION_SCOPE`].
 ///
 /// A container whose effective chain is EMPTY gets NO ENTRY, deliberately: the firing site's lookup
 /// then answers `None` on every deployment that attached nothing, which is the zero-cost default,
@@ -1678,7 +1716,7 @@ pub fn resolve_container_gates<'a>(
     settings_version: u64,
 ) -> std::collections::HashMap<String, Vec<(u16, ResolvedPolicy)>> {
     let mut out = std::collections::HashMap::new();
-    for (name, own) in containers {
+    for (name, own) in containers.chain(std::iter::once((SECTION_SCOPE, &[][..]))) {
         let attached = attach_list(section, own);
         if attached.is_empty() {
             continue;
@@ -1694,7 +1732,8 @@ pub fn resolve_container_gates<'a>(
 /// Resolve the per-CONTAINER REWRITE (`prompt: rw`) chains for one plane's registry — the
 /// tap/transform twin of [`resolve_container_gates`]. For each `(container name, own hook list)`, the
 /// effective attach ([`attach_list`]) resolved through [`resolve_rewrite_hooks`] (which enforces the
-/// EFFECTIVE `rw` grant), keyed by container.
+/// EFFECTIVE `rw` grant), keyed by container; and the section's own attach alone, under
+/// [`SECTION_SCOPE`].
 ///
 /// A container whose effective chain is EMPTY gets NO ENTRY, exactly like the gate twin: the tap
 /// firing site's presence lookup then answers `None` on every deployment that attached no rewrite
@@ -1711,7 +1750,7 @@ pub fn resolve_container_rewrites<'a>(
     settings_version: u64,
 ) -> std::collections::HashMap<String, Vec<(std::time::Duration, Arc<dyn RoutingPolicy>)>> {
     let mut out = std::collections::HashMap::new();
-    for (name, own) in containers {
+    for (name, own) in containers.chain(std::iter::once((SECTION_SCOPE, &[][..]))) {
         let attached = attach_list(section, own);
         if attached.is_empty() {
             continue;

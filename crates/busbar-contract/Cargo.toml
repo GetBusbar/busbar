@@ -148,6 +148,10 @@ jsonschema = { workspace = true }
 # expansion names `::hyper`, and the test names hyper's own buffer type. Dev-only: the shipped graph
 # does not name it.
 hyper = { workspace = true }
+# The C header generator (tests/abi_header) and the source rules (tests/source_rules) parse Rust.
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
 
 [features]
 # The TEST-ONLY seal (#65). `plugin::TestKernelSeal` is the one implementor of the now-SEALED
@@ -163,3 +167,12 @@ test-seal = []
 # default and named only in `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs`), so it is absent
 # from every release build; it switches on no dependency and no other feature.
 services-double = []
+
+# The TEST-ONLY counting allocator (`alloc_counter`, ARCHITECT ruling 2026-10-21): the one
+# `GlobalAlloc` impl a plugin's allocation gates install as their test binary's
+# `#[global_allocator]`, so a plugin crate root keeps the literal `#![forbid(unsafe_code)]`
+# (BUSBAR-1.6.0.md l.273). OFF by default, never in `default`, and named only in
+# `[dev-dependencies]` (`tests/test_seal_is_dev_only.rs` refuses any other edge and any `default`
+# that names it), so it is absent from every release build; it switches on no dependency and no
+# other feature.
+alloc-counter = []

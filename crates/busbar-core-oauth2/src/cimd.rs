@@ -21,11 +21,24 @@
 //! ONE fetch, at most [`MAX_FETCHES_PER_SITE`] fetches run at once for the documents of one site
 //! ([`site_of`]: a host's registrable domain under the Public Suffix List, so one owner's many
 //! hosts are one site and the tenants of a shared suffix are each their own; an IPv6 literal's /64,
-//! the block one end site is handed whole), and at most [`MAX_CONCURRENT_FETCHES`] run at once in
+//! the block one end site is handed whole), the documents at address literals share ONE such
+//! share between them ([`ADDRESS_LITERALS`]), and at most [`MAX_CONCURRENT_FETCHES`] run at once in
 //! all, a request waiting up to [`PERMIT_WAIT`] for one of those. Past that a request naming an
-//! uncached document reads as an unknown client, as every other fetch failure does. So one owner's
-//! slow documents hold at most its own site's share, and holding every fetch takes
-//! `MAX_CONCURRENT_FETCHES / MAX_FETCHES_PER_SITE` sites the caller owns.
+//! uncached document reads as an unknown client, as every other fetch failure does.
+//!
+//! What a fetch can be held by, and for how long, is what decides who can hold them all:
+//!
+//! * A far end that never answers (an address that drops the connection attempt, a name whose
+//!   resolution stalls) needs nothing the caller owns, and it holds its fetch for at most
+//!   [`ANSWER_DEADLINE`]: the far end must answer its response head by then. Addresses are
+//!   plentiful, so all of them together hold one site's share.
+//! * A far end that answers in time and then sends its document slowly holds its fetch up to
+//!   [`FETCH_TIMEOUT`], and one site holds at most its own share.
+//!
+//! So holding every fetch takes `MAX_CONCURRENT_FETCHES / MAX_FETCHES_PER_SITE` shares at once, at
+//! most one of them the addresses': the rest are registrable domains, each one the caller serves
+//! slowly or one whose name stalls, named afresh at least every [`ANSWER_DEADLINE`]. No number of
+//! addresses does it. A request names no caller this plane can see, so no bound here is per caller.
 //!
 //! ## Every failure is an UNKNOWN CLIENT, not an error
 //!
@@ -82,6 +95,12 @@ pub(crate) const MAX_DOCUMENT_BYTES: usize = 5 * 1024;
 /// slow document host must fail the one login rather than parking a handler for a minute.
 pub(crate) const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long the far end has to answer its response head. A document host that is up answers in a
+/// fraction of this; one that never answers (an address that drops the connection attempt, a name
+/// whose resolution stalls) lets its fetch go here rather than at [`FETCH_TIMEOUT`], so a caller
+/// cannot hold the fetches with far ends it does not even have to own.
+pub(crate) const ANSWER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// THE FETCH, AS A SEAM. Production installs [`ConnectorFetch`]; the flow tests install a stub, so
 /// the end-to-end proof drives the real authorize/consent/token wire without a second listener
 /// standing in for "the public internet".
@@ -110,6 +129,12 @@ pub(crate) const MAX_FETCHES_PER_SITE: usize = 2;
 /// How long a request naming an uncached document waits for a fetch permit before its client reads
 /// as unknown.
 pub(crate) const PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The share every document at an ADDRESS LITERAL takes as well as its own site's. A caller can name
+/// any number of addresses it does not own (any one that drops the connection attempt will do), so
+/// counted one site each they could hold every fetch; counted together they hold one site's share.
+/// Not a host name (it has a space), so no site is ever this.
+pub(crate) const ADDRESS_LITERALS: &str = "address literals";
 
 /// The site a document URL's host belongs to, lower-cased: what one owner holds as one unit.
 ///
@@ -196,38 +221,56 @@ impl Default for Documents {
     }
 }
 
-/// One site's share of the fetches, held while its fetch runs.
+/// The shares a document's fetch takes: its site's ([`site_of`]), and [`ADDRESS_LITERALS`] as well
+/// when its host is an address.
+fn shares_of(url: &str) -> Vec<String> {
+    let literal = busbar_contract::net::parse_url(url)
+        .is_ok_and(|p| p.host.parse::<std::net::IpAddr>().is_ok());
+    let mut shares = vec![site_of(url)];
+    if literal {
+        shares.push(ADDRESS_LITERALS.to_string());
+    }
+    shares
+}
+
+/// A fetch's shares of the fetches ([`shares_of`]), held while it runs.
 struct SiteShare<'a> {
     sites: &'a Mutex<HashMap<String, usize>>,
-    site: String,
+    shares: Vec<String>,
 }
 
 impl Drop for SiteShare<'_> {
     fn drop(&mut self) {
         let mut sites = self.sites.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(n) = sites.get_mut(&self.site) {
-            *n -= 1;
-            if *n == 0 {
-                sites.remove(&self.site);
+        for share in &self.shares {
+            if let Some(n) = sites.get_mut(share) {
+                *n -= 1;
+                if *n == 0 {
+                    sites.remove(share);
+                }
             }
         }
     }
 }
 
 impl Documents {
-    /// A share of `url`'s site's fetches, or `None` when its site already holds
+    /// Every share `url`'s fetch takes ([`shares_of`]), or `None` when one of them already holds
     /// [`MAX_FETCHES_PER_SITE`].
     fn site_share(&self, url: &str) -> Option<SiteShare<'_>> {
-        let site = site_of(url);
+        let shares = shares_of(url);
         let mut sites = self.sites.lock().unwrap_or_else(|p| p.into_inner());
-        let n = sites.entry(site.clone()).or_insert(0);
-        if *n >= MAX_FETCHES_PER_SITE {
+        if shares
+            .iter()
+            .any(|share| sites.get(share).is_some_and(|n| *n >= MAX_FETCHES_PER_SITE))
+        {
             return None;
         }
-        *n += 1;
+        for share in &shares {
+            *sites.entry(share.clone()).or_insert(0) += 1;
+        }
         Some(SiteShare {
             sites: &self.sites,
-            site,
+            shares,
         })
     }
 
@@ -304,7 +347,7 @@ pub(crate) struct ConnectorFetch {
 
 /// The fetch of a server built with no connection table ([`crate::NoConnections`]): every document
 /// fetch fails closed, so every metadata-document client is unknown.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) fn unconnected() -> Arc<dyn CimdFetch> {
     Arc::new(ConnectorFetch {
         table: <crate::NoConnections as crate::Connections>::table,
@@ -341,7 +384,9 @@ impl CimdFetch for ConnectorFetch {
                     .declare(table.owner, DOCUMENT_NEED, &document_need(), None, None)
                     .map_err(failed)?;
             }
-            let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
+            let started = tokio::time::Instant::now();
+            let deadline = started + FETCH_TIMEOUT;
+            let answer_by = started + ANSWER_DEADLINE;
             // The request's head words: the method, and the path and query the framer writes,
             // read by the one shared URL reader (a URL with no path asks for `/`).
             let path = busbar_contract::net::parse_url(url)
@@ -365,7 +410,7 @@ impl CimdFetch for ConnectorFetch {
                 table: &table,
                 conn,
             };
-            read_document(&held, url, deadline).await
+            read_document(&held, url, answer_by, deadline).await
         })
     }
 }
@@ -373,10 +418,12 @@ impl CimdFetch for ConnectorFetch {
 /// The far end's answer, read to its completion: its status judged on the head (a 3xx is refused:
 /// the document lives at the `client_id`; anything else that is not a success is refused), then
 /// the body under the document ceiling, enforced while the bytes arrive, so an oversized document
-/// costs the cap and not itself. ONE deadline for the whole exchange.
+/// costs the cap and not itself. The head must arrive by `answer_by` ([`ANSWER_DEADLINE`]); the
+/// whole exchange must end by `deadline`.
 async fn read_document(
     held: &Held<'_>,
     url: &str,
+    answer_by: tokio::time::Instant,
     deadline: tokio::time::Instant,
 ) -> Result<Vec<u8>, String> {
     let (table, conn) = (held.table, held.conn);
@@ -384,12 +431,19 @@ async fn read_document(
     let mut status: Option<u32> = None;
     let mut body: Vec<u8> = Vec::new();
     loop {
+        let (until, missed) = match status {
+            None => (
+                answer_by.min(deadline),
+                "the far end did not answer within the answer deadline",
+            ),
+            Some(_) => (deadline, "the fetch's deadline passed"),
+        };
         let piece = tokio::time::timeout_at(
-            deadline,
+            until,
             std::future::poll_fn(|cx| table.conns.poll_read(table.owner, conn, cx, &mut buf)),
         )
         .await
-        .map_err(|_| format!("fetching `{url}` failed: the fetch's deadline passed"))?
+        .map_err(|_| format!("fetching `{url}` failed: {missed}"))?
         .map_err(|e| format!("fetching `{url}` failed: {e}"))?;
         match piece.kind {
             PieceKind::Completion => break,
@@ -852,7 +906,9 @@ impl Storage for Backend {
 #[derive(Clone, Debug)]
 pub(crate) struct Pushed {
     pub(crate) client_id: String,
-    pub(crate) scope: String,
+    /// The pushed `scope`, `None` when the request named none (it is then granted the client's
+    /// default, which is what the screen names).
+    pub(crate) scope: Option<String>,
     pub(crate) redirect_uri: String,
     expires_at: std::time::SystemTime,
     /// Whether the consent screen has shown this request already.
@@ -895,7 +951,7 @@ impl CimdStore {
             return match store.pushed(request_uri).await {
                 Ok(found) => found.map(|record| Pushed {
                     client_id: record.client_id.as_str().to_string(),
-                    scope: record.scope.clone().unwrap_or_default(),
+                    scope: record.scope.clone(),
                     redirect_uri: record.redirect_uri.clone().unwrap_or_default(),
                     expires_at: record.expires_at,
                     shown: false,
@@ -965,8 +1021,8 @@ impl CimdStore {
 impl CimdStore {
     /// One fetch of the document at `url`, validated: its client, or `None` (an unknown client)
     /// when the fetch is refused or fails, the document fails validation, or
-    /// [`MAX_FETCHES_PER_SITE`] are already in flight for its site, or no fetch permit frees within
-    /// [`PERMIT_WAIT`].
+    /// [`MAX_FETCHES_PER_SITE`] are already in flight for one of its shares ([`shares_of`]), or no
+    /// fetch permit frees within [`PERMIT_WAIT`].
     async fn fetch_document(&self, url: &str) -> Option<Arc<Client>> {
         let Some(_share) = self.documents.site_share(url) else {
             tracing::debug!(
@@ -1268,7 +1324,7 @@ impl Storage for CimdStore {
         let request_uri = record.request_uri.clone();
         let summary = Pushed {
             client_id: record.client_id.as_str().to_string(),
-            scope: record.scope.clone().unwrap_or_default(),
+            scope: record.scope.clone(),
             redirect_uri: record.redirect_uri.clone().unwrap_or_default(),
             expires_at: record.expires_at,
             shown: false,

@@ -49,15 +49,16 @@
 pub mod cimd;
 pub mod config;
 pub mod consent;
+/// The hosted browser login flow (`GET /auth/token`; THE DESIGN §8), moved from the kernel (row 159,
+/// K3#2) and reached through the kernel's login seam.
+mod hosted_login;
 pub mod plane;
 pub mod policy;
 pub mod routes;
 pub mod shared;
 pub mod signer;
-// `testkit` names `busbar_kernel::test_support::TestApp`, which only exists when the kernel compiles
-// with its own `test-support` feature (or under `cfg(test)`) — so this module is gated the same way,
-// and a production build of this crate (the shipped binary's dependency) never reaches for it.
-#[cfg(any(test, feature = "test-support"))]
+// `testkit`: this crate's own tests' `oauth_as:`-configured `TestApp` builder.
+#[cfg(test)]
 pub mod testkit;
 
 // A module whose tests are its own wires them from inside itself (`#[path = "tests/…"] mod …;`):
@@ -118,6 +119,9 @@ impl Connections for NoConnections {
 /// for the same reason. `oauth_as:` carries no feature flag (it is a normal dependency, like the
 /// underlying `oauth-as` crate always was), so every real build calls this.
 pub fn install<C: Connections>() {
+    // The hosted login flow: the kernel mounts `GET /auth/token` and routes a credential-form
+    // `POST /auth/token` through this seam (row 159, K3#2).
+    busbar_kernel::auth::login::seam::install(hosted_login::SEAM);
     busbar_kernel::oauth_as::seam::install_as_plane_seam(
         busbar_kernel::oauth_as::seam::AsPlaneSeam {
             check: config::seam_check,

@@ -40,6 +40,11 @@
 //! session, and the collection `FROM_KERNEL` answers `x`), any other piece is echoed `echo:<x>`, and
 //! the caller's last piece ends the reply. A far-end piece is answered `far-said:<x>`. `/sessions`
 //! answers the session counters, in [`Sessions`] order.
+//!
+//! Opened with `capture_to` (a directory), it records each generation it retires there as an empty
+//! `retired.<generation>`; opened with `unchecked_refresh: true`, every `refresh` answers READY with
+//! a snapshot whose first claim's arrival span is no span name (`[a-z0-9_]`), which the host's copy
+//! of the snapshot refuses.
 
 #![allow(clippy::missing_safety_doc, unsafe_op_in_unsafe_fn)]
 
@@ -63,10 +68,11 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::call::{MetricEntry, METRIC_SET};
 use busbar_contract::abi::mechanism::door::{
-    Door, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE, SECTION_DECLARING,
+    Door, DoorParts, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE,
+    SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, OpsHead, RefreshIn, TickIn, TickOut, LIFECYCLE_SLOTS,
+    CancelIn, CancelOut, DriveIn, GenIn, OpsHead, RefreshIn, TickIn, TickOut, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
@@ -338,7 +344,7 @@ static OPS: Shared<Ops> = Shared(Ops {
         validate: Some(ready),
         open: Some(open),
         refresh: Some(refresh),
-        retire: Some(ready),
+        retire: Some(retire),
         tick: Some(tick),
         drive: Some(drive),
         cancel: Some(cancel),
@@ -356,15 +362,19 @@ static OPS: Shared<Ops> = Shared(Ops {
     catalog: None,
 });
 
-static DOOR: Shared<Door> = Shared(Door {
-    magic: DOOR_MAGIC,
-    mechanism_version: MECHANISM_VERSION,
-    size: std::mem::size_of::<Door>() as u32,
-    kind: KindCode::Plane as u32,
-    kind_abi: KindCode::Plane.abi_version(),
-    statement: &STATEMENT.0 as *const Statement,
-    ops: &OPS.0 as *const Ops as *const OpsHead,
-    ready: None,
+// SAFETY: the Statement and plane table are this file's own `'static` data, laid out above: every
+// list points at its stated count of `'static` entries and every slot honours the call convention.
+static DOOR: Shared<Door> = Shared(unsafe {
+    Door::__from_parts(DoorParts {
+        magic: DOOR_MAGIC,
+        mechanism_version: MECHANISM_VERSION,
+        size: std::mem::size_of::<Door>() as u32,
+        kind: KindCode::Plane as u32,
+        kind_abi: KindCode::Plane.abi_version(),
+        statement: &STATEMENT.0 as *const Statement,
+        ops: &OPS.0 as *const Ops as *const OpsHead,
+        ready: None,
+    })
 });
 
 /// The claims: every path under `/call` for POST, `/open`, a claim that takes no inbound
@@ -393,6 +403,10 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
     },
 ]);
 
+/// The claims' arrival spans (status row 173), one per claim: an arrival on `/call` opens
+/// `test_arrival`; `/open` and `/framed` open none, the RED arm of the root's span test.
+static ARRIVALS: Shared<[AbiStr; 3]> = Shared([s(b"test_arrival"), s(b""), s(b"")]);
+
 /// The admin routes the snapshot publishes, served through `serve`: an audited admin route, and a
 /// public one the kernel's admin table never serves.
 static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
@@ -417,7 +431,7 @@ static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
 const SHORT_REPLY: usize = 1 << 20;
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
-pub extern "C" fn door() -> *const Door {
+pub extern "C" fn door() -> &'static Door {
     &DOOR.0
 }
 
@@ -442,6 +456,10 @@ struct Unit {
 
 struct Inst {
     wake: WakeFn,
+    /// The directory the open settings' `capture_to` named, where `retire` records.
+    capture: Option<std::path::PathBuf>,
+    /// The open settings' `unchecked_refresh`: every refreshed snapshot fails the host's copy.
+    unchecked_refresh: bool,
     /// The host's service table, as `open` was handed it (`/clock` reads its `clock.now`).
     services: *const HostSlots,
     ctx: HostCtx,
@@ -560,17 +578,43 @@ unsafe fn record(tag: &str, settings: Blob, blobs: &[(&str, Blob)]) {
     }
 }
 
-/// `refresh`: the next generation, its snapshot the first one's claims; recorded.
+/// The arrival spans an `unchecked_refresh` snapshot states, one per claim: the first is no span
+/// name, so the host's copy refuses the snapshot.
+static UNCHECKED_SPANS: Shared<[AbiStr; 3]> = Shared([s(b"Not-A-Span"), NO_STR, NO_STR]);
+
+/// `refresh`: the next generation, its snapshot the first one's claims (with `unchecked_refresh`,
+/// spans the host refuses); recorded.
 extern "C" fn refresh(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let i = &*input.cast::<RefreshIn>();
         record("refresh", i.settings, &[]);
         let me = inst(instance);
+        let (arrival_spans, arrival_spans_len) = if me.unchecked_refresh {
+            (UNCHECKED_SPANS.0.as_ptr(), UNCHECKED_SPANS.0.len())
+        } else {
+            (me.snapshot.arrival_spans, me.snapshot.arrival_spans_len)
+        };
         let snapshot = Box::leak(Box::new(PlaneSnapshot {
             generation: i.generation,
+            arrival_spans,
+            arrival_spans_len,
             ..*me.snapshot
         }));
         (*out.cast::<PlaneRefreshOut>()).snapshot = snapshot as *const PlaneSnapshot;
+        say(out, Outcome::Ready)
+    }
+}
+
+/// `retire`: the generation retired, recorded where the open settings named `capture_to`.
+extern "C" fn retire(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+    unsafe {
+        if !instance.is_null() {
+            let generation = (*input.cast::<GenIn>()).generation;
+            if let Some(dir) = &inst(instance).capture {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join(format!("retired.{generation}")), b"");
+            }
+        }
         say(out, Outcome::Ready)
     }
 }
@@ -579,6 +623,17 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
     unsafe {
         let i = &*input.cast::<PlaneOpenIn>();
         record("open", i.open.settings, &[("owned", i.owned)]);
+        let opened = serde_json::from_slice::<serde_json::Value>(bytes(i.open.settings)).ok();
+        let capture = opened
+            .as_ref()
+            .and_then(|v| v.get("capture_to"))
+            .and_then(serde_json::Value::as_str)
+            .map(std::path::PathBuf::from);
+        let unchecked_refresh = opened
+            .as_ref()
+            .and_then(|v| v.get("unchecked_refresh"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let Some(host) = i.open.host.as_ref() else {
             return say(out, Outcome::Refused);
         };
@@ -632,11 +687,13 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             resource_facts,
             listed: std::ptr::null(),
             listed_len: 0,
-            arrival_spans: std::ptr::null(),
-            arrival_spans_len: 0,
+            arrival_spans: ARRIVALS.0.as_ptr(),
+            arrival_spans_len: ARRIVALS.0.len(),
         });
         let me = Box::new(Inst {
             wake,
+            capture,
+            unchecked_refresh,
             services: host.services,
             ctx: host.ctx,
             snapshot,

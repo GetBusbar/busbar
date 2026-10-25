@@ -71,3 +71,38 @@ fn a_committed_rewrite_crosses_to_the_plane_as_one_and_never_as_absent() {
     // The control: empty bytes ARE the absent blob, which is why the crossing must never make them.
     assert!(blob(&[]).ptr.is_null(), "empty bytes cross as ABSENT");
 }
+
+/// THE CROSSING IS WRITTEN WITHOUT A JSON TREE (row 159 K2#4), BYTE FOR BYTE what the tree wrote:
+/// the hook's values serialized straight from the reply carry the same bytes as the
+/// `{"messages": .., "tools": ..}` object built from copies of them, nested objects, escapes and
+/// numbers included.
+#[test]
+fn the_crossing_is_byte_identical_to_the_object_it_replaced() {
+    let replies = [
+        RewriteReply {
+            messages: Vec::new(),
+            tools: Vec::new(),
+        },
+        RewriteReply {
+            messages: vec![
+                serde_json::json!({ "role": "system", "content": "be \"brief\"\n" }),
+                serde_json::json!({
+                    "role": "user",
+                    "content": [{ "type": "text", "text": "é ✓" }, { "z": 1, "a": [1.5, -2, null] }],
+                }),
+            ],
+            tools: vec![serde_json::json!({ "name": "t", "parameters": { "b": true, "a": {} } })],
+        },
+    ];
+    for rw in &replies {
+        let tree = serde_json::to_vec(&serde_json::json!({
+            "messages": rw.messages,
+            "tools": rw.tools,
+        }))
+        .expect("the object serializes");
+        assert_eq!(
+            String::from_utf8(rewrite_bytes(rw)).expect("utf-8"),
+            String::from_utf8(tree).expect("utf-8")
+        );
+    }
+}

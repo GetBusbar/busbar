@@ -6,10 +6,10 @@
 //! (`egress::fixtures::TlsDouble`): what each posture HANDS the wrap — the ALPN offer 1.5.5's hello
 //! carried, the extra roots joining the webpki store, the identity presented only when one was built
 //! in — and that a peer demanding an identity refuses a hop that carried none. The identity's key is
-//! wiped on the last handle's drop. The same postures over the REAL wrap — the R4 parity corpus of
-//! the identity PEM walk against `reqwest::Identity::from_pem`, the mutual handshake recording the
-//! engine identity's leaf, the private CA accepted only with its extra root, the garbage root
-//! failing the build — are the connector's `tls/engine_tests.rs`.
+//! wiped on the last handle's drop. The connector's own outbound TLS (the dial the shipped binary
+//! makes) proves its postures over a real handshake in `busbar-core-connector`'s
+//! `tls/client_tests.rs`: the private CA trusted only with its extra anchor, the pinned key, the
+//! client identity presented to a mutual peer.
 
 use std::sync::Arc;
 

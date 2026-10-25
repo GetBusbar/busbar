@@ -651,46 +651,6 @@ fn the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first() {
     assert_eq!(before, engine.len(), "a read changed the working set");
 }
 
-/// AN IDLE ACTIVE HANDLE IS NEVER EVICTED, AND NEVER SETTLED BY THE SWEEP (`BUSBAR-1.6.0.md` THE
-/// DESIGN §1, "Admission bounds live work; nothing evicts it"; ARCHITECT 2026-10-07 K2-H5 (ii)). A
-/// second submit far past any idle age claims the sweep, and the handle the plane never settled is
-/// still ACTIVE after it: only the plane ends live work, and live work is bounded at admission.
-#[test]
-fn an_idle_active_handle_stays_active_through_the_next_sweep() {
-    let engine = DurableHandleEngine::new();
-    submit_demo(
-        &engine,
-        DemoRow {
-            id: "idle".into(),
-            owner: "o".into(),
-            updated_at: 0,
-            terminal: false,
-            cursor: 0,
-        },
-        0,
-    );
-    // A second submit far past any idle age claims the sweep; the idle handle is untouched by it.
-    submit_demo(
-        &engine,
-        DemoRow {
-            id: "fresh".into(),
-            owner: "o".into(),
-            updated_at: 1000,
-            terminal: false,
-            cursor: 0,
-        },
-        1000,
-    );
-    let idle = engine
-        .meta("idle")
-        .expect("an active handle is never evicted");
-    assert!(
-        !idle.terminal,
-        "the sweep settled an idle ACTIVE handle; only the plane may end live work"
-    );
-    assert_eq!(idle.updated_at, 0, "the sweep moved an idle ACTIVE handle");
-}
-
 /// A SWEEP NEVER TRANSITIONS AN ACTIVE HANDLE, HOWEVER LONG IT IDLES. The sweep touches only
 /// terminal handles: whatever the idle age at which a submit claims it, an ACTIVE handle's
 /// meta is unchanged, its durable row is unchanged and its chain gains no event — no transition

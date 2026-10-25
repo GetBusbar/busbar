@@ -14,12 +14,23 @@
 //! ticket is judged by the permutation's inverse ([`Judged`]): one the slot minted is a late wake,
 //! dropped; one it never minted is a FORGERY, blamed on the wake's supplier. A slot whose counter is
 //! spent is RETIRED, never handed out again.
+//!
+//! THE RESULTS KEPT UNDER AN INLINE TICKET are an op's own, as a worker ticket's are (THE DESIGN
+//! §11.12, "the host never runs a service twice"; §11.11 H2): the dispatcher's stored service
+//! results and the connector's kept answers under the ticket are forgotten when a NEW op (not a
+//! resume, and not the one re-call a short answer earns) starts on it ([`InlineTickets::starting`]),
+//! and when the ticket is dropped. Kept, the next op, whose handles count from 0 again, would
+//! redeem the last op's answer (the same random bytes, a stale verdict) and the entries would never
+//! be freed.
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::task::{Wake, Waker};
 
 use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::conn::InstanceId;
+
+use super::services::ServiceStore;
 
 use super::handle::{ticket_count, ticket_generation, TicketKey};
 use super::ticket::{decode, encode, MAX_INDEX, MAX_WORKERS};
@@ -44,6 +55,11 @@ pub(crate) struct Slot {
 struct Held {
     generation: u32,
     waker: Option<Waker>,
+    /// The instance whose ops this generation drove: its kept connector answers under the ticket
+    /// are forgotten with the ticket.
+    instance: Option<InstanceId>,
+    /// The op whose last call answered short: the one re-call it earns reads the results it kept.
+    short: Option<u32>,
 }
 
 impl Slot {
@@ -118,6 +134,8 @@ pub struct InlineTickets {
     /// The dispatcher's ticket key: inline generations are permuted as a worker slot's.
     key: TicketKey,
     slots: Mutex<(Vec<Arc<Slot>>, Vec<u32>)>,
+    /// The dispatcher's service results, which keep what an op on an inline ticket was answered.
+    services: Weak<ServiceStore>,
 }
 
 impl std::fmt::Debug for InlineTickets {
@@ -127,11 +145,49 @@ impl std::fmt::Debug for InlineTickets {
 }
 
 impl InlineTickets {
-    /// The inline tickets of a dispatcher whose ticket key is `key`.
-    pub(crate) fn new(key: TicketKey) -> Self {
+    /// The inline tickets of a dispatcher whose ticket key is `key` and whose service results
+    /// `services` keeps.
+    pub(crate) fn new(key: TicketKey, services: &Arc<ServiceStore>) -> Self {
         Self {
             key,
             slots: Mutex::default(),
+            services: Arc::downgrade(services),
+        }
+    }
+
+    /// An op of `instance`'s op `s` is about to cross on the inline ticket `t`. A NEW op (not a
+    /// `resume`, and not the one re-call of an op whose last call answered short) starts with
+    /// nothing kept: the last op's stored service results and kept connector answers under `t` go,
+    /// ending their epoch, so a service of the last op still running completes into nothing.
+    pub(crate) fn starting(&self, t: Ticket, instance: InstanceId, s: u32, resume: bool) {
+        let Some(slot) = self.lookup(t) else {
+            return;
+        };
+        let fresh = {
+            let mut held = slot.section();
+            if held.generation == 0 || held.generation != t.generation {
+                return;
+            }
+            held.instance = Some(instance);
+            !resume && held.short.take() != Some(s)
+        };
+        if fresh {
+            if let Some(store) = self.services.upgrade() {
+                store.forget(t);
+            }
+            super::conn_services::forget(instance, t);
+        }
+    }
+
+    /// The op `s` on the inline ticket `t` returned; `short`: it answered short, and its one
+    /// re-call reads what it kept.
+    pub(crate) fn ended(&self, t: Ticket, s: u32, short: bool) {
+        let Some(slot) = self.lookup(t) else {
+            return;
+        };
+        let mut held = slot.section();
+        if held.generation != 0 && held.generation == t.generation {
+            held.short = short.then_some(s);
         }
     }
 
@@ -149,6 +205,8 @@ impl InlineTickets {
                     held: Mutex::new(Held {
                         generation: ticket_generation(self.key, INLINE_WORKER, i, 1),
                         waker: None,
+                        instance: None,
+                        short: None,
                     }),
                 }));
                 i
@@ -227,12 +285,27 @@ impl InlineTickets {
         let g = next.map_or(0, |c| ticket_generation(self.key, INLINE_WORKER, index, c));
         // The generation and the waker go together, in the section: no wake for the old
         // generation takes a waker from here on, and the next task registers on a clean slot.
-        let gone = {
+        let (gone, instance, old) = {
             let mut held = slot.section();
+            let old = held.generation;
             held.generation = g;
-            held.waker.take()
+            held.short = None;
+            (held.waker.take(), held.instance.take(), old)
         };
         drop(gone);
+        // What the dropped ticket's last op kept goes with it, before its slot can be handed out.
+        let dropped = Ticket {
+            slot: encode(INLINE_WORKER, index),
+            generation: old,
+        };
+        if old != 0 {
+            if let Some(store) = self.services.upgrade() {
+                store.forget(dropped);
+            }
+            if let Some(instance) = instance {
+                super::conn_services::forget(instance, dropped);
+            }
+        }
         if next.is_some() {
             self.slots
                 .lock()

@@ -213,12 +213,13 @@ fn nonstream_same_proto_all_protocols() {
 // ---- ONE PROJECTION: the buffered billing arm and the stream tap must agree ----
 
 /// A Cohere completion whose separately-metered `billed_units` differ from the raw `tokens` bucket
-/// must be ledgered IDENTICALLY whether it was served buffered or streamed. The buffered arm is
+/// must be ledgered IDENTICALLY whether it was served buffered or streamed, and on the raw counts
+/// 1.5.5 billed. The buffered arm is
 /// `ChatRespHandle::billing()`; the streamed arm is the A-tap, which ledgers
 /// `IrUsage::to_token_usage()`. Both answer the SAME completion, so a divergence here is a
 /// same-request double answer: the operator is invoiced two different numbers depending on a
 /// `stream` flag the provider's own counts do not depend on. Guards against the buffered arm
-/// growing a SECOND projection that rebuilds `TokenUsage` from the RAW totals.
+/// growing a SECOND projection.
 #[test]
 fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
     use busbar_contract::billing::Billing;
@@ -238,8 +239,8 @@ fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
     let streamed = ir.usage.to_token_usage();
     assert_eq!(
         (streamed.input, streamed.output),
-        (120, 50),
-        "the stream tap ledgers the BILLED counts"
+        (100, 40),
+        "the stream tap ledgers the RAW counts, as 1.5.5 did"
     );
 
     // The BUFFERED billing arm over the same IR.
@@ -254,7 +255,6 @@ fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
     };
     assert_eq!(
         buffered, streamed,
-        "buffered and streamed billing must be ONE projection of one completion's usage — the \
-         buffered arm must not rebuild TokenUsage from the raw totals and ignore billed_units"
+        "buffered and streamed billing must be ONE projection of one completion's usage"
     );
 }

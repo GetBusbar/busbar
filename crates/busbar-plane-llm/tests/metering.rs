@@ -11,6 +11,10 @@
 //! first kind would bill the cached prefix twice. The codec's reader is where that is settled, and
 //! the case below is the one where getting it wrong is worth eighty tokens a request.
 
+// A list read is `unsafe` while its pointer and length fields are pub (status row 194), and
+// safe once #1471 makes them private: the same `unsafe { x.list() }` compiles on both.
+#![allow(unused_unsafe)]
+
 mod harness;
 
 use busbar_contract::bounded::Labels;
@@ -326,17 +330,15 @@ fn the_meter_classes_are_the_doors_billable_classes_by_their_1_5_5_names() {
         .iter()
         .map(|c| (c.key.as_str(), c.family))
         .collect();
-    // SAFETY: the tail's billable classes are a `'static` list of `billable_classes_len` entries.
-    let stated =
-        unsafe { std::slice::from_raw_parts(TAIL.billable_classes, TAIL.billable_classes_len) };
+    let stated = unsafe { TAIL.billable_classes() };
     let door: Vec<(&str, &str)> = stated[..declared.len()]
         .iter()
         .map(|b| {
             // SAFETY: each `AbiStr` names a `'static` string of `len` bytes.
             let (c, f) = unsafe {
                 (
-                    std::slice::from_raw_parts(b.class.ptr, b.class.len),
-                    std::slice::from_raw_parts(b.family.ptr, b.family.len),
+                    std::slice::from_raw_parts(b.class.ptr(), b.class.len()),
+                    std::slice::from_raw_parts(b.family.ptr(), b.family.len()),
                 )
             };
             (

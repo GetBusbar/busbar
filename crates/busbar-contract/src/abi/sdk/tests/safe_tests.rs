@@ -61,6 +61,9 @@ const OPEN_INSTALLS_NOTHING: usize = 5;
 const OPEN_DROP_PANICS: usize = 6;
 /// `close` with these `in.flags` answers FAILED.
 const CLOSE_FAILS: u32 = 7;
+/// `close` with these `in.flags` answers READY naming a reason leased from the state's own table
+/// (memory the box that goes at this `close` owns).
+const CLOSE_LEASES_ERROR: u32 = 8;
 /// `drive` with these `in.flags` answers FAILED with a reason leased from a table the body made
 /// for itself.
 const DRIVE_LOCAL_LEASE: u32 = 0x100;
@@ -164,10 +167,14 @@ mod plugin {
     safe_slot!(Release, Probe, ReleaseIn, OutHead, |_i, _input, _o| {
         Outcome::Ready
     });
-    safe_slot!(Close, Probe, InHead, OutHead, |_i, input, _o| {
+    safe_slot!(Close, Probe, InHead, OutHead, |i, input, o| {
         if input.flags == CLOSE_FAILS {
             Outcome::Failed
         } else {
+            if input.flags == CLOSE_LEASES_ERROR {
+                let p = i.get().expect("open installed a probe");
+                o.lease_str(|o| &o.error, &p.leases, "closing".to_string());
+            }
             Outcome::Ready
         }
     });
@@ -191,7 +198,7 @@ mod plugin {
 
 fn table() -> &'static LifecycleOnly {
     // SAFETY: the macro's `'static` door and table.
-    unsafe { &*(*plugin::door()).ops.cast::<LifecycleOnly>() }
+    unsafe { &*plugin::door().ops.cast::<LifecycleOnly>() }
 }
 
 fn in_head<T>(op: u32) -> InHead {
@@ -263,10 +270,16 @@ fn tick(instance: *mut c_void) -> (Outcome, u64) {
 }
 
 fn close(instance: *mut c_void, flags: u32) -> Outcome {
+    close_out(instance, flags).0
+}
+
+/// `close` with `flags`: its outcome and the `out` the host reads after it.
+fn close_out(instance: *mut c_void, flags: u32) -> (Outcome, OutHead) {
     let mut input = in_head::<InHead>(slot::CLOSE);
     input.flags = flags;
     let mut out = out_head::<OutHead>();
-    call(table().head.close, instance, &input, &mut out)
+    let o = call(table().head.close, instance, &input, &mut out);
+    (o, out)
 }
 
 #[test]
@@ -435,10 +448,27 @@ fn a_crossing_with_its_scoped_capture_allocates_nothing() {
     // The worker's first crossings build its capture slot.
     assert_eq!(tick(inst), (Outcome::Ready, 42));
     assert_eq!(tick(inst), (Outcome::Ready, 42));
-    crate::abi::CountingAlloc::reset();
+    crate::alloc_counter::reset();
     let answered = tick(inst);
-    let allocations = crate::abi::CountingAlloc::count();
+    let allocations = crate::alloc_counter::allocations();
     assert_eq!(answered, (Outcome::Ready, 42));
     assert_eq!(allocations, 0, "a warm crossing allocated");
     assert_eq!(close(inst, 0), Outcome::Ready);
+}
+
+#[test]
+fn red_a_ready_close_names_no_memory_its_freed_state_owned() {
+    // RED before the fix: the reason `close` leased from the state's table named the box the
+    // trampoline then freed, and the host read freed memory. The `out` the host reads now names
+    // none of it: its error is absent, the state gone, the answer READY.
+    let (o, instance, drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    let (closed, out) = close_out(instance, CLOSE_LEASES_ERROR);
+    assert_eq!(closed, Outcome::Ready);
+    assert_eq!(drops.load(Ordering::SeqCst), 1, "the state is gone");
+    assert!(
+        out.error.ptr.is_null() && out.error.len == 0,
+        "no reason names the freed box"
+    );
+    assert!(out.extensions.ptr.is_null(), "nor does any payload");
 }

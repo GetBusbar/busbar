@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SECRET KIND'S CALLS over the one dispatcher (THE DESIGN, "Plugins" and the plugin ABI; TODO step 28): the
+//! THE SECRET KIND'S CALLS over the one dispatcher (THE DESIGN, "Plugins" and the plugin ABI): the
 //! contract's [`SecretAxis`] and [`SecretCalls`], implemented here over [`Plugin`]`<`[`Secret`]`>`.
 //! [`SecretRows`] holds every secret plugin the composition root admitted — a compiled-in row (its
 //! linked door) and a dropped-in one (its verified library, discovered off its signed manifest) —
@@ -398,7 +398,7 @@ impl SecretCalls for LoadedSecret {
 }
 
 /// THE PROCESS'S SECRET PLUGINS, by Statement name and alias: the linked rows (fixed at build) and
-/// the dropped-in ones (replaced at each registry build), each loaded on first use through the one
+/// the dropped-in ones (replaced at each admission), each loaded on first use through the one
 /// loader and called through the one dispatcher. Two different plugins answering one word are
 /// refused when the dropped-in set is admitted ([`SecretRows::admit_dropped`], ARCHITECT Q-P4-12);
 /// neither door outranks the other. The composition root builds it and
@@ -560,6 +560,29 @@ impl SecretRows {
         &self,
         candidates: impl IntoIterator<Item = Candidate>,
     ) -> Result<(), String> {
+        let secrets = self.judge_dropped(candidates)?;
+        let all: Vec<Candidate> = self
+            .linked
+            .iter()
+            .cloned()
+            .chain(secrets.iter().cloned())
+            .collect();
+        for line in crate::boot::both_doors(&all) {
+            tracing::info!("{line}");
+        }
+        self.set_dropped(secrets);
+        Ok(())
+    }
+
+    /// The secret-kind candidates among `candidates`, judged as [`Self::admit_dropped`] judges
+    /// them and NOT put on the rows: what a build that commits nothing (a dry run) refuses.
+    ///
+    /// # Errors
+    /// The contested word and the two plugins that claim it, or two sugars that collide.
+    pub fn judge_dropped(
+        &self,
+        candidates: impl IntoIterator<Item = Candidate>,
+    ) -> Result<Vec<Candidate>, String> {
         let secrets: Vec<Candidate> = candidates
             .into_iter()
             .filter(|c| c.kind == KindCode::Secret)
@@ -572,11 +595,7 @@ impl SecretRows {
             .collect();
         crate::boot::one_owner(&all)?;
         crate::boot::sugars_of(&all)?;
-        for line in crate::boot::both_doors(&all) {
-            tracing::info!("{line}");
-        }
-        self.set_dropped(secrets);
-        Ok(())
+        Ok(secrets)
     }
 
     /// The DROPPED-IN secret plugins: every secret-kind candidate among `candidates` (the registry's
