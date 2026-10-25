@@ -7,21 +7,15 @@
 //! ## ONE STREAM, on the CORE chain
 //!
 //! The hash chain here is [`crate::audit`]'s: one append, one digest, one verifier, shared with other
-//! chains elsewhere in the codebase that log their own request-rate activity. This file used to own a
-//! third copy of that machinery. What it owns now is the RECORD, via `impl ChainedRecord for AuditEntry`, plus a bounded
-//! IN-PROCESS ring of the recent tail — a hot cache, never the system of record.
+//! chains elsewhere in the codebase that log their own request-rate activity. What this file owns is
+//! the RECORD, via `impl ChainedRecord for AuditEntry`, and the recording seam [`AUDIT`].
 //!
-//! ## Where durability lives — the ONE durable path
+//! ## Where durability lives — the ONE path
 //!
-//! Durability is the neutral journal seam's ([`crate::audit::auditlog`]): [`AuditLog::record_by`] is
-//! the ONE place an admin mutation is recorded, and it feeds that mutation onto the store-backed
-//! durable seam, which persists the hash-chained record into `plane_records`, seeds the read-model ring
-//! `GET /audit` serves, and is restored + verified at boot. This ring keeps NO durable state: it is a
-//! bounded in-process VecDeque, ephemeral by construction (started fresh on every boot), retained for
-//! the in-process tamper-evidence checks the audit unit tests assert on. There is ONE durable audit
-//! path: the store-backed journal seam, which is the sole write, read, boot-restore and verify path.
-//! (A separate durable audit table with its own sink, write-through, restore and rebase no longer
-//! exists — the seam is authoritative.)
+//! [`AuditLog::record_by`] is the one place an admin mutation is recorded. It puts the mutation on the
+//! store-backed journal seam ([`crate::audit::auditlog`]), which persists the hash-chained record into
+//! `plane_records`, keeps the read-model ring `GET /audit` serves, and is restored and verified at
+//! boot. Nothing here keeps a second copy.
 //!
 //! **Sharing the mechanism is not sharing the buffer, and the difference is load-bearing.** This log
 //! is admin-MUTATION-ONLY and its working set is a bounded ring of [`MAX_AUDIT_ENTRIES`]. An admin
@@ -263,122 +257,28 @@ pub use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTE
 /// exist") still resolves.
 pub use crate::audit::MAX_AUDIT_ENTRIES;
 
-/// The in-memory admin audit ring. `record_by` is append-only + bounded (FIFO prune of the oldest — a
-/// hot cache of the recent tail); `list` returns most-recent-first. It holds NO durable state: the
-/// durable path is the neutral journal seam ([`crate::audit::auditlog`]), which `record_by` feeds and
-/// which serves the durable write, the `GET /audit` read, and the boot restore + verify. This ring is
-/// ephemeral by construction, started fresh on every boot. Interior-mutable so it can be a shared
-/// global.
-pub struct AuditLog {
-    entries: std::sync::Mutex<std::collections::VecDeque<AuditEntry>>,
-    seq: std::sync::atomic::AtomicU64,
-}
+/// THE ADMIN AUDIT LOG'S RECORDING SEAM. It keeps nothing itself: `record_by` puts the mutation on
+/// the durable journal seam ([`crate::audit::auditlog`]), whose read model serves `GET /audit`, is
+/// written through to the configured store and is restored from it at boot. There is one ring, and it
+/// is that one.
+pub struct AuditLog;
 
 impl AuditLog {
-    const fn new() -> Self {
-        Self {
-            entries: std::sync::Mutex::new(std::collections::VecDeque::new()),
-            seq: std::sync::atomic::AtomicU64::new(1),
-        }
-    }
-
-    /// Record one mutation attempt. Never fails (a poisoned lock is recovered — losing the audit log
-    /// to a panic would be worse than proceeding). Bounded RAM ring: prunes the oldest past the cap.
-    /// WITH principal attribution: every mutation, success AND failure, is attributed to WHO attempted
-    /// it. Feeds the SAME mutation onto the durable journal seam — the ONE durable path.
+    /// Record one mutation attempt, success or failure, attributed to WHO attempted it. Never fails
+    /// the mutation it records: a store that refuses the write queues it (see
+    /// [`crate::audit::auditlog::emit_admin_hostless`]).
     pub fn record_by(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
-        // Allocate `seq` INSIDE the entries lock so it matches insertion order: fetching it before
-        // the lock let two concurrent recorders interleave (thread B takes the lock with the higher
-        // seq and pushes first, thread A pushes its lower seq behind it), producing out-of-order
-        // seq numbers in the ring. Under the lock, Relaxed is sufficient (the mutex is the ordering
-        // point).
-        // ONE clock read for this mutation, shared by the in-process ring seal below AND the journal-
-        // seam emitter after the ring block. Reading the clock twice (once here, once seam-side) would
-        // let the two records carry timestamps up to a second apart — a divergence a single read
-        // eliminates.
-        let ts = busbar_kernel::store::now();
-        {
-            let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-            let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            // Chain to the most recent entry (the back), before any prune.
-            let prev_hash = q.back().map(|e| e.hash.clone()).unwrap_or_default();
-            // The ring allocates the POSITION (it must, under this lock, to match insertion order);
-            // `crate::audit::seal` builds and digests the record. The caller's payload and the
-            // chain's position arrive through different arguments, so no call site can supply a seq
-            // or a link of its own choosing.
-            let entry: AuditEntry = crate::audit::seal(
-                ADMIN_LOG,
-                seq,
-                prev_hash,
-                AuditInput {
-                    ts,
-                    action: action.to_string(),
-                    resource: resource.to_string(),
-                    outcome: outcome.to_string(),
-                    principal: principal.to_string(),
-                },
-            );
-            while q.len() >= MAX_AUDIT_ENTRIES {
-                q.pop_front();
-            }
-            q.push_back(entry);
-        }
-        // THE CHOKEPOINT FEED onto the durable journal seam. `record_by` is the ONE place an admin
-        // mutation is recorded, so this ONE call — with the SAME `ts` sealed above — is the durable
-        // write. Fire-and-forget: it NEVER fails the mutation it records (see
-        // `audit::auditlog::emit_admin_hostless`), and the seam's own seq/prev_hash/hash are minted
-        // independently of this in-process ring's (both continue the same persisted chain).
-        crate::audit::auditlog::emit_admin_hostless(ts, action, resource, outcome, principal);
+        crate::audit::auditlog::emit_admin_hostless(
+            busbar_kernel::store::now(),
+            action,
+            resource,
+            outcome,
+            principal,
+        );
     }
 
-    /// Export the retained ring, oldest first. TEST-ONLY: the durable seam is production's restore
-    /// source; this backs the in-process restart-simulation tests (a fresh `AuditLog` re-seeded from
-    /// this process's ring) alongside `load`, and the proxy/egress audit-trail assertions.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn export(&self) -> Vec<AuditEntry> {
-        let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        q.iter().cloned().collect()
-    }
-
-    /// Seed the ring from an in-process snapshot. TEST-ONLY: the durable seam is production's restore
-    /// source (`audit::auditlog::PlaneAuditLog::restore_from_store`); this remains as the in-process
-    /// restart-simulation seam the ring tests drive. Replaces the current contents and resumes the
-    /// sequence AFTER the highest restored seq, so post-restart entries chain on without seq reuse.
-    #[cfg(test)]
-    pub fn load(&self, mut entries: Vec<AuditEntry>) {
-        // `load` IS the seeding path by definition: whatever it is handed came from OUTSIDE this
-        // process's live append stream, even when the `Vec` was produced by this process's OWN
-        // `export()`. `#[serde(skip)]` only clears provenance on an encoded round-trip; this path
-        // never encodes, so it clears it explicitly.
-        for e in &mut entries {
-            e.recorded_here = false;
-        }
-        let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let max_seq = entries.iter().map(|e| e.seq).max().unwrap_or(0);
-        q.clear();
-        q.extend(entries);
-        self.seq
-            .fetch_max(max_seq + 1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Verify the tamper-evidence chain over the RETAINED entries, through the ONE verifier in
-    /// [`crate::audit`]. A WINDOW, not a whole chain: the ring is bounded, so the oldest retained
-    /// entry's `prev_hash` may point at a digest that has been pruned and only its self-digest can
-    /// be checked. Returns `true` if intact.
-    #[cfg(test)]
-    pub fn verify(&self) -> bool {
-        let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let window: Vec<AuditEntry> = q.iter().cloned().collect();
-        crate::audit::verify_window(&window).is_ok()
-    }
-
-    /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
-    /// skip `offset`, then take `limit`. `None` filters match everything.
-    ///
-    /// NO PRODUCTION CALLER after the 1.6.0 seam read cutover: `GET /audit` reads the durable journal
-    /// seam's [`crate::audit::auditlog::AUDIT_LOG`]. This in-process ring's `list_filtered`/`list`
-    /// remain the direct-ring read the audit unit tests still assert on.
-    #[allow(dead_code)]
+    /// A page of the read model newest-first, optionally filtered by exact `action` and/or
+    /// `resource`: skip `offset`, then take `limit` (the rows `GET /audit` serves).
     pub fn list_filtered(
         &self,
         offset: usize,
@@ -386,15 +286,7 @@ impl AuditLog {
         action: Option<&str>,
         resource: Option<&str>,
     ) -> Vec<AuditEntry> {
-        let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        q.iter()
-            .rev()
-            .filter(|e| action.is_none_or(|a| e.action == a))
-            .filter(|e| resource.is_none_or(|r| e.resource == r))
-            .skip(offset)
-            .take(limit)
-            .cloned()
-            .collect()
+        crate::audit::auditlog::AUDIT_LOG.list_filtered(offset, limit, action, resource)
     }
 
     /// The most-recent `limit` entries, newest first (unfiltered).
@@ -402,11 +294,15 @@ impl AuditLog {
     pub fn list(&self, limit: usize) -> Vec<AuditEntry> {
         self.list_filtered(0, limit, None, None)
     }
+
+    /// The retained read model, oldest first.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn export(&self) -> Vec<AuditEntry> {
+        let mut entries = self.list_filtered(0, MAX_AUDIT_ENTRIES, None, None);
+        entries.reverse();
+        entries
+    }
 }
 
-/// The process-wide admin audit log. Const-constructed, so no lazy init needed.
-pub static AUDIT: AuditLog = AuditLog::new();
-
-#[cfg(test)]
-#[path = "tests/audit_ring_tests.rs"]
-mod tests;
+/// The process-wide admin audit log.
+pub static AUDIT: AuditLog = AuditLog;

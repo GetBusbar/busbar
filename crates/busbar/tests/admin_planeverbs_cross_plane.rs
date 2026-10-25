@@ -141,11 +141,14 @@ fn the_not_found_names_the_plane_s_own_subject() {
 /// THE AUDIT ACTION AND RESOURCE are `<kind>.<verb>` on `<kind>:<name>`, with the kind coming off
 /// the spine. These strings are read back by audit queries and compliance exports, so the kernel's
 /// ONE recorder (`admin::planeverbs::audit`) is driven for every linked plane with admin verbs and
-/// the row it writes is read back off the audit ring. Each plane pins its own published literals
+/// the row it writes is read back off the audit log's read model. Each plane pins its own published literals
 /// (`<kind>`, `<kind>.connect`, `<kind>.approve`) in its own crate's suite.
 #[test]
 fn the_audit_naming_is_derived_from_the_plane() {
     use busbar_kernel::audit_ring::AUDIT;
+    // The audit stream a booted node registers: an admin row is recorded on it and read back off
+    // its read model.
+    let _ = busbar_kernel::test_support::TestApp::new().build();
     let principal = busbar_contract::auth::AuthPrincipal(None);
     for decl in verb_planes() {
         assert_eq!(
