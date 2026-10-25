@@ -628,7 +628,7 @@ impl Rig {
                 .iter()
                 .map(|(n, v)| (n.as_bytes().to_vec(), v.as_bytes().to_vec()))
                 .collect(),
-            body: Arc::from(body),
+            body: bytes::Bytes::copy_from_slice(body),
         };
         let units = self.driver.unit(steps, &far, &caller, arrival, 0);
         let outcome = drive(&units).await;
