@@ -2107,6 +2107,35 @@ struct GatedKeyStore {
     fired: std::sync::atomic::AtomicBool,
 }
 impl busbar_kernel::governance::RecordStore for GatedKeyStore {
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> busbar_kernel::governance::RecordStoreResult<bool> {
+        self.inner.redeem_plane_token(kind, token, expires_at, now)
+    }
+    fn get_plane_record(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> busbar_kernel::governance::RecordStoreResult<Option<Vec<u8>>> {
+        self.inner.get_plane_record(kind, id)
+    }
+    fn upsert_plane_record(
+        &self,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
+        self.inner.upsert_plane_record(record)
+    }
+    fn purge_plane_records_before(
+        &self,
+        kind: &str,
+        before: u64,
+    ) -> busbar_kernel::governance::RecordStoreResult<u64> {
+        self.inner.purge_plane_records_before(kind, before)
+    }
     fn put_key(
         &self,
         key: &busbar_contract::records::VirtualKey,
@@ -2185,6 +2214,35 @@ struct SlowNthPutKeyStore {
     slow_on_call: usize,
 }
 impl busbar_kernel::governance::RecordStore for SlowNthPutKeyStore {
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> busbar_kernel::governance::RecordStoreResult<bool> {
+        self.inner.redeem_plane_token(kind, token, expires_at, now)
+    }
+    fn get_plane_record(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> busbar_kernel::governance::RecordStoreResult<Option<Vec<u8>>> {
+        self.inner.get_plane_record(kind, id)
+    }
+    fn upsert_plane_record(
+        &self,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
+        self.inner.upsert_plane_record(record)
+    }
+    fn purge_plane_records_before(
+        &self,
+        kind: &str,
+        before: u64,
+    ) -> busbar_kernel::governance::RecordStoreResult<u64> {
+        self.inner.purge_plane_records_before(kind, before)
+    }
     fn put_key(
         &self,
         key: &busbar_contract::records::VirtualKey,
@@ -6175,6 +6233,35 @@ impl CountingStore {
     }
 }
 impl busbar_kernel::governance::RecordStore for CountingStore {
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> busbar_kernel::governance::RecordStoreResult<bool> {
+        self.inner.redeem_plane_token(kind, token, expires_at, now)
+    }
+    fn get_plane_record(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> busbar_kernel::governance::RecordStoreResult<Option<Vec<u8>>> {
+        self.inner.get_plane_record(kind, id)
+    }
+    fn upsert_plane_record(
+        &self,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
+        self.inner.upsert_plane_record(record)
+    }
+    fn purge_plane_records_before(
+        &self,
+        kind: &str,
+        before: u64,
+    ) -> busbar_kernel::governance::RecordStoreResult<u64> {
+        self.inner.purge_plane_records_before(kind, before)
+    }
     fn put_key(
         &self,
         key: &busbar_contract::records::VirtualKey,
@@ -6650,6 +6737,35 @@ struct BarrierStore {
 }
 
 impl busbar_kernel::governance::RecordStore for BarrierStore {
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> busbar_kernel::governance::RecordStoreResult<bool> {
+        self.inner.redeem_plane_token(kind, token, expires_at, now)
+    }
+    fn get_plane_record(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> busbar_kernel::governance::RecordStoreResult<Option<Vec<u8>>> {
+        self.inner.get_plane_record(kind, id)
+    }
+    fn upsert_plane_record(
+        &self,
+        record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_kernel::governance::RecordStoreResult<()> {
+        self.inner.upsert_plane_record(record)
+    }
+    fn purge_plane_records_before(
+        &self,
+        kind: &str,
+        before: u64,
+    ) -> busbar_kernel::governance::RecordStoreResult<u64> {
+        self.inner.purge_plane_records_before(kind, before)
+    }
     fn put_key(
         &self,
         key: &busbar_kernel::governance::VirtualKey,

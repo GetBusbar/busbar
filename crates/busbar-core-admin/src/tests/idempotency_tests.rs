@@ -221,7 +221,9 @@ fn an_unsettled_claim_is_in_flight_until_it_lapses() {
     let k = key("alice", "unsettled-1");
     durable::claim(&store, &k, 1_000).unwrap();
     assert_eq!(durable::claim(&store, &k, 1_001), Err(Refused::InFlight));
-    assert!(durable::claim(&store, &k, 1_000 + IDEMPOTENCY_TTL_SECS).is_ok());
+    // A store may extend a claim on every attempt that loses it: the claim lapses one window after
+    // the LAST attempt, never before.
+    assert!(durable::claim(&store, &k, 1_001 + IDEMPOTENCY_TTL_SECS).is_ok());
 }
 
 /// Two principals presenting the same header never share a claim.
