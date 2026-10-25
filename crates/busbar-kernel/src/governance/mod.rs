@@ -854,6 +854,7 @@ pub mod group_provision;
 // `crate::governance::signing::…` path resolves to exactly the same items and nothing outside
 // busbar-core reaches them through this crate.
 mod state;
+pub use state::{AdjustRefused, Adjustment, PricedBucket};
 
 /// Which self-serve mint operation [`mint_self_offloaded`] should run on the blocking pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1997,7 +1997,6 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
     );
     let tokens: u64 = gov
         .bucket_model_tokens(
-            &neg_rate,
             "k1",
             crate::governance::WINDOW_TOTAL,
             1_700_000_000,

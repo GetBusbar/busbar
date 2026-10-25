@@ -275,597 +275,136 @@ impl AdminDispatch for RefusingDispatch {
 
 // ── the ledger's read-only views ────────────────────────────────────────────────────────────────
 
-/// The figures the five ledger views read.
-///
-/// A read seam and nothing else: four methods, none of which takes an argument and none of which
-/// can change anything. That shape is the point. The views are the one part of the administrative
-/// surface whose answer is not produced by the operation's own handler — there is no 1.5.5 handler
-/// for a figure 1.5.5 never kept — so the root has to reach the ledger itself, and reaching it
-/// through a seam that offers no way to write is what keeps "read-only admin surface" a property of
-/// the type rather than a promise in a comment.
-///
-/// It is deliberately NOT the ledger. A `Ledger` can settle, adjust and transfer; a view has no
-/// business holding one. What the root binds behind this is a snapshot of what the ledger holds,
-/// taken under whatever lock the node keeps it behind, and what the views render is that snapshot.
+/// One row of the one ledger, priced: a bucket's current window, its counts priced at the card each
+/// was earned under (MONEY-DESIGN §3: money is counts x the card, computed in core).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerRow {
+    /// The bucket: a key's id.
+    pub bucket: String,
+    /// The window the counts are in, as the unix second it opens at (`0` = the all-time window).
+    pub day: u64,
+    /// The priced figure, in nano-units: the one function's figure (scale six) at nano scale.
+    pub priced_nanos: u128,
+    /// Billable requests in the window: the fee base.
+    pub fee_count: u64,
+}
+
+/// A row the card refused to price (#42): it is withheld from the figures and named, never served
+/// as the priced remainder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedRow {
+    /// The bucket.
+    pub bucket: String,
+    /// The window, as the unix second it opens at.
+    pub day: u64,
+    /// The refusal, in the one function's own words.
+    pub refusal: String,
+}
+
+/// The one ledger as the views read it, as of one read: every priced row, and every refused one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PricedLedger {
+    /// The priced rows, in bucket order. A row nothing was counted in is not a row.
+    pub rows: Vec<LedgerRow>,
+    /// The rows the card refused to price.
+    pub refused: Vec<RefusedRow>,
+}
+
+/// The figures the ledger views read: THE ONE LEDGER, the configured store's usage counts, priced
+/// by the dated rate card in core. A read seam and nothing else: it cannot change anything.
 pub trait LedgerView: Send + Sync {
-    /// What the ledger posted, by row — the ledger side of the reconciliation identity.
-    fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot;
-
-    /// What the previous release's rows carry for the same cells — the other side of it. `Err` when
-    /// a row's figure cannot be projected into the `i64` that row carries (item 28): refused, never
-    /// pinned at `i64::MAX`.
-    fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError>;
-
-    /// THE SEALED CHECKPOINTS, OLDEST FIRST, each handed to `each` in turn with the balances it
-    /// sealed (Q128 kernel-ledger HIGH 1, ARCHITECT ruling A1). Handed over one at a time rather
-    /// than returned as a list: a node keeps each seal's head, and the figures are re-derived from
-    /// its chain as the read reaches them, so a read never holds more than one checkpoint's
-    /// figures.
+    /// Every key's usage row for its current window, priced.
     ///
     /// # Errors
     ///
-    /// The first checkpoint whose figures cannot be served: its record is not on the chain, the
-    /// chain re-derives figures that are not the sealed ones, or the journal cannot be read. The
-    /// refusal names its sequence number and carries no figure.
-    fn each_checkpoint(
-        &self,
-        each: &mut dyn FnMut(&Checkpoint),
-    ) -> Result<(), CheckpointUnreadable>;
-
-    /// The keyset a checkpoint's seal is verified against — the audit chain's own (Q71(3): one
-    /// keyset, #82). Empty by default: a view bound to no chain vouches for no signature.
-    fn checkpoint_keys(&self) -> AuditKeySet {
-        AuditKeySet::new()
-    }
-
-    /// The marker the first boot after the upgrade sealed, if this deployment has migrated.
-    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker>;
-
-    /// BOTH sides of the identity, as of one moment.
-    ///
-    /// The reconciliation view needs the two snapshots to be of the same instant, and reading them
-    /// through the two methods above cannot promise that: a settlement landing between the two calls
-    /// would leave the previous release's side holding a posting the ledger's side was read before,
-    /// and the view would report a discrepancy that never existed. On a busy node that is not a rare
-    /// race — it is every request.
-    ///
-    /// The default is the pair of reads, which is exactly right for a view whose answers do not move.
-    /// A view over live figures overrides it to take both under one hold of whatever lock it keeps
-    /// them behind, which is the only place that guarantee can be made.
-    fn identity_snapshot(
-        &self,
-    ) -> Result<
-        (
-            crate::root::ledger_identity::LedgerSnapshot,
-            crate::root::ledger_identity::LegacySnapshot,
-        ),
-        MoneyError,
-    > {
-        Ok((self.ledger_rows(), self.legacy_rows()?))
-    }
-
-    /// SEAM `booked-lines`: the lines this view can price, each carrying ITS OWN ARRIVAL INSTANT.
-    ///
-    /// The totals view's money is a READ-TIME CONVERSION over these, never a figure read off a
-    /// balance (#77(3)). A booked line holds the quantities by declared class, the lane the card is
-    /// keyed by, and `arrived_ms` — and that last field is the whole reason the seam carries lines
-    /// rather than sums: an amount already summed has lost the instants, and an instant is what
-    /// [`busbar_kernel_ledger::totals_as_of`] resolves a card at (#79).
-    ///
-    /// The default is EMPTY, and empty means "this view has no lines to price", NEVER "these rows
-    /// priced at nothing". [`derived_totals_rows`] reads it that way: with no lines there is no
-    /// derivation to make and the view falls back to the balance the book already holds, exactly as
-    /// the previous release answered. A silent zero on a money path is only ever correct where no
-    /// rate card is configured at all (#42), and this is not that.
-    fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
-        Vec::new()
-    }
-
-    /// SEAM `dated-history`: the deployment's dated rate-card history, PINNED for one read.
-    ///
-    /// Pinned rather than read per row: an apply landing while the read is in flight must not price
-    /// half of one response's rows against one history and half against another.
-    ///
-    /// `None` is "no operator has said what any of this costs", which is NOT "all of it is free".
-    /// The distinction is the whole of #42: free is an explicit zero rate row, and an absent row is
-    /// a question nobody has answered. A view that collapsed the two would report a deployment
-    /// nobody has priced as a deployment that costs nothing.
-    fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
-        None
-    }
-
-    /// The balances on this node's book that have NO FIGURE because a counts row on them REFUSED
-    /// to price (#42/#71), each named with its window, the lane that served the unit and the
-    /// refusal ([`Durability::refused_balances`]).
-    ///
-    /// A refused row moves no balance — [`Durability::post_counts`] is why one can exist at all
-    /// without a figure behind it — so it is invisible to [`LedgerView::ledger_rows`], which only
-    /// ever walks settled balances; the totals derivation would price its counts at whatever the
-    /// card now says rather than refuse them as the book does. A served figure for the row such a
-    /// balance folds into would be the priced remainder (or a price past the refusal), which is
-    /// exactly the silent zero #42 forbids, just moved from the pricing read to the admin read
-    /// beside it. So the reads REFUSE THAT ROW, and only that row: the totals and reconciliation
-    /// views withhold it and name it under `refused`, and `GET /admin/verify` reports it as a
-    /// finding. Every other row is answered. A read refused whole over one row would hide every
-    /// other figure and finding for the life of the journal, because a refused row is rebuilt from
-    /// the chain at every boot.
-    ///
-    /// Each read asks this AFTER it has read its rows, so a row refused between the two reads is
-    /// still withheld: the race can only withhold a row whose figure did not yet miss anything,
-    /// never serve one that did.
-    ///
-    /// The default is empty: [`UnopenedLedger`] and a view with no book behind it genuinely hold no
-    /// refused row, and saying so is the true and honest answer for them.
-    ///
-    /// [`Durability::refused_balances`]: crate::root::durability::Durability::refused_balances
-    /// [`Durability::post_counts`]: crate::root::durability::Durability::post_counts
-    fn refused_balances(&self) -> Vec<crate::root::durability::RefusedCounts> {
-        Vec::new()
-    }
-
-    /// SEAM `recorded-counts` (item 404): what the book RECORDED for the entry whose journal digest
-    /// is `amends` — the unit's principal, lane, card epoch and counts — which is what an `adjust`
-    /// corrects. `None` is "this view holds no such entry", and the verb answers `NotFound`.
-    fn recorded_counts(&self, _amends: &str) -> Option<RecordedCounts> {
-        None
-    }
-
-    /// What the `verify` verb checks (owner answer Q71(2)): the sealed checkpoints, oldest first,
-    /// each handed to `each` through the same re-derivation [`LedgerView::each_checkpoint`] reads,
-    /// and the book's balances as they stand NOW — both as of one moment, so a settlement landing
-    /// between the two reads cannot read as an imbalance.
-    ///
-    /// The book is an option, and `None` is "this view holds no book", NEVER "the book is empty":
-    /// the verifier then checks the checkpoints alone and says it did not verify a book. The default
-    /// is exactly that, which is the true answer for a view with no book behind it.
-    fn verify_snapshot(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
-        VerifySnapshot {
-            read: self.each_checkpoint(each),
-            book: None,
-            anchored: None,
-        }
-    }
-
-    /// What this node's boot reconciliation found: the book it rebuilt from its journal against a
-    /// second replay, and every record the chain could not read. Empty for a view with no book, and
-    /// for a node that booted clean.
-    fn restart_findings(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// What a walk of this node's retained audit chain finds: a record whose digest, link or
-    /// position does not hold, or whose signature does not verify. Empty for a view with no chain.
-    fn retained_audit_findings(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// What a walk of EVERY CHAIN THE CONFIGURED STORE KEEPS finds — this node's and every other
-    /// node's the registry names — each journal chain and the audit records on it, signatures
-    /// included, against the deployment keyset. Empty for a view with no store behind it.
-    fn stored_chain_findings(&self) -> Vec<String> {
-        Vec::new()
-    }
-
-    /// [`LedgerView::verify_snapshot`] with the anchor's head, all as of one moment. `None`
-    /// is "this view holds no anchor", which the verifier writes down as such; the default is that.
-    fn verify_snapshot_anchored(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
-        self.verify_snapshot(each)
-    }
+    /// The store could not be read; the answer names why, for the node's log only.
+    fn priced(&self) -> Result<PricedLedger, String>;
 }
 
-/// What one `verify` read took as of one moment: whether every held checkpoint was handed over
-/// (`Err` names the first that could not be, and the checkpoints after it were not), the book's
-/// balances now, and the anchor's head.
-#[derive(Debug)]
-pub struct VerifySnapshot {
-    /// Every held checkpoint handed over, or the first that could not be.
-    pub read: Result<(), CheckpointUnreadable>,
-    /// The book's balances now; `None` = this view holds no book.
-    pub book: Option<BookTotals>,
-    /// The anchor's head; `None` = this view holds no anchor.
-    pub anchored: Option<AnchoredHead>,
-}
-
-/// The book's balances, per bucket, dimension, scope and window — what a checkpoint seals and what
-/// `verify` measures the checkpoint against.
-pub type BookTotals = std::collections::BTreeMap<
-    (
-        busbar_kernel_ledger::totals::TotalsKey,
-        busbar_kernel_ledger::totals::WindowStart,
-    ),
-    busbar_kernel_ledger::totals::Totals,
->;
-
-/// The view a node has before a ledger is bound behind it.
-///
-/// Every answer is empty, and each emptiness is a statement rather than a placeholder: no rows were
-/// posted, no rows were read, nothing has been sealed and this deployment has not migrated. A node
-/// composed without a ledger genuinely has none of those things, and saying so is a true answer.
-///
-/// What it is NOT is a reconciliation that balances. Two empty snapshots do reconcile — trivially —
-/// and that is honest here precisely because the emptiness is visible in the totals view beside it:
-/// an operator reading `"rows": []` can see that the identity held over nothing.
+/// The view a node has before a ledger is bound behind it: no rows, which is the truth about a node
+/// composed with no governance store.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnopenedLedger;
 
 impl LedgerView for UnopenedLedger {
-    fn ledger_rows(&self) -> crate::root::ledger_identity::LedgerSnapshot {
-        crate::root::ledger_identity::LedgerSnapshot::new()
-    }
-
-    fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError> {
-        Ok(crate::root::ledger_identity::LegacySnapshot::new())
-    }
-
-    fn each_checkpoint(&self, _: &mut dyn FnMut(&Checkpoint)) -> Result<(), CheckpointUnreadable> {
-        Ok(())
-    }
-
-    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
-        None
+    fn priced(&self) -> Result<PricedLedger, String> {
+        Ok(PricedLedger::default())
     }
 }
 
-/// The views over the figures THIS node holds.
-///
-/// The default [`UnopenedLedger`] is an honest answer for a node that has no ledger; it is the wrong
-/// answer for one that does, because "no rows" and "no rows I was wired to read" are indistinguishable
-/// from outside and only the first is a fact about the deployment.
-///
-/// ## What it holds, and why it is a handle rather than a copy
-///
-/// A handle on the node's own durability, behind the node's own lock. Not a snapshot taken when the
-/// node was composed: that would freeze the served figures at boot, and a stale figure that still
-/// looks like a current one is worse for an operator than an empty table. The snapshot is taken HERE,
-/// per request, under the same lock a settlement holds — so no view can catch a unit half-settled,
-/// with the ledger moved and the journal not yet appended.
-///
-/// ## Why it still cannot write
-///
-/// The lock is taken and a VALUE comes back out; nothing behind [`LedgerView`] hands out a `&mut` to
-/// anything, and the four methods take no argument. The dual write is reached through
-/// [`LegacyRowsRead`], which is the read half of a seam whose write half lives inside the ledger. So
-/// "read-only administrative surface" stays a property of the types rather than of this comment.
-///
-/// ## The row width the node actually keeps
-///
-/// The reconciliation's row is `(bucket, day, lane, provider)`, because that is the width the
-/// previous release's usage rows are queried at and the width a discrepancy can hide inside. A live
-/// node's books are narrower: the ledger's cells are keyed by bucket and window, and the postings the
-/// dual write produces carry the same two and no more — the serving lane and its provider are facts
-/// about the request, and neither the books nor the row this crate writes retain them.
-///
-/// So both sides are read at the width the node keeps, with the lane and the provider EMPTY, and
-/// that is not a narrowing of the check: the two snapshots are read at the same width, so a posting
-/// the dual write lost is still a residual naming its bucket and its day. What it does mean is that
-/// two lanes inside one bucket-day cannot cancel here the way the identity's full width forbids —
-/// which is why the release's own gate on that identity is the test over both pricing paths, and
-/// this view is the operator's read of the node rather than a second gate.
-///
-/// The fee count is read on BOTH sides from the one settlement that moved them: a posting that is
-/// `n` billable requests settles `n` onto the balance beside its figure and writes `n` onto the
-/// previous release's row as that row's billable requests. So the count half of the identity
-/// compares two real counts — a dual write that dropped or doubled a count is a row that is out,
-/// exactly as a dropped figure is.
-pub struct NodeLedger {
-    durability: Arc<Mutex<crate::root::durability::Durability>>,
-    legacy: Arc<dyn LegacyRowsRead>,
+/// THE VIEWS OVER THE ONE LEDGER: the live governance state's usage rows, read through the same
+/// cell [`busbar_kernel::governance::GovState::usage_for`] answers `/keys/{id}/usage` from and
+/// priced by the same function, so the ledger views and the key usage read are one money. Read off
+/// the live snapshot per call, so a config apply is what the next read sees.
+pub struct CountsLedger {
+    app: Arc<busbar_kernel::state::AppHandle>,
 }
 
-impl std::fmt::Debug for NodeLedger {
+impl std::fmt::Debug for CountsLedger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NodeLedger").finish_non_exhaustive()
+        f.debug_struct("CountsLedger").finish_non_exhaustive()
     }
 }
 
-impl NodeLedger {
-    /// Bind the views to a node's durability and to the read half of its dual write.
+impl CountsLedger {
+    /// The views over `app`'s live governance state.
     #[must_use]
-    pub fn new(
-        durability: Arc<Mutex<crate::root::durability::Durability>>,
-        legacy: Arc<dyn LegacyRowsRead>,
-    ) -> Self {
-        NodeLedger { durability, legacy }
-    }
-
-    /// The lock, taken the way every other reader of it takes it.
-    ///
-    /// A poisoned lock is read through rather than refused. The panic that poisoned it happened
-    /// somewhere else; the four things behind this lock are append-only, so what a reader sees is a
-    /// prefix of the truth rather than a corrupted one, and refusing to serve an operator a figure
-    /// because an unrelated unit panicked is the wrong trade on a diagnostic surface.
-    fn lock(&self) -> std::sync::MutexGuard<'_, crate::root::durability::Durability> {
-        self.durability.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    /// The ledger's side, off a lock somebody already holds: **THE BOOK'S BALANCE**.
-    ///
-    /// `settled` is what the node DREW against the bucket and posted when its units ended, at the
-    /// rates in force then — the figure the budget was enforced on. It is not a price and must not
-    /// be published as one: a figure that was computed once at settlement cannot reflect a rate row
-    /// added afterwards, which is exactly the stored price #77(3) forbids and exactly what leaves
-    /// the dated history inert for a view that echoes it.
-    ///
-    /// **It is therefore the reconciliation's side and the totals view's FALLBACK, never its
-    /// model.** The reconciliation identity compares this against the PREVIOUS release's rows,
-    /// which that release derived at settlement and never reprices, so both sides of it have to be
-    /// read at the same vintage. The totals view reaches it only through [`totals_rows`], and only
-    /// where the view's counted lines cannot be priced or are not the whole of the book's money —
-    /// see [`derived_totals_rows`] and [`LedgerView::booked_lines`].
-    fn rows_of(durability: &crate::root::durability::Durability) -> LedgerSnapshot {
-        use crate::root::ledger_identity::{LedgerRow, RowKey};
-
-        let mut rows = LedgerSnapshot::new();
-        for ((key, window), totals) in durability.ledger.book().iter() {
-            // A cell nothing has settled against is not a row. The books carry a cell as soon as a
-            // hold opens on it, and serving those as rows of zero would put a line in front of an
-            // operator for every key that was ever admitted and never billed. A cell whose settled
-            // figure has been adjusted below zero is not a row that was posted either, which is why
-            // this is a skip rather than a saturating cast that would report it as zero. A cell
-            // holding billable requests IS a row, figure or none: the previous release's side
-            // counts every one of them, and skipping it here would report its count as missing.
-            if totals.settled <= 0 && totals.fee_count == 0 {
-                continue;
-            }
-            let row = RowKey::new(
-                key.bucket.as_str(),
-                *window,
-                WIDTH_THE_NODE_KEEPS,
-                WIDTH_THE_NODE_KEEPS,
-            );
-            // Accumulated rather than inserted: one bucket-day can hold several cells — a dimension
-            // and a scope apiece — and at the width this view reads they are one row.
-            let entry: &mut LedgerRow = rows.entry(row).or_default();
-            if let Ok(settled) = u128::try_from(totals.settled) {
-                entry.priced_nanos = entry.priced_nanos.saturating_add(settled);
-            }
-            entry.fee_count = entry.fee_count.saturating_add(totals.fee_count);
-        }
-        rows
-    }
-
-    /// The previous release's side, off the same hold.
-    ///
-    /// The dual write happens inside the ledger's one book-moving function, which the node calls
-    /// under this same lock — so a reader holding it sees a settlement's two halves together or
-    /// neither, and never the ledger's half alone.
-    fn legacy_rows_under_lock(&self) -> Result<LegacySnapshot, MoneyError> {
-        use crate::root::ledger_identity::{LegacyRow, RowKey};
-
-        // Nano-units accumulate per row and the projection to micro-units happens ONCE over the sum,
-        // which is the ledger side's rule and has to be this side's too — projecting each posting
-        // first would floor every sub-micro posting to nothing and report a busy row as short.
-        //
-        // Folded rather than copied: the answer is one entry per row the node has settled into,
-        // which is a handful whatever the traffic since boot has been, and the postings themselves
-        // are read where they already live. A view that took a copy of the whole history first paid
-        // for every posting ever made, under the lock every settlement waits on.
-        let mut sums: std::collections::BTreeMap<RowKey, (u128, u64)> =
-            std::collections::BTreeMap::new();
-        self.legacy.fold_postings(&mut |posting| {
-            let row = RowKey::new(
-                posting.bucket.as_str(),
-                posting.window_start,
-                WIDTH_THE_NODE_KEEPS,
-                WIDTH_THE_NODE_KEEPS,
-            );
-            let (nanos, billable) = sums.entry(row).or_default();
-            *nanos = nanos.saturating_add(u128::from(posting.settled));
-            *billable = billable.saturating_add(posting.fee_count);
-        });
-        // THE ONE PROJECTION, CHECKED (item 28): a row past the `i64` it is served in refuses the
-        // whole read. It was pinned at `i64::MAX`, a figure nobody posted.
-        sums.into_iter()
-            .map(|(row, (nanos, billable_requests))| {
-                let spend_micros = Money::of_nanos(nanos)?.micros_i64()?;
-                Ok((
-                    row,
-                    LegacyRow {
-                        spend_micros,
-                        billable_requests,
-                    },
-                ))
-            })
-            .collect()
+    pub fn new(app: Arc<busbar_kernel::state::AppHandle>) -> Self {
+        CountsLedger { app }
     }
 }
 
-/// The lane and the provider a live node's books do not retain. See [`NodeLedger`].
-const WIDTH_THE_NODE_KEEPS: &str = "";
-
-impl LedgerView for NodeLedger {
-    fn ledger_rows(&self) -> LedgerSnapshot {
-        NodeLedger::rows_of(&self.lock())
-    }
-
-    fn legacy_rows(&self) -> Result<LegacySnapshot, MoneyError> {
-        let _durability = self.lock();
-        self.legacy_rows_under_lock()
-    }
-
-    /// Both sides under ONE hold, which is what makes the served residual a fact rather than a race.
-    fn identity_snapshot(&self) -> Result<(LedgerSnapshot, LegacySnapshot), MoneyError> {
-        let durability = self.lock();
-        Ok((
-            NodeLedger::rows_of(&durability),
-            self.legacy_rows_under_lock()?,
-        ))
-    }
-
-    /// Re-derived from this node's chain as of one hold of the lock a seal takes, so the held set
-    /// the walk reads is the one the ring holds ([`Durability::held_walk`]); the walk itself, which
-    /// reads the store, runs without it.
-    ///
-    /// [`Durability::held_walk`]: crate::root::durability::Durability::held_walk
-    fn each_checkpoint(
-        &self,
-        each: &mut dyn FnMut(&Checkpoint),
-    ) -> Result<(), CheckpointUnreadable> {
-        let walk = self.lock().held_walk();
-        walk.each(each)
-    }
-
-    fn checkpoint_keys(&self) -> AuditKeySet {
-        crate::root::durability::keyset_of(&self.lock().record)
-    }
-
-    /// The chain as of one hold of the lock, read without it: the read scans the store.
-    fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
-        let chain = self.lock().chain_at();
-        chain.migration_marker()
-    }
-
-    /// The deployment's dated history, pinned — a relay and no more.
-    ///
-    /// The history this node's book is rebuilt against at boot, read off the book itself: on a
-    /// production node that is the root's holder ([`crate::root::kernel::ROOT_CARD`]), so the
-    /// figure this read derives and the figure a restart rebuilds come from one history. This
-    /// method adds nothing to it. Pinned rather than borrowed, so a config apply landing between
-    /// two rows of one response cannot price the first half of the table against one history and
-    /// the second half against another.
-    fn rate_history(&self) -> Option<crate::root::kernel::PinnedHistory> {
-        self.lock().pinned_history()
-    }
-
-    /// SEAM `booked-lines`, FED FROM THE BOOK'S COUNTED LINES (audit root-R1 #6; ARCHITECT
-    /// 2026-10-07 H6 retention ruling).
-    ///
-    /// Every posting the node journals with a unit's counts — the late arm's settlement, its counts
-    /// row, a recovered hold's checkpoint — is kept on the book as the counts, the balance and
-    /// window, the fee count and the instant they price at, and rebuilt from the chain at boot
-    /// ([`crate::root::durability::Durability::booked_lines`]). This hands them over as booked
-    /// lines, so the totals read prices each at the card in force at ITS arrival: a signed
-    /// back-dated correction moves the next read with no restart, and a restart over the same chain
-    /// answers the same lines. Nothing is replayed here (audit M11), and no price is on any line.
-    ///
-    /// EMPTY where the lines are not the whole of the book's money — a figure on a balance with no
-    /// counts behind it, or a class no booked line can name — and the read then answers the book's
-    /// balance, as [`derived_totals_rows`] documents. A posting with no counts and no figure (the
-    /// overdraft carry, a voided recovery) is no line and moves nothing either way.
-    fn booked_lines(&self) -> Vec<busbar_kernel_ledger::Posting> {
-        self.lock().booked_lines().unwrap_or_default()
-    }
-
-    /// Off the same lock every other read of this node's durability takes.
-    fn refused_balances(&self) -> Vec<crate::root::durability::RefusedCounts> {
-        self.lock().refused_balances()
-    }
-
-    /// Read off this node's own journal as of one hold of the lock every other read takes, and
-    /// without it: the read scans the store.
-    fn recorded_counts(&self, amends: &str) -> Option<RecordedCounts> {
-        let chain = self.lock().chain_at();
-        adjust::recorded_in(chain, amends)
-    }
-
-    /// Both halves as of ONE hold of the lock a settlement takes: the book and the chain taken
-    /// under it, the walk of the chain, which reads the store, after it.
-    fn verify_snapshot(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
-        let (walk, book) = {
-            let durability = self.lock();
-            (durability.held_walk(), durability.ledger.book().snapshot())
+impl LedgerView for CountsLedger {
+    fn priced(&self) -> Result<PricedLedger, String> {
+        let app = self.app.load();
+        let Some(gov) = app.governance.clone() else {
+            return Ok(PricedLedger::default());
         };
-        VerifySnapshot {
-            read: walk.each(each),
-            book: Some(book),
-            anchored: None,
-        }
-    }
-
-    fn restart_findings(&self) -> Vec<String> {
-        self.lock()
-            .restart_findings
-            .iter()
-            .map(ToString::to_string)
-            .collect()
-    }
-
-    fn retained_audit_findings(&self) -> Vec<String> {
-        self.lock().retained_audit_findings()
-    }
-
-    /// The inputs under the book's lock, the walk (which reads the store) without it.
-    fn stored_chain_findings(&self) -> Vec<String> {
-        let Some((lane, own, keys)) = self.lock().stored_walk_inputs() else {
-            return Vec::new();
-        };
-        crate::root::durability::walk_stored_chains(&lane, own, &keys).findings
-    }
-
-    /// All three as of ONE hold of the lock a seal takes, so a checkpoint sealed between reads
-    /// cannot read as a head that differs; the walk of the chain, which reads the store, after it.
-    fn verify_snapshot_anchored(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
-        let (walk, book, anchored) = {
-            let durability = self.lock();
-            (
-                durability.held_walk(),
-                durability.ledger.book().snapshot(),
-                durability.anchored_head(),
-            )
-        };
-        VerifySnapshot {
-            read: walk.each(each),
-            book: Some(book),
-            anchored,
-        }
+        let now = busbar_kernel::store::now();
+        // The reads reach the store: off the runtime's workers, as the journal's own reads are.
+        crate::root::durability::off_runtime(|| priced_keys(&gov, &app.cost, now))
     }
 }
 
-/// The read half of the dual write.
+/// Every key's own bucket, current window, priced: one row per key with anything counted, a refused
+/// row for a key whose counts the card will not price.
 ///
-/// [`busbar_kernel_ledger::legacy::LegacyRows`] is a WRITE trait and deliberately so — the unit's job
-/// is to say what was posted and hand it over, never to read a shape it does not own. But the
-/// reconciliation identity needs both sides, and the previous release's side of it is exactly what
-/// that write produced. So the root asks for the read half separately, as its own seam, and a
-/// binding that can only be written to simply does not offer one.
+/// # Errors
 ///
-/// Keeping the two halves apart is what stops the views acquiring a way to write: nothing behind
-/// this trait can move a row, and the value the node dual-writes through is reached from here only
-/// as a list of what it already took.
-pub trait LegacyRowsRead: Send + Sync {
-    /// Every posting the dual write put onto the previous release's rows, in the order it made them.
-    ///
-    /// A COPY of the whole history, which is what makes it the wrong thing for a view to ask for:
-    /// the aggregate a view renders is a handful of rows whatever the node has settled, and the
-    /// copy is the only part of the work that grows with the traffic since boot. Kept for a caller
-    /// that genuinely wants the postings themselves; every view goes through [`fold_postings`].
-    ///
-    /// [`fold_postings`]: Self::fold_postings
-    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting>;
-
-    /// Show each posting to a fold, in the order the dual write made them, without copying any.
-    ///
-    /// The form a view reads through. What a view builds is a per-row sum, so it needs to SEE each
-    /// posting once and to keep none of them — and the default below is the honest fallback for a
-    /// binding that can only hand over a copy, not the shape the production one takes.
-    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_kernel_ledger::legacy::LegacyPosting)) {
-        for posting in self.postings() {
-            take(&posting);
+/// The store could not list the keys or read a durable row.
+pub fn priced_keys(
+    gov: &busbar_kernel::governance::GovState,
+    cost: &busbar_kernel::cost::CostModel,
+    now: u64,
+) -> Result<PricedLedger, String> {
+    let mut keys = gov.all_keys().map_err(|e| e.to_string())?;
+    keys.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut ledger = PricedLedger::default();
+    for key in keys {
+        let bucket = gov
+            .priced_bucket(cost, &key.id, busbar_kernel::governance::WINDOW_TOTAL, now)
+            .map_err(|e| e.to_string())?;
+        match bucket.spend {
+            Ok(spend) => {
+                let micros = u128::try_from(spend.micros()).unwrap_or(0);
+                if micros == 0 && bucket.billable_requests == 0 {
+                    continue;
+                }
+                ledger.rows.push(LedgerRow {
+                    bucket: key.id,
+                    day: bucket.window_start,
+                    priced_nanos: micros.saturating_mul(1_000),
+                    fee_count: bucket.billable_requests,
+                });
+            }
+            Err(refusal) => ledger.refused.push(RefusedRow {
+                bucket: key.id,
+                day: bucket.window_start,
+                refusal: refusal.to_string(),
+            }),
         }
     }
-}
-
-/// THE PRODUCTION BINDING: the rows are running sums per cell, so a "posting" here is one cell's
-/// row. Every reader folds per bucket and window, which a cell's sum answers exactly as the
-/// postings that made it would.
-impl LegacyRowsRead for busbar_kernel_ledger::legacy::SummedRows {
-    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting> {
-        self.rows()
-    }
-
-    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_kernel_ledger::legacy::LegacyPosting)) {
-        self.fold_rows(take);
-    }
-}
-
-impl LegacyRowsRead for busbar_kernel_ledger::legacy::RecordingRows {
-    fn postings(&self) -> Vec<busbar_kernel_ledger::legacy::LegacyPosting> {
-        self.written()
-    }
-
-    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_kernel_ledger::legacy::LegacyPosting)) {
-        self.fold_written(take);
-    }
+    Ok(ledger)
 }
 
 // ── the audit chain's three reads ───────────────────────────────────────────────────────────────

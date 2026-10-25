@@ -595,7 +595,7 @@ fn a_failed_over_unit_ledgers_and_meters_under_the_serving_member() {
     );
     let models: Vec<String> = r
         .gov
-        .bucket_model_tokens(&r.cost, &r.key.id, WINDOW_TOTAL, NOW)
+        .bucket_model_tokens(&r.key.id, WINDOW_TOTAL, NOW)
         .into_iter()
         .map(|(model, _)| model)
         .collect();
@@ -667,7 +667,7 @@ fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
     );
     let models: Vec<String> = r
         .gov
-        .bucket_model_tokens(&r.cost, &r.key.id, WINDOW_TOTAL, NOW)
+        .bucket_model_tokens(&r.key.id, WINDOW_TOTAL, NOW)
         .into_iter()
         .map(|(model, _)| model)
         .collect();

@@ -26,9 +26,7 @@ mod lint {
 /// they are.
 mod what_the_record_reads;
 
-/// The posting's arithmetic at the edges: the width the priced total does not share with the
-/// reservation, the line between spending the reservation and spending past it, and a unit that
-/// runs past the end more than once.
+/// The posting's flags: distinct bits, every one the type declares.
 mod the_posting_arithmetic;
 
 /// Where a reported quantity came from, and the three questions the crate asks about it.

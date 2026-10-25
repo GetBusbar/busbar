@@ -1345,7 +1345,7 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
     let read = |g: &GovState| {
         let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
         let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
-        let gauge = g.bucket_model_tokens(&cm, &k.id, super::WINDOW_TOTAL, now);
+        let gauge = g.bucket_model_tokens(&k.id, super::WINDOW_TOTAL, now);
         (
             key.spend_cents,
             key.tokens,
@@ -1429,7 +1429,7 @@ fn q64_read(
         let spend = (g.derived_bucket_usage(cm, &id, "day", true, now))
             .unwrap()
             .spend_cents;
-        let gauge = g.bucket_model_tokens(cm, &id, "day", now);
+        let gauge = g.bucket_model_tokens(&id, "day", now);
         (spend, gauge[0].1[busbar_contract::records::UNIT_INPUT])
     };
     [

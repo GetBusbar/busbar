@@ -4,11 +4,12 @@
 //! THE NODE AMENDMENT JOURNAL, BOUND TO THE ONE CHAIN.
 //!
 //! The audit unit keeps one node-wide amendment journal: every hook or export handed content leaves
-//! an access on it, and every root correction of a unit's counts an adjustment. Held in memory
-//! only, a restart dropped every one — a corrected count read as recorded again, and money with it.
+//! an access on it. Held in memory only, a restart dropped every one. (Pre-release builds also
+//! sealed count adjustments here; nothing writes or prices those now, and a chain that holds one
+//! still decodes and verifies.)
 //!
 //! So each amendment goes on the node's journal as it is sealed — an access as an `Access` record,
-//! an adjustment as a `Transaction` record (the classes the journal unit names for them) — carrying
+//! a legacy adjustment as a `Transaction` record (the classes the journal unit names for them) — carrying
 //! every field its digest covers, and a boot rebuilds the node journal from the chain before
 //! anything can seal onto it, whenever the chain has a durable source: a data directory, or the
 //! configured store the chain was resumed from. A node with neither journals and rebuilds nothing.
@@ -185,8 +186,8 @@ fn linked_run(records: &[JournalRecord]) -> (Vec<Amendment>, usize) {
 
 impl Durability {
     /// **THE BOOT'S REBUILD OF THE NODE AMENDMENT JOURNAL**, before anything can seal onto it: the
-    /// node journal becomes exactly the run this book's chain holds, so a count a root correction
-    /// amended reads as corrected after a restart, and so does its money. It runs whenever the chain
+    /// node journal becomes exactly the run this book's chain holds, so every recorded content access
+    /// survives a restart. It runs whenever the chain
     /// has a durable source ([`Durability::keeps_chain`]): a disk, or the configured store the
     /// chain was resumed from. A book with neither rebuilds nothing.
     ///
@@ -198,8 +199,8 @@ impl Durability {
     ///
     /// The chain could not be read back, or does not verify. The boot refuses then, as it refuses a
     /// store that would not read the chain back the first time: taken for an empty chain, the
-    /// failed read rebuilt no amendment, so every signed count correction reverted for the life of
-    /// the process and none sealed afterwards was journalled (audit R1#3, audit root r4 B-2).
+    /// failed read rebuilt no amendment and none sealed afterwards was journalled (audit R1#3,
+    /// audit root r4 B-2).
     pub fn restore_amendments(&mut self) -> Result<(), String> {
         if !self.keeps_chain() {
             return Ok(());
@@ -212,10 +213,10 @@ impl Durability {
             Err(e) => return Err(self.unreadable(&e)),
         };
         if set_aside > 0 {
-            let finding = JournalDisagreement::Unreadable(format!(
+            let finding = format!(
                 "{set_aside} amendment record(s) do not link onto the amendment chain and were set \
                  aside"
-            ));
+            );
             tracing::error!(finding = %finding, "the amendment journal was rebuilt without them");
             self.restart_findings.push(finding);
         }
@@ -223,9 +224,7 @@ impl Durability {
             Ok(through) => self.amendments_through = Some(through),
             Err(broken) => self
                 .restart_findings
-                .push(JournalDisagreement::Unreadable(format!(
-                    "the amendment chain does not verify: {broken:?}"
-                ))),
+                .push(format!("the amendment chain does not verify: {broken:?}")),
         }
         Ok(())
     }
@@ -244,7 +243,7 @@ impl AmendSink for BookAmendments {
         };
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
         // A durability loss is retained and re-offered by the log like any other append; it is
-        // never a refusal of the read or the correction the amendment records.
+        // never a refusal of the read the amendment records.
         if let Err(lost) =
             durability
                 .journal

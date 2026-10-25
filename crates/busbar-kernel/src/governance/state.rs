@@ -6,7 +6,7 @@ use busbar_kernel_ledger::{
     },
     usage::FeeEras,
 };
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 // The wall clock, by name: the admission path reads it and never reaches a store handle for it.
 use crate::store::now_ms as wall_ms;
 
@@ -22,6 +22,12 @@ use crate::diagnostics::{
 /// (`caches_read`, `signing_material`, …) exactly as the methods did when they lived here.
 #[path = "self_serve.rs"]
 mod self_serve;
+
+/// The one ledger's admin read and its one correction (MONEY-DESIGN §4, PR-C): a child module, so
+/// it reaches this module's private helpers as the methods here do.
+#[path = "ledger_adjust.rs"]
+mod ledger_adjust;
+pub use ledger_adjust::{AdjustRefused, Adjustment, PricedBucket};
 
 /// Prefix on the DEGRADED-BUT-APPLIED error [`GovState::delete_key`] returns when the durable
 /// tombstone committed but the full cache reconcile did not. A stable, greppable marker so an
@@ -1542,12 +1548,7 @@ impl GovState {
     ) -> RecordStoreResult<Result<DerivedUsage, busbar_kernel_ledger::cost::MoneyError>> {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell(bucket_id, window)?;
-        self.price_cell(
-            cost,
-            (bucket_id, budget_period, window),
-            include_request_fee,
-            cell,
-        )
+        self.price_cell(cost, include_request_fee, cell)
     }
 
     /// **THE SCRAPE'S READ OF [`Self::derived_bucket_usage`]**, through the money view's memo: the
@@ -1568,8 +1569,7 @@ impl GovState {
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
             None => {
-                let key = (bucket_id, budget_period, window);
-                let priced = self.price_cell(cost, key, include_request_fee, cell)?;
+                let priced = self.price_cell(cost, include_request_fee, cell)?;
                 self.money_view.keep(bucket_id, inputs, priced.clone());
                 priced
             }
@@ -1609,20 +1609,17 @@ impl GovState {
         })
     }
 
-    /// THE MONEY VIEW over one cell: its counts as corrected, priced by the one function.
+    /// THE MONEY VIEW over one cell: its counts, priced by the one function.
     fn price_cell(
         &self,
         cost: &crate::cost::CostModel,
-        (bucket_id, budget_period, window): (&str, &str, u64),
         include_request_fee: bool,
-        mut cell: BudgetCell,
+        cell: BudgetCell,
     ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
         self.money_view.priced();
-        // Q51: the counts AS CORRECTED by every sealed `adjust` landing on this bucket. Fee derives
-        // from the BILLABLE (2xx-only) count; `requests` reports the admission count (the
-        // requests-limit truth).
-        let fixed = self.corrected(cost, (bucket_id, budget_period, window), &mut cell.models)?;
-        let spend = fixed.and_then(|()| cell.spend(cost, include_request_fee));
+        // Fee derives from the BILLABLE (2xx-only) count; `requests` reports the admission count
+        // (the requests-limit truth). An `adjust` is a usage-row delta, already in the counts.
+        let spend = cell.spend(cost, include_request_fee);
         Ok(spend
             .and_then(Money::minor_i64)
             .map(|spend_cents| DerivedUsage {
@@ -1632,71 +1629,11 @@ impl GovState {
             }))
     }
 
-    /// **THE BUDGET BOOK'S COUNTS AS CORRECTED** (Q51, item 404, OWNER RULING Q9). An `adjust`
-    /// corrects a recorded unit's COUNTS on the node amendment journal; every read of this book
-    /// (key and group usage, the `/metrics` money gauges) prices `segments` only after this folds in
-    /// Σ (now − was) of each correction that lands on the bucket: its principal's own bucket, or a
-    /// bucket of that key's group chain the correction's pool participates in (Q64/Q67: an unscoped
-    /// bucket always, a pool-scoped one for its own pool; a sealed correction naming no pool reaches
-    /// the unscoped buckets only), whose window holds the unit's card epoch. The delta lands on the unit's lane in the latest era not after the epoch.
-    /// A correction leaving a count fractional or below zero REFUSES (`Overflow`), never clamps.
-    fn corrected(
-        &self,
-        cost: &crate::cost::CostModel,
-        (bucket_id, period, window): (&str, &str, u64),
-        segments: &mut Vec<ModelCell>,
-    ) -> RecordStoreResult<Result<(), busbar_kernel_ledger::cost::MoneyError>> {
-        use crate::audit::amend::{node_corrections, AmendBody, Subject};
-        for amendment in node_corrections() {
-            let AmendBody::Adjust(adj) = &amendment.body else {
-                continue;
-            };
-            let Subject::PrincipalId(p) = &adj.subject else {
-                continue;
-            };
-            let lands = budget_window(period, adj.card_epoch_ms / 1_000) == window
-                && (p == bucket_id
-                    || self.store.get_key(p)?.is_some_and(|k| {
-                        (cost.chain_for(&k).ok()).is_some_and(|c| {
-                            c.iter()
-                                .any(|b| b.bucket_id == bucket_id && adj.reaches(b.scope))
-                        })
-                    }));
-            if !lands {
-                continue;
-            }
-            let at = adj.card_epoch_ms;
-            let seg = (segments.iter().enumerate())
-                .filter(|(_, m)| *m.model == *adj.lane && m.era <= at)
-                .max_by_key(|(_, m)| m.era)
-                .map(|(i, _)| i);
-            let i = seg.unwrap_or_else(|| {
-                segments.push(ModelCell {
-                    model: std::sync::Arc::from(adj.lane.as_str()),
-                    era: crate::rate_apply::effective_from_at(at),
-                    cur: BTreeMap::new(),
-                    flushed: BTreeMap::new(),
-                });
-                segments.len() - 1
-            });
-            for class in BTreeSet::from_iter(adj.was.keys().chain(adj.now.keys())) {
-                let (whole, frac) = (adj.delta(class) / 1_000_000, adj.delta(class) % 1_000_000);
-                let slot = segments[i].cur.entry(class.clone()).or_insert(0);
-                match (i128::from(*slot).checked_add(whole)).and_then(|n| u64::try_from(n).ok()) {
-                    Some(n) if frac == 0 => *slot = n,
-                    _ => return Ok(Err(busbar_kernel_ledger::cost::MoneyError::Overflow)),
-                }
-            }
-        }
-        Ok(Ok(()))
-    }
-
     /// SCRAPE-TIME view of one bucket's per-(model, tier) token counters for its CURRENT window:
     /// the authoritative cell when live, else the durable ledger. Off the hot path (the /metrics
     /// scrape); allocation here is fine.
     pub fn bucket_model_tokens(
         &self,
-        cost: &crate::cost::CostModel,
         bucket_id: &str,
         budget_period: &str,
         now: u64,
@@ -1709,16 +1646,9 @@ impl GovState {
             || (self.store.get_usage(bucket_id, window)).map(|l| durable_segments(l.models)),
             Ok,
         );
-        let Ok(mut models) = read else {
+        let Ok(models) = read else {
             return Vec::new();
         };
-        // Q51: the counts AS CORRECTED; a refused correction skips the series, as a failed read does.
-        if !matches!(
-            self.corrected(cost, (bucket_id, budget_period, window), &mut models),
-            Ok(Ok(()))
-        ) {
-            return Vec::new();
-        }
         // One series per MODEL: a model's eras are one set of counts to the scrape.
         let models = models.iter().map(|m| (&*m.model, m.cur.clone()));
         busbar_kernel_ledger::usage::by_lane(models, u64::saturating_add)

@@ -162,7 +162,7 @@ impl Durability {
         if let Err(broken) = AuditChain::verify_window(&self.audit_records) {
             findings.push(format!("{broken:?}"));
         }
-        let keys = super::seal::keyset_of(&self.record);
+        let keys = keyset_of(&self.record);
         for record in &self.audit_records {
             let Some(key_id) = record.key_id.as_deref() else {
                 if self
