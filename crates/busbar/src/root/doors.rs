@@ -186,10 +186,10 @@ impl Live {
 
 /// A CONFIG APPLY, as every opened transport instance takes it (`BUSBAR-1.6.0.md` §11.4, "a plugin
 /// is a plugin": every kind's `refresh` slot is called on an apply, as the planes' and the
-/// credentials' are): each live instance is refreshed with the applied `settings`
-/// ([`Dispatched::refresh`]). An instance that will not refresh keeps the settings it holds and
-/// keeps serving; each refusal is answered, for the caller to log. A listener set change still applies on
-/// restart (THE DESIGN, the generations rule): a refresh binds nothing.
+/// credentials' are): each live instance is refreshed with the applied `settings`. An instance
+/// that will not refresh keeps the settings it holds and keeps serving; each refusal is answered,
+/// for the caller to log. A listener set change still applies on restart (THE DESIGN, the
+/// generations rule): a refresh binds nothing.
 pub fn refresh_live(settings: &busbar_contract::transport::TransportSettings) -> Vec<String> {
     refresh_named(settings, |_| true)
 }
@@ -309,6 +309,7 @@ impl Dispatched {
     /// # Errors
     ///
     /// The instance did not answer READY; it keeps the settings it holds.
+    #[cfg(test)]
     pub fn refresh(
         &self,
         settings: &busbar_contract::transport::TransportSettings,
