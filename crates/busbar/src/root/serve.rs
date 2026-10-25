@@ -3412,7 +3412,7 @@ impl DataRoutes {
             method: method.as_str().as_bytes().to_vec(),
             target: target.as_bytes().to_vec(),
             fields,
-            body: Arc::from(&body[..]),
+            body: body.clone(),
         };
         let principal = match gov.key() {
             Some(key) => PrincipalId::new(key.id.as_str()),
@@ -3693,7 +3693,7 @@ impl DataRoutes {
             method: method.as_str().as_bytes().to_vec(),
             target: target.as_bytes().to_vec(),
             fields,
-            body: Arc::from(&body[..]),
+            body: body.clone(),
         };
         let principal = match gov.key() {
             Some(key) => PrincipalId::new(key.id.as_str()),
@@ -3881,7 +3881,7 @@ impl DataRoutes {
             method: nest.ask.verb.into_bytes(),
             target: nest.ask.target.into_bytes(),
             fields: Vec::new(),
-            body: Arc::from(nest.ask.body),
+            body: bytes::Bytes::from(nest.ask.body),
         };
         let nesting = Nesting {
             parent,
@@ -4415,7 +4415,7 @@ fn deframed_arrival(
 ) -> (Arrival, IngressCaller, IngressReply) {
     let deframed = Bytes::from(messages.concat());
     let arrival = Arrival {
-        body: Arc::from(&deframed[..]),
+        body: deframed.clone(),
         ..arrival
     };
     let (caller, reply) = IngressCaller::arriving(deframed);

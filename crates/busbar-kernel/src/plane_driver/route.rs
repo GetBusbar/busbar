@@ -371,7 +371,7 @@ pub(crate) struct PieceBufs {
     fields: Vec<OutField>,
     arena: Vec<u8>,
     /// The caller's body, kept for every attempt.
-    body: Arc<[u8]>,
+    body: bytes::Bytes,
     /// The far end's current piece.
     input: Vec<u8>,
     /// The current attempt's member.
@@ -397,8 +397,13 @@ pub(crate) struct PieceBufs {
     pub(crate) passthrough: bool,
 }
 
+/// The far end's piece becomes the input the plane is lent: its bytes are moved, never copied.
+pub(crate) fn lend_piece(input: &mut Vec<u8>, piece: &mut FarPiece) {
+    *input = std::mem::take(&mut piece.bytes);
+}
+
 impl PieceBufs {
-    pub(crate) fn new(caps: &BufferCaps, body: Arc<[u8]>) -> Self {
+    pub(crate) fn new(caps: &BufferCaps, body: bytes::Bytes) -> Self {
         let mut bufs = PieceBufs {
             reply: vec![0; caps.reply],
             units: Vec::new(),
@@ -736,7 +741,7 @@ impl<'u> Pumping<'u> {
         ctx: &'u UnitCtx,
         ticket: Ticket,
         deadline_ns: u64,
-        body: Arc<[u8]>,
+        body: bytes::Bytes,
     ) -> Self {
         Pumping {
             driver,
@@ -949,7 +954,7 @@ impl Drop for Pumping<'_> {
         // client-drop path is cancelling) holds until it returns.
         let bufs = std::mem::replace(
             &mut self.bufs,
-            Box::new(PieceBufs::new(&BufferCaps::EMPTY, Arc::from(&[][..]))),
+            Box::new(PieceBufs::new(&BufferCaps::EMPTY, bytes::Bytes::new())),
         );
         *self
             .keep
@@ -1328,7 +1333,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     use tracing::Instrument as _;
                     self.far.next(run.token).instrument(attempt_span.clone())
                 };
-                let piece = match turn_wait(run, turn, next).await {
+                let mut piece = match turn_wait(run, turn, next).await {
                     Ok(Some(piece)) => piece,
                     Ok(None) => FarPiece {
                         last: true,
@@ -1353,8 +1358,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     // The far end answered this attempt: it is the session's held far end.
                     t.held.send_replace(true);
                 }
-                run.bufs.input.clear();
-                run.bufs.input.extend_from_slice(&piece.bytes);
+                lend_piece(&mut run.bufs.input, &mut piece);
                 // The status crosses on the answer's first piece, and on its trailers where the
                 // transport read one off them (`FarPiece::status`).
                 let head = first && piece.status.is_some();
