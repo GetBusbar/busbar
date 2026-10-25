@@ -697,9 +697,10 @@ impl RootHistory {
     }
 
     /// **THE BOOT'S REBUILD, RUN BY THE BOOK** before it prices a replayed posting: `records` is the
-    /// chain it read, or `None` for a node with no data directory (the previous release's
-    /// no-persistence shape: the history stays the boot card from instant zero and nothing is
-    /// held) or a chain that could not be read (rebuilt from nothing, journalled nothing).
+    /// chain it read, or `None` for a node whose chain has no durable source (the previous
+    /// release's no-persistence shape: the history stays the boot card from instant zero and
+    /// nothing is held). A chain kept but not read back or not verified never reaches here: the
+    /// book's build refuses the boot first, so it never disarms the journal (audit root r4 A-5).
     ///
     /// A chain written before applied cards were journalled holds none: its history starts at the
     /// boot card from instant zero, exactly as it did, and that opening entry is journalled now.
