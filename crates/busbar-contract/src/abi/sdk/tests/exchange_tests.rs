@@ -220,6 +220,9 @@ slot!(write_request, service::WRITE_REQUEST);
 slot!(read_reply, service::READ_REPLY);
 slot!(close, service::CLOSE);
 
+/// The scripted host's `FACTS` reports the stream in the clear.
+static INSECURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The far end's key pin the scripted host's `FACTS` reports.
 const OBSERVED_PIN: &str = "c2NyaXB0ZWQga2V5";
 
@@ -243,7 +246,7 @@ slot! {
         unsafe {
             io.facts.write(StreamFacts {
                 size: std::mem::size_of::<StreamFacts>() as u32,
-                secure: 1,
+                secure: u32::from(!INSECURE.load(std::sync::atomic::Ordering::Relaxed)),
                 endpoint: AbiStr {
                     ptr: std::ptr::null(),
                     len: 0,
@@ -1213,4 +1216,46 @@ fn a_sealed_body_replaces_the_requests_own() {
         &body[..],
         b"grant_type=authorization_code&client_secret=s3c"
     );
+}
+
+/// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4), RED before the check: a credential the operator's
+/// URL requires secured goes out only on a stream the host connector reports secured. On one it
+/// reports in the clear the request is refused before a byte of it is written; a credential with
+/// no requirement goes out either way, and costs no facts call.
+#[test]
+fn a_credential_that_must_go_out_secured_is_refused_on_a_clear_stream() {
+    use crate::abi::sdk::cred::{Cred, NOT_SECURE};
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let required = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()))
+        .secure_for("https://far/hook");
+    let free = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()));
+    let go = |cred: &Cred, insecure: bool| {
+        INSECURE.store(insecure, std::sync::atomic::Ordering::Relaxed);
+        let ex =
+            Exchange::request_sealed(post(), vec![(0, b"authorization".to_vec(), cred.bearer())])
+                .expect("frames");
+        let r = run(http_reply(), false, ex, None, |c, st| {
+            exchange(c, st, 0, Some("https://far/hook"))
+        });
+        INSECURE.store(false, std::sync::atomic::Ordering::Relaxed);
+        r
+    };
+    let refused = go(&required, true);
+    assert!(
+        matches!(&refused.answered, Err(ConnFailure::Refused(t)) if t == NOT_SECURE),
+        "{:?}",
+        refused.answered.as_ref().err()
+    );
+    assert!(
+        !refused.ops.contains(&service::WRITE_REQUEST),
+        "a byte was written"
+    );
+    let sent = go(&required, false);
+    assert_eq!(sent.answered.expect("sent secured").status, 200);
+    let clear = go(&free, true);
+    assert_eq!(clear.answered.expect("no requirement").status, 200);
+    // establish, head, body, end, four reads, close: no facts asked.
+    assert_eq!(clear.runs.len(), 9, "{:?}", clear.runs);
 }

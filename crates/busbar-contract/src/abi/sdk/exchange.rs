@@ -174,6 +174,14 @@ pub struct Exchange {
     refused_read: Option<(u32, &'static str)>,
     /// The field lines ([`Exchange::framed_fields`]'s indices) whose values are sealed.
     sealed_lines: Vec<usize>,
+    /// A sealed value goes out only secured ([`Cred::secure_required`]): the stream is confirmed
+    /// secured before the request is written.
+    ///
+    /// [`Cred::secure_required`]: crate::abi::sdk::cred::Cred::secure_required
+    secure_required: bool,
+    /// The stream was found in the clear: every re-entry answers the refusal (a replayed `FACTS`
+    /// writes nothing, so only this remembers it).
+    insecure: bool,
     /// What closes `stream` should the exchange be dropped before it closed it: set when
     /// [`Op::exchange`] parks it, so a parked exchange its op gives up does not leave its host
     /// connection open.
@@ -226,6 +234,8 @@ impl Exchange {
             reply_ceiling: REPLY_MAX,
             refused_read: None,
             sealed_lines: Vec::new(),
+            secure_required: false,
+            insecure: false,
             closer: None,
         }
     }
@@ -350,6 +360,10 @@ impl Exchange {
         body: Option<crate::abi::sdk::cred::SealedWrite>,
     ) -> Result<Self, ConnFailure> {
         let mut request = Zeroizing::new(request);
+        let secure_required = sealed.iter().any(|(_, _, s)| s.secure_required())
+            || body
+                .as_ref()
+                .is_some_and(crate::abi::sdk::cred::SealedWrite::secure_required);
         if let Some(mut b) = body {
             request.body.zeroize();
             request.body = std::mem::take(&mut *b.buf);
@@ -429,6 +443,7 @@ impl Exchange {
             timeout_ms: request.timeout_ms,
         });
         ex.sealed_lines = sealed_lines;
+        ex.secure_required = secure_required;
         Ok(ex)
     }
 
@@ -600,6 +615,16 @@ fn exchange_once(
 /// Send on `stream`, then read the reply to its terminal piece into `state`; the stream's facts
 /// are read where the caller asks, once the reply ended or failed.
 fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
+    if state.secure_required {
+        let confirmed = crate::abi::sdk::cred::confirm_secure(c, stream);
+        if state.insecure || matches!(confirmed, Poll::Ready(Err(_))) {
+            state.insecure = true;
+            return Poll::Ready(Err(ConnFailure::Refused(
+                crate::abi::sdk::cred::NOT_SECURE.into(),
+            )));
+        }
+        ready!(confirmed);
+    }
     ready!(send(c, state, stream));
     loop {
         let this = c.issued();

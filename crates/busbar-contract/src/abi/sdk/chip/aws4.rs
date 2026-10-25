@@ -142,7 +142,7 @@ impl Cred {
         let k_region = hmac_sha256(&k_date[..], region.as_bytes());
         let k_service = hmac_sha256(&k_region[..], service.as_bytes());
         let key = hmac_sha256(&k_service[..], TERMINATION.as_bytes());
-        Cred::captured(Zeroizing::new(key.to_vec()))
+        self.derived(Zeroizing::new(key.to_vec()))
     }
 
     /// Sign `r` under this day key ([`Cred::aws4_day_key`]), the session `token` (if any) signed
@@ -158,7 +158,7 @@ impl Cred {
         let (sts, signed_headers) = string_to_sign(r, token)?;
         let mac = hmac_sha256(self.wire(), sts.as_bytes());
         let mut hexed = hex::encode(&mac[..]);
-        let signature = Seal::new(Zeroizing::new(hexed.as_bytes().to_vec()));
+        let signature = self.seal(Zeroizing::new(hexed.as_bytes().to_vec()));
         hexed.zeroize();
         Ok(Aws4Signature {
             signature,
