@@ -98,6 +98,8 @@ pub enum FetchOutcome {
     /// Downloaded, verified against the pin (if any), and atomically written.
     Fetched { filename: String },
     /// A non-fatal (reload) miss/mismatch: recorded and logged, the node keeps serving what it has.
+    /// `url`, and the URL inside `error`, are the printable URL (no userinfo, no query): this
+    /// outcome exists to be logged.
     Warned { url: String, error: String },
 }
 
@@ -128,13 +130,14 @@ pub fn fetch_plugins(
             if fatal_on_miss {
                 errors.push(msg);
             } else {
-                // The URL as a log may repeat it (H10): no userinfo, no query, in either field.
+                // The URL as a log may repeat it (H10): no userinfo, no query, in either field,
+                // here and in the recorded outcome (which the kernel logs as its reload miss).
                 let shown = printable_url(&spec.url);
                 let error = msg.replace(spec.url.as_str(), &shown);
                 tracing::warn!(url = %shown, %error, "plugin fetch problem (reload); keeping the current artifact");
                 outcomes.push(FetchOutcome::Warned {
-                    url: spec.url.clone(),
-                    error: msg,
+                    url: shown.into_owned(),
+                    error,
                 });
             }
         };
