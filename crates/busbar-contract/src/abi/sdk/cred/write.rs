@@ -235,7 +235,7 @@ impl SealedWrite {
         stream: u64,
         piece: &RequestPiece,
     ) -> Answer<()> {
-        std::task::ready!(self.confirm(c, stream))?;
+        // A framed stream is secured by its need: its target decides (`Exchange`).
         while !self.finished() {
             match c.write_request(stream, piece, &self.buf[self.done..]) {
                 Poll::Pending | Poll::Ready(Ok(0)) => return Poll::Pending,
@@ -253,7 +253,6 @@ impl SealedWrite {
         stream: u64,
         piece: &RequestPiece,
     ) -> Answer<usize> {
-        std::task::ready!(self.confirm(c, stream))?;
         c.write_request(stream, piece, &self.buf)
     }
 }
