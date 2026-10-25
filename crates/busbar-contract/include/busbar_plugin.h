@@ -336,6 +336,7 @@ extern "C" {
 #define BB_EXPORT_SLOT_STATUS UINT32_C(11) /* `status`. */
 #define BB_EXPORT_SLOT_CHECK UINT32_C(12) /* `check`. */
 #define BB_EXPORT_SLOT_SERVE UINT32_C(13) /* `serve`. */
+#define BB_EXPORT_KIND_SLOTS UINT32_C(5) /* How many kind slots the table holds after the lifecycle. */
 #define BB_EXPORT_SLOTS UINT32_C(14) /* How many slots the export kind's whole table holds (the lifecycle plus its five own ops). */
 #define BB_EXPORT_SCRAPE_KIND_COUNTER UINT8_C(0) /* [`ScrapeFamily::kind`]: a counter. */
 #define BB_EXPORT_SCRAPE_KIND_GAUGE UINT8_C(1) /* [`ScrapeFamily::kind`]: a gauge. */
@@ -2467,7 +2468,7 @@ struct bb_hook_Tail {
     size_t routes_len;
 };
 
-/* The export kind's ops table. Leads with the shared [`OpsHead`]; kind op `k` is at slot index */
+/* The kind's ops table. */
 struct bb_export_Ops {
     bb_mech_OpsHead head;
     bb_mech_Op deliver;
