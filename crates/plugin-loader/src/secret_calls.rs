@@ -351,6 +351,16 @@ impl SecretCalls for LoadedSecret {
                     format!("secret module '{name}' could not be called: no ticket"),
                 ))
             }
+            // The watchdog judged the crossing a breach: the plugin's FAULT.
+            Some(Ran::Faulted) => {
+                return Err(refused(
+                    ERROR_KIND_INTERNAL,
+                    format!(
+                        "secret module '{name}' answered {:?} to resolve",
+                        Outcome::Fault
+                    ),
+                ))
+            }
             None => {
                 return Err(refused(
                     ERROR_KIND_INTERNAL,

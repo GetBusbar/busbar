@@ -1928,6 +1928,7 @@ impl<K: Kind> Plugin<K> {
             drainable,
             unit,
             watch: Duration::ZERO,
+            breach: None,
         })
     }
 
@@ -1965,7 +1966,8 @@ impl<K: Kind> Plugin<K> {
 
     /// Whether a new op `s` on the held ticket `t` is the re-call a SHORT answer earned.
     pub(crate) fn is_recall(&self, t: Ticket, s: u32) -> bool {
-        self.inline_tickets().is_some_and(|tickets| tickets.is_recall(t, s))
+        self.inline_tickets()
+            .is_some_and(|tickets| tickets.is_recall(t, s))
     }
 
     /// Register `waker` as what an op pending on the held ticket `t` wakes.
@@ -2058,8 +2060,10 @@ impl<K: Kind> Plugin<K> {
         debug_assert!(std::ptr::eq(inst, &*admitted.inst));
         let (i, o, out_size) = frame.heads();
         let id = inst.next_call.fetch_add(1, Ordering::Relaxed);
-        inst.lock_calls()
-            .push(Watched::new(id, s, admitted.watch, class));
+        inst.lock_calls().push(Watched {
+            breach: admitted.breach.clone(),
+            ..Watched::new(id, s, admitted.watch, class)
+        });
         // SAFETY: the frame is ours for the call; its heads lead the structs.
         let crossed = unsafe {
             let head = &mut *i;
@@ -2108,13 +2112,28 @@ pub(crate) struct Cancelled {
 
 /// One crossing in progress, as the watchdog judges it: past the longer of its class budget and
 /// its own watch budget, it is a breach.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct Watched {
     pub(crate) id: u64,
     pub(crate) started: Instant,
     pub(crate) slot: u32,
     pub(crate) watch: Duration,
     pub(crate) class: DeadlineClass,
+    /// Told when the watchdog judges this crossing a breach (its op is answered FAULT then, while
+    /// the crossing runs on).
+    pub(crate) breach: Option<Breach>,
+}
+
+/// What the watchdog tells an op whose crossing it judged a breach.
+pub(crate) type Breach = Arc<dyn Fn() + Send + Sync>;
+
+impl std::fmt::Debug for Watched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watched")
+            .field("id", &self.id)
+            .field("slot", &self.slot)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Watched {
@@ -2125,6 +2144,7 @@ impl Watched {
             slot,
             watch,
             class,
+            breach: None,
         }
     }
 }
@@ -2142,6 +2162,8 @@ pub(crate) struct Admitted {
     /// A longer watch budget its crossings get from the watchdog than their class's (a hook's
     /// `timeout_ms`).
     pub(crate) watch: Duration,
+    /// Told when the watchdog judges one of its crossings a breach.
+    pub(crate) breach: Option<Breach>,
 }
 
 impl Drop for Admitted {

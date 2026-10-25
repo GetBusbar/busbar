@@ -132,6 +132,19 @@ pub(crate) enum Ran<I, O> {
     },
     /// The op may pend and no ticket could be had for it: it was never made.
     NoTicket,
+    /// The watchdog judged a crossing of it a breach: FAULT, with no frame (the crossing, still
+    /// running, owns it).
+    Faulted,
+}
+
+/// How a wait for a crossing ended.
+enum Crossing {
+    /// It answered.
+    Answered,
+    /// The caller's deadline came first (a leaving caller).
+    Left,
+    /// The watchdog judged it a breach.
+    Breached,
 }
 
 /// The regrow after a SHORT answer: a new frame over bigger buffers and what it lends, or `None`.
@@ -176,29 +189,38 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
         let left = d.saturating_duration_since(Instant::now());
         now_ns().saturating_add(u64::try_from(left.as_nanos()).unwrap_or(u64::MAX))
     });
-    let op = Arc::new(Op {
-        plugin: Arc::clone(plugin),
-        lane: opts.lane.clone(),
-        s,
-        class: opts.class,
-        ticket,
-        inline: opts.inline,
-        cancel: opts.cancel.clone(),
-        deadline_ns,
-        latch: Arc::new(Latch::default()),
-        state: Mutex::new(State {
-            frame: Some(Box::new(frame)),
-            lent: Some(lent),
-            answered: None,
-            cancelled: None,
-            crossing: false,
-            pending: false,
-            gone: false,
-            unit: None,
-            admitted: Some(admitted),
-            ticket: owned,
-            waker: None,
-        }),
+    let op = Arc::new_cyclic(|op: &std::sync::Weak<Op<K, I, O>>| {
+        let op = op.clone();
+        admitted.breach = Some(Arc::new(move || {
+            if let Some(op) = op.upgrade() {
+                op.breached();
+            }
+        }));
+        Op {
+            plugin: Arc::clone(plugin),
+            lane: opts.lane.clone(),
+            s,
+            class: opts.class,
+            ticket,
+            inline: opts.inline,
+            cancel: opts.cancel.clone(),
+            deadline_ns,
+            latch: Arc::new(Latch::default()),
+            state: Mutex::new(State {
+                frame: Some(Box::new(frame)),
+                lent: Some(lent),
+                answered: None,
+                cancelled: None,
+                crossing: false,
+                pending: false,
+                gone: false,
+                unit: None,
+                admitted: Some(admitted),
+                ticket: owned,
+                waker: None,
+                breached: false,
+            }),
+        }
     });
     let mut held = Held(Some(Arc::clone(&op)));
     let mut resume = false;
@@ -208,8 +230,15 @@ pub(crate) async fn call<K: Kind, I: InFrame, O: OutFrame>(
     loop {
         op.register().await;
         Op::cross(&op, resume);
-        if !op.answered_by(opts.deadline.filter(|_| opts.leave)).await {
-            return Ran::TimedOut { cancelled: None };
+        match op.answered_by(opts.deadline.filter(|_| opts.leave)).await {
+            Crossing::Answered => {}
+            Crossing::Left => return Ran::TimedOut { cancelled: None },
+            // The watchdog judged the crossing a breach: the op is FAULT now, and the crossing,
+            // still running, owns its frame and ends the op when it returns.
+            Crossing::Breached => {
+                held.0 = None;
+                return Ran::Faulted;
+            }
         }
         let (called, wake_at) = op.take_answer();
         if called.recall.is_some() {
@@ -343,11 +372,28 @@ struct State<I, O> {
     ticket: Option<InlineTicket>,
     /// The caller's task, woken when a crossing or a `cancel` returns.
     waker: Option<Waker>,
+    /// The watchdog judged the running crossing a breach.
+    breached: bool,
 }
 
 impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
     fn lock(&self) -> MutexGuard<'_, State<I, O>> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The watchdog judged the running crossing a breach: its caller is answered FAULT now.
+    fn breached(&self) {
+        let waker = {
+            let mut st = self.lock();
+            if !st.crossing {
+                return;
+            }
+            st.breached = true;
+            st.waker.take()
+        };
+        if let Some(w) = waker {
+            w.wake();
+        }
     }
 
     /// Before a crossing: the calling task is the one the op's latch wakes, the latch is the
@@ -505,13 +551,17 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
 
     /// Wait for the crossing's answer: `false` = the deadline (`None`: none) came first (the caller
     /// is gone; the crossing ends the op).
-    async fn answered_by(&self, deadline: Option<Instant>) -> bool {
+    async fn answered_by(&self, deadline: Option<Instant>) -> Crossing {
         let mut sleep = std::pin::pin!(deadline.map(sleep_until));
         std::future::poll_fn(|cx| {
             {
                 let mut st = self.lock();
                 if st.answered.is_some() {
-                    return Poll::Ready(true);
+                    return Poll::Ready(Crossing::Answered);
+                }
+                if st.breached {
+                    st.gone = true;
+                    return Poll::Ready(Crossing::Breached);
                 }
                 st.waker = Some(cx.waker().clone());
             }
@@ -522,10 +572,10 @@ impl<K: Kind, I: InFrame, O: OutFrame> Op<K, I, O> {
             {
                 let mut st = self.lock();
                 if st.answered.is_some() {
-                    return Poll::Ready(true);
+                    return Poll::Ready(Crossing::Answered);
                 }
                 st.gone = true;
-                return Poll::Ready(false);
+                return Poll::Ready(Crossing::Left);
             }
             Poll::Pending
         })

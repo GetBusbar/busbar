@@ -852,6 +852,11 @@ impl AuthCalls for AuthInstance {
                     verdict(called.outcome, &frame.out, &held)
                 }
                 Ran::TimedOut { .. } => Verified::Failed.into(),
+                // The watchdog judged the crossing a breach: the plugin's FAULT.
+                Ran::Faulted => {
+                    fault.store(true, Ordering::Release);
+                    Verified::Failed.into()
+                }
                 Ran::NoTicket => Verified::Overloaded.into(),
             }
         };

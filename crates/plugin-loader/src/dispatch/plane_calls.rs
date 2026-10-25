@@ -6,9 +6,9 @@
 //! compiled-in and a dropped-in plane through the same table without naming this crate. The
 //! composition root builds it and hands it to the driver.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 
@@ -24,9 +24,9 @@ use busbar_contract::plane_calls::{
     PlaneCalls, ServeInFlight,
 };
 
-use super::kinds::plane::Plane;
 use super::call::{self, CancelRequest, Opts, Ran};
 use super::inline::InlineTicket;
+use super::kinds::plane::Plane;
 use super::plugin::Admission;
 use super::{in_head, now_ns, Dispatcher, Frame, InFrame, OutFrame, Plugin};
 
@@ -74,8 +74,9 @@ impl PlaneInstance {
         self.tickets.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Op `s` of a unit on its `ticket`, on the one call path: crossed on the caller's thread,
-    /// never refused for the instance's cap, cancelled at the kernel's client drop. A ticket whose
+    /// Op `s` of a unit on its `ticket`, on the one call path: crossed on a plugin thread (so a
+    /// wedged crossing the watchdog judges a breach answers FAULT while it runs on, owning the
+    /// unit's buffers until it returns), never refused for the instance's cap, cancelled at the kernel's client drop. A ticket whose
     /// client dropped answers every later op REFUSED, with no crossing, until it is recycled.
     fn unit_op<I: InFrame, O: OutFrame>(
         &self,
@@ -115,7 +116,7 @@ impl PlaneInstance {
                     lane: None,
                     admission: Admission::Unit,
                     ticket: Some(ticket),
-                    inline: true,
+                    inline: false,
                     cancel: Some(cancel),
                 },
                 &mut |_| None,
@@ -355,9 +356,12 @@ impl PlaneCalls for PlaneInstance {
     }
 }
 
+/// A unit op's call, boxed.
+type Running<I, O> = Pin<Box<dyn Future<Output = Ran<I, O>> + Send>>;
+
 /// A unit op in flight (`on_piece`, `serve`) on the one call path: its answer once it has one.
 struct InFlight<I, O> {
-    op: Option<Pin<Box<dyn Future<Output = Ran<I, O>> + Send>>>,
+    op: Option<Running<I, O>>,
     done: Option<Done<O>>,
 }
 
@@ -408,7 +412,7 @@ impl<I: InFrame, O: OutFrame> Future for InFlight<I, O> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Answered> {
         if let Some(d) = &self.done {
-            return Poll::Ready(d.answered.clone());
+            return Poll::Ready(d.answered);
         }
         let Some(op) = self.op.as_mut() else {
             return Poll::Ready(Answered {
@@ -460,7 +464,9 @@ impl<I: InFrame, O: OutFrame> Future for InFlight<I, O> {
                     writes: Vec::new(),
                 },
             },
-            Ran::NoTicket => Done {
+            // No ticket, or the watchdog judged the crossing a breach (it runs on, owning its
+            // frame): FAULT, with no `out`.
+            Ran::NoTicket | Ran::Faulted => Done {
                 answered: Answered {
                     outcome: Outcome::Fault,
                     short: false,
@@ -470,7 +476,7 @@ impl<I: InFrame, O: OutFrame> Future for InFlight<I, O> {
                 writes: Vec::new(),
             },
         };
-        let a = done.answered.clone();
+        let a = done.answered;
         self.done = Some(done);
         Poll::Ready(a)
     }
