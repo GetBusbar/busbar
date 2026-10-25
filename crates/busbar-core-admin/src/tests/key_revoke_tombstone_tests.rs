@@ -59,8 +59,8 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
 
     // A unique marker so this test's own audit rows are distinguishable from any other test
     // sharing the process-global AUDIT ring.
-    let before = audit_ring::AUDIT
-        .export()
+    let before = busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, None)
         .iter()
         .filter(|e| e.resource == format!("key:{id}") && e.action == "key.revoke")
         .count();
@@ -91,8 +91,8 @@ async fn revoke_on_an_already_tombstoned_key_answers_200_and_audits_applied() {
     assert_eq!(body["revoked"], id.as_str());
 
     // A `key.revoke` / `applied` audit row landed for this key.
-    let after = audit_ring::AUDIT
-        .export()
+    let after = busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, None)
         .iter()
         .filter(|e| {
             e.resource == format!("key:{id}")

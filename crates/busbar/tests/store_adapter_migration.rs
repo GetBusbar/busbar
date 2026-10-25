@@ -32,6 +32,32 @@ use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, Totals, 
 use busbar_plugin_loader::store_adapter::{LegacyReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS};
 use std::sync::{Arc, Mutex};
 
+/// The ledger's own records for the migration marker, in test memory: where a node keeps its marker
+/// (the journal, `root::durability`) is the root's, and these tests prove the read and the seal.
+#[derive(Default)]
+struct MarkerRecords {
+    marker: Option<busbar_kernel_ledger::migration::MigrationMarker>,
+}
+
+impl MigrationRecords for MarkerRecords {
+    fn read_marker(
+        &self,
+    ) -> Result<
+        Option<busbar_kernel_ledger::migration::MigrationMarker>,
+        busbar_kernel_ledger::migration::MigrationError,
+    > {
+        Ok(self.marker.clone())
+    }
+
+    fn write_marker(
+        &mut self,
+        marker: &busbar_kernel_ledger::migration::MigrationMarker,
+    ) -> Result<(), busbar_kernel_ledger::migration::MigrationError> {
+        self.marker = Some(marker.clone());
+        Ok(())
+    }
+}
+
 /// The published payload schema — the one every 1.5.x store plugin is built against (the 1.5.5
 /// store payload schema, v2).
 const PUBLISHED_SCHEMA: u32 = 2;
@@ -397,7 +423,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
     assert_eq!(plan.windows.len(), 2, "one bucket per key row");
 
     let rows = adapter.legacy_ledger_rows(plan);
-    let mut records = adapter.migration_records();
+    let mut records = MarkerRecords::default();
     let Outcome::Sealed(opening) =
         migrate(&rows, &mut records, 1, 1_700_000_000, 3, None).expect("the migration seals")
     else {
@@ -538,7 +564,7 @@ fn the_migration_never_writes_to_the_rows_it_read() {
         .key_bucket_plan(WINDOW, &[], &[WINDOW])
         .expect("the key rows list");
     let rows = adapter.legacy_ledger_rows(plan);
-    let mut records = adapter.migration_records();
+    let mut records = MarkerRecords::default();
     migrate(&rows, &mut records, 1, 1, 1, None).expect("the migration seals");
 
     let requests = store.requests();
@@ -581,7 +607,7 @@ fn a_second_boot_issues_no_request_to_the_store() {
         .key_bucket_plan(WINDOW, &[], &[WINDOW])
         .expect("the key rows list");
     let first = adapter.legacy_ledger_rows(plan.clone());
-    let mut records = adapter.migration_records();
+    let mut records = MarkerRecords::default();
     let sealed = migrate(&first, &mut records, 1, 1_700_000_000, 3, None).expect("seals");
     assert!(sealed.sealed_now());
     let after_first = store.requests().len();
@@ -598,13 +624,9 @@ fn a_second_boot_issues_no_request_to_the_store() {
     );
     assert_eq!(second.marker(), sealed.marker());
     assert_eq!(
-        adapter
-            .migration_records()
-            .read_marker()
-            .expect("the records read")
-            .as_ref(),
+        records.read_marker().expect("the records read").as_ref(),
         Some(sealed.marker()),
-        "the marker is on the adapter, not on the rows that were read"
+        "the marker is on the ledger's own records, not on the rows that were read"
     );
 }
 
@@ -623,7 +645,7 @@ fn a_store_with_no_legacy_rows_opens_at_zero_and_still_seals() {
         days: vec![WINDOW],
     };
     let rows = adapter.legacy_ledger_rows(plan);
-    let mut records = adapter.migration_records();
+    let mut records = MarkerRecords::default();
     let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1_700_000_000, 1, None)
         .expect("an empty store still seals")
     else {
@@ -654,7 +676,7 @@ fn a_plan_naming_nothing_seals_an_empty_opening() {
     let store = a_serving_store();
     let adapter = adapter_over(store.clone());
     let rows = adapter.legacy_ledger_rows(LegacyReadPlan::nothing());
-    let mut records = adapter.migration_records();
+    let mut records = MarkerRecords::default();
     let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1, 1, None).expect("seals")
     else {
         panic!("seals");
@@ -703,7 +725,7 @@ fn the_window_and_metering_views_of_one_consumption_do_not_fold() {
             .key_bucket_plan(WINDOW, &[], &[WINDOW])
             .expect("the key rows list"),
     );
-    let mut records = adapter.migration_records();
+    let mut records = MarkerRecords::default();
     let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1, 1, None).expect("seals")
     else {
         panic!("seals");
