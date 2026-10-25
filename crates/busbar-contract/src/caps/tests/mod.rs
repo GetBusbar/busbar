@@ -38,9 +38,6 @@ mod what_the_usage_report_says;
 /// 326).
 mod take_site_census;
 
-/// Every implementor of the sealed plugin seal trait, against the minter's documentation (item 329).
-mod seal_implementors;
-
 /// Whether the kernel keeps this step's token to itself, read off the step markers' own
 /// `KERNEL_OWNED` constants rather than off a second runtime table.
 ///
