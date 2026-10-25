@@ -132,10 +132,10 @@ const AUDIT_VERBS_1_6_0: &[VerbEntry] = &[
     get_row("/api/v1/admin/audit/keys", "get_audit_keys"),
 ];
 
-/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 12 1.6.0 kernel
-/// verbs (the nine money-governance verbs and the three trust verbs), the 5 1.6.0 ledger views,
+/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 11 1.6.0 kernel
+/// verbs (the eight money-governance verbs and the three trust verbs), the 5 1.6.0 ledger views,
 /// and the 3 audit-chain reads.
-pub(crate) const VERB_COUNT: usize = 66 + 12 + 5 + 3;
+pub(crate) const VERB_COUNT: usize = 66 + 11 + 5 + 3;
 
 // ── THE ROWS AND THEIR NAMES CANNOT DRIFT, AND THE COMPILER IS WHAT SAYS SO ────────────────────
 //

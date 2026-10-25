@@ -668,7 +668,7 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 12 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
+/// The 11 new 1.6.0 verbs: the seven money-governance verbs, plus `amend_rate_history` — the
 /// back-dated rate-card correction the dated-history design adds — and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
 /// `set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset` and `approve` left 1.6.0
 /// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7), and `set_overdraft_ceiling`,
