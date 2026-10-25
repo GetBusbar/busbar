@@ -491,8 +491,7 @@ pub(crate) fn scoped_dial() -> Option<ScopedDial> {
 /// engine's side of the seam: the server name and the ALPN offer it hands the wrap, the extra roots
 /// and the identity it asks for, the facts it reads back (the agreed protocol, the peer's leaf), and
 /// how a refused handshake surfaces. Real TLS — the ClientHello on the wire, certificate verification,
-/// a mutual handshake — is proven where TLS lives: the connector's own tests, its
-/// `tls/engine_tests.rs` among them, which drive this engine over the connector's wrap.
+/// a mutual handshake — is proven where TLS lives: the connector's own tests.
 #[derive(Clone, Default)]
 pub struct TlsDouble {
     hellos: Arc<Mutex<Vec<DoubleHello>>>,
@@ -527,8 +526,7 @@ impl TlsDouble {
 
 impl crate::secure::SecureLayer for TlsDouble {
     /// A plain PEM walk (certificates and one private key, the last key winning), enough for a test
-    /// identity; the connector's walk, and its verdict parity with `reqwest::Identity::from_pem`, is
-    /// proven over the real wrap (the connector's `tls/engine_tests.rs`).
+    /// identity.
     fn identity_from_pem(
         &self,
         pem: &[u8],
@@ -915,21 +913,6 @@ pub fn spawn_double(
     DoubleFixture { addr, records }
 }
 
-// ── the TLS wrap of a test binary no composition root boots ────────────────────────────────────
-
-/// The egress-trust capability a test binary with no composition root installs to carry a TLS wrap:
-/// the pass-through primitives (so every other answer is the one no capability gives), and `layer`.
-pub struct TlsEgressTrust(pub Arc<dyn crate::secure::SecureLayer>);
-
-impl crate::egress::trust::EgressTrustHost for TlsEgressTrust {
-    fn secure_layer(&self) -> Option<Arc<dyn crate::secure::SecureLayer>> {
-        Some(Arc::clone(&self.0))
-    }
-    fn judge_name(&self, host: &str, _: u32) -> Result<(), crate::host_services::DestRefusal> {
-        loopback_literal_listed(host)
-    }
-}
-
 /// The name arm of a test binary with no deployment guard, through the same allowlist an operator
 /// writes: the guard double ([`PrivateRefusing`]) with the loopback every fixture binds listed, as
 /// `advanced.allow_destinations: ["127.0.0.1", "::1"]` lists it. A listed loopback literal is
@@ -943,18 +926,10 @@ pub fn loopback_literal_listed(host: &str) -> Result<(), crate::host_services::D
     )
 }
 
-/// TEST SEAM: carry `layer` as the wrap every client in this test binary is built over, in the
-/// egress-trust capability the composition root installs at boot in a shipped process (first
-/// install wins).
-pub fn install_test_tls(layer: Arc<dyn crate::secure::SecureLayer>) {
-    crate::egress::trust::install_egress_trust_host(Arc::new(TlsEgressTrust(layer)));
-}
-
 /// THE SYSTEM LOOKUP a test build's kernel resolve-then-pin answers with when no guarded egress-trust
 /// capability is installed (`egress::trust::EgressTrustHost::resolve_names`): every
 /// address `host` answers with, de-duplicated but otherwise untouched and unsorted. Test machinery
-/// only: a production kernel resolves nothing itself, the connector's resolver
-/// (`busbar_core_connector::hostio::SystemNames`, the same body) is installed behind the capability.
+/// only: a production kernel resolves nothing itself.
 ///
 /// # Errors
 ///

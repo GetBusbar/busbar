@@ -128,8 +128,8 @@ fn inner() -> &'static Ops {
     static INNER: OnceLock<Shared<Ops>> = OnceLock::new();
     &INNER
         .get_or_init(|| {
-            // SAFETY: the test plane's door is `'static`; a plane door's `ops` is a plane `Ops`.
-            Shared(unsafe { *(*plane::door()).ops.cast::<Ops>() })
+            // SAFETY: a plane door's `ops` is a `'static` plane `Ops`.
+            Shared(unsafe { *plane::door().ops().cast::<Ops>() })
         })
         .0
 }
@@ -168,7 +168,7 @@ extern "C" fn catalog(_: *mut c_void, _: *const c_void, out: *mut c_void) -> Raw
 
 /// The door this binary loads: the test plane's Statement and lifecycle, its request-path ops
 /// wrapped so their bodies run disarmed.
-extern "C" fn door() -> *const Door {
+extern "C" fn door() -> &'static Door {
     static OPS: OnceLock<Shared<Ops>> = OnceLock::new();
     static DOOR: OnceLock<Shared<Door>> = OnceLock::new();
     let ops = &OPS
@@ -186,11 +186,11 @@ extern "C" fn door() -> *const Door {
         .0;
     &DOOR
         .get_or_init(|| {
-            Shared(Door {
-                ops: (ops as *const Ops).cast::<OpsHead>(),
-                // SAFETY: the test plane's door is `'static`.
-                ..unsafe { *plane::door() }
-            })
+            let mut parts = plane::door().parts();
+            parts.ops = (ops as *const Ops).cast::<OpsHead>();
+            // SAFETY: the test plane's own `'static` Statement, over a `'static` plane table whose
+            // request-path slots wrap the test plane's own.
+            Shared(unsafe { Door::__from_parts(parts) })
         })
         .0
 }

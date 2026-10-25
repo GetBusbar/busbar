@@ -132,8 +132,8 @@ mod plugin {
 }
 
 fn ops() -> &'static Ops {
-    // SAFETY: the macro's door and table are `'static` consts.
-    let d: &Door = unsafe { &*plugin::door() };
+    // The macro's door and table are `'static` consts.
+    let d: &Door = plugin::door();
     // SAFETY: as above; the door's ops are an auth table.
     unsafe { &*d.ops.cast::<Ops>() }
 }
@@ -485,7 +485,7 @@ fn the_ops_it_does_not_serve_are_refused_and_the_tail_states_inbound_only() {
         assert!(op.is_some());
     }
     // SAFETY: the door's `'static` Statement and tail.
-    let st = unsafe { &*(*plugin::door()).statement };
+    let st = unsafe { &*plugin::door().statement };
     // SAFETY: as above.
     let tail = unsafe { &*st.kind_tail.cast::<AuthTail>() };
     assert_eq!(tail.caps, crate::abi::auth::CAP_INBOUND);
