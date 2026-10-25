@@ -10,20 +10,19 @@
 //!
 //! It answers two surfaces:
 //!
-//! * [`StoreCalls`], the typed store v3 surface: every op is SUBMITTED on a ticket to the
-//!   dispatcher and AWAITED on the caller's task (no runtime thread is parked, no
+//! * [`StoreCalls`], the typed store v3 surface: every op goes down the ONE CALL PATH
+//!   ([`call::call`]) and is AWAITED on the caller's task (no runtime thread is parked, no
 //!   `spawn_blocking`); a full instance answers [`StoreFailure::Overloaded`] without a crossing;
-//!   a short answer is re-submitted once on the same ticket with the buffers it named.
+//!   a short answer is re-called once on the same ticket with the buffers it named.
 //! * [`RecordStore`], the 1.5.5 op set, SYNCHRONOUSLY, for the consumers that have not moved to
-//!   [`StoreCalls`]. M6: this bridge is deleted when no consumer remains. Every one of its ops is
-//!   SUBMITTED ON A TICKET like a [`StoreCalls`] op, and the synchronous caller waits for the
-//!   completion: a store that answers PENDING (a remote store waiting on its connection) is
-//!   resumed by the dispatcher on its wake and completes the op, never faulted (ARCHITECT ruling
-//!   2026-10-03 on Q-L14-1; THE DESIGN, the plugin ABI). The wait is the caller's, exactly where the
+//!   [`StoreCalls`]. M6: this bridge is deleted when no consumer remains. Every one of its ops
+//!   goes down the same call path as a [`StoreCalls`] op, and the synchronous caller waits for
+//!   the completion: a store that answers PENDING (a remote store waiting on its connection) is
+//!   resumed on its wake and completes the op, never faulted (ARCHITECT ruling 2026-10-03 on
+//!   Q-L14-1; THE DESIGN, the plugin ABI). The wait is the caller's, exactly where the
 //!   compiled-in store's direct calls ran before, so no call site moves from non-blocking to
-//!   blocking. Only on a dispatcher's only worker, which cannot run an op while it waits, does an
-//!   op cross ticket-less on the caller's thread, where a PENDING is FAULT (loud: logged at error,
-//!   and a debug build panics). Remaining consumers: the kernel's governance state and budget flusher
+//!   blocking; the crossings run on plugin threads, so a caller that is itself inside a crossing
+//!   never starves its own op. Remaining consumers: the kernel's governance state and budget flusher
 //!   (`busbar-kernel/src/governance/state.rs`), the plane host's record and token ops
 //!   (`busbar-kernel/src/plane_host/`), the admin units, the boot ledger's migration read, and
 //!   the planes' own record legs.
@@ -33,9 +32,8 @@
 use std::cell::UnsafeCell;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
@@ -59,9 +57,11 @@ use busbar_contract::records::{
 };
 use busbar_contract::store_calls::{OpIdMint, StoreCall, StoreCalls, StoreFailure};
 
+use crate::dispatch::call::{self, Opts};
 use crate::dispatch::kinds::store::{Store, StoreFacts};
+use crate::dispatch::plugin::Admission;
 use crate::dispatch::{
-    in_head, now_ns, out_head, Dispatcher, Frame, InFrame, Lent, OutFrame, Plugin,
+    in_head, out_head, Dispatcher, Frame, InFrame, Kind, Lent, OutFrame, Plugin,
 };
 
 /// The first byte buffer a request-path read is handed; a longer answer is re-asked once at the
@@ -69,17 +69,17 @@ use crate::dispatch::{
 const FIRST_BYTES: usize = 16 * 1024;
 /// The first item capacity of a request-path list.
 const FIRST_ITEMS: usize = 256;
-/// How long a Call-class op may pend before the dispatcher cancels it.
+/// How long a Call-class op may pend before it is cancelled.
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
 
 // ── the handle ───────────────────────────────────────────────────────────────────────────────
 
 /// ONE STORE INSTANCE, opened through the store v3 table.
 pub struct LoadedStore {
-    plugin: Plugin<Store>,
-    dispatcher: Arc<Dispatcher>,
+    plugin: Arc<Plugin<Store>>,
+    /// Kept alive while the store is: it owns the tickets and services the instance's ops use.
+    _dispatcher: Arc<Dispatcher>,
     facts: StoreFacts,
-    next_worker: AtomicU32,
     /// The node's one `op_id` allocator, for the bridge's `op_id`-carrying 1.5.5 writes.
     mint: OpIdMint,
 }
@@ -131,7 +131,8 @@ impl LoadedStore {
                 err_len: 0,
             },
         );
-        let c = Self::open_on_ticket(&plugin, &dispatcher, o, settings);
+        let plugin = Arc::new(plugin);
+        let c = Self::open_on_ticket(&plugin, o, settings);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
         }
@@ -139,54 +140,41 @@ impl LoadedStore {
         plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
         Ok(Self {
             plugin,
-            dispatcher,
+            _dispatcher: dispatcher,
             facts,
-            next_worker: AtomicU32::new(0),
             mint,
         })
     }
 
     /// `open` ON A TICKET (ARCHITECT ruling 2026-10-03 on Q-L16-2; the mechanism: `open` "may
-    /// pend", on the control lane): submitted through the dispatcher and waited for, so a store
-    /// whose connect step ([`busbar_contract::abi::sdk::store::StoreSlots::connect`]) pends on the
+    /// pend", on the control lane): down the one call path and waited for, so a store whose
+    /// connect step ([`busbar_contract::abi::sdk::store::StoreSlots::connect`]) pends on the
     /// connector is resumed on its wake and completes the open, and an unreachable backend still
-    /// refuses the load at open, in the store's own words. Called on the dispatcher's only worker,
-    /// it crosses ticket-less on this thread (as the bridge does, [`LoadedStore::inline`]).
-    /// `settings` owns what `o` lends: the dispatcher keeps it until the crossing returns.
+    /// refuses the load at open, in the store's own words. `settings` owns what `o` lends: the op
+    /// keeps it until the crossing returns.
     fn open_on_ticket(
-        plugin: &Plugin<Store>,
-        dispatcher: &Dispatcher,
-        mut o: Frame<OpenIn, OpenOut>,
+        plugin: &Arc<Plugin<Store>>,
+        o: Frame<OpenIn, OpenOut>,
         settings: Arc<Vec<u8>>,
     ) -> crate::dispatch::Called {
-        let Some(worker) = pick_worker(dispatcher, 0) else {
-            return plugin.call(life::OPEN, &mut o);
+        let ran = futures::executor::block_on(call::call(
+            plugin,
+            life::OPEN,
+            o,
+            settings,
+            opts(DeadlineClass::Call),
+            &mut |_| None,
+        ));
+        let (outcome, error, lease) = match ran {
+            call::Ran::Answered { called, .. } => (called.outcome, called.error, called.lease),
+            call::Ran::TimedOut { cancelled } => (timeout_of(cancelled.as_ref()), None, 0),
+            call::Ran::NoTicket => (Outcome::Refused, None, 0),
+            call::Ran::Faulted => (Outcome::Fault, None, 0),
         };
-        let Some(ticket) = dispatcher.mint(worker) else {
-            return crate::dispatch::Called {
-                outcome: Outcome::Refused,
-                error: None,
-                lease: 0,
-                recall: None,
-            };
-        };
-        let _recycle = Recycle(dispatcher, ticket);
-        let deadline = now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64);
-        let done = dispatcher
-            .submit_lent(
-                plugin,
-                ticket,
-                life::OPEN,
-                o,
-                DeadlineClass::Call,
-                deadline,
-                settings,
-            )
-            .wait_done();
         crate::dispatch::Called {
-            outcome: done.outcome,
-            error: done.error,
-            lease: done.lease,
+            outcome,
+            error,
+            lease,
             recall: None,
         }
     }
@@ -250,155 +238,77 @@ impl LoadedStore {
         let _ = self.plugin.call(life::RELEASE, &mut f);
     }
 
-    // ── the two runners ──────────────────────────────────────────────────────────────────────
+    // ── the runner ───────────────────────────────────────────────────────────────────────────
 
-    /// THE BRIDGE'S RUNNER (ARCHITECT ruling 2026-10-03 on Q-L14-1; THE DESIGN, the plugin ABI: every call
-    /// returns Ready or Pending(wake), and slow I/O pends, never a blocking thread): the op is
-    /// SUBMITTED on a ticket exactly as [`StoreCalls`] submits it, and this synchronous caller
-    /// waits for its completion. A store that answers PENDING is resumed by the dispatcher on its
-    /// wake, its crossing never parked; a short answer is re-submitted once on the same ticket.
-    /// Called on one of the dispatcher's own workers (whose thread cannot run the op while it
-    /// waits), the op goes to another worker; on a dispatcher with that worker alone it crosses
-    /// ticket-less on this thread ([`LoadedStore::inline`]).
+    /// THE BRIDGE'S RUNNER (ARCHITECT ruling 2026-10-03 on Q-L14-1; THE DESIGN, the plugin ABI: every
+    /// call returns Ready or Pending(wake), and slow I/O pends, never a blocking thread): the op goes
+    /// down the one call path exactly as a [`StoreCalls`] op does, and this synchronous caller
+    /// waits for its completion. A store that answers PENDING is resumed on its wake, its crossing
+    /// never parked; a short answer is re-called once on the same ticket.
     // TRANSITIONAL: the synchronous caller waits on its own thread (ARCHITECT ruling 2026-10-03 on
     // Q-L16-1); drains when the governance callers move to StoreCalls (D2/D3; 1.6.0-TODO.md).
-    fn now<R: Req>(&self, mut r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
-        let s = r.slot();
-        let Some(worker) = self.bridge_worker() else {
-            let ran = self.inline(&mut r);
-            return (ran, Lend::new(r));
-        };
-        let Some(ticket) = self.dispatcher.mint(worker) else {
-            return (Ran::host(Outcome::Refused, r.out()), Lend::new(r));
-        };
-        let _recycle = Recycle(&self.dispatcher, ticket);
-        let (class, deadline) = deadline_of(s);
-        let r = Lend::new(r);
-        let mut regrown = false;
-        loop {
-            let frame = r.frame();
-            // Settled before it is dropped, so the drop cancels nothing. The request is LENT: the
-            // dispatcher holds it until the crossing returns, even past a watchdog fault.
-            let done = self
-                .dispatcher
-                .submit_lent(&self.plugin, ticket, s, frame, class, deadline, r.lent())
-                .wait_done();
-            let out = done.frame.as_ref().map_or_else(|| r.get().out(), |f| f.out);
-            if done.short && !regrown {
-                regrown = true;
-                r.grow(&out);
-                continue;
-            }
-            let ran = Ran {
-                outcome: done.outcome,
-                out,
-                error: done.error,
-                lease: done.lease,
-            };
-            return (ran, r);
-        }
+    fn now<R: Req>(&self, r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
+        futures::executor::block_on(self.submit(r))
     }
 
-    /// The worker the bridge submits to: the next in turn, never the calling thread's own; `None`
-    /// when the calling thread is the dispatcher's only worker.
-    fn bridge_worker(&self) -> Option<u32> {
-        pick_worker(
-            &self.dispatcher,
-            self.next_worker.fetch_add(1, Ordering::Relaxed),
-        )
-    }
-
-    /// A ticket-less crossing on this thread, the one re-call of a short answer: the bridge's path
-    /// on a dispatcher's only worker, where a ticketed op could never run.
-    // TRANSITIONAL: the one-worker fallback of the bridge's wait (ARCHITECT ruling 2026-10-03 on
-    // Q-L16-1); drains with the bridge (D2/D3; 1.6.0-TODO.md).
-    fn inline<R: Req>(&self, r: &mut R) -> Ran<R::O> {
-        let s = r.slot();
-        let mut f = Frame::new(r.input(), r.out());
-        let mut c = self.plugin.call(s, &mut f);
-        if let Some(token) = c.recall.take() {
-            r.grow(&f.out);
-            f = Frame::new(r.input(), r.out());
-            c = self.plugin.recall(token, s, &mut f);
-        }
-        // The SDK answers a ticket-less PENDING as FAULT, so a FAULT here is the pend (or worse).
-        if c.outcome == Outcome::Fault {
-            pended_on_the_bridge(self.plugin.name(), s);
-        }
-        Ran {
-            outcome: c.outcome,
-            out: f.out,
-            error: c.error,
-            lease: c.lease,
-        }
-    }
-
-    /// THE TYPED RUNNER: submitted on a ticket, awaited, a short answer re-submitted once on the
-    /// same ticket.
+    /// THE TYPED RUNNER: down the one call path, awaited, a short answer re-called once on the
+    /// same ticket. The request is LENT to the op: a crossing the watchdog faulted, or one whose
+    /// caller stopped waiting, still reads and writes live memory until it returns.
     async fn submit<R: Req>(&self, r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
         let s = r.slot();
-        let workers = self.dispatcher.workers().max(1);
-        let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
-        let Some(ticket) = self.dispatcher.mint(worker) else {
-            return (Ran::host(Outcome::Refused, r.out()), Lend::new(r));
-        };
-        let _recycle = Recycle(&self.dispatcher, ticket);
-        let (class, deadline) = deadline_of(s);
+        let class = OPS[(s - LIFECYCLE_SLOTS) as usize].deadline;
         let r = Lend::new(r);
-        let mut regrown = false;
-        loop {
-            let frame = r.frame();
-            // The request is LENT: the dispatcher holds it until the crossing returns, even when
-            // the watchdog faults the op or this future is dropped first.
-            let reply = self.dispatcher.submit_lent(
-                &self.plugin,
-                ticket,
-                s,
-                frame,
-                class,
-                deadline,
-                r.lent(),
-            );
-            let done = reply.await;
-            let out = done.frame.as_ref().map_or_else(|| r.get().out(), |f| f.out);
-            if done.short && !regrown {
-                regrown = true;
-                r.grow(&out);
-                continue;
+        let ran = call::call(
+            &self.plugin,
+            s,
+            r.frame(),
+            r.lent(),
+            opts(class),
+            &mut |f| {
+                r.grow(&f.out);
+                Some((r.frame(), r.lent()))
+            },
+        )
+        .await;
+        let ran = match ran {
+            call::Ran::Answered { called, frame, .. } => Ran {
+                outcome: called.outcome,
+                out: frame.out,
+                error: called.error,
+                lease: called.lease,
+            },
+            call::Ran::TimedOut { cancelled } => {
+                Ran::host(timeout_of(cancelled.as_ref()), r.get().out())
             }
-            let ran = Ran {
-                outcome: done.outcome,
-                out,
-                error: done.error,
-                lease: done.lease,
-            };
-            return (ran, r);
-        }
+            call::Ran::NoTicket => Ran::host(Outcome::Refused, r.get().out()),
+            call::Ran::Faulted => Ran::host(Outcome::Fault, r.get().out()),
+        };
+        (ran, r)
     }
 }
 
-/// The worker a synchronous waiter submits to: the `turn`th in turn, never the calling thread's
-/// own; `None` when the calling thread is the dispatcher's only worker.
-fn pick_worker(dispatcher: &Dispatcher, turn: u32) -> Option<u32> {
-    let workers = dispatcher.workers().max(1);
-    let next = turn % workers;
-    match dispatcher.current_worker() {
-        None => Some(next),
-        Some(_) if workers == 1 => None,
-        Some(me) if me == next => Some((next + 1) % workers),
-        Some(_) => Some(next),
+/// How a store op is called: a Call-class op may pend [`CALL_DEADLINE`]; a WriteBehind op is
+/// never cancelled, so it states no deadline.
+fn opts(class: DeadlineClass) -> Opts {
+    Opts {
+        class,
+        deadline: (class != DeadlineClass::WriteBehind).then(|| Instant::now() + CALL_DEADLINE),
+        watch: Duration::ZERO,
+        leave: false,
+        lane: None,
+        admission: Admission::Cap,
+        ticket: None,
+        inline: false,
+        cancel: None,
     }
 }
 
-/// Op `s`'s deadline class and its deadline: a Call-class op may pend [`CALL_DEADLINE`]; a
-/// WriteBehind op is never cancelled, so it carries none.
-fn deadline_of(s: u32) -> (DeadlineClass, u64) {
-    let class = OPS[(s - LIFECYCLE_SLOTS) as usize].deadline;
-    let deadline = match class {
-        DeadlineClass::WriteBehind => 0,
-        _ => now_ns().saturating_add(CALL_DEADLINE.as_nanos() as u64),
-    };
-    (class, deadline)
+/// An op cut at its deadline answers the kind's timeout; a `cancel` that FAULTed makes it FAULT.
+fn timeout_of(cancelled: Option<&crate::dispatch::plugin::Cancelled>) -> Outcome {
+    match cancelled {
+        Some(c) if c.outcome == Outcome::Fault => Outcome::Fault,
+        _ => <Store as Kind>::TIMEOUT,
+    }
 }
 
 impl Drop for LoadedStore {
@@ -410,37 +320,11 @@ impl Drop for LoadedStore {
     }
 }
 
-/// The ticket goes back when the call is over, however it ended.
-struct Recycle<'a>(
-    &'a Dispatcher,
-    busbar_contract::abi::mechanism::ticket::Ticket,
-);
-impl Drop for Recycle<'_> {
-    fn drop(&mut self) {
-        self.0.recycle(self.1);
-    }
-}
-
-/// A ticket-less crossing ([`LoadedStore::inline`], on a dispatcher's only worker) that PENDED
-/// faulted the store. Loud: an error line always, and a debug build panics, so a pend there never
-/// goes unseen.
-fn pended_on_the_bridge(store: &str, s: u32) {
-    tracing::error!(
-        store,
-        op = <Store as crate::dispatch::Kind>::op_name(s),
-        "a store op faulted on the bridge's ticket-less crossing (the dispatcher's only worker called it)"
-    );
-    debug_assert!(
-        false,
-        "store '{store}' faulted op {s} on the bridge's ticket-less crossing (a pending op is FAULT there)"
-    );
-}
-
-/// ONE OP'S REQUEST, LENT TO THE DISPATCHER (THE DESIGN §2: "The memory a call lends a plugin
+/// ONE OP'S REQUEST, LENT TO ITS OP (THE DESIGN §2: "The memory a call lends a plugin
 /// lives until that call completes, abandoned or not, for every kind (a submit that the watchdog
 /// can abandon uses the lending submit)"). Every pointer an op's `in` carries names memory its
-/// request owns ([`Owned`] and its own buffers); the runner hands a clone of this `Arc` to
-/// [`Dispatcher::submit_lent`], so a crossing the watchdog abandoned, or one whose caller stopped
+/// request owns ([`Owned`] and its own buffers); the runner lends a clone of this `Arc` to the
+/// op ([`call::call`]), so a crossing the watchdog abandoned, or one whose caller stopped
 /// waiting, still reads and writes live memory until it returns.
 struct Lend<R>(UnsafeCell<R>);
 // SAFETY: a request is plain data and raw pointers into memory it owns. The host touches it only
