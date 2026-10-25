@@ -168,7 +168,7 @@ pub use store_identity::{host_identity, keep_keyset, persisted_node, stored_keys
 pub use store_identity::node_id;
 // Its callers are the admin verify (`units_admin`, `root-admin`) and the tests.
 #[cfg(any(test, feature = "root-admin"))]
-pub use store_identity::walk_stored_chains;
+pub use store_identity::{stored_chains, walk_stored_chains};
 
 /// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
 /// journal rebuilt from the chain at boot. A private child module, as `replay` is.
@@ -3033,15 +3033,9 @@ fn build_inner(
     if let Some(cards) = cards {
         let records = durability.keeps_chain().then_some(records.as_slice());
         // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).
-        refused_corrections =
-            cards
-                .rebuild_from_chain(&mut durability, records)
-                .map_err(|lost| {
-                    OpenError::Io(std::io::Error::other(format!(
-                        "the journal could not make the boot's rate card durable at step {}",
-                        lost.step().as_str()
-                    )))
-                })?;
+        refused_corrections = cards
+            .rebuild_from_chain(&mut durability, records)
+            .map_err(|refused| OpenError::Io(std::io::Error::other(refused.to_string())))?;
     }
     let pinned = (durability.history)();
     let view = pinned.as_ref().map(PinnedHistory::view);

@@ -65,6 +65,8 @@ pub mod adapters;
 pub mod admission;
 pub mod auth_bindings;
 pub mod boot;
+pub mod card_history;
+pub mod card_store;
 pub mod cli;
 pub mod connector;
 pub mod credentials;

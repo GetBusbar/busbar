@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 /// The busbar-owned config overlay (persistence substrate for API-applied hook changes).
+pub mod card;
 pub mod overlay;
 
 /// The credential positions `${VAR}` filled, and the settings a plane is handed over them: a secret

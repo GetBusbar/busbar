@@ -1689,6 +1689,10 @@ fn amend_rate_history_effect(
                 GovernanceError::Validation
             }
             crate::root::kernel::AmendRefused::Seal(e) => e,
+            crate::root::kernel::AmendRefused::Store(why) => {
+                tracing::warn!("amend_rate_history refused: {why}");
+                GovernanceError::Store
+            }
         })?;
     // AND THE ANSWER WAITS FOR THE STORE (ARCHITECT 2026-10-07 H3 ruling (d)). The correction is on
     // the chain and in force on this node, as the chain says; until the store has acknowledged it, a
