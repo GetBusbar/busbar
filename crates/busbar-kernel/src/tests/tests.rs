@@ -638,8 +638,11 @@ async fn test_axum_marker_413_is_reshaped_even_as_plain_text() {
     assert!(v.get("error").is_some());
 }
 
-/// Helpers for the plugin pre-flight regression tests: a fresh temp plugins dir and an in-memory
-/// signed/unsigned tarball builder.
+/// Helpers for the plugin pre-flight regression tests: a fresh temp plugins dir, and the rows a
+/// plugins directory admits, stated through the registry double (`test_support::rows`): the kernel
+/// names no loader, so no tarball is packed or scanned here. What the loader admits from a directory,
+/// and in which words it refuses, is proven where the loader is composed
+/// (`crates/busbar/tests/plugin_preflight_scan.rs`).
 pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
     // A monotonic counter, NOT a timestamp. Several helpers call this with the same `tag` from
     // different tests running concurrently, and a clock read is not guaranteed to differ between
@@ -672,41 +675,31 @@ pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-pub(crate) fn plugin_manifest(
-    name: &str,
-    alias: &str,
-    publisher: &str,
-) -> busbar_plugin_loader::sign::Manifest {
-    busbar_plugin_loader::sign::Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "store".into(),
-        version: "1.5.0".into(),
-        publisher: publisher.into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
-    }
+/// A row dropped into a plugins directory, named `name`, aliased `alias`, of `kind`: unsigned and
+/// admitted under the `allow_unsigned` opt-in, keyed (and printed) by its canonical name, as the
+/// loader states a scanned row.
+pub(crate) fn dropped(name: &str, alias: &str, kind: &str) -> busbar_contract::plugin_rows::Row {
+    let mut row = crate::test_support::rows::row(name, alias, kind);
+    row.key = name.to_string();
+    row
 }
 
-/// An UNSIGNED (but structurally valid) tarball: sha256 set, signature empty.
-pub(crate) fn unsigned_tarball(mut m: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<u8> {
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(lib);
-    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
+/// A plugin present in `file` and SKIPPED by the trust policy for `reason`.
+pub(crate) fn skipped_in(
+    file: &str,
+    name: &str,
+    alias: &str,
+    reason: &str,
+) -> busbar_contract::plugin_rows::Skipped {
+    let mut s = crate::test_support::rows::skipped(name, alias, reason);
+    s.file = file.to_string();
+    s
 }
+
+/// The loader's reason for skipping an unsigned plugin under the default trust (its words, as the
+/// trust evaluator states them).
+pub(crate) const UNSIGNED_SKIPPED: &str = "manifest carries no signature; refusing to load an \
+     unsigned plugin. Set plugins.trust.allow_unsigned=true to permit unsigned plugins.";
 
 fn plugins_cfg(dir: &std::path::Path, enabled: bool) -> crate::config::PluginsCfg {
     crate::config::PluginsCfg {
@@ -753,66 +746,21 @@ fn store_plugin_with_plugins_disabled_is_boot_error_naming_the_flag() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `plugins.logs` is refused at the one pre-flight seam every path runs (boot, `--validate`, reload,
-/// apply), naming its key: a level word that names no level, and a zero rotation size.
-#[test]
-fn a_bad_plugins_logs_value_is_refused_naming_its_key() {
-    let mut cfg = crate::config::PluginsCfg::default();
-    cfg.logs.level = Some("loud".into());
-    let run = |cfg: &crate::config::PluginsCfg| {
-        crate::plugins_preflight(
-            None,
-            None,
-            &Default::default(),
-            &Default::default(),
-            cfg,
-            &Default::default(),
-        )
-    };
-    let err = run(&cfg).unwrap_err();
-    assert!(err.contains("plugins.logs.level"), "{err}");
-    cfg.logs.level = Some("debug".into());
-    cfg.logs.rotate_mb = Some(0);
-    let err = run(&cfg).unwrap_err();
-    assert!(err.contains("plugins.logs.rotate_mb"), "{err}");
-    cfg.logs.rotate_mb = Some(8);
-    assert!(run(&cfg).is_ok(), "a good block passes");
-}
-
-/// DROP-IS-INERT: plugins present in the directory but `plugins.enabled: false` (store: memory) —
-/// boot succeeds with an EMPTY registry; nothing in the dir is even considered.
-#[test]
-fn disabled_plugins_are_inert_even_when_present() {
-    let dir = tmp_plugin_dir("inert");
-    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
-    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
-    // Even an INVALID tarball must not matter while disabled.
-    std::fs::write(dir.join("junk.tar.gz"), b"not a tarball").unwrap();
-    let reg = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &plugins_cfg(&dir, false),
-        &Default::default(),
-    )
-    .expect("inert");
-    assert!(reg.loadable().is_empty() && reg.skipped().is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// THE BOOT LOG OVER THE ROOT'S REGISTRY BUILD (ARCHITECT ruling Q8): the registry is built by
 /// the composition root (`preflight::RegistryBuild`), and the preflight logs each step the build
 /// notes — the same lines, the same fields, in the order it logged them when it scanned the
 /// directory itself: `disabled`; or `enabled`, then every skipped row, then every loadable row.
+/// The rows are the registry double's (`test_support::rows`): the directory holds the unsigned
+/// `acme-lines` plugin, SKIPPED by the default trust and admitted under `allow_unsigned`.
 #[test]
 fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
     use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let dir = tmp_plugin_dir("boot-lines");
-    let tarball = unsigned_tarball(plugin_manifest("acme-lines", "lines", "acme"), b"lib");
-    std::fs::write(dir.join("lines.tar.gz"), tarball).unwrap();
+    // The default trust skips the unsigned plugin.
+    let skip = skipped_in("lines.tar.gz", "acme-lines", "lines", UNSIGNED_SKIPPED);
+    crate::test_support::rows::drop_in(&dir, Vec::new(), vec![skip]);
     let lines = |cfg: &crate::config::PluginsCfg| {
         let cap = WarnCapture::capturing_debug();
         let subscriber = tracing_subscriber::registry().with(cap.clone());
@@ -850,6 +798,16 @@ fn the_registry_build_keeps_the_preflights_boot_lines_in_order() {
             && skipped[1].contains("plugin=acme-lines")
             && skipped[1].contains("lines.tar.gz"),
         "{skipped:?}"
+    );
+    // `allow_unsigned` admits it.
+    crate::test_support::rows::drop_in(
+        &dir,
+        vec![dropped(
+            "acme-lines",
+            "lines",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
+        Vec::new(),
     );
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
@@ -898,14 +856,14 @@ fn the_preflight_warns_about_a_malformed_floor() {
 }
 
 /// K5 (DECISIONS #2 rule (1)) — THE BUILT-IN STORE IS A ROW OF THE STORE AXIS. The linked store is
-/// registered through `PluginRegistry::link`, the admission a dropped-in store's row takes, and the
-/// configured name resolves to it there — not a name the kernel matches. With the plugins directory
-/// off the registry holds exactly that row, which states itself ephemeral and opens through
-/// `open_store`, by its key and by its canonical name alike (ARCHITECT C': one plugin, one identity).
-/// With the directory on, a dropped-in copy of the SAME plugin (its canonical name) at the version
-/// the linked plugin states is admitted once — the linked row serves — and a DIFFERENT plugin
-/// spelling the linked row's key is refused, naming both (Q-P4-12: no door outranks the other; the
-/// silent first-registration win is gone).
+/// registered through the root's registry build (`preflight::RegistryBuild`), the admission a
+/// dropped-in store's row takes, and the configured name resolves to it there — not a name the
+/// kernel matches. With the plugins directory off the registry holds exactly that row, which states
+/// itself ephemeral and opens through `open_store`, by its key and by its canonical name alike
+/// (ARCHITECT C': one plugin, one identity). What the loader's build does with a dropped-in copy of
+/// the SAME plugin and with a DIFFERENT plugin spelling the linked row's key (Q-P4-12) is proven
+/// where the loader is composed: `crates/busbar/tests/plugin_preflight_scan.rs`,
+/// `the_built_in_stores_dropped_in_copy_is_admitted_once_and_a_rival_is_refused`.
 ///
 /// RED by planting the door bypass: `linked_rows()` registering nothing leaves the configured
 /// `store.module` (the stand-in row) unresolved (the preflight then refuses it as a plugin with
@@ -924,16 +882,20 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
     )
     .expect("the configured store resolves on the axis");
     let row = reg.resolve(name).expect("the configured store is a row");
-    assert_eq!((row.manifest.kind.as_str(), row.ephemeral), ("store", true));
-    let stores = reg.linked().iter().filter(|p| p.manifest.kind == "store");
+    assert_eq!(
+        (row.kind.as_str(), row.ephemeral),
+        (busbar_contract::abi::mechanism::kind::STORE, true)
+    );
+    let stores = reg
+        .linked()
+        .into_iter()
+        .filter(|p| p.kind == busbar_contract::abi::mechanism::kind::STORE);
     assert_eq!((stores.count(), reg.loadable().len()), (1, 0));
     reg.store_door(name)
         .expect("the row states its door to boot");
-    let canonical = row.manifest.name.clone();
+    let canonical = row.name.clone();
     assert_ne!(canonical, name, "the row's canonical name is not its key");
-    assert_eq!(row.key(), name, "the row prints its key");
-    let version = row.plugin_version().expect("the store states its version");
-    let statement = row.statement().expect("the store states itself");
+    assert_eq!(row.key, name, "the row prints its key");
     reg.store_door(&canonical)
         .expect("the canonical name opens the same store");
     let by_canonical = crate::plugins_preflight(
@@ -945,46 +907,7 @@ fn the_built_in_store_is_a_linked_row_of_the_store_axis() {
         &Default::default(),
     )
     .expect("`store.module: <canonical>` resolves as the key does");
-    assert!(by_canonical.resolve(&canonical).expect("resolves").linked());
-
-    // A dropped-in copy of the same plugin at its version: admitted once, the linked row serves.
-    let dir = tmp_plugin_dir("linked-store");
-    let mut m = plugin_manifest(&canonical, name, "acme");
-    m.version = version.clone();
-    m.statement = Some(hex::encode(&statement));
-    std::fs::write(dir.join("copy.tar.gz"), unsigned_tarball(m, b"lib")).unwrap();
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    let scan = || {
-        crate::plugins_preflight(
-            Some(&store),
-            None,
-            &Default::default(),
-            &Default::default(),
-            &cfg,
-            &Default::default(),
-        )
-    };
-    let reg = scan().expect("the directory scans");
-    assert!(
-        reg.resolve(name).expect("resolves").linked(),
-        "the linked row serves"
-    );
-    assert_eq!(reg.loadable().len(), 0, "the copy is no row of its own");
-    assert_eq!(reg.linked_copies().len(), 1);
-
-    // A DIFFERENT plugin spelling the key: refused, naming both.
-    std::fs::remove_file(dir.join("copy.tar.gz")).unwrap();
-    let other = unsigned_tarball(plugin_manifest(name, "acme-ram", "acme"), b"lib");
-    std::fs::write(dir.join("ram.tar.gz"), other).unwrap();
-    let refused = scan().expect_err("two plugins claim the key");
-    assert!(
-        refused.contains("plugin claim conflict")
-            && refused.contains(&format!("'{name}'"))
-            && refused.contains("ram.tar.gz"),
-        "{refused}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(by_canonical.resolve(&canonical).expect("resolves").linked);
 }
 
 /// THE PRINTED NAME OF A LINKED ROW IS ITS KEY (ARCHITECT C'): every preflight refusal that names a
@@ -1007,7 +930,7 @@ fn a_linked_rows_refusals_print_its_key() {
         &Default::default(),
     )
     .expect("the store resolves");
-    let canonical = reg.resolve(&key).expect("the row").manifest.name.clone();
+    let canonical = reg.resolve(&key).expect("the row").name;
     for word in [key.as_str(), canonical.as_str()] {
         let hooks: std::collections::HashMap<String, crate::config::HookCfg> =
             serde_json::from_value(serde_json::json!({ "h": { "module": word, "kind": "tap" } }))
@@ -1045,7 +968,7 @@ fn a_linked_rows_refusals_print_its_key() {
             "{word}: {refused}"
         );
         assert_eq!(
-            crate::preflight::validate_secret_module(&reg, word).unwrap_err(),
+            crate::preflight::validate_secret_module(reg.as_ref(), word).unwrap_err(),
             format!(
                 "secrets.{word}: plugin '{key}' has kind 'store', not 'secret'; only a kind: \
                  secret plugin can back a `secrets:` block entry"
@@ -1055,7 +978,7 @@ fn a_linked_rows_refusals_print_its_key() {
             module: word.to_string(),
             ..crate::config::SecretRef::env("K")
         });
-        let refused = crate::preflight::validate_secret_refs(&reg, &cfg).unwrap_err();
+        let refused = crate::preflight::validate_secret_refs(reg.as_ref(), &cfg).unwrap_err();
         assert!(
             refused.contains(&format!(
                 "references secret module '{word}', but plugin '{key}' has kind 'store'"
@@ -1107,8 +1030,15 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     );
 
     let dir = tmp_plugin_dir("linked-secret");
-    let tarball = unsigned_tarball(plugin_manifest("env", "acme-env", "acme"), b"lib");
-    std::fs::write(dir.join("env.tar.gz"), tarball).unwrap();
+    crate::test_support::rows::drop_in(
+        &dir,
+        vec![dropped(
+            "env",
+            "acme-env",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
+        Vec::new(),
+    );
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
     let reg = crate::plugins_preflight(
@@ -1399,68 +1329,6 @@ async fn each_strategy_word_ranks_as_1_5_5_did_through_the_door_and_never_reache
     }
 }
 
-/// SECURITY: if the CONFIGURED governance store resolves to a plugin that is UNTRUSTED and NOT
-/// opted-in, boot must FAIL with a clear error that NAMES the plugin and carries the exact trust
-/// reason - never silently skip the store the operator asked for. With `allow_unsigned` set, the
-/// same tarball passes preflight and resolves by alias AND canonical name.
-#[test]
-fn configured_store_with_untrusted_plugin_fails_boot_with_naming_error() {
-    let dir = tmp_plugin_dir("untrusted-store");
-    let tarball = unsigned_tarball(
-        plugin_manifest("busbar-store-durable", "durable", "busbar"),
-        b"unsigned lib bytes",
-    );
-    std::fs::write(dir.join("durable.tar.gz"), tarball).unwrap();
-
-    // STRICT default trust: the referenced store plugin is skipped -> preflight fails, naming it.
-    let err = crate::plugins_preflight(
-        Some(&gov_with_store("durable")),
-        None,
-        &Default::default(),
-        &Default::default(),
-        &plugins_cfg(&dir, true),
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(
-        err.contains("busbar-store-durable") || err.contains("'durable'"),
-        "names the plugin: {err}"
-    );
-    assert!(
-        err.contains("allow_unsigned"),
-        "carries the exact opt-in flag to set: {err}"
-    );
-
-    // Opt in to unsigned: preflight passes and the store resolves by alias AND canonical name.
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    let reg = crate::plugins_preflight(
-        Some(&gov_with_store("durable")),
-        None,
-        &Default::default(),
-        &Default::default(),
-        &cfg,
-        &Default::default(),
-    )
-    .expect("allow_unsigned permits the unsigned store plugin at boot");
-    assert!(reg.resolve("durable").is_some(), "alias resolves");
-    assert!(
-        reg.resolve("busbar-store-durable").is_some(),
-        "canonical name resolves"
-    );
-    let reg2 = crate::plugins_preflight(
-        Some(&gov_with_store("busbar-store-durable")),
-        None,
-        &Default::default(),
-        &Default::default(),
-        &cfg,
-        &Default::default(),
-    )
-    .expect("the canonical name is equally valid as governance.store");
-    assert!(reg2.resolve("busbar-store-durable").is_some());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// An UNKNOWN `governance.store` name (no plugin matches by alias or name) is a clear boot error
 /// listing what IS available.
 #[test]
@@ -1468,8 +1336,15 @@ fn unknown_store_name_is_a_clear_boot_error() {
     let dir = tmp_plugin_dir("unknown-store");
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
-    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
-    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
+    crate::test_support::rows::drop_in(
+        &dir,
+        vec![dropped(
+            "acme-store-x",
+            "x",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
+        Vec::new(),
+    );
     let err = crate::plugins_preflight(
         Some(&gov_with_store("dynamo")),
         None,
@@ -1487,97 +1362,29 @@ fn unknown_store_name_is_a_clear_boot_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// FAIL-CLOSED (hard requirement 1): ANY invalid tarball/manifest in an ENABLED plugins dir aborts
-/// preflight (and therefore boot) with the file + reason named — never a partial boot, even when
-/// the invalid plugin is not the configured store.
-#[test]
-fn invalid_manifest_in_enabled_dir_fails_boot() {
-    let dir = tmp_plugin_dir("invalid-any");
-    std::fs::write(dir.join("junk.tar.gz"), b"not a tarball at all").unwrap();
-    let err = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &plugins_cfg(&dir, true),
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("junk.tar.gz"), "names the file: {err}");
-    assert!(err.contains("plugin validation failed"), "got {err}");
-
-    // A structurally-broken manifest (bad sha256 binding) equally aborts.
-    std::fs::remove_file(dir.join("junk.tar.gz")).unwrap();
-    let mut m = plugin_manifest("acme-store-x", "x", "acme");
-    m.sha256 = busbar_plugin_loader::sign::sha256_hex(b"OTHER bytes");
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", b"real bytes").unwrap();
-    std::fs::write(dir.join("sha.tar.gz"), tarball).unwrap();
-    let err = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &plugins_cfg(&dir, true),
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(err.contains("integrity"), "names the sha mismatch: {err}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// CONFLICT (hard requirement 3): two loadable plugins claiming the same alias abort boot naming
-/// BOTH — "you can't use kv and a third-party kv".
-#[test]
-fn alias_conflict_fails_boot_naming_both() {
-    let dir = tmp_plugin_dir("conflict");
-    let mut cfg = plugins_cfg(&dir, true);
-    cfg.trust.allow_unsigned = true;
-    let a = unsigned_tarball(
-        plugin_manifest("busbar-store-kv-plugin", "kv", "busbar"),
-        b"a",
-    );
-    let b = unsigned_tarball(plugin_manifest("acme-store-kv", "kv", "acme"), b"b");
-    std::fs::write(dir.join("a.tar.gz"), a).unwrap();
-    std::fs::write(dir.join("b.tar.gz"), b).unwrap();
-    let err = crate::plugins_preflight(
-        None,
-        None,
-        &Default::default(),
-        &Default::default(),
-        &cfg,
-        &Default::default(),
-    )
-    .unwrap_err();
-    assert!(
-        err.contains("busbar-store-kv-plugin") && err.contains("acme-store-kv"),
-        "names both plugins: {err}"
-    );
-    assert!(err.contains("alias conflict"), "got {err}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 // ── secrets: block validation + alias/name canonicalization ──────────────────────────────────────
 
-/// A `kind: secret` manifest with the correct secret ABI (the store default from `plugin_manifest`
-/// carries the store ABI, which the secret kind would reject).
-fn secret_manifest(name: &str, alias: &str) -> busbar_plugin_loader::sign::Manifest {
-    let mut m = plugin_manifest(name, alias, "acme");
-    m.kind = "secret".into();
-    m.abi_version = *busbar_plugin_loader::supported_abi("secret")
-        .iter()
-        .max()
-        .expect("secret abi");
-    m
-}
-
-/// A registry loaded from an unsigned `kind: secret` tarball (name `acme-secret-vault`, alias
-/// `vault`), for exercising the `secrets:` block resolution.
-fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::PluginRegistry) {
+/// A registry over a plugins directory holding an unsigned `kind: secret` plugin (name
+/// `acme-secret-vault`, alias `vault`) admitted under `allow_unsigned`, for exercising the
+/// `secrets:` block resolution.
+fn secret_registry(
+    tag: &str,
+) -> (
+    std::path::PathBuf,
+    std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
+) {
     let dir = tmp_plugin_dir(tag);
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
-    let tarball = unsigned_tarball(secret_manifest("acme-secret-vault", "vault"), b"lib");
-    std::fs::write(dir.join("vault.tar.gz"), tarball).unwrap();
+    crate::test_support::rows::drop_in(
+        &dir,
+        vec![dropped(
+            "acme-secret-vault",
+            "vault",
+            busbar_contract::abi::mechanism::kind::SECRET,
+        )],
+        Vec::new(),
+    );
     let reg = crate::plugins_preflight(
         None,
         None,
@@ -1595,9 +1402,9 @@ fn secret_registry(tag: &str) -> (std::path::PathBuf, busbar_plugin_loader::Plug
 /// operator error, not a silent no-op.
 #[test]
 fn secrets_block_rejects_builtin_resolver_names() {
-    let reg = busbar_plugin_loader::PluginRegistry::empty();
+    let reg = crate::test_support::rows::empty();
     for reserved in ["env", "file"] {
-        let err = validate_secret_module(&reg, reserved).unwrap_err();
+        let err = validate_secret_module(reg.as_ref(), reserved).unwrap_err();
         assert!(
             err.contains("built-in secret resolver"),
             "reserved '{reserved}' rejected as a module: {err}"
@@ -1609,8 +1416,8 @@ fn secrets_block_rejects_builtin_resolver_names() {
 /// this is the failure that pairs with the alias/name mismatch below.
 #[test]
 fn secrets_block_rejects_unknown_module() {
-    let reg = busbar_plugin_loader::PluginRegistry::empty();
-    let err = validate_secret_module(&reg, "typo-vault").unwrap_err();
+    let reg = crate::test_support::rows::empty();
+    let err = validate_secret_module(reg.as_ref(), "typo-vault").unwrap_err();
     assert!(
         err.contains("no loadable") && err.contains("typo-vault"),
         "unknown module named in the error: {err}"
@@ -1626,11 +1433,11 @@ fn secrets_block_canonicalizes_alias_and_name_to_the_same_key() {
     let (dir, reg) = secret_registry("secrets-canon");
     // Both the alias and the canonical name resolve to the SAME canonical name.
     assert_eq!(
-        validate_secret_module(&reg, "vault").unwrap(),
+        validate_secret_module(reg.as_ref(), "vault").unwrap(),
         "acme-secret-vault"
     );
     assert_eq!(
-        validate_secret_module(&reg, "acme-secret-vault").unwrap(),
+        validate_secret_module(reg.as_ref(), "acme-secret-vault").unwrap(),
         "acme-secret-vault"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1643,9 +1450,16 @@ fn secrets_block_rejects_non_secret_kind() {
     let dir = tmp_plugin_dir("secrets-wrong-kind");
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
-    // A STORE-kind plugin (default from plugin_manifest) — wrong kind for a secrets: entry.
-    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
-    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
+    // A STORE-kind plugin — wrong kind for a secrets: entry.
+    crate::test_support::rows::drop_in(
+        &dir,
+        vec![dropped(
+            "acme-store-x",
+            "x",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
+        Vec::new(),
+    );
     let reg = crate::plugins_preflight(
         None,
         None,
@@ -1655,7 +1469,7 @@ fn secrets_block_rejects_non_secret_kind() {
         &Default::default(),
     )
     .unwrap();
-    let err = validate_secret_module(&reg, "x").unwrap_err();
+    let err = validate_secret_module(reg.as_ref(), "x").unwrap_err();
     assert!(
         err.contains("not 'secret'"),
         "wrong-kind rejection names the mismatch: {err}"
@@ -1777,7 +1591,7 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
         );
         // The registry-backed pre-flight check PASSES because the plugin is loaded + is kind:secret.
         assert!(
-            validate_secret_refs(&reg, &cfg).is_ok(),
+            validate_secret_refs(reg.as_ref(), &cfg).is_ok(),
             "a loaded kind:secret plugin '{module}' must pass the secret-ref pre-flight"
         );
     }
@@ -1801,7 +1615,7 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
         crate::config_validate::validate(&cfg).is_ok(),
         "pre-registry validate cannot (and must not) reject the unknown module by itself"
     );
-    let err = validate_secret_refs(&reg, &cfg)
+    let err = validate_secret_refs(reg.as_ref(), &cfg)
         .expect_err("a typo'd secret module with no plugin must fail the pre-flight");
     assert!(
         err.contains("providers.acme.api_key")
@@ -1816,10 +1630,10 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
 /// pre-flight (they are resolved inline, never through a plugin), even with an EMPTY registry.
 #[test]
 fn secret_ref_builtin_modules_pass_with_empty_registry() {
-    let reg = busbar_plugin_loader::PluginRegistry::empty();
+    let reg = crate::test_support::rows::empty();
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef::env("ACME_KEY"));
     assert!(
-        validate_secret_refs(&reg, &cfg).is_ok(),
+        validate_secret_refs(reg.as_ref(), &cfg).is_ok(),
         "a built-in env ref must pass the pre-flight with no plugins loaded"
     );
 }
@@ -1831,8 +1645,15 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
     let dir = tmp_plugin_dir("secretref-wrong-kind");
     let mut cfg = plugins_cfg(&dir, true);
     cfg.trust.allow_unsigned = true;
-    let tarball = unsigned_tarball(plugin_manifest("acme-store-x", "x", "acme"), b"lib");
-    std::fs::write(dir.join("x.tar.gz"), tarball).unwrap();
+    crate::test_support::rows::drop_in(
+        &dir,
+        vec![dropped(
+            "acme-store-x",
+            "x",
+            busbar_contract::abi::mechanism::kind::STORE,
+        )],
+        Vec::new(),
+    );
     let reg = crate::plugins_preflight(
         None,
         None,
@@ -1846,7 +1667,7 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
         module: "x".to_string(),
         settings: serde_json::Map::new(),
     });
-    let err = validate_secret_refs(&reg, &root)
+    let err = validate_secret_refs(reg.as_ref(), &root)
         .expect_err("a store-kind plugin cannot back a secret reference");
     assert!(
         err.contains("not 'secret'") && err.contains("providers.acme.api_key"),
@@ -1901,7 +1722,6 @@ fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
 #[test]
 fn secrets_block_rejects_alias_and_canonical_for_one_module() {
     let (dir, reg) = secret_registry("secrets-alias-collision");
-    let reg = std::sync::Arc::new(reg);
     let mut secrets = std::collections::BTreeMap::new();
     for spelling in ["vault", "acme-secret-vault"] {
         secrets.insert(

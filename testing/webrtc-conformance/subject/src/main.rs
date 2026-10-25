@@ -61,7 +61,10 @@ fn door() -> Arc<dyn FramerDoor> {
     use loader::dispatch::{kinds::transport::Transport as TransportKind, load_linked, LinkedRow};
     let key = busbar_transport_webrtc::linked::KEY;
     let plugin = LinkedRow::of(busbar_transport_webrtc::door::door)
-        .and_then(|row| load_linked::<TransportKind>(&row, doors::row_bind(key)))
+        .map_err(|e| e.to_string())
+        .and_then(|row| {
+            load_linked::<TransportKind>(&row, doors::row_bind(key)?).map_err(|e| e.to_string())
+        })
         .unwrap_or_else(|e| panic!("webrtc-conformance-subject: the `{key}` door is refused: {e}"));
     Arc::new(
         doors::Dispatched::open(

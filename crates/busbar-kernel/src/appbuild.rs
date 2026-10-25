@@ -763,14 +763,14 @@ pub fn build_app_from_config(
     // PLUGIN PRE-FLIGHT (the ONE shared pipeline; see the fn doc). Run UP FRONT so the secret
     // resolver - and the store open below - both draw on the same validated registry. A non-memory
     // store, an unresolvable secret plugin, or any invalid tarball fails boot here.
-    let plugin_registry = Arc::new(plugins_preflight(
+    let plugin_registry = plugins_preflight(
         cfg.store.as_ref(),
         cfg.auth.as_ref(),
         &cfg.identity_providers,
         &cfg.hooks,
         &plugins_cfg,
         &cfg.export,
-    )?);
+    )?;
     // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
     // secret axis here, never in the registry build `--validate` and every dry run share.
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
@@ -782,7 +782,7 @@ pub fn build_app_from_config(
     // (it runs before the registry exists). A typo'd module fails boot HERE; the documented vault
     // `api_key: { module: acme-vault }` passes once the plugin is loaded + trusted. This is the boot
     // twin of the `--validate` check, sharing `validate_secret_refs`/`config_validate::secret_refs`.
-    validate_secret_refs(&plugin_registry, &cfg)?;
+    validate_secret_refs(plugin_registry.as_ref(), &cfg)?;
 
     // The SECRET RESOLVER: built-in env/file resolve inline; any other module delegates to a
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
@@ -1366,7 +1366,7 @@ pub fn build_app_from_config(
         // in by (DECISIONS #2 rule (1)). A row that states itself ephemeral keeps nothing across a
         // restart, which the operator is told before it opens.
         let row = plugin_registry.resolve(&g.module);
-        let ephemeral = row.is_some_and(|p| p.ephemeral);
+        let ephemeral = row.as_ref().is_some_and(|p| p.ephemeral);
         if ephemeral {
             diag_warn!(
                 GOVERNANCE_STORE_EPHEMERAL,
@@ -1386,7 +1386,7 @@ pub fn build_app_from_config(
         // the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable ref refuses the store
         // load rather than handing the plugin a dangling reference. A row opened IN PROCESS is
         // handed no settings, so it has none to resolve (the built-in store never read its own).
-        let resolved = match row.is_some_and(|p| p.in_process()) {
+        let resolved = match row.as_ref().is_some_and(|p| p.in_process) {
             true => Default::default(),
             false => config::secret::resolve_settings(
                 &g.settings,
@@ -2018,7 +2018,7 @@ pub fn build_app_from_config(
         cost,
         plugins_dir: std::path::PathBuf::from(&plugins_cfg.dir),
         plugins_cfg,
-        plugin_trust: crate::preflight::root_rows().trust_policy,
+        plugin_admission: crate::preflight::root_rows().admission,
         // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
         // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
         self_key_ttl_secs: cfg

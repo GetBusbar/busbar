@@ -208,10 +208,9 @@ pub mod config_validate;
 pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;
-// The durable-write choke point lives in `busbar-plugin-loader` (which names the contract alone, Part 2
-// #33) so the loader's own writes and this crate's route through the SAME primitive. Re-exported here
-// so every existing `crate::durable::*` call site in this binary resolves unchanged.
-pub use busbar_plugin_loader::durable;
+// THE DURABLE-WRITE SEAM: the one durable-write primitive is the composition root's to install
+// (the kernel never names the loader); every `crate::durable::*` call site writes through it.
+pub mod durable;
 // The host-owned outbound surface: the neutral SSRF-pinned client and the egress-trust seam. See the
 // module header.
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
@@ -258,6 +257,12 @@ pub mod operation {
 }
 
 // The kernel member crates' minting tests (ARCHITECT ruling A): minting is legal only here.
+/// THE PLUGIN-ADMISSION SEAM the operator surface drives (upload, inspect, rollback, inventory),
+/// in the kernel's own words: the composition root answers it over its loader
+/// ([`preflight::RootInstall::admission`]). The admin cleanliness crate reaches it through the
+/// kernel it serves, its one-way dependency (BUSBAR-1.6.0.md:3780, R2/#37); neither names the
+/// loader (THE DESIGN l.322).
+pub mod admission;
 #[cfg(test)]
 #[path = "tests/members/mod.rs"]
 mod member_tests;
@@ -266,17 +271,6 @@ mod member_tests;
 mod operation_tests;
 pub mod plane;
 pub mod plugin_routes;
-/// THE PLUGIN-ADMISSION MACHINERY the operator surface drives (upload, verify, inventory, rescan):
-/// the loader's own items by `pub use`, the same types and the same functions, no wrapper. The
-/// admin cleanliness crate reaches them through the kernel it serves, its one-way dependency
-/// (BUSBAR-1.6.0.md:3780, R2/#37), never by naming the loader: `kernel -> plugin-tooling` is a class
-/// the architecture grants and `cleanliness -> plugin-tooling` is not.
-pub mod plugin_admission {
-    pub use busbar_plugin_loader::{
-        inventory_tarballs, scan_and_validate, sign, supported_abi, tarball, LoadablePlugin,
-        PluginRegistry,
-    };
-}
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
 // the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an
 // implementation's own instrument — a second honest implementation could bucket differently, or not

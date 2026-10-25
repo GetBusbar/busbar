@@ -370,9 +370,9 @@ async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503()
 fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
     let env = busbar_kernel::test_support::test_hook_env(
         &["test-hook"],
-        busbar_plugin_loader::sign::HookNeeds {
-            prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-            user: busbar_plugin_loader::sign::NeedLevel::Ro,
+        busbar_kernel::test_support::HookNeeds {
+            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+            user: busbar_contract::plugin_rows::NeedLevel::Ro,
         },
     );
     let hook: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
