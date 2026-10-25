@@ -96,6 +96,10 @@ impl SealedWrite {
         Self { buf, done: 0 }
     }
 
+    pub(crate) fn from_bytes(buf: Zeroizing<Vec<u8>>) -> Self {
+        Self { buf, done: 0 }
+    }
+
     /// A whole auth message, written alone.
     pub fn message(seal: Seal) -> Self {
         Self::new(Parts::new().sealed(seal))
@@ -149,6 +153,24 @@ impl SealedWrite {
     ) -> Poll<Result<(), E>> {
         while !self.finished() {
             match write(&self.buf[self.done..]) {
+                Poll::Pending | Poll::Ready(Ok(0)) => return Poll::Pending,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Ready(Ok(n)) => self.done += n,
+            }
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    /// Write what is left as request BODY pieces on a framed `stream` (`piece` names the body):
+    /// `Ready(Ok(()))` once every byte is taken.
+    pub fn poll_request(
+        &mut self,
+        c: &mut Connector<'_>,
+        stream: u64,
+        piece: &RequestPiece,
+    ) -> Answer<()> {
+        while !self.finished() {
+            match c.write_request(stream, piece, &self.buf[self.done..]) {
                 Poll::Pending | Poll::Ready(Ok(0)) => return Poll::Pending,
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Ready(Ok(n)) => self.done += n,

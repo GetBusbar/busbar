@@ -189,3 +189,62 @@ fn a_userinfo_only_split_leaves_the_query_as_written() {
     let c = Cred::captured(zeroize::Zeroizing::new(vec![0xff]));
     assert!(c.is_field_value() && !c.is_text());
 }
+
+#[test]
+fn a_form_body_encodes_as_serde_urlencoded_and_seals_its_credential() {
+    let secret = Cred::captured(zeroize::Zeroizing::new(b"s&=e cr+t".to_vec()));
+    let body = super::FormBody::new()
+        .public("grant_type", "client_credentials")
+        .public("client_id", "a b")
+        .sealed("client_secret", &secret);
+    assert_eq!(
+        body.names().collect::<Vec<_>>(),
+        ["grant_type", "client_id", "client_secret"]
+    );
+    assert!(!format!("{body:?}").contains("s&=e"));
+    let w = body.encoded().expect("encodes");
+    assert_eq!(
+        &w.buf[..],
+        b"grant_type=client_credentials&client_id=a+b&client_secret=s%26%3De+cr%2Bt"
+    );
+}
+
+/// A throwaway 2048-bit PKCS #8 test key (generated for this test only).
+#[cfg(feature = "chip-jws")]
+const JWS_TEST_KEY_B64: &str = "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCmblkCTFF4bAqCCbUGsRyBcOTAYRpV7rS3+nX3zHUTqjhzG8tag6piB/n64+NB5DrFhqDLZY7rN47b79UXrRVWzMWm+QtbPrHFas6hqUIBRMKg6AOAydBMdHRdVoIkwVUM/tMU+pbibdYyWKIkZLcbymNgJML5mVesMD5HKT8NB4StRf6Rrw5DFO1aFRv4mAQzTzog/q5d/GSqjiHd1oMsPPgZwiLdqVl8uoZtIDmJZYqdrTd/jTxpVqDCNn64gS/u+4YzV3eGaP84Lob7z2QTYe3fF/r/kqG5JU+/ovCIVnd0nYJl5IdzN2utYJpXYbAGYiznx9MewgZZiD4Q5YktAgMBAAECggEATt01QliFtomDxTDyXhRpDJFBZEPfJd8yNYfyhJSW2dWsYCdIikCf6UocU53PH3cVvmnYIemi+qTeBiw0jr6OwQ3RjxiuH/Oqa4D8HzDEPTOnAnZOyqVXFhOM3HnUu7P9KGZMAcHo46zmdf73/kTXW8zgoDtrRLk8CTTnHfNWlEY7HVryRtZL4KFAuRpYaY36m3LVeOAUm6tl5OZK6pGuF4z6bW84XtLpajjRGkEfkTZiu+UmOddilono+wmwjWnHSiBW3sLkwKMOR7r/oHGRk/B6irSqDzaERrVWR5Oyc1kcNyXTISbxhDWeWYSJIV19qnx4fL11IVeaWIsv89NnxQKBgQDRUkXEHAJIYZZwyav+fM7qkhr6Tz3f1sAHqZf/BGJV47HNIogxxEKGyS/Cjs1pZFtRiy5UC3SaX1zNbzWNyuyAx93pGp0tPMOt6RB/uzPKN0xN0dlq85Mvsjmv2lcSi3Oyx1Kune4SLB/GacrTy5V5HqXk+EcpuJiaBRFNg4wiqwKBgQDLi43i+2lm1afKooEfwnHw3uC8VKVrBhX18RuYiK3/yTLKREwSGwgSLLoYpLVOoRZsdaP1TxHlAETtW4FgladO/m3a9nhMFq+4tVExQd4RU+LKzPoR4+naEMyayRRKJk3x36J4H1vrzPTaiDAamNVuLXtp4Vt36DiC3+Gp0sXDhwKBgH/aft6gNQy8/sT5ieKxnTlN8Mh/ak20wCpt/nc32FCZ+VpRA1tSg0gMzu1JiFIdiGGwX6XaMWixYt/gU5e+IOMwMW1WYjblbKhnOTqrv6B+Uk8eJGzdRkPV2sJ83L5pC0xhzzD1KhtTdD0fFVJ0gWIvxCitNdpX9G3vNnhgJ1JtAoGASg7TqCN7fRv9ud+YhZq05EPjlwJhUWhccyivtrb8QBXPcgKZfvjw3dQCPdcn1J0N0JaY+jcztpN7gLULhL3OqxItnD6TFHQoqVbnXLmvd7SCzvD3h6zaOCpml2bUCAqZz4hjz7rxMgFXkW99uR+kgDryLVr+cck/Tnbw31498F8CgYAtm3jGRbHyAO2SKcyo/L9JFGNr8Cznqy51lKG8+0Rmr3k4dyLeNs4jDySbDriMIyZcztVokQZ/JJKm+khxiDrXEP6uzX+D8eVhTA3lqujwB+vvFIGPJ6QiPWmItRuXgwdIlNr8JAl7YiezC03NQ68WWsBLmjbuhKDvgu5W0Wyrjw==";
+
+#[cfg(feature = "chip-jws")]
+#[test]
+fn a_jws_assertion_verifies_under_the_keys_public_half() {
+    use base64::Engine as _;
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(JWS_TEST_KEY_B64)
+        .expect("b64");
+    let key = Cred::captured(zeroize::Zeroizing::new(der.clone()));
+    key.rsa_pkcs8_check().expect("a PKCS #8 RSA key");
+    let input = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ4In0";
+    let sig = key.jws_rs256(input.as_bytes()).expect("signs");
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(sig.wire())
+        .expect("b64url");
+    let pair = ring::signature::RsaKeyPair::from_pkcs8(&der).expect("key");
+    use ring::signature::KeyPair as _;
+    ring::signature::UnparsedPublicKey::new(
+        &ring::signature::RSA_PKCS1_2048_8192_SHA256,
+        pair.public_key().as_ref(),
+    )
+    .verify(input.as_bytes(), &raw)
+    .expect("verifies");
+    let body = super::FormBody::new().value(
+        "assertion",
+        super::FormValue::JwsRs256 {
+            key: key.clone(),
+            signing_input: input.to_owned(),
+        },
+    );
+    let w = body.encoded().expect("encodes");
+    assert!(w.buf.starts_with(format!("assertion={input}.").as_bytes()));
+    assert!(Cred::captured(zeroize::Zeroizing::new(b"nope".to_vec()))
+        .rsa_pkcs8_check()
+        .is_err());
+}

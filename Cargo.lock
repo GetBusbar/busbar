@@ -470,6 +470,7 @@ dependencies = [
  "num-bigint",
  "proc-macro2",
  "quote",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml_ng",

@@ -10,6 +10,8 @@
 
 pub mod aws4;
 pub(crate) mod digests;
+#[cfg(feature = "chip-jws")]
+mod jws;
 #[cfg(feature = "chip-rsa")]
 pub(crate) mod rsa;
 

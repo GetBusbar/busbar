@@ -45,12 +45,14 @@
 //! ```
 
 mod form;
+mod form_body;
 mod settings;
 mod write;
 
 use zeroize::{Zeroize, Zeroizing};
 
 pub use form::{CredUrl, PasswordAt, UserinfoUrl};
+pub use form_body::{FormBody, FormValue};
 pub use settings::{settings, SettingsError};
 pub use write::{Parts, SealedWrite};
 
