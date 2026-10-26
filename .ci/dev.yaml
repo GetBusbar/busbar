@@ -1,32 +1,26 @@
-# What dev must pass, judged on dev's head: the same five checks, absolute (OWNER 2026-10-24).
-# DEV-GREEN is all five green on one dev sha. Nothing lands in qa: the move is held for the owner.
+# What dev must pass to move into qa: the five checks (KICKOFF, OWNER 2026-10-24), ABSOLUTE on
+# dev's head (no `baseline`: every check green, not "no worse than qa"): fmt, clippy, test, the
+# oracle against the 1.5.5 golden, deny + vet. Every one green on dev's head is DEV-GREEN. The
+# xtask gate machinery is deleted (dd677873c4), and with it gates, conformance's recorder, the
+# q128 audit and the selftest shards. ModernCI names a branch file for the branch being moved, so
+# the move dev -> qa reads this file; the landing into qa is the owner's approval
+# (docs/design/BUSBAR-1.6.0.md Part 6).
 to: qa
+# Open the dev -> qa move on every new dev head by itself (ModernCI's default is off); approve: true
+# below still holds the landing into qa for the owner.
 promote: auto
-# OWNER HARD RULE 2026-10-24: busbar stops at dev green. This move judges dev's head and reports;
-# it never merges or pushes qa (qa and main are also locked on GitHub).
-on_green: none
+on_green: merge
+# The owner's approval on the pull request holds the merge too.
 approve: true
+# 8h: a release build, the oracle's corpus and the workspace tests do not fit in 6h.
 deadline: 8h
-on:
-  # All five, judged on dev's head (OWNER 2026-10-24).
-  move: [fmt, clippy, test, deny, oracle]
 env:
-  # The oracle's judge, as bin/oracle reads it under ModernCI (only from the config's env, never the
-  # candidate's pin): testing/shadow-oracle/oracle-rust.pin on dev; fetched with BUSBAR_RELEASE_TOKEN.
-  BUSBAR_ORACLE_RELEASE_REPO: https://github.com/GetBusbar/busbar-release.git
-  BUSBAR_ORACLE_RELEASE_REF: 151ad095a21819dca97e8bdb3384c3c3eb2eb806
-  BUSBAR_ORACLE_SHA256_LINUX_X86_64: 0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8
-  BUSBAR_ORACLE_SHA256_LINUX_AARCH64: 188070522e9b2d5b21e4978666399a0031d5960819a865217dfbb07532bfa9c4
-  BUSBAR_ORACLE_CRATE: busbar-release-oracle
-  BUSBAR_ORACLE_BIN: busbar-oracle
-  # The 1.5.5 golden the replay judges against: git rev-parse dev:testing/shadow-oracle/golden/1.5.5.
-  BUSBAR_GOLDEN_1_5_5_TREE: 5e33e76f77af35b01674da6dedf37e8dd434602c
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
   BUSBAR_TOOL_SH: |
-    # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq`
+    # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq vet`
     # Puts each named tool, at the version pinned below, on PATH. The checks own their toolchain:
     # a tool already on PATH at exactly the pin is used; otherwise the official release asset is
     # fetched with curl, verified against the sha256 pinned here, and cached under
@@ -41,6 +35,7 @@ env:
     _bbt_deny_ver=0.20.2
     _bbt_jq_ver=1.7.1
     _bbt_rustup_ver=1.28.2
+    _bbt_vet_ver=0.10.3
     _bbt_root=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools
 
     # _bbt_pin <tool> <os-arch>: prints "<asset-url> <sha256> <path of the binary inside the asset>"
@@ -118,10 +113,20 @@ env:
     _bbt_ensure() {
       case "$1" in
         rust) _bbt_rust; return $? ;;
+        vet)
+          # cargo-vet publishes no linux-aarch64 asset to pin a sha256 to: it is built from crates.io
+          # at the pinned version (the index checksum verifies the source, --locked its dependencies)
+          # into the same cache, once per version.
+          _dir=$_bbt_root/vet-$_bbt_vet_ver
+          if [ ! -x "$_dir/bin/cargo-vet" ]; then
+            cargo install --locked --quiet cargo-vet --version "=$_bbt_vet_ver" --root "$_dir" || return 1
+          fi
+          PATH="$_dir/bin:$PATH"; export PATH
+          return 0 ;;
         nextest) _bin=cargo-nextest; _ver=$_bbt_nextest_ver; _want="cargo-nextest $_ver"; _vargs="nextest --version" ;;
         deny)    _bin=cargo-deny;    _ver=$_bbt_deny_ver;    _want="cargo-deny $_ver"; _vargs=--version ;;
         jq)      _bin=jq;            _ver=$_bbt_jq_ver;      _want="jq-$_ver"; _vargs=--version ;;
-        *) echo "tool.sh: unknown tool '$1' (known: rust nextest deny jq)" >&2; return 1 ;;
+        *) echo "tool.sh: unknown tool '$1' (known: rust nextest deny jq vet)" >&2; return 1 ;;
       esac
       # Already on PATH at exactly the pinned version.
       if command -v "$_bin" >/dev/null 2>&1; then
@@ -166,20 +171,35 @@ env:
     for _bbt_t in "$@"; do
       _bbt_ensure "$_bbt_t" || return 1
     done
+on:
+  move: [fmt, clippy, test, deny, oracle]
 checks:
   fmt:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo fmt --all -- --check
+      cargo metadata --locked --format-version 1 >/dev/null
   clippy:
+    # Every target under every feature, then the builds no other check makes: the workspace with no
+    # default features and the kernel/contract feature-deletion matrix (plane-a2a, plane-mcp, none).
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
+      cargo clippy --workspace --all-targets --no-default-features --locked --keep-going -- -D warnings
+      cargo clippy -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked -- -D warnings
+      cargo clippy -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked -- -D warnings
+      cargo clippy -p busbar-kernel -p busbar-contract --no-default-features --locked -- -D warnings
+    needs: [fmt]
   test:
-    # Every behaviour test: the workspace suites (with the cdylibs and the dropped-in plugins they
-    # dlopen built first), the feature-gated suites, the loom models, then the doctests.
+    # The workspace's cdylibs and the dropped-in plugins the tests dlopen, then one build and one
+    # nextest run of the default features; then the feature-gated suites the default run never
+    # builds (row 164: A, the busbar/kernel/core-admin gates at once, filtered to the gated binaries
+    # and modules so the default suites do not run twice; B, the plugin-pack CLI; C, the loom models
+    # in release); then the doctests. The C header's generator is a busbar-contract test
+    # (tests/abi_header), so the committed header is held here too.
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
@@ -208,70 +228,42 @@ checks:
       plugin busbar-secret-env busbar-secret-env-plugin optional
       plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
       cargo build --workspace --locked
+      # Every test is cut at five minutes.
       cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
       # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
       cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
-      cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
-      cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
-      timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
-      cargo test --workspace --doc --locked --no-fail-fast
-    requires: [cc]
-  deny:
-    # Supply chain: cargo deny (advisories, licences, bans, sources) and cargo vet (supply-chain/).
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust deny; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny; fi || exit 1
-      cargo deny check
-      # cargo-vet 0.10.3: the release's prebuilt binary where one ships (sha256 pinned here), else a
-      # source build into the same cache (linux-aarch64 has no prebuilt), once per backend.
-      V=0.10.3; VD="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-vet-$V"
-      if [ ! -x "$VD/bin/cargo-vet" ]; then
-        case "$(uname -s)-$(uname -m)" in
-          Linux-x86_64) T=x86_64-unknown-linux-gnu; S=e83878b80913fbe43629c28768e14ab51f4e86a4ba8f9dd08cc25b8dbc503c19 ;;
-          Darwin-arm64) T=aarch64-apple-darwin; S=a83f7d6f48a069890743ba61f7637660c8577f263efd64fee47e673632f0e423 ;;
-          *) T= ;;
-        esac
-        if [ -n "$T" ]; then
-          mkdir -p "$VD/bin" && A="$VD/vet.tar.xz"
-          curl -fsSL --retry 3 -o "$A" "https://github.com/mozilla/cargo-vet/releases/download/v$V/cargo-vet-$T.tar.xz" || exit 1
-          if command -v sha256sum >/dev/null; then G=$(sha256sum "$A" | cut -d' ' -f1); else G=$(shasum -a 256 "$A" | cut -d' ' -f1); fi; [ "$G" = "$S" ] || { echo "cargo-vet sha256 mismatch: $G"; exit 1; }
-          tar -xJf "$A" -C "$VD" && mv "$VD/cargo-vet-$T/cargo-vet" "$VD/bin/cargo-vet" && rm -rf "$A" "$VD/cargo-vet-$T"
-        else
-          cargo install --locked --root "$VD" cargo-vet --version "$V"
-        fi
+      if [ -z "$MODERNCI_ONLY" ]; then
+        cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
+        cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+        timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+        cargo test --workspace --doc --locked --no-fail-fast
       fi
-      PATH="$VD/bin:$PATH" cargo vet
+    requires: [cc]
+    needs: [fmt]
+  deny:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust deny vet; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny vet; fi || exit 1
+      cargo deny check
+      cargo vet --locked
+    needs: [fmt]
     requires: [cc]
   oracle:
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
     requires: [cc, docker]
-    inputs:
-      - crates/**
-      - Cargo.toml
-      - Cargo.lock
-      - rust-toolchain.toml
-      - .cargo/**
-      - bin/oracle
-      - testing/shadow-oracle/**
-      - qa/method-inventory.json
-      - qa/field-inventory.json
-      - providers.yaml
-      - plugins.yaml
-    # busbar's own judge, fetched by bin/oracle itself exactly as .ci/dev.yaml does (no backend tool):
-    # the judge is the one dev's oracle-rust.pin names, run only when its
-    # sha256 is that pin's for this host (a candidate never picks its own judge); the 1.5.5 golden is
-    # add-only from dev to this commit; then the candidate's release binary is recorded over the
-    # corpus and replayed against the committed 1.5.5 golden, strict: green is every cell byte-green
-    # or forgiven by an owner-signed accepted difference.
+    # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
+    # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
+    # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
+    # holds none: the first move) and runs it only at that pin's sha256 for this architecture, its
+    # .sig verified against busbar-release's release key; no line for this architecture is no judge.
+    # BUSBAR_RELEASE_TOKEN (a secret ModernCI gives this check) reads the private release. The 1.5.5
+    # golden is add-only from dev to this commit wherever dev holds it (none before the first move);
+    # then the candidate's release binary is recorded over the corpus and replayed against the
+    # committed 1.5.5 golden, strict: green is every cell byte-green or forgiven by an owner-signed
+    # accepted difference.
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      # A refusal to judge (no judge configured) is infra, never red or green: exit 97.
-      if ! j=$(./bin/oracle tool-dir 2>&1 >/dev/null); then
-        printf '%s\n' "$j"
-        case "$j" in *"NO JUDGE"*) echo "modernci: infra: the oracle has no judge configured"; exit 97 ;; esac
-        exit 1
-      fi
-      [ -n "$j" ] && printf '%s\n' "$j"
+      ./bin/oracle tool-dir >/dev/null
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
         ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
       else
@@ -294,6 +286,7 @@ checks:
       rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+    needs: [fmt]
     # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
     # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
     outputs: [target/oracle/reports/]
