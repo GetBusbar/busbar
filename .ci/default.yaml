@@ -466,6 +466,6 @@ checks:
       # WORKAROUND: exit 0 on a suite non-pass is a workaround for ModernCI not honouring
       # blocks:false; restore `exec bash testing/conformance/run.sh` when fixed. It is NOT a pass:
       # the verdict file records the fail/not-run, and the manifest and site show it.
-      bash testing/conformance/run.sh; rc=$?
+      rc=0; bash testing/conformance/run.sh || rc=$?
       [ "$rc" -le 1 ] || exit "$rc"
     outputs: [target/conformance/]
