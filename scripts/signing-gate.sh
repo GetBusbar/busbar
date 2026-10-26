@@ -153,7 +153,7 @@ u32(); u32(); u32(); u32()                       # mechanism, kind, kind_abi, ma
 string(); string()                               # name, version
 for _ in range(count()):                         # families
     string(); string(); string(); strs(); u8()
-strs(); u32(); take(u32())                       # diag_ids, kind_tail size, kind_tail_facts
+strs(); u32(); take(u32())                       # diag_ids, kind_tail, kind_tail_facts (bytes)
 blob(); strs(); blob(); u64()                    # extensions, secret_refs, settings_schema, marks
 for _ in range(count()): u32(); string()         # mark_words
 for _ in range(count()): u32(); string(); string()  # rewrites
