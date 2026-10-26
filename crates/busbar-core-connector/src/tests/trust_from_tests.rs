@@ -21,18 +21,8 @@ const OWNER: InstanceId = InstanceId(1);
 
 /// A private CA and a `localhost` leaf it signed: (ca_pem, leaf_der, key_der).
 fn private_ca() -> (String, Vec<u8>, Vec<u8>) {
-    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
-    let ca_kp = KeyPair::generate().unwrap();
-    let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
-    ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    let ca = ca_params.self_signed(&ca_kp).unwrap();
-    let issuer = Issuer::from_params(&ca_params, ca_kp);
-    let kp = KeyPair::generate().unwrap();
-    let leaf = CertificateParams::new(vec!["localhost".to_owned()])
-        .unwrap()
-        .signed_by(&kp, &issuer)
-        .unwrap();
-    (ca.pem(), leaf.der().to_vec(), kp.serialize_der())
+    let ca = crate::test_support::private_ca();
+    (ca.ca_pem, ca.leaf_der, ca.key_der)
 }
 
 /// A TLS far end on loopback presenting `leaf`: every connection whose handshake completes has its

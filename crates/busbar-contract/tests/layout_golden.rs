@@ -1764,7 +1764,7 @@ fn abi_layout_matches_golden() {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
 
     if let Some(mode) = std::env::var_os("BUSBAR_UPDATE_GOLDEN") {
-        // THE RE-SEED IS JUDGED, NOT TRUSTED (TODO l.1829-1831): it used to write whatever layout it
+        // THE RE-SEED IS JUDGED, NOT TRUSTED: it used to write whatever layout it
         // found, and the "do not re-seed" below was a sentence a re-seed never reads. A diff that
         // moves, resizes or removes what a peer already reads is refused unless the seed names it.
         let breaks = layout_breaks(&existing, &actual);
@@ -1880,7 +1880,7 @@ fn layout_breaks(old: &str, new: &str) -> Vec<String> {
     out
 }
 
-/// RED ARM, THE RE-SEED (TODO l.1829-1831): a moved field, a resize, an insert and a removal are
+/// RED ARM, THE RE-SEED: a moved field, a resize, an insert and a removal are
 /// each a break the re-seed refuses; an append and a new struct are not; the layout against itself
 /// is clean.
 #[test]

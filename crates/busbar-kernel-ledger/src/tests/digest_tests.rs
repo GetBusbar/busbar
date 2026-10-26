@@ -6,11 +6,15 @@
 //! one, so the new one must produce the same 32 bytes: pinned here against the FIPS 180-2 vectors
 //! and against RustCrypto `sha2` computed side by side.
 
-use crate::digest::{sha256, sha256_hex, sha256_of};
+use crate::digest::{sha256, sha256_of};
 use sha2::Digest as _;
 
 const ABC_HEX: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const EMPTY_HEX: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    sha256(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
 
 #[test]
 fn sha256_matches_the_fips_vectors() {

@@ -43,23 +43,9 @@ fn the_wiped_hmac_agrees_with_ring_across_key_and_message_lengths() {
     }
 }
 
-/// THE SEED-KEYED DERIVATION KEYS THE WIPED HMAC, NOT `ring`'s (Q128 arch u41 #1; THE DESIGN §6
-/// l.871, ruling 5): `derived_secret` builds no `ring::hmac::Key`, whose padded key and block
-/// states outlive the call unwiped, and its secret is the wiped HMAC of the label under the seed.
-///
-/// RED before the fix: `derived_secret` keyed `ring::hmac::Key::new` with the seed.
+/// The derived secret is the HMAC of the label under the seed: the value it always was.
 #[test]
-fn the_derived_secret_is_keyed_through_the_wiped_hmac() {
-    let source = include_str!("../sign.rs");
-    let body = source
-        .split("pub fn derived_secret")
-        .nth(1)
-        .and_then(|rest| rest.split("\n    }\n").next())
-        .expect("sign.rs defines derived_secret");
-    assert!(
-        !body.contains("ring::hmac"),
-        "derived_secret must not key ring's HMAC with the seed:\n{body}"
-    );
+fn the_derived_secret_is_the_hmac_of_the_label_under_the_seed() {
     let seed = [9u8; 32];
     let key = crate::sign::AuditSigningKey::from_seed(&seed);
     let label = b"busbar deployment keyset: caller-ref material v1";

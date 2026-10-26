@@ -4,8 +4,7 @@
 //! THE ADMIN SURFACE OVER THE LINKED PLANES — the admin service's tests that need a real plane
 //! (a plane-owned named-map section, a plane's admin trust verbs, the plane operations the committed
 //! `openapi.json` documents), moved here from busbar-core-admin with their assertions unchanged.
-//! busbar-core-admin is core: it names zero plane types, its tests included (ARCHITECT ruling on
-//! kind-isolation `test-deps`), so these live where a plane may be linked, the composition root.
+//! busbar-core-admin is core: it names zero plane types, its tests included, so these live where a plane may be linked, the composition root.
 //!
 //! The planes are the root's test-linked roster (`linked/mod.rs`, data in this crate's
 //! `[package.metadata.busbar.test-linked]`); the operator credential's registry row is the root's
@@ -53,8 +52,7 @@ pub(crate) fn ensure_seam() {
         // `build.hook_plugins` description), not a root-less test build's none.
         busbar_kernel::test_support::install_root_hook_names(LINKED_HOOK_NAMES);
         // The operator credential's test registry row, before anything resolves the auth axis, in
-        // the root's own words (`root::auth_bindings::operator_auth_module`; ARCHITECT
-        // 2026-09-30, KERNEL-AUTH-ZERO Q2).
+        // the root's own words.
         for_each_operator_auth_row!(install_operator_row);
         fn install_operator_row(door: busbar_kernel::test_support::AuthDoor) {
             const ROOT_WORDS: busbar_kernel::test_support::OperatorWords =

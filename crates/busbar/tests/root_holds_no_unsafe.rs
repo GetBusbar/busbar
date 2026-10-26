@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE COMPOSITION ROOT HOLDS NO `unsafe` (status row 195; coordinator ruling (a), BUSBAR-1.6.0.md
-//! l.272-274: the root is `forbid(unsafe_code)`; the loader holds the reviewed `unsafe`, and a
+//! THE COMPOSITION ROOT HOLDS NO `unsafe` (the root is `forbid(unsafe_code)`; the loader holds the reviewed `unsafe`, and a
 //! door-root crate's door is admitted there, by `open_linked`, never here). The crate root forbids
 //! it, nothing under `src/` lifts the forbid, and no source line under `src/` or `build.rs` writes an
 //! `unsafe` block, fn, impl or trait; the generated tables the root includes are judged by the same

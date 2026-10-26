@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE REQUEST-LOG FILE, BYTE FOR BYTE AS 1.5.5 WROTE IT** (ARCHITECT ruling Q-C1-FILE,
-//! 2026-10-03; THE DESIGN §11.11 R4, §11.12 `disk.append`).
+//! **THE REQUEST-LOG FILE, BYTE FOR BYTE AS 1.5.5 WROTE IT**.
 //!
 //! The shipped binary boots with the request-log FILE sink (`module: request-log-file`, the linked
 //! `busbar-export-file` door) and serves two OpenAI chat completions through a loopback upstream that

@@ -78,11 +78,10 @@
 //! ## No transport is built over another
 //!
 //! A transport is linked or dropped in only as its memory-ABI door, and the host serves every door
-//! over its own sockets: the carrier is the connector's choice from the target's scheme (ARCHITECT
-//! Q128 U7). A door that names a transport it composes over is refused at its build
+//! over its own sockets: the carrier is the connector's choice from the target's scheme.
+//! A door that names a transport it composes over is refused at its build
 //! (`HostWire::new`), so every registered row records no layer, and `check_composition` holds each
-//! declaration against that. There is no transport trait whose instance could answer otherwise
-//! (step 36).
+//! declaration against that. There is no transport trait whose instance could answer otherwise.
 //!
 //! ## The fold, bottom-up — both doors, one pass
 //!
@@ -90,8 +89,7 @@
 //! DROPPED INTO `plugins.dir` (scan order), each a memory-ABI transport door admitted through the
 //! one dispatcher's door validation and served over the host's sockets by the connector
 //! (`crate::root::doors`) — #2 rule (1): one contract, one loading path; #3: a transport is
-//! swappable, compiled in OR dropped in. (The HOT-tier transport decl and its adapter are deleted,
-//! row 84.) The fold does not ask which door a row came in by, except to build it.
+//! swappable, compiled in OR dropped in. The fold does not ask which door a row came in by, except to build it.
 //!
 //! A wire is built once every layer it declares that this build carries is built, in row order
 //! otherwise — so a layer always exists before anything that names it — and is handed no layer: a
@@ -219,8 +217,8 @@ pub fn plane_claims(planes: &[LinkedClaims]) -> Vec<PlaneClaim> {
 
 /// A transport entry in the registry, under one of the schemes it claims: its own, and each one past
 /// it under its own key (the entry's wire serves them all; ONE ENTRY PER PLUGIN, the schemes are its
-/// claims). A transport is a door the connector serves, not a trait object the registry holds
-/// (step 36), so the registry holds its key.
+/// claims). A transport is a door the connector serves, not a trait object the registry holds,
+/// so the registry holds its key.
 struct Claimed(&'static str);
 
 impl Plugin for Claimed {
@@ -304,8 +302,7 @@ impl Row<'_> {
 /// The rows are `linked` then `dropped` (module docs). Each round builds the first row whose every
 /// declared layer this composition carries is already built — so a layer always exists before
 /// anything that names it. Every row is a door the host serves over its own sockets and is built
-/// over nothing (no transport names another, ARCHITECT Q128 U7; a door that names a layer is refused
-/// at its build), so its registered row records no layer, which `check_composition` holds against
+/// over nothing, so its registered row records no layer, which `check_composition` holds against
 /// its declaration.
 ///
 /// # Errors
