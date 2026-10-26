@@ -28,7 +28,16 @@ pub fn drive_sealed<E>(
     w: &mut crate::abi::sdk::cred::SealedWrite,
     mut write: impl FnMut(&[u8]) -> std::task::Poll<Result<usize, E>>,
 ) -> std::task::Poll<Result<(), E>> {
-    w.drive(&mut write)
+    while w.done < w.buf.len() {
+        match write(&w.buf[w.done..]) {
+            std::task::Poll::Pending | std::task::Poll::Ready(Ok(0)) => {
+                return std::task::Poll::Pending
+            }
+            std::task::Poll::Ready(Err(e)) => return std::task::Poll::Ready(Err(e)),
+            std::task::Poll::Ready(Ok(n)) => w.done += n,
+        }
+    }
+    std::task::Poll::Ready(Ok(()))
 }
 
 /// The bytes a [`Cred`](crate::abi::sdk::cred::Cred) holds, for a test's fake far end that checks
@@ -41,7 +50,14 @@ pub fn cred_bytes(cred: &crate::abi::sdk::cred::Cred) -> Vec<u8> {
 /// The bytes [`Parts`](crate::abi::sdk::cred::Parts) put on the wire, in order.
 #[must_use]
 pub fn parts_bytes(parts: &crate::abi::sdk::cred::Parts) -> Vec<u8> {
-    parts.assembled().to_vec()
+    let mut out = Vec::with_capacity(parts.len());
+    for p in &parts.parts {
+        match p {
+            crate::abi::sdk::cred::write::Part::Public(b) => out.extend_from_slice(b),
+            crate::abi::sdk::cred::write::Part::Sealed(s) => out.extend_from_slice(s.wire()),
+        }
+    }
+    out
 }
 
 /// The bytes a [`FormBody`](crate::abi::sdk::cred::FormBody) encodes to.

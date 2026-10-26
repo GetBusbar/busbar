@@ -316,9 +316,24 @@ impl Conns for TcpConns {
         Err(ConnError::Refused)
     }
 
+    /// A stream secured by `upgrade_secure` reports a certificate, as the host's `FACTS` reads
+    /// security off one (the TLS double does not name the far end's; a stand-in does); a clear one
+    /// reports none, so a credential that must go out secured (`Cred::secure_required`) is refused
+    /// on it as the host refuses it.
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
-        self.slab.get(caller, conn)?;
-        Ok(ConnFacts::default())
+        let (_, c) = self.slab.get(caller, conn)?;
+        let secured = matches!(
+            c.lock().unwrap_or_else(PoisonError::into_inner).sock,
+            Sock::Tls(_)
+        );
+        Ok(ConnFacts {
+            peer_cert: secured.then(|| busbar_contract::transport::CertFacts {
+                subject: String::new(),
+                issuer: String::new(),
+                fingerprint: "secured-by-the-tls-double".to_string(),
+            }),
+            ..ConnFacts::default()
+        })
     }
 
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError> {

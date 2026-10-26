@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CHIP'S RECIPES (CHIP-DESIGN v4.1 §3.1): every auth step a plugin needs, performed by the
+//! THE CHIP'S RECIPES (the chip design, its section on recipe classes): every auth step a plugin needs, performed by the
 //! credential, answering a [`Seal`] or a yes/no. A raw stream's recipe builds the WHOLE auth message
 //! from public inputs, so the plugin cannot choose where credential-derived bytes sit on the wire.
 //!
@@ -10,9 +10,7 @@
 
 pub mod aws4;
 pub(crate) mod digests;
-#[cfg(feature = "chip-jws")]
 mod jws;
-#[cfg(feature = "chip-rsa")]
 pub(crate) mod rsa;
 mod scheme;
 
@@ -509,7 +507,6 @@ impl Cred {
     }
 }
 
-#[cfg(feature = "chip-rsa")]
 impl Cred {
     /// A MySQL packet for `caching_sha2_password` full authentication on a link with no TLS: the
     /// password (NUL-terminated) XORed with the `nonce`, RSA-OAEP-encrypted to the server's PEM

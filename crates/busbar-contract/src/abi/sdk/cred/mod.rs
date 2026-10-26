@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PLUGIN'S CREDENTIALS (CHIP-DESIGN v4.1 §7). A plugin never holds a credential as text:
+//! A PLUGIN'S CREDENTIALS (the chip design, its section on plugin credentials). A plugin never holds a credential as text:
 //!
 //! * [`Cred`] is a credential the plugin was configured with. It has no getter, no `Debug`, no
 //!   `Display` and no `Serialize`; the plugin asks it to perform an auth step (the chip's recipes,
@@ -50,7 +50,7 @@ mod form;
 mod form_body;
 pub mod record;
 mod settings;
-mod write;
+pub(crate) mod write;
 
 use zeroize::{Zeroize, Zeroizing};
 
@@ -116,6 +116,12 @@ pub struct Cred {
 /// The URL schemes whose connection is secured from the first byte: a credential the operator
 /// wrote with one of them never goes out on a connection that is not.
 const SECURE_SCHEMES: &[&str] = &["https", "wss", "rediss", "ldaps", "grpcs", "mqtts", "amqps"];
+
+/// Whether a framed request's `target` is secured by its scheme ([`SECURE_SCHEMES`]); a target
+/// with no scheme is the need's own and answers `true`.
+pub(crate) fn secure_target(target: &str) -> bool {
+    !target.contains("://") || secure_scheme(target)
+}
 
 /// Whether `url`'s scheme is one of [`SECURE_SCHEMES`] (case-insensitive).
 pub(crate) fn secure_scheme(url: &str) -> bool {
