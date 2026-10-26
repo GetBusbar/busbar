@@ -49,8 +49,8 @@ fn openapi_operations_carry_stable_operation_ids() {
     // together.
     //
     // 101 = those 81 + the 20 operations the 1.6.0 closed verb table adds, every one with its
-    // effect bound since owner answer Q71(2) (9 money-governance verbs, 5 ledger views, 3
-    // audit-chain reads) and the ARCHITECT's 2026-10-06 trust verbs (`GET /trust`,
+    // effect bound (9 money-governance verbs, 5 ledger views, 3
+    // audit-chain reads) and the trust verbs (`GET /trust`,
     // `POST /trust/approve`, `POST /trust/revoke`), which the node's administrative loop answers
     // and which the one document describes (items 45/46: no side-car document).
     assert_eq!(checked, 101, "expected exactly 101 admin operations");
@@ -139,7 +139,7 @@ fn openapi_json_matches_committed_file() {
     );
 }
 
-/// THE PLANES' COMPONENT SCHEMAS ARE THE COMMITTED ONES (ARCHITECT Q2): every component schema a
+/// THE PLANES' COMPONENT SCHEMAS ARE THE COMMITTED ONES: every component schema a
 /// plane's `openapi_schemas` registers equals the committed document's entry of that name. A linked
 /// plane's come from schemars; a door plane's are the data its admin OpenAPI blob states under
 /// `components.schemas`, which the kernel's fold inserts as written, so this is the drift test that

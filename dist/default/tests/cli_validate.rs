@@ -44,7 +44,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
 }
 
 /// The `store:` line a fixture config carries unless the block under test writes its own: a config
-/// names its store (owner ruling Q-STORE = (B), 2026-09-27).
+/// names its store.
 fn store_unless_written(extra: &str) -> &'static str {
     if extra.lines().any(|l| l.starts_with("store:")) {
         ""
@@ -178,7 +178,7 @@ fn validate_ok_on_valid_config_without_plugins() {
 }
 
 /// A 1.5.5-shaped config whose root `pools:` names a pool after a reserved sub-key (`tier`, `work`)
-/// validates exactly as 1.5.5 did (Q-STEP9-a, ARCHITECT 2026-10-07): the root `pools:` section keeps
+/// validates exactly as 1.5.5 did: the root `pools:` section keeps
 /// 1.5.5's two reserved words and no more, so both are pools and both are counted.
 #[cfg(linked_section_pools)]
 #[test]
@@ -376,7 +376,7 @@ fn validate_trust_gate_matches_boot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE SIGNING GATE'S READING, PINNED (scripts/signing-gate.sh, ARCHITECT ruling (A)): when a
+/// THE SIGNING GATE'S READING, PINNED: when a
 /// linked row answers the config's reference, `--validate` exits 0 whatever an unsigned tarball's
 /// fate, and the gate judges its refusing arms by these exact lines of the summary instead: the
 /// count `0 validated, 1 skipped` and the skip line `skipped: <manifest name> (<file>) — ... manifest
@@ -418,7 +418,7 @@ fn validate_summary_names_an_unsigned_tarball_as_the_signing_gate_reads_it() {
 }
 
 /// THE SIGNING GATE'S REFERENCE reaches the dropped-in tarball under test, even when this build links
-/// the same plugin (ARCHITECT C': one plugin, one identity whichever door it arrives by).
+/// the same plugin.
 /// scripts/signing-gate.sh writes `store: { module: <ref> }`, its reference the tarball's MANIFEST
 /// NAME (`$MANIFEST_NAME`, what its release packs). busbar links busbar-store-memory under that same
 /// canonical name, alias `memory`, so the linked row answers the reference and `--validate` exits
@@ -662,7 +662,7 @@ fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
     let dir = fixture_dir("migrate-clean");
     std::fs::create_dir_all(&dir).unwrap();
     let legacy = dir.join("legacy.yaml");
-    // Names its store, so the Q-STORE insertion has nothing to add either.
+    // Names its store, so the store insertion has nothing to add either.
     std::fs::write(
         &legacy,
         "listen: \"127.0.0.1:8080\"\nstore: {module: memory}\n",
@@ -1473,7 +1473,7 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 // `decisions.models.<m>.provider` naming a provider `providers:` does not define booted; a
 // `decisions.hooks` entry naming an undefined hook booted; and a model whose provider resolves to
 // a dialect this plane does not speak (non-`jev`) booted instead of failing closed
-// (BUSBAR-1.6.0.md #51, OWNER-LOCKED: "the decisions plane (only jev) handed `anthropic` fails").
+//
 // All three now refuse at `config::resolve` — the ONE function both `--validate` (`root/cli.rs`)
 // and real boot (`main.rs`) call — so these `--validate` runs stand in for both call sites without
 // this file needing a boot-and-kill harness; `validate_ok_on_valid_config_without_plugins` above
@@ -1641,7 +1641,7 @@ fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// DEFECT 3 (#51, OWNER-LOCKED): a model whose provider resolves to a dialect the decisions plane
+/// DEFECT 3: a model whose provider resolves to a dialect the decisions plane
 /// does not speak must FAIL CLOSED — the exact row #51 cites: "the decisions plane (only jev)
 /// handed `anthropic` fails". `write_decisions_configs`'s default catalog protocol IS `anthropic`
 /// (the shipped default, `providers.rs::DEFAULT_PROTOCOL`), so this is also the config an operator
@@ -1841,8 +1841,7 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
 /// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` reads a dropped-in plugin's stated facts off its
 /// signed manifest and selects it WITHOUT opening it (the library bytes are not a library, so a
 /// `dlopen` would refuse the run) — and its report is 1.5.5's bytes: the stage report is debug
-/// logging, never a `plugin: … — selected as …` line (ARCHITECT 2026-10-06; oracle
-/// `plugins.store-persist|store-sqlite`).
+/// logging, never a `plugin: … — selected as …` line.
 #[cfg(linked_section_pools)]
 #[test]
 fn validate_selects_a_dropped_plugin_without_opening_it_and_reports_in_1_5_5s_words() {
@@ -1904,7 +1903,7 @@ fn validate_refuses_a_selected_plugin_built_for_another_host() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE MINT ENDPOINT'S SCHEME, AT `--validate` (ARCHITECT ruling D1 2026-10-05, MINT CLASS (B); RED):
+/// THE MINT ENDPOINT'S SCHEME, AT `--validate`:
 /// the token endpoint need is operator-infrastructure, so the connector would dial plaintext, and
 /// the 1.5.5 rule is `--validate`'s to keep: an `http` `token_url` on a PUBLIC host is refused (it
 /// would POST the client secret in clear), and on a loopback host it is not, as in 1.5.5.

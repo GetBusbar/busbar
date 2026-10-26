@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Every linked wire is built over nothing, as the boot seal records it. A transport is linked only
-//! as its memory-ABI door (step 36), and the host serves a door over its own sockets: the door is
+//! as its memory-ABI door, and the host serves a door over its own sockets: the door is
 //! refused at its build if it names a transport it composes over (`HostWire::new`), so the seal's
 //! rows record no layer (`composed_over: None`, which the registry's boot check,
 //! `busbar_contract::transport::registry::check_composition`, holds against each declaration). This
@@ -61,7 +61,7 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
             row.key
         );
     }
-    // NO TRANSPORT NAMES ANOTHER (ARCHITECT ruling Q128 U7; TRANSPORT-STACK (2), :4721): the carrier
+    // NO TRANSPORT NAMES ANOTHER: the carrier
     // is the connector's choice from the target's scheme, so no shipped wire is built over another
     // and the shipped fold names no layer.
     assert!(

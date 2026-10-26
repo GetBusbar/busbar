@@ -439,7 +439,7 @@ fn read_to_string(path: &Path) -> String {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_metrics_admitted_in_open_relay_mode`
-/// (coverage map v2 row 137). 1.5.5: under an open auth chain (`chain: []`) a `GET /metrics` with
+/// 1.5.5: under an open auth chain (`chain: []`) a `GET /metrics` with
 /// no credential is admitted: `200`, a `content-type` that starts `text/plain` (the Prometheus text
 /// exposition), and a body that carries a series (the legacy test seeded the request counter in
 /// process; a spawned node with no traffic yet renders its scrape-time lane series, `busbar_lane_state`).

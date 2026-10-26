@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EGRESS WALK'S PRODUCTION PORTS (ARCHITECT Q-SW8, 2026-10-02; SERVE-WIRE P2b): the clock, the
+//! THE EGRESS WALK'S PRODUCTION PORTS: the clock, the
 //! members' concurrency permits and the walk's counters, as the composition root binds them for a
 //! plane served through its door (`busbar_kernel::plane_driver::Egress`). Each is node-local runtime
 //! state that outlives a request; none moves money. (The write-ahead dispatch record, the walk's
