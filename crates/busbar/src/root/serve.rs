@@ -492,7 +492,7 @@ impl HostServices for LateServices {
 
 // ── the door planes, composed ─────────────────────────────────────────────────────────────────────
 
-/// ONE DOOR PLANE, COMPOSED (TODO U6-U7, ARCHITECT Q-SW4 2026-10-02): its instance, the driver the
+/// ONE DOOR PLANE, COMPOSED: its instance, the driver the
 /// kernel serves it through, the snapshot its `open` published (its claims and admin routes), and
 /// what its units are served by: its tail's facts, the pools its section states, its money steps
 /// and its egress.
@@ -1027,7 +1027,7 @@ impl Checkpoints {
     }
 }
 
-/// THE DOOR PLANES, COMPOSED ([`compose_planes`], TODO U6-U7) over the deployment's governance book
+/// THE DOOR PLANES, COMPOSED ([`compose_planes`]) over the deployment's governance book
 /// `gov`: each plane bound through its door whose section this deployment writes is opened, driven
 /// and ticked once, its money posted onto the process's one node. A deployment without governance
 /// has no money book for a driven unit to settle on, so its door planes stay bound and unopened.
@@ -2271,7 +2271,7 @@ fn open(
 
 // ── the data routes: a claimed arrival, driven ──────────────────────────────────────────────────
 
-/// THE DOOR PLANES' DATA ROUTES (SERVE-WIRE P2, TODO U6-U7; ARCHITECT Q-SW1 2026-10-02: the route
+/// THE DOOR PLANES' DATA ROUTES (SERVE-WIRE P2; ARCHITECT Q-SW1 2026-10-02: the route
 /// install is the router's construction, no static): every composed plane's snapshot claims, each a
 /// line on the data listener's guest list ([`door_routes`]), mounted at construction with its
 /// handler. A claimed arrival is one unit of that plane, driven on the process's one node over the
@@ -3412,7 +3412,7 @@ impl DataRoutes {
             method: method.as_str().as_bytes().to_vec(),
             target: target.as_bytes().to_vec(),
             fields,
-            body: Arc::from(&body[..]),
+            body: body.clone(),
         };
         let principal = match gov.key() {
             Some(key) => PrincipalId::new(key.id.as_str()),
@@ -3693,7 +3693,7 @@ impl DataRoutes {
             method: method.as_str().as_bytes().to_vec(),
             target: target.as_bytes().to_vec(),
             fields,
-            body: Arc::from(&body[..]),
+            body: body.clone(),
         };
         let principal = match gov.key() {
             Some(key) => PrincipalId::new(key.id.as_str()),
@@ -3881,7 +3881,7 @@ impl DataRoutes {
             method: nest.ask.verb.into_bytes(),
             target: nest.ask.target.into_bytes(),
             fields: Vec::new(),
-            body: Arc::from(nest.ask.body),
+            body: bytes::Bytes::from(nest.ask.body),
         };
         let nesting = Nesting {
             parent,
@@ -4368,8 +4368,7 @@ struct SessionDoor {
 }
 
 /// THE CALLER'S SIDE OF A DUPLEX SESSION over today's hyper upgrade (K6's one `SessionCaller`;
-/// ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, the `IngressCaller` pattern; TRANSITIONAL: deleted when
-/// INBOUND-LISTEN's `accepted::Caller` serves, 1.6.0-TODO "TRANSITIONAL ROWS"). Its pieces are the
+/// ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, the `IngressCaller` pattern). Its pieces are the
 /// caller's messages as the core's bridge hands them over; every frame the plane writes toward the
 /// caller is one message, text when the plane said so. The caller's close ends its reads; a write after
 /// the socket went answers `false`.
@@ -4416,7 +4415,7 @@ fn deframed_arrival(
 ) -> (Arrival, IngressCaller, IngressReply) {
     let deframed = Bytes::from(messages.concat());
     let arrival = Arrival {
-        body: Arc::from(&deframed[..]),
+        body: deframed.clone(),
         ..arrival
     };
     let (caller, reply) = IngressCaller::arriving(deframed);
@@ -4425,8 +4424,7 @@ fn deframed_arrival(
 
 // ── the driver's caller side over today's ingress ────────────────────────────────────────────────
 
-/// THE CALLER'S SIDE OF A DRIVEN UNIT over today's hyper ingress (TRANSITIONAL: deleted when
-/// INBOUND-LISTEN's `accepted::Caller` serves the data door, 1.6.0-TODO "TRANSITIONAL ROWS").
+/// THE CALLER'S SIDE OF A DRIVEN UNIT over today's hyper ingress.
 ///
 /// The head goes to the handler once; the bytes go into the response body through a channel of one
 /// piece, so a `write` resolves only once the body has taken the piece before it (the caller's side

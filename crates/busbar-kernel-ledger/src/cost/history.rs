@@ -52,7 +52,7 @@ impl std::fmt::Display for HistorySeq {
 /// `t_ms (u64 BE) ++ node_rand (8 bytes, per boot) ++ counter (u32 BE)`.
 pub const ENTRY_KEY_LEN: usize = 20;
 
-/// **AN ENTRY'S IDENTITY**: its key in the fleet-shared history (MONEY-DESIGN §3a).
+/// **AN ENTRY'S IDENTITY**: its key in the fleet-shared history (MONEY-DESIGN section 3a).
 ///
 /// Keys are unique across nodes (the writer's per-boot random half) and ordered by their bytes,
 /// which is time first. The resolution rule names the KEY, never a list position: among the live
@@ -120,7 +120,7 @@ impl std::fmt::Display for EntryKey {
 pub const ENTRY_ID_LEN: usize = 12;
 
 /// **THE ID A COUNT SEGMENT CARRIES**: the first 12 bytes of SHA-256 of the entry's [`EntryKey`]
-/// (MONEY-DESIGN §3b). Spelled as 24 lowercase hex characters; the pseudo-model prefix of a
+/// (MONEY-DESIGN section 3b). Spelled as 24 lowercase hex characters; the pseudo-model prefix of a
 /// sibling era row is that spelling followed by `U+001F`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct EntryId(pub [u8; ENTRY_ID_LEN]);
@@ -220,6 +220,7 @@ pub enum Author {
 pub struct CardEntry {
     seq: HistorySeq,
     key: EntryKey,
+    voided: bool,
     effective_from: u64,
     effective_until: Option<u64>,
     card: RateCard,
@@ -276,6 +277,17 @@ impl CardEntry {
     /// Whether this entry's interval covers `t`: `effective_from <= t < effective_until`.
     pub fn covers(&self, t: u64) -> bool {
         t >= self.effective_from && self.effective_until.is_none_or(|until| t < until)
+    }
+
+    /// Whether a VOID record names this entry: it is never in force, but its id stays KNOWN, so a
+    /// count already posted under it keeps its card (MONEY-DESIGN section 3a, owner item 16).
+    pub fn is_voided(&self) -> bool {
+        self.voided
+    }
+
+    /// Whether this entry prices `t`: live, and covering it.
+    fn prices(&self, t: u64) -> bool {
+        !self.voided && self.covers(t)
     }
 }
 
@@ -408,6 +420,7 @@ impl History {
         self.entries.push(CardEntry {
             seq,
             key,
+            voided: false,
             effective_from: draft.effective_from,
             effective_until: draft.effective_until,
             card: draft.card,
@@ -419,13 +432,72 @@ impl History {
 }
 
 impl History {
+    /// **ORDERED INSERT** of an entry read from (or written to) the fleet-shared history under its
+    /// own `key`. Entries are kept in key order, and an entry's number is its position in that
+    /// order, so a history rebuilt from the store numbers its entries alike on every node. A key
+    /// already held is left as it is: an entry is immutable. Answers the entry's number.
+    pub fn insert(&mut self, key: EntryKey, draft: CardEntryDraft) -> HistorySeq {
+        match self.entries.binary_search_by(|e| e.key.cmp(&key)) {
+            Ok(at) => HistorySeq(at as u64),
+            Err(at) => {
+                self.entries.insert(
+                    at,
+                    CardEntry {
+                        seq: HistorySeq(at as u64),
+                        key,
+                        voided: false,
+                        effective_from: draft.effective_from,
+                        effective_until: draft.effective_until,
+                        card: draft.card,
+                        appended_at: draft.appended_at,
+                        author: draft.author,
+                    },
+                );
+                for (i, e) in self.entries.iter_mut().enumerate().skip(at) {
+                    e.seq = HistorySeq(i as u64);
+                }
+                HistorySeq(at as u64)
+            }
+        }
+    }
+
+    /// Mark the entry `key` VOID. Answers whether this history holds it.
+    pub fn void(&mut self, key: &EntryKey) -> bool {
+        match self.entries.iter_mut().find(|e| e.key == *key) {
+            Some(entry) => {
+                entry.voided = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The entry whose key is `key`, voided or not.
+    pub fn entry(&self, key: &EntryKey) -> Option<&CardEntry> {
+        self.entries.iter().find(|e| e.key == *key)
+    }
+
+    /// The highest commit time among the LIVE entries (`head_t_ms`): a voided entry never counts.
+    pub fn head_t_ms(&self) -> Option<u64> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| !e.voided)
+            .map(|e| e.key.t_ms())
+    }
+
+    /// The highest-keyed LIVE entry: the head a new entry extends.
+    pub fn live_head(&self) -> Option<&CardEntry> {
+        self.entries.iter().rev().find(|e| !e.voided)
+    }
+
     /// **THE ANSWER AT `instant`** (seam for the poster): the id and card of the highest-keyed live
     /// entry covering it, or `None` for a hole.
     pub fn entry_at(&self, instant: u64) -> Option<(EntryId, &RateCard)> {
         self.entries
             .iter()
             .rev()
-            .find(|entry| entry.covers(instant))
+            .find(|entry| entry.prices(instant))
             .map(|entry| (entry.id(), &entry.card))
     }
 
@@ -462,13 +534,13 @@ impl HistoryView<'_> {
         self.entries
             .iter()
             .rev()
-            .find(|e| e.covers(t))
+            .find(|e| e.prices(t))
             .map(|e| (e.seq, &e.card))
     }
 
     /// The entry this view resolved to at `t`, whole.
     pub fn entry_at(&self, t: u64) -> Option<&CardEntry> {
-        self.entries.iter().rev().find(|e| e.covers(t))
+        self.entries.iter().rev().find(|e| e.prices(t))
     }
 
     /// **THE ONE ENTRY THAT PRICES EVERY INSTANT OF `[from, until)`** (`until` `None` is open-ended),
@@ -488,7 +560,8 @@ impl HistoryView<'_> {
         // An entry that out-ranks the base and overlaps the window resolves part of it (it cannot
         // cover `from`, or it would have been the base).
         let outranked = self.entries.iter().any(|e| {
-            e.seq > base.seq
+            !e.voided
+                && e.seq > base.seq
                 && e.effective_until.is_none_or(|ends| from < ends)
                 && until.is_none_or(|until| e.effective_from < until)
         });

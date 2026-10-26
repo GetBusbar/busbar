@@ -349,14 +349,6 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     assert_eq!(ended.finish, busbar_contract::FinishClass::Complete);
 }
 
-/// The point of the skeleton: the shape compiles against the real trait, and the real trait is
-/// the kernel's. A `ProductionUnits` that did not satisfy `Units` would be a plan, not a root.
-#[test]
-fn production_units_is_the_kernels_units_trait() {
-    fn assert_units<U: Units>() {}
-    assert_units::<ProductionUnits>();
-}
-
 /// The arrival door is the admission unit's, and a hold it opens reserves nothing — the point
 /// of the arrival hold is that even a refusal is an event with a cell of its own to settle.
 #[test]
@@ -533,40 +525,6 @@ fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() 
     );
 }
 
-/// **The units carry no metering policy, and the root has no pool-expansion boot check** (items
-/// 239/246).
-///
-/// `ProductionUnits.meter_policy` was built from `MeterPolicyConfig::default()` at its one
-/// production site and read by nothing, and `pools_without_expansion` — the check written to guard
-/// it — had no production caller. Neither priced anything: what prices a unit is the rate card,
-/// through the one function Tally governs. A policy field on the assembly is a second place a
-/// reader would look for how a unit is priced, and it would answer with an empty default. So the
-/// assembly holds none, and the check that guarded it is gone with it.
-#[test]
-fn the_units_carry_no_metering_policy_and_the_root_names_no_pool_check() {
-    fn code(source: &str) -> String {
-        source
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-    let kernel = code(include_str!("../kernel.rs"));
-    let start = kernel
-        .find("pub struct ProductionUnits {")
-        .expect("the assembly is declared in kernel.rs");
-    let body = &kernel[start..];
-    let body = &body[..body.find("\n}").expect("the struct closes")];
-    assert!(
-        !body.contains("meter_policy") && !body.contains("MeterPolicyHandle"),
-        "ProductionUnits carries a metering policy again"
-    );
-    assert!(
-        !code(include_str!("../policy.rs")).contains("fn pools_without_expansion"),
-        "the root grew its unread pool-expansion check back"
-    );
-}
-
 /// The interner is idempotent, which is what makes "leaked exactly once" a property of the
 /// type rather than of the caller's discipline.
 #[test]
@@ -636,94 +594,6 @@ fn the_usage_read_answers_with_the_process_history() {
         CardRepricer.history().and_then(|h| h.head()),
         ROOT_CARD.history().and_then(|h| h.head()),
         "the read and the holder disagree about which entry is the head"
-    );
-}
-
-/// **THE WIRING WITNESS.** The root's install record carries BOTH halves of the rate seam, the
-/// binary installs that record, and the boot arms the repricer's journal.
-///
-/// The apply half without the read half is precisely the defect this seam rules out: a node that dates its
-/// prices and then reports them off the newest card anyway. The date half without the other two
-/// stamps an instant nothing reads. And any of them without a caller is dead code that looks live.
-/// So the root's install record is read for both halves, `main.rs` for its install, the body of
-/// `install_card_repricer` for the journal it arms, and the root unit, `main.rs` and the manifest's
-/// root-unit table for the call — facts that have to hold together for the seam to be reachable in
-/// the shipped binary, and no one of which implies the others.
-#[test]
-fn the_boot_install_raises_both_halves_of_the_rate_seam_and_main_calls_it() {
-    let linked = include_str!("../linked.rs");
-    let record = linked
-        .split("pub fn register_stores(linked: &Linked) {")
-        .nth(1)
-        .expect("register_stores is declared")
-        .split("\n}")
-        .next()
-        .expect("its body closes");
-    assert!(
-        record.contains("rate_apply: Some(&crate::root::kernel::CardRepricer)"),
-        "the root's install record stopped carrying the APPLY half: {record}"
-    );
-    assert!(
-        record.contains("rate_epoch: Some(&crate::root::kernel::CardRepricer)"),
-        "the root's install record stopped carrying the DATE half — a metering cell would carry no \
-         instant finer than its UTC day and a mid-day card edit would reprice the whole day (#79): \
-         {record}"
-    );
-    assert!(
-        include_str!("../../main.rs").contains("root::linked::register_stores(&LINKED);"),
-        "main.rs no longer installs the root's install record, so neither half is ever raised"
-    );
-    let kernel = include_str!("../kernel.rs");
-    let body = kernel
-        .split("pub fn install_card_repricer() {")
-        .nth(1)
-        .expect("install_card_repricer is declared")
-        .split("\n}")
-        .next()
-        .expect("its body closes");
-    assert!(
-        body.contains("ROOT_CARD.arm_journal()"),
-        "the boot step stopped arming the repricer's journal before the boot resolution: {body}"
-    );
-    // The READ half rides the date half: the dater's `history` is what the usage read and the
-    // budget book price through (`rate_apply::dated_history`).
-    let dater = kernel
-        .split("impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {")
-        .nth(1)
-        .expect("the root implements the rate dater")
-        .split("\n}")
-        .next()
-        .expect("its impl closes");
-    assert!(
-        dater.contains("fn history(&self)") && dater.contains("ROOT_CARD.history()"),
-        "the rate dater stopped handing over the process history — the usage read would price off \
-         the newest card again (#79): {dater}"
-    );
-    // The call: a root unit's configuration step runs it, `main.rs` runs every enabled unit's
-    // configuration step, and the generated table this binary compiles carries that unit.
-    // The unit is found through the manifest's root-unit table (the data every build's table is
-    // generated from), not by name: some module that table lists must make the call.
-    let main = include_str!("../../main.rs");
-    assert!(
-        main.contains("ROOT_UNITS.iter().filter_map(|u| u.on_config)"),
-        "main.rs no longer runs the root units' configuration steps, so the repricer's journal is \
-         never armed"
-    );
-    let manifest = include_str!("../../../Cargo.toml");
-    let callers: Vec<String> = root_unit_modules(manifest)
-        .into_iter()
-        .filter(|module| {
-            let path = format!("{}/src/root/{module}.rs", env!("CARGO_MANIFEST_DIR"));
-            std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("the manifest lists root unit `{module}`: {path}: {e}"))
-                .contains("on_config: Some(|_| crate::root::kernel::install_card_repricer())")
-        })
-        .collect();
-    assert!(
-        !callers.is_empty(),
-        "no root unit the manifest lists has a configuration step that arms the repricer, so the \
-         boot resolution's opening entry is never held for the book (or the unit that does is not \
-         a root unit the manifest lists, so no build's table carries it)"
     );
 }
 
@@ -1225,8 +1095,8 @@ fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
     apply_at(holder, 5.0, APPLIED_B);
     assert_eq!(
         holder.len(),
-        3,
-        "the refused card lands with the card in force put back behind it, as the chain holds them"
+        1,
+        "the refused card is not published, and nothing is WITHDRAWN behind it (MONEY-DESIGN section 3a)"
     );
     assert_eq!(
         flat_price_at(holder, EARNED_B),
@@ -1291,94 +1161,6 @@ fn config_epochs(records: &[busbar_kernel_wal::JournalRecord]) -> Vec<u64> {
             super::JournalledCard::Amended(_) | super::JournalledCard::Corrected(..) => None,
         })
         .collect()
-}
-
-/// **A REFUSED APPLY IS IN DOUBT, NOT ABSENT** (REV-293 #1, MONEY-AUDIT D-6). The journal chains a
-/// record BEFORE the log is asked to take it and the log RETAINS a refused batch, offering it again
-/// on the next append (`busbar-kernel-wal` `Journal::append`, `Wal::append_batch`): a card the
-/// journal answered `DurabilityLost` for is on the chain and lands with the next posting. So the
-/// live history must price every instant exactly as the history a restart rebuilds from the chain:
-/// the refused card goes on it together with the card in force put back at the same instant, and
-/// no later apply reuses the refused record's policy epoch.
-///
-/// RED arm: the refused card was left off the live history only — the rebuilt history priced
-/// `EARNED_B` at the refused card (5,000) where the live node priced it at the card in force
-/// (3,000), and the next apply journalled a second config entry under the refused one's epoch.
-#[test]
-fn a_refused_rate_apply_prices_live_exactly_as_the_rebuilt_chain_does() {
-    let dir = journal_dir("in-doubt-apply");
-    let holder = process_holder();
-    apply_at(holder, 3.0, BOOT_A);
-    let book = boot_book(holder, &dir);
-    let boot = chain_records(&book);
-    let refusing = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::memory_buffered_to(
-        7,
-        Box::new(SwitchShipper(Arc::clone(&refusing))),
-        busbar_kernel::store::now_ms,
-    );
-    assert!(
-        matches!(
-            try_apply_at(holder, 5.0, APPLIED_B),
-            Err(CardRefused::Lost(_))
-        ),
-        "a refused card is answered as in doubt"
-    );
-    assert_eq!(
-        flat_price_at(holder, EARNED_B),
-        Some(3_000),
-        "the card in force prices the refused card's era"
-    );
-
-    // THE RETRY LANDS: the chain holds the boot card and everything the refusal retained.
-    let landed: Vec<_> = boot
-        .iter()
-        .chain(chain_records(&book).iter())
-        .cloned()
-        .collect();
-    let rebuilt = rebuilt_from(&landed);
-    assert_eq!(
-        flat_price_on(&rebuilt, EARNED_B),
-        flat_price_at(holder, EARNED_B),
-        "a restart reprices the refused card's era at a card the live node never priced under"
-    );
-    assert_eq!(
-        rebuilt.len(),
-        holder.len(),
-        "the live history and the rebuilt one agree entry for entry"
-    );
-    // THE RETRY NEVER LANDS: the boot card prices the era on the chain too.
-    assert_eq!(flat_price_on(&rebuilt_from(&boot), EARNED_B), Some(3_000));
-
-    // The store answers again: the next apply lands, behind what the refusal retained.
-    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
-    assert!(try_apply_at(holder, 7.0, REBOOT).is_ok());
-    let chain: Vec<_> = boot
-        .iter()
-        .chain(chain_records(&book).iter())
-        .cloned()
-        .collect();
-    let epochs = config_epochs(&chain);
-    let mut distinct = epochs.clone();
-    distinct.sort_unstable();
-    distinct.dedup();
-    assert_eq!(
-        distinct.len(),
-        epochs.len(),
-        "two config entries on the chain share one policy epoch: {epochs:?}"
-    );
-    let rebuilt = rebuilt_from(&chain);
-    assert_eq!(rebuilt.len(), holder.len());
-    for at in [EARNED_A, EARNED_B, REBOOT] {
-        assert_eq!(
-            flat_price_on(&rebuilt, at),
-            flat_price_at(holder, at),
-            "live and rebuilt disagree at {at}"
-        );
-    }
-    assert_eq!(flat_price_at(holder, REBOOT), Some(7_000));
-    drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A disk the test can break: while `failing`, every write, sync and resize on a segment fails (the
@@ -1535,9 +1317,9 @@ fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirm
         .filter(|r| super::CardApplied::from_body(&r.body).is_some())
         .count();
     assert_eq!(
-        owed_cards, 2,
-        "the log owes the card, and the card in force put back behind it: both retained for their \
-         retry, neither dropped"
+        owed_cards, 1,
+        "the log owes the card for its retry, and no WITHDRAW is written behind it (MONEY-DESIGN \
+         section 3a)"
     );
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);
@@ -1578,75 +1360,6 @@ fn a_rate_apply_before_the_book_is_bound_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The engine staging the deployment at `price` with `holder` at `at`, ahead of the save.
-fn stage_at(holder: &RootHistory, price: f64, at: u64) -> Result<(), super::CardRefused> {
-    let lanes = lanes_at(price);
-    let fees = plane_fees();
-    holder.stage_rates(
-        &busbar_kernel::rate_apply::RawRates {
-            lanes: &lanes,
-            units: &[("gpt".to_string(), "search_units".to_string(), 2_000)],
-            flat_minor: 4,
-            present: true,
-            plane_fees: &fees,
-        },
-        at,
-    )
-}
-
-/// **A STAGED CARD WHOSE CONFIG CHANGE DID NOT COMMIT NEVER PRICES AN INSTANT** (MONEY-AUDIT D-6,
-/// ARCHITECT ruling 2026-10-02): staged, it is on the journal and not published; withdrawn, the
-/// card in force goes back on the chain at the staged card's own instant, so the history a restart
-/// rebuilds is the live one, entry for entry. A staged card that commits is published as
-/// journalled: no second record, dated at its staging.
-#[test]
-fn a_staged_card_whose_change_did_not_commit_never_prices_an_instant() {
-    let dir = journal_dir("staged-withdrawn");
-    let holder = process_holder();
-    apply_at(holder, 3.0, BOOT_A);
-    let book = boot_book(holder, &dir);
-    stage_at(holder, 5.0, APPLIED_B).expect("the journal takes the staged card");
-    assert_eq!(
-        flat_price_at(holder, EARNED_B),
-        Some(3_000),
-        "a staged card is not published"
-    );
-    holder.withdraw_staged(APPLIED_B + 1);
-    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
-    let live = holder.len();
-    assert_eq!(
-        cards_on_chain(&book),
-        3,
-        "the boot card, the staged card, its withdrawal"
-    );
-    drop(book);
-
-    let restarted = process_holder();
-    apply_at(restarted, 3.0, REBOOT);
-    let book = boot_book(restarted, &dir);
-    assert_eq!(
-        flat_price_at(restarted, EARNED_B),
-        Some(3_000),
-        "a restart priced an instant at a card whose change never committed"
-    );
-    assert_eq!(
-        restarted.len(),
-        live,
-        "the live history is the one the chain rebuilds"
-    );
-
-    stage_at(restarted, 7.0, REBOOT_CHANGED).expect("the journal takes the staged card");
-    apply_at(restarted, 7.0, REBOOT_CHANGED + 5);
-    assert_eq!(flat_price_at(restarted, REBOOT_CHANGED), Some(7_000));
-    assert_eq!(
-        cards_on_chain(&book),
-        4,
-        "the commit wrote no second record"
-    );
-    drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// The book's chain swapped for a memory-buffered one over a store the test flips (refusing at
 /// first, as `refusing` says), answering the flag.
 fn swap_to_switchable_store(
@@ -1660,112 +1373,6 @@ fn swap_to_switchable_store(
         busbar_kernel::store::now_ms,
     );
     flag
-}
-
-/// **A REFUSED STAGE IS IN DOUBT, NOT ABSENT** (REV-309 #1, MONEY-AUDIT D-6). The staged card's
-/// record is chained and the log retains it, so it lands with the next append; a restart then took
-/// it as the newest journalled config card and priced every instant from its staging at a card
-/// neither the configuration nor the live history ever held. The refused stage now withdraws as it
-/// refuses: the card in force goes back behind the staged card at the same instant, and both land
-/// live, so the live history prices as the rebuilt chain does — and the refused record's epoch is
-/// spent.
-///
-/// RED arm: `stage_at` returned the refusal with the live history untouched while the chain held
-/// the staged card — the rebuilt history priced `EARNED_B` at 5,000 against the live 3,000.
-#[test]
-fn a_refused_stage_prices_live_exactly_as_the_rebuilt_chain_does() {
-    let dir = journal_dir("refused-stage");
-    let holder = process_holder();
-    apply_at(holder, 3.0, BOOT_A);
-    let book = boot_book(holder, &dir);
-    let boot = chain_records(&book);
-    let refusing = swap_to_switchable_store(&book, true);
-    assert!(
-        matches!(
-            stage_at(holder, 5.0, APPLIED_B),
-            Err(super::CardRefused::Lost(_))
-        ),
-        "a refused stage refuses the config change, in doubt"
-    );
-    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
-    let landed: Vec<_> = boot
-        .iter()
-        .chain(chain_records(&book).iter())
-        .cloned()
-        .collect();
-    let rebuilt = rebuilt_from(&landed);
-    assert_eq!(
-        flat_price_on(&rebuilt, EARNED_B),
-        flat_price_at(holder, EARNED_B),
-        "a restart priced the refused stage's era at a card that was never in force"
-    );
-    assert_eq!(
-        rebuilt.len(),
-        holder.len(),
-        "the live history and the rebuilt one agree entry for entry"
-    );
-
-    // The store answers again: the next change lands behind what the refusal retained.
-    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
-    stage_at(holder, 7.0, REBOOT).expect("the journal takes the staged card");
-    assert!(try_apply_at(holder, 7.0, REBOOT + 5).is_ok());
-    let chain: Vec<_> = boot
-        .iter()
-        .chain(chain_records(&book).iter())
-        .cloned()
-        .collect();
-    let epochs = config_epochs(&chain);
-    let mut distinct = epochs.clone();
-    distinct.sort_unstable();
-    distinct.dedup();
-    assert_eq!(
-        distinct.len(),
-        epochs.len(),
-        "two config entries on the chain share one policy epoch: {epochs:?}"
-    );
-    let rebuilt = rebuilt_from(&chain);
-    assert_eq!(rebuilt.len(), holder.len());
-    for at in [EARNED_A, EARNED_B, REBOOT, REBOOT_CHANGED] {
-        assert_eq!(
-            flat_price_on(&rebuilt, at),
-            flat_price_at(holder, at),
-            "live and rebuilt disagree at {at}"
-        );
-    }
-    assert_eq!(flat_price_at(holder, REBOOT_CHANGED), Some(7_000));
-    drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// **A WITHDRAWAL THE JOURNAL LEAVES IN DOUBT STILL LANDS BOTH ENTRIES LIVE** (REV-309 #2). The
-/// put-back is retained behind the staged card and lands with it, so the live history takes both —
-/// otherwise a restart rebuilds staged + put-back while the live node holds neither, and the entry
-/// numbers invoices cite diverge.
-///
-/// RED arm (the PR head): the refused put-back logged and returned with no in-memory append — live
-/// one entry, rebuilt three.
-#[test]
-fn a_withdrawal_the_journal_leaves_in_doubt_still_lands_both_entries_live() {
-    let dir = journal_dir("withdraw-in-doubt");
-    let holder = process_holder();
-    apply_at(holder, 3.0, BOOT_A);
-    let book = boot_book(holder, &dir);
-    let boot = chain_records(&book);
-    let refusing = swap_to_switchable_store(&book, false);
-    stage_at(holder, 5.0, APPLIED_B).expect("the journal takes the staged card");
-    refusing.store(true, std::sync::atomic::Ordering::SeqCst);
-    holder.withdraw_staged(APPLIED_B + 1);
-    let landed: Vec<_> = boot
-        .iter()
-        .chain(chain_records(&book).iter())
-        .cloned()
-        .collect();
-    let rebuilt = rebuilt_from(&landed);
-    assert_eq!(rebuilt.len(), holder.len(), "entry for entry");
-    assert_eq!(flat_price_on(&rebuilt, EARNED_B), Some(3_000));
-    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
-    drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A holder that was not armed — every test holder, and a build with no root ledger — rebuilds

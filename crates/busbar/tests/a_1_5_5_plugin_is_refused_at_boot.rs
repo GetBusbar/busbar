@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! C21 AT THE BOOT, END TO END: **a 1.5.5 JSON-contract plugin is refused at boot, naming the
-//! rebuild** (THE DESIGN §11.8, "No legacy loading"; ruling C21/ABI-o1; TODO P2 exit).
+//! rebuild** (THE DESIGN §11.8, "No legacy loading"; ruling C21/ABI-o1).
 //!
 //! The loader's own suite proves the scan refuses the artifact. This drives the REAL binary: a
 //! published-1.5.5-shaped plugin of each JSON-contract kind (its manifest states that kind's 1.5.5

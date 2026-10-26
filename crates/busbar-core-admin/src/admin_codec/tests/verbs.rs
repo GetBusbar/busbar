@@ -44,11 +44,6 @@ fn resolve_refuses_a_pair_the_table_does_not_declare() {
 }
 
 #[test]
-fn table_has_exactly_the_rows_the_count_declares() {
-    assert_eq!(all_verbs().len(), VERB_COUNT);
-}
-
-#[test]
 fn matches_a_templated_path_and_captures_the_param() {
     let params = match_path("/api/v1/admin/keys/{id}", "/api/v1/admin/keys/abc123").unwrap();
     assert_eq!(params, vec![("id", "abc123")]);

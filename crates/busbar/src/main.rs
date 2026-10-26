@@ -1603,7 +1603,6 @@ fn serve_thread_per_core(
                     // pre-TLS so the balancer can place it on another worker; the TLS handshake
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
-                    // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
                     let via = crate::root::connector::the().address_via();
                     let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {

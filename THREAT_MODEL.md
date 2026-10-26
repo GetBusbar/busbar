@@ -125,6 +125,42 @@ loaded, so the bytes that pass the signature check are the bytes that run. An un
 logged and skipped, never `dlopen`ed. This narrows but does not eliminate the risk: a plugin you
 choose to trust and load is trusted code by definition (see out-of-scope below).
 
+### T10 — Credential custody in plugins (boundary 4; the credential chip, 1.6.0)
+A plugin that authenticates to something (a store, an identity provider, a webhook, a provider)
+needs a credential, and a plugin is code someone else may have written. **Mitigation:** a plugin is
+never handed a credential as text. The plugin SDK's `Cred` (and the `Seal` a recipe makes from it)
+has no getter, no `Debug`, no `Display` and no `Serialize`; printing or serializing one does not
+compile. The plugin asks the SDK's recipes ("the chip") to perform the auth step — a Postgres
+password or SCRAM message, a MySQL handshake, an LDAP bind, a RESP `AUTH`, Basic/Bearer, HMAC,
+AWS SigV4, JWS — and the SDK writes the result to the wire from a wiped buffer. A setting the
+plugin declares secret is sealed as it is parsed, a URL's password is split off at parse, and no
+settings error quotes a value. Further rules:
+- **Declared fields only.** A secret reference (`{env:}`, `{secret:}`, `{file:}`) at a plugin
+  setting the plugin has not declared secret is refused at boot and by `--validate`, naming the
+  field and the plugin.
+- **The operator's URL decides how a credential travels.** A credential written in an `https`,
+  `rediss`, `ldaps` (…) URL, or with a TLS mode that refuses cleartext (`sslmode=require`, …), goes
+  out only on a connection the host connector reports secured; otherwise nothing is sent.
+- **No downgrade.** An auth method weaker than the server offers (Postgres cleartext or MD5 where
+  SCRAM is available; MySQL cleartext or old-password) is refused unless the operator allows it in
+  config, and the refusal is explained and audited. MySQL RSA full authentication needs an operator
+  key pin, TLS or a unix socket.
+- **At rest.** A recoverable credential busbar mints (a signed-request secret) is sealed under a
+  dedicated at-rest key before any store sees it; a `previous` key keeps rotation from breaking
+  stored credentials, and rows are re-wrapped under the current key.
+- **Every plugin is tested for it.** Each plugin's conformance suite configures a canary credential
+  and fails if any spelling of it (raw, percent-encoded, base64, hex) crosses back through an answer
+  or a log record.
+
+**Residual, accepted for 1.6.0 (owner ruling).** Plugins run in busbar's process, and the chip runs
+inside each plugin. Native code in the same address space can read memory, so a plugin that is
+*malicious* — rather than careless — can recover a credential it was configured with. The
+mitigations above remove every accidental path (logs, errors, `Debug`, dumps, the store, the
+wrong host) and every ABI path; they do not stop deliberate in-process memory access. The
+controls against a malicious plugin are therefore the ones in T9: plugins are off by default, every
+dropped-in plugin is signature-verified, and third-party publishers must be allowlisted. A plugin
+linked into a custom build is **first party by the operator's choice** and is trusted as such.
+
 ## Explicitly out of scope
 
 - The security of the **upstream providers** themselves.
@@ -133,6 +169,10 @@ choose to trust and load is trusted code by definition (see out-of-scope below).
   chain in production, `security.allow_all_metadata`) — these are documented foot-guns, gated behind
   explicit flags, and warned at boot.
 - Physical access and side-channels beyond the timing-safe comparisons noted above.
+- A malicious plugin reading a credential out of busbar's own process memory (T10's accepted
+  residual; T9's controls decide which plugins load).
+- Not part of 1.6.0 at all: HashiCorp Vault raw-stream and transit use, SRTP keying material, and
+  the busbar release signing key are outside the credential chip's custody.
 
 ## Validation
 

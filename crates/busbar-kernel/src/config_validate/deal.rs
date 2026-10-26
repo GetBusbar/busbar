@@ -18,12 +18,11 @@ use serde_json::{Map, Value};
 
 /// THE RESERVED CORE-OWNED SUB-KEYS a declared-verb section may carry beyond the two every section
 /// reserves (`busbar_contract::section::RESERVED_SECTION_KEYS`) and its card and fees
-/// (`crate::config::prepass`): §4 "Reserved core-owned sub-keys" and the OWNER-CONFIRMED (b) list
-/// (`breaker`, `on_exhausted`, the `gates` binding, `affinity`, `tier`, `repeatable`), POOLS-VERBS's
-/// `work` and `pools` (#47: tool and agent pools sit under their plane's verb as a reserved `pools`
-/// sub-key; Q-STEP9-a, ARCHITECT 2026-10-07), and an entry's `timeout`
-/// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`, its member's attempt bound; ARCHITECT timeout
-/// ruling, R2-G).
+/// (`crate::config::prepass`): the
+/// keys (`breaker`, `on_exhausted`, the `gates` binding, `affinity`, `tier`, `repeatable`), POOLS-VERBS's
+/// `work` and `pools` (tool and agent pools sit under their plane's verb as a reserved `pools`
+/// sub-key), and an entry's `timeout`
+/// (`busbar_contract::section::ENTRY_TIMEOUT_KEY`, its member's attempt bound).
 pub const RESERVED_SUB_KEYS: [&str; 9] = [
     "breaker",
     "on_exhausted",
@@ -419,7 +418,7 @@ impl Document {
     }
 }
 
-/// THE STRIP (Q-STEP9-a, ARCHITECT 2026-10-07): `section`, the value the document writes under
+/// THE STRIP: `section`, the value the document writes under
 /// `verb`, with the reserved sub-keys taken off at EXACT depths and nowhere else — the section's own
 /// level, each registration's level, each pool (`pools.<p>`) and each pool member
 /// (`pools.<p>.members[i]`, when the members are maps) — each recorded in `reserved` at its path

@@ -81,7 +81,7 @@ pub async fn tail(
         tracing::warn!("journal records were still queued for the store at shutdown");
     }
     // THE NODE'S LEASE ON ITS HOST NAME, held on that lane, released once its chain reached the
-    // store, so the next boot of this host resumes it at once (Q128). Off the runtime: it waits on
+    // store, so the next boot of this host resumes it at once. Off the runtime: it waits on
     // the store.
     let _released = tokio::task::spawn_blocking(move || lane.release_held_lease()).await;
 }

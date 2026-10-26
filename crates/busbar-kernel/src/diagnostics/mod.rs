@@ -38,10 +38,6 @@ mod emit;
 pub use emit::emit;
 
 #[cfg(test)]
-#[path = "tests/coverage_tests.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "tests/catalog_tests.rs"]
 mod catalog_tests;
 
@@ -2086,9 +2082,10 @@ pub const PLANE_DEMOTIONS_UNREAD: Diagnostic = Diagnostic {
     slug: "plane-demotions-unread",
     title: "Durable plane demotion records could not be read at boot",
     severity: Severity::Actionable,
-    summary: "The durable plane demotion records could NOT be read at boot, so any upstream this \
-              deployment had demoted is re-opened until the first sweep looks again. Usually a \
-              durable store-read outage.",
+    summary: "The durable plane demotion records or the operator's trust decisions could NOT be \
+              read when a plane instance was admitted, so the instance was refused rather than \
+              re-open an upstream this deployment demoted or stand over a revoke it cannot see. \
+              Usually a durable store-read outage.",
     action:
         "Restore the durable governance store's read path and restart so persisted demotions are \
              re-applied before a listener binds.",

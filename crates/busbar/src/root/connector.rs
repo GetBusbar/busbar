@@ -219,14 +219,12 @@ pub fn boot(
         eprintln!("busbar: the connector did not build: {refusal}");
         std::process::exit(2);
     });
-    let one = install(connector).unwrap_or_else(|_| {
+    // THE ONE PROXY CHOICE (status row 130 E5a) is the connector's own: it read the process
+    // environment and every framed dial it makes honours it. The kernel dials nothing to hand it.
+    install(connector).unwrap_or_else(|_| {
         eprintln!("busbar: a second connector was built; the process has one");
         std::process::exit(2);
-    });
-    // THE ONE PROXY CHOICE (status row 130 E5a): the connector read the process environment; the
-    // kernel's remaining egress engine takes the same value and reads none of its own.
-    busbar_kernel::egress::engine::install_proxy(one.proxy());
-    one
+    })
 }
 
 /// THE REACTOR A SOCKET A PLUGIN OPENS FROM A DISPATCHER WORKER REGISTERS ON
@@ -237,9 +235,6 @@ pub(crate) fn install_io_reactor() {
     busbar_core_connector::io::install_process_reactor(io_reactor());
 }
 
-// TRANSITIONAL: the connector's own I/O thread exists because synchronous governance callers wait
-// on the control runtime's thread (ARCHITECT ruling 2026-10-03 on Q-L16-3, the Q-L16-1 row); drains
-// with that wait (D2/D3; 1.6.0-TODO.md).
 /// A ROOT TEST'S OWN DISPATCHER on the connector's I/O runtime, as [`boot`] installs the process's:
 /// its workers' crossings run inside that runtime, and a socket armed off a task goes on its
 /// reactor. Without it a worker enters no runtime, and a dial made on a worker is refused.

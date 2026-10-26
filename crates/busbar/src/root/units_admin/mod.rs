@@ -1279,6 +1279,17 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 &self.attribution,
             );
         }
+        // `card void` (MONEY-DESIGN section 3a): the operator's write to the fleet-shared rate-card
+        // history. Audited by the verbs unit like every new verb, and again
+        // here with what they did.
+        if verb == KernelVerb::CardVoid {
+            return card_verb_effect(
+                &crate::root::kernel::ROOT_CARD,
+                verb,
+                request,
+                &self.attribution.principal,
+            );
+        }
         // `adjust` (item 404, owner ruling Q9): a correction to a recorded unit's COUNTS, sealed on
         // the node amendment journal by the kernel's half. Its scope and rate class ran in the verbs
         // unit before this seam; the kernel half re-checks the scope and
@@ -1414,7 +1425,7 @@ fn json_answer(body: Vec<u8>) -> AdminAnswer {
 
 /// Whether `view` already holds `correction`: an amendment entry by the same author for the same
 /// reason over the same window, carrying every figure the correction names. That is what the same
-/// body produces each time it is applied, so a second one is a replay (TODO M28).
+/// body produces each time it is applied, so a second one is a replay.
 fn already_applied(
     view: busbar_kernel_ledger::cost::HistoryView<'_>,
     correction: &crate::root::kernel::Correction,
@@ -1436,6 +1447,58 @@ fn already_applied(
                     == Some(*nanos)
             })
     })
+}
+
+/// The effect half of `card void` (MONEY-DESIGN section 3a): void an entry whose start is still in
+/// the future, by key. Audited (`card.void`).
+fn card_verb_effect(
+    history: &crate::root::kernel::RootHistory,
+    verb: KernelVerb,
+    body: &[u8],
+    principal: &str,
+) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
+    use busbar_core_admin::GovernanceError;
+    let store = history.card_store().ok_or(GovernanceError::NotFound)?;
+    let _ = verb;
+    let doc: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let key = doc
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .and_then(busbar_kernel_ledger::cost::EntryKey::parse_hex)
+        .ok_or(GovernanceError::Validation)?;
+    let (action, outcome) = ("card.void", "voided");
+    let done = store.void(key, principal).map(|()| key);
+    match done {
+        Ok(key) => {
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                action,
+                &format!("rate_card:{key}"),
+                busbar_kernel::audit_ring::OUTCOME_APPLIED,
+                principal,
+            );
+            let mut out = String::from("{\"key\":");
+            json_string(&key.hex(), &mut out);
+            out.push_str(",\"outcome\":");
+            json_string(outcome, &mut out);
+            out.push('}');
+            Ok(json_answer(out.into_bytes()).pack())
+        }
+        Err(why) => {
+            tracing::warn!("{action} refused: {why}");
+            busbar_kernel::audit_ring::AUDIT.record_by(
+                action,
+                "rate_card",
+                busbar_kernel::audit_ring::OUTCOME_REJECTED,
+                principal,
+            );
+            Err(if why.contains("did not take") {
+                GovernanceError::Store
+            } else {
+                GovernanceError::Validation
+            })
+        }
+    }
 }
 
 /// The effect half of `amend_rate_history`: decode the correction, validate its shape, append
@@ -1487,13 +1550,23 @@ fn amend_rate_history_effect(
     if effective_until.is_some_and(|until| until <= effective_from) {
         return Err(GovernanceError::Validation);
     }
-    // A CORRECTION IS BACK-DATED OR IT IS NOT A CORRECTION (TODO M28; #79 "an entry whose
+    // A CORRECTION IS BACK-DATED OR IT IS NOT A CORRECTION (#79 "an entry whose
     // `effective_from` lies in the past"). A window that opens after the instant the correction
     // arrived prices a future no booked line has reached yet: that is a forward price, which is a
     // configuration write, and an amendment signed today must not be able to stand in for one.
     // `arrival_secs` is the second the call arrived in, so its first instant is never after it.
     if effective_from > arrival_secs.saturating_mul(1000) {
         return Err(GovernanceError::Validation);
+    }
+    // AN AMEND IS BOUNDED AND ENDS BEFORE IT ARRIVED (MONEY-DESIGN section 3a "Amends"). An open-ended
+    // change is a card apply, which goes through `PUT /config/settings` and its rules; a window
+    // reaching past the arrival would price instants nothing has posted yet, as a forward price.
+    match effective_until {
+        None => return Err(GovernanceError::Validation),
+        Some(until) if until > arrival_secs.saturating_mul(1000) => {
+            return Err(GovernanceError::Validation)
+        }
+        Some(_) => {}
     }
 
     // NO SIGNER AND NO SIGNATURE (#77(9)). The answer and the history entry name no signer; the
@@ -1611,10 +1684,17 @@ fn amend_rate_history_effect(
     if history.is_empty() {
         return Err(GovernanceError::NotFound);
     }
-    let journal = journal.ok_or(GovernanceError::Store)?;
+    // THE HISTORY KEPT IN THE STORE takes the amend as an entry of its own (MONEY-DESIGN section 3a):
+    // nothing goes on the journal.
+    let in_store = history.keeps_store();
+    let journal = if in_store {
+        None
+    } else {
+        Some(journal.ok_or(GovernanceError::Store)?)
+    };
     // WHERE THE STORE KEEPS THE JOURNAL, nothing is recorded while it is refusing the journal's
     // records: the correction is refused 503 with the reason (ARCHITECT 2026-10-07 H3 ruling (d)).
-    if let Err(why) = journal.admit() {
+    if let Some(Err(why)) = journal.map(AmendmentJournal::admit) {
         return Ok(bound::journal_unavailable(&why).pack());
     }
     let sealed_at: std::cell::Cell<Option<u64>> = std::cell::Cell::new(None);
@@ -1627,8 +1707,8 @@ fn amend_rate_history_effect(
         fee: per_request_fee,
     };
     let seq = history
-        .amend(&correction, |card, base| {
-            // A CORRECTION APPLIES ONCE (TODO M28). The body names the window, the cells, the fee
+        .amend_by(&correction, &attribution.principal, |card, base| {
+            // A CORRECTION APPLIES ONCE. The body names the window, the cells, the fee
             // and the reason, and nothing that makes one submission different from the next — so
             // the same bytes, sent again after a later correction moved the window on, would put
             // the earlier price back with no new operator act. Under the apply lock (this closure
@@ -1672,9 +1752,12 @@ fn amend_rate_history_effect(
                 signed_payload: canonical_amend_payload(obj),
                 signature: String::new(),
             };
-            journal
-                .seal_policy(amendment_body(&record), arrival_secs)
-                .map(|(node_seq, _)| sealed_at.set(Some(node_seq)))
+            match journal {
+                Some(journal) => journal
+                    .seal_policy(amendment_body(&record), arrival_secs)
+                    .map(|(node_seq, _)| sealed_at.set(Some(node_seq))),
+                None => Ok(()),
+            }
         })
         .map_err(|refused| match refused {
             crate::root::kernel::AmendRefused::NoHistory => GovernanceError::NotFound,
@@ -1689,11 +1772,15 @@ fn amend_rate_history_effect(
                 GovernanceError::Validation
             }
             crate::root::kernel::AmendRefused::Seal(e) => e,
+            crate::root::kernel::AmendRefused::Store(why) => {
+                tracing::warn!("amend_rate_history refused: {why}");
+                GovernanceError::Store
+            }
         })?;
     // AND THE ANSWER WAITS FOR THE STORE (ARCHITECT 2026-10-07 H3 ruling (d)). The correction is on
     // the chain and in force on this node, as the chain says; until the store has acknowledged it, a
     // restart elsewhere could not read it back, so it is not answered as done.
-    if let Some(node_seq) = sealed_at.get() {
+    if let (Some(node_seq), Some(journal)) = (sealed_at.get(), journal) {
         if let Err(why) = journal.acked(node_seq) {
             return Ok(bound::journal_unavailable(&format!(
                 "the correction is sealed at journal position {node_seq} and not yet kept by the \

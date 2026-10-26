@@ -216,13 +216,13 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// URL carrying `user:pass@`. TRANSITIONAL: deleted with the legacy lane plane (row 155 C) (the stripping stays: no plane sees a userinfo URL).
 pub(crate) fn lane_token_endpoint(
     written: Option<&str>,
-) -> (Option<String>, Option<crate::egress::engine::UrlUserinfo>) {
+) -> (Option<String>, Option<crate::bound_credential::UrlUserinfo>) {
     let Some(written) = written else {
         return (None, None);
     };
     (
         Some(busbar_kernel_egress::trust::net::strip_userinfo(written).into_owned()),
-        crate::egress::engine::UrlUserinfo::of(written),
+        crate::bound_credential::UrlUserinfo::of(written),
     )
 }
 
@@ -587,9 +587,10 @@ pub struct InstalledLimits {
     /// (and by the swap that puts the generation live); never published by a build that is refused.
     limits: config::LimitsResolved,
     rates: ResolvedRates,
-    /// The rates this build STAGED with the holder (made durable before the caller persists):
-    /// withdrawn if this handle is dropped unkept, published by [`InstalledLimits::keep`].
-    staged: StagedRates,
+    /// The card this configuration resolved, raised at [`InstalledLimits::keep`]: when it differs
+    /// from the card in force, the holder appends a dated history entry for it (MONEY-DESIGN
+    /// section 3a; the configuration is the source of the card, as in 1.5.5).
+    configured_card: config::card::CardFields,
     /// The destinations this configuration states, raised to the destination judge at the commit
     /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
     /// rejected apply must not leave them in force.
@@ -597,20 +598,6 @@ pub struct InstalledLimits {
     /// The root's rules this build was judged by, which hear the commit
     /// ([`RootRules::destinations_applied`]).
     rules: std::sync::Arc<dyn RootRules>,
-}
-
-/// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
-/// the config change never committed — the holder is told to withdraw them.
-struct StagedRates {
-    armed: bool,
-}
-
-impl Drop for StagedRates {
-    fn drop(&mut self) {
-        if self.armed {
-            crate::rate_apply::rates_withdrawn();
-        }
-    }
 }
 
 impl ResolvedRates {
@@ -643,13 +630,13 @@ impl InstalledLimits {
         let InstalledLimits {
             limits,
             rates,
-            mut staged,
+            configured_card,
             destinations,
             rules,
         } = self;
         busbar_kernel::config::limits::publish(&limits);
         rules.destinations_applied(&destinations);
-        staged.armed = false;
+        crate::rate_apply::card_applied(&configured_card);
         crate::rate_apply::rates_applied(&rates.raw());
     }
 }
@@ -729,6 +716,8 @@ pub fn build_app_from_config(
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The card this configuration resolves, raised at the commit (`InstalledLimits::keep`).
+    let configured_card = config::card::CardFields::of_root(&cfg);
     // The root's rules of this configuration, before any part of it is built or installed: a
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
@@ -1073,9 +1062,11 @@ pub fn build_app_from_config(
             provider_cfg.base_url.trim_end_matches('/'),
         )
         .into_owned();
-        // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
-        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
-        let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
+        // ...and the Basic that userinfo spelled, held opaque (see `UrlUserinfo`): the plane never
+        // reads it, and no kernel hop presents it (the kernel's outbound engine is deleted, u30; a
+        // member's userinfo reaches its attempts through its binding, `root::userinfo`).
+        // TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+        let url_userinfo = crate::bound_credential::UrlUserinfo::of(&provider_cfg.base_url);
         let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
         lane_inputs.push(LaneInput {
             model: ld.member.clone(),
@@ -2135,19 +2126,6 @@ pub fn build_app_from_config(
             retain(&app);
         }
     }
-    // THE CARD GOES ON THE JOURNAL BEFORE THE CONFIG CHANGE IS SAVED (MONEY-AUDIT D-6, ARCHITECT
-    // ruling 2026-10-02): the LAST fallible step of the build, so every caller's persist runs only
-    // after the holder made the rates durable. A journal that refuses them refuses the whole change:
-    // nothing is persisted, nothing is swapped, the old configuration and the old card both stay.
-    // From here the handle is armed: dropped unkept (a persist or swap that failed), the holder
-    // withdraws the staged card.
-    crate::rate_apply::rates_staged(&resolved_rates.raw()).map_err(|why| {
-        format!(
-            "the rate card could not be made durable, so the configuration change was refused \
-             and nothing was changed: {why}"
-        )
-    })?;
-    let staged = StagedRates { armed: true };
     // The build reached its end without a single fallible step refusing — but the build is not the
     // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
     // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it
@@ -2158,7 +2136,7 @@ pub fn build_app_from_config(
         InstalledLimits {
             limits: limits_resolved,
             rates: resolved_rates,
-            staged,
+            configured_card,
             destinations,
             rules: std::sync::Arc::clone(rules),
         },
@@ -2179,5 +2157,5 @@ struct LaneModelFacts {
 }
 
 #[cfg(test)]
-#[path = "tests/static_seams_drained_tests.rs"]
-mod static_seams_drained_tests;
+#[path = "tests/root_rules_hearing_tests.rs"]
+mod root_rules_hearing_tests;

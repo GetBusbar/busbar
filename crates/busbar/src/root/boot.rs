@@ -1083,12 +1083,25 @@ pub fn book(
         None => super::durability::take_node(calls.as_ref(), &host),
     }
     .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    // THE FIRST-PARTY ANTI-DOWNGRADE FLOOR, held in the store for this host: the scan ran before
+    // the store opened, so a dropped-in first-party plugin below the mark the store keeps refuses
+    // the boot here, and the marks rise to what loaded.
+    super::durability::hold_plugin_floor(
+        calls.as_ref(),
+        &host,
+        app.hook_env.registry.as_ref(),
+        &app.plugins_cfg.first_party_floors,
+    )?;
     // The lease is held on the lane to the store it is held in, the lane this book keeps: its
     // checkpoint flush tick refreshes it and the clean shutdown releases it.
     if let Some(lease) = taken.lease {
         lane.hold_lease(lease);
     }
     let node = taken.id;
+    // THE RATE-CARD HISTORY IS KEPT IN THE STORE (MONEY-DESIGN section 3a): the book's rebuild loads it
+    // from `busbar.card.v1` under this node's durable id, re-puts a pending entry from the data
+    // directory's spool, and migrates every chain's journalled cards into it.
+    super::kernel::ROOT_CARD.keep_in_store(calls.clone(), node, data_dir.clone());
     let mig = super::migration::MigrationConfig {
         node,
         ..super::migration::config_from(&app.cost, now)

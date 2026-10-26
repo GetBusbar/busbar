@@ -26,7 +26,7 @@ type Rows = BTreeMap<(String, Vec<u8>), RecordBytes>;
 type Claims = BTreeMap<(String, String), u64>;
 
 /// What a test runs at each scan, on the thread that scans.
-type ScanProbe = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
+type ScanProbe = Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>;
 
 /// The double. Cheap to clone; every clone is the same store.
 #[derive(Clone, Default)]
@@ -39,6 +39,8 @@ pub(crate) struct RecordSlots {
     budget: Arc<AtomicUsize>,
     puts: Arc<AtomicUsize>,
     probe: ScanProbe,
+    /// Keep every put and answer it FAILED: a store that committed and lost the ack.
+    lost_acks: Arc<AtomicBool>,
 }
 
 impl RecordSlots {
@@ -66,7 +68,7 @@ impl RecordSlots {
 
     /// From now on, run `probe` at the start of every scan, on the thread that scans.
     pub(crate) fn on_scan(&self, probe: impl Fn() + Send + Sync + 'static) {
-        *self.probe.lock().unwrap_or_else(|p| p.into_inner()) = Some(Box::new(probe));
+        *self.probe.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(probe));
     }
 
     /// Take the next `n` puts, then refuse every one after until [`Self::refuse`] says otherwise:
@@ -86,6 +88,12 @@ impl RecordSlots {
                     b => Some(b - 1),
                 })
                 == Ok(1)
+    }
+
+    /// From now on, keep every put and answer it FAILED (`true`), or answer as usual (`false`):
+    /// the write landed and the ack was lost, so the writer cannot tell.
+    pub(crate) fn lose_acks(&self, losing: bool) {
+        self.lost_acks.store(losing, Ordering::Release);
     }
 
     /// How many puts the store took.
@@ -167,10 +175,15 @@ impl StoreCalls for RecordSlots {
                 .insert((schema.to_string(), key.to_vec()), value.clone());
             self.puts.fetch_add(1, Ordering::AcqRel);
         }
+        let lost = self.lost_acks.load(Ordering::Acquire);
         Box::pin(async move {
             if refused {
                 Err(StoreFailure::Refused(
                     "the test store refuses writes".to_string(),
+                ))
+            } else if lost {
+                Err(StoreFailure::Failed(
+                    "the test store lost the ack".to_string(),
                 ))
             } else {
                 Ok(())
@@ -196,12 +209,10 @@ impl StoreCalls for RecordSlots {
         prefix: &'a [u8],
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        if let Some(probe) = self
-            .probe
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-        {
+        // Taken out of the lock before it runs, so a probe that waits on another scanning thread
+        // (a barrier) does not hold every other scan behind it.
+        let probe = self.probe.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some(probe) = probe {
             probe();
         }
         if self.unreadable.load(Ordering::Acquire) {
