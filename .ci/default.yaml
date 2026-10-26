@@ -16,6 +16,12 @@ on:
   # All five on every move (OWNER 2026-10-24: busbar uses the app; no hand-run oracle passes). D-1
   # is re-signed at 510 cells.
   move: [fmt, clippy, test, deny, oracle]
+  # CodeQL (off GitHub code scanning default setup, 2026-10-26): daily at dev's tip and on request;
+  # it reports, never gates.
+  schedule:
+  - cron: "0 7 * * *"
+    checks: [codeql]
+  manual: [codeql]
 # Step 5: dist/default is its own workspace and embeds core's source, so a change to it or to
 # crates/busbar runs every scoped check whole (the dist half carries no -p to narrow by).
 affected:
@@ -26,9 +32,9 @@ env:
   # The oracle's judge, as bin/oracle reads it under ModernCI (only from the config's env, never the
   # candidate's pin): testing/shadow-oracle/oracle-rust.pin on dev; fetched with BUSBAR_RELEASE_TOKEN.
   BUSBAR_ORACLE_RELEASE_REPO: https://github.com/GetBusbar/busbar-release.git
-  BUSBAR_ORACLE_RELEASE_REF: d12a08c7d716434d082375085acaeeb0bc051d39
+  BUSBAR_ORACLE_RELEASE_REF: 151ad095a21819dca97e8bdb3384c3c3eb2eb806
   BUSBAR_ORACLE_SHA256_LINUX_X86_64: 0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8
-  BUSBAR_ORACLE_SHA256_LINUX_AARCH64: 432a2fb7619bce915cf5fcfbe17ace614792639e80bd9dfdabf81afb19f6effd
+  BUSBAR_ORACLE_SHA256_LINUX_AARCH64: 188070522e9b2d5b21e4978666399a0031d5960819a865217dfbb07532bfa9c4
   BUSBAR_ORACLE_CRATE: busbar-release-oracle
   BUSBAR_ORACLE_BIN: busbar-oracle
   # The 1.5.5 golden the replay judges against: git rev-parse dev:testing/shadow-oracle/golden/1.5.5.
@@ -378,3 +384,48 @@ checks:
     # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
     # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
     outputs: [target/oracle/reports/]
+  # CODEQL, migrated off GitHub code scanning "default setup" (owner 2026-10-26: Actions retired).
+  # The same engine, version and suite GitHub ran (CodeQL 2.27.3, `default` suite, rust + python,
+  # build-mode none: nothing is compiled), headless: the per-language bundles are fetched from
+  # github/codeql-action's release, verified against the sha256 pinned here, and cached. It runs
+  # daily at dev's tip and on request (`run_event`), never on a move: it reports, it never gates.
+  # RATCHET: red when the high/critical findings outnumber CODEQL_MAX_HIGH, the open high/critical
+  # alerts GitHub held on 2026-10-26 (28 rust/cleartext-logging, 22 rust/hard-coded-cryptographic-value,
+  # 1 py/redos, 1 py/clear-text-storage-sensitive-data = 52). Lower it as they are fixed; never raise it.
+  codeql:
+    run: |
+      set -euo pipefail
+      V=2.27.3
+      CODEQL_MAX_HIGH=52
+      cache="${MODERNCI_CACHE_DIR:-$HOME/.cache}/codeql-$V"
+      fetch() { # lang sha256
+        d="$cache/$1"
+        [ -x "$d/codeql/codeql" ] && return 0
+        t=$(mktemp -d); f="$t/b.tar.zst"
+        curl -fsSL -o "$f" "https://github.com/github/codeql-action/releases/download/codeql-bundle-v$V/codeql-bundle-$1-linux64.tar.zst"
+        echo "$2  $f" | sha256sum -c - >/dev/null || { echo "codeql: bundle $1 sha256 mismatch"; exit 1; }
+        mkdir -p "$d.tmp" && zstd -dc "$f" | tar -x -C "$d.tmp" && rm -rf "$d" && mv "$d.tmp" "$d"; rm -rf "$t"
+      }
+      fetch rust 218a19c49a4e44dee236d2cc55e20cda03ac4f37ddc581b1b0e5fff2e7912237
+      fetch python ffb149bcbb0818f1017bec9f68d7b84693a7b0ac4a69b7be390a4f2825c3a170
+      out=$(mktemp -d); trap 'rm -rf "$out"' EXIT
+      for lang in rust python; do
+        q="$cache/$lang/codeql/codeql"
+        "$q" database create "$out/db-$lang" --language="$lang" --build-mode=none --source-root=. --threads=0 --overwrite >/dev/null
+        "$q" database analyze "$out/db-$lang" "codeql/$lang-queries:codeql-suites/$lang-code-scanning.qls" \
+          --format=sarif-latest --output="$out/$lang.sarif" --threads=0 --ram=6000 >/dev/null
+      done
+      # Each result with its rule's security-severity (GitHub's high >= 7.0, critical >= 9.0).
+      jq -r '.runs[] | (.tool.driver.rules // []) as $r | ([.tool.extensions[]?.rules[]?] + $r) as $rules
+        | .results[] | . as $x | ($rules | map(select(.id == $x.ruleId)) | first // {}) as $rule
+        | [(($rule.properties["security-severity"] // "0") | tonumber), $x.ruleId,
+           ($x.locations[0].physicalLocation.artifactLocation.uri + ":" + ($x.locations[0].physicalLocation.region.startLine|tostring))] | @tsv' \
+        "$out"/*.sarif | sort -rn > "$out/results.tsv"
+      echo "== CodeQL $V findings by rule (severity rule count)"
+      awk -F'\t' '{k=$1" "$2; c[k]++} END{for(k in c) print k, c[k]}' "$out/results.tsv" | sort -rn
+      echo "== high/critical findings"
+      awk -F'\t' '$1 >= 7.0' "$out/results.tsv"
+      high=$(awk -F'\t' '$1 >= 7.0' "$out/results.tsv" | wc -l | tr -d ' ')
+      echo "codeql: $high high/critical findings (ceiling $CODEQL_MAX_HIGH), $(wc -l < "$out/results.tsv" | tr -d ' ') in all"
+      [ "$high" -le "$CODEQL_MAX_HIGH" ] || { echo "codeql: high/critical findings rose past $CODEQL_MAX_HIGH"; exit 1; }
+    requires: [curl, zstd, jq, arch-x86_64]
