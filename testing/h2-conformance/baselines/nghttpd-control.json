@@ -1,0 +1,7 @@
+{
+  "peer": "nghttpd nghttp2/1.12.0 (svagi/nghttp2@sha256:1eb96bfe378941adc97d92c2cdc4e4f7476377c73b2dfdd29897d7d062ad962c), h2spec v2.6.0 -t, GET /big",
+  "note": "The control peer's own measured h2spec result, not a waiver for busbar. nghttpd (checked again at nghttp2 1.64.0) answers a stream id lower than the previous with a normal response where RFC 9113 5.1.1 wants a connection error. The control leg is green only while its failing set equals this list.",
+  "failing": [
+    "http2/5.1.1: Sends stream identifier that is numerically smaller than previous"
+  ]
+}
