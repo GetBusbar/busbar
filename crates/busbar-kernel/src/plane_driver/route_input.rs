@@ -57,48 +57,6 @@ pub enum OnExhaustedInput {
     },
 }
 
-/// A pool's breaker trip mode — a neutral mirror of `busbar_kernel::store::TripMode`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum TripModeInput {
-    /// Trip on the error RATE over the window (the ADR-0002 default).
-    #[default]
-    ErrorRate,
-    /// Trip on N consecutive failures.
-    Consecutive,
-}
-
-/// A pool's resolved breaker TRIP parameters — a neutral mirror of `busbar_kernel::store::TripConfig`.
-#[derive(Clone, Debug)]
-pub struct TripInput {
-    /// The trip mode.
-    pub mode: TripModeInput,
-    /// The outcome window in seconds.
-    pub window_s: u64,
-    /// The error-rate trip threshold (`ErrorRate` mode).
-    pub threshold: f64,
-    /// The minimum request count before the rate can trip.
-    pub min_requests: usize,
-    /// The consecutive-failure count that trips (`Consecutive` mode).
-    pub consecutive_n: u32,
-}
-
-/// A pool's RESOLVED breaker config — a neutral mirror of the runtime `busbar_kernel::store::BreakerCfg`
-/// (the config `pools.<pool>.breaker:` block already lowered core-side via `BreakerCfg::from`, then
-/// flattened here, so the row names no core type). `None` on `PoolInput` ⇒ the pool uses the ADR-0002 defaults.
-#[derive(Clone, Debug)]
-pub struct BreakerInput {
-    /// Base cooldown after a trip (seconds).
-    pub base_cooldown_secs: u64,
-    /// Cooldown ceiling for the exponential backoff (seconds).
-    pub max_cooldown_secs: u64,
-    /// Whether an upstream `Retry-After` is honored as the cooldown floor.
-    pub honor_retry_after: bool,
-    /// Whether a sub-trip-threshold transient still benches the cell for a cooldown.
-    pub bench_below_trip_threshold: bool,
-    /// The resolved trip parameters (the config `trip:` block, or the ADR-0002 defaults).
-    pub trip: TripInput,
-}
-
 /// ONE pool, flattened to neutral scalars. Its routing POLICY / gates / rewrites are NOT here — those
 /// stay resolved-and-read core-side behind `App::resolve_pool_*`.
 #[derive(Clone, Debug)]
@@ -109,6 +67,4 @@ pub struct PoolInput {
     pub members: Vec<PoolMemberInput>,
     /// The pool's `on_exhausted:` policy.
     pub on_exhausted: OnExhaustedInput,
-    /// The pool's resolved `breaker:` override (`None` ⇒ ADR-0002 defaults).
-    pub breaker: Option<BreakerInput>,
 }

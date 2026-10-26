@@ -27,7 +27,6 @@ fn pool(name: &str, members: Vec<PoolMemberInput>, on_exhausted: OnExhaustedInpu
         name: name.to_string(),
         members,
         on_exhausted,
-        breaker: None,
     }
 }
 

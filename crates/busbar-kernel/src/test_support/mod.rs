@@ -795,9 +795,6 @@ pub struct TestApp {
     mint_policy: Option<crate::governance::mint_policy::MintPolicy>,
     governance: Option<std::sync::Arc<crate::governance::GovState>>,
     cost: Option<std::sync::Arc<crate::cost::CostModel>>,
-    /// Per-pool resolved `breaker:` override the `PoolInput` carrier holds, keyed by pool name.
-    pool_breaker:
-        std::collections::HashMap<String, busbar_kernel::plane_driver::route_input::BreakerInput>,
     /// The pool-hook facade maps (money-path Phase 3-4 C) the built `App` carries — the resolved
     /// per-pool routing policy / decision gates / rewrite chains the engine reads via `App::pool_*`.
     /// Set by the routing-policy fixtures (`.pool_policy_resolved`/`.pool_gates_resolved`/
@@ -912,7 +909,6 @@ impl TestApp {
             mint_policy: None,
             governance: None,
             cost: None,
-            pool_breaker: std::collections::HashMap::new(),
             pool_orderings: std::collections::HashMap::new(),
             pool_decision_gates: std::collections::HashMap::new(),
             pool_rewrite_chains: std::collections::HashMap::new(),
@@ -1374,12 +1370,6 @@ impl TestApp {
     ) -> Self {
         self.governance(engine_kit::gov_state(g))
     }
-    /// Set a pool's resolved `breaker:` config (the runtime `store::BreakerCfg`, flattened to the
-    /// neutral carrier the plane reconstructs it from).
-    pub fn pool_breaker(mut self, name: &str, b: &busbar_kernel::store::BreakerCfg) -> Self {
-        self.pool_breaker.insert(name.into(), b.to_breaker_input());
-        self
-    }
     /// Install a pre-resolved pool ROUTING POLICY (the `route:`/base-hook order) read by the engine
     /// through the `App::pool_policy` facade — the successor to the former `.pool_runtime(PoolRuntime{
     /// policy: … })`. The plane's tests build the `ResolvedPolicy` (a core-owned type they name at
@@ -1575,7 +1565,6 @@ impl TestApp {
                         }
                         _ => busbar_kernel::plane_driver::route_input::OnExhaustedInput::Status503,
                     },
-                    breaker: self.pool_breaker.get(&name).cloned(),
                     name,
                 })
                 .collect();

@@ -954,15 +954,6 @@ pub fn build_app_from_config(
                 .as_ref()
                 .map(|o| on_exhausted_input_of(&o.to_runtime()))
                 .unwrap_or_default(),
-            // The pool's `breaker:` block, RESOLVED core-side into the runtime cfg
-            // (`store::breaker_cfg_to_runtime` does the config→runtime lowering + ADR-0002 trip
-            // defaults) then flattened to the neutral carrier; the plane's `build_runtime`
-            // reconstructs it via `BreakerCfg::from_breaker_input`.
-            breaker: pool
-                .breaker
-                .as_ref()
-                .map(crate::store::breaker_cfg_to_runtime)
-                .map(|b| b.to_breaker_input()),
         });
     }
 
