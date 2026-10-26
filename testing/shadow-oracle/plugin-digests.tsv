@@ -47,7 +47,7 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # first-party (publisher busbar) by the run's throwaway oracle key, which the run's candidate embeds as its
 # release key (ARCHITECT ruling 2026-10-20, row 86: the oracle judges the production configuration). No
 # floating builds: every row is an exact commit. auth-oidc is the rev busbar's Cargo.lock links
-# (cc59d73, the workspace pin; 9ff64ff predated its memory-ABI door and was refused as a 1.5.5 JSON-contract plugin). A store is
+# (82b88d5, the workspace pin: busbar-auth-oidc #53, a loopback http jwks_url loads with a warning; 9ff64ff predated its memory-ABI door and was refused as a 1.5.5 JSON-contract plugin). A store is
 # pinned to the newest dev commit whose declares.json speaks the store contract ABI busbar supports (v3):
 # store-sqlite 59e3254 (its dev head 2026-10-19, back on v3 since its busbar pin 565f24f25e; it carries 5e6b6b0,
 # redeem_plane_token taking u64::MAX as 'never expires': e46e159 refused the boot's node-id claim with
@@ -57,16 +57,16 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # auth-ldap is 52ff062 (#8/#10/#11, 2026-10-09: the sans-IO LDAP codec over the host's connector, pinned to
 # busbar predev 39374ec00e). The rest
 # are each repo's dev head on 2026-10-05.
-# 2026-10-25 (busbar #1667, the store table at 31 slots): the four store rows are the heads of their
-# money-slots-out PRs (sqlite #38, postgres #47, valkey #46, mysql #45), the first commits that speak the
-# 31-slot store table; a 47-slot build is refused at load.
-store-sqlite	src:795a83bafa86a5000f2d9deb11b93f70a4eb69f4	build:busbar-store-sqlite	-	1.6
-store-postgres	src:2aa5ecfeeb1b1cec6b0e4994142e573a5025bff5	build:busbar-store-postgres	-	1.6
-store-valkey	src:c2c86eeae426fd3d9c20c0fc063f382cf7839041	build:busbar-store-valkey	-	1.6
-store-mysql	src:b48964a109d87df539815b47fb84dd8ea8e1a88c	build:busbar-store-mysql	-	1.6
-hashicorp-vault	src:4a6316fc2e7fd9d1e9f06aebd650dda7fee9d7f1	build:busbar-secret-vault	-	1.6
-auth-oidc	src:cc59d737972c1b881a164b437d63c4f29f6a15c1	build:busbar-auth-oidc	-	1.6
-auth-github	src:96cf0d401dc7a70a235d5abdc5eec911cd2696ed	build:busbar-auth-github	-	1.6
-auth-ldap	src:52ff062381f984791e7da2e27b3d80d4c1cec85b	build:busbar-auth-ldap	-	1.6
-webrequest-hook	src:5f0207dc4a3f5887a763280a8dd7450bd6669332	build:busbar-hook-webrequest	-	1.6
+# 2026-10-26 (busbar #1667, the store table at 31 slots): the four store rows are each plugin's dev head,
+# the first commits holding both its version-1.6.0 merge and its money-slots-out PR (sqlite #38,
+# postgres #47, valkey #46, mysql #45) that speaks the 31-slot store table; a 47-slot build is refused at load.
+store-sqlite	src:71ba326fad627853467051235877b49efb68f0c2	build:busbar-store-sqlite	-	1.6
+store-postgres	src:87fb8172f1d07dda5cfa622a87990bdfacbddb6b	build:busbar-store-postgres	-	1.6
+store-valkey	src:b4f09028d7937ee9c0a8daeabcd29b8400408c2d	build:busbar-store-valkey	-	1.6
+store-mysql	src:412a49c08f5891aa4498c3076c7dac31edb45f54	build:busbar-store-mysql	-	1.6
+hashicorp-vault	src:3c6baa9b5cd9d6758880ee837b0b66bb22fd0920	build:busbar-secret-vault	-	1.6
+auth-oidc	src:82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab	build:busbar-auth-oidc	-	1.6
+auth-github	src:077388b9e3553d731e3bc7f4f0252e1abf8f2ef6	build:busbar-auth-github	-	1.6
+auth-ldap	src:cbc5d83e38604037eba85a56adc8ee650202f145	build:busbar-auth-ldap	-	1.6
+webrequest-hook	src:214bfc79b1a12f91f81bfa91c02f8e7e20e2d83f	build:busbar-hook-webrequest	-	1.6
 headroom-hook	src:4385464cbc80509e8cb7254c81e07a07ad319c55	build:busbar-hook-headroom	-	1.6
