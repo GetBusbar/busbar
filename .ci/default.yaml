@@ -301,6 +301,7 @@ checks:
     scope: affected
     baseline: target
     requires: [cc]
+    tools: [busbar-oracle-judge]
   deny:
     # Supply chain: cargo deny (advisories, licences, bans, sources) and cargo vet (supply-chain/).
     run: |
@@ -335,6 +336,7 @@ checks:
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
     requires: [cc, docker]
+    tools: [busbar-oracle-judge]
     baseline: target
     inputs:
       - crates/**
