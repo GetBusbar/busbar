@@ -6,9 +6,8 @@
 //! in the loop's order, each refusal stamped at its seat.
 //!
 //! Its own file because it is the loop's door for every plane, and it keeps the loop's shape: no
-//! `?` and no early return (`loop_battery::the_loop_has_no_early_exits` reads this file as it reads
-//! the teller's), so a refusal simply stops the chain. Whatever the door waits on, it waits on here,
-//! BEFORE the admit: nothing is awaited between the door's yes and the loop's guard (see
+//! `?` and no early return, so a refusal simply stops the chain. Whatever the door waits on, it
+//! waits on here, BEFORE the admit: nothing is awaited between the door's yes and the loop's guard (see
 //! [`Units::govern`]).
 
 use busbar_contract::caps::{

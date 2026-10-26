@@ -88,8 +88,7 @@ fn disabled_plugins_are_inert_even_when_present() {
 /// K5 (DECISIONS #2 rule (1)), the directory half — THE BUILT-IN STORE'S DROPPED-IN COPY. With the
 /// directory on, a dropped-in copy of the SAME plugin as the linked store (its canonical name) at
 /// the version the linked plugin states is admitted once — the linked row serves — and a DIFFERENT
-/// plugin spelling the linked row's key is refused, naming both (Q-P4-12: no door outranks the
-/// other; the silent first-registration win is gone). The linked half (the row, its door, its key
+/// plugin spelling the linked row's key is refused, naming both. The linked half (the row, its door, its key
 /// and canonical name) is the kernel's: `busbar-kernel` `src/tests/tests.rs`,
 /// `the_built_in_store_is_a_linked_row_of_the_store_axis`.
 #[test]

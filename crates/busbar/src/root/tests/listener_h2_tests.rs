@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE TLS LISTENER SERVES HTTP/2 TO A CLIENT THAT OFFERS IT (OWNER RULING Q137, 2026-10-04: "offers
-//! h2 on the TLS listener. yes why not?"), end to end over the production pieces: the connector's
+//! THE TLS LISTENER SERVES HTTP/2 TO A CLIENT THAT OFFERS IT, end to end over the production pieces: the connector's
 //! `tls::prepare` builds the listener's wrap from a `tls:` block, the root's `listener::serve` runs
 //! the accept loop and the hardened auto builder, and a real rustls client speaks to it.
 //!

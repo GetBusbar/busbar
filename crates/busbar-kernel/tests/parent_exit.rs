@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A parent unit that exits while its child still runs (owner ruling Q71(4)).
+//! A parent unit that exits while its child still runs.
 //!
 //! The child's accrual was spent against the parent's hold, and that hold goes with the parent. The
 //! loop converts the accrual to a hold of the child's own at the child's end, so the child settles
