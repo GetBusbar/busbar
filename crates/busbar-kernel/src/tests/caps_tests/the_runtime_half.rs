@@ -120,13 +120,12 @@ fn a_decision_carries_the_facts_of_its_own_step() {
 fn the_cell_makes_the_one_transition_and_hands_back_the_arrival_hold() {
     let k = Kernel::new();
     let admit = k.admit_token();
-    let cell = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let cell = HoldCell::new(Hold::open(&admit, who("acct-1")));
     assert_eq!(cell.state(), HoldCellState::Arrival);
 
     let arrival = cell
-        .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
+        .admit(Hold::open(&admit, who("acct-1")), &admit)
         .expect("the first admission wins");
-    assert_eq!(arrival.reserved(), 0, "the arrival hold reserved nothing");
     assert_eq!(cell.state(), HoldCellState::Admitted);
     let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 }
@@ -135,19 +134,19 @@ fn the_cell_makes_the_one_transition_and_hands_back_the_arrival_hold() {
 fn two_holds_into_one_cell_fail_and_the_loser_comes_back() {
     let k = Kernel::new();
     let admit = k.admit_token();
-    let cell = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let cell = HoldCell::new(Hold::open(&admit, who("acct-1")));
     let first = cell
-        .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
+        .admit(Hold::open(&admit, who("acct-1")), &admit)
         .expect("first");
     let _ = Posted::settle(first, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let rejected = cell
-        .admit(Hold::open(&admit, who("acct-1"), 9_999), &admit)
+        .admit(Hold::open(&admit, who("acct-9")), &admit)
         .expect_err("a cell takes one admission");
     assert_eq!(rejected.error, CellError::AlreadyAdmitted);
     assert_eq!(
-        rejected.hold.reserved(),
-        9_999,
+        rejected.hold.principal().as_str(),
+        "acct-9",
         "the refused hold is handed back, not dropped"
     );
     assert_eq!(
@@ -163,7 +162,7 @@ fn the_hold_is_taken_exactly_once_however_many_exits_race() {
     let k = Kernel::new();
     let admit = k.admit_token();
     let exit = k.exit_token();
-    let cell = HoldCell::new(Hold::open(&admit, who("acct-1"), 500));
+    let cell = HoldCell::new(Hold::open(&admit, who("acct-1")));
 
     let taken = cell.take(&exit).expect("the first take gets it");
     assert_eq!(cell.state(), HoldCellState::Taken);
@@ -175,7 +174,7 @@ fn the_hold_is_taken_exactly_once_however_many_exits_race() {
 
     // And nothing can put one back afterwards.
     let rejected = cell
-        .admit(Hold::open(&admit, who("acct-1"), 1), &admit)
+        .admit(Hold::open(&admit, who("acct-1")), &admit)
         .expect_err("a taken cell is final");
     assert_eq!(rejected.error, CellError::AlreadyTaken);
     let _ = Posted::settle(rejected.hold, 0, &usage_of(&k, 0), &k.ledger_token());
@@ -186,7 +185,7 @@ fn the_hold_is_taken_exactly_once_however_many_exits_race() {
 fn two_threads_racing_the_take_produce_exactly_one_hold() {
     let k = Kernel::new();
     let admit = k.admit_token();
-    let cell = std::sync::Arc::new(HoldCell::new(Hold::open(&admit, who("acct-1"), 7)));
+    let cell = std::sync::Arc::new(HoldCell::new(Hold::open(&admit, who("acct-1"))));
     let winners = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let mut handles = Vec::new();
@@ -220,9 +219,8 @@ fn two_threads_racing_the_take_produce_exactly_one_hold() {
 /// decided the posting and the posting itself come out of the same critical section, so a clean
 /// in-parent posting is never written against a slot somebody had already emptied.
 ///
-/// Whichever way the race falls, the child's SETTLED AMOUNT is the same figure. Only the flags
-/// and the overdraft column move, which is what makes this a discipline fix rather than a money
-/// fix, and why the amount is asserted on every iteration rather than the outcome.
+/// Whichever way the race falls, the child posts exactly once and for the same principal. Only the
+/// flags move, which is what makes this a discipline fix rather than a count fix.
 #[test]
 fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
     use std::sync::atomic::{AtomicBool, Ordering as Order};
@@ -241,14 +239,14 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
     for round in 0..10_000usize {
         let k = Kernel::new();
         let admit = k.admit_token();
-        let cell = std::sync::Arc::new(HoldCell::new(Hold::open(&admit, who("acct-1"), 0)));
+        let cell = std::sync::Arc::new(HoldCell::new(Hold::open(&admit, who("acct-1"))));
         let arrival = cell
-            .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
+            .admit(Hold::open(&admit, who("acct-1")), &admit)
             .expect("the parent passes the door");
         let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
         let accrual = cell
-            .accrue_child(&who("acct-1"), 250, &admit)
-            .expect("an open parent takes the child's spend");
+            .accrue_child(&who("acct-1"), &admit)
+            .expect("an open parent takes the child");
 
         // The sweep publishes its win only after the slot is empty, so a poster that sees the
         // flag already set knows the parent has gone and must be handed its accrual back.
@@ -282,24 +280,22 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
         sweep.join().expect("no thread panics");
 
         assert_eq!(
-            posted.settled(),
-            250,
-            "the child's settled amount is the same figure whichever way the race fell"
+            posted.principal().as_str(),
+            "acct-1",
+            "the child posts for its own principal whichever way the race fell"
         );
         if posted.flags().is_clean() {
             assert!(
                 !parent_already_gone,
                 "a clean in-parent posting against a slot the sweep had already emptied"
             );
-            assert_eq!(posted.overdraft(), 0);
             clean += 1;
         } else {
             assert_eq!(
                 posted.flags(),
-                PostingFlags::LATE_ACCRUAL.with(PostingFlags::OVERDRAFT),
+                PostingFlags::LATE_ACCRUAL,
                 "the only other answer is the late one"
             );
-            assert_eq!(posted.overdraft(), 250);
             late += 1;
         }
     }
@@ -311,138 +307,52 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
 }
 
 #[test]
-fn a_hold_accrues_until_the_reservation_runs_out_then_tops_up() {
-    let k = Kernel::new();
-    let admit = k.admit_token();
-    let mut hold = Hold::open(&admit, who("acct-1"), 100);
-
-    assert_eq!(hold.accrue(60), Accrual::Within { remaining: 40 });
-    assert_eq!(hold.accrue(30), Accrual::Within { remaining: 10 });
-    assert_eq!(hold.accrue(25), Accrual::Exhausted { shortfall: 15 });
-
-    // One top-up from the slice covers the shortfall and the hold carries on.
-    assert_eq!(hold.top_up(50), 35);
-    assert_eq!(hold.accrued(), 115);
-    assert_eq!(hold.reserved(), 150);
-
-    // The slice is empty and the reserve is refused: the unit still finishes and posts the lot.
-    assert_eq!(hold.accrue(40), Accrual::Exhausted { shortfall: 5 });
-    hold.record_overdraft(5);
-    assert_eq!(hold.overdraft(), 5);
-
-    let posted = Posted::settle(hold, 155, &usage_of(&k, 155), &k.ledger_token());
-    assert_eq!(posted.settled(), 155);
-    assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
-    assert!(!posted.flags().contains(PostingFlags::RECOVERED));
-}
-
-#[test]
 fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
     let k = Kernel::new();
     let admit = k.admit_token();
-    let cell = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let cell = HoldCell::new(Hold::open(&admit, who("acct-1")));
 
     // Before the door: nothing to accrue into.
     assert_eq!(
-        cell.accrue_child(&who("acct-1"), 10, &admit).unwrap_err(),
+        cell.accrue_child(&who("acct-1"), &admit).unwrap_err(),
         AccrualRefused::ParentNotAdmitted
     );
 
     let arrival = cell
-        .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
+        .admit(Hold::open(&admit, who("acct-1")), &admit)
         .expect("admitted");
     let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     // A stranger's child cannot spend this admission.
     assert_eq!(
-        cell.accrue_child(&who("acct-2"), 10, &admit).unwrap_err(),
+        cell.accrue_child(&who("acct-2"), &admit).unwrap_err(),
         AccrualRefused::PrincipalMismatch
     );
 
     let accrual = cell
-        .accrue_child(&who("acct-1"), 10, &admit)
+        .accrue_child(&who("acct-1"), &admit)
         .expect("same principal, parent admitted");
-    assert_eq!(accrual.amount(), 10);
+    assert_eq!(accrual.principal().as_str(), "acct-1");
     assert_eq!(cell.accruals(), 1);
 
     // After the parent exits, a late child is refused and posts on its own instead.
     let parent = cell.take(&k.exit_token()).expect("the parent exits");
     assert_eq!(
-        parent.accrued(),
-        10,
-        "the child's spend landed on the parent"
-    );
-    assert_eq!(
-        cell.accrue_child(&who("acct-1"), 10, &admit).unwrap_err(),
+        cell.accrue_child(&who("acct-1"), &admit).unwrap_err(),
         AccrualRefused::ParentExited
     );
 
     let posted = Posted::settle_late(accrual, &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::LATE_ACCRUAL));
-    assert_eq!(posted.settled(), 10);
-    // All four posting fields, as on the converted-accrual branch: a late accrual has no
-    // reservation behind it, so the whole of it posts as overdraft.
-    assert_eq!(posted.reserved(), 0);
-    assert_eq!(posted.overdraft(), 10);
-    assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
+    assert_eq!(posted.principal().as_str(), "acct-1");
     let _ = Posted::settle(parent, 10, &usage_of(&k, 10), &k.ledger_token());
-}
-
-#[test]
-fn a_recovered_hold_says_so_all_the_way_onto_the_posting() {
-    let k = Kernel::new();
-    let recovery = Grant::<Recover>::mint(&k.seal);
-    let hold = Hold::materialize(&recovery, who("acct-1"), 1_000, 250);
-    assert!(hold.is_recovered());
-    assert_eq!(hold.accrued(), 250, "the last checkpointed accrual");
-
-    let posted = Posted::settle(hold, 250, &usage_of(&k, 250), &k.ledger_token());
-    assert!(posted.flags().contains(PostingFlags::RECOVERED));
-}
-
-/// KERNEL<>PLUGINS step 14: the exit's posting and the late figure close on ONE line. The late amount
-/// settles on top of the exit's; what passes the reservation is overdraft; the line is flagged late
-/// and loses the exit's "nothing reported" mark, because the figure on it was reported.
-#[test]
-fn a_late_figure_folds_into_the_exits_posting_as_one_line() {
-    let k = Kernel::new();
-    let admit = k.admit_token();
-    let floor = Usage::estimate(&k.usage_token(), Vec::new()).expect("fits");
-    let exit = Posted::settle(
-        Hold::open(&admit, who("acct-1"), 100),
-        0,
-        &floor,
-        &k.ledger_token(),
-    );
-    assert!(exit.flags().contains(PostingFlags::ESTIMATED));
-    let late = HoldAccrual::after_terminal(who("acct-1"), 130, &k.ledger_token());
-    let line = exit.with_late(late, &k.ledger_token());
-    assert_eq!(line.reserved(), 100);
-    assert_eq!(line.settled(), 130);
-    assert_eq!(line.overdraft(), 30, "only the part past the reservation");
-    assert!(line.flags().contains(PostingFlags::LATE_ACCRUAL));
-    assert!(line.flags().contains(PostingFlags::OVERDRAFT));
-    assert!(!line.flags().contains(PostingFlags::ESTIMATED));
-
-    let within = Posted::settle(
-        Hold::open(&admit, who("acct-1"), 100),
-        0,
-        &usage_of(&k, 0),
-        &k.ledger_token(),
-    )
-    .with_late(
-        HoldAccrual::after_terminal(who("acct-1"), 40, &k.ledger_token()),
-        &k.ledger_token(),
-    );
-    assert_eq!((within.settled(), within.overdraft()), (40, 0));
-    assert!(!within.flags().contains(PostingFlags::OVERDRAFT));
 }
 
 #[test]
 fn an_estimated_usage_report_flags_the_posting() {
     let k = Kernel::new();
     let admit = k.admit_token();
-    let hold = Hold::open(&admit, who("acct-1"), 100);
+    let hold = Hold::open(&admit, who("acct-1"));
     let floor = Usage::estimate(
         &k.usage_token(),
         vec![UsageLine {
@@ -485,11 +395,11 @@ fn a_unit_end_carries_its_posting_or_the_loss_that_replaced_it() {
     let admit = k.admit_token();
     let exit = k.exit_token();
 
-    let hold = Hold::open(&admit, who("acct-1"), 10);
+    let hold = Hold::open(&admit, who("acct-1"));
     let posted = Posted::settle(hold, 10, &usage_of(&k, 10), &k.ledger_token());
     let end = UnitEnd::seal(&exit, Outcome::Completed, Ok(posted));
     assert!(end.outcome().is_completed());
-    assert_eq!(end.posted().map(Posted::settled), Ok(10));
+    assert_eq!(end.posted().map(Posted::quantity), Ok(10));
 
     let lost = DurabilityLost::observed(&Grant::<DurableWrite>::mint(&k.seal), StepName::Meter);
     let end = UnitEnd::seal(
@@ -597,7 +507,7 @@ fn the_doors_answer_is_one_of_three_shapes() {
     let token: Pass<Admit> = Pass::mint(&k.seal);
 
     let decision =
-        SeatVerdict::proceed(&token, Admission::Own(Hold::open(&admit, who("acct-1"), 5)));
+        SeatVerdict::proceed(&token, Admission::Own(Hold::open(&admit, who("acct-1"))));
     match decision.into_result(&k.seal).expect("proceeds") {
         Admission::Own(hold) => {
             let _ = Posted::settle(hold, 5, &usage_of(&k, 5), &k.ledger_token());
@@ -624,25 +534,19 @@ fn the_doors_answer_is_one_of_three_shapes() {
 fn a_child_posts_inside_its_parent_while_the_parent_is_open() {
     let k = Kernel::new();
     let admit = k.admit_token();
-    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let parent = HoldCell::new(Hold::open(&admit, who("acct-1")));
     let arrival = parent
-        .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
+        .admit(Hold::open(&admit, who("acct-1")), &admit)
         .expect("the parent passes the door");
     let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let accrual = parent
-        .accrue_child(&who("acct-1"), 250, &admit)
-        .expect("an open parent takes the child's spend");
+        .accrue_child(&who("acct-1"), &admit)
+        .expect("an open parent takes the child");
 
     let posted =
         Posted::into_parent(accrual, &parent, &k.ledger_token()).expect("the parent is still open");
-    assert_eq!(posted.settled(), 250);
-    assert_eq!(
-        posted.reserved(),
-        0,
-        "the reservation behind a child is its parent's"
-    );
-    assert_eq!(posted.overdraft(), 0);
+    assert_eq!(posted.principal().as_str(), "acct-1");
     assert!(
         posted.flags().is_clean(),
         "nothing about a child that met its parent is late"
@@ -650,86 +554,17 @@ fn a_child_posts_inside_its_parent_while_the_parent_is_open() {
 }
 
 #[test]
-fn a_childs_spend_past_the_parents_reservation_lands_on_the_parents_hold() {
-    // A child spends five times what the parent reserved. The parent's hold is the reservation
-    // behind the child, so the part nothing could back has to reach the parent's posting; a spend
-    // that ran past every reservation must never post clean.
-    let k = Kernel::new();
-    let admit = k.admit_token();
-    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
-    let arrival = parent
-        .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
-        .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
-
-    let accrual = parent
-        .accrue_child(&who("acct-1"), 5_000, &admit)
-        .expect("an open parent takes the child's spend");
-    assert_eq!(accrual.amount(), 5_000, "a spend is never trimmed");
-    assert_eq!(
-        accrual.overdraft(),
-        4_000,
-        "what the child drew against nothing"
-    );
-
-    let child =
-        Posted::into_parent(accrual, &parent, &k.ledger_token()).expect("the parent is still open");
-    assert_eq!(child.settled(), 5_000);
-    assert_eq!(child.overdraft(), 4_000);
-    assert!(child.flags().contains(PostingFlags::OVERDRAFT));
-
-    let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
-    let settled = Posted::settle(taken, 5_000, &usage_of(&k, 5_000), &k.ledger_token());
-    assert_eq!(settled.settled(), 5_000, "the settled figure is untouched");
-    assert_eq!(settled.overdraft(), 4_000);
-    assert!(settled.flags().contains(PostingFlags::OVERDRAFT));
-}
-
-#[test]
-fn two_children_that_together_run_past_the_reservation_overdraw_once() {
-    // 800 and 800 against a reservation of 1,000. The first fits; the second carries the 600 that
-    // is left over, and the parent carries 600 in total rather than 600 twice.
-    let k = Kernel::new();
-    let admit = k.admit_token();
-    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
-    let arrival = parent
-        .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
-        .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
-
-    let first = parent
-        .accrue_child(&who("acct-1"), 800, &admit)
-        .expect("inside the reservation");
-    assert_eq!(first.overdraft(), 0);
-    let second = parent
-        .accrue_child(&who("acct-1"), 800, &admit)
-        .expect("past the end of it");
-    assert_eq!(second.overdraft(), 600);
-
-    let first = Posted::into_parent(first, &parent, &k.ledger_token()).expect("open");
-    assert!(first.flags().is_clean());
-    let second = Posted::into_parent(second, &parent, &k.ledger_token()).expect("open");
-    assert!(second.flags().contains(PostingFlags::OVERDRAFT));
-
-    let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
-    let settled = Posted::settle(taken, 1_600, &usage_of(&k, 1_600), &k.ledger_token());
-    assert_eq!(settled.settled(), 1_600);
-    assert_eq!(settled.overdraft(), 600, "carried once, not twice");
-    assert!(settled.flags().contains(PostingFlags::OVERDRAFT));
-}
-
-#[test]
 fn a_child_whose_parent_exited_gets_its_accrual_back_and_posts_late() {
     let k = Kernel::new();
     let admit = k.admit_token();
-    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let parent = HoldCell::new(Hold::open(&admit, who("acct-1")));
     let arrival = parent
-        .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
+        .admit(Hold::open(&admit, who("acct-1")), &admit)
         .expect("the parent passes the door");
     let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
     let accrual = parent
-        .accrue_child(&who("acct-1"), 250, &admit)
-        .expect("an open parent takes the child's spend");
+        .accrue_child(&who("acct-1"), &admit)
+        .expect("an open parent takes the child");
 
     // The parent exits while the child is still running.
     let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
@@ -737,182 +572,36 @@ fn a_child_whose_parent_exited_gets_its_accrual_back_and_posts_late() {
 
     let handed_back = Posted::into_parent(accrual, &parent, &k.ledger_token())
         .expect_err("a parent that has gone cannot carry it");
-    assert_eq!(handed_back.amount(), 250);
+    assert_eq!(handed_back.principal().as_str(), "acct-1");
 
     let late = Posted::settle_late(handed_back, &k.ledger_token());
     assert!(late.flags().contains(PostingFlags::LATE_ACCRUAL));
-    assert_eq!(late.settled(), 250);
-    // The whole amount is overdraft, and the posting says so: the parent's reservation was
-    // released at its exit, so nothing was held back for this. The figure is reconciliation input,
-    // so it is pinned here rather than left to whatever the constructor happens to write.
-    assert_eq!(late.reserved(), 0);
-    assert_eq!(late.overdraft(), 250);
-    assert!(late.flags().contains(PostingFlags::OVERDRAFT));
-    assert_eq!(late.released(), 0, "a late accrual releases nothing");
+    assert_eq!(late.principal().as_str(), "acct-1");
 }
 
 #[test]
 fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
     let k = Kernel::new();
     let admit = k.admit_token();
-    let parent = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
+    let parent = HoldCell::new(Hold::open(&admit, who("acct-1")));
     let arrival = parent
-        .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
+        .admit(Hold::open(&admit, who("acct-1")), &admit)
         .expect("the parent passes the door");
     let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
     let accrual = parent
-        .accrue_child(&who("acct-1"), 250, &admit)
-        .expect("an open parent takes the child's spend");
+        .accrue_child(&who("acct-1"), &admit)
+        .expect("an open parent takes the child");
 
-    // Sized at the child's maximum reported push, drawn synchronously: whatever the child goes on
-    // to spend, there is a reservation behind it, which is what makes the exposure a bound.
+    // Converted synchronously at the parent's exit: the child ends on a hold of its own.
     let converted = accrual
-        .convert_at_parent_exit(1_000, &admit)
+        .convert_at_parent_exit(&admit)
         .expect("the accruing call's own grant converts it");
-    assert_eq!(converted.reserved(), 1_000);
     assert_eq!(converted.principal(), &who("acct-1"));
     let posted = Posted::settle(converted, 250, &usage_of(&k, 250), &k.ledger_token());
-    assert_eq!(posted.settled(), 250);
+    assert_eq!(posted.quantity(), 250);
     assert!(
         !posted.flags().contains(PostingFlags::LATE_ACCRUAL),
-        "a converted accrual is not a late one: it has its own reservation"
-    );
-    assert_eq!(posted.overdraft(), 0);
-}
-
-#[test]
-fn a_spend_inside_the_reservation_neither_tops_up_nor_carries() {
-    let k = Kernel::new();
-    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
-    let spend = hold.spend(400, u64::MAX);
-    assert_eq!(
-        spend,
-        Spend {
-            accrued: 400,
-            topped_up: 0,
-            overdraft: 0
-        }
-    );
-    assert_eq!(hold.reserved(), 1_000);
-    assert_eq!(hold.remaining(), 600);
-}
-
-#[test]
-fn a_spend_past_the_reservation_grows_it_out_of_the_headroom_it_is_given() {
-    let k = Kernel::new();
-    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
-    let spend = hold.spend(1_500, 900);
-    assert_eq!(
-        spend.topped_up, 500,
-        "the shortfall fits inside the headroom"
-    );
-    assert_eq!(spend.overdraft, 0);
-    assert_eq!(hold.reserved(), 1_500);
-    assert_eq!(hold.overdraft(), 0);
-}
-
-#[test]
-fn a_spend_no_headroom_can_cover_is_carried_and_never_refused() {
-    let k = Kernel::new();
-    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
-    let spend = hold.spend(1_500, 0);
-    // The whole point: the spend lands in full even though nothing could back the last of it.
-    assert_eq!(spend.accrued, 1_500);
-    assert_eq!(spend.overdraft, 500);
-    assert_eq!(hold.accrued(), 1_500);
-    assert_eq!(hold.overdraft(), 500);
-    let posted = Posted::settle(hold, 1_500, &usage_of(&k, 1_500), &k.ledger_token());
-    assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
-    assert_eq!(posted.overdraft(), 500);
-    assert_eq!(posted.released(), 0);
-}
-
-#[test]
-fn a_second_spend_past_the_end_carries_only_its_own_share() {
-    let k = Kernel::new();
-    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 100);
-    assert_eq!(hold.spend(250, 0).overdraft, 150);
-    // Not 400: what the first spend already carried is not carried a second time.
-    assert_eq!(hold.spend(250, 0).overdraft, 250);
-    assert_eq!(hold.overdraft(), 400);
-    assert_eq!(hold.accrued(), 500);
-}
-
-#[test]
-fn a_part_covered_spend_reports_both_halves() {
-    let k = Kernel::new();
-    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 100);
-    let spend = hold.spend(400, 120);
-    assert_eq!(spend.topped_up, 120);
-    assert_eq!(spend.overdraft, 180);
-    assert_eq!(hold.reserved(), 220);
-    assert_eq!(hold.accrued(), 400);
-}
-
-#[test]
-fn the_residual_of_an_underspent_hold_is_what_settlement_releases() {
-    let k = Kernel::new();
-    let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
-    hold.spend(250, u64::MAX);
-    let posted = Posted::settle(hold, 250, &usage_of(&k, 250), &k.ledger_token());
-    assert_eq!(posted.released(), 750);
-    assert_eq!(posted.overdraft(), 0);
-}
-
-/// A settlement is money, and a usage report is not.
-///
-/// The report carries one quantity per meter class, each in the class's OWN unit — seconds of
-/// audio, bytes relayed, tokens generated — and adding those together produces a number that is
-/// not a figure in any unit at all. The reservation the hold carries is nano-units. Posting the
-/// sum of the quantities against a reservation in nano-units subtracts two different units from
-/// each other, and the residual, the overdraft and every legacy row derived from them are wrong by
-/// whatever the classes happened to be.
-///
-/// So the priced total comes in at the seam, in the unit the reservation is written in, and the
-/// posting is the answer to "what does this cost", not "how much of everything was there".
-#[test]
-fn a_posting_settles_the_priced_amount_and_not_the_sum_of_the_quantities() {
-    let k = Kernel::new();
-    let hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
-    // Two classes whose quantities are in nothing comparable: two minutes of audio and three
-    // megabytes of relay. Their sum, 3_000_120, is a number with no unit.
-    let report = Usage::report(
-        &k.usage_token(),
-        vec![
-            UsageLine {
-                class: MeterClassId::new("seconds"),
-                quantity: 120,
-                source: QuantitySource::Count,
-                estimated: false,
-            },
-            UsageLine {
-                class: MeterClassId::new("bytes"),
-                quantity: 3_000_000,
-                source: QuantitySource::Count,
-                estimated: false,
-            },
-        ],
-    )
-    .expect("two lines are within the bound");
-
-    // What the cost unit priced those two lines at, in the nano-units the reservation is in.
-    let priced: u128 = 1_500;
-    let posted = Posted::settle(hold, priced, &report, &k.ledger_token());
-
-    assert_eq!(
-        posted.settled(),
-        1_500,
-        "the posting is what the lines priced at, not what they summed to"
-    );
-    assert_eq!(posted.reserved(), 1_000);
-    assert_eq!(
-        posted.released(),
-        0,
-        "a settlement above the reservation releases nothing"
-    );
-    assert!(
-        posted.flags().contains(PostingFlags::OVERDRAFT),
-        "settling above the reservation is an overdraft even when the hold's own counter is quiet"
+        "a converted accrual is not a late one: it has its own hold"
     );
 }
 
@@ -926,14 +615,14 @@ fn a_grant_of_another_call_neither_admits_nor_converts() {
     let (call_a, call_b) = (k.next_call(), k.next_call());
     let (grant_a, grant_b) = (k.admit_token_for(call_a), k.admit_token_for(call_b));
 
-    let cell = HoldCell::new(Hold::open(&grant_b, who("acct-1"), 0));
+    let cell = HoldCell::new(Hold::open(&grant_b, who("acct-1")));
     let rejected = cell
-        .admit(Hold::open(&grant_b, who("acct-1"), 5_000), &grant_a)
+        .admit(Hold::open(&grant_b, who("acct-9")), &grant_a)
         .expect_err("call A's grant admitted call B's hold");
     assert_eq!(rejected.error, CellError::CallMismatch);
     assert_eq!(
-        rejected.hold.reserved(),
-        5_000,
+        rejected.hold.principal().as_str(),
+        "acct-9",
         "the refused hold did not come back whole"
     );
     let arrival = cell
@@ -942,14 +631,14 @@ fn a_grant_of_another_call_neither_admits_nor_converts() {
     let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let accrual = cell
-        .accrue_child(&who("acct-1"), 250, &grant_b)
-        .expect("an open parent takes the child's spend");
+        .accrue_child(&who("acct-9"), &grant_b)
+        .expect("an open parent takes the child");
     let accrual = accrual
-        .convert_at_parent_exit(1_000, &grant_a)
+        .convert_at_parent_exit(&grant_a)
         .expect_err("call A's grant converted call B's accrual");
     let converted = accrual
-        .convert_at_parent_exit(1_000, &grant_b)
+        .convert_at_parent_exit(&grant_b)
         .expect("call B's own grant converts it");
-    assert_eq!(converted.reserved(), 1_000);
+    assert_eq!(converted.call(), call_b);
     let _ = Posted::settle(converted, 250, &usage_of(&k, 250), &k.ledger_token());
 }

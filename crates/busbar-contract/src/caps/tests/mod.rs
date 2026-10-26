@@ -223,7 +223,7 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
     let expected = lint::expected();
     assert_eq!(
         expected.len(),
-        10,
+        9,
         "the escapes the scan must keep: {expected:?}"
     );
     assert_eq!(lint::hold_escapes().len(), 9, "the hold-escape list");

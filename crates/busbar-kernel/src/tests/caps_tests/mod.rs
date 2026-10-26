@@ -16,14 +16,12 @@ mod the_runtime_half;
 /// The renderings every one of these types hand-rolls, read back.
 mod what_the_record_reads;
 
-/// The posting's arithmetic at the edges.
+/// What a posting carries: a count, its principal and its flags.
 mod the_posting_arithmetic;
 
 /// Where a reported quantity came from, and the reports built on it.
 mod what_the_usage_report_says;
 
-/// A posting above its reservation carries the excess as its overdraft figure (item 318).
-mod settle_carries_the_excess;
 
 /// A sealed unit's bounded draft facts and leg replies (from
 /// `busbar-contract/tests/bounded_limits.rs`).

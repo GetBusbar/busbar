@@ -99,15 +99,15 @@ fn the_largest_report_the_record_can_hold_is_accepted() {
 fn a_cell_counts_the_accruals_it_took_and_starts_at_none() {
     // One of the four numbers the canary balances. A count that started at one would have the
     // canary reporting a settlement missing on every clean run; one that never moved would let a
-    // child's spend disappear without the arithmetic noticing.
+    // child disappear without the arithmetic noticing.
     let k = seal();
     let admit: Grant<Admittance> = Grant::<Admittance>::mint(&k);
-    let cell = HoldCell::new(Hold::open(&admit, PrincipalId::new("acct-1"), 0));
+    let cell = HoldCell::new(Hold::open(&admit, PrincipalId::new("acct-1")));
     assert_eq!(cell.accruals(), 0, "a fresh cell has taken nothing");
 
     let arrival = cell
         .admit(
-            Hold::open(&admit, PrincipalId::new("acct-1"), 1_000),
+            Hold::open(&admit, PrincipalId::new("acct-1")),
             &admit,
         )
         .expect("admitted");
@@ -116,14 +116,14 @@ fn a_cell_counts_the_accruals_it_took_and_starts_at_none() {
     let mut children = Vec::new();
     for expected in 1..=3 {
         children.push(
-            cell.accrue_child(&PrincipalId::new("acct-1"), 10, &admit)
-                .expect("an admitted parent takes a child's spend"),
+            cell.accrue_child(&PrincipalId::new("acct-1"), &admit)
+                .expect("an admitted parent takes a child"),
         );
         assert_eq!(cell.accruals(), expected);
     }
 
     // A refused accrual is not one the cell took.
-    cell.accrue_child(&PrincipalId::new("acct-2"), 10, &admit)
+    cell.accrue_child(&PrincipalId::new("acct-2"), &admit)
         .expect_err("another principal's child is refused");
     assert_eq!(cell.accruals(), 3);
 

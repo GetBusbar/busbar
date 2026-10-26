@@ -6,8 +6,8 @@
 //!
 //! THE PLANE REPORTS; THE KERNEL WRITES (`BUSBAR-1.6.0.md` §7, #77(2)). The kernel
 //! decides no figure and no fee: whatever the end, it writes what the plane reported, adds no
-//! floor, and resolves no disagreement. Only a unit brought back from a journal is answered by the
-//! kernel, from its own record, and never upward.
+//! floor, and resolves no disagreement. There is no unit brought back from a journal any more: the
+//! one ledger is the store's usage counts (MONEY-DESIGN §4, PR-C).
 
 use busbar_contract::caps::OriginKind;
 use busbar_contract::caps::{Outcome, PostingFlags, ReasonCode, StepName};
@@ -64,50 +64,6 @@ fn an_unfinished_unit_that_reported_nothing_writes_zero_marked_estimated_and_no_
 }
 
 #[test]
-fn row_recovered_with_a_dispatch_writes_the_last_checkpoint() {
-    let evidence = Evidence {
-        recovered: true,
-        dispatched: true,
-        checkpointed: 700,
-        reported: Some(9_000),
-        ..Evidence::default()
-    };
-    for end in ends() {
-        assert_eq!(
-            written(&end, &evidence),
-            (700, PostingFlags::RECOVERED),
-            "a recovered unit is answered from its record, never a live report"
-        );
-    }
-}
-
-#[test]
-fn row_recovered_with_no_dispatch_writes_zero_and_voids() {
-    let evidence = Evidence {
-        recovered: true,
-        dispatched: false,
-        checkpointed: 700,
-        ..Evidence::default()
-    };
-    assert_eq!(
-        written(&Outcome::Completed, &evidence),
-        (0, PostingFlags::VOIDED)
-    );
-}
-
-#[test]
-fn a_lost_settle_record_keeps_the_amount_and_marks_it_unposted() {
-    let evidence = Evidence {
-        reported: Some(300),
-        settle_record_lost: true,
-        ..Evidence::default()
-    };
-    let (amount, flags) = written(&Outcome::Completed, &evidence);
-    assert_eq!(amount, 300);
-    assert!(flags.contains(PostingFlags::UNPOSTED));
-}
-
-#[test]
 fn the_fee_units_are_the_planes_as_told_on_every_end() {
     // The kernel decides no fee (TD step 13: the kernel fee decider is deleted); it writes the fee
     // units the plane reported, whatever the end, and never invents one.
@@ -124,30 +80,18 @@ fn the_fee_units_are_the_planes_as_told_on_every_end() {
 
 #[test]
 fn no_row_ever_resolves_upward() {
-    // Whatever the evidence, the amount written is never more than what the plane reported or the
-    // journal checkpointed.
+    // Whatever the evidence, the amount written is never more than what the plane reported.
     let cases = [
         Evidence {
             reported: Some(100),
             ..Evidence::default()
         },
         Evidence::default(),
-        Evidence {
-            recovered: true,
-            dispatched: true,
-            checkpointed: 100,
-            reported: Some(900),
-            ..Evidence::default()
-        },
     ];
     for evidence in cases {
         for end in ends() {
             let (amount, _) = written(&end, &evidence);
-            let highest = if evidence.recovered {
-                evidence.checkpointed
-            } else {
-                evidence.reported.unwrap_or(0)
-            };
+            let highest = evidence.reported.unwrap_or(0);
             assert!(amount <= highest, "{evidence:?} at {end:?} wrote {amount}");
         }
     }

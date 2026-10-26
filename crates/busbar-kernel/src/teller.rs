@@ -204,7 +204,8 @@ impl Kernel {
     }
 
     /// The seal itself, for the other place in the kernel that mints tokens — the source scan that
-    /// accounts for every mint counts it as well as the factories above:
+    /// accounts for every mint counts it as well as the factories above. Through it they mint four,
+    /// one of them `WriteMoney`:
     ///
     /// - the node's sweep, which settles an abandoned unit: `Exit` for the take, `Consumption`,
     ///   `WriteMoney`, and `Exit` again to seal the end. The unit's audit pass it takes from

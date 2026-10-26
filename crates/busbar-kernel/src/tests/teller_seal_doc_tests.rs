@@ -8,7 +8,7 @@
 //! raw seal to other modules is where that accounting has to name what it lends it for. It named two
 //! purposes and no tokens, while those two modules minted six-and-more — two of the tree's
 //! production `WriteMoney` mints among them. The doc now states the count and the kinds per module;
-//! this reads both modules' real mints and holds the doc to them.
+//! this reads the minting module's real mints and holds the doc to them.
 
 /// Every `Grant::<Kind>::mint(kernel.seal())` in one source file, by kind, in order.
 fn seal_mints(src: &str) -> Vec<&str> {
@@ -47,38 +47,30 @@ fn seal_doc() -> String {
 
 #[test]
 fn the_seal_accessor_names_every_token_minted_through_it() {
-    let recovery = seal_mints(include_str!("../recovery.rs"));
+    // One module mints through the seal now: the node's sweep. Recovery, the other, went with the
+    // second ledger (MONEY-DESIGN §4, PR-C).
     let tick = seal_mints(include_str!("../tick.rs"));
     let doc = seal_doc();
     let words = [
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
     ];
-    let total = recovery.len() + tick.len();
     assert!(
-        doc.contains(&format!("they mint {}", words[total])),
-        "the seal accessor's doc must state the {total} tokens minted through it; it reads: {doc}"
+        doc.contains(&format!("they mint {}", words[tick.len()])),
+        "the seal accessor's doc must state the {} tokens minted through it; it reads: {doc}",
+        tick.len()
     );
-    let money = recovery
-        .iter()
-        .chain(&tick)
-        .filter(|k| **k == "WriteMoney")
-        .count();
+    let money = tick.iter().filter(|k| **k == "WriteMoney").count();
     assert!(
         doc.contains(&format!("{} of them `WriteMoney`", words[money])),
         "the doc must name the {money} WriteMoney mints; it reads: {doc}"
     );
-    let (recovery_doc, tick_doc) = doc
+    let (_, tick_doc) = doc
         .split_once("the node's sweep")
-        .expect("the doc names the sweep's mints apart from recovery's");
-    for (module, kinds, said) in [
-        ("recovery", &recovery, recovery_doc),
-        ("tick", &tick, tick_doc),
-    ] {
-        for kind in kinds.iter() {
-            assert!(
-                said.contains(&format!("`{kind}`")),
-                "{module} mints `{kind}` through the seal and the doc does not name it: {said}"
-            );
-        }
+        .expect("the doc names the sweep's mints");
+    for kind in &tick {
+        assert!(
+            tick_doc.contains(&format!("`{kind}`")),
+            "tick mints `{kind}` through the seal and the doc does not name it: {tick_doc}"
+        );
     }
 }
