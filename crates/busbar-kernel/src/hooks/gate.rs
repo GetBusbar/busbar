@@ -80,7 +80,7 @@ pub(crate) enum GateVerdict {
         message: String,
         /// The transport/policy name, for the audit row and the log line: "it was refused" is not
         /// an operator-actionable fact unless it says by WHAT.
-        hook: &'static str,
+        hook: String,
     },
 }
 
@@ -426,14 +426,14 @@ fn gate_ran(hook: &str, head: HookHead, failed: bool) -> HookApplied {
 /// p15#5).
 fn verdict_of(
     answer: RoutingDecision,
-    hook: &'static str,
+    hook: &str,
     subject: &GateSubject<'_>,
 ) -> Option<GateVerdict> {
     match answer {
         RoutingDecision::Reject { status, message } => Some(GateVerdict::Reject {
             status: clamp_reject_status(status),
             message: sanitize_reject_message(&message),
-            hook,
+            hook: hook.to_string(),
         }),
         // The two candidate-set verbs. Nothing to act on, and saying so at `debug` is what stops an
         // operator concluding their compliance restrict is in force here.
@@ -464,7 +464,7 @@ struct Fallback<'f, 's> {
     /// Whether the request's content could be read (a link granted the content cannot screen an
     /// unreadable request either, so it is a link that failed).
     readable: bool,
-    failed: &'static str,
+    failed: &'f str,
 }
 
 impl Fallback<'_, '_> {
@@ -571,11 +571,11 @@ impl Fallback<'_, '_> {
 /// ([`crate::hooks::failed_call_refuses`]) and answers the one client-facing refusal every other
 /// seat answers ([`crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its message): a broken
 /// load-bearing gate is the same retryable condition on every plane (audit kernel-K4 #7).
-fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &'static str) -> Option<GateVerdict> {
+fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &str) -> Option<GateVerdict> {
     crate::hooks::failed_call_refuses(on_error).then(|| GateVerdict::Reject {
         status: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
         message: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
-        hook,
+        hook: hook.to_string(),
     })
 }
 

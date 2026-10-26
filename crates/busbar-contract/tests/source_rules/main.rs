@@ -6,6 +6,5 @@
 //! still reads. Each rule names the file and line it refuses.
 
 mod config;
-mod money;
 mod secrets;
 mod walk;

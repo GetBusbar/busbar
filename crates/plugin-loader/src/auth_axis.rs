@@ -159,7 +159,7 @@ impl AuthRows {
             },
         };
         let loaded = match row.door() {
-            Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Auth>(&r, bind)),
+            Some(door) => LinkedRow::of_raw(door).and_then(|r| load_linked::<Auth>(&r, bind)),
             None => match row.manifest.stated_rendering().map_err(refused)? {
                 None => return Err(refused(NO_DOOR.to_string())),
                 Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
@@ -177,7 +177,7 @@ impl AuthRows {
     /// Statement is one a bind refuses.
     fn stated(&self, row: &LoadablePlugin) -> Option<AuthFacts> {
         match row.door() {
-            Some(door) => crate::dispatch::kinds::auth::stated_facts(door).ok(),
+            Some(door) => crate::dispatch::kinds::auth::stated_facts_raw(door).ok(),
             None => row
                 .manifest
                 .stated_rendering()
@@ -419,7 +419,7 @@ impl AuthRows {
 /// A rendering that does not read back names nothing here; the load refuses it.
 fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
     let stated = match row.door() {
-        Some(door) => LinkedRow::of(door).ok().map(|r| r.statement),
+        Some(door) => LinkedRow::of_raw(door).ok().map(|r| r.statement),
         None => row.manifest.stated_rendering().ok().flatten(),
     };
     stated

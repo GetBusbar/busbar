@@ -347,7 +347,13 @@ pub trait RoutingPolicy: Send + Sync + 'static {
 
     /// Stable transport/policy name for metrics + the `x-busbar-route` header
     /// (e.g. `"socket"`, `"weighted"`, `"cheapest"`).
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
+
+    /// The same name as an owned, shareable handle: an implementation that already holds its name in
+    /// an `Arc<str>` hands out a clone, any other copies the borrow once.
+    fn name_arc(&self) -> std::sync::Arc<str> {
+        std::sync::Arc::from(self.name())
+    }
 
     /// REWRITE phase (`prompt: rw` gate): send the request projection and return the hook's `rewrite`
     /// reply — the replacement message body (+ optional injected tools), FAIL-CLOSED (`None` = proceed

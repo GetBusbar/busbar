@@ -288,6 +288,9 @@ fn register_planes() {
     root::legacy::install();
     // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
     // auth axis, before anything resolves one.
+    // THE DOOR-ROOT ROWS FIRST (status row 195): each crate's door admitted by the loader and its
+    // Statement agreeing with its row, or the boot is refused (exit 2) before any row registers.
+    root::door_root::check_door_roots(LINKED.door_roots);
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(
         LINKED.auths,
@@ -374,6 +377,10 @@ fn main() {
     // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
+    // A linked transport row logs to its own plugin log file under the configured `plugins.logs`,
+    // read just above as `plugins.dir` was scanned (`root::boot::dropped_from_config`) and handed
+    // to the transport doors before any linked row binds.
+    root::doors::install_plugin_logs(root::boot::plugin_logs());
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
@@ -385,12 +392,6 @@ fn main() {
     // is built from has been read. It runs in `run()`, off the resolved limits, still before any
     // listener is bound. Every axis above is installed by then, which is the ordering the seal
     // needed from this slot in the first place.
-    // THE ROOT-BOUND SEAMS the linked entries drive, each bound once here beside the plane axis and
-    // only when some entry drives it: the parse-time section list a cross-plane hook refusal reads
-    // (after the plane axis, before the CLI flags read `--validate`), and the envelope a
-    // self-enveloping admin verb builds its own reply through. A build whose entries drive none of
-    // them binds none.
-    root::linked::register_seams();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = root::cli::handle_cli_flags() {
@@ -662,11 +663,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
     // THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): ONE judge for every outbound
-    // connection, built once here, before anything dials: the kernel's `dest.judge` and its own
-    // clients ask it (installed below), and the connector dials by it. Its metadata lists are
-    // re-published at every config commit, this boot's own build included.
+    // connection, built once here, before anything dials: the kernel's `dest.judge` asks it
+    // (composed below), and the connector dials by it. Its metadata lists are re-published at
+    // every config commit, this boot's own build included, through the root's rules that hold it.
     let dest = root::connector::dest_judge(&cfg);
-    root::connector::install_egress_trust(dest.clone());
+    let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     // `records.secret` reads the App's governance through its swap handle, which exists once the App
@@ -805,8 +806,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
     // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
     // planes name once the planes are composed (below), so an apply carrying one the boot would
-    // refuse is refused, its running generation untouched.
-    let root_rules = Arc::new(root::door_steps::Rules::default());
+    // refuse is refused, its running generation untouched. They hold the destination guard, which
+    // hears every configuration commit through them.
+    let root_rules = Arc::new(root::door_steps::Rules::hearing(commit_guard));
     // The plane doors the boot's configuration does not use, so the boot never loads them (Law 7):
     // a running process refuses a first section of one (u67 BLOCK 2 item 2).
     root_rules.hold_unloaded(root::door_steps::unloaded_doors());
@@ -1600,7 +1602,6 @@ fn serve_thread_per_core(
                     // pre-TLS so the balancer can place it on another worker; the TLS handshake
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
-                    // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
                     let via = crate::root::connector::the().address_via();
                     let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {

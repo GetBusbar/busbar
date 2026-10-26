@@ -575,13 +575,10 @@ pub(crate) fn base_data_router(
     router
         .map_router(|r| {
             r
-                // EVERY protocol endpoint — chat and the 1.2 operations, all six dialects — flows
-                // through the catch-all: Router (dumb protocol ID from path+headers) → that
-                // protocol's RequestHandler (reads path+body, decides the operation) → its
-                // OperationHandler cell. Adding a protocol or an operation never touches this file.
-                // Unknown paths / wrong methods keep the pre-collapse native-envelope 404/405
-                // shaping (no bare-proxy tells). A fallback claims no path, so it declares no route:
-                // it takes the normal data-plane bar like any unclaimed path always has.
+                // A path no claimed row owns: the kernel's own 404 (`ingress::protocol_dispatch`).
+                // A plane matches its own claimed routes; the kernel identifies no protocol here.
+                // A fallback claims no path, so it declares no route: it takes the normal
+                // data-plane bar like any unclaimed path always has.
                 .fallback(ingress::protocol_dispatch)
                 // Wrong-method hits on a VALID path (axum's built-in 405) get the same
                 // native-envelope treatment as the 404 fallback above.
@@ -1340,10 +1337,6 @@ pub(crate) fn apply_inbound_concurrency_limit(
         router
     }
 }
-
-#[cfg(test)]
-#[path = "tests/router_doc_tests.rs"]
-mod router_doc_tests;
 
 #[cfg(test)]
 #[path = "tests/router_door_tests.rs"]

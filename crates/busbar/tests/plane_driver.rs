@@ -1198,9 +1198,10 @@ fn admin(method: &str, path: &str, body: &str) -> Option<(u16, String)> {
 
 /// The audit rows written for `resource` under the test plane's audit verb.
 fn rows(resource: &str) -> Vec<String> {
-    busbar_kernel::audit_ring::AUDIT
-        .export()
+    busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES, None, None)
         .into_iter()
+        .rev()
         .filter(|e| e.action == "testkind.act" && e.resource == resource)
         .map(|e| e.outcome)
         .collect()
@@ -1220,6 +1221,9 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     let _one = PUBLISHED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
+    // test harness registers it, so the rows this test writes reach the seam's read model.
+    let _ = busbar_kernel::test_support::TestApp::new().build();
     for way in ways() {
         let item = format!("{way:?}").to_lowercase();
         let act = format!("/items/{item}/act");

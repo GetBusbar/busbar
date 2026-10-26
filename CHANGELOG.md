@@ -64,6 +64,11 @@ Everything else in this release is identical to 1.5.5, apart from the improvemen
 register entries listed below. These are the changes an operator must act on or will notice, each
 signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
+- **A key refresh link rotates only from busbar's own page.** `GET /auth/token?method=<m>&refresh=1`
+  rotates the caller's key only when the browser reports a same-origin navigation (the key page's
+  "Refresh key" link). From any other site, a typed URL or a non-browser client it re-shows the
+  current key instead. 1.5.5 rotated from any origin, so another site could revoke a signed-in
+  user's key.
 - **A `store:` block is required.** `busbar --validate` and boot refuse a config without one, and tell
   you to add one, e.g. `store: {module: memory}`. 1.5.5 used `memory` when the block was absent.
   **Migration:** run `busbar --migrate-config`, which inserts exactly `store: {module: memory}`

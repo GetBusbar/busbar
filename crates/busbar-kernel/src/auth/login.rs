@@ -191,10 +191,10 @@ impl LoginMethods {
     /// build. Runs inside `build_app_from_config`.
     pub(crate) fn build(
         cfg: &AuthCfg,
-        registry: &Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: &Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
-        Self::build_on(cfg, registry, secret_resolver, || {
+        Self::build_on(cfg, registry.as_ref(), secret_resolver, || {
             crate::preflight::auth_axis(registry.clone())
         })
     }
@@ -202,7 +202,7 @@ impl LoginMethods {
     /// [`Self::build`] over the auth axis `open_axis` answers (opened on first use).
     fn build_on(
         cfg: &AuthCfg,
-        registry: &busbar_plugin_loader::PluginRegistry,
+        registry: &dyn busbar_contract::plugin_rows::PluginRows,
         secret_resolver: &crate::config::secret::SecretResolver,
         open_axis: impl Fn() -> Option<Arc<dyn busbar_contract::auth_calls::AuthAxis>>,
     ) -> Result<Self, String> {
@@ -345,15 +345,11 @@ const CLIENT_SECRET_SLOT: &str = "client_secret";
 /// keys the loader lifts out of the settings and lends as secret blobs. A module the registry does
 /// not resolve, or whose Statement does not read back, states none.
 fn states_secret_slot(
-    registry: &busbar_plugin_loader::PluginRegistry,
+    registry: &dyn busbar_contract::plugin_rows::PluginRows,
     module: &str,
     key: &str,
 ) -> bool {
-    registry
-        .resolve(module)
-        .and_then(busbar_plugin_loader::LoadablePlugin::statement)
-        .and_then(|bytes| busbar_contract::abi::mechanism::rendering::read(&bytes).ok())
-        .is_some_and(|stated| stated.secret_refs.iter().any(|k| k == key))
+    registry.secret_slots(module).iter().any(|k| k == key)
 }
 
 /// Wipe every string the lent settings document holds (THE DESIGN §6 K2: auth material is

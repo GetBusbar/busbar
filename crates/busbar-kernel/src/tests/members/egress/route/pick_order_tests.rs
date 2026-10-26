@@ -10,6 +10,7 @@
 
 use super::harness::Health;
 use super::{member, Node};
+use crate::test_support::tokens::pass;
 use busbar_contract::DestinationId;
 use busbar_kernel_egress::ports::Unavailable;
 
@@ -111,7 +112,7 @@ fn ordered_walk_empty_order_is_swrr() {
     let (node, members) = three_lanes();
     let real = RealBreaker::new();
     let order: Vec<DestinationId> = Vec::new();
-    let token = super::route_token();
+    let token = pass::<busbar_contract::caps::Route>();
     let pick = || {
         let mut ctx = node.request_ctx();
         pick_among(

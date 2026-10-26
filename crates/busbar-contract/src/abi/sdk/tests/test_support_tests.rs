@@ -307,10 +307,12 @@ const PLANE_STATEMENT: &Statement =
     });
 const PLANE_OPS: &crate::abi::plane::Ops =
     &crate::abi::sdk::door::absent_table::<crate::abi::plane::Ops>();
-const PLANE_DOOR: &crate::abi::mechanism::door::Door =
-    &crate::abi::sdk::door::door::<crate::abi::plane::Ops>(PLANE_STATEMENT, PLANE_OPS, None);
+// SAFETY: this file's `'static` Statement and tail, and an all-absent table.
+const PLANE_DOOR: &crate::abi::mechanism::door::Door = &unsafe {
+    crate::abi::sdk::door::door::<crate::abi::plane::Ops>(PLANE_STATEMENT, PLANE_OPS, None)
+};
 
-extern "C" fn plane_door() -> *const crate::abi::mechanism::door::Door {
+extern "C" fn plane_door() -> &'static crate::abi::mechanism::door::Door {
     PLANE_DOOR
 }
 

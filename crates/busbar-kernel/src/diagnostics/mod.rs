@@ -38,10 +38,6 @@ mod emit;
 pub use emit::emit;
 
 #[cfg(test)]
-#[path = "tests/coverage_tests.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "tests/catalog_tests.rs"]
 mod catalog_tests;
 
@@ -2086,9 +2082,10 @@ pub const PLANE_DEMOTIONS_UNREAD: Diagnostic = Diagnostic {
     slug: "plane-demotions-unread",
     title: "Durable plane demotion records could not be read at boot",
     severity: Severity::Actionable,
-    summary: "The durable plane demotion records could NOT be read at boot, so any upstream this \
-              deployment had demoted is re-opened until the first sweep looks again. Usually a \
-              durable store-read outage.",
+    summary: "The durable plane demotion records or the operator's trust decisions could NOT be \
+              read when a plane instance was admitted, so the instance was refused rather than \
+              re-open an upstream this deployment demoted or stand over a revoke it cannot see. \
+              Usually a durable store-read outage.",
     action:
         "Restore the durable governance store's read path and restart so persisted demotions are \
              re-applied before a listener binds.",
@@ -2626,27 +2623,6 @@ pub const CONFIG_RATE_CARD_ALL_ZERO: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A provider `error_map` entry names a status class busbar does not recognize; the mapping is
-/// ignored and classification falls through to the upstream status.
-pub const CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED: Diagnostic = Diagnostic {
-    code: 3022,
-    class: Class::Config,
-    slug: "config-error-map-class-unrecognized",
-    title: "error_map maps an error to an unrecognized status class (the mapping is ignored)",
-    severity: Severity::Actionable,
-    summary: "A provider's `error_map` maps an upstream error code or structured type to a string \
-              that is not one of busbar's status classes (rate_limit, overloaded, server_error, \
-              timeout, network, auth, billing, client_error, context_length). The mapping is \
-              IGNORED and the error is classified from its upstream status instead, so a typo'd entry \
-              (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized \
-              value for the life of the process, on the first error that reaches it — never at \
-              boot, so a deployment whose providers never fail never sees this line.",
-    action: "Correct the named `error_map` value to one of the nine status classes, or remove the \
-             entry if the built-in status classification is what you want.",
-    since: "1.6.0",
-    retired: false,
-};
-
 /// A metadata host-list entry names no host the guard judges; it boots, matches nothing and is dropped.
 pub const CONFIG_METADATA_ENTRY_NAMES_NO_HOST: Diagnostic = Diagnostic {
     code: 3024,
@@ -2909,7 +2885,6 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &CONFIG_FIRSTPARTY_FLOOR_INVALID,
     &CONFIG_POOL_HETEROGENEOUS,
     &CONFIG_RATE_CARD_ALL_ZERO,
-    &CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED,
     &CONFIG_METADATA_ENTRY_NAMES_NO_HOST,
     &CONFIG_AUTH_CHAIN_FULL_SCOPE,
     &CONFIG_OPEN_ADMIN_MINT,

@@ -214,15 +214,17 @@ fn bind_as(
 ) -> Result<Plugin<TestKind>, crate::dispatch::LoadError> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
-    let st: Statement = unsafe { *real.statement };
+    let st: Statement = unsafe { *real.statement() };
     let st: &'static Statement = Box::leak(Box::new(Statement {
         needs: needs.as_ptr(),
         needs_len: needs.len(),
         ..st
     }));
-    let door: &'static Door = Box::leak(Box::new(Door {
-        statement: st,
-        ..real
+    let door: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            statement: st,
+            ..real.parts()
+        })
     }));
     let v = validate_door::<TestKind>(door).expect("the door validates");
     Plugin::bind(
@@ -1075,15 +1077,17 @@ fn bound_over(table: &Arc<Scripted>) -> Plugin<TestKind> {
 fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
-    let st: Statement = unsafe { *real.statement };
+    let st: Statement = unsafe { *real.statement() };
     let st: &'static Statement = Box::leak(Box::new(Statement {
         needs: NAMED.as_ptr(),
         needs_len: NAMED.len(),
         ..st
     }));
-    let door: &'static Door = Box::leak(Box::new(Door {
-        statement: st,
-        ..real
+    let door: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            statement: st,
+            ..real.parts()
+        })
     }));
     let v = validate_door::<TestKind>(door).expect("the door validates");
     let conns: Arc<dyn DeclaredConns> = table.clone();
@@ -2518,7 +2522,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
     }]));
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
-    let st: Statement = unsafe { *real.statement };
+    let st: Statement = unsafe { *real.statement() };
     let auth = KindCode::Auth;
     let st: &'static Statement = Box::leak(Box::new(Statement {
         kind: auth as u32,
@@ -2527,11 +2531,13 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
         needs_len: unpinned.len(),
         ..st
     }));
-    let door: &'static Door = Box::leak(Box::new(Door {
-        kind: auth as u32,
-        kind_abi: auth.abi_version(),
-        statement: st,
-        ..real
+    let door: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            kind: auth as u32,
+            kind_abi: auth.abi_version(),
+            statement: st,
+            ..real.parts()
+        })
     }));
     let v = validate_door::<AuthShaped>(door).expect("the auth-kind door validates");
     let conns: Arc<dyn DeclaredConns> = table.clone();

@@ -29,8 +29,9 @@ use std::time::Duration;
 /// ONE OPENED HOOK INSTANCE AS THE ROUTING SEAM CALLS IT.
 pub(crate) struct HookPolicy {
     calls: Arc<dyn HookCalls>,
-    /// The hook's registry name (metrics, `x-busbar-route`), interned once per distinct name.
-    name: &'static str,
+    /// The hook's registry name (metrics, `x-busbar-route`), owned by the policy for as long as it
+    /// lives: a decision that names it takes a clone of this handle, so nothing is leaked per open.
+    name: Arc<str>,
 }
 
 impl HookPolicy {
@@ -38,7 +39,7 @@ impl HookPolicy {
     pub(crate) fn policy(calls: Arc<dyn HookCalls>, name: &str) -> Arc<dyn RoutingPolicy> {
         Arc::new(Self {
             calls,
-            name: busbar_plugin_loader::intern_name(name),
+            name: Arc::from(name),
         })
     }
 }
@@ -177,12 +178,16 @@ impl RoutingPolicy for HookPolicy {
             } => Ok(lower_decide(&out, &frame, candidates)),
             // FAILED (the hook said it could not answer), a deadline, a broken contract: the
             // caller's `on_error` decides, never a silent abstain.
-            other => Err(PolicyError::from(unanswered(self.name, budget, other))),
+            other => Err(PolicyError::from(unanswered(&self.name, budget, other))),
         }
     }
 
-    fn name(&self) -> &'static str {
-        self.name
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn name_arc(&self) -> Arc<str> {
+        Arc::clone(&self.name)
     }
 
     async fn transform(&self, req: &RoutingRequest<'_>, budget: Duration) -> TransformOutcome {
@@ -204,7 +209,7 @@ impl RoutingPolicy for HookPolicy {
                 message: error.unwrap_or_default(),
             },
             other => TransformOutcome::Failed {
-                message: unanswered(self.name, budget, other),
+                message: unanswered(&self.name, budget, other),
             },
         }
     }

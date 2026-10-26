@@ -333,6 +333,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "idna_adapter",
+ "libloading",
  "metrics",
  "opentelemetry-proto",
  "prost",
@@ -340,6 +341,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "rustls-pki-types",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "sha2",
@@ -488,7 +490,6 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "flate2",
- "hex",
  "http-body-util",
  "reqwest",
  "schemars",
@@ -505,21 +506,17 @@ name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
  "arc-swap",
- "axum",
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
  "busbar-kernel-egress",
  "busbar-plugin-loader",
  "busbar-transport-tcp-plugin",
- "bytes",
  "crc32fast",
  "dimpl",
  "futures",
- "http-body-util",
  "libc",
  "rcgen",
- "reqwest",
  "ring",
  "rustls",
  "rustls-pki-types",
@@ -671,7 +668,6 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-scope",
  "busbar-kernel-wal",
- "busbar-plugin-loader",
  "bytes",
  "crc32fast",
  "criterion",
@@ -683,8 +679,6 @@ dependencies = [
  "http-body",
  "http-body-util",
  "httpdate",
- "hyper",
- "hyper-util",
  "indexmap",
  "libc",
  "loom",
@@ -728,7 +722,6 @@ name = "busbar-kernel-breaker"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "httpdate",
 ]
 
 [[package]]
@@ -736,7 +729,6 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-kernel-breaker",
  "bytes",
  "futures",
 ]
@@ -780,7 +772,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=0565fcf1fa040ed986e0abcc8528e1b336e2e83c#0565fcf1fa040ed986e0abcc8528e1b336e2e83c"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=757897b71862489343d2e5449b1816619bdcf69e#757897b71862489343d2e5449b1816619bdcf69e"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -799,7 +791,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=d2835f69d202fc11cbb9bda6f1f231094e34133f#d2835f69d202fc11cbb9bda6f1f231094e34133f"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=b1eca3619e9fd09ed92c109c46f46ea1be45ae66#b1eca3619e9fd09ed92c109c46f46ea1be45ae66"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -823,7 +815,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=1cdd3ea22875bb434784a00906bc10d906a1919d#1cdd3ea22875bb434784a00906bc10d906a1919d"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8#6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -927,10 +919,11 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=f1b5d4d75f5cdaa46eff23cfef44e0a675d2fbb4#f1b5d4d75f5cdaa46eff23cfef44e0a675d2fbb4"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=2531ef131e492385788b6714687346e48d864d44#2531ef131e492385788b6714687346e48d864d44"
 dependencies = [
  "busbar-contract",
  "bytes",
+ "h2",
  "http",
  "http-body",
  "hyper",
@@ -3017,7 +3010,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "h2",
  "http",
  "http-body",
  "http-body-util",

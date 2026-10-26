@@ -354,7 +354,7 @@ fn red_a_stated_rendering_whose_tail_is_not_the_doors_is_refused_at_admit() {
         statement: LinkedRow::of(plain::door)
             .expect("the plain door states itself")
             .statement,
-        door: cacheable::door,
+        door: crate::dispatch::load::raw(cacheable::door),
     };
     assert_eq!(
         load_linked::<Auth>(&lying, bind())

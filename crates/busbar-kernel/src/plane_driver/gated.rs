@@ -306,7 +306,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     status,
                     "a unit refused by a hook gate"
                 );
-                return Err(veto_by(status, message, hook));
+                return Err(veto_by(status, message, &hook));
             }
         }
         Ok(())

@@ -21,6 +21,40 @@ use crate::abi::host::conn::connector::Need;
 #[derive(Debug, Clone, Copy)]
 pub struct Door {
     /// [`super::DOOR_MAGIC`].
+    pub(crate) magic: u64,
+    /// [`super::MECHANISM_VERSION`].
+    pub(crate) mechanism_version: u32,
+    /// `size_of::<Door>()` at construction.
+    pub(crate) size: u32,
+    /// [`super::KindCode`], as its number.
+    pub(crate) kind: u32,
+    /// The kind's ABI version ([`super::KindCode::abi_version`]).
+    pub(crate) kind_abi: u32,
+    /// The plugin's Statement.
+    pub(crate) statement: *const Statement,
+    /// The kind's ops table; every kind's table begins with [`OpsHead`].
+    pub(crate) ops: *const OpsHead,
+    /// APPEND-ONLY TAIL: `ready` (`abi::mechanism::lifecycle`, READY), in [`super::lifecycle::ReadyIn`],
+    /// out [`super::call::OutHead`]; `None` = the plugin has none and is opened exactly as before.
+    /// A door whose `size` ends before this field has none: the host reads it only when `size`
+    /// covers it.
+    pub(crate) ready: Option<Op>,
+}
+
+/// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.
+///
+/// SEALED (status row 195, ARCHITECT ruling on `admit_linked`): it answers a `&'static Door`, and a
+/// [`Door`]'s fields are private behind the `unsafe` [`Door::__from_parts`], so every `DoorFn` safe
+/// code can name answers a door some `unsafe` constructor vouched for. The C header spells the same
+/// symbol `const bb_mech_Door *(*)(void)`; a door read off a `dlsym` is a
+/// [`RawDoorFn`](crate::abi::sdk::door::RawDoorFn) until the loader has checked it.
+pub type DoorFn = extern "C" fn() -> &'static Door;
+
+/// A door's fields, plain: what [`Door::__from_parts`] takes and [`Door::read_parts`] answers. A
+/// `DoorParts` is no door: nothing admits one, so building one is safe.
+#[derive(Debug, Clone, Copy)]
+pub struct DoorParts {
+    /// [`super::DOOR_MAGIC`].
     pub magic: u64,
     /// [`super::MECHANISM_VERSION`].
     pub mechanism_version: u32,
@@ -28,21 +62,178 @@ pub struct Door {
     pub size: u32,
     /// [`super::KindCode`], as its number.
     pub kind: u32,
-    /// The kind's ABI version ([`super::KindCode::abi_version`]).
+    /// The kind's ABI version.
     pub kind_abi: u32,
     /// The plugin's Statement.
     pub statement: *const Statement,
-    /// The kind's ops table; every kind's table begins with [`OpsHead`].
+    /// The kind's ops table.
     pub ops: *const OpsHead,
-    /// APPEND-ONLY TAIL: `ready` (`abi::mechanism::lifecycle`, READY), in [`super::lifecycle::ReadyIn`],
-    /// out [`super::call::OutHead`]; `None` = the plugin has none and is opened exactly as before.
-    /// A door whose `size` ends before this field has none: the host reads it only when `size`
-    /// covers it.
+    /// The optional `ready` op.
     pub ready: Option<Op>,
 }
 
-/// The door function: the ONE symbol a plugin exports. `extern "C"`: a panic escaping it aborts.
-pub type DoorFn = extern "C" fn() -> *const Door;
+impl Door {
+    /// THE ONE CONSTRUCTOR, `unsafe` and `#[doc(hidden)]`: the contract's door macro reaches it
+    /// through [`crate::abi::sdk::door::door`]; a loader's or a test's hand-laid door names it.
+    ///
+    /// # Safety
+    ///
+    /// The door is the `'static` plugin data a [`DoorFn`] may answer: `statement` points at a
+    /// `'static` [`Statement`] whose lists, strings, blobs and kind tail point at their stated counts
+    /// of live `'static` data, and `ops` at a `'static` table of the kind `kind` names whose every
+    /// non-NULL slot honours the call convention (`abi::mechanism::call`). A host reads a door as
+    /// it states itself; a door that lies is undefined behaviour in the host.
+    #[doc(hidden)]
+    #[must_use]
+    pub const unsafe fn __from_parts(p: DoorParts) -> Self {
+        Self {
+            magic: p.magic,
+            mechanism_version: p.mechanism_version,
+            size: p.size,
+            kind: p.kind,
+            kind_abi: p.kind_abi,
+            statement: p.statement,
+            ops: p.ops,
+            ready: p.ready,
+        }
+    }
+
+    /// The door's fields, plain.
+    #[must_use]
+    pub const fn parts(&self) -> DoorParts {
+        DoorParts {
+            magic: self.magic,
+            mechanism_version: self.mechanism_version,
+            size: self.size,
+            kind: self.kind,
+            kind_abi: self.kind_abi,
+            statement: self.statement,
+            ops: self.ops,
+            ready: self.ready,
+        }
+    }
+
+    /// [`super::DOOR_MAGIC`].
+    #[must_use]
+    pub const fn magic(&self) -> u64 {
+        self.magic
+    }
+
+    /// [`super::MECHANISM_VERSION`].
+    #[must_use]
+    pub const fn mechanism_version(&self) -> u32 {
+        self.mechanism_version
+    }
+
+    /// `size_of::<Door>()` at construction.
+    #[must_use]
+    pub const fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// [`super::KindCode`], as its number.
+    #[must_use]
+    pub const fn kind(&self) -> u32 {
+        self.kind
+    }
+
+    /// The kind's ABI version.
+    #[must_use]
+    pub const fn kind_abi(&self) -> u32 {
+        self.kind_abi
+    }
+
+    /// The plugin's Statement.
+    #[must_use]
+    pub const fn statement(&self) -> *const Statement {
+        self.statement
+    }
+
+    /// The kind's ops table.
+    #[must_use]
+    pub const fn ops(&self) -> *const OpsHead {
+        self.ops
+    }
+
+    /// The optional `ready` op.
+    #[must_use]
+    pub const fn ready(&self) -> Option<Op> {
+        self.ready
+    }
+
+    /// Where the append-only `ready` tail starts: the least size a door states.
+    #[must_use]
+    pub const fn ready_at() -> usize {
+        core::mem::offset_of!(Door, ready)
+    }
+
+    /// Each field's name and offset, in order: the layout golden's record of the sealed door.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn __layout() -> [(&'static str, usize); 8] {
+        use core::mem::offset_of;
+        [
+            ("magic", offset_of!(Door, magic)),
+            ("mechanism_version", offset_of!(Door, mechanism_version)),
+            ("size", offset_of!(Door, size)),
+            ("kind", offset_of!(Door, kind)),
+            ("kind_abi", offset_of!(Door, kind_abi)),
+            ("statement", offset_of!(Door, statement)),
+            ("ops", offset_of!(Door, ops)),
+            ("ready", offset_of!(Door, ready)),
+        ]
+    }
+
+    /// A door's leading `(magic, mechanism_version, size)`, read one field at a time and unaligned:
+    /// what a loader checks before it trusts the rest.
+    ///
+    /// # Safety
+    ///
+    /// `p` is non-NULL and readable through `size`.
+    #[must_use]
+    pub unsafe fn read_head(p: *const Self) -> (u64, u32, u32) {
+        use core::ptr::addr_of;
+        // SAFETY: the caller's contract; each field is read unaligned.
+        unsafe {
+            (
+                addr_of!((*p).magic).read_unaligned(),
+                addr_of!((*p).mechanism_version).read_unaligned(),
+                addr_of!((*p).size).read_unaligned(),
+            )
+        }
+    }
+
+    /// A door's fields, read one at a time and unaligned; `ready` only when the `size` it states
+    /// covers it (an absent tail reads as `None`).
+    ///
+    /// # Safety
+    ///
+    /// `p` is non-NULL and readable up to `ready` ([`Door::ready_at`]), and through `ready` when
+    /// the `size` it states covers it.
+    #[must_use]
+    pub unsafe fn read_parts(p: *const Self) -> DoorParts {
+        use core::ptr::addr_of;
+        // SAFETY: the caller's contract; each field is read unaligned, `ready` only when covered.
+        unsafe {
+            let (magic, mechanism_version, size) = Self::read_head(p);
+            let has_ready = size as usize >= Self::ready_at() + size_of::<Option<Op>>();
+            DoorParts {
+                magic,
+                mechanism_version,
+                size,
+                kind: addr_of!((*p).kind).read_unaligned(),
+                kind_abi: addr_of!((*p).kind_abi).read_unaligned(),
+                statement: addr_of!((*p).statement).read_unaligned(),
+                ops: addr_of!((*p).ops).read_unaligned(),
+                ready: if has_ready {
+                    addr_of!((*p).ready).read_unaligned()
+                } else {
+                    None
+                },
+            }
+        }
+    }
+}
 
 /// [`MetricFamily::kind`]: a counter.
 pub const FAMILY_COUNTER: u8 = 0;

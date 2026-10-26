@@ -196,19 +196,19 @@ impl Durability {
     ///
     /// # Errors
     ///
-    /// The chain could not be read back. The boot refuses then, as it refuses a store that would
-    /// not read the chain back the first time: taken for an empty chain, the failed read rebuilt no
-    /// amendment, so every signed count correction reverted for the life of the process and none
-    /// sealed afterwards was journalled (audit R1#3).
+    /// The chain could not be read back, or does not verify. The boot refuses then, as it refuses a
+    /// store that would not read the chain back the first time: taken for an empty chain, the
+    /// failed read rebuilt no amendment, so every signed count correction reverted for the life of
+    /// the process and none sealed afterwards was journalled (audit R1#3, audit root r4 B-2).
     pub fn restore_amendments(&mut self) -> Result<(), String> {
         if !self.keeps_chain() {
             return Ok(());
         }
         let (run, set_aside) = match self.chain() {
             Ok(Ok(records)) => linked_run(&records),
-            // A chain that does not verify: the book's own rebuild verified the same chain and
-            // already reported the break as a restart finding.
-            Ok(Err(_)) => return Ok(()),
+            // A chain that does not verify refuses the boot as the book's own build does: taken for
+            // an empty chain, nothing was rebuilt or bound (audit root r4 B-2).
+            Ok(Err(broken)) => return Err(format!("the journal does not verify: {broken}")),
             Err(e) => return Err(self.unreadable(&e)),
         };
         if set_aside > 0 {

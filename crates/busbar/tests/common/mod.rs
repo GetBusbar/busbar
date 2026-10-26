@@ -29,6 +29,7 @@ pub mod lines;
 pub mod otlp;
 pub mod pinned_planes;
 pub mod plugins;
+pub mod root_install;
 pub mod upstream;
 
 use std::path::{Path, PathBuf};

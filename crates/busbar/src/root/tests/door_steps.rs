@@ -1246,7 +1246,7 @@ fn the_signing_region_is_read_off_the_host_the_request_dials() {
     }
 }
 
-// ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
+// ── the minted credential of a member bound under an OAuth grant ─────────────────
 
 /// One open's head fields: `(name, value)`, in the order received.
 type HeadFields = Vec<(String, Vec<u8>)>;
@@ -2095,7 +2095,7 @@ fn a_registration_member_is_reached_at_its_own_target() {
 }
 
 /// THE TOOL DOOR, SERVED END TO END (the fold's flip; BUSBAR-1.6.0.md Part 3 section 12,
-/// "The switch"; TODO P3) — the tool plane's root leg (`qa/teller-steps.json`): a
+/// "The switch") — the tool plane's root leg (`qa/teller-steps.json`): a
 /// `tools/call` the tool door claims reaches that plane's driver through its route on the data
 /// router (mounted at the router's construction), behind the deployment's auth gate, is admitted
 /// and charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
@@ -3212,6 +3212,21 @@ pub(crate) mod tool_door {
     struct StoreRows(Arc<busbar_kernel::governance::MemoryStore>);
 
     impl busbar_kernel::host_records::RecordRows for StoreRows {
+        fn claim(
+            &self,
+            token: &str,
+            expires_at: u64,
+            now: u64,
+        ) -> Result<bool, busbar_contract::kinds::StoreError> {
+            busbar_contract::records::RecordStore::redeem_plane_token(
+                &*self.0,
+                busbar_kernel::host_records::CLAIM_KIND,
+                token,
+                expires_at,
+                now,
+            )
+            .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
+        }
         fn record_put(
             &self,
             schema: busbar_contract::ids::RecordSchemaId,
@@ -3257,6 +3272,15 @@ pub(crate) mod tool_door {
     );
 
     impl busbar_kernel::host_records::RecordRows for Rows {
+        /// One writer in this test: every claim is the first.
+        fn claim(
+            &self,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> Result<bool, busbar_contract::kinds::StoreError> {
+            Ok(true)
+        }
         fn record_put(
             &self,
             schema: busbar_contract::ids::RecordSchemaId,
@@ -6620,9 +6644,9 @@ pub(crate) mod hook_parity {
     pub(crate) fn hook_env() -> busbar_kernel::hooks::HookEnv {
         busbar_kernel::test_support::test_hook_env(
             &["test-hook"],
-            busbar_plugin_loader::sign::HookNeeds {
-                prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-                user: busbar_plugin_loader::sign::NeedLevel::Ro,
+            busbar_kernel::test_support::HookNeeds {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
         )
     }

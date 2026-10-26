@@ -659,17 +659,16 @@ impl SafeSlot for Uncounted {
 
 /// The llm door with `on_piece` swapped for [`Uncounted`].
 extern "C" fn uncounted_door() -> *const Door {
-    // SAFETY: the macro's `'static` door and its plane table.
-    let (d, mut ops) = unsafe {
-        let d = &*plane_door::door();
-        (d, *d.ops.cast::<plane::Ops>())
-    };
+    let d = plane_door::door();
+    // SAFETY: the macro's `'static` door states a plane table.
+    let mut ops = unsafe { *d.ops().cast::<plane::Ops>() };
     ops.on_piece = kind_op::<plane::Ops, Safe<Uncounted>, TestCapture, { slot::ON_PIECE }>();
     let ops: &'static plane::Ops = Box::leak(Box::new(ops));
-    Box::leak(Box::new(Door {
-        ops: std::ptr::from_ref(ops).cast(),
-        ..*d
-    }))
+    let mut parts = d.parts();
+    parts.ops = std::ptr::from_ref(ops).cast();
+    // SAFETY: the llm door's own `'static` Statement, over a leaked plane table whose every slot
+    // honours the call convention (one swapped for the SDK's own `kind_op`).
+    Box::leak(Box::new(unsafe { Door::__from_parts(parts) }))
 }
 
 #[test]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH AXIS'S LINKED ROW (ARCHITECT 2026-09-27 AUTH-ROW; DECISIONS #2 rule (1), #40): the
+//! THE AUTH AXIS'S LINKED ROW: the
 //! operator credential resolves through the auth kind's registry by the key configuration names,
 //! and the row that answers it is the one this composition root links (`auths` in the manifest).
 //! The kernel names no auth module and links none, so every test here that needs the operator
@@ -151,7 +151,7 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
     );
 }
 
-/// THE SHIPPED DEFAULT INBOUND STYLE (row 159, K3#1): the linked rows state exactly one, and its
+/// THE SHIPPED DEFAULT INBOUND STYLE: the linked rows state exactly one, and its
 /// carrier marks are 1.5.5's client-token lines in 1.5.5's precedence order (the Bearer on
 /// `authorization`, then `x-api-key`, then `x-goog-api-key`). The kernel names none of them; RED
 /// before the header auth states them (no row states the style, so the walk reads nothing). And the
@@ -159,7 +159,7 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
 #[test]
 fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     link();
-    let linked = Arc::new(busbar_kernel::preflight::linked().expect("the linked registry"));
+    let linked = busbar_kernel::preflight::linked().expect("the linked registry");
     let axis = crate::root::dispatch::auth_axis(linked);
     assert_eq!(
         axis.default_inbound_style(),
@@ -177,11 +177,10 @@ fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
 
 /// `GET /api/v1/admin/info` `build.auth_modules` in the shipped build is 1.5.5's answer, `keys` and
 /// the operator credential's word (oracle cell `admin.ops|GetInfo|ok`): the build also links
-/// OUTBOUND-ONLY auth plugins on the auth axis (ARCHITECT Q-L1-AUTH (A)), and a row that declares no
+/// OUTBOUND-ONLY auth plugins on the auth axis, and a row that declares no
 /// inbound capability is not an auth-chain module an operator can name, so it is not listed. RED
 /// before the fix: the outbound-only header row's name was listed third. The default build also
-/// links the INBOUND webhook-signature row (ARCHITECT 2026-10-14, accepted difference `#64-class
-/// build.auth_modules lists the webhook-signature module`), an auth-chain module an operator names,
+/// links the INBOUND webhook-signature row, an auth-chain module an operator names,
 /// so it is listed after 1.5.5's two. The case rides every linked auth row (`linked_every_auth`,
 /// build.rs): every outbound-only row is then linked, and none of them is listed.
 #[cfg(linked_every_auth)]
@@ -634,7 +633,7 @@ async fn a_renamed_provider_backed_by_the_operator_module_is_the_operator_creden
     renamed_provider_is_the_operator_credential(op()).await;
 }
 
-/// ONE PLUGIN, ONE IDENTITY (ARCHITECT C'): the operator credential's module named by its CANONICAL
+/// ONE PLUGIN, ONE IDENTITY: the operator credential's module named by its CANONICAL
 /// name (the manifest name its release tarball carries, its row's `linked-canonical` value) is the
 /// operator credential exactly as its key is — the same provider, the same full scope, the same
 /// carriers, the same refusal — because the kernel compares the plugin the module resolves to, not
@@ -747,7 +746,7 @@ async fn a_provider_named_like_the_operator_but_backed_by_another_module_is_that
     );
 }
 
-// ── THE ROOT-ADMIN LOOP'S DOOR IS THE SAME LIVE ADMIN CHAIN (DONE-BUILD, ARCHITECT 2026-09-30) ──────
+// ── THE ROOT-ADMIN LOOP'S DOOR IS THE SAME LIVE ADMIN CHAIN ──────
 // The loop's authenticate step used to run a hardcoded `[admin-tokens]` chain built once at boot,
 // whatever `admin_auth` said: `admin_auth: []` answered 401 where 1.5.5 answered 200 (1.5.5
 // `auth/mod.rs:847-848`, scope Full at `:1067-1068`), an external admin module was never asked, and
@@ -940,8 +939,7 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE DATA-PLANE CHAIN ON THE AUTH AXIS (AUTH-CHAIN-SWITCH, ARCHITECT lane L2-AUTH; THE DESIGN
-/// 11.6): a provider backed by the linked operator door — a REAL plugin on the auth kind's memory
+/// THE DATA-PLANE CHAIN ON THE AUTH AXIS: a provider backed by the linked operator door — a REAL plugin on the auth kind's memory
 /// ABI — opened through the root's auth axis is ONE chain position the request path submits and
 /// awaits, lent the request's head and its candidate credential: the right token identifies under
 /// the provider's name, a wrong one is REFUSED, another scheme's grammar and none pass (and the
@@ -953,17 +951,15 @@ fn a_swapped_admin_chain_is_the_loops_next_door() {
 async fn a_door_on_the_data_plane_chain_judges_the_request_it_is_lent() {
     use busbar_kernel::auth::{AuthMiddleware, ChainHead, ChainVerdict};
     let op = op();
-    let registry = Arc::new(
-        busbar_kernel::preflight::plugins_preflight(
-            None,
-            None,
-            &config::IdentityProviders::new(),
-            &HashMap::new(),
-            &config::PluginsCfg::default(),
-            &config::ExportCfg::default(),
-        )
-        .expect("the linked rows"),
-    );
+    let registry = busbar_kernel::preflight::plugins_preflight(
+        None,
+        None,
+        &config::IdentityProviders::new(),
+        &HashMap::new(),
+        &config::PluginsCfg::default(),
+        &config::ExportCfg::default(),
+    )
+    .expect("the linked rows");
     let digest = busbar_contract::redacted::sha256_hex(TOKEN.as_bytes());
     let door = crate::root::dispatch::auth_axis(registry)
         .open(op, "data-door", &serde_json::Value::String(digest))
@@ -1012,7 +1008,7 @@ fn bearer(token: &str) -> axum::http::HeaderMap {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_role_bound_principal_governed_like_a_virtual_key`
-/// (coverage map v2 row 402). 1.5.5: with governance on and an external data-plane module on the
+/// 1.5.5: with governance on and an external data-plane module on the
 /// chain, a role-bound principal is governed through a SYNTHESIZED key exactly like a virtual key:
 /// its binding's pool ACL admits the granted pool (200) and refuses another (403); a binding that
 /// omits `allowed_pools` grants every pool; an explicit `allowed_pools: []` grants nothing (401);
@@ -1139,8 +1135,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     );
 }
 
-/// THE CLIENT-TOKEN LINES ON THE DATA LISTENER, end to end through the linked default inbound style
-/// (row 159, K3#1): a key minted by `keys` is admitted on each of 1.5.5's three lines alone (the
+/// THE CLIENT-TOKEN LINES ON THE DATA LISTENER, end to end through the linked default inbound style: a key minted by `keys` is admitted on each of 1.5.5's three lines alone (the
 /// Bearer on `authorization`, raw on `x-api-key` and on `x-goog-api-key`), the Bearer wins when it
 /// and `x-api-key` are both present (oracle cell `http.crosscut|bearer-and-x-api-key`), and a bad
 /// credential on any line is 1.5.5's 401. A present non-Bearer `authorization` (a SigV4 signature

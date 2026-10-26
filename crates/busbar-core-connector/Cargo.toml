@@ -35,9 +35,7 @@ arc-swap = { workspace = true }
 # `busbar-kernel` names nothing here.
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # The egress unit's one http(s) URL reader (`trust::net::split_url`, the destination judge's URL arm
-# and the metadata carve-outs' host), and its `Resolver` seam, which the system name lookup the
-# kernel's remaining resolve-then-pin dials ask (`hostio::SystemNames`) implements: the kernel
-# resolves no name itself (row 130 E2). One-way, like the edge above.
+# and the metadata carve-outs' host). One-way, like the edge above.
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
@@ -72,7 +70,7 @@ crc32fast = { workspace = true }
 # PROGRAM is the child's pipes, spawned and killed by the connector (its reactor carries them).
 tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }
-# THE PROXY ENVIRONMENT (`proxy`, row 130 E5a): a proxy variable read as the kernel engine read it
+# THE PROXY ENVIRONMENT (`proxy`, row 130 E5a): a proxy variable read as 1.5.5's reqwest read it
 # (`url`), and the `Proxy-Authorization: Basic` credential its userinfo becomes (`base64`).
 url = { workspace = true }
 base64 = { workspace = true }
@@ -92,17 +90,9 @@ test-support = ["rcgen/pem"]
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
-# THE REAL-TLS ROWS (tls/engine_tests.rs): the kernel's outbound engine and TLS listener driven over
-# this crate's wrap. TLS stays in the connector, so the rows that need a real handshake through the
-# kernel live here: the kernel's test kit (its fixture servers and the test install of the
-# egress-trust capability), 1.5.5's pinned reqwest client the egress differential compares against
-# and whose `Identity::from_pem` the identity PEM walk keeps verdict parity with, and the router the
-# TLS listener serves. Dev-only.
+# The kernel's test kit, for the tests that build kernel values the shipped feature set gates.
+# Dev-only.
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
-reqwest = { workspace = true }
-axum = { workspace = true, features = ["http1"] }
-http-body-util = { workspace = true }
-bytes = { workspace = true }
 # THE UNIVERSAL-NEEDS WITNESS (tests/universal_needs.rs, its only user): the fixture below is loaded
 # dropped in through the real admission, scan and open, never a host written for the test. Dev-only.
 busbar-plugin-loader = { path = "../plugin-loader" }

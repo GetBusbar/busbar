@@ -68,7 +68,8 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::call::{MetricEntry, METRIC_SET};
 use busbar_contract::abi::mechanism::door::{
-    Door, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE, SECTION_DECLARING,
+    Door, DoorParts, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE,
+    SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     CancelIn, CancelOut, DriveIn, GenIn, OpsHead, RefreshIn, TickIn, TickOut, LIFECYCLE_SLOTS,
@@ -361,15 +362,19 @@ static OPS: Shared<Ops> = Shared(Ops {
     catalog: None,
 });
 
-static DOOR: Shared<Door> = Shared(Door {
-    magic: DOOR_MAGIC,
-    mechanism_version: MECHANISM_VERSION,
-    size: std::mem::size_of::<Door>() as u32,
-    kind: KindCode::Plane as u32,
-    kind_abi: KindCode::Plane.abi_version(),
-    statement: &STATEMENT.0 as *const Statement,
-    ops: &OPS.0 as *const Ops as *const OpsHead,
-    ready: None,
+// SAFETY: the Statement and plane table are this file's own `'static` data, laid out above: every
+// list points at its stated count of `'static` entries and every slot honours the call convention.
+static DOOR: Shared<Door> = Shared(unsafe {
+    Door::__from_parts(DoorParts {
+        magic: DOOR_MAGIC,
+        mechanism_version: MECHANISM_VERSION,
+        size: std::mem::size_of::<Door>() as u32,
+        kind: KindCode::Plane as u32,
+        kind_abi: KindCode::Plane.abi_version(),
+        statement: &STATEMENT.0 as *const Statement,
+        ops: &OPS.0 as *const Ops as *const OpsHead,
+        ready: None,
+    })
 });
 
 /// The claims: every path under `/call` for POST, `/open`, a claim that takes no inbound
@@ -426,7 +431,7 @@ static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
 const SHORT_REPLY: usize = 1 << 20;
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
-pub extern "C" fn door() -> *const Door {
+pub extern "C" fn door() -> &'static Door {
     &DOOR.0
 }
 

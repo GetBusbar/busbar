@@ -555,22 +555,24 @@ mod door {
     extern "C" fn lifecycle_open_door() -> *const Door {
         // SAFETY: the macro's `'static` door and its plane table.
         let (d, ops) = unsafe {
-            let d = &*plug::door();
-            (d, *d.ops.cast::<plane::Ops>())
+            let d = plug::door();
+            (d, *d.ops().cast::<plane::Ops>())
         };
         let mut ops = ops;
         ops.head.open = kind_op::<Lifecycle, LifecycleOpen, TestCapture, { life::OPEN }>();
         ops.head.close = kind_op::<Lifecycle, LifecycleClose, TestCapture, { life::CLOSE }>();
         let ops: &'static plane::Ops = Box::leak(Box::new(ops));
-        Box::leak(Box::new(Door {
-            ops: std::ptr::from_ref(ops).cast(),
-            ..*d
+        Box::leak(Box::new(unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                ops: std::ptr::from_ref(ops).cast(),
+                ..d.parts()
+            })
         }))
     }
 
     #[test]
     fn red_a_plane_open_over_the_lifecycle_structs_publishes_no_snapshot_and_faults() {
-        let row = LinkedRow::of(lifecycle_open_door).expect("the door states its Statement");
+        let row = LinkedRow::of_raw(lifecycle_open_door).expect("the door states its Statement");
         let red = load_linked::<Plane>(&row, bind()).expect("the door loads");
         let mut o = open_frame(1);
         assert_eq!(red.call(life::OPEN, &mut o).outcome, Outcome::Fault);
