@@ -232,6 +232,21 @@ impl LateServices {
     }
 }
 
+use std::convert::identity;
+
+/// Forward each listed `HostServices` method to the installed services, answering the refusal
+/// (through `$refuse`) before the install.
+macro_rules! forward {
+    ($($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, $refuse:expr;)*) => {$(
+        fn $name(&self, $($arg: $ty),*) -> $ret {
+            match self.served() {
+                Ok(s) => s.$name($($arg),*),
+                Err(r) => $refuse(r),
+            }
+        }
+    )*};
+}
+
 impl HostServices for LateServices {
     /// The kernel's clock once installed. `clock.now` has no refusal to answer, so before the
     /// install it is the kernel's own clock with no egress class, started with this value.
@@ -243,238 +258,34 @@ impl HostServices for LateServices {
     }
 
     // Every other service is the installed services' answer, or REFUSED before the install.
-    fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran {
-        match self.served() {
-            Ok(s) => s.dest_judge(dest, class, flags, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn records_get(&self, caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_get(caller, kind, key, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn records_list(&self, caller: &Caller, list: RecordsList, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_list(caller, list, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn records_claim(
-        &self,
-        caller: &Caller,
-        kind: &str,
-        key: &[u8],
-        ttl_ms: u64,
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_claim(caller, kind, key, ttl_ms, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn sign(&self, caller: &Caller, data: &[u8]) -> Stored {
-        match self.served() {
-            Ok(s) => s.sign(caller, data),
-            Err(r) => r,
-        }
-    }
-
-    fn trust_sight(&self, caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.trust_sight(caller, counterparty, hash, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_unreached(caller, counterparty),
-            Err(r) => r,
-        }
-    }
-
-    fn trust_decide(
-        &self,
-        caller: &Caller,
-        key: busbar_contract::services::TrustKeyRef<'_>,
-        expected: Option<&str>,
-        approve: bool,
-    ) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_decide(caller, key, expected, approve),
-            Err(r) => r,
-        }
-    }
-
-    fn trust_state(&self, caller: &Caller, counterparty: &str) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_state(caller, counterparty),
-            Err(r) => r,
-        }
-    }
-
-    fn trust_sight_item(
-        &self,
-        caller: &Caller,
-        counterparty: &str,
-        item: &str,
-        digest: &str,
-    ) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_sight_item(caller, counterparty, item, digest),
-            Err(r) => r,
-        }
-    }
-
-    fn trust_serves(
-        &self,
-        caller: &Caller,
-        counterparty: &str,
-        item: Option<&str>,
-        digest: Option<&str>,
-    ) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_serves(caller, counterparty, item, digest),
-            Err(r) => r,
-        }
-    }
-
-    fn trust_due(&self, caller: &Caller) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_due(caller),
-            Err(r) => r,
-        }
-    }
-
-    fn trust_verify(&self, caller: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
-        match self.served() {
-            Ok(s) => s.trust_verify(caller, cp, payload, sigs),
-            Err(r) => r,
-        }
-    }
-
-    fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
-        match self.served() {
-            Ok(s) => s.entitlement_check(caller, unit, target),
-            Err(r) => r,
-        }
-    }
-
-    fn random_fill(&self, len: u64) -> Stored {
-        match self.served() {
-            Ok(s) => s.random_fill(len),
-            Err(r) => r,
-        }
-    }
-
-    fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
-        match self.served() {
-            Ok(s) => s.session_emit(caller, session, bytes),
-            Err(r) => r,
-        }
-    }
-
-    fn records_secret(&self, kind: &str, id: &str, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.records_secret(kind, id, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn unit_nest(&self, caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.unit_nest(caller, unit, ask, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn work_open(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        kind: &str,
-        record: &[u8],
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_open(caller, unit, kind, record, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn work_find(&self, caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_find(caller, unit, reference, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn work_settle(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        handle: u64,
-        record: &[u8],
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_settle(caller, unit, handle, record, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn work_resume(&self, caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.work_resume(caller, unit, handle, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn disk_append(&self, dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.disk_append(dest, bytes, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn verify_lookup(&self, caller: &Caller, key: &[u8], later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.verify_lookup(caller, key, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
-        match self.served() {
-            Ok(s) => s.verify_store(caller, key, entry, ttl_ms),
-            Err(r) => r,
-        }
-    }
-
-    fn content_scan(
-        &self,
-        caller: &Caller,
-        unit: Option<u64>,
-        content: &[u8],
-        later: Later,
-    ) -> Ran {
-        match self.served() {
-            Ok(s) => s.content_scan(caller, unit, content, later),
-            Err(r) => Ran::Now(r),
-        }
-    }
-
-    fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
-        match self.served() {
-            Ok(s) => s.hook_call(caller, unit, ask, later),
-            Err(r) => Ran::Now(r),
-        }
+    forward! {
+        dest_judge(dest: &str, class: u32, flags: u32, later: Option<Later>) -> Ran, Ran::Now;
+        records_get(caller: &Caller, kind: &str, key: &[u8], later: Later) -> Ran, Ran::Now;
+        records_list(caller: &Caller, list: RecordsList, later: Later) -> Ran, Ran::Now;
+        records_claim(caller: &Caller, kind: &str, key: &[u8], ttl_ms: u64, later: Later) -> Ran, Ran::Now;
+        sign(caller: &Caller, data: &[u8]) -> Stored, identity;
+        trust_sight(caller: &Caller, counterparty: &str, hash: &str, later: Later) -> Ran, Ran::Now;
+        trust_unreached(caller: &Caller, counterparty: &str) -> Stored, identity;
+        trust_decide(caller: &Caller, key: busbar_contract::services::TrustKeyRef<'_>, expected: Option<&str>, approve: bool) -> Stored, identity;
+        trust_state(caller: &Caller, counterparty: &str) -> Stored, identity;
+        trust_sight_item(caller: &Caller, counterparty: &str, item: &str, digest: &str) -> Stored, identity;
+        trust_serves(caller: &Caller, counterparty: &str, item: Option<&str>, digest: Option<&str>) -> Stored, identity;
+        trust_due(caller: &Caller) -> Stored, identity;
+        trust_verify(caller: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored, identity;
+        entitlement_check(caller: &Caller, unit: Option<u64>, target: &str) -> Stored, identity;
+        random_fill(len: u64) -> Stored, identity;
+        session_emit(caller: &Caller, session: u64, bytes: &[u8]) -> Stored, identity;
+        records_secret(kind: &str, id: &str, later: Later) -> Ran, Ran::Now;
+        unit_nest(caller: &Caller, unit: Option<u64>, ask: NestAsk, later: Later) -> Ran, Ran::Now;
+        work_open(caller: &Caller, unit: Option<u64>, kind: &str, record: &[u8], later: Later) -> Ran, Ran::Now;
+        work_find(caller: &Caller, unit: Option<u64>, reference: &[u8], later: Later) -> Ran, Ran::Now;
+        work_settle(caller: &Caller, unit: Option<u64>, handle: u64, record: &[u8], later: Later) -> Ran, Ran::Now;
+        work_resume(caller: &Caller, unit: Option<u64>, handle: u64, later: Later) -> Ran, Ran::Now;
+        disk_append(dest: &DiskDest, bytes: Vec<u8>, later: Later) -> Ran, Ran::Now;
+        verify_lookup(caller: &Caller, key: &[u8], later: Later) -> Ran, Ran::Now;
+        verify_store(caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored, identity;
+        content_scan(caller: &Caller, unit: Option<u64>, content: &[u8], later: Later) -> Ran, Ran::Now;
+        hook_call(caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran, Ran::Now;
     }
 
     fn snapshot_read(&self, caller: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
