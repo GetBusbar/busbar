@@ -597,6 +597,17 @@ fn exchange_once(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
+    // A framed request is made whole when its stream opens, so its security is its target's: a
+    // sealed value that must go out secured is refused before the open when the target names a
+    // scheme that is not secure. A need's own target (`None`) is the operator's, as written.
+    if state.secure_required
+        && (state.insecure || target.is_some_and(|t| !crate::abi::sdk::cred::secure_target(t)))
+    {
+        state.insecure = true;
+        return Poll::Ready(Err(ConnFailure::Refused(
+            crate::abi::sdk::cred::NOT_SECURE.into(),
+        )));
+    }
     let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
     state.stream = Some(stream);
     let ended = match read_to_end(c, state, stream) {
@@ -615,16 +626,6 @@ fn exchange_once(
 /// Send on `stream`, then read the reply to its terminal piece into `state`; the stream's facts
 /// are read where the caller asks, once the reply ended or failed.
 fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
-    if state.secure_required {
-        let confirmed = crate::abi::sdk::cred::confirm_secure(c, stream);
-        if state.insecure || matches!(confirmed, Poll::Ready(Err(_))) {
-            state.insecure = true;
-            return Poll::Ready(Err(ConnFailure::Refused(
-                crate::abi::sdk::cred::NOT_SECURE.into(),
-            )));
-        }
-        ready!(confirmed);
-    }
     ready!(send(c, state, stream));
     loop {
         let this = c.issued();

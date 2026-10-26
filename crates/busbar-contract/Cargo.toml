@@ -119,9 +119,10 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }
-num-bigint = { workspace = true, optional = true }
-getrandom = { workspace = true, optional = true }
-ring = { workspace = true, optional = true }
+# The chip's RSA recipe (MySQL `caching_sha2_password` full authentication) and its RS256 recipe.
+num-bigint = { workspace = true }
+getrandom = { workspace = true }
+ring = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 # `base64` renders the one document-fingerprint tag a plane writes, `sha256/<standard base64>`
@@ -179,14 +180,3 @@ services-double = []
 # that names it), so it is absent from every release build; it switches on no dependency and no
 # other feature.
 alloc-counter = []
-
-# THE CHIP'S RSA RECIPE (`abi::sdk::chip::Cred::mysql_rsa_packet`): MySQL `caching_sha2_password`
-# full authentication on a link with no TLS encrypts the password to the server's key. Off by
-# default; a plugin that speaks that handshake (and, from chip row 4, the secret plugin running the
-# recipe) turns it on. `num-bigint` and `getrandom` are already in Cargo.lock.
-chip-rsa = ["dep:num-bigint", "dep:getrandom"]
-
-# THE CHIP'S RS256 RECIPE (`Cred::jws_rs256`): a JWT-bearer assertion signed under the PKCS #8 key the
-# credential holds. Off by default; the plugin that mints with it (and, from chip row 4, the secret
-# plugin) turns it on. `ring` is already in Cargo.lock.
-chip-jws = ["dep:ring"]
