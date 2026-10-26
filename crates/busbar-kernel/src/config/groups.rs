@@ -51,6 +51,20 @@ pub fn validate_groups(
     errors: &mut Vec<String>,
 ) {
     for (name, group) in groups {
+        // VALIDATION AT THE EDGE (MONEY-DESIGN §3b): every bucket id this group composes is a store
+        // row key, so it must fit the narrowest bucket column; refused here, by name, never posted.
+        for limit in &group.limits {
+            let Some(window) = limit.per else {
+                continue;
+            };
+            let id = match &limit.scope {
+                Some(s) => format!("group:{name}@{}#{}:{}", window.as_str(), s.kind, s.value),
+                None => format!("group:{name}@{}", window.as_str()),
+            };
+            if let Some(why) = crate::posting::edge::bucket_id_refusal(&id) {
+                errors.push(format!("groups.{name}: {why}; shorten the group or pool name"));
+            }
+        }
         // A pool-qualified limit against a pool that doesn't exist would silently never match any
         // traffic (an unenforced budget) - reject it at the door instead.
         let own = group.limits.iter().map(|l| (l, "limits"));

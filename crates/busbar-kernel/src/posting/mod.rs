@@ -4,6 +4,7 @@
 //! THE POSTER'S DURABLE PIECES (MONEY-DESIGN §3c): the spool's framing, its segments and manifest,
 //! and the count records with the batch bodies derived from them.
 
+pub mod edge;
 pub mod frame;
 pub mod record;
 pub mod recorder;

@@ -299,7 +299,15 @@ pub(crate) enum ExchangeError {
 fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
     let leading_reserved =
         sub.starts_with("vk_") || sub.starts_with("user:") || sub.starts_with("group:");
+    // VALIDATION AT THE EDGE (MONEY-DESIGN §3b): the subject's `user:<sub>` leaf composes bucket ids
+    // that must fit the store's bucket column, in ASCII.
+    let too_long = crate::posting::edge::bucket_id_refusal(&format!(
+        "group:user:{sub}@{}",
+        crate::posting::edge::LONGEST_WINDOW
+    ))
+    .is_some();
     if sub.is_empty()
+        || too_long
         || sub.contains('/')
         || sub.chars().any(|c| c.is_control())
         || leading_reserved
@@ -308,7 +316,8 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
             SELF_SUBJECT_UNSAFE,
             sub = %sub,
             "token-exchange: refusing a principal id unsafe as a self-serve subject (empty, a '/' \
-             route separator, a control char, or a leading reserved 'vk_'/'user:'/'group:' prefix)"
+             route separator, a control char, a leading reserved 'vk_'/'user:'/'group:' prefix, \
+             or a bucket id the store cannot hold: non-ASCII or over 128 bytes)"
         );
         return Err(ExchangeError::BadSubject);
     }

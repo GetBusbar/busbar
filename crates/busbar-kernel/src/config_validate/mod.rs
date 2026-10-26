@@ -1581,6 +1581,22 @@ fn priced_classes(
 /// secret reference's MODULE resolvability. Paste-ready stubs throughout. Pure - shared verbatim
 /// by boot and `--validate` so the two cannot drift.
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
+    // VALIDATION AT THE EDGE (MONEY-DESIGN §3b): a priced lane and a provider become store row keys
+    // with a card-entry prefix; refused here, by name, never posted.
+    if let Some(card) = &cfg.rate_card {
+        for key in card.keys() {
+            if let Some(why) = crate::posting::edge::model_refusal(key) {
+                errors.push(format!("rate_card['{key}']: {why}"));
+            }
+        }
+    }
+    let mut providers: Vec<&String> = cfg.providers.keys().collect();
+    providers.sort();
+    for name in providers {
+        if let Some(why) = crate::posting::edge::provider_refusal(name) {
+            errors.push(format!("providers.{name}: {why}"));
+        }
+    }
     if let Some(card) = &cfg.rate_card {
         // Well-formed rates: every tier finite and >= 0 (names the exact config path). A non-fallback
         // plane's card rides in the same map under plane-qualified keys (#47) and is held to the
