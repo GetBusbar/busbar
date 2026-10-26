@@ -714,7 +714,7 @@ impl Wake for TicketWake {
     }
 }
 
-fn map(f: &Failure) -> ConnError {
+pub(crate) fn map(f: &Failure) -> ConnError {
     match f {
         Failure::Refused(_) => ConnError::Refused,
         Failure::Timeout => ConnError::Timeout,
