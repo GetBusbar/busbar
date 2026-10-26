@@ -31,7 +31,7 @@ use super::super::{DriverSteps, FarEnd, PlaneUnits};
 use super::{rewrite_applied, veto_by, HookBinder, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::ResolvedPolicy;
-use busbar_kernel_audit::record::HookApplied;
+use busbar_kernel_audit::record::{HookApplied, HookHead};
 
 /// The order a plane's request-stage hooks run in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -224,16 +224,14 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
                     let next = match self.project(Some(&bytes), true) {
-                        Ok(next) => next,
+                        // A rewrite naming messages the plane answered with no rewritten body:
+                        // not applied, refused as a rewrite the plane refused is.
+                        Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => next,
                         // A FAULT project: the shared 500, never the hook's `on_error`.
                         Err(fault @ Stopped::Veto(_)) => return Err(fault),
-                        Err(_) => {
-                            // The plane refused the rewrite: the hook's failure, by its
-                            // `on_error`.
-                            if let Some((status, message)) = refused_rewrite(&**hook, &view.pool) {
-                                return Err(veto_by(status, message, hook.name()));
-                            }
-                            continue;
+                        Ok(_) | Err(_) => {
+                            let (status, message) = refused_rewrite(&**hook, &view.pool, ran);
+                            return Err(veto_by(status, message, hook.name()));
                         }
                     };
                     // The re-projection is held to the same bound entry.
@@ -353,38 +351,56 @@ fn bound_entry<'v>(
         .map_err(|_| Stopped::Unreadable)
 }
 
-/// A REWRITE THE PLANE REFUSED TO APPLY (one naming a model other than the routed one, say): the
-/// rewriting hook's failure, never the unit's, answered by that hook's own `on_error` (coordinator
-/// ruling, row 159). A load-bearing hook (`on_error: reject`) refuses the unit with the refusal a
-/// failed call of the same hook answers, [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words
-/// (`Some`); any other disposition proceeds with the body and view the unit had before that rewrite
-/// (`None`), as 1.5.5 left a request it could not rewrite unmodified. Never a silent switch to what
-/// the rewrite named.
+/// A REWRITE THE PLANE DID NOT APPLY (it refused the rewrite, or answered with no rewritten body:
+/// one naming a model other than the routed one, a dialect with no conversation to frame it into,
+/// a body the splice cannot place it in): THE REQUEST IS REFUSED, never forwarded as the caller sent
+/// it. A rewrite hook rewrites to redact, compress or police; relaying the un-rewritten body
+/// upstream is the fail-open the hook exists to prevent, whatever its `on_error` says (that answers
+/// the hook's OWN failure to answer, not busbar's failure to apply what it answered).
+///
+/// A load-bearing hook (`on_error: reject`) is refused with the refusal a failed call of the same
+/// hook answers, [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words; every other hook with
+/// [`PROJECT_FAULT_STATUS`] and 1.5.5's own words for this case, [`PROJECT_FAULT_MESSAGE`]. The
+/// refusal is logged at error naming the hook and the entry, and the hook's entry in the unit's
+/// record (its "hooks applied") is rewritten to a failed veto ([`mark_unapplied`]).
 ///
 /// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`]: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
+/// [`PROJECT_FAULT_STATUS`]: busbar_contract::abi::plane::PROJECT_FAULT_STATUS
+/// [`PROJECT_FAULT_MESSAGE`]: busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE
 pub(super) fn refused_rewrite(
     hook: &dyn busbar_contract::hooks::RoutingPolicy,
     entry: &str,
-) -> Option<(u16, String)> {
+    ran: &mut [HookApplied],
+) -> (u16, String) {
     use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
-    if hook.refuses_failed_rewrite() {
-        tracing::warn!(
-            hook = hook.name(),
-            entry = %entry,
-            "the plane refused a rewrite hook's rewrite and the hook is declared load-bearing \
-             (on_error: reject); refusing the request"
-        );
-        return Some(rewrite_refusal(
-            REQUIRED_HOOK_UNAVAILABLE_STATUS,
-            REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
-        ));
-    }
-    tracing::warn!(
+    let load_bearing = hook.refuses_failed_rewrite();
+    tracing::error!(
         hook = hook.name(),
         entry = %entry,
-        "the plane refused a rewrite hook's rewrite; proceeding with the request unmodified"
+        load_bearing,
+        "a rewrite hook's rewrite could not be applied to the request; refusing the request \
+         rather than forwarding the body un-rewritten"
     );
-    None
+    mark_unapplied(hook.name(), ran);
+    if load_bearing {
+        return rewrite_refusal(
+            REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+        );
+    }
+    (
+        busbar_contract::abi::plane::PROJECT_FAULT_STATUS,
+        busbar_contract::abi::plane::PROJECT_FAULT_MESSAGE.to_string(),
+    )
+}
+
+/// The hook's entry in the unit's record, pushed as a rewrite when it answered, rewritten to what
+/// happened: a failed veto.
+fn mark_unapplied(hook: &str, ran: &mut [HookApplied]) {
+    if let Some(last) = ran.iter_mut().rev().find(|h| h.hook == hook) {
+        last.head = HookHead::Veto;
+        last.failed = true;
+    }
 }
 
 /// A REWRITE'S REFUSAL, as the caller is answered (SEAM-L(q), predev parity): a status the hook

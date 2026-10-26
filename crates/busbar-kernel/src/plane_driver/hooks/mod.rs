@@ -1599,25 +1599,24 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
                     match self.project(Some(&bytes), true) {
-                        Ok(next) => {
+                        // Applied; or a rewrite naming no messages, which 1.5.5 read as no rewrite.
+                        Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => {
                             if let Some(body) = &next.rewritten {
                                 self.lock().body = Some(Arc::from(body.as_slice()));
                             }
                             view = next;
                         }
-                        // The plane refused the rewrite: the hook's failure, by its `on_error`;
-                        // otherwise the unit goes on as it stood before that rewrite.
                         Err(fault @ Stopped::Veto(_)) => {
                             // A FAULT project: the shared 500, never the hook's `on_error`.
                             self.lock().hooked = Some((hooks, view));
                             return Err(fault);
                         }
-                        Err(_) => {
-                            if let Some((status, message)) = gated::refused_rewrite(&**hook, &pool)
-                            {
-                                self.lock().hooked = Some((hooks, view));
-                                return Err(veto(status, message));
-                            }
+                        // The plane refused the rewrite, or answered with no rewritten body: the
+                        // request is refused, never forwarded un-rewritten.
+                        Ok(_) | Err(_) => {
+                            let (status, message) = gated::refused_rewrite(&**hook, &pool, ran);
+                            self.lock().hooked = Some((hooks, view));
+                            return Err(veto(status, message));
                         }
                     }
                 }

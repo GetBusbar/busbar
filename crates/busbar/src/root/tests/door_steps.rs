@@ -6876,9 +6876,16 @@ pub(crate) mod hook_parity {
             port,
             vec![(
                 "screen",
+                // Screens only: clean arguments are let through untouched (the double's default
+                // answer is a chat rewrite a tool call cannot take, which is refused, never
+                // relayed un-rewritten).
                 gate(
                     "rw",
-                    serde_json::json!({ "reject_if_contains": "/etc/shadow", "reject_status": 451 }),
+                    serde_json::json!({
+                        "reject_if_contains": "/etc/shadow",
+                        "reject_status": 451,
+                        "raw_transform_reply": {},
+                    }),
                 ),
             )],
         );

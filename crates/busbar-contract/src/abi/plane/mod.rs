@@ -2854,8 +2854,9 @@ pub struct ProjectOut {
     pub end_user: AbiStr,
     /// The rewritten body, in the arena, when [`ProjectIn::rewrite`] was given and the plane
     /// applied it: the body the kernel keeps and re-pushes on every attempt from now on. Empty
-    /// (or [`SPAN_ABSENT`]) = not applied, and the unit proceeds with the body it had (1.5.5:
-    /// a rewrite that cannot be applied leaves the request unmodified).
+    /// (or [`SPAN_ABSENT`]) = not applied: for a rewrite naming messages the kernel refuses the
+    /// unit (the hook's 503 under `on_error: reject`, [`PROJECT_FAULT_STATUS`] otherwise), never
+    /// forwarding the body un-rewritten; a rewrite naming no messages is no rewrite (1.5.5).
     pub rewritten: Span,
     /// Short answer: the turns `messages_buf` needs.
     pub messages_needed: u32,

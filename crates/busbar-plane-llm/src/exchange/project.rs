@@ -216,8 +216,10 @@ fn read_rewrite(rewrite: &[u8]) -> Option<RewriteReply> {
 
 /// APPLY a request-stage hook's rewrite to `arrived` in its own dialect: the dialect frames the
 /// rewrite's messages (and tools) into its conversation container. Answers the rewritten body when
-/// it applied; `None` leaves the arrival untouched (the previous release: a rewrite that cannot be
-/// applied leaves the request unmodified).
+/// it applied; `None` leaves the arrival untouched and answers no rewritten body. A rewrite naming
+/// messages that comes back with no rewritten body is one the kernel REFUSES the request over (the
+/// hook's 503 under `on_error: reject`, 1.5.5's 500 otherwise), never relayed un-rewritten; a
+/// rewrite naming no messages is no rewrite, as in 1.5.5.
 ///
 /// THE REWRITE IS SPLICED, NEVER RE-SERIALIZED (OWNER 2026-10-02 LLM DIALECT FIDELITY RULE,
 /// BUSBAR-1.6.0.md: "hook `rw` edits, spliced per changed block. Never parse-edit-reserialize"):
@@ -253,8 +255,9 @@ pub fn apply_rewrite(arrived: &mut Arrived, rewrite: &[u8]) -> Option<Vec<u8>> {
             .filter(|key| !obj.contains_key(key.as_str()))
             .map(|key| json_splice::Edit::Remove(key.as_str())),
     );
-    // `None` from the splice with edits to make is a body it cannot place them in: the request goes
-    // on unmodified. With none, the rewrite read the same as the body: its bytes stand.
+    // `None` from the splice with edits to make is a body it cannot place them in: no rewritten
+    // body, which the kernel refuses the request over. With none, the rewrite read the same as the
+    // body: its bytes stand.
     let bytes = if edits.is_empty() {
         arrived.body.clone()
     } else {
