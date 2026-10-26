@@ -483,13 +483,18 @@ mod tests {
         a.add_unit("", "gpt", "input", 5);
         let body = usage_body([&a]);
         assert_eq!(body.len(), 2);
-        let (plain_id, w, plain) = &body[0];
-        assert_eq!((plain_id.as_str(), *w), ("group:g@day", 100));
+        let (_, w, plain) = body
+            .iter()
+            .find(|(b, _, _)| b == "group:g@day")
+            .expect("the plain row");
+        assert_eq!(*w, 100);
         assert_eq!(plain.requests, 2);
         assert_eq!(plain.billable_requests, 2);
         assert_eq!(plain.models[0].usage_units["input"], 15);
-        let (sib_id, _, sib) = &body[1];
-        assert_eq!(sib_id, &sibling_bucket("group:g@day"));
+        let (sib_id, _, sib) = body
+            .iter()
+            .find(|(b, _, _)| *b == sibling_bucket("group:g@day"))
+            .expect("the sibling row");
         assert_eq!(sib_id.len(), 34);
         assert_eq!(sib.requests, 0);
         let fee = sib
