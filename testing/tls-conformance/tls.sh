@@ -67,12 +67,22 @@ if [ ! -f "$J/tls_assess.py" ] || [ ! -f "$J/tls-assert.json" ]; then
   # PR #1713 has not landed in this tree: take its two files from the PR ref at run time. Never copied
   # into this repo (a second copy would be a second home); once #1713 is in, this branch is not taken.
   J="$W/judge"; mkdir -p "$J"
-  if git -C "$repo" fetch -q origin "$PR_1713" 2>/dev/null \
-     && git -C "$repo" show FETCH_HEAD:scripts/release/tls_assess.py >"$J/tls_assess.py" 2>/dev/null \
-     && git -C "$repo" show FETCH_HEAD:scripts/release/tls-assert.json >"$J/tls-assert.json" 2>/dev/null; then
-    say "judge: scripts/release/{tls_assess.py,tls-assert.json} are not in this tree; taken from $PR_1713"
-  else
-    why+=("the shared TLS judge (scripts/release/tls_assess.py, tls-assert.json from PR #1713) is neither in this tree nor fetchable from $PR_1713"); final
+  jerr=""
+  for remote in origin "https://github.com/GetBusbar/busbar"; do
+    jerr="$jerr [$remote: $(git -C "$repo" fetch -q "$remote" "$PR_1713" 2>&1 | tail -1)]"
+    if git -C "$repo" show FETCH_HEAD:scripts/release/tls_assess.py >"$J/tls_assess.py" 2>/dev/null \
+       && git -C "$repo" show FETCH_HEAD:scripts/release/tls-assert.json >"$J/tls-assert.json" 2>/dev/null; then
+      say "judge: scripts/release/{tls_assess.py,tls-assert.json} are not in this tree; taken from $PR_1713 via $remote"; jerr=""; break
+    fi
+  done
+  if [ -n "$jerr" ]; then  # the repo is public: the PR's branch over plain https
+    RAW=https://raw.githubusercontent.com/GetBusbar/busbar/lane-release-publish-gate/scripts/release
+    if curl -fsSL --retry 2 -o "$J/tls_assess.py" "$RAW/tls_assess.py" && curl -fsSL --retry 2 -o "$J/tls-assert.json" "$RAW/tls-assert.json"; then
+      say "judge: taken from the lane-release-publish-gate branch (PR #1713) over https"; jerr=""
+    fi
+  fi
+  if [ -n "$jerr" ]; then
+    why+=("the shared TLS judge (scripts/release/tls_assess.py, tls-assert.json from PR #1713) is neither in this tree nor fetchable from $PR_1713:$jerr"); final
   fi
 fi
 
