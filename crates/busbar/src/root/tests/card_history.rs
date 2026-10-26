@@ -449,3 +449,156 @@ fn the_journals_cards_migrate_under_time_keys_and_collapse_duplicates() {
     again.boot(&edit, "boot", migrated).unwrap();
     assert_eq!(store.puts(), puts);
 }
+
+/// **B1: A UNIT PRICES WITH ITS NODE'S OWN CARD.** Two holders kept in one store load different
+/// cards; each one's `pin()` (what a unit is admitted under) prices now with its OWN card, while the
+/// fleet read (`history()`) takes the later change. Without the node resolution, the node that
+/// changed first priced with the other's card after its next rescan.
+#[test]
+fn t13_each_nodes_pin_prices_with_its_own_card_after_the_other_changes() {
+    use crate::root::kernel::RootHistory;
+    let store = RecordSlots::new();
+    let boot = card(1.0, 0);
+    let holder = |node: u64| {
+        let h = RootHistory::default();
+        h.keep_in_store(store.calls(), node, None);
+        h.card_applied(&boot, "boot");
+        h.boot_in_store(None).expect("the store boot");
+        h
+    };
+    let (a, b) = (holder(1), holder(2));
+    let (card_a, card_b) = (card(1.0, 5), card(7.0, 0));
+    a.card_applied(&card_a, "config/reload on node 1");
+    std::thread::sleep(Duration::from_millis(5));
+    b.card_applied(&card_b, "config/reload on node 2");
+    a.card_store().unwrap().rescan(None).unwrap();
+    b.card_store().unwrap().rescan(None).unwrap();
+    let now = now_ms() + 1;
+    let priced = |h: &RootHistory| {
+        let pin = h.pin().expect("a pin");
+        let view = pin.view();
+        let (_, card) = view.card_at(now).expect("covered");
+        card.clone()
+    };
+    assert_eq!(
+        priced(&a),
+        super::rate_card_of(&card_a),
+        "node 1 prices with its own card"
+    );
+    assert_eq!(
+        priced(&b),
+        super::rate_card_of(&card_b),
+        "node 2 prices with its own card"
+    );
+    let fleet = a.history().unwrap();
+    let view = fleet.current();
+    assert_eq!(
+        view.card_at(now).map(|(_, c)| c.clone()),
+        Some(super::rate_card_of(&card_b)),
+        "the fleet read takes the later change"
+    );
+}
+
+/// **B2: A NODE WHOSE CARD IS NOT THE FLEET'S ALARMS**, naming the differing fields, even when the
+/// two entries do not extend one head.
+#[test]
+fn a_node_whose_card_differs_from_the_card_in_force_alarms() {
+    let store = RecordSlots::new();
+    let first = booted(&store, 1, &card(1.0, 0));
+    std::thread::sleep(Duration::from_millis(2));
+    let other = booted(&store, 2, &card(1.0, 6));
+    first.rescan(None).unwrap();
+    assert!(first
+        .alarms()
+        .iter()
+        .any(|m| m.contains("this node prices with rate card entry")
+            && m.contains("per_request_fee")));
+    assert!(other
+        .alarms()
+        .iter()
+        .all(|m| !m.contains("this node prices with rate card entry")));
+}
+
+/// **B3: THE MIGRATION PRICES EVERY INSTANT AS DEV'S REBUILD DID**, a REFUSED correction included:
+/// one sealed over a card its chain does not hold at that number is left out, as dev's boot left
+/// it out, and a valid one is rebuilt over its own base. Spend equality, card for card.
+#[test]
+fn the_migration_prices_every_instant_as_devs_rebuild_did_with_a_refused_correction() {
+    use crate::root::kernel::{card_from_raw, CardApplied, CardForm, CorrectionBase, RootHistory};
+    use crate::root::units_admin::{amendment_body, AmendmentRecord};
+    let applied = |card: &CardFields, from: u64, at: u64| {
+        let rates = card.rates();
+        let built = card_from_raw(&rates.raw());
+        CardApplied {
+            effective_from: from,
+            appended_at: at,
+            policy_epoch: 0,
+            form: CardForm::of(&rates.raw(), &built),
+        }
+    };
+    let record = |seq: u64, body: Vec<u8>| busbar_kernel_wal::JournalRecord {
+        class: busbar_kernel_wal::RecordClass::Policy,
+        node: 1,
+        node_seq: seq,
+        lease_epoch: 0,
+        policy_epoch: 0,
+        wall: 0,
+        mono: 0,
+        body,
+        body_hash: [0; 32],
+        prev_hash: [0; 32],
+        hash: [0; 32],
+    };
+    let correction = |seq: u64, digest: [u8; 32], at: u64, nanos: u64| AmendmentRecord {
+        effective_from: 5_000,
+        effective_until: Some(6_000),
+        amended_at_ms: at,
+        sealed_over: Some(CorrectionBase {
+            seq: busbar_kernel_ledger::cost::HistorySeq(seq),
+            card_digest: digest,
+        }),
+        sealed_fee: 3,
+        rates: vec![("m".to_string(), "input".to_string(), Some(nanos))],
+        operator_fingerprint: String::new(),
+        reason_hash: [1; 32],
+        principal: "op".to_string(),
+        dual_control: "single".to_string(),
+        signed_payload: Vec::new(),
+        signature: String::new(),
+    };
+    let (boot, edit) = (card(1.0, 0), card(1.0, 3));
+    let (a0, a1) = (applied(&boot, 0, 1_000), applied(&edit, 5_000, 5_000));
+    let edit_digest = a1.form.card().digest();
+    let records = vec![
+        record(1, a0.body()),
+        record(2, a1.body()),
+        // Sealed over entry 1 with the WRONG digest: dev's rebuild refuses it.
+        record(3, amendment_body(&correction(1, [9; 32], 7_000, 50_000))),
+        // Sealed over entry 1 with its own digest: rebuilt.
+        record(4, amendment_body(&correction(1, edit_digest, 8_000, 4_000))),
+    ];
+    let dev = RootHistory::restore(crate::root::kernel::journalled_cards(&records), Vec::new());
+    assert_eq!(
+        dev.history.len(),
+        3,
+        "dev's rebuild left the refused correction out"
+    );
+
+    let migrated = super::migrated(&[(1, records.clone())], 9);
+    assert_eq!(
+        migrated.len(),
+        3,
+        "and so does the migration: {migrated:#?}"
+    );
+    let store = RecordSlots::new();
+    let cs = CardStore::new(store.calls(), 9, None);
+    cs.boot(&edit, "boot", migrated).unwrap();
+    let ours = cs.history().unwrap();
+    for t in [0, 4_999, 5_000, 5_500, 5_999, 6_000, 9_999] {
+        let dev_view = dev.history.current();
+        let our_view = ours.current();
+        let dev_card = dev_view.card_at(t).map(|(_, c)| c.clone());
+        let our_card = our_view.card_at(t).map(|(_, c)| c.clone());
+        assert_eq!(our_card, dev_card, "the card at {t} is dev's");
+    }
+}

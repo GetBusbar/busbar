@@ -1707,7 +1707,7 @@ fn amend_rate_history_effect(
         fee: per_request_fee,
     };
     let seq = history
-        .amend(&correction, |card, base| {
+        .amend_by(&correction, &attribution.principal, |card, base| {
             // A CORRECTION APPLIES ONCE. The body names the window, the cells, the fee
             // and the reason, and nothing that makes one submission different from the next — so
             // the same bytes, sent again after a later correction moved the window on, would put

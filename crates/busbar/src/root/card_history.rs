@@ -80,6 +80,10 @@ pub struct CardStore {
     data_dir: Option<PathBuf>,
     state: Mutex<State>,
     published: arc_swap::ArcSwapOption<History>,
+    /// The history as THIS NODE prices with it: the fleet history, with every other node's
+    /// change keyed above this node's own entry left known but out of force, so this node's own
+    /// entry prices its instants from its start ([`Self::node_history`]).
+    node_published: arc_swap::ArcSwapOption<History>,
     loaded: AtomicBool,
     rescanning: AtomicBool,
 }
@@ -125,6 +129,7 @@ impl CardStore {
             data_dir,
             state: Mutex::new(State::default()),
             published: arc_swap::ArcSwapOption::empty(),
+            node_published: arc_swap::ArcSwapOption::empty(),
             loaded: AtomicBool::new(false),
             rescanning: AtomicBool::new(false),
         })
@@ -140,10 +145,20 @@ impl CardStore {
         self.loaded.load(Ordering::Acquire)
     }
 
-    /// The history as this node resolves it, for pricing.
+    /// The FLEET history, resolved by time: the latest change on any node prices an instant. The
+    /// read every view and budget derivation takes (MONEY-DESIGN section 3a, item 17).
     #[must_use]
     pub fn history(&self) -> Option<Arc<History>> {
         self.published.load_full()
+    }
+
+    /// **THE HISTORY THIS NODE PRICES WITH**: the fleet history, with every OTHER node's change
+    /// keyed above this node's own entry left known (its id still finds its card) but out of
+    /// force, so this node's own card prices every instant from its own entry's start, whatever
+    /// another node loaded since. What [`crate::root::kernel::RootHistory::pin`] hands a unit.
+    #[must_use]
+    pub fn node_history(&self) -> Option<Arc<History>> {
+        self.node_published.load_full()
     }
 
     /// This node's durable id.
@@ -185,10 +200,20 @@ impl CardStore {
         state.entries.get(&key).map(|e| (key, e.card.clone()))
     }
 
-    /// Rebuild the resolved history from what this node holds, and publish it.
+    /// Rebuild the resolved histories from what this node holds, and publish them: the fleet's,
+    /// and this node's own ([`Self::node_history`]).
     fn publish(&self, state: &State) {
-        self.published
-            .store(Some(Arc::new(Self::resolve(&state.entries, &state.voids))));
+        let fleet = Self::resolve(&state.entries, &state.voids);
+        let mut node = fleet.clone();
+        if let Some(own) = state.own {
+            for entry in state.entries.range(own..).skip(1).map(|(_, e)| e) {
+                if entry.writer != self.node && matches!(entry.author, EntryAuthor::Change) {
+                    node.void(&entry.key);
+                }
+            }
+        }
+        self.published.store(Some(Arc::new(fleet)));
+        self.node_published.store(Some(Arc::new(node)));
     }
 
     /// The opening entry that won: the lowest-keyed one.
@@ -293,16 +318,37 @@ impl CardStore {
         let now = now_ms();
         let voided: BTreeSet<String> = state.voids.iter().map(|v| v.voided.clone()).collect();
         let mut messages = Vec::new();
+        // THIS NODE'S CARD IS NOT THE FLEET'S: its configuration loaded another card than the one
+        // a time-based read now takes.
+        if let (Some(own), Some(in_force)) = (
+            state.own.and_then(|k| state.entries.get(&k)),
+            Self::in_force_at(state, now),
+        ) {
+            if own.key != in_force.key && own.card != in_force.card {
+                messages.push(format!(
+                    "this node prices with rate card entry {} ({}) and the fleet's card in force is \
+                     entry {} (node {}, {}); they differ in [{}]. Make the nodes' configuration \
+                     agree",
+                    own.key,
+                    own.actor,
+                    in_force.key,
+                    in_force.writer,
+                    in_force.actor,
+                    own.card.differing_fields(&in_force.card).join(", ")
+                ));
+            }
+        }
         for entry in state.entries.values() {
-            if entry.key.t_ms() > now.saturating_add(SKEW_MS) && !voided.contains(&entry.key.hex())
+            if entry.effective_from > now.saturating_add(SKEW_MS)
+                && !voided.contains(&entry.key.hex())
             {
                 messages.push(format!(
-                    "rate card entry {} written by node {} is dated {} ms ahead of this node's \
+                    "rate card entry {} written by node {} starts {} ms ahead of this node's \
                      clock; it prices only instants from its own start. An operator may run `card \
                      void {}` while its start is still in the future",
                     entry.key,
                     entry.writer,
-                    entry.key.t_ms() - now,
+                    entry.effective_from - now,
                     entry.key
                 ));
             }
@@ -438,6 +484,15 @@ impl CardStore {
             let records = write.records()?;
             let key = EntryKey::parse_hex(&write.key)
                 .ok_or_else(|| format!("the rate card spool names `{}`", write.key))?;
+            // The spooled entry is this node's own: held, and (a change) the entry it prices with,
+            // so the boot below adopts it rather than writing it again.
+            for entry in Scanned::of(records.clone()).entries {
+                let mut state = self.lock();
+                if matches!(entry.author, EntryAuthor::Change) {
+                    state.own = Some(entry.key);
+                }
+                state.entries.insert(entry.key, entry);
+            }
             if put_all(self.calls.as_ref(), &records, deadline(), false) != PutOutcome::Ready {
                 tracing::error!(
                     "the rate card entry {key} is not confirmed by the store yet; it is re-put in \
@@ -572,35 +627,20 @@ impl CardStore {
             "the rate card changed: a history entry is appended, effective now"
         );
         let key = entry.key;
-        self.write(entry);
-        self.lock().own = Some(key);
+        self.write(entry, true);
         Some(key)
     }
 
     /// A head more than the skew bound ahead of this node's clock is alarmed, naming it and its
     /// writer. It never delays a change (see [`Self::apply`]).
-    fn skew_alarm(&self, state: &mut State, now: u64) {
-        let head = Self::resolve(&state.entries, &state.voids)
-            .live_head()
-            .map(|e| e.key());
-        if let Some(head) = head.filter(|h| h.t_ms() > now.saturating_add(SKEW_MS)) {
-            let writer = state.entries.get(&head).map_or(0, |e| e.writer);
-            let msg = format!(
-                "the rate-card history's head {head}, written by node {writer}, is dated {} ms \
-                 ahead of this node's clock (more than the {} s skew bound); this node's changes \
-                 still take effect from its own now. An operator may run `card void {head}` while \
-                 its start is in the future",
-                head.t_ms() - now,
-                SKEW_MS / 1000
-            );
-            self.alarm(state, msg);
-        }
+    fn skew_alarm(&self, state: &mut State, _now: u64) {
+        self.check_alarms(state);
     }
 
     /// Write `entry` write-before-apply: spooled first, put with the in-lock bound. READY, it is
     /// confirmed; anything else leaves it PENDING, in force on this node and re-put in the
     /// background until READY. Never refused.
-    fn write(self: &Arc<Self>, entry: StoredEntry) {
+    fn write(self: &Arc<Self>, entry: StoredEntry, own: bool) {
         let key = entry.key;
         let records = match entry.records() {
             Ok(records) => records,
@@ -617,16 +657,23 @@ impl CardStore {
                  held in memory and re-put until the store confirms it"
             );
         }
+        // IN FORCE ON THIS NODE AT ONCE, already spooled: the generation that resolved it is live,
+        // so its counts carry this entry's id from now, before the store has answered.
+        {
+            let mut state = self.lock();
+            state.entries.insert(key, entry);
+            if own {
+                state.own = Some(key);
+            }
+            self.publish(&state);
+        }
         let outcome = put_all(
             self.calls.as_ref(),
             &records,
             Some(Instant::now() + IN_LOCK_BOUND),
             true,
         );
-        let mut state = self.lock();
-        state.entries.insert(key, entry);
         if outcome == PutOutcome::Ready {
-            drop(state);
             spool.pending.retain(|w| w.key != key.hex());
             if let Err(why) = self.save_spool(&spool) {
                 tracing::error!(
@@ -635,21 +682,18 @@ impl CardStore {
                 );
             }
             let mut state = self.lock();
-            self.publish(&state);
             self.check_alarms(&mut state);
             return;
         }
-        let why = match outcome {
-            PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => why,
+        let why = match &outcome {
+            PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => why.clone(),
             PutOutcome::Ready => String::new(),
         };
         tracing::error!(
             "rate card entry {key} is in force on this node and pending confirmation from the \
              store ({why}); it is re-put until the store confirms it"
         );
-        state.pending.push((key, records));
-        self.publish(&state);
-        drop(state);
+        self.lock().pending.push((key, records));
         self.spawn_reput();
     }
 
@@ -690,7 +734,7 @@ impl CardStore {
             }
         };
         let key = entry.key;
-        self.write(entry);
+        self.write(entry, false);
         Ok(key)
     }
 
@@ -745,7 +789,8 @@ impl CardStore {
         }
     }
 
-    /// Re-put every pending entry, oldest first, until each is READY.
+    /// Re-put every pending entry, oldest first, until each is READY. An entry the store keeps
+    /// REFUSING is alarmed, naming the store's reason, and still re-put: the node never drops it.
     fn spawn_reput(self: &Arc<Self>) {
         {
             let mut state = self.lock();
@@ -759,29 +804,51 @@ impl CardStore {
             .name("card-reput".into())
             .spawn(move || {
                 let mut pause = Duration::from_millis(100);
+                let mut refusals: BTreeMap<EntryKey, u32> = BTreeMap::new();
                 loop {
                     std::thread::sleep(pause);
                     pause = (pause * 2).min(Duration::from_secs(5));
                     let Some(this) = weak.upgrade() else { return };
-                    let Some((key, records)) = this.lock().pending.first().cloned() else {
+                    let pending = this.lock().pending.clone();
+                    if pending.is_empty() {
                         this.lock().reputting = false;
                         return;
-                    };
-                    let outcome = put_all(
-                        this.calls.as_ref(),
-                        &records,
-                        Some(Instant::now() + Duration::from_secs(10)),
-                        false,
-                    );
-                    if outcome == PutOutcome::Ready {
-                        let mut spool = this.load_spool();
-                        spool.pending.retain(|w| w.key != key.hex());
-                        if let Err(why) = this.save_spool(&spool) {
-                            tracing::error!("rate card entry {key} is confirmed; the spool: {why}");
+                    }
+                    for (key, records) in pending {
+                        match put_all(
+                            this.calls.as_ref(),
+                            &records,
+                            Some(Instant::now() + Duration::from_secs(10)),
+                            true,
+                        ) {
+                            PutOutcome::Ready => {
+                                let mut spool = this.load_spool();
+                                spool.pending.retain(|w| w.key != key.hex());
+                                if let Err(why) = this.save_spool(&spool) {
+                                    tracing::error!(
+                                        "rate card entry {key} is confirmed; the spool: {why}"
+                                    );
+                                }
+                                this.lock().pending.retain(|(k, _)| *k != key);
+                                refusals.remove(&key);
+                                tracing::warn!("rate card entry {key} is confirmed by the store");
+                            }
+                            PutOutcome::Refused(why) => {
+                                let n = refusals.entry(key).or_insert(0);
+                                *n += 1;
+                                if *n == 3 {
+                                    let mut state = this.lock();
+                                    this.alarm(
+                                        &mut state,
+                                        format!(
+                                            "the store keeps REFUSING rate card entry {key}: \
+                                             {why}; it is in force on this node and still re-put"
+                                        ),
+                                    );
+                                }
+                            }
+                            PutOutcome::Doubtful(_) => {}
                         }
-                        this.lock().pending.retain(|(k, _)| *k != key);
-                        tracing::warn!("rate card entry {key} is confirmed by the store");
-                        pause = Duration::from_millis(100);
                     }
                 }
             });
@@ -813,123 +880,105 @@ mod tests;
 /// records in chain order)`.
 pub type Chain = (u64, Vec<busbar_kernel_wal::JournalRecord>);
 
-/// **THE MIGRATION** (MONEY-DESIGN section 3a, before the opening rule): every chain's `Policy` records —
-/// configured cards and amendments — as `busbar.card.v1` entries under TIME keys
-/// (`appended_at_ms ++ journal node ++ node_seq`). Duplicates by (card, `effective_from`) collapse
-/// to the lowest key, and only the oldest opening entry is kept. A correction is rebuilt over the
-/// entry its chain sealed it over; one whose base its chain does not hold is left out, named.
+/// **THE MIGRATION** (MONEY-DESIGN section 3a, before the opening rule): every chain's history AS
+/// DEV'S BOOT REBUILT IT (`RootHistory::restore`): the opening entry first, then every other card
+/// record in chain order, each correction rebuilt over the entry its chain sealed it over and LEFT
+/// OUT when that rebuild refuses it (dev never priced a refused correction). Each entry is copied
+/// under a TIME key (`appended_at_ms ++ journal node ++ node_seq`). Duplicates by (card, window)
+/// collapse to the lowest key, and only the oldest opening entry is kept.
 #[must_use]
 pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
+    use crate::root::kernel::JournalledCard;
     let mut out: Vec<StoredEntry> = Vec::new();
     for (node, records) in chains {
-        // The chain's own history as it rebuilt it, to find each correction's base card.
-        let mut history = History::new();
-        let mut cards: Vec<CardFields> = Vec::new();
-        let mut chain_opened = false;
-        for record in records
-            .iter()
-            .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
-        {
-            let key = |at: u64| EntryKey::new(at, node.to_be_bytes(), record.node_seq as u32);
-            if let Some(applied) = crate::root::kernel::CardApplied::from_body(&record.body) {
-                let opening = !chain_opened && applied.effective_from == 0;
-                chain_opened |= opening;
-                let card = applied.form.to_fields();
-                history.append(CardEntryDraft {
-                    effective_from: applied.effective_from,
-                    effective_until: None,
-                    card: rate_card_of(&card),
-                    appended_at: applied.appended_at,
-                    author: Author::Config { policy_epoch: 0 },
-                });
-                cards.push(card.clone());
-                out.push(StoredEntry {
-                    key: key(applied.appended_at),
-                    effective_from: applied.effective_from,
-                    effective_until: None,
-                    appended_at: applied.appended_at,
-                    author: EntryAuthor::Migrated {
-                        node: *node,
-                        node_seq: record.node_seq,
-                        opening,
-                        reason: None,
-                    },
-                    actor: "migration".to_string(),
-                    base: None,
-                    writer,
-                    set_fields: Vec::new(),
-                    card,
-                    correction: None,
-                });
-                continue;
+        // The order `restore` rebuilds in: the first configured card from instant zero opens it,
+        // and every other record follows in chain order.
+        let mut opening = None;
+        let mut rest = Vec::new();
+        for (seq, body, card) in crate::root::kernel::journalled_cards_at(records) {
+            match card {
+                JournalledCard::Applied(applied)
+                    if applied.effective_from == 0 && opening.is_none() =>
+                {
+                    opening = Some((seq, body, JournalledCard::Applied(applied)));
+                }
+                other => rest.push((seq, body, other)),
             }
-            #[cfg(feature = "root-admin")]
-            if let Some(amendment) = crate::root::units_admin::amendment_from_body(&record.body) {
-                let cells: Vec<(String, String, u64)> = amendment
-                    .rates
-                    .iter()
-                    .filter_map(|(l, c, n)| n.map(|n| (l.clone(), c.clone(), n)))
-                    .collect();
-                let card = match amendment.sealed_over {
-                    // A `v3` correction: its cells over the card its chain sealed it over.
-                    Some(base) => {
-                        let Some(base_card) = usize::try_from(base.seq.get())
-                            .ok()
-                            .and_then(|i| cards.get(i))
-                        else {
-                            tracing::error!(
+        }
+        let has_opening = opening.is_some();
+        let mut history = History::new();
+        // The card of each entry `history` holds, by its number.
+        let mut cards: Vec<CardFields> = Vec::new();
+        for (index, (seq, body, card)) in opening.into_iter().chain(rest).enumerate() {
+            let key = |at: u64| EntryKey::new(at, node.to_be_bytes(), seq as u32);
+            let migrated = |reason: Option<String>| EntryAuthor::Migrated {
+                node: *node,
+                node_seq: seq,
+                opening: has_opening && index == 0 && reason.is_none(),
+                reason,
+            };
+            let (draft, fields, reason) = match card {
+                JournalledCard::Applied(applied) => {
+                    // The chain's own history holds the card exactly as dev's rebuild did, so a
+                    // correction's base digest matches it as it did there.
+                    (applied.draft(), applied.form.to_fields(), None)
+                }
+                JournalledCard::Corrected(correction, sealed_over) => {
+                    let draft = match correction.rebuild_over(history.current(), sealed_over) {
+                        Ok(draft) => draft,
+                        Err(cause) => {
+                            tracing::warn!(
                                 node,
-                                node_seq = record.node_seq,
-                                "a journalled rate correction names a base entry its chain does \
-                                 not hold; it is not migrated"
+                                node_seq = seq,
+                                ?cause,
+                                "a journalled rate correction its chain's rebuild refuses is not \
+                                 migrated (it never priced an instant)"
                             );
                             continue;
-                        };
-                        crate::root::kernel::cells_onto(
-                            base_card,
-                            &cells,
-                            Some(amendment.sealed_fee),
-                        )
-                    }
-                    // A `v1`/`v2` correction: the cells and fee were the whole card it sealed.
-                    None => crate::root::kernel::cells_onto(
-                        &CardFields {
-                            rate_card: Some(BTreeMap::new()),
-                            ..CardFields::default()
-                        },
-                        &cells,
-                        Some(amendment.sealed_fee),
-                    ),
-                };
-                history.append(CardEntryDraft {
-                    effective_from: amendment.effective_from,
-                    effective_until: amendment.effective_until,
-                    card: rate_card_of(&card),
-                    appended_at: amendment.amended_at_ms,
-                    author: Author::Amend {
-                        reason_hash: amendment.reason_hash,
-                    },
-                });
-                cards.push(card.clone());
-                out.push(StoredEntry {
-                    key: key(amendment.amended_at_ms),
-                    effective_from: amendment.effective_from,
-                    effective_until: amendment.effective_until,
-                    appended_at: amendment.amended_at_ms,
-                    author: EntryAuthor::Migrated {
-                        node: *node,
-                        node_seq: record.node_seq,
-                        opening: false,
-                        reason: Some(hex::encode(amendment.reason_hash)),
-                    },
-                    actor: "migration".to_string(),
-                    base: None,
-                    writer,
-                    set_fields: Vec::new(),
-                    card,
-                    correction: None,
-                });
-            }
+                        }
+                    };
+                    let base = usize::try_from(sealed_over.seq.get())
+                        .ok()
+                        .and_then(|i| cards.get(i))
+                        .cloned()
+                        .unwrap_or_default();
+                    let cells: Vec<(String, String, u64)> = correction
+                        .cells
+                        .iter()
+                        .map(|(cell, nanos)| (cell.lane.clone(), cell.class.clone(), *nanos))
+                        .collect();
+                    let fields = crate::root::kernel::cells_onto(&base, &cells, correction.fee);
+                    let reason = match &draft.author {
+                        Author::Amend { reason_hash } => Some(hex::encode(reason_hash)),
+                        _ => Some(String::new()),
+                    };
+                    (draft, fields, reason)
+                }
+                JournalledCard::Amended(draft) => {
+                    // A `v1`/`v2` correction: the cells and the fee were the whole card it sealed.
+                    let fields = amended_fields(&body);
+                    let reason = match &draft.author {
+                        Author::Amend { reason_hash } => Some(hex::encode(reason_hash)),
+                        _ => Some(String::new()),
+                    };
+                    (draft, fields, reason)
+                }
+            };
+            history.append(draft.clone());
+            cards.push(fields.clone());
+            out.push(StoredEntry {
+                key: key(draft.appended_at),
+                effective_from: draft.effective_from,
+                effective_until: draft.effective_until,
+                appended_at: draft.appended_at,
+                author: migrated(reason),
+                actor: format!("migrated from node {node}'s journal"),
+                base: None,
+                writer,
+                set_fields: Vec::new(),
+                card: fields,
+                correction: None,
+            });
         }
     }
     // Lowest key first, so each collapse keeps the lowest.
@@ -946,4 +995,31 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
         seen.insert((digest_hex(&e.card), e.effective_from, e.effective_until))
     });
     out
+}
+
+/// The card a `v1`/`v2` correction record sealed whole: its cells and its fee.
+#[cfg(feature = "root-admin")]
+fn amended_fields(body: &[u8]) -> CardFields {
+    let Some(amendment) = crate::root::units_admin::amendment_from_body(body) else {
+        return CardFields::default();
+    };
+    let cells: Vec<(String, String, u64)> = amendment
+        .rates
+        .iter()
+        .filter_map(|(l, c, n)| n.map(|n| (l.clone(), c.clone(), n)))
+        .collect();
+    crate::root::kernel::cells_onto(
+        &CardFields {
+            rate_card: Some(BTreeMap::new()),
+            ..CardFields::default()
+        },
+        &cells,
+        Some(amendment.sealed_fee),
+    )
+}
+
+/// A build without the admin plane journals no correction.
+#[cfg(not(feature = "root-admin"))]
+fn amended_fields(_body: &[u8]) -> CardFields {
+    CardFields::default()
 }

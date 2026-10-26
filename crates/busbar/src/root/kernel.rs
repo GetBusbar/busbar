@@ -303,7 +303,13 @@ impl RootHistory {
     /// caller and leaves this one reading the snapshot it was admitted under.
     #[must_use]
     pub fn pin(&self) -> Option<PinnedHistory> {
-        let history = self.history()?;
+        // A UNIT PRICES WITH THIS NODE'S OWN CARD (MONEY-DESIGN section 3a): the history kept in the
+        // store, resolved so this node's own entry prices from its start whatever another node
+        // loaded since. Views read the fleet's ([`Self::history`]).
+        let history = match self.card_store() {
+            Some(store) => store.node_history()?,
+            None => self.history()?,
+        };
         let at = history.head()?;
         Some(PinnedHistory { history, at })
     }
@@ -378,6 +384,16 @@ impl RootHistory {
         }
     }
 
+    /// The store boot without a book, for a test that drives a holder kept in a test store.
+    #[cfg(test)]
+    pub(crate) fn boot_in_store(
+        &self,
+        own: Option<&[busbar_kernel_wal::JournalRecord]>,
+    ) -> Result<(), String> {
+        let store = self.store.get().ok_or("no store kept")?;
+        self.boot_store(store, own)
+    }
+
     /// THE STORE BOOT, run by the book's rebuild: every chain's card records migrated, the history
     /// read, opened if empty, and the boot's card applied.
     fn boot_store(
@@ -396,12 +412,21 @@ impl RootHistory {
             ),
         }
         let migrated = crate::root::card_history::migrated(&chains, store.node());
-        let card = self
+        // The boot's own build raised its card before the book opened. A process with no rate
+        // holder raised none (a test binary's book): the history is NOT opened with an empty card
+        // nobody configured, and the holder keeps its in-memory history.
+        let Some(card) = self
             .boot_card
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
-            .unwrap_or_default();
+        else {
+            tracing::error!(
+                "the boot raised no rate card before its book opened; the rate-card history in the \
+                 store is not opened with an empty one"
+            );
+            return Ok(());
+        };
         store.boot(&card, &format!("boot of node {}", store.node()), migrated)
     }
 
@@ -606,7 +631,10 @@ impl RootHistory {
     ///   resolution is appended, dated at the instant it landed, ONLY where it differs from the
     ///   newest journalled config card: a restart that changed no price appends nothing and moves
     ///   nothing; a restart that did prices what happens after the boot and nothing before it.
-    fn restore(journalled: Vec<JournalledCard>, held: Vec<CardApplied>) -> RestoredHistory {
+    pub(crate) fn restore(
+        journalled: Vec<JournalledCard>,
+        held: Vec<CardApplied>,
+    ) -> RestoredHistory {
         use busbar_kernel_ledger::cost::{CardEntryDraft, History};
         let mut refused: Vec<CorrectionRefused> = Vec::new();
         let mut opening: Option<CardEntryDraft> = None;
@@ -812,6 +840,20 @@ impl RootHistory {
         correction: &Correction,
         seal: impl FnOnce(&busbar_kernel_ledger::cost::RateCard, CorrectionBase) -> Result<(), E>,
     ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AmendRefused<E>> {
+        self.amend_by(correction, "admin", seal)
+    }
+
+    /// [`Self::amend`], naming who amended (the history entry's actor).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::amend`].
+    pub fn amend_by<E>(
+        &self,
+        correction: &Correction,
+        actor: &str,
+        seal: impl FnOnce(&busbar_kernel_ledger::cost::RateCard, CorrectionBase) -> Result<(), E>,
+    ) -> Result<busbar_kernel_ledger::cost::HistorySeq, AmendRefused<E>> {
         let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
         let current = self.history().ok_or(AmendRefused::NoHistory)?;
         // OWNER ruling #32 (2026-09-29): A CORRECTION THAT WOULD CUT INSIDE A STORED ROW IS
@@ -849,7 +891,7 @@ impl RootHistory {
                 _ => [0; 32],
             };
             let key = store
-                .amend(correction.effective_from, until, card, reason_hash, "admin")
+                .amend(correction.effective_from, until, card, reason_hash, actor)
                 .map_err(AmendRefused::Store)?;
             let history = store.history().ok_or(AmendRefused::NoHistory)?;
             return history
@@ -1275,7 +1317,7 @@ pub struct CardApplied {
 
 impl CardApplied {
     /// The history entry this record is.
-    fn draft(&self) -> busbar_kernel_ledger::cost::CardEntryDraft {
+    pub(crate) fn draft(&self) -> busbar_kernel_ledger::cost::CardEntryDraft {
         busbar_kernel_ledger::cost::CardEntryDraft {
             effective_from: self.effective_from,
             effective_until: None,
@@ -1612,8 +1654,8 @@ pub enum AmendRefused<E> {
 /// What [`RootHistory::restore`] rebuilt from the chain: the history, the boot's records the book
 /// must journal before it is published, the next policy epoch, the newest config card, and every
 /// journalled correction the rebuild refused ([`CorrectionRefused`]).
-struct RestoredHistory {
-    history: busbar_kernel_ledger::cost::History,
+pub(crate) struct RestoredHistory {
+    pub(crate) history: busbar_kernel_ledger::cost::History,
     write: Vec<CardApplied>,
     next_epoch: u64,
     newest: Option<CardForm>,
@@ -1631,6 +1673,23 @@ pub(crate) fn journalled_cards(
             CardApplied::from_body(&r.body)
                 .map(JournalledCard::Applied)
                 .or_else(|| journalled_amendment(&r.body))
+        })
+        .collect()
+}
+
+/// [`journalled_cards`], each with its record's sequence number and body: what the rate-card
+/// migration copies (MONEY-DESIGN section 3a), keyed by the record it came from.
+pub(crate) fn journalled_cards_at(
+    records: &[busbar_kernel_wal::JournalRecord],
+) -> Vec<(u64, Vec<u8>, JournalledCard)> {
+    records
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
+        .filter_map(|r| {
+            CardApplied::from_body(&r.body)
+                .map(JournalledCard::Applied)
+                .or_else(|| journalled_amendment(&r.body))
+                .map(|card| (r.node_seq, r.body.clone(), card))
         })
         .collect()
 }
