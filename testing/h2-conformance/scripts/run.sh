@@ -87,6 +87,10 @@ free_port() {
 # h2spec_run <port> <path> <report>: the full generic+http2+hpack battery over TLS, JUnit to <report>.
 h2spec_run() {
   "$H2SPEC" -t -k -h 127.0.0.1 -p "$1" -P "$2" -o "$PER_CASE_TIMEOUT" -j "$3" >"$3.log" 2>&1
+  local rc=$?
+  # h2spec's own account of what failed, in the check's log.
+  sed -n '/^Failures:/,$p' "$3.log" | head -120 >&2
+  [ -s "$3" ] || tail -5 "$3.log" >&2
   [ -s "$3" ]
 }
 
@@ -115,8 +119,11 @@ leg_control() {
   local port=""
   for _ in $(seq 1 30); do port="$(docker port "$CONTAINER" 8443/tcp 2>/dev/null | head -1 | sed 's/.*://')"; [ -n "$port" ] && break; sleep 1; done
   # apt installs the package before nghttpd listens.
-  wait_listening "${port:-1}" "" 300 || { LEG_REASON="the control peer (nghttpd) did not listen"; docker logs "$CONTAINER" >&2; return 1; }
-  docker logs "$CONTAINER" 2>&1 | grep -m1 '^nghttpd' >&2
+  # docker publishes the port at once; nghttpd is up when apt is done and it printed its version.
+  local i
+  for i in $(seq 1 300); do docker logs "$CONTAINER" 2>&1 | grep -q '^nghttpd nghttp2' && break; sleep 1; done
+  docker logs "$CONTAINER" 2>&1 | grep -m1 '^nghttpd nghttp2' >&2 || { LEG_REASON="the control peer (nghttpd) did not start"; docker logs "$CONTAINER" >&2; return 1; }
+  sleep 2
   h2spec_run "$port" "$BIG_PATH" "$d/report.xml" || { LEG_REASON="h2spec wrote no report against the control"; return 1; }
   python3 -I "$PARSER" --report "$d/report.xml" --role control --baseline "$HERE/baselines/nghttpd-control.json" --out "$OUT/control.json" >&2
   local rc=$?
@@ -156,7 +163,7 @@ leg_subject() {
   ( umask 077; "$bin" --generate-signing-key >"$d/signing.key" 2>"$d/genkey.log" ) || { LEG_REASON="busbar --generate-signing-key failed"; return 1; }
   local port; port="$(free_port)"
   bash "$HERE/scripts/subject-config.sh" "$d" "$port" || { LEG_REASON="could not write the subject config"; return 1; }
-  ( exec env BUSBAR_CONFIG="$d/config.yaml" BUSBAR_PROVIDERS="$d/providers.yaml" BUSBAR_ADMIN_TOKEN="h2-conformance-$$" RUST_LOG=warn "$bin" ) \
+  ( exec env BUSBAR_CONFIG="$d/config.yaml" BUSBAR_ADMIN_TOKEN="h2-conformance-$$" RUST_LOG=warn "$bin" ) \
     >"$d/busbar.log" 2>&1 &
   local pid=$!; PIDS+=("$pid")
   wait_listening "$port" "$pid" || { tail -30 "$d/busbar.log" >&2; LEG_REASON="busbar did not listen on the tls: port (see subject/busbar.log)"; return 1; }

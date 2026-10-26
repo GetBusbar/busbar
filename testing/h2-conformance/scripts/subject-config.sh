@@ -7,9 +7,6 @@
 # a closed auth chain, no providers.
 set -euo pipefail
 d="$1"; port="$2"
-cat >"$d/providers.yaml" <<'YAML'
-{}
-YAML
 cat >"$d/config.yaml" <<YAML
 listen: "127.0.0.1:$port"
 store: { module: memory }
