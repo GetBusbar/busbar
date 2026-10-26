@@ -1279,17 +1279,6 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 &self.attribution,
             );
         }
-        // `card void` (MONEY-DESIGN section 3a): the operator's write to the fleet-shared rate-card
-        // history. Audited by the verbs unit like every new verb, and again
-        // here with what they did.
-        if verb == KernelVerb::CardVoid {
-            return card_verb_effect(
-                &crate::root::kernel::ROOT_CARD,
-                verb,
-                request,
-                &self.attribution.principal,
-            );
-        }
         // `adjust` (item 404, owner ruling Q9): a correction to a recorded unit's COUNTS, sealed on
         // the node amendment journal by the kernel's half. Its scope and rate class ran in the verbs
         // unit before this seam; the kernel half re-checks the scope and
@@ -1447,58 +1436,6 @@ fn already_applied(
                     == Some(*nanos)
             })
     })
-}
-
-/// The effect half of `card void` (MONEY-DESIGN section 3a): void an entry whose start is still in
-/// the future, by key. Audited (`card.void`).
-fn card_verb_effect(
-    history: &crate::root::kernel::RootHistory,
-    verb: KernelVerb,
-    body: &[u8],
-    principal: &str,
-) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
-    use busbar_core_admin::GovernanceError;
-    let store = history.card_store().ok_or(GovernanceError::NotFound)?;
-    let _ = verb;
-    let doc: serde_json::Value =
-        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
-    let key = doc
-        .get("key")
-        .and_then(serde_json::Value::as_str)
-        .and_then(busbar_kernel_ledger::cost::EntryKey::parse_hex)
-        .ok_or(GovernanceError::Validation)?;
-    let (action, outcome) = ("card.void", "voided");
-    let done = store.void(key, principal).map(|()| key);
-    match done {
-        Ok(key) => {
-            busbar_kernel::audit_ring::AUDIT.record_by(
-                action,
-                &format!("rate_card:{key}"),
-                busbar_kernel::audit_ring::OUTCOME_APPLIED,
-                principal,
-            );
-            let mut out = String::from("{\"key\":");
-            json_string(&key.hex(), &mut out);
-            out.push_str(",\"outcome\":");
-            json_string(outcome, &mut out);
-            out.push('}');
-            Ok(json_answer(out.into_bytes()).pack())
-        }
-        Err(why) => {
-            tracing::warn!("{action} refused: {why}");
-            busbar_kernel::audit_ring::AUDIT.record_by(
-                action,
-                "rate_card",
-                busbar_kernel::audit_ring::OUTCOME_REJECTED,
-                principal,
-            );
-            Err(if why.contains("did not take") {
-                GovernanceError::Store
-            } else {
-                GovernanceError::Validation
-            })
-        }
-    }
 }
 
 /// The effect half of `amend_rate_history`: decode the correction, validate its shape, append

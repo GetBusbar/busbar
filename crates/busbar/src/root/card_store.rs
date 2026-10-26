@@ -248,7 +248,7 @@ pub struct VoidRecord {
     pub at_ms: u64,
     /// Who voided it.
     pub actor: String,
-    /// Why: `void` (the operator's `card void`) or `abandon` (`card abandon`).
+    /// Why it was voided (`void`).
     pub why: String,
 }
 

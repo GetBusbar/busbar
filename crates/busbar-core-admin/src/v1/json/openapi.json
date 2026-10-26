@@ -749,37 +749,6 @@
         ],
         "type": "object"
       },
-      "CardVerbView": {
-        "description": "`POST /ledger/card/void`'s answer: the entry it voided.",
-        "properties": {
-          "key": {
-            "description": "The entry's key, 40 lowercase hex characters.",
-            "type": "string"
-          },
-          "outcome": {
-            "description": "`voided`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "outcome"
-        ],
-        "type": "object"
-      },
-      "CardVoidReq": {
-        "description": "`POST /ledger/card/void`'s body: the entry to void.",
-        "properties": {
-          "key": {
-            "description": "The entry's key, 40 lowercase hex characters.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "key"
-        ],
-        "type": "object"
-      },
       "ClassUsage": {
         "description": "One plane-declared class's consumption on a usage row: its raw count and its cost.\n\nNEW IN 1.6.0 (1.5.5's usage rows carried the token split alone, and 1.5.5 served no plane that\ndeclares a class of its own): ledgered by the FLIP-A2A ruling. `cost` is in the same MICRO-units\nas [`UsageBreakdown::spend_micros`], priced by the same card in force at the row's instant, and is\npart of that row's `spend_micros`, never added to it a second time.",
         "properties": {
@@ -10985,85 +10954,6 @@
           }
         ],
         "summary": "Append a back-dated correction to the dated rate-card history",
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
-    "/api/v1/admin/ledger/card/void": {
-      "post": {
-        "description": "`card void <key>`: the entry is never in force, and its id stays known, so counts already posted under it keep its card. Refused once its start is past by this node's clock. Audited.",
-        "operationId": "PostLedgerCardVoid",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CardVoidReq"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CardVerbView"
-                }
-              }
-            },
-            "description": "The entry that was voided"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`invalid_request`: no `key`, a key that is not 40 hex characters, an entry this node does not hold, an entry already in force, or a request body that could not be read to the operator's size cap"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`unavailable`: the store did not take the VOID record. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Void a rate-card history entry whose start is still in the future",
         "x-busbar-required-scope": "full",
         "x-busbar-since": "1.6.0"
       }

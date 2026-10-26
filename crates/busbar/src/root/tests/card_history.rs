@@ -286,7 +286,7 @@ fn t19_a_joining_node_adopts_the_card_in_force_or_records_its_own() {
 }
 
 /// **T22.** A far-future head (a fast clock) alarms, naming the entry and its writer, and never
-/// delays a change: the change is effective from this node's now. `card void` clears the head while
+/// delays a change: the change is effective from this node's now. Voiding the head while
 /// its start is in the future, and its id stays known.
 #[test]
 fn t22_a_far_future_head_never_delays_a_change_and_card_void_clears_it() {
