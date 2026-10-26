@@ -459,5 +459,10 @@ checks:
     requires: [cc, git, curl, docker]
     run: |
       if [ ! -f testing/conformance/run.sh ]; then echo "no testing/conformance/run.sh on this head yet"; exit 0; fi
-      exec bash testing/conformance/run.sh
+      # Non-blocking by ruling (owner 2026-10-26): a suite that did not pass is reported in its verdict
+      # (target/conformance/verdicts/), not as this check's exit. Only a driver failure (exit 2: no
+      # busbar, no tools, no verdicts written) fails the check. ModernCI's `blocks: false` on a move
+      # entry still dooms the move on a red, so the exit carries the ruling here.
+      bash testing/conformance/run.sh; rc=$?
+      [ "$rc" -le 1 ] || exit "$rc"
     outputs: [target/conformance/]
