@@ -4384,18 +4384,19 @@ fn warn_invalid_floors_keeps_both_warnings_byte_for_byte() {
 fn the_provider_tenant_merges_deployment_over_catalog() {
     let mut def = provider_def("openai", "https://api.example.com");
     let mut deploy = provider_deploy("K");
-    // The tenant keys are the plane's: they ride the resolved entry's table (#957), read as the
-    // legacy lane carrier reads them.
+    // The tenant keys are the plane's: they ride the resolved entry's table (#957).
     let tenant = |def: &ProviderDef, deploy: &ProviderDeploy| {
-        crate::plane_driver::route_input::LegacyLaneKeys::of(&merge_provider_fallback(def, deploy))
+        let table = merge_provider_fallback(def, deploy).table;
+        let key = |k: &str| table.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        (key("organization"), key("project"))
     };
-    assert_eq!(tenant(&def, &deploy).organization, None);
+    assert_eq!(tenant(&def, &deploy).0, None);
     def.organization = Some("org-catalog".to_string());
     def.project = Some("proj-catalog".to_string());
     deploy.organization = Some("org-deploy".to_string());
     let merged = tenant(&def, &deploy);
-    assert_eq!(merged.organization.as_deref(), Some("org-deploy"));
-    assert_eq!(merged.project.as_deref(), Some("proj-catalog"));
+    assert_eq!(merged.0.as_deref(), Some("org-deploy"));
+    assert_eq!(merged.1.as_deref(), Some("proj-catalog"));
 }
 
 /// A NEUTRAL plane that declares its own section and OWNS a second one beside it, the shape of a
