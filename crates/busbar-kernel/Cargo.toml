@@ -1,16 +1,3 @@
-# busbar-core — the engine LIBRARY. Step 3.7 of 1.6.0 splits `crates/busbar` into this crate
-# (everything a protocol plugin or the binary links against) and the thin `busbar` binary
-# (argument parsing, config location, process lifecycle, and — from step 4 — protocol
-# registration, which is the composition root's knowledge and no one else's).
-#
-# NOTE ON THE PUBLIC SURFACE: this crate is `publish = false` and its `pub` items are NOT a
-# semver contract. Visibility here is what the lib/bin seam and the protocol crates need — it
-# was widened at the compiler's demand, not by design intent, and may narrow again at any time.
-# The security-relevant internals (the audit sink, the token signer, the durable statics, the
-# trust sweeper) stay `pub(crate)` behind the `boot` module's entry points; see src/boot.rs.
-#
-# Per-dependency rationale lives where it always did: the workspace table and the `busbar`
-# manifest this list was split from (crates/busbar/Cargo.toml, pre-split history).
 [package]
 name = "busbar-kernel"
 version = "1.6.0"
@@ -25,83 +12,22 @@ name = "busbar_kernel"
 path = "src/lib.rs"
 
 [dependencies]
-# ── ABSORBED from the pre-1.6.0 busbar-kernel crate (W4.a #19/#37) ────────────────────────────────
-# The chunk-chaining bump allocator behind `scratch::ScratchPad` (#41). The closed JSON span
-# grammar the kernel loop's `grammar`/`teller` modules name used to be its own dependency here
-# (`busbar-grammar`); it folded into `busbar-contract` (DECISIONS #40) and is now named via
-# `busbar_contract::spans`, which this crate already depends on below.
 bumpalo = { workspace = true }
-# The plugin-visible contract. Core names it directly for the GENERIC authorization lattice
-# (`busbar_contract::authz::{Scope, Grants}`) — the admin-worded ceiling/error/path vocabulary
-# stays on the admin surface; only the neutral scope model lives here, so a non-admin core
-# consumer (router, the chain-verification module, config, config_validate) never has to name
-# "admin" to check a scope.
 busbar-contract = { path = "../busbar-contract" }
-# THE ONE NETWORK JUDGE (#36: "the upstream leg — walk + swrr weighting + pre-dial guard; trust
-# folded in"). `busbar_kernel_egress::trust::net` is the single definition of the SSRF/metadata
-# guard — the metadata name list, the address predicates, the WHATWG host extraction, the
-# resolve-then-pin. Every in-core call site names it in its unit home (the pure host atoms in
-# `busbar_contract::net`); the kernel resolves no name itself (row 130 E2: the resolver is the
-# connector's, behind the egress-trust capability). There WAS a second copy of that guard in this crate; it drifted, and the drift was a
-# live metadata bypass (`metadata.platformequinix.com` resolves and pins to a routable address, so
-# nothing but the NAME arm can refuse it, and the name arm read a two-entry list). One judge is the
-# fix; this edge is what makes one judge reachable from here.
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
-# THE MONEY ARITHMETIC, so this crate does not restate it. `src/cost.rs` carried its own copy of the
-# decimal-to-rate conversion AND its own copy of the reserved-four multiply-and-sum, and both had
-# drifted from the ledger's. The rate copy tested only finiteness where the ledger also clamps a
-# value too large for a `u64`, so a config typo with too many zeros priced as 0 in the book and
-# u64::MAX nanos/token here. The summation copy had no overflow guard at all where the ledger's and
-# the budget unit's both saturate, so a total one past the u128 ceiling wrapped to ONE nano-unit —
-# an astronomical bill deriving as nearly free. One judge is the fix; this edge is what makes the
-# one judge reachable from here. The ledger unit depends only on `busbar-contract` + `sha2`, so the
-# edge is acyclic and it is kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED grants).
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
-# The write-ahead log the kernel's journal rides (`busbar_kernel_wal`). The one durable whole-file
-# publish is NOT this crate's: `busbar_kernel::durable` is a seam the composition root fills with it
-# (the kernel never names the loader, THE DESIGN l.322).
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
-# THE AMENDMENT JOURNAL (item 404): the hook seam and the export dispatch record every content read
-# as an access amendment, and the correction a root admin makes to a recorded count is an adjustment
-# on the same chain. The audit unit depends only on `busbar-contract` and its digest/signature
-# crates, so the edge is acyclic and kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED
-# grants), exactly as the ledger edge above.
 busbar-kernel-audit = { path = "../busbar-kernel-audit" }
-# THE ONE BREAKER (item 142). The admission path's circuit-breaker state machine, the per-lane
-# `max_requests` budget and the two `limits.*` breaker knobs are this unit's; the in-memory store
-# holds handles onto its cells. There WAS a second copy of that state machine in this crate, and it
-# carried three races the unit had already fixed. The unit depends only on `busbar-contract`, so the
-# edge is acyclic and kernel -> kernel, exactly as the ledger and audit edges above.
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
-# THE AUTHENTICATE UNIT (the identity chain, the operator credential, the caller reference). The unit
-# depends only on `busbar-contract`, so the edge is acyclic and kernel -> kernel, exactly as the
-# ledger, audit and breaker edges above.
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
-# The folded `timing` module (former busbar-timing, OWNER Q70) calls `atexit(3)` for its process-exit
-# dump, and only under the non-default `timing` feature. The default build does not link it.
+# Only under the non-default `timing` feature.
 libc = { workspace = true, optional = true }
-# NO PLUGIN LOADER (BUSBAR-1.6.0.md THE DESIGN l.322: "The kernel never names the loader"). The
-# plugin registry reaches the kernel as the contract's `plugin_rows::PluginRows` view, and every
-# loader-backed capability (the registry build, the per-kind axes, the plugin admission, the durable
-# write) as a seam the composition root installs (`preflight::RootInstall`).
-# THE STAND-IN LINKED ROWS are no crate at all: the composition root links the build's store and
-# ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no root,
-# so the in-crate R-FIX3 doubles stand in, linked only — `test_support::store_double` (the store row
-# and the `MemoryStore` the kernel's tests build a `GovState` over) and `test_support::ranking_double`.
-# The kernel names no store crate under any name (THE DESIGN Part 2 #2: the kernel reaches a store
-# only through the store kind's door), and the root proves each double states what the real door
-# states.
 axum = { workspace = true }
 tower = { workspace = true }
-# No `net`: the kernel opens no socket and resolves no name (THE DESIGN §5; status row 130,
-# `tests/no_socket.rs`). Its test scaffolding asks for it through `test-support` and the
-# dev-dependency below.
+# No `net`: the kernel opens no socket; `test-support` adds it.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "io-std", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# The engine-built OAuth mint hops (`egress_auth`) form-
-# encode through `serde_urlencoded` — the crate reqwest's `.form()` was, so the wire bytes are
-# unchanged.
 serde_urlencoded = { workspace = true }
 url = { workspace = true }
 indexmap = { workspace = true }
@@ -117,119 +43,45 @@ zeroize = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 metrics = { workspace = true }
-# The observation source (`metrics/source.rs`) is built on the facade's generational registry and
-# summary storage (`recency` = the registry's generations; it implies `registry` and `storage`).
 metrics-util = { workspace = true, features = ["recency"] }
 http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-# The `log` -> `tracing` bridge (`observability::init_log_bridge`), installed on its own so the
-# composition root takes the `log` slot before a compiled-in plugin's call capture can.
 tracing-log = { workspace = true }
 hex = { workspace = true }
 getrandom = { workspace = true }
 ed25519-dalek = { workspace = true }
 crc32fast = { workspace = true }
 async-trait = { workspace = true }
-# Lock-free read-mostly snapshot for the live-config seam (`AppHandle`): reads take a debt-slot
-# Guard — no lock, no shared-refcount RMW — where the old RwLock<Arc<App>> paid a contended
-# read-lock + Arc clone on EVERY extraction, on every request, across all workers.
 arc-swap = { workspace = true }
 httpdate = { workspace = true }
 
 [features]
-# The `#[cfg(feature = ...)]` sites live in this crate, so this crate declares the features and
-# the `busbar` binary forwards them (busbar/<feature> = ["busbar-kernel/<feature>"]).
-#
-# No auth feature and no auth-module edge (DECISIONS #40, #2; ARCHITECT 2026-09-27 AUTH-ROW): every
-# admin auth module, the operator credential's included, resolves through the auth kind's registry by
-# the key the configuration names. The composition root links the build's auth rows
-# (`preflight::install_linked_auth`); this crate names none of them.
-# No `hooks-ranking` feature (THE DESIGN l.1443: the `hooks-ranking` kernel feature is deleted): the
-# composition root links the ranking row under its own feature, and a test build's stand-in hook
-# rows carry the kernel's ranking double in every build (`test_support::hook_axis_stand_in`, answered
-# in process: the kernel never names the loader, THE DESIGN l.322).
 default = ["plane-mcp", "plane-a2a"]
-# THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
-# the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
-# never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
-# the `tools:`/`mcp:` config sections are captured raw and refused if used, so core still routes the
-# LLM and A2A planes with the MCP plane absent (the plane-split deletion test). The binary's
-# `plane-mcp` forwards to this via `busbar-kernel/plane-mcp`.
-#
-# Phase-B B1 FORWARDS to substrate: the relocated trust/egress/failover families carry the
-# plane-gated dead-code allowances, so enabling `plane-mcp` here must enable substrate's matching
-# marker (was an empty marker; now a forward) to keep the moved `#[cfg(feature = "plane-mcp")]` sites
-# correct.
-# W4.b P2: substrate absorbed. The neutral capability markers `dispatch`/`relay`/`runtime` (formerly
-# forwarded via `busbar-substrate/*`) are now declared HERE and forward to the pure value crate's
-# same-named markers so the value-side `#[cfg]` sites arm in lock-step, exactly as before.
+# Default-on; off compiles out `src/mcp`, and the `tools:`/`mcp:` config sections are refused if used.
 plane-mcp = ["dispatch"]
-# THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
-# A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
-# Default-on — the shipped engine speaks A2A. With it OFF, `src/a2a` (and its plane-side helper
-# `plane::taskstore`) is compiled out and the `agents:` config section is captured raw and refused if
-# used, so core still routes the LLM and MCP planes with the A2A plane absent (the plane-split
-# deletion test). The binary's `plane-a2a` forwards to this via `busbar-kernel/plane-a2a`. The exact
-# analogue of `plane-mcp` above.
-#
-# Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
-# other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
-# substrate marker on with it.
+# Default-on; off compiles out `src/a2a`, and the `agents:` config section is refused if used.
 plane-a2a = ["relay"]
-# THE NEUTRAL INBOUND WS CAPABILITY — arms the core-side duplex session mount (router.rs,
-# `mount_plane_session`) that answers a door plane's session upgrade. NAMES NO PLANE: any duplex
-# plane turns on the same capability. Forwards to the neutral `runtime` (which arms `axum/ws` and the
-# `duplex_ws` acceptor). OFF by default and pulled ONLY by the binary's `plane-streaming`, so the
-# default/shipped money-path build carries no `axum/ws` edge (no tokio-tungstenite/sha1/base64) and
-# this capability is compiled out entirely — byte-identical assembly, strong-form deletable.
+# Off by default so the shipped build carries no `axum/ws` edge.
 duplex-ws  = ["runtime"]
-# The neutral capability markers. `dispatch`/`relay` gate the `#[cfg]`/dead-code-allowance sites in
-# this crate's engine source; `runtime` arms the full-duplex WS transport (the
-# `axum/ws` acceptor). All three gate this crate's sites alone: the contract's channel axis is ungated.
 dispatch = []
 relay = []
 runtime = ["axum/ws"]
-# FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
-# and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
-# enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
 openapi-schema = ["dep:schemars"]
 loom-model = ["dep:loom"]
-# Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
-# the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
-# capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
-# `tokio/net`: the test kit's mock servers bind loopback sockets (`test_support`); the shipped
-# kernel asks for no socket layer (THE DESIGN §5).
+# Never on in a normal build; dependents enable it from [dev-dependencies].
 test-support = ["tokio/net", "busbar-kernel-identity/stand-in"]
-# The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
-# DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
-# zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
-# feature (dropping a `()` is a no-op the `dropping_copy_types` lint rightly rejects). Enabling it
-# makes those guards real `Timer`s whose `Drop` records the elapsed span.
+# Default off: `timeit!` expands to `()`.
 timing = ["dep:libc"]
 
 [dev-dependencies]
-# Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
-# THIS CRATE'S OWN `test-support`, for its integration tests (`tests/*.rs` reach `test_support`
-# through the library, where `cfg(test)` is false) and the stand-in rows its unit tests build. The
-# crate names itself, as busbar-transport-webrtc did in this tree; no plane crate rides in. The cross-plane cells
-# that need a real plane live in the composition root, which links every plane
-# (`crates/busbar/tests/`, its test-linked roster).
+# Self-edge so integration tests reach `test_support`, where `cfg(test)` is false.
 busbar-kernel = { path = ".", default-features = false, features = ["test-support"] }
-# THE CONTRACT'S TEST SEAL (#65): `KernelSeal::acquire_for_kernel` exists only under the contract's
-# dev-only `test-seal` feature, so this crate's own tests (which mint tokens to show a step's
-# shape) reach it through this dev edge. The release build takes its seal through `seal::acquire`.
+# Dev-only: the test seal is absent from release builds.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
-# 1.5.5's recorder, as the REFERENCE the observation source is proven against byte for byte
-# (`tests/metrics_source_tests.rs`). A test edge only: the kernel ships no exposition renderer.
-# (No plugin crate is a dev-dependency here, R-FIX3: the export and auth proofs this crate's tests
-# once drew from the real scrape sink and the real token-verifying module run on in-crate test
-# doubles here, and the real-plugin proofs live with the composition root, `crates/busbar/tests`.)
 metrics-exporter-prometheus = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "net"] }
-# The far side of the WS-accept seam's session tests (`tests/router_session_tests.rs`): a test client
-# only. The kernel dials no WebSocket; an upstream duplex rides the connector (row 130 E3).
 tokio-tungstenite = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 axum = { workspace = true, features = ["http1"] }
@@ -238,45 +90,25 @@ futures = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
 rcgen = { workspace = true, features = ["pem"] }
-# THE POOL-CREDS MICRO-BENCH (`benches/pool_upstream_creds.rs`) — measures the per-request
-# egress credential-mode resolution delta (String-keyed SipHash probe vs the flag-gated Copy read).
 criterion = { workspace = true }
-# THE MEMBER CRATES' `test-support` SEAMS (ARCHITECT Q-GG3): the minting tests moved into
-# `src/tests/members/` reach a member's private step only through its off-by-default
-# `test-support` feature, enabled HERE and nowhere in a release build. (The loader's store-adapter
-# minting tests live in busbar's integration suite, `tests/store_adapter_verb_seam.rs`: the store
-# proof they load is a store crate, and the kernel names none — ARCHITECT C4B-1.)
+# Member `test-support` features are enabled here, never in a release build.
 busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-support"] }
 
-# The telemetry recovery tests read per-thread jemalloc counters; the lib's TEST binary therefore
-# runs on the same allocator the shipped binary does (see the cfg(test) global_allocator in
-# lib.rs). Dev-only and target-gated exactly as the binary's dependency is.
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
 tikv-jemalloc-ctl = { workspace = true }
 
-# ── THE POOL-CREDS MICRO-BENCH ── `harness = false`: criterion supplies its own `main`.
 [[bench]]
 name = "pool_upstream_creds"
 harness = false
 
-# ── THE HOT-PATH PERF INSTRUMENT ── the `<1µs` witness of the plane-extraction perf gate:
-# plugin-host-vtable call vs direct call, delta < 1µs at p50 AND p99, plus a per-token host-call
-# counter asserted == 0 on the streaming path. `harness = false`: criterion supplies `main`, and the
-# file's own budget assertions take the process down non-zero when a claim is violated.
 [[bench]]
 name = "plane_host_vtable_perf"
 harness = false
 
-# ── THE HOT-PATH ALLOC INSTRUMENT ── the zero-allocation witness of the alloc gate: a counting
-# `#[global_allocator]` asserted == 0 across the isolated POD host-call batch.
 [[bench]]
 name = "plane_host_vtable_alloc"
 harness = false
 
-# `txn_fence_red` is the rustc cfg `cargo xtask txn-fence` sets to compile the NEGATIVE compile
-# fence (admin/v1/json/tests/txn_fence.rs). It is a cfg rather than a cargo feature because a
-# feature whose only effect is to break the build makes `--all-features` red for no defect.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(txn_fence_red)'] }
-
