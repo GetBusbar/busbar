@@ -24,8 +24,8 @@
 # key lives on the founder's hardware key, never in a CI secret. The owner signs the canonical bytes,
 # and `scripts/release/publish_gate.py plugin-release <repo> <tag>`, run from his own busbar clone,
 # attaches each signature, verifies it against the compiled-in key list, uploads the signed
-# tarballs, and only then publishes the release (docs/verify.md). BUSBAR_SIGN_KEY is still accepted
-# as an input so that callers rendered before this change keep parsing, but it is never read.
+# tarballs, and only then publishes the release (docs/verify.md). This workflow takes no signing
+# secret of any kind.
 #
 # A C plugin (`plugin_lang: c`, plugin-ci.yml's C path) is released the same way: its build step
 # compiles the `c_dir` sources against busbar_plugin.h at the pin with the target's C compiler into
@@ -97,13 +97,6 @@ on:
         required: false
         type: string
         default: ""
-    secrets:
-      BUSBAR_SIGN_KEY:
-        description: "IGNORED. First-party plugins are signed by the owner's hardware key, never in CI. Kept so older callers still parse."
-        required: false
-      RELEASE_DISPATCH_TOKEN:
-        description: "IGNORED. Nothing is published here, so nothing is announced. Kept so older callers still parse."
-        required: false
 
 # Read-only by default; only the jobs that create, upload to, attest or publish the Release are
 # granted write, so pin / abi-completeness (which run code from the pinned busbar) hold no write token.
@@ -272,8 +265,6 @@ jobs:
             [ -n "$top" ] && extra+=(--abi-version "$top")
           fi
           for name in $FORMER_NAMES; do extra+=(--former-name "$name"); done
-          # Never a signing key here: unset it even if a caller passed one.
-          unset BUSBAR_SIGN_KEY
           mkdir -p plugin-dist
           out="plugin-dist/${PREFIX}-${ver}-${target}.tar.gz"
           "$pack" pack --lib "$lib" --name "$NAME" --alias "$ALIAS" --kind "$KIND" \

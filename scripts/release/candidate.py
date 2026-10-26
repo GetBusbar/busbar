@@ -161,8 +161,7 @@ def cmd_plugins(target: str, kit: str, out: Path) -> None:
                 args += ["--abi-version", str(top)]
         for n in re.findall(r"[a-z0-9-]+", e.get("former_names", "")):
             args += ["--former-name", n]
-        env = {k: v for k, v in os.environ.items() if k != "BUSBAR_SIGN_KEY"}
-        p = subprocess.run([pack, *args], env=env)
+        p = subprocess.run([pack, *args])
         if p.returncode != 0:
             sys.exit(f"candidate: packing {repo} for {target} failed")
         rows.append({"repo": repo, "version": ver, "tag": tag, "commit": commit})
