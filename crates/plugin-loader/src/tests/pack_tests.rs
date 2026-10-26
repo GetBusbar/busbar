@@ -1259,11 +1259,11 @@ fn unsigned_first_party(lib: &[u8]) -> Vec<u8> {
     busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-/// What the offline signer does: sign the canonical bytes, hex the 64-byte signature.
-fn offline_signature(key: &SigningKey, unsigned: &[u8]) -> String {
+/// What the offline signer does: sign the canonical bytes; the raw 64-byte signature.
+fn offline_signature(key: &SigningKey, unsigned: &[u8]) -> [u8; 64] {
     use ed25519_dalek::Signer;
     let up = busbar_plugin_loader::tarball::unpack(unsigned).unwrap();
-    hex::encode(key.sign(&canonical_manifest_bytes(&up.manifest)).to_bytes())
+    key.sign(&canonical_manifest_bytes(&up.manifest)).to_bytes()
 }
 
 fn keys(list: &[(&str, &SigningKey)]) -> Vec<FirstPartyKey> {
@@ -1322,15 +1322,6 @@ fn attach_refuses_what_would_not_load_as_first_party() {
         "a signature over a different manifest is refused"
     );
     assert!(
-        attach(
-            &unsigned,
-            &offline_signature(&a, &unsigned).to_uppercase(),
-            &list
-        )
-        .is_err(),
-        "the signature is lowercase hex"
-    );
-    assert!(
         attach(&unsigned, &offline_signature(&a, &unsigned), &[]).is_err(),
         "a tool built with no first-party key verifies nothing"
     );
@@ -1350,4 +1341,50 @@ fn attach_refuses_what_would_not_load_as_first_party() {
         attach(&third, &offline_signature(&a, &third), &list).is_err(),
         "attach signs first-party manifests only"
     );
+}
+
+/// The CLI contract the release gate drives: `@file` signatures in both forms, `canonical --out`,
+/// and an unknown flag refused.
+#[test]
+fn the_release_cli_reads_both_signature_files_and_names_the_canonical_bytes() {
+    let a = SigningKey::from_bytes(&[11; 32]);
+    let unsigned = unsigned_first_party(b"cdylib");
+    let sig = offline_signature(&a, &unsigned);
+    let dir = std::env::temp_dir().join(format!("pack-release-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (raw, hexed) = (dir.join("sig.bin"), dir.join("sig.hex"));
+    std::fs::write(&raw, sig).unwrap();
+    std::fs::write(&hexed, format!("{}\n", hex::encode(sig))).unwrap();
+    for f in [&raw, &hexed] {
+        assert_eq!(read_signature(&format!("@{}", f.display())).unwrap(), sig);
+    }
+    assert_eq!(read_signature(&hex::encode(sig)).unwrap(), sig);
+    assert!(
+        read_signature("abcd").is_err(),
+        "a short signature is refused"
+    );
+
+    let tgz = dir.join("u.tar.gz");
+    std::fs::write(&tgz, &unsigned).unwrap();
+    let canon = dir.join("u.canonical");
+    let line = canonical_cli(&[
+        tgz.display().to_string(),
+        "--out".into(),
+        canon.display().to_string(),
+    ])
+    .unwrap();
+    let bytes = std::fs::read(&canon).unwrap();
+    assert!(
+        line.starts_with(&format!("canonical-sha256={} ", sha256_hex(&bytes))),
+        "{line}"
+    );
+    assert!(
+        line.contains(" publisher=busbar ") && line.ends_with(" signed=false"),
+        "{line}"
+    );
+    assert!(
+        release_args(&["x".into(), "--bogus".into(), "1".into()], &["out"]).is_err(),
+        "an unknown flag is refused"
+    );
+    std::fs::remove_dir_all(&dir).ok();
 }
