@@ -135,6 +135,8 @@ struct ModelCell {
     seg: Seg,
     /// The name-keyed CURRENT unit counters. Sparse (a zero unit is absent).
     cur: std::collections::BTreeMap<String, u64>,
+    /// `cur` as of the writer's last take: `cur - taken` is this window's pending delta.
+    taken: std::collections::BTreeMap<String, u64>,
 }
 
 /// In-memory TOKEN-LEDGER cell for a bucket's CURRENT window - the AUTHORITATIVE hot-path
@@ -142,8 +144,8 @@ struct ModelCell {
 /// NO SPEND FIELD: money is derived at check time as `cell counts x the card of the entry each was
 /// earned under` (+ the flat fee x billable requests per entry). The counts are segmented by card
 /// entry, and each segment prices at its entry's card (MONEY-DESIGN §3b). What reaches the store is
-/// not read off the cell: every count-changing mutation emits its delta into its shard's
-/// [`Pending`] map in the same critical section (MONEY-DESIGN §3c).
+/// the cell's delta since the writer's last take (MONEY-DESIGN §3c): its counts less the baseline
+/// held in [`PendCells`] for its own window, plus the explicit deltas of older windows.
 #[derive(Clone, Default)]
 struct BudgetCell {
     window_start: u64,
@@ -170,17 +172,76 @@ impl BudgetCell {
         }
     }
 
-    /// ROLL the cell to the newer `window`: the counts start over. Emits nothing: what the old
-    /// window held was emitted as it happened. What is still pending or unsent keeps it resident.
+    /// ROLL the cell to the newer `window`: the counts start over. The old window's delta since
+    /// the last take is settled into its pending first, so nothing it held is lost.
     fn roll(&mut self, window: u64) {
-        let pending = std::mem::take(&mut self.pending);
+        self.settle();
+        let mut pending = std::mem::take(&mut self.pending);
+        pending.rebase();
         *self = Self::fresh(window);
         self.pending = pending;
     }
 
     /// Whether it holds deltas not yet taken.
     fn dirty(&self) -> bool {
-        !self.pending.is_empty()
+        self.pending.touched || !self.pending.wins.is_empty()
+    }
+
+    /// A count changed in place (the hot path's only bookkeeping: the delta is read at the take).
+    fn touch(&mut self) {
+        self.pending.touched = true;
+    }
+
+    /// THE SETTLE (under the shard lock): the cell's counts less the last take's baseline, into
+    /// its own window's pending delta, and the baseline moved up to the counts.
+    fn settle(&mut self) {
+        if !std::mem::take(&mut self.pending.touched) {
+            return;
+        }
+        let w = self.window_start;
+        let p = &mut self.pending;
+        let dr = signed(self.requests).saturating_sub(signed(p.requests));
+        if dr != 0 {
+            p.admitted(w, dr);
+        }
+        let now: Vec<(Seg, u64)> = self.fee_segs.split(self.billable_requests).collect();
+        let was: Vec<(Seg, u64)> = p.fee.split(p.billable).collect();
+        for (seg, n) in &now {
+            let before = was.iter().find(|(s, _)| s == seg).map_or(0, |(_, n)| *n);
+            let d = signed(*n).saturating_sub(signed(before));
+            if d != 0 {
+                p.billable(w, *seg, d);
+            }
+        }
+        for (seg, before) in &was {
+            if before != &0 && !now.iter().any(|(s, _)| s == seg) {
+                p.billable(w, *seg, -signed(*before));
+            }
+        }
+        p.requests = self.requests;
+        p.billable = self.billable_requests;
+        p.fee.clone_from(&self.fee_segs);
+        for m in &mut self.models {
+            if m.cur == m.taken {
+                continue;
+            }
+            let c = p.at(w);
+            for (class, n) in &m.cur {
+                let before = m.taken.get(class).copied().unwrap_or(0);
+                c.unit(
+                    m.seg,
+                    &m.model,
+                    class,
+                    signed(*n).saturating_sub(signed(before)),
+                );
+            }
+            for (class, before) in &m.taken {
+                if !m.cur.contains_key(class) {
+                    c.unit(m.seg, &m.model, class, -signed(*before));
+                }
+            }
+            m.taken.clone_from(&m.cur);
+        }
     }
 
     /// Accrue one response's keyed units under `model` in segment `seg`, interning the pair on
@@ -198,6 +259,7 @@ impl BudgetCell {
                     model: std::sync::Arc::from(model),
                     seg,
                     cur: std::collections::BTreeMap::new(),
+                    taken: std::collections::BTreeMap::new(),
                 });
                 self.models.last_mut().expect("just pushed")
             }
@@ -234,6 +296,21 @@ impl BudgetCell {
         )
     }
 
+    /// Add `counts` (non-negative: hydrated or dead-lettered) to the cell AND its baseline: they
+    /// are counts the store already holds or will never hold, never a delta to record.
+    fn absorb_counts(&mut self, counts: &crate::posting::record::CellCount) {
+        self.settle();
+        self.add_counts(counts);
+        let p = &mut self.pending;
+        p.touched = false;
+        p.requests = self.requests;
+        p.billable = self.billable_requests;
+        p.fee.clone_from(&self.fee_segs);
+        for m in &mut self.models {
+            m.taken.clone_from(&m.cur);
+        }
+    }
+
     /// Add `counts` (non-negative: hydrated, foreign or dead-lettered) to the cell.
     fn add_counts(&mut self, counts: &crate::posting::record::CellCount) {
         self.requests = self
@@ -266,7 +343,8 @@ impl BudgetCell {
     /// Drop DEAD `ModelCell`s (no current counts) so the `models` Vec cannot grow without bound in
     /// a long-lived, never-rolled cell. A model that later reappears is simply re-interned.
     fn prune_dead_models(&mut self) {
-        self.models.retain(|m| units_total(&m.cur) != 0);
+        self.models
+            .retain(|m| units_total(&m.cur) != 0 || units_total(&m.taken) != 0);
     }
 
     /// Total current TOKENS across models — every token-family class (the scalar view for admin
@@ -290,7 +368,16 @@ impl BudgetCell {
 /// [`Pending`] map once the cell is removed (a deleted key or group: nothing is discarded). A string
 /// is allocated only on a segment's or class's FIRST sight in a window.
 #[derive(Clone, Default)]
-pub(crate) struct PendCells(Vec<PendCell>);
+pub(crate) struct PendCells {
+    /// Explicit deltas per window (older windows' give-backs, settled rolls, orphans).
+    wins: Vec<PendCell>,
+    /// The owning cell changed since its last settle.
+    touched: bool,
+    /// The owning cell's counts at its last settle (the baseline of its own window's delta).
+    requests: u64,
+    billable: u64,
+    fee: busbar_kernel_ledger::usage::FeeSegs,
+}
 
 /// One window's pending delta.
 #[derive(Clone, Default)]
@@ -340,34 +427,14 @@ impl PendCell {
 
 impl PendCells {
     fn at(&mut self, window: u64) -> &mut PendCell {
-        match self.0.iter().position(|c| c.window == window) {
-            Some(i) => &mut self.0[i],
+        match self.wins.iter().position(|c| c.window == window) {
+            Some(i) => &mut self.wins[i],
             None => {
-                self.0.push(PendCell {
+                self.wins.push(PendCell {
                     window,
                     ..PendCell::default()
                 });
-                self.0.last_mut().expect("just pushed")
-            }
-        }
-    }
-
-    /// ONE CHARGE: `requests +1` and the fee (`billable +1` in `seg`, or the fee lane's unit in
-    /// `seg`).
-    fn charged(
-        &mut self,
-        window: u64,
-        seg: Seg,
-        fee_lane: Option<(&str, &std::collections::BTreeMap<String, u64>)>,
-    ) {
-        let c = self.at(window);
-        c.requests = c.requests.saturating_add(1);
-        match fee_lane {
-            None => c.fee(seg, 1),
-            Some((lane, one)) => {
-                for (class, n) in one {
-                    c.unit(seg, lane, class, signed(*n));
-                }
+                self.wins.last_mut().expect("just pushed")
             }
         }
     }
@@ -399,17 +466,19 @@ impl PendCells {
 
     /// Whether anything is pending for `window`.
     fn holds(&self, window: u64) -> bool {
-        self.0.iter().any(|c| c.window == window)
+        self.wins.iter().any(|c| c.window == window)
     }
 
-    /// Whether anything is pending.
-    fn is_empty(&self) -> bool {
-        self.0.is_empty()
+    /// A new window's baseline is zero.
+    fn rebase(&mut self) {
+        self.requests = 0;
+        self.billable = 0;
+        self.fee = busbar_kernel_ledger::usage::FeeSegs::default();
     }
 
     /// Add `other` (a removed cell's pending) into these.
     fn adopt(&mut self, other: PendCells) {
-        for c in other.0 {
+        for c in other.wins {
             let into = self.at(c.window);
             into.requests = into.requests.saturating_add(c.requests);
             for (seg, n) in c.billable {
@@ -424,7 +493,7 @@ impl PendCells {
     /// THE TAKE: every window's delta as the spool's cells of `bucket` (zero ones dropped).
     fn take(&mut self, bucket: &str) -> Vec<crate::posting::record::CellCount> {
         let mut out = Vec::new();
-        for c in std::mem::take(&mut self.0) {
+        for c in std::mem::take(&mut self.wins) {
             let mut cell = crate::posting::record::CellCount::new(bucket, c.window);
             cell.requests = c.requests;
             for (seg, n) in c.billable {

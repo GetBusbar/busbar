@@ -209,6 +209,42 @@ async fn t1_spend_survives_a_kill_and_restart_with_identical_money_and_headroom(
     );
 }
 
+/// T1 ACROSS TWO RESTARTS: spend added on a hydrated node is recorded as its own delta only: the
+/// hydrated counts are never written a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t1_a_hydrated_node_records_only_what_it_adds() {
+    let (_holder, _serial) = holder_opening(history_card(20.0));
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let key = team_key(store.as_ref(), "vk_t1h");
+    let dir = TmpDir::new();
+    let medium = Medium::Dir(dir.path().to_path_buf());
+    let now = busbar_kernel::store::now();
+    let cost = cost(20.0, 1_000_000, None);
+
+    let mut seen = None;
+    for _ in 0..3 {
+        let gov = boot(&store, &medium, &cost).await;
+        if let Some(seen) = seen {
+            assert_eq!(
+                reads(&gov, &cost, &key),
+                seen,
+                "identical money after restart"
+            );
+        }
+        gov.try_admit(&cost, &key, "", now).expect("admits");
+        gov.record_usage(&cost, &key, "", "m", &input(100_000), now);
+        seen = Some(reads(&gov, &cost, &key));
+        let rec = gov.recorder().expect("attached");
+        assert!(rec.drain(true, Duration::from_secs(5)).await);
+        rec.stop().await;
+    }
+    assert_eq!(
+        seen.expect("three boots").0,
+        600,
+        "three requests' spend, each once"
+    );
+}
+
 /// T1 without a data directory: identical after a CLEAN shutdown (the drain).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t1_without_a_data_directory_a_clean_shutdown_keeps_identical_money() {

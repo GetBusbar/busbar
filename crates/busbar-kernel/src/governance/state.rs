@@ -727,9 +727,8 @@ impl GovState {
         };
         cell.accrue(model, seg, units);
         cell.last_touch = now;
-        // THE EMIT (MONEY-DESIGN §3c): the same delta, in the same critical section.
-        let at = cell.window_start;
-        cell.pending.units(at, (model, seg), units, 1);
+        // THE EMIT (MONEY-DESIGN §3c): the cell is marked; its delta is read at the take.
+        cell.touch();
     }
 
     /// Record one completed response's RAW consumption into the per-(key, day-bucket, model,
@@ -1203,7 +1202,8 @@ impl GovState {
         // (the store only tombstones a key; its rows are kept), MONEY-DESIGN §3c.
         {
             let mut shard = self.budget.write(id);
-            if let Some(cell) = shard.cells.remove(id) {
+            if let Some(mut cell) = shard.cells.remove(id) {
+                cell.settle();
                 shard.pending.of(id).adopt(cell.pending);
             }
         }
@@ -1272,7 +1272,8 @@ impl GovState {
                 .cloned()
                 .collect();
             for id in gone {
-                if let Some(cell) = shard.cells.remove(&id) {
+                if let Some(mut cell) = shard.cells.remove(&id) {
+                    cell.settle();
                     shard.pending.of(&id).adopt(cell.pending);
                 }
             }
@@ -1668,6 +1669,7 @@ impl GovState {
                     model: std::sync::Arc::from(adj.lane.as_str()),
                     seg: entry,
                     cur: BTreeMap::new(),
+                    taken: BTreeMap::new(),
                 });
                 segments.len() - 1
             });
@@ -2168,10 +2170,8 @@ impl GovState {
                 cell.billable_requests = cell.billable_requests.saturating_add(1);
                 cell.fee_segs.charge(seg);
             }
-            // THE EMIT (MONEY-DESIGN §3c), in the same critical section as the charge.
-            let lane = plane_fee.as_ref().map(|(lane, one)| (lane.as_str(), one));
-            let at = cell.window_start;
-            cell.pending.charged(at, seg, lane);
+            // THE EMIT (MONEY-DESIGN §3c): the cell is marked; its delta is read at the take.
+            cell.touch();
             cell.last_touch = now;
             // The cell this fee reached, by its window: what the refund returns it from.
             let reached = (bucket.bucket_id.to_string(), cell.window_start);
@@ -2213,18 +2213,19 @@ impl GovState {
     /// The one give-back behind [`GovState::refund_charge`] and [`GovState::uncharge`].
     fn give_back(&self, charge: &FeeCharge, requests_too: bool) {
         let lane = charge.lane.as_deref().map(|l| (l, PER_REQUEST));
+        // A fee lane's one unit, built before any lock is taken (and only for a fee lane).
+        let one = lane.map(|_| BTreeMap::from([(PER_REQUEST.to_string(), 1)]));
         for (bucket_id, window) in &charge.cells {
             let mut guard = self.budget.write(bucket_id);
             let super::ShardMap { cells, pending, .. } = &mut *guard;
-            let one = BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
             // The -1s for the charge's own window, onto `p`.
             let emit = |p: &mut super::PendCells| {
                 if requests_too {
                     p.admitted(*window, -1);
                 }
-                match lane {
-                    None => p.billable(*window, charge.seg, -1),
-                    Some((lane, _)) => p.units(*window, (lane, charge.seg), &one, -1),
+                match (lane, &one) {
+                    (Some((lane, _)), Some(one)) => p.units(*window, (lane, charge.seg), one, -1),
+                    _ => p.billable(*window, charge.seg, -1),
                 }
             };
             let Some(cell) = cells.get_mut(bucket_id) else {
@@ -2239,9 +2240,9 @@ impl GovState {
             if cell.window_start == *window {
                 if requests_too {
                     cell.requests = cell.requests.saturating_sub(1);
-                    cell.pending.admitted(*window, -1);
+                    cell.touch();
                 }
-                refund_in_place(cell, *window, lane, charge.seg);
+                refund_in_place(cell, lane, charge.seg);
             } else if cell.window_start > *window {
                 // The charge's window has rolled away: RAM `cur` no longer holds it, but the store
                 // does, so the -1 is emitted to the charge's own window (MONEY-DESIGN §3c).
@@ -2306,10 +2307,7 @@ impl GovState {
                     .find(|m| &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0));
                 if let Some(m) = held {
                     take_one(&mut m.cur, unit);
-                    let seg = m.seg;
-                    let one = BTreeMap::from([(unit.to_string(), 1)]);
-                    let at = cell.window_start;
-                    cell.pending.units(at, (lane, seg), &one, -1);
+                    cell.touch();
                 }
             }
         }
@@ -2327,6 +2325,7 @@ impl GovState {
             let mut taken = Vec::new();
             for (bucket, cell) in shard.cells.iter_mut() {
                 if cell.dirty() {
+                    cell.settle();
                     taken.extend(cell.pending.take(bucket));
                 }
             }
@@ -2379,7 +2378,7 @@ impl GovState {
                 .entry(c.bucket.clone())
                 .or_insert_with(|| BudgetCell::fresh(c.window));
             if cell.window_start == c.window {
-                cell.add_counts(&c.signed_part(true));
+                cell.absorb_counts(&c.signed_part(true));
             }
         }
     }
@@ -2551,18 +2550,13 @@ fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool 
 /// `lane`. Refund ONLY the billable (fee-base) counter - the flat fee bills 2xx only. The admission
 /// `requests` counter is NEVER refunded, so a failed request still consumed its requests-limit slot
 /// (a caller cannot escape the requests cap by hammering failures). Floored at 0.
-fn refund_in_place(
-    cell: &mut BudgetCell,
-    window: u64,
-    lane: Option<(&str, &str)>,
-    seg: super::Seg,
-) {
+fn refund_in_place(cell: &mut BudgetCell, lane: Option<(&str, &str)>, seg: super::Seg) {
     match lane {
         None => {
             if cell.billable_requests > 0 {
                 cell.billable_requests -= 1;
                 cell.fee_segs.refund(seg);
-                cell.pending.billable(window, seg, -1);
+                cell.touch();
             }
         }
         // A plane's fee unit: one count off its fee lane, in the segment the charge accrued it under.
@@ -2571,8 +2565,7 @@ fn refund_in_place(
             if let Some(m) = charged {
                 if m.cur.get(unit).is_some_and(|n| *n > 0) {
                     take_one(&mut m.cur, unit);
-                    let one = BTreeMap::from([(unit.to_string(), 1)]);
-                    cell.pending.units(window, (lane, seg), &one, -1);
+                    cell.touch();
                 }
             }
         }
@@ -2613,7 +2606,7 @@ fn durable_cell(
 ) -> BudgetCell {
     let counts = super::state_rows(plain, sibling, window);
     let mut cell = BudgetCell::fresh(window);
-    cell.add_counts(&counts);
+    cell.absorb_counts(&counts);
     cell
 }
 
