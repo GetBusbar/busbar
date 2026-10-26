@@ -511,6 +511,61 @@ async fn t26_a_delete_loses_no_counts_and_a_recreated_group_starts_at_zero() {
     );
 }
 
+/// T26b: on one node, a capped group deleted and re-created under the same name answers no new
+/// 429: its old rows (recorded before the delete) are never read back as another node's spend.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t26b_a_recreated_capped_group_answers_no_new_429() {
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let c = cost(20.0, 1_000_000, Some(2));
+    let gov = boot(&store, &Medium::Memory, &c).await;
+    let now = busbar_kernel::store::now();
+    let key = team_key(store.as_ref(), "vk_t26b_old");
+    gov.try_admit(&c, &key, "", now).expect("first");
+    gov.try_admit(&c, &key, "", now).expect("second");
+    assert!(
+        gov.try_admit(&c, &key, "", now).is_err(),
+        "the requests cap holds"
+    );
+    let rec = gov.recorder().expect("attached");
+    assert!(rec.drain(true, Duration::from_secs(5)).await);
+    gov.delete_key(&key.id).expect("deleted");
+    gov.reclaim_group_cells("team");
+    let fresh = team_key(store.as_ref(), "vk_t26b_new");
+    gov.refresh_snapshot(&c, rec.store().as_ref()).await;
+    gov.try_admit(&c, &fresh, "", now)
+        .expect("the re-created group starts at zero");
+    gov.refresh_snapshot(&c, rec.store().as_ref()).await;
+    gov.try_admit(&c, &fresh, "", now)
+        .expect("and its old rows are never foreign spend");
+}
+
+/// T28: a group delete on a one-worker runtime, with a data directory and its spool writer running,
+/// completes: no delete path waits for the writer or an `fsync`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn t28_a_group_delete_on_one_worker_completes() {
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let dir = TmpDir::new();
+    let medium = Medium::Dir(dir.path().to_path_buf());
+    let c = cost(20.0, 1_000_000, None);
+    let gov = boot(&store, &medium, &c).await;
+    let rec = gov.recorder().expect("attached");
+    rec.spawn();
+    let now = busbar_kernel::store::now();
+    let key = team_key(store.as_ref(), "vk_t28");
+    gov.try_admit(&c, &key, "", now).expect("admits");
+    gov.record_usage(&c, &key, "", "m", &input(1_000), now);
+    let deleted = tokio::time::timeout(Duration::from_secs(10), async {
+        gov.delete_key(&key.id).expect("deleted");
+        gov.reclaim_group_cells("team")
+    })
+    .await;
+    assert!(deleted.is_ok(), "the delete completed");
+    assert!(rec.drain(true, Duration::from_secs(5)).await);
+    rec.stop().await;
+}
+
 thread_local! {
     /// Set on a thread that is serving requests: nothing on it may call the store or `fsync`.
     static REQUEST_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
