@@ -398,7 +398,7 @@ checks:
     outputs: [target/oracle/reports/]
   # CODEQL, migrated off GitHub code scanning "default setup" (owner 2026-10-26: Actions retired).
   # The same engine, version and suite GitHub ran (CodeQL 2.27.3, `default` suite, rust + python,
-  # build-mode none: nothing is compiled), headless: the per-language bundles are fetched from
+  # build-mode none: nothing is compiled), headless: the bundles are fetched from
   # github/codeql-action's release, verified against the sha256 pinned here, and cached. It runs
   # daily at dev's tip and on request (`run_event`), never on a move: it reports, it never gates.
   # RATCHET: red when the high/critical findings outnumber CODEQL_MAX_HIGH, the open high/critical
@@ -410,19 +410,29 @@ checks:
       V=2.27.3
       CODEQL_MAX_HIGH=52
       cache="${MODERNCI_CACHE_DIR:-$HOME/.cache}/codeql-$V"
-      fetch() { # lang sha256
+      # One bundle per machine architecture: GitHub ships per-language bundles for linux64 only, and
+      # one full bundle for linux-arm64 (ModernCI compute is aarch64).
+      case "$(uname -m)" in
+        x86_64) bundles="rust:218a19c49a4e44dee236d2cc55e20cda03ac4f37ddc581b1b0e5fff2e7912237:codeql-bundle-rust-linux64 python:ffb149bcbb0818f1017bec9f68d7b84693a7b0ac4a69b7be390a4f2825c3a170:codeql-bundle-python-linux64" ;;
+        aarch64|arm64) bundles="rust:82a7828e050573e885ba96620c5b72db985ef4a88118dd2baf14ae7b325064d7:codeql-bundle-linux-arm64 python:82a7828e050573e885ba96620c5b72db985ef4a88118dd2baf14ae7b325064d7:codeql-bundle-linux-arm64" ;;
+        *) echo "codeql: no bundle for $(uname -m)"; exit 1 ;;
+      esac
+      fetch() { # asset sha256 -> $cache/<asset>/codeql/codeql
         d="$cache/$1"
         [ -x "$d/codeql/codeql" ] && return 0
         t=$(mktemp -d); f="$t/b.tar.zst"
-        curl -fsSL -o "$f" "https://github.com/github/codeql-action/releases/download/codeql-bundle-v$V/codeql-bundle-$1-linux64.tar.zst"
+        curl -fsSL -o "$f" "https://github.com/github/codeql-action/releases/download/codeql-bundle-v$V/$1.tar.zst"
         echo "$2  $f" | sha256sum -c - >/dev/null || { echo "codeql: bundle $1 sha256 mismatch"; exit 1; }
-        mkdir -p "$d.tmp" && zstd -dc "$f" | tar -x -C "$d.tmp" && rm -rf "$d" && mv "$d.tmp" "$d"; rm -rf "$t"
+        rm -rf "$d.tmp"; mkdir -p "$d.tmp" && zstd -dc "$f" | tar -x -C "$d.tmp" && rm -rf "$d" && mv "$d.tmp" "$d"; rm -rf "$t"
       }
-      fetch rust 218a19c49a4e44dee236d2cc55e20cda03ac4f37ddc581b1b0e5fff2e7912237
-      fetch python ffb149bcbb0818f1017bec9f68d7b84693a7b0ac4a69b7be390a4f2825c3a170
+      declare -A bin
+      for b in $bundles; do
+        IFS=: read -r lang sha asset <<< "$b"
+        fetch "$asset" "$sha"; bin[$lang]="$cache/$asset/codeql/codeql"
+      done
       out=$(mktemp -d); trap 'rm -rf "$out"' EXIT
       for lang in rust python; do
-        q="$cache/$lang/codeql/codeql"
+        q="${bin[$lang]}"
         "$q" database create "$out/db-$lang" --language="$lang" --build-mode=none --source-root=. --threads=0 --overwrite >/dev/null
         "$q" database analyze "$out/db-$lang" "codeql/$lang-queries:codeql-suites/$lang-code-scanning.qls" \
           --format=sarif-latest --output="$out/$lang.sarif" --threads=0 --ram=6000 >/dev/null
@@ -440,7 +450,7 @@ checks:
       high=$(awk -F'\t' '$1 >= 7.0' "$out/results.tsv" | wc -l | tr -d ' ')
       echo "codeql: $high high/critical findings (ceiling $CODEQL_MAX_HIGH), $(wc -l < "$out/results.tsv" | tr -d ' ') in all"
       [ "$high" -le "$CODEQL_MAX_HIGH" ] || { echo "codeql: high/critical findings rose past $CODEQL_MAX_HIGH"; exit 1; }
-    requires: [curl, zstd, jq, arch-x86_64]
+    requires: [curl, zstd, jq]
   conformance:
     # busbar's own suites (the OAuth2 AS, TLS, the supply chain) by the fleet's one driver
     # (busbar-release template/conformance): verdicts to target/conformance/verdicts/, brought into
