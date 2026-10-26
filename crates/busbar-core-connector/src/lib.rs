@@ -2003,6 +2003,26 @@ impl DeclaredConns for Connector {
         }
     }
 
+    /// THE DIAL HAS LANDED: its judgement answered and the far end took the connect (a name's
+    /// refused address moving on to its next admitted one first). A lease, a held session's leg,
+    /// and a line lent from the pool are landed when they open.
+    fn landed(&self, caller: InstanceId, conn: ConnId, ticket: Ticket) -> Result<(), ConnError> {
+        let (_, held) = self.slab.get(caller, conn)?;
+        if held.lease.is_some() || held.dialled.is_some() {
+            return Ok(());
+        }
+        let waker = self.waker(caller, ticket);
+        if !self.settle(&held, Some(&waker))? {
+            return Err(ConnError::Pending);
+        }
+        let (line, stream) = held.line().ok_or(ConnError::Closed)?;
+        match line.poll_landed(stream, &mut Context::from_waker(&waker)) {
+            Poll::Ready(Ok(())) => Ok(()),
+            Poll::Ready(Err(f)) => Err(map(&f)),
+            Poll::Pending => Err(ConnError::Pending),
+        }
+    }
+
     /// A need is framed when the entry serving its transport is a FRAMER (its tail's role, ARCHITECT
     /// ruling Q128 U7: http's kind, over the carrier the connector chose); a CARRIER entry is a raw
     /// stream.
