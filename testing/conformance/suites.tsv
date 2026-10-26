@@ -1,1 +1,3 @@
 # busbar core suites: <suite-id>\t<command>, run by testing/conformance/run.sh (the ModernCI conformance check).
+oidf-oauth2	python3 -I testing/oidf-conformance/oidf.py
+fapi2	python3 -I testing/oidf-conformance/oidf.py
