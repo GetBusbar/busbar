@@ -929,6 +929,7 @@ fn oracle_shim() -> PathBuf {
         "the oracle shim is missing at {shim:?}; it is what obtains and locates the pinned \
          engine, and there is no other supported way to find it"
     );
+    judge_handed_over(judge_path().as_deref(), under_modernci());
 
     let help = Command::new("bash")
         .arg(&shim)
@@ -946,6 +947,110 @@ fn oracle_shim() -> PathBuf {
         String::from_utf8_lossy(&help.stderr)
     );
     shim
+}
+
+/// The judge ModernCI pre-fetched for this run: `BUSBAR_ORACLE_JUDGE_PATH`, which the shim takes
+/// first (verified against the config's sha256 before every exec) and never fetches past.
+fn judge_path() -> Option<PathBuf> {
+    std::env::var_os("BUSBAR_ORACLE_JUDGE_PATH")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Whether ModernCI is running this cell: it hands the trusted shim (`BUSBAR_ORACLE_SHIM`), and its
+/// own markers name the run.
+fn under_modernci() -> bool {
+    [
+        "BUSBAR_ORACLE_SHIM",
+        "MODERNCI",
+        "MODERNCI_JOB",
+        "MODERNCI_TO_SHA",
+        "MODERNCI_HEAD",
+        "MODERNCI_COMMIT",
+    ]
+    .iter()
+    .any(|k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+}
+
+/// THE JUDGE IS HANDED OVER, NOT FETCHED, UNDER MODERNCI. A ModernCI job runs candidate code and
+/// holds no token, so the shim cannot fetch busbar-release's judge there: it reads the one ModernCI
+/// pre-fetched at `BUSBAR_ORACLE_JUDGE_PATH`. With the path set, it must name an executable file
+/// (the shim then verifies its digest). Under ModernCI with the path unset, the cell refuses here and
+/// says what is missing, not as the shim's token error three layers down. Outside ModernCI an unset
+/// path leaves the shim to obtain the engine as it always has.
+fn judge_handed_over(judge: Option<&Path>, under_modernci: bool) {
+    match judge {
+        Some(judge) => {
+            let executable = std::fs::metadata(judge).is_ok_and(|m| {
+                use std::os::unix::fs::PermissionsExt;
+                m.is_file() && m.permissions().mode() & 0o111 != 0
+            });
+            assert!(
+                executable,
+                "BUSBAR_ORACLE_JUDGE_PATH names {judge:?}, which is not an executable file: the \
+                 judge ModernCI pre-fetched for this run is missing"
+            );
+        }
+        None => assert!(
+            !under_modernci,
+            "BUSBAR_ORACLE_JUDGE_PATH is not set, and this is a ModernCI run: the cell needs the \
+             pinned oracle judge (its `mock` is this cell's upstream), a ModernCI job holds no token \
+             to fetch it, and ModernCI's judge tool slot is what hands it over. Set \
+             BUSBAR_ORACLE_JUDGE_PATH to the pre-fetched judge."
+        ),
+    }
+}
+
+/// What a caught panic said, whichever of the two payloads `panic!` gave it.
+fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default()
+}
+
+#[test]
+fn under_modernci_an_unset_judge_path_refuses_naming_it() {
+    let refused = std::panic::catch_unwind(|| judge_handed_over(None, true))
+        .expect_err("a ModernCI run with no judge path is refused");
+    let said = panic_text(&refused);
+    assert!(
+        said.contains("BUSBAR_ORACLE_JUDGE_PATH is not set"),
+        "{said}"
+    );
+    assert!(said.contains("judge tool slot"), "{said}");
+}
+
+#[test]
+fn a_judge_path_naming_no_executable_file_refuses_naming_it() {
+    let dir = std::env::temp_dir().join(format!("busbar-judge-path-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let missing = dir.join("absent-judge");
+    let plain = dir.join("not-executable");
+    std::fs::write(&plain, b"#!/bin/sh\n").unwrap();
+    for judge in [&missing, &plain] {
+        let refused = std::panic::catch_unwind(|| judge_handed_over(Some(judge), true))
+            .expect_err("a judge path that is no executable file is refused");
+        let said = panic_text(&refused);
+        assert!(said.contains("not an executable file"), "{said}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_executable_judge_is_taken_and_outside_modernci_the_shim_obtains_one() {
+    let dir = std::env::temp_dir().join(format!("busbar-judge-ok-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let judge = dir.join("busbar-oracle");
+    std::fs::write(&judge, b"#!/bin/sh\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&judge, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    judge_handed_over(Some(&judge), true);
+    judge_handed_over(None, false);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The oracle's configuration, narrowed to the one dialect this cell needs: the same auth chain,
