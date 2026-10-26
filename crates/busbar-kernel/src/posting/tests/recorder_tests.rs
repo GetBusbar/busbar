@@ -327,19 +327,17 @@ async fn t10_t7_a_kill_before_ready_replays_once_and_never_reuses_an_op_id() {
     assert_eq!(store.row("k", 0), (5, 5), "exactly once");
     book.emit("k", 0, 1);
     assert!(settle(&rec, Duration::from_secs(5)).await);
-    let ops = store.ops.lock().unwrap();
     assert_eq!(store.row("k", 0), (6, 6));
-    assert_eq!(
-        ops.len(),
-        2,
-        "one op per carve, never two bodies under one id"
-    );
-    let fresh = ops.keys().filter(|o| !first_ops.contains(o)).count();
+    let (count, fresh) = {
+        let ops = store.ops.lock().unwrap();
+        let fresh = ops.keys().filter(|o| !first_ops.contains(o)).count();
+        (ops.len(), fresh)
+    };
+    assert_eq!(count, 2, "one op per carve, never two bodies under one id");
     assert_eq!(
         fresh, 1,
         "the new carve minted a new op id, never a previous boot's"
     );
-    drop(ops);
     rec.stop().await;
 }
 

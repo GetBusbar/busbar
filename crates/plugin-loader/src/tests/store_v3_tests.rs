@@ -151,8 +151,16 @@ fn usage_adds_through_the_bridge_mint_distinct_op_ids() {
     s.add_usage("k", 60, &delta(1, 10)).expect("a");
     s.add_usage("k", 60, &delta(1, 10))
         .expect("b: a fresh op_id, not a replay");
-    assert_eq!(s.get_usage("k", 60).expect("read").requests, 2);
-    assert_eq!(s.get_usage("untouched", 60).expect("read").requests, 0);
+    assert_eq!(
+        RecordStore::get_usage(&s, "k", 60).expect("read").requests,
+        2
+    );
+    assert_eq!(
+        RecordStore::get_usage(&s, "untouched", 60)
+            .expect("read")
+            .requests,
+        0
+    );
 }
 
 #[test]
@@ -296,7 +304,10 @@ fn a_usage_batch_replays_once_and_a_reused_op_id_is_a_conflict() {
             Err(StoreFailure::Conflict)
         );
     });
-    assert_eq!(s.get_usage("k", 60).expect("read").requests, 1);
+    assert_eq!(
+        RecordStore::get_usage(&s, "k", 60).expect("read").requests,
+        1
+    );
 }
 
 #[test]

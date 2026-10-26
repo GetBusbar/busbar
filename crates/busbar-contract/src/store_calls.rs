@@ -76,8 +76,14 @@ pub trait StoreCalls: Send + Sync {
         -> StoreCall<'a, ()>;
     /// `get_usage`: one `(bucket, window)` usage row, empty when absent. The same `GET_USAGE` slot
     /// the 1.5.5 op set reads, submitted and awaited (the fleet snapshot reads it off the request
-    /// path, MONEY-DESIGN §3d).
-    fn get_usage<'a>(&'a self, bucket: &'a str, window_start: u64) -> StoreCall<'a, UsageLedger>;
+    /// path, MONEY-DESIGN §3d). An implementation that does not read usage REFUSES it, so the
+    /// snapshot reports the read as failing rather than reading zero.
+    fn get_usage<'a>(&'a self, bucket: &'a str, window_start: u64) -> StoreCall<'a, UsageLedger> {
+        let _ = (bucket, window_start);
+        Box::pin(std::future::ready(Err(StoreFailure::Refused(
+            "this store handle does not read usage rows".to_string(),
+        ))))
+    }
     /// `record_put`.
     fn record_put<'a>(
         &'a self,

@@ -35,11 +35,11 @@ impl RateEpoch for Holder {
     }
 }
 
-static SERIAL: Mutex<()> = Mutex::new(());
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn holder_opening(card: RateCard) -> (&'static Holder, std::sync::MutexGuard<'static, ()>) {
+async fn holder_opening(card: RateCard) -> (&'static Holder, tokio::sync::MutexGuard<'static, ()>) {
     static HOLDER: std::sync::OnceLock<&'static Holder> = std::sync::OnceLock::new();
-    let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let serial = SERIAL.lock().await;
     let holder = *HOLDER.get_or_init(|| {
         let opening = Arc::new(History::opening(history_card(0.0), 0));
         let holder: &'static Holder = Box::leak(Box::new(Holder(Mutex::new(opening))));
@@ -174,7 +174,7 @@ fn reads(
 /// headroom are identical: each segment is priced at its own entry's card, from the sibling row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t1_spend_survives_a_kill_and_restart_with_identical_money_and_headroom() {
-    let (holder, _serial) = holder_opening(history_card(20.0));
+    let (holder, _serial) = holder_opening(history_card(20.0)).await;
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), "vk_t1");
     let dir = TmpDir::new();
@@ -213,7 +213,7 @@ async fn t1_spend_survives_a_kill_and_restart_with_identical_money_and_headroom(
 /// hydrated counts are never written a second time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t1_a_hydrated_node_records_only_what_it_adds() {
-    let (_holder, _serial) = holder_opening(history_card(20.0));
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), "vk_t1h");
     let dir = TmpDir::new();
@@ -248,7 +248,7 @@ async fn t1_a_hydrated_node_records_only_what_it_adds() {
 /// T1 without a data directory: identical after a CLEAN shutdown (the drain).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t1_without_a_data_directory_a_clean_shutdown_keeps_identical_money() {
-    let (holder, _serial) = holder_opening(history_card(20.0));
+    let (holder, _serial) = holder_opening(history_card(20.0)).await;
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), "vk_t1m");
     let now = busbar_kernel::store::now();
@@ -275,7 +275,7 @@ async fn t1_without_a_data_directory_a_clean_shutdown_keeps_identical_money() {
 /// path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t12_hydrated_counts_on_one_node_are_never_foreign() {
-    let (_holder, _serial) = holder_opening(history_card(20.0));
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), "vk_t12");
     let now = busbar_kernel::store::now();
@@ -311,7 +311,7 @@ async fn t12_hydrated_counts_on_one_node_are_never_foreign() {
 /// T5: two nodes on one store: B's capped admission sees A's spend after one snapshot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t5_a_second_node_sees_the_first_nodes_spend_after_one_snapshot() {
-    let (_holder, _serial) = holder_opening(history_card(20.0));
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), "vk_t5");
     let now = busbar_kernel::store::now();
@@ -345,58 +345,55 @@ async fn t5_a_second_node_sees_the_first_nodes_spend_after_one_snapshot() {
 /// RAM-only path. On one node the recorder changes no answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn t6_t6b_concurrent_admissions_and_settlements_match_the_ram_only_path() {
-    let (holder, _serial) = holder_opening(history_card(20.0));
-    let run = |recorded: bool| {
-        let holder = holder;
-        async move {
-            *holder.0.lock().unwrap() = Arc::new(History::opening(history_card(20.0), 0));
-            let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
-            let key = team_key(store.as_ref(), "vk_t6");
-            let c = Arc::new(cost(20.0, 2_000, Some(150)));
-            let gov = if recorded {
-                let g = boot(&store, &Medium::Memory, &c).await;
-                g.recorder().unwrap().spawn();
-                g
-            } else {
-                Arc::new(GovState::new(store, None).unwrap())
-            };
-            let now = busbar_kernel::store::now();
-            let (ok, refused) = (Arc::new(Mutex::new(0)), Arc::new(Mutex::new(Vec::new())));
-            let mut joins = Vec::new();
-            for t in 0..8 {
-                let (gov, key, c, ok, refused) = (
-                    Arc::clone(&gov),
-                    key.clone(),
-                    Arc::clone(&c),
-                    Arc::clone(&ok),
-                    Arc::clone(&refused),
-                );
-                joins.push(std::thread::spawn(move || {
-                    for i in 0..30 {
-                        match gov.try_admit(&c, &key, "", now) {
-                            Ok(grant) => {
-                                *ok.lock().unwrap() += 1;
-                                gov.record_usage(&c, &key, "", "m", &input(1_000), now);
-                                if (t + i) % 5 == 0 {
-                                    gov.refund_charge(grant.charge());
-                                }
+    let (holder, _serial) = holder_opening(history_card(20.0)).await;
+    let run = |recorded: bool| async move {
+        *holder.0.lock().unwrap() = Arc::new(History::opening(history_card(20.0), 0));
+        let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+        let key = team_key(store.as_ref(), "vk_t6");
+        let c = Arc::new(cost(20.0, 2_000, Some(150)));
+        let gov = if recorded {
+            let g = boot(&store, &Medium::Memory, &c).await;
+            g.recorder().unwrap().spawn();
+            g
+        } else {
+            Arc::new(GovState::new(store, None).unwrap())
+        };
+        let now = busbar_kernel::store::now();
+        let (ok, refused) = (Arc::new(Mutex::new(0)), Arc::new(Mutex::new(Vec::new())));
+        let mut joins = Vec::new();
+        for t in 0..8 {
+            let (gov, key, c, ok, refused) = (
+                Arc::clone(&gov),
+                key.clone(),
+                Arc::clone(&c),
+                Arc::clone(&ok),
+                Arc::clone(&refused),
+            );
+            joins.push(std::thread::spawn(move || {
+                for i in 0..30 {
+                    match gov.try_admit(&c, &key, "", now) {
+                        Ok(grant) => {
+                            *ok.lock().unwrap() += 1;
+                            gov.record_usage(&c, &key, "", "m", &input(1_000), now);
+                            if (t + i) % 5 == 0 {
+                                gov.refund_charge(grant.charge());
                             }
-                            Err(e) => refused.lock().unwrap().push(format!("{e:?}")),
                         }
+                        Err(e) => refused.lock().unwrap().push(format!("{e:?}")),
                     }
-                }));
-                if t == 4 {
-                    edit_card(holder, 10.0);
                 }
+            }));
+            if t == 4 {
+                edit_card(holder, 10.0);
             }
-            for j in joins {
-                j.join().unwrap();
-            }
-            let mut refused = refused.lock().unwrap().clone();
-            refused.sort();
-            let ok = *ok.lock().unwrap();
-            (ok, refused)
         }
+        for j in joins {
+            j.join().unwrap();
+        }
+        let mut refused = refused.lock().unwrap().clone();
+        refused.sort();
+        let ok = *ok.lock().unwrap();
+        (ok, refused)
     };
     let ram = run(false).await;
     let recorded = run(true).await;
@@ -414,7 +411,7 @@ async fn t6_t6b_concurrent_admissions_and_settlements_match_the_ram_only_path() 
 /// after a restart the store matches RAM.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t20_t24_refunds_and_straddles_restart_to_what_ram_applied() {
-    let (_holder, _serial) = holder_opening(history_card(20.0));
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), "vk_t20");
     let c = cost(20.0, 1_000_000, None);
@@ -473,7 +470,7 @@ async fn t20_t24_refunds_and_straddles_restart_to_what_ram_applied() {
 /// in-flight unit's refund (no cell any more) still nets out; a re-created group starts at zero.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t26_a_delete_loses_no_counts_and_a_recreated_group_starts_at_zero() {
-    let (_holder, _serial) = holder_opening(history_card(20.0));
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), "vk_t26");
     let c = cost(20.0, 1_000_000, None);
@@ -634,7 +631,7 @@ async fn guarded_node(
 /// the store and the journal's `fsync` from the request path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn l1_red_the_request_path_never_touches_the_store_or_the_disk() {
-    let (_holder, _serial) = holder_opening(history_card(20.0));
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), "vk_l1");
     let dir = TmpDir::new();
@@ -688,7 +685,7 @@ async fn l1_red_the_request_path_never_touches_the_store_or_the_disk() {
 /// it with `uncharge`), while a 1.5.5 refusal still wins. Default mode serves through (T3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn t3s_strict_mode_flags_unrecordable_spend_after_2s_and_1_5_5_refusals_still_win() {
-    let (_holder, _serial) = holder_opening(history_card(20.0));
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
     let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
     let key = team_key(store.as_ref(), "vk_t3s");
     let (gov, post) = guarded_node(&store, &Medium::Memory, Duration::ZERO).await;
