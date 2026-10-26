@@ -20,7 +20,7 @@
 #   bash testing/h2-conformance/scripts/run.sh --selftest   the judge bites on planted reports (no docker, no build)
 #
 # Env (set by testing/conformance/run.sh): CONFORMANCE_OUT, BUSBAR_CHECKOUT (default: this repo),
-# CARGO_TARGET_DIR. h2spec ships amd64 linux only, so the legs run on linux x86_64.
+# CARGO_TARGET_DIR. Needs docker, curl, openssl and python3 on PATH.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
@@ -30,10 +30,14 @@ CHECKOUT="${BUSBAR_CHECKOUT:-$REPO_ROOT}"
 TARGET="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 SUITE="${CONFORMANCE_SUITE:-h2}"
 
-# THE INSTRUMENTS, PINNED. h2spec's release asset by sha256; the control by image digest.
+# THE INSTRUMENTS, PINNED. ModernCI compute is aarch64 and h2spec publishes amd64 release binaries
+# only, so h2spec v2.6.0 is built from its tagged commit (the commit sha is checked, its Go
+# dependencies are pinned by its own go.sum) inside a golang image pinned by digest. The control is
+# nghttpd from a Debian image pinned by digest.
 H2SPEC_VERSION=2.6.0
-H2SPEC_LINUX_AMD64_SHA256=157ee0de702e01ad40e752dbf074b366027e550c8e7504f9450da2809e279318
-CONTROL_IMAGE='svagi/nghttp2@sha256:1eb96bfe378941adc97d92c2cdc4e4f7476377c73b2dfdd29897d7d062ad962c'
+H2SPEC_COMMIT=70ac2294010887f48b18e2d64f5cccd48421fad1
+GO_IMAGE='golang@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437'
+CONTROL_IMAGE='debian@sha256:a717a33469731894e77e912ea7d714e27c2dc38ee6554fd1a3102e92999cfc66'
 # A response larger than the initial flow-control window: h2spec's http2/6.9.2 case skips itself
 # against a smaller one, and a skipped case is not a pass.
 BIG_PATH=/big
@@ -52,25 +56,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
-
 # fetch_h2spec: the pinned h2spec on H2SPEC, or return 1.
 fetch_h2spec() {
-  case "$(uname -s)-$(uname -m)" in
-    Linux-x86_64) ;;
-    *) say "h2spec v$H2SPEC_VERSION ships linux amd64 only; this is $(uname -s)-$(uname -m)"; return 1 ;;
-  esac
-  local root="${MODERNCI_CACHE_DIR:-$HOME/.cache}/conformance-tools/h2spec-$H2SPEC_VERSION"
-  local tgz="$root/h2spec_linux_amd64.tar.gz"
-  mkdir -p "$root" || return 1
-  if [ ! -f "$tgz" ] || [ "$(sha256_of "$tgz")" != "$H2SPEC_LINUX_AMD64_SHA256" ]; then
-    curl -fsSL --retry 3 -o "$tgz.part.$$" "https://github.com/summerwind/h2spec/releases/download/v$H2SPEC_VERSION/h2spec_linux_amd64.tar.gz" \
-      || { say "download of h2spec v$H2SPEC_VERSION failed"; rm -f "$tgz.part.$$"; return 1; }
-    local got; got="$(sha256_of "$tgz.part.$$")"
-    [ "$got" = "$H2SPEC_LINUX_AMD64_SHA256" ] || { say "h2spec sha256 mismatch: want $H2SPEC_LINUX_AMD64_SHA256, got $got"; rm -f "$tgz.part.$$"; return 1; }
-    mv "$tgz.part.$$" "$tgz"
+  local root="${MODERNCI_CACHE_DIR:-$HOME/.cache}/conformance-tools/h2spec-$H2SPEC_VERSION-$H2SPEC_COMMIT-$(uname -m)"
+  if [ ! -x "$root/h2spec" ]; then
+    mkdir -p "$root" || return 1
+    docker run --rm -e CGO_ENABLED=0 -v "$root:/out" "$GO_IMAGE" sh -c "
+      set -e
+      git clone -q https://github.com/summerwind/h2spec /src && cd /src
+      git checkout -q v$H2SPEC_VERSION
+      [ \"\$(git rev-parse HEAD)\" = $H2SPEC_COMMIT ] || { echo 'h2spec v$H2SPEC_VERSION is not commit $H2SPEC_COMMIT' >&2; exit 1; }
+      go build -trimpath -o /out/h2spec ./cmd/h2spec" >"$OUT/h2spec-build.log" 2>&1 \
+      || { tail -20 "$OUT/h2spec-build.log" >&2; say "could not build h2spec v$H2SPEC_VERSION"; return 1; }
   fi
-  [ -x "$root/h2spec" ] || tar -xzf "$tgz" -C "$root" || return 1
   H2SPEC="$root/h2spec"
 }
 
@@ -92,9 +90,9 @@ h2spec_run() {
   [ -s "$3" ]
 }
 
-wait_listening() { # <port> <pid or empty>
+wait_listening() { # <port> <pid or empty> [tries, 0.3 s apart]
   local i
-  for i in $(seq 1 100); do
+  for i in $(seq 1 "${3:-100}"); do
     python3 -I -c "import socket,sys;socket.create_connection(('127.0.0.1',$1),0.5).close()" 2>/dev/null && return 0
     [ -n "${2:-}" ] && ! kill -0 "$2" 2>/dev/null && return 1
     sleep 0.3
@@ -111,11 +109,14 @@ leg_control() {
   chmod -R a+rX "$d"
   docker pull -q "$CONTROL_IMAGE" >/dev/null 2>&1 || { LEG_REASON="could not pull the control image $CONTROL_IMAGE"; return 1; }
   CONTAINER="h2-control-$$"
-  docker run -d --name "$CONTAINER" --platform linux/amd64 -p 127.0.0.1::8443 \
-    -v "$d:/c:ro" --entrypoint nghttpd "$CONTROL_IMAGE" -d /c/htdocs 8443 /c/key.pem /c/cert.pem >/dev/null \
+  docker run -d --name "$CONTAINER" -p 127.0.0.1::8443 -v "$d:/c:ro" "$CONTROL_IMAGE" sh -c \
+    'apt-get update -qq && apt-get install -y -qq nghttp2-server >/dev/null && nghttpd --version && exec nghttpd -d /c/htdocs 8443 /c/key.pem /c/cert.pem' >/dev/null \
     || { LEG_REASON="the control container did not start"; return 1; }
-  local port; port="$(docker port "$CONTAINER" 8443/tcp | head -1 | sed 's/.*://')"
-  wait_listening "$port" || { LEG_REASON="the control peer did not listen"; docker logs "$CONTAINER" >&2; return 1; }
+  local port=""
+  for _ in $(seq 1 30); do port="$(docker port "$CONTAINER" 8443/tcp 2>/dev/null | head -1 | sed 's/.*://')"; [ -n "$port" ] && break; sleep 1; done
+  # apt installs the package before nghttpd listens.
+  wait_listening "${port:-1}" "" 300 || { LEG_REASON="the control peer (nghttpd) did not listen"; docker logs "$CONTAINER" >&2; return 1; }
+  docker logs "$CONTAINER" 2>&1 | grep -m1 '^nghttpd' >&2
   h2spec_run "$port" "$BIG_PATH" "$d/report.xml" || { LEG_REASON="h2spec wrote no report against the control"; return 1; }
   python3 -I "$PARSER" --report "$d/report.xml" --role control --baseline "$HERE/baselines/nghttpd-control.json" --out "$OUT/control.json" >&2
   local rc=$?
