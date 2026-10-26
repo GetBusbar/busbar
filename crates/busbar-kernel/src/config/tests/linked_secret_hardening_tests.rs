@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A reference's bytes through the linked secret plugins alone.
 fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
-    SecretResolver::builtins_only().resolve(secret)
+    SecretResolver::builtins_only()
+        .resolve(secret)
+        .map(|held| held.expose(&crate::seal::lend()).clone())
 }
 
 /// A process-lifetime-unique suffix so parallel test threads never pick the same env var name.
@@ -162,7 +164,7 @@ fn resolve_linked_string_trims_trailing_newlines() {
     let var = unique("STR_TRIM");
     std::env::set_var(&var, "top-secret\r\n");
     let got = resolve_linked_string(&SecretRef::env(&var)).unwrap();
-    assert_eq!(got, "top-secret");
+    assert_eq!(got.expose(&crate::seal::lend()), "top-secret");
     std::env::remove_var(&var);
 }
 

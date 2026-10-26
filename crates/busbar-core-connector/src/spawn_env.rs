@@ -37,6 +37,17 @@ use busbar_contract::secret_ref::SecretRef;
 /// (fail-closed).
 pub type SpawnSecretFn = fn(&SecretRef, &ConfigScope) -> Result<String, String>;
 
+/// THE LINKED SPAWN RESOLVER: one member program's `env` reference, resolved at config time through
+/// the linked secret plugins. OWED (row 7): an environment template is rendered as text, so the
+/// value leaves its zeroizing holder here, into the [`Secret`] the spawn holds.
+///
+/// # Errors
+/// The reference does not resolve; the text names it, never a value.
+pub fn linked_spawn_secret(secret: &SecretRef, scope: &ConfigScope) -> Result<String, String> {
+    busbar_kernel::config::secret::resolve_linked_string_at_config(secret, scope)
+        .map(|held| held.expose(&busbar_kernel::seal::lend()).clone())
+}
+
 /// How often a held environment is re-resolved, off the request path: the refresher's lease.
 pub const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
 

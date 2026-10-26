@@ -967,10 +967,10 @@ pub(crate) fn resolve_admin_token(
     let token = resolver
         .resolve_string_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
         .map_err(|e| unresolved_token(op, &e))?;
-    if token.trim().is_empty() {
+    if token.expose(&crate::seal::lend()).trim().is_empty() {
         return Err(blank_token(op));
     }
-    Ok(Some(busbar_contract::redacted::Secret::new(token)))
+    Ok(Some(token))
 }
 
 /// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared
@@ -1037,7 +1037,7 @@ pub(crate) fn resolve_signing_key(
              issues busbar-signed keys."
         )
         })?;
-    let secret = parse_signing_secret(&bytes)?;
+    let secret = parse_signing_secret(bytes.expose(&crate::seal::lend()))?;
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
@@ -1322,7 +1322,7 @@ pub(crate) fn build_secret_resolver(
             move |module: &str,
                   settings: &str,
                   scope: Option<&busbar_contract::config_time::ConfigScope>|
-                  -> Result<Vec<u8>, String> {
+                  -> Result<config::secret::Held, String> {
                 if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
                     // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
                     // open the plugin once.
@@ -1387,13 +1387,12 @@ impl OpenedSecrets {
         settings: &str,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
         open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<config::secret::Held, String> {
         let calls = self.calls(key, open)?;
         match scope {
             Some(scope) => calls.resolve_at_config(settings.as_bytes(), scope),
             None => calls.resolve(settings.as_bytes()),
         }
-        .map(|m| m.expose(&crate::seal::lend()).clone())
         .map_err(|r| r.text)
     }
 }

@@ -2239,7 +2239,7 @@ fn parking_secret_env(park: std::time::Duration) -> HookEnv {
         std::sync::Arc::new(crate::config::secret::SecretResolver::with_plugin(
             Box::new(move |_module: &str, _settings: &str| {
                 std::thread::sleep(park);
-                Ok(b"resolved".to_vec())
+                Ok(busbar_contract::redacted::Secret::new(b"resolved".to_vec()))
             }),
         )),
     )

@@ -13,7 +13,7 @@ pub fn read_pem(
     resolver: &dyn busbar_contract::secret::SecretResolve,
     secret: &busbar_contract::secret_ref::SecretRef,
     what: &str,
-) -> Result<Vec<u8>, String> {
+) -> Result<crate::config::secret::Held, String> {
     resolver
         .resolve_at_config(
             secret,

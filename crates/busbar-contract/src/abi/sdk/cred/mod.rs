@@ -13,7 +13,9 @@
 //! * [`settings`] parses a plugin's settings so every `Cred`/`CredUrl` field is sealed as it is read,
 //!   the parse tree is wiped, and no error text quotes a settings value.
 //! * [`Held`] is the zeroizing holder for material that is not a configured credential (SRTP keys,
-//!   a presented assertion): no getter outside this crate either.
+//!   a presented assertion, a secret plugin's resolved value): no getter outside this crate either.
+//! * [`resolved`] is a secret plugin's `resolve` answer: its [`Held`] value written into the host's
+//!   buffer and wiped.
 //!
 //! None of these types implements `Debug`, so a struct that holds one cannot derive it: printing a
 //! credential does not compile.
@@ -46,6 +48,7 @@
 
 mod form;
 mod form_body;
+mod resolved;
 mod settings;
 mod write;
 
@@ -53,6 +56,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub use form::{CredUrl, PasswordAt, UserinfoUrl};
 pub use form_body::{FormBody, FormValue};
+pub use resolved::resolved;
 pub use settings::{settings, SettingsError};
 pub(crate) use write::confirm_secure;
 pub use write::{Parts, SealedWrite};

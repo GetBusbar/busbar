@@ -8,10 +8,12 @@
 //! `dispatch::kinds::secret`); the layout golden pins its layout.
 //!
 //! B.2, transcribed:
-//! - `resolve(settings blob)` returns a [`BLOB_SECRET`](super::mechanism::call::BLOB_SECRET)
-//!   lease, or [`Outcome::Failed`](super::mechanism::call::Outcome::Failed) plus
+//! - `resolve(settings blob)` writes the material into the HOST'S zeroed buffer
+//!   ([`ResolveIn::secret_buf`], the credential chip, row 6: host-owned secret bytes: no lease, no copy left on the plugin's
+//!   side), or answers [`Outcome::Failed`](super::mechanism::call::Outcome::Failed) plus
 //!   [`ResolveOut::error_kind`], with no material in [`super::mechanism::call::OutHead::error`]'s
-//!   text (the error text is operator-facing only; the reason code lives in `error_kind`).
+//!   text (the error text is operator-facing only; the reason code lives in `error_kind`). A value
+//!   over the buffer is the short-buffer answer ([`ResolveOut::needed`]).
 //! - `tick` (the shared lifecycle slot) renews vault leases; it grows no new `in`/`out` for
 //!   secret, so nothing is added here beyond the lifecycle's own [`TickIn`](super::mechanism::lifecycle::TickIn)/
 //!   [`TickOut`](super::mechanism::lifecycle::TickOut).
@@ -93,6 +95,12 @@ pub struct ResolveIn {
     /// The settings naming what to resolve (a `{env: X}`/`{file: Y}` reference, or the plugin's
     /// own settings shape, already rewritten by the kernel per the Statement rewrite rule).
     pub settings: Blob,
+    /// THE HOST'S SECRET BUFFER, zeroed, lent for the call (the credential chip, row 6: host-owned secret bytes): a READY
+    /// `resolve` writes the material here and nowhere the host must later release. The host wipes
+    /// it when its consumer is done. NULL (with `secret_cap` `0`) = no buffer: every value is short.
+    pub secret_buf: *mut u8,
+    /// How many bytes `secret_buf` holds.
+    pub secret_cap: usize,
 }
 
 // The five variants below are the OLD `SecretErrorKind` (`busbar-contract/src/secret.rs`),
@@ -119,9 +127,10 @@ pub const ERROR_KIND_INTERNAL: u32 = 5;
 pub struct ResolveOut {
     /// The head.
     pub head: OutHead,
-    /// The resolved material, as a [`super::mechanism::call::BLOB_SECRET`] blob, held under
-    /// `head.lease` until `release(lease)`; absent unless `head.outcome` is
-    /// [`Ready`](super::mechanism::call::Outcome::Ready).
+    /// The resolved material, as a [`super::mechanism::call::BLOB_SECRET`] blob naming the bytes
+    /// written at the start of [`ResolveIn::secret_buf`] (its `ptr` is that buffer, its `len` at
+    /// most [`ResolveIn::secret_cap`]); absent unless `head.outcome` is
+    /// [`Ready`](super::mechanism::call::Outcome::Ready). Never under a lease: `head.lease` is `0`.
     pub secret: Blob,
     /// One of the `ERROR_KIND_*` constants for a [`Failed`](super::mechanism::call::Outcome::Failed)
     /// answer; [`ERROR_KIND_UNSET`] otherwise. Distinct from `head.error`'s free text, which never
@@ -129,7 +138,15 @@ pub struct ResolveOut {
     pub error_kind: u32,
     /// Alignment padding.
     pub _reserved: u32,
+    /// THE SHORT-BUFFER ANSWER (M-SB, on [`OutHead`]): on a FAILED answer whose value does not fit
+    /// [`ResolveIn::secret_cap`], the value's full length (`error_kind` stays
+    /// [`ERROR_KIND_UNSET`]); `0` otherwise. The host re-calls once with a buffer that size.
+    pub needed: u64,
 }
+
+/// The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM
+/// chain) is the short-buffer answer and the host re-calls once with its size.
+pub const FIRST_SECRET_CAP: usize = 4096;
 
 /// `check`'s `in`: one reference's settings object and the host's reason buffer, as
 /// [`ValidateIn`](super::mechanism::lifecycle::ValidateIn) lends one to `validate`.
@@ -205,3 +222,7 @@ super::sdk::door::slot_structs!(
         slot::CHECK => CheckIn, OutHead;
     }
 );
+
+#[cfg(test)]
+#[path = "../tests/secret_holder_tests.rs"]
+mod holder_tests;

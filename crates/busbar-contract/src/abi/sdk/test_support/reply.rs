@@ -466,7 +466,13 @@ impl sealed::Take for crate::abi::secret::ResolveOut {
         };
     }
     fn take(&self, _: Outcome, _: Token) -> SecretCopy {
-        judged(crate::abi::secret::validate::check_resolve(self));
+        // The `in` is the test's own, so the host buffer is judged where the answer names it: the
+        // dispatcher judges it against the buffer it lent (`check_resolve`'s `buf`/`cap`).
+        judged(crate::abi::secret::validate::check_resolve(
+            self,
+            self.secret.ptr as usize,
+            self.secret.len as u64,
+        ));
         let mut copy = Zeroizing::new(Vec::new());
         copy.extend_from_slice(lent(self.secret.ptr, self.secret.len, "resolve.secret"));
         SecretCopy(copy)

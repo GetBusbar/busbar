@@ -87,7 +87,7 @@ pub fn build(
         own_ports,
         wake,
         pool,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        crate::spawn_env::linked_spawn_secret,
     )
 }
 
