@@ -24,8 +24,9 @@
 //!   [`super::card_store::IN_LOCK_BOUND`]. Anything else is PENDING: the node prices with the
 //!   pending entry's locally computed id and re-puts the same bytes until READY (strict mode, PR-B2,
 //!   refuses admissions meanwhile: [`CardStore::pending_refusal`]).
-//! - **There is no WITHDRAW.** An entry that landed stays. `card void` voids an entry whose start is
-//!   still in the future.
+//! - **There is no WITHDRAW.** An entry that landed stays. [`CardStore::void`] keeps an entry
+//!   known but out of force; no operator verb reaches it, because a later change already keys
+//!   above a far-future entry and prices from its own start.
 //! - **Clock skew** never delays a change: an entry is effective from the writer's own now, whatever
 //!   its key; a head more than [`super::card_store::SKEW_MS`] ahead alarms.
 
@@ -344,12 +345,11 @@ impl CardStore {
             {
                 messages.push(format!(
                     "rate card entry {} written by node {} starts {} ms ahead of this node's \
-                     clock; it prices only instants from its own start. An operator may run `card \
-                     void {}` while its start is still in the future",
+                     clock; it prices only instants from its own start, and any later change on \
+                     any node keys above it and takes precedence",
                     entry.key,
                     entry.writer,
                     entry.effective_from - now,
-                    entry.key
                 ));
             }
             if let Some(base) = entry.base {
@@ -745,8 +745,8 @@ impl CardStore {
         Self::in_force_at(&state, t).map(|e| (e.key, e.card))
     }
 
-    /// **`card void <key>`**: void an entry whose start is still in the future by this node's
-    /// clock. The VOID is written and acked before it is answered.
+    /// Void an entry whose start is still in the future by this node's clock: known, never in
+    /// force. The VOID is written and acked before it is answered.
     ///
     /// # Errors
     ///
@@ -783,9 +783,9 @@ impl CardStore {
                 self.publish(&state);
                 Ok(())
             }
-            PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => Err(format!(
-                "the store did not take the VOID for {key}: {why}; run `card void` again"
-            )),
+            PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => {
+                Err(format!("the store did not take the VOID for {key}: {why}"))
+            }
         }
     }
 
