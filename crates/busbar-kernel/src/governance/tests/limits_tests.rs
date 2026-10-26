@@ -1836,14 +1836,9 @@ fn a_stale_cell_still_owing_the_store_survives_the_sweep_and_is_written() {
     {
         let mut map = g.budget.write("vk_sweep_owed");
         let mut cell = BudgetCell::fresh(window);
-        cell.park(
-            window,
-            UsageDelta {
-                requests: 1,
-                billable_requests: 1,
-                ..UsageDelta::default()
-            },
-        );
+        // What it owes the store is in the shard's pending map; the cell is marked as holding it.
+        map.pending.admitted(owed, window, 1);
+        map.pending.billable(owed, window, None, 1);
         cell.dirty = true;
         map.insert(owed.to_string(), cell);
     }

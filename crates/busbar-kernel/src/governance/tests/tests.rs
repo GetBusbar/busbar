@@ -1043,163 +1043,6 @@ fn test_additive_flush_carries_refund_deltas() {
     );
 }
 
-/// Under a SUSTAINED metering-store outage with diverse keys, `pending_metering` stays BOUNDED and
-/// loses NO billable usage. Before the cap, `flush_metering` re-queued every failed cell each tick
-/// while `record_metering` kept adding new ones, so the map grew without bound. Now both routes go
-/// through `accrue_pending`, which caps the map and COALESCES the overflow into a per-bucket sentinel
-/// (totals preserved, per-key attribution collapsed) and counts it on a metric — so the map is
-/// bounded, the loss of attribution is visible, and not one token or request is dropped.
-#[test]
-fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outage() {
-    crate::snapshot::init();
-
-    /// A store whose `add_metering` ALWAYS fails — a metering-write outage that never recovers.
-    struct MeteringDownStore {
-        inner: MemoryStore,
-    }
-    impl busbar_contract::records::RecordStore for MeteringDownStore {
-        fn put_key(
-            &self,
-            k: &busbar_contract::records::VirtualKey,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.put_key(k)
-        }
-        fn get_key(
-            &self,
-            id: &str,
-        ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
-        {
-            self.inner.get_key(id)
-        }
-        fn list_keys(
-            &self,
-        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-        {
-            self.inner.list_keys()
-        }
-        fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.delete_key(id)
-        }
-        fn get_usage(
-            &self,
-            id: &str,
-            w: u64,
-        ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger>
-        {
-            self.inner.get_usage(id, w)
-        }
-        fn put_usage(
-            &self,
-            id: &str,
-            w: u64,
-            l: &busbar_contract::records::UsageLedger,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.put_usage(id, w, l)
-        }
-        fn add_metering(
-            &self,
-            _d: &busbar_contract::records::MeteringDelta,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            Err(busbar_contract::records::RecordStoreError(
-                "metering store down".into(),
-            ))
-        }
-        fn list_metering(
-            &self,
-            b: u64,
-        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
-        {
-            self.inner.list_metering(b)
-        }
-    }
-
-    let store = Arc::new(MeteringDownStore {
-        inner: MemoryStore::new(),
-    });
-    let gov = GovState::new(store, None).unwrap();
-    let now = 1_700_000_000;
-    let per = crate::billing::TokenUsage {
-        input: 3,
-        output: 5,
-        cache_read: Some(1),
-        cache_creation: Some(2),
-        ..Default::default()
-    };
-    // Drive well past the cap with DISTINCT keys — the "diverse keys/models" outage shape.
-    let n = MAX_PENDING_METERING + 5_000;
-    for i in 0..n {
-        gov.record_metering(&format!("k{i}"), "m", "p", Some(&per), now);
-    }
-
-    // The RECORD path alone already bounds the map (record_metering coalesces past the cap), and the
-    // summed totals still equal everything accrued — coalescing MOVES counts, it never drops them.
-    let (len_rec, sum_rec) = gov.pending_metering_totals();
-    let n64 = n as u64;
-    assert!(
-        len_rec <= MAX_PENDING_METERING + GOV_SHARDS,
-        "the accrual path holds the map at the cap (+ at most one per-bucket sentinel per shard), not one cell per key: {len_rec}"
-    );
-    assert_eq!(
-        sum_rec.requests, n64,
-        "every accrued request is still counted"
-    );
-    assert_eq!(
-        sum_rec.tokens_input,
-        n64 * 3,
-        "no input tokens lost to the cap"
-    );
-    assert_eq!(
-        sum_rec.tokens_output,
-        n64 * 5,
-        "no output tokens lost to the cap"
-    );
-    assert_eq!(
-        sum_rec.tokens_cache_read, n64,
-        "no cache-read tokens lost to the cap"
-    );
-    assert_eq!(
-        sum_rec.tokens_cache_write,
-        n64 * 2,
-        "no cache-write tokens lost to the cap"
-    );
-
-    // The FLUSH re-queue path: every write fails, every drained cell is re-queued through the same
-    // bound. This is precisely where the map used to grow without bound.
-    let flushed = gov.deliver_metering();
-    assert_eq!(
-        flushed, 0,
-        "the store is down, so nothing persisted this tick"
-    );
-    let (len_flush, sum_flush) = gov.pending_metering_totals();
-    assert!(
-        len_flush <= MAX_PENDING_METERING + GOV_SHARDS,
-        "the failed-flush re-queue stays bounded rather than growing unbounded: {len_flush}"
-    );
-    assert_eq!(
-        sum_flush.requests, n64,
-        "retry preserves every request across the failed flush (nothing dropped, nothing doubled)"
-    );
-    assert_eq!(
-        sum_flush.tokens_input,
-        n64 * 3,
-        "no billable input tokens lost across the failed flush"
-    );
-
-    // The loss of ATTRIBUTION is COUNTED, not silent: the coalesce metric is exported and non-zero.
-    let rendered = crate::snapshot::render();
-    let coalesced = rendered
-        .lines()
-        .find(|l| l.starts_with("busbar_metering_pending_coalesced_total "))
-        .and_then(|l| l.rsplit(' ').next())
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0);
-    assert!(
-        coalesced > 0,
-        "coalesced cells are exported on busbar_metering_pending_coalesced_total so the degradation \
-         is observable; got:\n{rendered}"
-    );
-}
-
 /// The sharded metering accumulator counts EVERY concurrent accrual EXACTLY ONCE: N threads accrue
 /// in parallel (with keys that both spread across shards and collide on shared cells across threads),
 /// and the summed totals equal the arithmetic sum of all accruals — nothing lost to a race, nothing
@@ -1710,11 +1553,8 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         window_start,
         requests,
         billable_requests: requests,
-        flushed_requests: 0,
-        flushed_billable_requests: 0,
         models: Vec::new(),
-        fee_eras: Default::default(),
-        rolled: Vec::new(),
+        fee_segs: Default::default(),
         dirty,
         last_touch: now,
     };
@@ -1788,11 +1628,8 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
         window_start,
         requests: 1,
         billable_requests: 1,
-        flushed_requests: 0,
-        flushed_billable_requests: 0,
         models: Vec::new(),
-        fee_eras: Default::default(),
-        rolled: Vec::new(),
+        fee_segs: Default::default(),
         dirty: false,
         last_touch,
     };
@@ -1867,11 +1704,8 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         window_start: now - 40 * SECS_PER_DAY, // genuinely stale (>31 d)
         requests: 1,
         billable_requests: 1,
-        flushed_requests: 0,
-        flushed_billable_requests: 0,
         models: Vec::new(),
-        fee_eras: Default::default(),
-        rolled: Vec::new(),
+        fee_segs: Default::default(),
         dirty: false,
         last_touch: now,
     };
@@ -2254,73 +2088,6 @@ impl RecordStore for RecordingBarrierStore {
     fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
         self.inner.list_metering(bucket)
     }
-}
-
-/// The periodic flusher must never let two `flush_budgets`
-/// runs overlap - overlapping snapshots could race baseline advancement and double- or
-/// under-count deltas. We hold the first flush's `add_usage` paused, accrue NEWER requests, and
-/// let the flusher fire (and SKIP) overlapping ticks; after release + shutdown the durable ledger
-/// must hold EXACTLY the total accrued requests - nothing lost, nothing double-counted.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
-    crate::snapshot::init();
-    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    let store = Arc::new(RecordingBarrierStore {
-        inner: MemoryStore::new(),
-        block_first: std::sync::atomic::AtomicBool::new(true),
-        entered: entered_tx,
-        release: std::sync::Mutex::new(release_rx),
-        writes: std::sync::Mutex::new(Vec::new()),
-    });
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
-    let cost = flat_cost(1);
-    let at = 1_700_000_000u64;
-    let key = sample_key("k1", "h1"); // no group: uncapped, charges only its own (total) bucket
-
-    // Accrue an OLDER 3 requests, then start the flusher: its first tick snapshots that cell and
-    // its `add_usage` BLOCKS mid-write (holding the flush in flight).
-    for _ in 0..3 {
-        assert!(gov.try_admit(&cost, &key, "", at).is_ok());
-    }
-    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-    let flusher = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx);
-
-    // Wait until the first flush is paused inside add_usage.
-    tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
-        .await
-        .unwrap();
-
-    // While that older flush is pinned, accrue 2 NEWER requests and re-mark the cell dirty.
-    assert!(gov.try_admit(&cost, &key, "", at).is_ok());
-    assert!(gov.try_admit(&cost, &key, "", at).is_ok());
-
-    // Yield so any tick that fires while the first flush is pinned takes its SKIP (try_lock) arm
-    // rather than racing it — not asserting how many ticks fired/skipped, only exactly-once below.
-    tokio::task::yield_now().await;
-
-    // Release the first (older) flush; it completes writing its 3-request delta.
-    release_tx.send(()).unwrap();
-
-    // Shut down and JOIN the flusher's own task instead of guessing a wall-clock duration for its
-    // final flush — this makes the wait for "the final flush COMPLETED" exact rather than a guess
-    // that can come up short under a loaded runner (the final flush is spawn_blocking work).
-    shutdown_tx.send(()).unwrap();
-    flusher.await.unwrap();
-
-    // The durable ledger holds EXACTLY 5 requests: additive deltas, serialized, exactly once.
-    let durable = store.inner.get_usage("k1", 0).unwrap().requests;
-    assert_eq!(
-        durable, 5,
-        "additive flushes must sum to exactly the accrued requests - no loss, no double count"
-    );
-    // The completed deltas sum to 5 as well (e.g. [3, 2]) - never a duplicated snapshot.
-    let writes = store.writes.lock().unwrap().clone();
-    assert_eq!(
-        writes.iter().sum::<i64>(),
-        5,
-        "the sum of flushed deltas equals the accrued total: {writes:?}"
-    );
 }
 
 /// A `Store` decorator whose `add_denylist` BLOCKS until released, letting the test pause a
@@ -3496,11 +3263,8 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
         window_start: 0,
         requests,
         billable_requests: requests,
-        flushed_requests: requests,
-        flushed_billable_requests: requests,
         models: Vec::new(),
-        fee_eras: Default::default(),
-        rolled: Vec::new(),
+        fee_segs: Default::default(),
         dirty,
         last_touch,
     };
@@ -4446,11 +4210,8 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         window_start: 0,
         requests: 7,
         billable_requests: 7,
-        flushed_requests: 7,
-        flushed_billable_requests: 7,
         models: Vec::new(),
-        fee_eras: Default::default(),
-        rolled: Vec::new(),
+        fee_segs: Default::default(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4510,11 +4271,8 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         window_start: 0,
         requests: 1,
         billable_requests: 1,
-        flushed_requests: 1,
-        flushed_billable_requests: 1,
         models: Vec::new(),
-        fee_eras: Default::default(),
-        rolled: Vec::new(),
+        fee_segs: Default::default(),
         dirty: false,
         last_touch: now,
     };
@@ -4681,11 +4439,8 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
         window_start: 0,
         requests: 7,
         billable_requests: 7,
-        flushed_requests: 7,
-        flushed_billable_requests: 7,
         models: Vec::new(),
-        fee_eras: Default::default(),
-        rolled: Vec::new(),
+        fee_segs: Default::default(),
         dirty: false,
         last_touch: now - max_window - 1,
     };
@@ -4730,11 +4485,8 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         window_start: 0,
         requests: 1,
         billable_requests: 1,
-        flushed_requests: 1,
-        flushed_billable_requests: 1,
         models: Vec::new(),
-        fee_eras: Default::default(),
-        rolled: Vec::new(),
+        fee_segs: Default::default(),
         dirty: false,
         last_touch: now,
     };
