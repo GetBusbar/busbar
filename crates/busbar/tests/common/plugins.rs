@@ -121,7 +121,9 @@ pub fn key(seed: u8) -> SigningKey {
 /// no publisher allowlisted, nothing unsigned, nothing third-party.
 pub fn release_policy(release: &SigningKey) -> TrustPolicy {
     TrustPolicy {
-        first_party_key: Some(release.verifying_key()),
+        first_party_keys: vec![busbar_plugin_loader::sign::FirstPartyKey::unnamed(
+            release.verifying_key(),
+        )],
         binary_version: env!("CARGO_PKG_VERSION").into(),
         ..Default::default()
     }

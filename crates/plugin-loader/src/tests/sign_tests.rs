@@ -96,7 +96,11 @@ fn policy(
     allow_third_party: bool,
 ) -> TrustPolicy {
     TrustPolicy {
-        first_party_key: first_party.map(|k| k.verifying_key()),
+        first_party_keys: first_party
+            .map(|k| FirstPartyKey::unnamed(k.verifying_key()))
+            .into_iter()
+            .collect(),
+        revoked: BTreeMap::new(),
         binary_version: "1.5.0".to_string(),
         first_party_floors: BTreeMap::new(),
         first_party_high_water: BTreeMap::new(),
@@ -855,29 +859,165 @@ fn validate_structure_accepts_abi_version_at_either_end_of_the_supported_range()
         .expect("abi_version at the max of the supported range is accepted");
 }
 
-/// The embedded-release-key accessor mirrors the build-time env exactly: a build that carried
-/// BUSBAR_RELEASE_PUBKEY (CI, and every build in this tree through .cargo/config.toml) embeds a key
-/// that parses; a build without it embeds none. Neither state is assumed, so the test is honest in
-/// both.
+/// The embedded key list mirrors the build-time env exactly: a build that carried a well-formed
+/// BUSBAR_RELEASE_PUBKEY embeds exactly the keys it parses to; a build without it, or with a list
+/// that does not parse, embeds none (fail closed). Neither state is assumed, so the test is honest
+/// in both.
 #[test]
-fn embedded_key_mirrors_the_build_env() {
-    match option_env!("BUSBAR_RELEASE_PUBKEY") {
-        Some(hex) if !hex.trim().is_empty() => {
-            // Not just `is_some()` (which a mutant that always returns `Some(Default::default())`
-            // would also satisfy) — the embedded key must be the SPECIFIC key that build-time hex
-            // parses to, so a mutant returning a fabricated key still goes red.
-            let expected = public_key_from_hex(hex)
-                .expect("this tree's committed BUSBAR_RELEASE_PUBKEY parses");
-            assert_eq!(
-                embedded_release_pubkey(),
-                Some(expected),
-                "a build with the key set must embed exactly that key, not a stand-in"
-            );
-        }
-        _ => assert!(
-            embedded_release_pubkey().is_none(),
-            "a keyless build must embed nothing"
+fn embedded_keys_mirror_the_build_env() {
+    match option_env!("BUSBAR_RELEASE_PUBKEY").map(parse_release_keys) {
+        // Not just `!is_empty()` (which a mutant returning a fabricated key would also satisfy):
+        // the embedded list must be the SPECIFIC keys the build-time list parses to.
+        Some(Ok(expected)) => assert_eq!(
+            embedded_release_keys(),
+            expected,
+            "a build with the list set must embed exactly that list, not a stand-in"
         ),
+        _ => assert!(
+            embedded_release_keys().is_empty(),
+            "a keyless or malformed build must embed nothing"
+        ),
+    }
+}
+
+// ── THE FIRST-PARTY KEY LIST (SECURITY-FIRST-PLAN C1 / P7) ────────────────────────────────────
+
+fn release_key_list(keys: &[(&str, &SigningKey)]) -> Vec<FirstPartyKey> {
+    keys.iter()
+        .map(|(id, k)| FirstPartyKey {
+            id: (*id).to_string(),
+            key: k.verifying_key(),
+        })
+        .collect()
+}
+
+/// ROTATION: a plugin signed by the NEXT key in the list is first-party trusted, exactly as one
+/// signed by the current key is; that is what lets a retired signing key go with no new binary.
+#[test]
+fn a_plugin_signed_by_any_listed_first_party_key_is_trusted() {
+    let current = test_key(41);
+    let next = test_key(42);
+    let mut pol = policy(None, &[], false, false);
+    pol.first_party_keys = release_key_list(&[("plugins-a", &current), ("plugins-b", &next)]);
+    for (signer, id) in [(&current, "plugins-a"), (&next, "plugins-b")] {
+        let m = sign(
+            signer,
+            manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER),
+            b"lib",
+        );
+        assert_eq!(
+            evaluate(b"lib", &m, &pol).unwrap(),
+            Verdict::Trusted {
+                publisher: FIRST_PARTY_PUBLISHER.to_string(),
+                first_party: true
+            },
+            "a manifest signed by {id} is first-party trusted"
+        );
+        assert_eq!(
+            first_party_signer(&m, b"lib", &pol.first_party_keys)
+                .unwrap()
+                .id,
+            id
+        );
+    }
+}
+
+/// UNKNOWN KEY: a first-party manifest signed by a key NOT in the list (the retired 1.5 key, a
+/// leaked one) is refused, and the refusal names every key id this build trusts.
+#[test]
+fn a_first_party_plugin_signed_by_an_unlisted_key_is_refused_naming_the_trusted_ids() {
+    let mut pol = policy(None, &[], false, false);
+    pol.first_party_keys =
+        release_key_list(&[("plugins-a", &test_key(41)), ("plugins-b", &test_key(42))]);
+    let m = sign(
+        &test_key(43),
+        manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER),
+        b"lib",
+    );
+    let err = evaluate(b"lib", &m, &pol).unwrap_err();
+    assert_eq!(err.kind, RejectKind::Tampered);
+    assert!(
+        err.reason.contains("[plugins-a, plugins-b]"),
+        "the refusal names the trusted key ids: {}",
+        err.reason
+    );
+}
+
+/// REVOKED DIGEST: a library on the revocation list is refused even though a listed key signed it,
+/// and no opt-in reaches it.
+#[test]
+fn a_revoked_digest_is_refused_whoever_signed_it_and_whatever_is_opted_in() {
+    let key = test_key(41);
+    let mut pol = policy(None, &[], true, true);
+    pol.first_party_keys = release_key_list(&[("plugins-a", &key)]);
+    let m = sign(
+        &key,
+        manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER),
+        b"lib",
+    );
+    assert!(
+        evaluate(b"lib", &m, &pol).is_ok(),
+        "GREEN before the revocation"
+    );
+    pol.revoked
+        .insert(sha256_hex(b"lib"), "pulled for a test".to_string());
+    let err = evaluate(b"lib", &m, &pol).unwrap_err();
+    assert_eq!(err.kind, RejectKind::Revoked);
+    assert!(err.reason.contains("pulled for a test"), "{}", err.reason);
+    let mut unsigned = m.clone();
+    unsigned.signature.clear();
+    assert_eq!(
+        evaluate(b"lib", &unsigned, &pol).unwrap_err().kind,
+        RejectKind::Revoked,
+        "allow_unsigned does not reach a revoked library"
+    );
+    assert!(
+        evaluate(
+            b"other lib",
+            &sign(
+                &key,
+                manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER),
+                b"other lib"
+            ),
+            &pol
+        )
+        .is_ok(),
+        "only the revoked digest is refused"
+    );
+}
+
+/// Every digest this build revokes is a lowercase sha256, so the lookup can never silently miss.
+#[test]
+fn the_revocation_list_holds_only_sha256_digests() {
+    for (digest, why) in REVOKED_DIGESTS {
+        assert!(
+            digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{digest} is not a sha256"
+        );
+        assert!(!why.trim().is_empty(), "{digest} states no reason");
+    }
+}
+
+/// The key-list parser: named and bare entries, and every malformed shape refused.
+#[test]
+fn the_release_key_list_parses_named_and_bare_entries_and_refuses_the_rest() {
+    let a = hex::encode(test_key(41).verifying_key().as_bytes());
+    let b = hex::encode(test_key(42).verifying_key().as_bytes());
+    let keys = parse_release_keys(&format!("plugins-a:{a}, {b}")).unwrap();
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[0].id, "plugins-a");
+    assert_eq!(keys[1].id, format!("ed25519:{}", &b[..16]));
+    for bad in [
+        String::new(),
+        format!("{a},"),
+        format!("Plugins-A:{a}"),
+        format!("plugins-a:{a},plugins-a:{b}"),
+        format!("plugins-a:{a},plugins-b:{a}"),
+        format!("plugins-a:{}", &a[..62]),
+        format!("plugins-a:{}", "0".repeat(64)),
+        "plugins-a:PLACEHOLDER".to_string(),
+    ] {
+        assert!(parse_release_keys(&bad).is_err(), "'{bad}' must be refused");
     }
 }
 
@@ -1357,23 +1497,29 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
         p.publishers.get("acme").map(|k| k.to_bytes()),
         Some(test_key(3).verifying_key().to_bytes())
     );
-    assert_eq!(p.first_party_key, embedded_release_pubkey());
+    assert_eq!(p.first_party_keys, embedded_release_keys());
+    assert_eq!(p.revoked, revoked_digests());
 }
 
 // ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load unchanged) ─────────────────────────────
 
-/// The busbar release public key (`.cargo/config.toml`'s `BUSBAR_RELEASE_PUBKEY`), which signed
-/// every 1.5.5-era first-party tarball.
-const RELEASE_PUBKEY: &str = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7";
+/// The RETIRED 1.5 release public key, which signed every 1.5.5-era first-party tarball. Its seed
+/// lived in a GitHub org secret (SECURITY-FIRST-PLAN C1), so 1.6.0 does NOT trust it: every 1.6
+/// plugin is re-signed with the hardware-held keys.
+const RELEASE_PUBKEY_1_5: &str = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7";
 
-/// THE DEFAULT RELEASE KEY IS THE REAL ONE. The release key is a build input
-/// (`BUSBAR_RELEASE_PUBKEY`, read by [`embedded_release_pubkey`] at compile time); a build that does
+/// THE DEFAULT RELEASE KEYS ARE THE REAL ONES. The key list is a build input
+/// (`BUSBAR_RELEASE_PUBKEY`, read by [`embedded_release_keys`] at compile time); a build that does
 /// not set it in its environment takes this tree's `.cargo/config.toml` `[env]` value, which must be
-/// the busbar release key, so every ship build embeds it unchanged. The shadow oracle sets the
-/// variable to its run key at ITS candidate build only (ARCHITECT ruling 2026-10-20, row 86); cargo's
-/// `[env]` never overrides the process environment, so that build input wins there and nowhere else.
+/// the busbar first-party key list, so every ship build embeds it unchanged. The shadow oracle sets
+/// the variable to its run key at ITS candidate build only (ARCHITECT ruling 2026-10-20, row 86);
+/// cargo's `[env]` never overrides the process environment, so that build input wins there and
+/// nowhere else.
+///
+/// RED while the committed list holds the ceremony placeholders: a tree whose default build trusts
+/// no key does not land.
 #[test]
-fn the_default_release_key_input_is_the_real_release_key() {
+fn the_default_release_key_input_is_the_real_release_key_list() {
     let cfg = include_str!("../../../../.cargo/config.toml");
     let committed: Vec<&str> = cfg
         .lines()
@@ -1381,12 +1527,22 @@ fn the_default_release_key_input_is_the_real_release_key() {
         .filter_map(|rest| rest.trim().strip_prefix('='))
         .map(|v| v.trim().trim_matches('"'))
         .collect();
-    assert_eq!(
-        committed,
-        [RELEASE_PUBKEY],
-        "the committed default release key must be the busbar release key, exactly once"
+    assert_eq!(committed.len(), 1, "the key list is committed exactly once");
+    let keys = parse_release_keys(committed[0])
+        .expect("the committed first-party key list parses (the ceremony's public keys are in)");
+    assert!(
+        keys.len() >= 2,
+        "the list holds the signing key and the sealed next key"
     );
-    public_key_from_hex(RELEASE_PUBKEY).expect("the release key parses");
+    assert!(
+        keys.iter().all(|k| !k.id.starts_with("ed25519:")),
+        "every committed key is named"
+    );
+    let retired = public_key_from_hex(RELEASE_PUBKEY_1_5).unwrap();
+    assert!(
+        keys.iter().all(|k| k.key != retired),
+        "the retired 1.5 key, whose seed lived in GitHub, is not trusted"
+    );
 }
 
 /// A manifest packed before `former_names` existed parses UNCHANGED and its signature still
@@ -1401,7 +1557,7 @@ fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
     let m: Manifest = serde_json::from_str(text).expect("a 1.5.5 manifest parses");
     assert!(m.former_names.is_empty());
     assert_eq!(m.name, "busbar-webrequest");
-    let key = public_key_from_hex(RELEASE_PUBKEY).unwrap();
+    let key = public_key_from_hex(RELEASE_PUBKEY_1_5).unwrap();
     let sig: [u8; 64] = hex::decode(&m.signature).unwrap().try_into().unwrap();
     let canonical = canonical_manifest_bytes(&m);
     assert!(

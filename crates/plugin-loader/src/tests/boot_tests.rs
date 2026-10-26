@@ -416,7 +416,8 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let tarball = crate::tarball::package(&manifest, "lib.so", &lib).unwrap();
     std::fs::write(dir.join("plane-door.tar.gz"), tarball).unwrap();
     let policy = crate::sign::TrustPolicy {
-        first_party_key: None,
+        first_party_keys: Vec::new(),
+        revoked: Default::default(),
         binary_version: "1.6.0".into(),
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),

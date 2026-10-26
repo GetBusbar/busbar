@@ -283,7 +283,7 @@ fn dropping(alias: &str, door: busbar_contract::abi::mechanism::door::DoorFn) ->
     )
     .expect("the tarball is written");
     let policy = TrustPolicy {
-        first_party_key: Some(key.verifying_key()),
+        first_party_keys: vec![crate::sign::FirstPartyKey::unnamed(key.verifying_key())],
         ..Default::default()
     };
     let registry = crate::registry::scan_and_validate(&dir, &policy).expect("the row scans");

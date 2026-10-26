@@ -394,7 +394,9 @@ fn packed_hook_needs_prompt_rw_is_signed() {
     let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
     let up = busbar_plugin_loader::tarball::unpack(&tarball).unwrap();
     let policy = busbar_plugin_loader::sign::TrustPolicy {
-        first_party_key: Some(key.verifying_key()),
+        first_party_keys: vec![busbar_plugin_loader::sign::FirstPartyKey::unnamed(
+            key.verifying_key(),
+        )],
         binary_version: "1.5.0".into(),
         ..Default::default()
     };
@@ -1236,175 +1238,153 @@ fn pack_refuses_a_version_the_statement_does_not_state() {
     );
 }
 
-/// An UNSIGNED first-party tarball as CI packs it for the hardware-key flow.
+// ── OFFLINE FIRST-PARTY SIGNING: canonical -> (hardware key) -> attach -> verify ───────────────
+
+/// An UNSIGNED first-party tarball, as a release's pack step emits it for the offline signer.
 fn unsigned_first_party(lib: &[u8]) -> Vec<u8> {
     let m = Manifest {
         name: "busbar-store-x".into(),
         alias: "x".into(),
         kind: "store".into(),
         version: "1.6.0".into(),
-        publisher: "busbar".into(),
+        publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
         abi_version: busbar_plugin_loader::supported_abi("store")
             .iter()
             .copied()
             .max()
             .unwrap(),
         sha256: busbar_plugin_loader::sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
+        ..Default::default()
     };
-    busbar_plugin_loader::tarball::package(&m, "libx.so", lib).unwrap()
+    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
 }
 
-/// The owner's signature over the canonical bytes, made off-tool (here: an in-process key standing
-/// in for the hardware key), then attached and verified by the release commands.
+/// What the offline signer does: sign the canonical bytes; the raw 64-byte signature.
+fn offline_signature(key: &SigningKey, unsigned: &[u8]) -> [u8; 64] {
+    use ed25519_dalek::Signer;
+    let up = busbar_plugin_loader::tarball::unpack(unsigned).unwrap();
+    key.sign(&canonical_manifest_bytes(&up.manifest)).to_bytes()
+}
+
+fn keys(list: &[(&str, &SigningKey)]) -> Vec<FirstPartyKey> {
+    list.iter()
+        .map(|(id, k)| FirstPartyKey {
+            id: (*id).into(),
+            key: k.verifying_key(),
+        })
+        .collect()
+}
+
+/// GREEN: a signature made offline over the canonical bytes attaches, verifies, names the key that
+/// made it, and the signed tarball loads as first-party under the engine's own trust evaluation.
 #[test]
-fn hardware_flow_canonical_attach_verify() {
-    use ed25519_dalek::Signer as _;
-    let dir = std::env::temp_dir().join(format!("pack-release-{}", std::process::id()));
+fn an_offline_signature_attaches_and_the_tarball_loads_as_first_party() {
+    let (a, b) = (
+        SigningKey::from_bytes(&[11; 32]),
+        SigningKey::from_bytes(&[12; 32]),
+    );
+    let list = keys(&[("plugins-a", &a), ("plugins-b", &b)]);
+    let unsigned = unsigned_first_party(b"cdylib");
+    let (signed, id) = attach(&unsigned, &offline_signature(&b, &unsigned), &list).unwrap();
+    assert_eq!(id, "plugins-b");
+    assert_eq!(verify_first_party(&signed, &list).unwrap(), "plugins-b");
+    let up = busbar_plugin_loader::tarball::unpack(&signed).unwrap();
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
+        first_party_keys: list,
+        ..Default::default()
+    };
+    assert!(matches!(
+        busbar_plugin_loader::sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
+        busbar_plugin_loader::sign::Verdict::Trusted {
+            first_party: true,
+            ..
+        }
+    ));
+}
+
+/// RED: every shape the publish step must refuse.
+#[test]
+fn attach_refuses_what_would_not_load_as_first_party() {
+    let a = SigningKey::from_bytes(&[11; 32]);
+    let stranger = SigningKey::from_bytes(&[13; 32]);
+    let list = keys(&[("plugins-a", &a)]);
+    let unsigned = unsigned_first_party(b"cdylib");
+
+    let err = attach(&unsigned, &offline_signature(&stranger, &unsigned), &list).unwrap_err();
+    assert!(
+        err.contains("[plugins-a]"),
+        "an unlisted key is refused naming the list: {err}"
+    );
+
+    let other = unsigned_first_party(b"another cdylib");
+    assert!(
+        attach(&unsigned, &offline_signature(&a, &other), &list).is_err(),
+        "a signature over a different manifest is refused"
+    );
+    assert!(
+        attach(&unsigned, &offline_signature(&a, &unsigned), &[]).is_err(),
+        "a tool built with no first-party key verifies nothing"
+    );
+
+    let (signed, _) = attach(&unsigned, &offline_signature(&a, &unsigned), &list).unwrap();
+    assert!(
+        attach(&signed, &offline_signature(&a, &unsigned), &list).is_err(),
+        "an already-signed tarball is refused"
+    );
+
+    let mut third = busbar_plugin_loader::tarball::unpack(&unsigned)
+        .unwrap()
+        .manifest;
+    third.publisher = "acme".into();
+    let third = busbar_plugin_loader::tarball::package(&third, "lib.so", b"cdylib").unwrap();
+    assert!(
+        attach(&third, &offline_signature(&a, &third), &list).is_err(),
+        "attach signs first-party manifests only"
+    );
+}
+
+/// The CLI contract the release gate drives: `@file` signatures in both forms, `canonical --out`,
+/// and an unknown flag refused.
+#[test]
+fn the_release_cli_reads_both_signature_files_and_names_the_canonical_bytes() {
+    let a = SigningKey::from_bytes(&[11; 32]);
+    let unsigned = unsigned_first_party(b"cdylib");
+    let sig = offline_signature(&a, &unsigned);
+    let dir = std::env::temp_dir().join(format!("pack-release-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = |n: &str| dir.join(n).to_string_lossy().into_owned();
-    let lib = b"pretend cdylib bytes";
-    std::fs::write(path("u.tar.gz"), unsigned_first_party(lib)).unwrap();
-
-    let owner = SigningKey::from_bytes(&[9u8; 32]);
-    let other = SigningKey::from_bytes(&[3u8; 32]);
-    let list = |keys: &[(&str, &SigningKey)]| {
-        keys.iter()
-            .map(|(id, k)| format!("{id}:{}", hex::encode(k.verifying_key().to_bytes())))
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-
-    // canonical writes exactly the bytes the loader verifies over.
-    assert_eq!(
-        release::canonical(&[path("u.tar.gz"), "--out".into(), path("c.bin")]),
-        ExitCode::SUCCESS
-    );
-    let canon = std::fs::read(path("c.bin")).unwrap();
-    let unpacked =
-        busbar_plugin_loader::tarball::unpack(&std::fs::read(path("u.tar.gz")).unwrap()).unwrap();
-    assert_eq!(
-        canon,
-        busbar_plugin_loader::sign::canonical_manifest_bytes(&unpacked.manifest)
+    let (raw, hexed) = (dir.join("sig.bin"), dir.join("sig.hex"));
+    std::fs::write(&raw, sig).unwrap();
+    std::fs::write(&hexed, format!("{}\n", hex::encode(sig))).unwrap();
+    for f in [&raw, &hexed] {
+        assert_eq!(read_signature(&format!("@{}", f.display())).unwrap(), sig);
+    }
+    assert_eq!(read_signature(&hex::encode(sig)).unwrap(), sig);
+    assert!(
+        read_signature("abcd").is_err(),
+        "a short signature is refused"
     );
 
-    // An unsigned tarball is refused.
-    let owner_list = list(&[("busbar-plugins-2026a", &owner)]);
-    assert_eq!(
-        release::verify(&[path("u.tar.gz"), "--keys".into(), owner_list.clone()]),
-        ExitCode::FAILURE
+    let tgz = dir.join("u.tar.gz");
+    std::fs::write(&tgz, &unsigned).unwrap();
+    let canon = dir.join("u.canonical");
+    let line = canonical_cli(&[
+        tgz.display().to_string(),
+        "--out".into(),
+        canon.display().to_string(),
+    ])
+    .unwrap();
+    let bytes = std::fs::read(&canon).unwrap();
+    assert!(
+        line.starts_with(&format!("canonical-sha256={} ", sha256_hex(&bytes))),
+        "{line}"
     );
-
-    let sig = hex::encode(owner.sign(&canon).to_bytes());
-    // A signature that verifies against no listed key produces no tarball.
-    assert_eq!(
-        release::attach(&[
-            path("u.tar.gz"),
-            "--signature".into(),
-            sig.clone(),
-            "--keys".into(),
-            list(&[("other", &other)]),
-            "--out".into(),
-            path("bad.tar.gz"),
-        ]),
-        ExitCode::FAILURE
+    assert!(
+        line.contains(" publisher=busbar ") && line.ends_with(" signed=false"),
+        "{line}"
     );
-    assert!(!std::path::Path::new(&path("bad.tar.gz")).exists());
-
-    // The right key: attached, and the written tarball verifies.
-    assert_eq!(
-        release::attach(&[
-            path("u.tar.gz"),
-            "--signature".into(),
-            sig.clone(),
-            "--keys".into(),
-            list(&[("other", &other), ("busbar-plugins-2026a", &owner)]),
-            "--out".into(),
-            path("s.tar.gz"),
-        ]),
-        ExitCode::SUCCESS
+    assert!(
+        release_args(&["x".into(), "--bogus".into(), "1".into()], &["out"]).is_err(),
+        "an unknown flag is refused"
     );
-    assert_eq!(
-        release::verify(&[
-            path("s.tar.gz"),
-            "--keys".into(),
-            owner_list.clone(),
-            "--name".into(),
-            "busbar-store-x".into(),
-            "--version".into(),
-            "1.6.0".into(),
-        ]),
-        ExitCode::SUCCESS
-    );
-    // The same signed tarball under the wrong version or another key list is refused.
-    assert_eq!(
-        release::verify(&[
-            path("s.tar.gz"),
-            "--keys".into(),
-            owner_list.clone(),
-            "--version".into(),
-            "1.6.1".into(),
-        ]),
-        ExitCode::FAILURE
-    );
-    assert_eq!(
-        release::verify(&[
-            path("s.tar.gz"),
-            "--keys".into(),
-            list(&[("other", &other)])
-        ]),
-        ExitCode::FAILURE
-    );
-    // Attaching to an already-signed tarball is refused.
-    assert_eq!(
-        release::attach(&[
-            path("s.tar.gz"),
-            "--signature".into(),
-            sig,
-            "--keys".into(),
-            owner_list,
-            "--out".into(),
-            path("s2.tar.gz"),
-        ]),
-        ExitCode::FAILURE
-    );
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-#[test]
-fn key_list_parsing_refuses_empty_duplicate_and_weak_entries() {
-    let a = hex::encode(
-        SigningKey::from_bytes(&[1u8; 32])
-            .verifying_key()
-            .to_bytes(),
-    );
-    let b = hex::encode(
-        SigningKey::from_bytes(&[2u8; 32])
-            .verifying_key()
-            .to_bytes(),
-    );
-    assert_eq!(
-        release::parse_key_list(&format!("k-a:{a},{b}"))
-            .unwrap()
-            .len(),
-        2
-    );
-    assert!(release::parse_key_list("").is_err());
-    assert!(release::parse_key_list(&format!("{a},")).is_err());
-    assert!(release::parse_key_list(&format!("k:{a},k:{b}")).is_err());
-    assert!(release::parse_key_list(&format!("k:{a},j:{a}")).is_err());
-    assert!(release::parse_key_list(&format!("K:{a}")).is_err());
-    // The identity point: a weak key that would accept any signature.
-    let identity = format!("01{}", "00".repeat(31));
-    assert!(release::parse_key_list(&identity).is_err());
+    std::fs::remove_dir_all(&dir).ok();
 }

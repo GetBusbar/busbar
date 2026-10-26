@@ -51,7 +51,9 @@ pub fn trust_policy(cfg: &PluginsCfg) -> Result<TrustPolicy, String> {
         first_party_floors: &cfg.first_party_floors,
         binary_version: env!("CARGO_PKG_VERSION"),
     })?;
-    policy.first_party_key = Some(release_key().verifying_key());
+    policy.first_party_keys = vec![busbar_plugin_loader::sign::FirstPartyKey::unnamed(
+        release_key().verifying_key(),
+    )];
     Ok(policy)
 }
 

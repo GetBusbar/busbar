@@ -581,7 +581,7 @@ operators allowlist):
 ```sh
 busbar-plugin-pack keygen
 # private (BUSBAR_SIGN_KEY, keep secret): 9f2c...
-# public  (publishers allowlist / BUSBAR_RELEASE_PUBKEY): 4ab1...
+# public  (publishers allowlist): 4ab1...
 ```
 
 Then sign and package in one step:
@@ -605,8 +605,13 @@ the grant-declaration flags `--needs-prompt <no|ro|rw>` and `--needs-user <no|ro
 signed manifest `needs` field. The core enforces the actual projection, so a plugin can never
 receive more than it declared.
 
-Every first-party plugin is built and signed with the same `BUSBAR_SIGN_KEY` / publisher `busbar`
-signing identity, but the *release* it ships from depends on the plugin:
+Every first-party plugin is published as `busbar` and signed offline, on a hardware key, with
+one of the first-party keys the busbar binary compiles in (`busbar-plugins-2026a`, with
+`busbar-plugins-2026b` as the next key). No first-party signing key is held in CI. A release packs
+the plugin unsigned, the owner signs the manifest's canonical bytes (`busbar-plugin-pack
+canonical`), and the publish step inserts that signature with `busbar-plugin-pack attach`. It
+refuses any signature that does not verify against the compiled-in list. The *release* a plugin
+ships from depends on the plugin:
 
 - **Store plugins** (`busbar-store-sqlite`, `busbar-store-postgres`, `busbar-store-mysql`,
   `busbar-store-valkey`), the **auth plugin** (`busbar-auth-oidc`), and the **secret plugin**

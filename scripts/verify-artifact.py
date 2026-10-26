@@ -252,9 +252,18 @@ def row_binary_format(ctx) -> str:
     return "format=%s arch=%s linkage=%s" % got
 
 
+# The first-party key list's shape (`parse_release_keys`, crates/plugin-loader/src/sign.rs, and
+# scripts/release-key-guard.sh): `<id>:<64 hex>` entries joined by `,`, a bare `<64 hex>` allowed.
+_KEY_ENTRY = r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?:)?[0-9a-fA-F]{64}"
+
+
+def _key_list_ok(spec) -> bool:
+    return bool(re.fullmatch(r"%s(?:,%s)*" % (_KEY_ENTRY, _KEY_ENTRY), spec or ""))
+
+
 def row_release_pubkey(ctx) -> str:
     key = ctx.pubkey
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", key or ""):
+    if not _key_list_ok(key):
         raise RowFailure(
             "no usable BUSBAR_RELEASE_PUBKEY was supplied to the verifier (got %r). The verifier "
             "refuses to search for nothing and call it a pass: an empty needle is found in every "
@@ -264,7 +273,7 @@ def row_release_pubkey(ctx) -> str:
         blob = fh.read()
     if key.lower().encode() not in blob.lower():
         raise RowFailure(
-            "the 64-hex release public key is NOT present in the shipped binary. "
+            "the release key list (BUSBAR_RELEASE_PUBKEY) is NOT present in the shipped binary. "
             "`option_env!(\"BUSBAR_RELEASE_PUBKEY\")` is read at COMPILE time and fails silently to "
             "`None`, so the build was green and the comment claimed the key was baked in while this "
             "artifact carried none. This is exactly the busbar-aarch64-unknown-linux-gnu defect that "
@@ -689,7 +698,7 @@ def row_image_release_pubkey(ctx) -> str:
     ship inside the image, and keeps the runtime probe as a second, subordinate signal.
     """
     ref = _image_ref(ctx)
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", ctx.pubkey or ""):
+    if not _key_list_ok(ctx.pubkey):
         raise AssertionError(
             "no usable BUSBAR_RELEASE_PUBKEY was supplied to the verifier (got %r), so this row "
             "could not run. Unknown is not green, and an empty needle is found in every binary."
@@ -700,7 +709,7 @@ def row_image_release_pubkey(ctx) -> str:
         blob_bytes = fh.read()
     if ctx.pubkey.lower().encode() not in blob_bytes.lower():
         raise AssertionError(
-            "the binary INSIDE the image does not contain the 64-hex release public key, so it "
+            "the binary INSIDE the image does not contain the release key list (BUSBAR_RELEASE_PUBKEY), so it "
             "refuses every correctly-signed first-party plugin. "
             "`option_env!(\"BUSBAR_RELEASE_PUBKEY\")` is read at COMPILE time and fails silently to "
             "None: the image build must carry the variable. This is the aarch64 defect (#52), in "
