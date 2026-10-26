@@ -80,7 +80,10 @@ impl Ledger for BookLedger {
     }
 
     fn take_metering(&self) -> Vec<MeteringDelta> {
-        self.0.upgrade().map(|g| g.take_metering()).unwrap_or_default()
+        self.0
+            .upgrade()
+            .map(|g| g.take_metering())
+            .unwrap_or_default()
     }
 
     fn landed(&self, cells: &[CellCount]) {
@@ -92,7 +95,10 @@ impl Ledger for BookLedger {
     fn unposted(&self, cells: &[CellCount]) {
         if let Some(g) = self.0.upgrade() {
             // Only the positive parts were ever added (at the take); they leave.
-            let out: Vec<CellCount> = cells.iter().map(|c| c.signed_part(true).negated()).collect();
+            let out: Vec<CellCount> = cells
+                .iter()
+                .map(|c| c.signed_part(true).negated())
+                .collect();
             g.adjust_posted(&out);
         }
     }
@@ -125,8 +131,7 @@ impl GovState {
 
     /// `advanced.strict_spend_recording` (read by every admission; set at every config apply).
     pub fn set_strict_spend_recording(&self, on: bool) {
-        self.strict
-            .store(on, std::sync::atomic::Ordering::Relaxed);
+        self.strict.store(on, std::sync::atomic::Ordering::Relaxed);
         if let Some(r) = self.recorder.get() {
             r.stamps().set_strict(on);
         }
@@ -162,9 +167,15 @@ impl GovState {
         now_ms: u64,
         strict: &mut Option<Closed>,
     ) -> Option<CellCount> {
+        use std::sync::atomic::Ordering::Relaxed;
+        if !self.snapshot_live.load(Relaxed) {
+            // One node, or nothing foreign yet: no snapshot read at all (the 1 s tick reads every
+            // capped bucket touched since).
+            return None;
+        }
         let snap = self.foreign.load();
         let Some(f) = snap.get(bucket).filter(|f| f.window == window) else {
-            if self.recorder.get().is_some() {
+            if self.snapshot_running.load(Relaxed) {
                 self.snapshot_wake.notify_one();
             }
             return None;
@@ -200,7 +211,10 @@ impl GovState {
         for shard in self.budget.shards.iter() {
             let map = shard.map.read().unwrap_or_else(|p| p.into_inner());
             for (id, cell) in map.iter() {
-                if cell.last_touch.saturating_mul(1_000).saturating_add(SNAPSHOT_TOUCHED_MS)
+                if cell
+                    .last_touch
+                    .saturating_mul(1_000)
+                    .saturating_add(SNAPSHOT_TOUCHED_MS)
                     >= now.saturating_mul(1_000)
                     && cost.bucket_enforces_a_cap(id)
                 {
@@ -281,6 +295,12 @@ impl GovState {
             SHOWN.store(stale > 0, std::sync::atomic::Ordering::Relaxed);
             metrics::gauge!(crate::snapshot::MONEY_SNAPSHOT_FAILING).set(stale as f64);
         }
+        let live = next
+            .rows
+            .values()
+            .any(|f| !f.counts.is_zero() || f.failing_since.is_some());
+        self.snapshot_live
+            .store(live, std::sync::atomic::Ordering::Relaxed);
         self.foreign.store(Arc::new(next));
     }
 
@@ -291,6 +311,8 @@ impl GovState {
         store: Arc<dyn PostStore>,
         cost: impl Fn() -> Arc<crate::cost::CostModel> + Send + Sync + 'static,
     ) -> tokio::task::JoinHandle<()> {
+        self.snapshot_running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let gov = Arc::downgrade(self);
         tokio::spawn(async move {
             loop {
@@ -343,13 +365,14 @@ impl GovState {
                 delivered += 1;
                 self.landed(std::slice::from_ref(&cell));
             } else {
-                let mut shard = self.budget.write(&cell.bucket);
-                shard
-                    .pending
-                    .0
-                    .entry((cell.bucket.clone(), cell.window))
-                    .or_insert_with(|| CellCount::new(&cell.bucket, cell.window))
-                    .merge(&cell);
+                {
+                    let mut shard = self.budget.write(&cell.bucket);
+                    let shard = &mut *shard;
+                    match shard.cells.get_mut(&cell.bucket) {
+                        Some(c) => c.pending.merge_cell(&cell),
+                        None => shard.pending.of(&cell.bucket).merge_cell(&cell),
+                    }
+                }
             }
         }
         delivered
@@ -440,7 +463,12 @@ fn split(stored: &BTreeMap<String, i64>, posted: &BTreeMap<String, i64>) -> Vec<
     let mut segs: Vec<(String, i64)> = stored
         .iter()
         .filter(|(seg, _)| !seg.is_empty())
-        .map(|(seg, n)| (seg.clone(), (n - posted.get(seg).copied().unwrap_or(0)).max(0)))
+        .map(|(seg, n)| {
+            (
+                seg.clone(),
+                (n - posted.get(seg).copied().unwrap_or(0)).max(0),
+            )
+        })
         .filter(|(_, n)| *n > 0)
         .collect();
     let sum: i64 = segs.iter().map(|(_, n)| *n).sum();

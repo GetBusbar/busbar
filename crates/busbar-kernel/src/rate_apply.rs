@@ -153,6 +153,18 @@ pub fn entry_at(at_ms: u64) -> crate::governance::Seg {
     dated_history().and_then(|h| h.entry_at(at_ms).map(|(id, _)| id))
 }
 
+/// [`effective_from_at`] and [`entry_at`] together, from ONE history lookup (the accrual path).
+#[must_use]
+pub fn era_and_entry_at(at_ms: u64) -> (u64, crate::governance::Seg) {
+    match dated_history() {
+        Some(h) => match h.current().entry_at(at_ms) {
+            Some(e) => (e.effective_from(), Some(e.id())),
+            None => (0, None),
+        },
+        None => (effective_from_at(at_ms), None),
+    }
+}
+
 /// The installed holder's dated history, if it holds one — see [`RateEpoch::history`].
 #[must_use]
 pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::History>> {

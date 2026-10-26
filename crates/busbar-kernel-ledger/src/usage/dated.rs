@@ -27,8 +27,8 @@
 use std::collections::BTreeMap;
 
 use crate::cost::{
-    nanos_of_exact, whole, EntryId, History, HistorySeq, HistoryView, Money, MoneyError, RateCard, Tally,
-    STANDARD_TIER_BP,
+    nanos_of_exact, whole, EntryId, History, HistorySeq, HistoryView, Money, MoneyError, RateCard,
+    Tally, STANDARD_TIER_BP,
 };
 
 /// One bucket's billable-request count (the flat fee's base), SPLIT BY THE ERA each request was
@@ -203,11 +203,7 @@ impl FeeSegs {
     /// no longer holds a request of is the remainder. The caller decrements the total in the same
     /// step.
     pub fn refund(&mut self, seg: Option<EntryId>) {
-        if let Some((_, n)) = self
-            .0
-            .iter_mut()
-            .find(|(e, n)| Some(*e) == seg && *n > 0)
-        {
+        if let Some((_, n)) = self.0.iter_mut().find(|(e, n)| Some(*e) == seg && *n > 0) {
             *n -= 1;
         }
     }
@@ -233,7 +229,10 @@ impl FeeSegs {
         self.0
             .iter()
             .map(|(e, n)| (Some(*e), *n))
-            .chain(std::iter::once((None, billable_total.saturating_sub(dated))))
+            .chain(std::iter::once((
+                None,
+                billable_total.saturating_sub(dated),
+            )))
     }
 }
 
@@ -266,13 +265,11 @@ pub fn price_segments<'r>(
         };
         let entry = match seg {
             Some(id) => h.entries().iter().find(|e| e.id() == id),
-            None => h
-                .entries()
-                .iter()
-                .rev()
-                .find(|e| e.covers(window_start_ms)),
+            None => h.entries().iter().rev().find(|e| e.covers(window_start_ms)),
         };
-        let entry = entry.ok_or(MoneyError::NoCardInForce { at: window_start_ms })?;
+        let entry = entry.ok_or(MoneyError::NoCardInForce {
+            at: window_start_ms,
+        })?;
         Ok((
             entry.seq(),
             if Some(entry.id()) == in_force {

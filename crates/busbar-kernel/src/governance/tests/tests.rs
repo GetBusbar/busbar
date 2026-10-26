@@ -1549,14 +1549,20 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
     let survivor = sample_key("survivor", "hs");
 
     // A seeded ledger cell with `requests` accrued (spend derives from requests x fee).
-    let seeded = |window_start: u64, requests: u64, dirty: bool| BudgetCell {
-        window_start,
-        requests,
-        billable_requests: requests,
-        models: Vec::new(),
-        fee_segs: Default::default(),
-        dirty,
-        last_touch: now,
+    let seeded = |window_start: u64, requests: u64, dirty: bool| {
+        let mut c = BudgetCell {
+            window_start,
+            requests,
+            billable_requests: requests,
+            models: Vec::new(),
+            fee_segs: Default::default(),
+            pending: Default::default(),
+            last_touch: now,
+        };
+        if dirty {
+            c.pending.admitted(c.window_start, 1);
+        }
+        c
     };
 
     // Seed co-tenants directly INTO the survivor's shard (same idiom as the old rate sweep test).
@@ -1593,7 +1599,7 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
         .get("total-cotenant")
         .expect("total-window cell must survive the sweep (window 0 never ages out)");
     assert_eq!(
-        (total.requests, total.dirty),
+        (total.requests, total.dirty()),
         (4999, true),
         "total-window accrual + dirty flag intact"
     );
@@ -1630,7 +1636,7 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
         billable_requests: 1,
         models: Vec::new(),
         fee_segs: Default::default(),
-        dirty: false,
+        pending: Default::default(),
         last_touch,
     };
 
@@ -1706,7 +1712,7 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
         billable_requests: 1,
         models: Vec::new(),
         fee_segs: Default::default(),
-        dirty: false,
+        pending: Default::default(),
         last_touch: now,
     };
 
@@ -3194,14 +3200,20 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
 
     let survivor = sample_key("survivor", "hs");
 
-    let all_time = |requests: u64, dirty: bool, last_touch: u64| BudgetCell {
-        window_start: 0,
-        requests,
-        billable_requests: requests,
-        models: Vec::new(),
-        fee_segs: Default::default(),
-        dirty,
-        last_touch,
+    let all_time = |requests: u64, dirty: bool, last_touch: u64| {
+        let mut c = BudgetCell {
+            window_start: 0,
+            requests,
+            billable_requests: requests,
+            models: Vec::new(),
+            fee_segs: Default::default(),
+            pending: Default::default(),
+            last_touch,
+        };
+        if dirty {
+            c.pending.admitted(c.window_start, 1);
+        }
+        c
     };
 
     {
@@ -4147,7 +4159,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         billable_requests: 7,
         models: Vec::new(),
         fee_segs: Default::default(),
-        dirty: false,
+        pending: Default::default(),
         last_touch: now - max_window - 1,
     };
     {
@@ -4160,7 +4172,7 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
         map.insert("group:gone@month".to_string(), {
             let mut c = idle();
             c.window_start = 0;
-            c.dirty = true;
+            c.pending.admitted(0, 1);
             c
         });
     }
@@ -4208,7 +4220,7 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
         billable_requests: 1,
         models: Vec::new(),
         fee_segs: Default::default(),
-        dirty: false,
+        pending: Default::default(),
         last_touch: now,
     };
     // A group's cells are `group:<name>@<window>[#<scope>]` — one per (window, pool scope), spread
@@ -4376,7 +4388,7 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
         billable_requests: 7,
         models: Vec::new(),
         fee_segs: Default::default(),
-        dirty: false,
+        pending: Default::default(),
         last_touch: now - max_window - 1,
     };
     {
@@ -4422,7 +4434,7 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
         billable_requests: 1,
         models: Vec::new(),
         fee_segs: Default::default(),
-        dirty: false,
+        pending: Default::default(),
         last_touch: now,
     };
     for id in [

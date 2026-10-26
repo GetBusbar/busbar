@@ -75,9 +75,11 @@ fn a_failed_fsync_seals_the_segment_and_rewrites_the_round_into_a_new_one() {
     let (mut s, _) = Spool::open(dir.path(), failing.clone()).expect("open");
     s.append(&[ready(1)]).expect("round");
     failing.0.store(1, Ordering::SeqCst);
-    s.append(&[ready(2)]).expect("the rewrite into a fresh segment takes the round");
+    s.append(&[ready(2)])
+        .expect("the rewrite into a fresh segment takes the round");
     assert!(!s.failed());
-    s.append(&[ready(3)]).expect("later rounds go to the fresh segment");
+    s.append(&[ready(3)])
+        .expect("later rounds go to the fresh segment");
     drop(s);
     let (_, recs) = Spool::open(dir.path(), Arc::new(DataSync)).expect("reopen");
     // The failed segment is read only up to its last synced offset: the failed round's bytes in
@@ -123,8 +125,12 @@ fn the_dead_letter_file_appends_synced_framed_records() {
     let dir = tmp();
     let f = Ledgerette::at(dir.path().join("DEADLETTERS"));
     assert!(f.read().expect("read").is_empty());
-    f.append(&[b"one".to_vec(), b"two".to_vec()]).expect("append");
-    assert_eq!(f.read().expect("read"), vec![b"one".to_vec(), b"two".to_vec()]);
+    f.append(&[b"one".to_vec(), b"two".to_vec()])
+        .expect("append");
+    assert_eq!(
+        f.read().expect("read"),
+        vec![b"one".to_vec(), b"two".to_vec()]
+    );
     f.discard().expect("discard");
     assert!(f.read().expect("read").is_empty());
 }

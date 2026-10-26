@@ -1290,7 +1290,11 @@ impl Units for DoorSteps<'_> {
         // spend cannot be recorded, raised only HERE, after every 1.5.5 refusal (the windowed caps in
         // `admit_checked`, then the route). The charge is undone in RAM (`uncharge`, its negatives
         // emitted) and the unit's money facts close with nothing to settle.
-        let unrecordable = self.lock().grant.as_ref().and_then(AdmitGrant::unrecordable);
+        let unrecordable = self
+            .lock()
+            .grant
+            .as_ref()
+            .and_then(AdmitGrant::unrecordable);
         if let Some(closed) = unrecordable {
             let grant = self.lock().grant.take();
             if let (Some(gov), Some(grant)) = (self.app.governance.as_ref(), grant) {

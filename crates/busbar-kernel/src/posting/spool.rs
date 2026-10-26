@@ -194,7 +194,10 @@ impl Spool {
 
     fn write_manifest(dir: &Path, manifest: &Manifest, syncer: &dyn Syncer) -> io::Result<()> {
         let mut bytes = Vec::new();
-        frame::put(&mut bytes, &serde_json::to_vec(manifest).unwrap_or_default());
+        frame::put(
+            &mut bytes,
+            &serde_json::to_vec(manifest).unwrap_or_default(),
+        );
         let tmp = dir.join(format!("{MANIFEST}.tmp"));
         {
             let mut f = OpenOptions::new()

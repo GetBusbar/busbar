@@ -157,9 +157,9 @@ struct BudgetCell {
     fee_segs: busbar_kernel_ledger::usage::FeeSegs,
     /// Wall-clock of the last accrual or admission charge (the all-time cell's eviction age).
     last_touch: u64,
-    /// HAS PENDING DELTAS: a mutation emitted into the shard's pending map since the writer's last
-    /// take. With the recorder's UNRECORDED set, what keeps the sweep from evicting the cell.
-    dirty: bool,
+    /// ITS PENDING DELTAS since the writer's last take ([`PendCells`]). Non-empty (with the
+    /// recorder's UNRECORDED set) is what keeps the sweep from evicting the cell.
+    pending: PendCells,
 }
 
 impl BudgetCell {
@@ -173,9 +173,14 @@ impl BudgetCell {
     /// ROLL the cell to the newer `window`: the counts start over. Emits nothing: what the old
     /// window held was emitted as it happened. What is still pending or unsent keeps it resident.
     fn roll(&mut self, window: u64) {
-        let dirty = self.dirty;
+        let pending = std::mem::take(&mut self.pending);
         *self = Self::fresh(window);
-        self.dirty = dirty;
+        self.pending = pending;
+    }
+
+    /// Whether it holds deltas not yet taken.
+    fn dirty(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// Accrue one response's keyed units under `model` in segment `seg`, interning the pair on
@@ -279,50 +284,196 @@ impl BudgetCell {
     }
 }
 
-/// ONE BUDGET SHARD'S PENDING DELTAS (MONEY-DESIGN §3c): every count-changing mutation of a cell in
-/// the shard adds its delta here, inside the shard's own lock, in the same critical section. The
-/// background writer takes the whole map with `mem::take`, one shard at a time. Keyed (bucket,
-/// window); each value is net and segmented.
-#[derive(Default)]
-pub(crate) struct Pending(HashMap<(String, u64), crate::posting::record::CellCount>);
+/// A BUCKET'S PENDING DELTAS (MONEY-DESIGN §3c), per window: what RAM `cur` applied since the
+/// writer's last take, net, by segment. They live ON THE CELL (under its shard's lock, so a
+/// mutation and its emit are one critical section with no lookup at all), and in the shard's
+/// [`Pending`] map once the cell is removed (a deleted key or group: nothing is discarded). A string
+/// is allocated only on a segment's or class's FIRST sight in a window.
+#[derive(Clone, Default)]
+pub(crate) struct PendCells(Vec<PendCell>);
 
-impl Pending {
-    fn at(&mut self, bucket: &str, window: u64) -> &mut crate::posting::record::CellCount {
-        self.0
-            .entry((bucket.to_string(), window))
-            .or_insert_with(|| crate::posting::record::CellCount::new(bucket, window))
+/// One window's pending delta.
+#[derive(Clone, Default)]
+pub(crate) struct PendCell {
+    window: u64,
+    requests: i64,
+    billable: Vec<(Seg, i64)>,
+    units: Vec<PendUnit>,
+}
+
+/// One (segment, model, class)'s pending count.
+#[derive(Clone)]
+pub(crate) struct PendUnit {
+    seg: Seg,
+    model: String,
+    class: String,
+    n: i64,
+}
+
+impl PendCell {
+    fn unit(&mut self, seg: Seg, model: &str, class: &str, n: i64) {
+        if n == 0 {
+            return;
+        }
+        match self
+            .units
+            .iter_mut()
+            .find(|u| u.seg == seg && u.model == model && u.class == class)
+        {
+            Some(u) => u.n = u.n.saturating_add(n),
+            None => self.units.push(PendUnit {
+                seg,
+                model: model.to_string(),
+                class: class.to_string(),
+                n,
+            }),
+        }
     }
 
-    /// `requests` and the fee base changed by `n` (+1 at a charge, -1 at an uncharge).
-    fn admitted(&mut self, bucket: &str, window: u64, n: i64) {
-        let c = self.at(bucket, window);
+    fn fee(&mut self, seg: Seg, n: i64) {
+        match self.billable.iter_mut().find(|(s, _)| *s == seg) {
+            Some((_, have)) => *have = have.saturating_add(n),
+            None => self.billable.push((seg, n)),
+        }
+    }
+}
+
+impl PendCells {
+    fn at(&mut self, window: u64) -> &mut PendCell {
+        match self.0.iter().position(|c| c.window == window) {
+            Some(i) => &mut self.0[i],
+            None => {
+                self.0.push(PendCell {
+                    window,
+                    ..PendCell::default()
+                });
+                self.0.last_mut().expect("just pushed")
+            }
+        }
+    }
+
+    /// ONE CHARGE: `requests +1` and the fee (`billable +1` in `seg`, or the fee lane's unit in
+    /// `seg`).
+    fn charged(
+        &mut self,
+        window: u64,
+        seg: Seg,
+        fee_lane: Option<(&str, &std::collections::BTreeMap<String, u64>)>,
+    ) {
+        let c = self.at(window);
+        c.requests = c.requests.saturating_add(1);
+        match fee_lane {
+            None => c.fee(seg, 1),
+            Some((lane, one)) => {
+                for (class, n) in one {
+                    c.unit(seg, lane, class, signed(*n));
+                }
+            }
+        }
+    }
+
+    /// `requests` changed by `n` (-1 at an uncharge).
+    fn admitted(&mut self, window: u64, n: i64) {
+        let c = self.at(window);
         c.requests = c.requests.saturating_add(n);
     }
 
     /// The flat fee base of `seg` changed by `n`.
-    fn billable(&mut self, bucket: &str, window: u64, seg: Seg, n: i64) {
-        self.at(bucket, window).add_billable(&seg_hex(seg), n);
+    fn billable(&mut self, window: u64, seg: Seg, n: i64) {
+        self.at(window).fee(seg, n);
     }
 
     /// `units` of `model` in `seg`, signed by `sign`.
     fn units(
         &mut self,
-        bucket: &str,
         window: u64,
         (model, seg): (&str, Seg),
         units: &std::collections::BTreeMap<String, u64>,
         sign: i64,
     ) {
-        let hex = seg_hex(seg);
-        let c = self.at(bucket, window);
+        let c = self.at(window);
         for (class, n) in units {
-            c.add_unit(&hex, model, class, signed(*n).saturating_mul(sign));
+            c.unit(seg, model, class, signed(*n).saturating_mul(sign));
         }
+    }
+
+    /// Whether anything is pending for `window`.
+    fn holds(&self, window: u64) -> bool {
+        self.0.iter().any(|c| c.window == window)
     }
 
     /// Whether anything is pending.
     fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Add `other` (a removed cell's pending) into these.
+    fn adopt(&mut self, other: PendCells) {
+        for c in other.0 {
+            let into = self.at(c.window);
+            into.requests = into.requests.saturating_add(c.requests);
+            for (seg, n) in c.billable {
+                into.fee(seg, n);
+            }
+            for u in c.units {
+                into.unit(u.seg, &u.model, &u.class, u.n);
+            }
+        }
+    }
+
+    /// THE TAKE: every window's delta as the spool's cells of `bucket` (zero ones dropped).
+    fn take(&mut self, bucket: &str) -> Vec<crate::posting::record::CellCount> {
+        let mut out = Vec::new();
+        for c in std::mem::take(&mut self.0) {
+            let mut cell = crate::posting::record::CellCount::new(bucket, c.window);
+            cell.requests = c.requests;
+            for (seg, n) in c.billable {
+                cell.add_billable(&seg_hex(seg), n);
+            }
+            for u in c.units {
+                cell.add_unit(&seg_hex(u.seg), &u.model, &u.class, u.n);
+            }
+            cell.tidy();
+            if !cell.is_zero() {
+                out.push(cell);
+            }
+        }
+        out
+    }
+
+    /// `cell` (a spool cell) back into pending (a test's undelivered delivery).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn merge_cell(&mut self, cell: &crate::posting::record::CellCount) {
+        self.admitted(cell.window, cell.requests);
+        for (seg, n) in &cell.billable {
+            self.billable(cell.window, seg_parse(seg), *n);
+        }
+        for (seg, models) in &cell.units {
+            for (model, classes) in models {
+                for (class, n) in classes {
+                    self.at(cell.window).unit(seg_parse(seg), model, class, *n);
+                }
+            }
+        }
+    }
+}
+
+/// THE SHARD'S PENDING DELTAS OF REMOVED CELLS (a deleted key or group): taken with the cells'.
+#[derive(Default)]
+pub(crate) struct Pending(HashMap<String, PendCells>);
+
+impl Pending {
+    /// `bucket`'s orphaned pending deltas.
+    fn of(&mut self, bucket: &str) -> &mut PendCells {
+        if !self.0.contains_key(bucket) {
+            self.0.insert(bucket.to_string(), PendCells::default());
+        }
+        self.0.get_mut(bucket).expect("just ensured")
+    }
+
+    /// Whether `bucket` has orphaned pending deltas for `window`.
+    fn holds(&self, bucket: &str, window: u64) -> bool {
+        self.0.get(bucket).is_some_and(|p| p.holds(window))
     }
 }
 
@@ -657,9 +808,7 @@ impl<V> Sharded<V> {
     /// keys (the write-behind flush snapshot). Each guard is acquired lazily by the iterator, so only
     /// one shard is locked at a time (no cross-shard deadlock, and a concurrent per-key op contends
     /// only for the single shard the iterator currently holds).
-    fn write_all(
-        &self,
-    ) -> impl Iterator<Item = std::sync::RwLockWriteGuard<'_, ShardMap<V>>> {
+    fn write_all(&self) -> impl Iterator<Item = std::sync::RwLockWriteGuard<'_, ShardMap<V>>> {
         self.shards
             .iter()
             .map(|s| s.map.write().unwrap_or_else(|p| p.into_inner()))
@@ -824,6 +973,11 @@ pub struct GovState {
     foreign: arc_swap::ArcSwap<recording::Snapshot>,
     /// Wakes the snapshot task when a capped bucket is touched with no fresh snapshot.
     snapshot_wake: tokio::sync::Notify,
+    /// The snapshot task runs (only then is it worth waking).
+    snapshot_running: std::sync::atomic::AtomicBool,
+    /// The snapshot holds a reading that matters to admission (foreign counts, or a failing read):
+    /// on one node never, so admission pays one atomic load and no snapshot read at all.
+    snapshot_live: std::sync::atomic::AtomicBool,
 }
 
 /// Recording counts off the request path: the recorder, strict mode and the fleet snapshot.

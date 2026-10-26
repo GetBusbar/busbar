@@ -536,7 +536,9 @@ impl Core {
         self.dead.iter().position(|d| {
             (d.state == DeadState::Refused || negative)
                 && d.kind == Kind::Usage
-                && d.cells.iter().any(|c| c.bucket == bucket && c.window == window)
+                && d.cells
+                    .iter()
+                    .any(|c| c.bucket == bucket && c.window == window)
         })
     }
 
@@ -549,8 +551,11 @@ impl Core {
         let mut cells = Vec::new();
         let keys: Vec<(String, u64)> = self.acc.keys().cloned().collect();
         for k in keys {
-            let size = serde_json::to_vec(&self.acc[&k]).map(|v| v.len()).unwrap_or(0);
-            if !cells.is_empty() && (cells.len() >= CARVE_MAX_CELLS || bytes + size > CARVE_MAX_BYTES)
+            let size = serde_json::to_vec(&self.acc[&k])
+                .map(|v| v.len())
+                .unwrap_or(0);
+            if !cells.is_empty()
+                && (cells.len() >= CARVE_MAX_CELLS || bytes + size > CARVE_MAX_BYTES)
             {
                 break;
             }
@@ -783,12 +788,14 @@ impl Recorder {
             bytes: core
                 .acc
                 .values()
-                .map(|c| record::encode(&Rec::Fold {
-                    window_seq: 0,
-                    cells: vec![c.clone()],
-                    metering: Vec::new(),
+                .map(|c| {
+                    record::encode(&Rec::Fold {
+                        window_seq: 0,
+                        cells: vec![c.clone()],
+                        metering: Vec::new(),
+                    })
+                    .len()
                 })
-                .len())
                 .sum::<usize>()
                 + core
                     .acc_meter
@@ -802,9 +809,7 @@ impl Recorder {
                 .flat_map(|d| d.cells.clone())
                 .collect(),
         };
-        let window_ms = u64::try_from(window.as_millis())
-            .unwrap_or(u64::MAX)
-            .max(1);
+        let window_ms = u64::try_from(window.as_millis()).unwrap_or(u64::MAX).max(1);
         let (tx, rx) = mpsc::channel();
         let stamps = Arc::new(Stamps::new(window_ms));
         *stamps
@@ -1114,7 +1119,8 @@ impl Recorder {
                     .min()
             };
             if self.stamps.heartbeat_ok() {
-                let lapsed = first.is_some_and(|t| now.saturating_sub(t) > MAX_UNKNOWN.as_millis() as u64);
+                let lapsed =
+                    first.is_some_and(|t| now.saturating_sub(t) > MAX_UNKNOWN.as_millis() as u64);
                 if lapsed {
                     self.dead_rest(
                         &mut entry,
@@ -1725,7 +1731,9 @@ impl Writer {
                                 let bodies: Vec<Vec<u8>> = rec
                                     .dead_letters()
                                     .into_iter()
-                                    .map(|l| serde_json::to_vec(&DeadRec::Letter(l)).unwrap_or_default())
+                                    .map(|l| {
+                                        serde_json::to_vec(&DeadRec::Letter(l)).unwrap_or_default()
+                                    })
                                     .collect();
                                 if let Err(e) = f.rewrite(&bodies) {
                                     tracing::warn!(error = %e, "money spool: the dead-letter file could not be rewritten");

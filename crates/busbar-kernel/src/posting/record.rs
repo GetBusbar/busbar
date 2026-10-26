@@ -371,9 +371,9 @@ pub fn usage_body<'c>(
         let mut plain: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
         let mut sib: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
         let add = |into: &mut BTreeMap<String, BTreeMap<String, i64>>,
-                       model: String,
-                       class: &str,
-                       n: i64| {
+                   model: String,
+                   class: &str,
+                   n: i64| {
             let slot = into
                 .entry(model)
                 .or_default()
@@ -452,9 +452,7 @@ pub fn prefixed_provider(seg: &str, provider: &str) -> String {
 #[must_use]
 pub fn split_provider(stored: &str) -> (&str, &str) {
     match stored.split_once(SEP) {
-        Some((id, provider))
-            if id.len() == 24 && id.bytes().all(|b| b.is_ascii_hexdigit()) =>
-        {
+        Some((id, provider)) if id.len() == 24 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
             (id, provider)
         }
         _ => ("", stored),

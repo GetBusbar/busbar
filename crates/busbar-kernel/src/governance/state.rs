@@ -155,6 +155,8 @@ impl GovState {
             strict: std::sync::atomic::AtomicBool::new(false),
             foreign: arc_swap::ArcSwap::from_pointee(super::recording::Snapshot::default()),
             snapshot_wake: tokio::sync::Notify::new(),
+            snapshot_running: std::sync::atomic::AtomicBool::new(false),
+            snapshot_live: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -593,8 +595,7 @@ impl GovState {
         // it: the tokens are segmented by the entry in force when they land, on the history's own
         // millisecond clock. The metering row also keeps the entry's start (`priced_from_ms`).
         let at_ms = crate::store::now_ms();
-        let seg = crate::rate_apply::entry_at(at_ms);
-        let era = crate::rate_apply::effective_from_at(at_ms);
+        let (era, seg) = crate::rate_apply::era_and_entry_at(at_ms);
         // THE METERING SERIES CARRIES WHAT THIS BOOK HOLDS: the same counts, keyed by the same
         // entry, mirrored onto the key's metering row by THIS accrual — the one place every
         // ledgered class lands — so the admin usage read prices exactly the counts this book prices.
@@ -713,23 +714,22 @@ impl GovState {
         now: u64,
     ) {
         let window = budget_window(budget_period, now);
-        let mut guard = self.budget.write(bucket_id);
-        let super::ShardMap { cells, pending, .. } = &mut *guard;
-        let cell = match cells.get_mut(bucket_id) {
+        let mut map = self.budget.write(bucket_id);
+        let cell = match map.get_mut(bucket_id) {
             Some(c) if window > c.window_start => {
                 c.roll(window);
                 c
             }
             Some(c) => c, // same window or straddle (cell newer-or-equal) → credit in place
-            None => cells
+            None => map
                 .entry(bucket_id.to_string())
                 .or_insert_with(|| BudgetCell::fresh(window)),
         };
         cell.accrue(model, seg, units);
         cell.last_touch = now;
         // THE EMIT (MONEY-DESIGN §3c): the same delta, in the same critical section.
-        pending.units(bucket_id, cell.window_start, (model, seg), units, 1);
-        cell.dirty = true;
+        let at = cell.window_start;
+        cell.pending.units(at, (model, seg), units, 1);
     }
 
     /// Record one completed response's RAW consumption into the per-(key, day-bucket, model,
@@ -1201,7 +1201,12 @@ impl GovState {
         //
         // Nothing it accrued is discarded: its pending and unrecorded deltas are still recorded
         // (the store only tombstones a key; its rows are kept), MONEY-DESIGN §3c.
-        self.budget.write(id).remove(id);
+        {
+            let mut shard = self.budget.write(id);
+            if let Some(cell) = shard.cells.remove(id) {
+                shard.pending.of(id).adopt(cell.pending);
+            }
+        }
         self.money_view.forget(id);
         if let Err(refresh_err) = refreshed {
             diag_error!(
@@ -1262,7 +1267,15 @@ impl GovState {
         let mut dropped = 0usize;
         for mut shard in self.budget.write_all() {
             let before = shard.len();
-            shard.retain(|id, _| !crate::cost::is_bucket_of_group(id, group));
+            let gone: Vec<String> = (shard.keys())
+                .filter(|id| crate::cost::is_bucket_of_group(id, group))
+                .cloned()
+                .collect();
+            for id in gone {
+                if let Some(cell) = shard.cells.remove(&id) {
+                    shard.pending.of(&id).adopt(cell.pending);
+                }
+            }
             // Its pending deltas and `posted_hi` stay: everything it accrued is still recorded, and a
             // re-created group starts at zero without reading its old rows as foreign spend.
             dropped += before - shard.len();
@@ -1649,8 +1662,7 @@ impl GovState {
             }
             // The delta lands on the unit's lane in the segment of the entry in force at its epoch.
             let entry = crate::rate_apply::entry_at(adj.card_epoch_ms);
-            let seg = (segments.iter())
-                .position(|m| *m.model == *adj.lane && m.seg == entry);
+            let seg = (segments.iter()).position(|m| *m.model == *adj.lane && m.seg == entry);
             let i = seg.unwrap_or_else(|| {
                 segments.push(ModelCell {
                     model: std::sync::Arc::from(adj.lane.as_str()),
@@ -1972,7 +1984,7 @@ impl GovState {
                     if c.window_start != 0 {
                         // What a cell owes the store is in the shard's pending map, not the cell,
                         // so an evicted cell loses nothing the writer has not taken.
-                        return c.dirty
+                        return c.dirty()
                             || self.unrecorded(id)
                             || c.window_start.saturating_add(max_window) > now;
                     }
@@ -1991,7 +2003,7 @@ impl GovState {
                     // bucket carries no cap, enforces NOTHING; it now ages out by last touch like
                     // any other attribution cell (and, like them, only while clean).
                     still_enforces_a_cap(cost, id)
-                        || c.dirty
+                        || c.dirty()
                         || self.unrecorded(id)
                         || c.last_touch.saturating_add(max_window) > now
                 });
@@ -2041,18 +2053,17 @@ impl GovState {
             // class, so a cache-read count never counts against it.
             // THE FLEET (MONEY-DESIGN §3d): other nodes' counts for this window, from the background
             // snapshot, never a store read. None on one node, so the answers are 1.5.5's.
-            let foreign = map
-                .get(bucket.bucket_id)
-                .filter(|c| c.window_start >= window)
-                .and_then(|c| self.foreign_for(bucket.bucket_id, c.window_start, now_ms, &mut strict));
+            let found = map.get(bucket.bucket_id);
+            let foreign = found.filter(|c| c.window_start >= window).and_then(|c| {
+                self.foreign_for(bucket.bucket_id, c.window_start, now_ms, &mut strict)
+            });
             let with_foreign;
-            let found = match (map.get(bucket.bucket_id), foreign) {
+            let found = match (found, foreign) {
                 (Some(cell), Some(f)) => {
                     with_foreign = cell.with_foreign(&f);
                     Some(&with_foreign)
                 }
-                (cell, None) => cell,
-                (None, Some(_)) => None,
+                (cell, _) => cell,
             };
             let (requests, tokens, live, derived) = match found {
                 Some(cell) if cell.window_start >= window => (
@@ -2139,8 +2150,7 @@ impl GovState {
         for (bi, bucket) in buckets.iter().enumerate() {
             let gi = guard_for(&guard_shards, shard_idx[bi]);
             let window = budget_window(bucket.window, now);
-            let super::ShardMap { cells, pending, .. } =
-                &mut **guards[gi].as_mut().expect("guard held");
+            let cells = &mut **guards[gi].as_mut().expect("guard held");
             let cell = match cells.get_mut(bucket.bucket_id) {
                 Some(c) if window > c.window_start => {
                     c.roll(window);
@@ -2152,17 +2162,16 @@ impl GovState {
                     .or_insert_with(|| BudgetCell::fresh(window)),
             };
             cell.requests = cell.requests.saturating_add(1);
-            // THE EMIT (MONEY-DESIGN §3c), in the same critical section as the charge.
-            pending.admitted(bucket.bucket_id, cell.window_start, 1);
             if let Some((lane, one)) = &plane_fee {
                 cell.accrue(lane, seg, one);
-                pending.units(bucket.bucket_id, cell.window_start, (lane, seg), one, 1);
             } else {
                 cell.billable_requests = cell.billable_requests.saturating_add(1);
                 cell.fee_segs.charge(seg);
-                pending.billable(bucket.bucket_id, cell.window_start, seg, 1);
             }
-            cell.dirty = true;
+            // THE EMIT (MONEY-DESIGN §3c), in the same critical section as the charge.
+            let lane = plane_fee.as_ref().map(|(lane, one)| (lane.as_str(), one));
+            let at = cell.window_start;
+            cell.pending.charged(at, seg, lane);
             cell.last_touch = now;
             // The cell this fee reached, by its window: what the refund returns it from.
             let reached = (bucket.bucket_id.to_string(), cell.window_start);
@@ -2207,53 +2216,36 @@ impl GovState {
         for (bucket_id, window) in &charge.cells {
             let mut guard = self.budget.write(bucket_id);
             let super::ShardMap { cells, pending, .. } = &mut *guard;
+            let one = BTreeMap::from([(PER_REQUEST.to_string(), 1)]);
+            // The -1s for the charge's own window, onto `p`.
+            let emit = |p: &mut super::PendCells| {
+                if requests_too {
+                    p.admitted(*window, -1);
+                }
+                match lane {
+                    None => p.billable(*window, charge.seg, -1),
+                    Some((lane, _)) => p.units(*window, (lane, charge.seg), &one, -1),
+                }
+            };
             let Some(cell) = cells.get_mut(bucket_id) else {
                 // No cell (the key or group was deleted): RAM is unchanged, but while the charge's
                 // +1 is still pending or unrecorded its -1 goes with it (MONEY-DESIGN §3c), so the
                 // store never ends above what RAM applied. Otherwise nothing, as on dev.
-                let held = pending.0.contains_key(&(bucket_id.clone(), *window))
-                    || self.unrecorded(bucket_id);
-                if held {
-                    if requests_too {
-                        pending.admitted(bucket_id, *window, -1);
-                    }
-                    match lane {
-                        None => pending.billable(bucket_id, *window, charge.seg, -1),
-                        Some((lane, unit)) => pending.units(
-                            bucket_id,
-                            *window,
-                            (lane, charge.seg),
-                            &BTreeMap::from([(unit.to_string(), 1)]),
-                            -1,
-                        ),
-                    }
+                if pending.holds(bucket_id, *window) || self.unrecorded(bucket_id) {
+                    emit(pending.of(bucket_id));
                 }
                 continue;
             };
             if cell.window_start == *window {
                 if requests_too {
                     cell.requests = cell.requests.saturating_sub(1);
-                    pending.admitted(bucket_id, *window, -1);
+                    cell.pending.admitted(*window, -1);
                 }
-                refund_in_place(cell, pending, (bucket_id, *window), lane, charge.seg);
-                cell.dirty = true;
+                refund_in_place(cell, *window, lane, charge.seg);
             } else if cell.window_start > *window {
                 // The charge's window has rolled away: RAM `cur` no longer holds it, but the store
                 // does, so the -1 is emitted to the charge's own window (MONEY-DESIGN §3c).
-                cell.dirty = true;
-                if requests_too {
-                    pending.admitted(bucket_id, *window, -1);
-                }
-                match lane {
-                    None => pending.billable(bucket_id, *window, charge.seg, -1),
-                    Some((lane, unit)) => pending.units(
-                        bucket_id,
-                        *window,
-                        (lane, charge.seg),
-                        &BTreeMap::from([(unit.to_string(), 1)]),
-                        -1,
-                    ),
-                }
+                emit(&mut cell.pending);
             }
         }
     }
@@ -2300,9 +2292,8 @@ impl GovState {
         (lane, unit): (&str, &str),
     ) {
         let window = budget_window(budget_period, now);
-        let mut guard = self.budget.write(bucket_id);
-        let super::ShardMap { cells, pending, .. } = &mut *guard;
-        if let Some(cell) = cells.get_mut(bucket_id) {
+        let mut map = self.budget.write(bucket_id);
+        if let Some(cell) = map.get_mut(bucket_id) {
             // The exact inverse of the charge's cell resolution: that lands a charge in place on a
             // cell holding this window OR a newer one, so this returns the fee from the same set.
             // An equality test here would leave the flat fee for a failed straddling request on the
@@ -2315,9 +2306,10 @@ impl GovState {
                     .find(|m| &*m.model == lane && m.cur.get(unit).is_some_and(|n| *n > 0));
                 if let Some(m) = held {
                     take_one(&mut m.cur, unit);
+                    let seg = m.seg;
                     let one = BTreeMap::from([(unit.to_string(), 1)]);
-                    pending.units(bucket_id, cell.window_start, (lane, m.seg), &one, -1);
-                    cell.dirty = true;
+                    let at = cell.window_start;
+                    cell.pending.units(at, (lane, seg), &one, -1);
                 }
             }
         }
@@ -2331,22 +2323,21 @@ impl GovState {
         let now = crate::store::now();
         let mut out = Vec::new();
         for mut guard in self.budget.write_all() {
-            if guard.pending.is_empty() && guard.posted.is_empty() {
-                continue;
-            }
             let shard = &mut *guard;
-            for ((bucket, window), delta) in std::mem::take(&mut shard.pending.0) {
-                if let Some(cell) = shard.cells.get_mut(&bucket) {
-                    cell.dirty = false;
+            let mut taken = Vec::new();
+            for (bucket, cell) in shard.cells.iter_mut() {
+                if cell.dirty() {
+                    taken.extend(cell.pending.take(bucket));
                 }
-                if delta.is_zero() {
-                    continue;
-                }
+            }
+            for (bucket, mut p) in std::mem::take(&mut shard.pending.0) {
+                taken.extend(p.take(&bucket));
+            }
+            for delta in taken {
                 // Into the unrecorded set INSIDE this critical section (shard, then set).
-                mark(&bucket);
+                mark(&delta.bucket);
                 let mut up = delta.signed_part(true);
-                up.bucket.clone_from(&bucket);
-                debug_assert_eq!(up.window, window);
+                up.bucket.clone_from(&delta.bucket);
                 shard.posted_add(&up);
                 out.push(delta);
             }
@@ -2357,7 +2348,9 @@ impl GovState {
             shard.posted.retain(|bucket, p| {
                 p.window == 0
                     || p.window.saturating_add(horizon) > now
-                    || cells.get(bucket).is_some_and(|c| c.window_start == p.window)
+                    || cells
+                        .get(bucket)
+                        .is_some_and(|c| c.window_start == p.window)
             });
         }
         out
@@ -2392,7 +2385,11 @@ impl GovState {
     }
 
     /// `posted_hi` of `bucket` in `window`.
-    pub fn posted_hi(&self, bucket: &str, window: u64) -> Option<crate::posting::record::CellCount> {
+    pub fn posted_hi(
+        &self,
+        bucket: &str,
+        window: u64,
+    ) -> Option<crate::posting::record::CellCount> {
         (self.budget.read(bucket).posted.get(bucket))
             .filter(|p| p.window == window)
             .cloned()
@@ -2556,8 +2553,7 @@ fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool 
 /// (a caller cannot escape the requests cap by hammering failures). Floored at 0.
 fn refund_in_place(
     cell: &mut BudgetCell,
-    pending: &mut super::Pending,
-    (bucket, window): (&str, u64),
+    window: u64,
     lane: Option<(&str, &str)>,
     seg: super::Seg,
 ) {
@@ -2566,7 +2562,7 @@ fn refund_in_place(
             if cell.billable_requests > 0 {
                 cell.billable_requests -= 1;
                 cell.fee_segs.refund(seg);
-                pending.billable(bucket, window, seg, -1);
+                cell.pending.billable(window, seg, -1);
             }
         }
         // A plane's fee unit: one count off its fee lane, in the segment the charge accrued it under.
@@ -2576,7 +2572,7 @@ fn refund_in_place(
                 if m.cur.get(unit).is_some_and(|n| *n > 0) {
                     take_one(&mut m.cur, unit);
                     let one = BTreeMap::from([(unit.to_string(), 1)]);
-                    pending.units(bucket, window, (lane, seg), &one, -1);
+                    cell.pending.units(window, (lane, seg), &one, -1);
                 }
             }
         }
@@ -2647,9 +2643,7 @@ pub(super) fn state_rows(
                 continue;
             }
             counts.add_unit(&seg, model, class, i64::try_from(*n).unwrap_or(i64::MAX));
-            let d = dated
-                .entry((model.to_string(), class.clone()))
-                .or_insert(0);
+            let d = dated.entry((model.to_string(), class.clone())).or_insert(0);
             *d = d.saturating_add(*n);
         }
     }

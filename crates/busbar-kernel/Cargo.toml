@@ -269,6 +269,12 @@ tikv-jemalloc-ctl = { workspace = true }
 name = "pool_upstream_creds"
 harness = false
 
+# L1 (MONEY-DESIGN §4, PR-B2): the request path's money steps, timed against a slow store and a
+# slow disk; the base build runs the same file with the recorder lines removed.
+[[bench]]
+name = "money_hot_path"
+harness = false
+
 # ── THE HOT-PATH PERF INSTRUMENT ── the `<1µs` witness of the plane-extraction perf gate:
 # plugin-host-vtable call vs direct call, delta < 1µs at p50 AND p99, plus a per-token host-call
 # counter asserted == 0 on the streaming path. `harness = false`: criterion supplies `main`, and the

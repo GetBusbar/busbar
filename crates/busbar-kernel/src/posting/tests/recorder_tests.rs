@@ -193,12 +193,26 @@ async fn t4_concurrent_settlements_never_wait_on_the_store_and_go_one_batch_at_a
     }
     for j in joins {
         let waited = j.await.unwrap();
-        assert!(waited < d / 10, "a settlement waited on the store: {waited:?}");
+        assert!(
+            waited < d / 10,
+            "a settlement waited on the store: {waited:?}"
+        );
     }
     assert!(settle(&rec, Duration::from_secs(10)).await);
-    assert!(started.elapsed() < d * 3, "16 settlements took {:?}", started.elapsed());
-    assert_eq!(store.max_in_flight.load(Ordering::SeqCst), 1, "one batch in flight");
-    assert!(store.calls.load(Ordering::SeqCst) <= 2, "coalesced into at most 2 batches");
+    assert!(
+        started.elapsed() < d * 3,
+        "16 settlements took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        store.max_in_flight.load(Ordering::SeqCst),
+        1,
+        "one batch in flight"
+    );
+    assert!(
+        store.calls.load(Ordering::SeqCst) <= 2,
+        "coalesced into at most 2 batches"
+    );
     for i in 0..16u64 {
         assert_eq!(store.row(&format!("k{i}"), 0), (1, 1));
     }
@@ -214,7 +228,11 @@ async fn t9_commit_then_failed_is_replayed_under_the_same_op_and_counted_once() 
     let (rec, _) = open(&book, &store, &Medium::Memory);
     book.emit("k", 0, 3);
     assert!(settle(&rec, Duration::from_secs(10)).await);
-    assert_eq!(store.row("k", 0), (3, 3), "exactly once after two lost replies");
+    assert_eq!(
+        store.row("k", 0),
+        (3, 3),
+        "exactly once after two lost replies"
+    );
     assert!(rec.dead_letters().is_empty());
     rec.stop().await;
 }
@@ -227,7 +245,10 @@ async fn t3_t27_an_outage_accumulates_and_is_recorded_once_without_dead_letters(
     store.modes.down.store(true, Ordering::SeqCst);
     let (rec, _) = open(&book, &store, &Medium::Memory);
     book.emit("k", 0, 1);
-    assert!(!settle(&rec, Duration::from_millis(300)).await, "nothing lands while down");
+    assert!(
+        !settle(&rec, Duration::from_millis(300)).await,
+        "nothing lands while down"
+    );
     book.emit("k", 0, 2);
     // A first failure far in the past: while the heartbeat FAILS it never counts (T27).
     for op in rec.lock().failing.values_mut() {
@@ -235,7 +256,10 @@ async fn t3_t27_an_outage_accumulates_and_is_recorded_once_without_dead_letters(
     }
     rec.beat().await; // fails: the store is down
     assert!(!settle(&rec, Duration::from_millis(300)).await);
-    assert!(rec.dead_letters().is_empty(), "an outage is never dead-lettered");
+    assert!(
+        rec.dead_letters().is_empty(),
+        "an outage is never dead-lettered"
+    );
     store.modes.down.store(false, Ordering::SeqCst);
     rec.beat().await; // fail→succeed: the first-failure clock restarts now
     assert!(settle(&rec, Duration::from_secs(10)).await);
@@ -305,9 +329,16 @@ async fn t10_t7_a_kill_before_ready_replays_once_and_never_reuses_an_op_id() {
     assert!(settle(&rec, Duration::from_secs(5)).await);
     let ops = store.ops.lock().unwrap();
     assert_eq!(store.row("k", 0), (6, 6));
-    assert_eq!(ops.len(), 2, "one op per carve, never two bodies under one id");
+    assert_eq!(
+        ops.len(),
+        2,
+        "one op per carve, never two bodies under one id"
+    );
     let fresh = ops.keys().filter(|o| !first_ops.contains(o)).count();
-    assert_eq!(fresh, 1, "the new carve minted a new op id, never a previous boot's");
+    assert_eq!(
+        fresh, 1,
+        "the new carve minted a new op id, never a previous boot's"
+    );
     drop(ops);
     rec.stop().await;
 }
@@ -377,7 +408,12 @@ async fn the_spool_fsync_never_runs_on_a_request_thread() {
     let (rec, _) = open(&book, &store, &Medium::Dir(dir.path().to_path_buf()));
     book.emit("k", 0, 1);
     assert!(settle(&rec, Duration::from_secs(5)).await);
-    let thread = rec.stats.fsync_thread.lock().unwrap().expect("an fsync ran");
+    let thread = rec
+        .stats
+        .fsync_thread
+        .lock()
+        .unwrap()
+        .expect("an fsync ran");
     assert_ne!(thread, std::thread::current().id());
     rec.stop().await;
 }

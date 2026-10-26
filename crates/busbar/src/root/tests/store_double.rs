@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::store::OpId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta, UsageLedger};
+use busbar_contract::records::{
+    MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta, UsageLedger,
+};
 use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 
 /// The rows the double keeps: `(schema, key)` to the bytes.

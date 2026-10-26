@@ -62,7 +62,9 @@ pub fn validate_groups(
                 None => format!("group:{name}@{}", window.as_str()),
             };
             if let Some(why) = crate::posting::edge::bucket_id_refusal(&id) {
-                errors.push(format!("groups.{name}: {why}; shorten the group or pool name"));
+                errors.push(format!(
+                    "groups.{name}: {why}; shorten the group or pool name"
+                ));
             }
         }
         // A pool-qualified limit against a pool that doesn't exist would silently never match any
