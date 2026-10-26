@@ -30,8 +30,8 @@
 //!   this module touches their wire; the oracle's store-persist cell is what proves it
 //!   (`testing/shadow-oracle/scripts/store-persist.sh`: mint, spend, kill, boot again on the same
 //!   store, read the money back).
-//! - **The sealed replay cache and the migration marker are answered from this node's memory.**
-//!   No money is held here: money is counts x the rate card, derived in core.
+//! - **The sealed replay cache is answered from this node's memory.** No money is held here:
+//!   money is counts x the rate card, derived in core.
 //!
 //! # Those answers, stated rather than implied
 //!
@@ -41,10 +41,6 @@
 //!   process-lifetime, though: a slot answers for [`REPLAY_TTL_SECS`] — the same window the
 //!   in-process sibling keeps — and is swept after, or the map would grow forever with every minted
 //!   response the node ever served. It does not survive a restart.
-//! - **The migration's marker, through this adapter.** [`StoreAdapter::migration_records`] keeps it
-//!   in node memory. The boot does not use it: the boot's marker goes on the node's journal, which
-//!   the store keeps. It must never go into the rows the migration read — those may be on a
-//!   read-only replica, and they are not this release's to write.
 //!
 //! # The migration's read, and why it is on this side of the seam
 //!
@@ -61,7 +57,7 @@
 
 use busbar_contract::migration::{
     LegacyCapDimension, LegacyFamily, LegacyFigure, LegacyFigures, LegacyHead, LegacyLedgerRows,
-    LegacyMigrationSource, MigrationError, MigrationMarker, MigrationRecords,
+    LegacyMigrationSource,
 };
 use busbar_contract::records::RecordStore as AbiStore;
 use busbar_contract::records::{
@@ -140,15 +136,11 @@ fn system_clock() -> ShimClock {
 ///
 /// # The lock order, stated once
 ///
-/// The two mutexes below are independent. No thread holds both at once: every reader and writer —
-/// the diagnostics read included — takes one lock, copies what it wants out, drops it, and only
-/// then takes the next. A thread that ever needs both takes them in the order they are declared
-/// here — replay, then migration — and in no other order.
+/// The one mutex below, `replay`, is taken by every reader and writer — the diagnostics read
+/// included — which copies what it wants out and drops it before doing anything else.
 #[derive(Default)]
 struct Shim {
     replay: Mutex<ReplaySlots>,
-    /// The migration's marker: the record that this deployment has sealed its opening balances.
-    migration: Mutex<Option<MigrationMarker>>,
 }
 
 /// The one epoch a node-local shim has. There is no fleet to advance it and nothing that could
@@ -411,18 +403,6 @@ impl StoreAdapter {
             audit: std::sync::OnceLock::new(),
         }
     }
-
-    /// The ledger's own records for the migration marker.
-    pub fn migration_records(&self) -> ShimMigrationRecords {
-        ShimMigrationRecords {
-            adapter: self.clone(),
-        }
-    }
-
-    /// The migration marker this node is holding, if it has sealed one.
-    pub fn migration_marker(&self) -> Option<MigrationMarker> {
-        self.inner.shim.migration().clone()
-    }
 }
 
 /// The name the previous release's billable-request count takes as a meter class.
@@ -548,35 +528,9 @@ impl LegacyLedgerRows for LegacyStoreRows {
     }
 }
 
-/// The migration marker, in node memory.
-///
-/// Labelled as what it is: a marker kept here does not survive a restart. The boot does not keep its
-/// marker here — it goes on the node's journal, which the configured store keeps — and what it must
-/// never do is go into the rows it read: those may be read-only, and they are not this release's to
-/// write.
-#[derive(Debug, Clone)]
-pub struct ShimMigrationRecords {
-    adapter: StoreAdapter,
-}
-
-impl MigrationRecords for ShimMigrationRecords {
-    fn read_marker(&self) -> Result<Option<MigrationMarker>, MigrationError> {
-        Ok(self.adapter.migration_marker())
-    }
-
-    fn write_marker(&mut self, marker: &MigrationMarker) -> Result<(), MigrationError> {
-        *self.adapter.inner.shim.migration() = Some(marker.clone());
-        Ok(())
-    }
-}
-
 impl Shim {
     fn replay(&self) -> MutexGuard<'_, ReplaySlots> {
         self.replay.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    fn migration(&self) -> MutexGuard<'_, Option<MigrationMarker>> {
-        self.migration.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 

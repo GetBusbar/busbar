@@ -178,14 +178,72 @@ pub(crate) fn row_carries_classes(provider: &str) -> bool {
 /// upstream provider, never a plane key; or the fallback plane's key) keeps its model as its lane,
 /// and its requests carry the flat `per_request_fee:` — byte-identical to the previous release.
 pub fn row_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
-    match busbar_kernel::plane::registry::plane_decl_for(provider) {
-        Some(decl) if !decl.fallback => std::borrow::Cow::Owned(format!(
-            "{}{}{model}",
-            decl.key,
-            busbar_kernel::governance::PLANE_LANE_SEP
-        )),
-        _ => std::borrow::Cow::Borrowed(model),
+    busbar_kernel::governance::metering_lane(model, provider)
+}
+
+/// **THE DAY'S ADJUSTMENTS, FOLDED INTO ITS METERING ROWS** (MONEY-DESIGN §4, PR-C): every root
+/// `adjust` of the day, net per (key, lane, era), moves the counts of the day's rows of that key,
+/// lane and era — a positive delta onto the first such row, a negative one taken from the rows in
+/// order — so the read prices the counts AS ADJUSTED through the one function, and no money figure
+/// is carried by an adjustment. `Err` names an adjustment the rows cannot carry (no row of its
+/// slot, or a count it takes below zero): the read refuses it rather than serve counts nobody
+/// recorded. The adjust verb refuses such an adjustment when it is made, so this is a store that
+/// lost rows under it.
+pub fn fold_adjustments(
+    rows: &mut [busbar_kernel::governance::MeteringRow],
+    adjustments: &[busbar_kernel::governance::UsageAdjustment],
+) -> Result<(), String> {
+    fn column<'r>(row: &'r mut busbar_kernel::governance::MeteringRow, class: &str) -> &'r mut u64 {
+        match class {
+            busbar_contract::records::UNIT_INPUT => &mut row.tokens_input,
+            busbar_contract::records::UNIT_OUTPUT => &mut row.tokens_output,
+            busbar_contract::records::UNIT_CACHE_READ => &mut row.tokens_cache_read,
+            busbar_contract::records::UNIT_CACHE_WRITE => &mut row.tokens_cache_write,
+            other => row.usage_units.entry(other.to_string()).or_insert(0),
+        }
     }
+    for adj in adjustments {
+        let slot: Vec<usize> = (0..rows.len())
+            .filter(|&i| {
+                let r = &rows[i];
+                r.key_id == adj.key_id
+                    && r.priced_from_ms == adj.era
+                    && row_lane(&r.model, &r.provider) == adj.lane.as_str()
+            })
+            .collect();
+        let Some(&first) = slot.first() else {
+            return Err(format!(
+                "an adjustment of key {} lane {:?} era {} has no metering row",
+                adj.key_id, adj.lane, adj.era
+            ));
+        };
+        for (class, d) in &adj.delta {
+            if *d >= 0 {
+                let c = column(&mut rows[first], class);
+                *c = c
+                    .checked_add(d.unsigned_abs())
+                    .ok_or_else(|| format!("an adjustment of {class} leaves the range"))?;
+                continue;
+            }
+            let mut owed = d.unsigned_abs();
+            for &i in &slot {
+                let c = column(&mut rows[i], class);
+                let take = owed.min(*c);
+                *c -= take;
+                owed -= take;
+            }
+            if owed != 0 {
+                return Err(format!(
+                    "an adjustment of {class} on key {} takes the count below zero",
+                    adj.key_id
+                ));
+            }
+        }
+        for &i in &slot {
+            rows[i].usage_units.retain(|_, n| *n != 0);
+        }
+    }
+    Ok(())
 }
 
 /// A usage read the one function REFUSED, as the admin wire answers it (OWNER RULING Q25b). A card

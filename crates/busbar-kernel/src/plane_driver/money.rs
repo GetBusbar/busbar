@@ -257,7 +257,7 @@ impl PlaneMoney {
         if m.fee.refunds(caller_status, &open.last) {
             match &m.fee {
                 FeeRefund::CallerStatus => self.gov.refund_charge(&m.charge),
-                // A PLANE'S REFUND RETURNS ITS OWN FEE UNIT (TODO row 17, Q17-6): a session's
+                // A PLANE'S REFUND RETURNS ITS OWN FEE UNIT: a session's
                 // `per_session` comes back from the plane's fee lane by its class name.
                 // The admission's charge (its request fee) comes back as it was charged; any other
                 // fee unit the plane declares by its own name.

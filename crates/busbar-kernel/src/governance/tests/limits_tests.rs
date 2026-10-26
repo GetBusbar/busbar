@@ -1326,6 +1326,29 @@ fn era_now() -> u64 {
     crate::rate_apply::effective_from_at(crate::store::now_ms())
 }
 
+/// The day's metering row of `n` input units for `key_id` on `model`, as the metering flush lands
+/// it: an adjustment is refused unless the metered view carries the counts it moves.
+fn metered(g: &GovState, key_id: &str, model: &str, n: u64, now: u64) {
+    g.store
+        .add_metering(&busbar_contract::records::MeteringDelta {
+            key_id: key_id.to_string(),
+            bucket: crate::governance::metering_bucket(now),
+            model: model.to_string(),
+            provider: String::new(),
+            tokens_input: n,
+            tokens_output: 0,
+            tokens_cache_read: 0,
+            tokens_cache_write: 0,
+            requests: 1,
+            billable_requests: 1,
+            key_group_at_use: String::new(),
+            pricing_version: String::new(),
+            priced_from_ms: era_now(),
+            usage_units: Default::default(),
+        })
+        .expect("the memory store accepts a metering delta");
+}
+
 /// Q51 (item 404, OWNER RULING Q9): an `adjust` moves EVERY read of the budget book, not only
 /// `GET /admin/usage`. 1,000,000 input units at 2.5 micro-units each are 250 cents; corrected by
 /// -200,000 they are 200 — on the key's usage (`/keys`), its group's bucket (`/groups`) and the
@@ -1345,6 +1368,7 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
     g.store.put_key(&k).expect("key persists");
     let now = crate::store::now();
     g.record_usage(&cm, &k, "", "m", &toks(1_000_000, 0), now);
+    metered(&g, &k.id, "m", 1_000_000, now);
     let read = |g: &GovState| {
         let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
         let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
@@ -1389,6 +1413,7 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
     g.store.put_key(&k).expect("key persists");
     let now = crate::store::now();
     g.record_usage(&cm, &k, "", "m", &toks(1_000, 0), now);
+    metered(&g, &k.id, "m", 1_000, now);
     let read = |g: &GovState| {
         let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
         let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
@@ -1411,7 +1436,7 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         other => panic!("a correction past the count is refused, got {other:?}"),
     }
     assert_eq!(read(&g), (1_000, 1_000), "nothing was applied anywhere");
-    // A segment the key never earned counts in holds none: any negative delta on it is refused.
+    // A lane the key never earned counts on has no metered row: refused before anything moves.
     let other_lane = super::Adjustment {
         model: "never-served",
         delta: &BTreeMap::from([(UNIT_INPUT.to_string(), -1i64)]),
@@ -1419,7 +1444,7 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
     };
     assert!(matches!(
         g.adjust_usage(&cm, &other_lane).expect("the store reads"),
-        Err(super::AdjustRefused::Exceeds { count: 0, .. })
+        Err(super::AdjustRefused::NotMetered { .. })
     ));
     // An unknown key and an empty correction are refused by name.
     let unknown = super::Adjustment {
@@ -1471,6 +1496,7 @@ fn q64_two_pools(
     let now = crate::store::now();
     g.record_usage(&cm, &k, "pool-a", "m", &toks(1_000_000, 0), now);
     g.record_usage(&cm, &k, "pool-b", "m", &toks(1_000_000, 0), now);
+    metered(&g, &k.id, "m", 2_000_000, now);
     let adjust = move |g: &GovState, cm: &CostModel, pool: Option<&str>| {
         let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -200_000i64)]);
         let adjustment = super::Adjustment {
@@ -1547,7 +1573,7 @@ fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
 /// Q64/Q67: an adjust that names no pool lands on the key and the group-wide bucket, and on
 /// neither pool-scoped bucket.
 #[test]
-fn an_unscoped_sealed_adjust_reads_as_it_always_did() {
+fn an_adjust_naming_no_pool_moves_no_pool_bucket() {
     let (g, cm, k, now, adjust) = q64_two_pools("vk_q64_unscoped", "q64u");
     adjust(&g, &cm, None);
     assert_eq!(

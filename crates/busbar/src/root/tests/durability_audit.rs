@@ -8,10 +8,10 @@ use busbar_kernel_audit::expose;
 use busbar_kernel_wal::NullShipper;
 
 /// A directory nobody else writes to, removed when the test ends.
-pub(super) struct Scratch(pub(super) std::path::PathBuf);
+pub(crate) struct Scratch(pub(crate) std::path::PathBuf);
 
 impl Scratch {
-    pub(super) fn new(tag: &str) -> Self {
+    pub(crate) fn new(tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "busbar-root-durability-audit-{tag}-{}-{:?}",
             std::process::id(),
@@ -42,7 +42,7 @@ pub(super) fn open(dir: &std::path::Path) -> Durability {
 }
 
 /// A unit's facts for the audit step, an hour apart per unit so each one is its own head sample.
-pub(super) fn inputs(unit: u64) -> AuditInputs {
+pub(crate) fn inputs(unit: u64) -> AuditInputs {
     use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
     use busbar_kernel_audit::{
         Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,

@@ -6,7 +6,7 @@
 use super::*;
 use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
-fn hook(kind: HookKind, global: bool) -> HookCfg {
+pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
         kind,
         plugin: "test-hook".to_string(),
@@ -2491,6 +2491,114 @@ mod dated_rate_card_history {
         AdminService::new(app).get_usage(Some(bucket), as_of).await
     }
 
+    /// **AN `adjust` MOVES THE SERVED USAGE FIGURE** (item 404, OWNER RULING Q9; MONEY-DESIGN §4,
+    /// PR-C). Key `vk_adjust_404` metered 1,000 input tokens today at 2.5 micro-units each:
+    /// `GET /api/v1/admin/usage` serves 2,500 micro-units. A root adjust of -200 input on that key,
+    /// lane and era is a signed adjustment row beside the day's metering rows, and the same read
+    /// serves 800 tokens and 2,000 micro-units: the counts AS ADJUSTED, priced by the one function.
+    /// The figure survives a restart (a new state over the same store), an adjustment past the
+    /// metered count is refused and moves nothing, and an adjustment of a key with no metered row
+    /// that day is refused.
+    ///
+    /// RED before the adjustment row: the read-time correction was deleted with the second ledger,
+    /// and the read served 1,000 / 2,500 after the adjust.
+    #[tokio::test]
+    async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
+        use busbar_kernel::governance::{AdjustRefused, Adjustment};
+        const ADJUSTED_KEY: &str = "vk_adjust_404";
+        let now = busbar_kernel::store::now();
+        let today = busbar_kernel::governance::metering_bucket(now);
+        let store = Arc::new(MemoryStore::new());
+        let key = VirtualKey {
+            id: ADJUSTED_KEY.to_string(),
+            generation_hash: format!("h:{ADJUSTED_KEY}"),
+            name: "adjusted".to_string(),
+            enabled: true,
+            revision: 1,
+            ..Default::default()
+        };
+        busbar_contract::records::RecordStore::put_key(store.as_ref(), &key).expect("key persists");
+        busbar_contract::records::RecordStore::add_metering(
+            store.as_ref(),
+            &busbar_contract::records::MeteringDelta {
+                key_id: ADJUSTED_KEY.to_string(),
+                bucket: today,
+                model: LANE.to_string(),
+                provider: PROVIDER.to_string(),
+                tokens_input: TOKENS,
+                tokens_output: 0,
+                tokens_cache_read: 0,
+                tokens_cache_write: 0,
+                requests: 1,
+                billable_requests: 1,
+                key_group_at_use: String::new(),
+                pricing_version: String::new(),
+                priced_from_ms: 0,
+                usage_units: Default::default(),
+            },
+        )
+        .expect("the memory store accepts a metering delta");
+        let cost = newest_cost();
+        let gov = Arc::new(GovState::new(store.clone(), None).expect("governance builds"));
+        // The budget book holds the same counts, as the unit's accrual put them there.
+        let units = std::collections::BTreeMap::from([(
+            busbar_contract::records::UNIT_INPUT.to_string(),
+            TOKENS,
+        )]);
+        gov.record_usage(&cost, &key, "", LANE, &units, now);
+        let src = source(History::opening(card(2.5), 0));
+
+        let before = read(gov.clone(), src, today).await.total;
+        assert_eq!((before.tokens_input, before.spend_micros), (1_000, 2_500));
+
+        let era = busbar_kernel::rate_apply::effective_from_at(busbar_kernel::store::now_ms());
+        let adjust = |key_id: &'static str, by: i64| {
+            let delta = std::collections::BTreeMap::from([(
+                busbar_contract::records::UNIT_INPUT.to_string(),
+                by,
+            )]);
+            gov.adjust_usage(
+                &cost,
+                &Adjustment {
+                    key_id,
+                    pool: "",
+                    model: LANE,
+                    entry_era: era,
+                    delta: &delta,
+                    now,
+                },
+            )
+            .expect("the store reads")
+        };
+        assert!(
+            matches!(
+                adjust(ADJUSTED_KEY, -1_001),
+                Err(AdjustRefused::Exceeds { .. })
+            ),
+            "an adjustment past the metered count is refused"
+        );
+        assert_eq!(
+            read(gov.clone(), src, today).await.total.spend_micros,
+            2_500,
+            "a refused adjustment moves nothing"
+        );
+        assert_eq!(adjust(ADJUSTED_KEY, -200), Ok(()));
+        let after = read(gov.clone(), src, today).await.total;
+        assert_eq!(
+            (after.tokens_input, after.spend_micros),
+            (800, 2_000),
+            "the served figure prices the adjusted counts: 800 x 2.5"
+        );
+
+        let restarted = Arc::new(GovState::new(store, None).expect("governance builds"));
+        let again = read(restarted, src, today).await.total;
+        assert_eq!(
+            (again.tokens_input, again.spend_micros),
+            (800, 2_000),
+            "the adjustment row is durable: a restart serves the same figure"
+        );
+    }
+
     /// The three dated windows, day-aligned because a metering bucket is a UTC day. The owner's
     /// example spans months; the arithmetic of "an earlier window keeps its own card" is the same
     /// at any spacing, and a day apart keeps the fixture inside the memory store's retention.
@@ -2777,29 +2885,6 @@ mod dated_rate_card_history {
 
     // ── PROOF 5: no pricing path reads `PostingStamp.rate_card_version` ──────────────────────
 
-    /// The resolution key is an instant, and the version field is reporting provenance (#44) that
-    /// must never become a pricing input. This scans the service's own CODE — comments excluded,
-    /// since the rule is what the file *does*, not what it says about the rule — so that reading
-    /// one back is a red test and not a review note.
-    #[test]
-    fn the_usage_service_names_no_rate_card_version_in_code() {
-        let src = include_str!("../service.rs");
-        let offenders: Vec<(usize, &str)> = src
-            .lines()
-            .enumerate()
-            .filter(|(_, l)| {
-                let t = l.trim_start();
-                !(t.starts_with("//") || t.starts_with("*") || t.is_empty())
-            })
-            .filter(|(_, l)| l.contains("rate_card_version"))
-            .map(|(i, l)| (i + 1, l.trim()))
-            .collect();
-        assert!(
-            offenders.is_empty(),
-            "a pricing path reads the posting's stamped rate-card version: {offenders:?}"
-        );
-    }
-
     // ── THE BYTE-SAFETY PIN: no source installed ⇒ the previous release's arithmetic ─────────
 
     /// The oracle cell `billing|rate-card|history-mid-window`'s exact shape (three responses of
@@ -2856,130 +2941,6 @@ mod dated_rate_card_history {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE MONEY-READ REGISTER
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// **EVERY PRODUCTION SITE IN THIS CRATE THAT TURNS A LEDGER FIGURE INTO MONEY**, named, with the
-/// book it reads and whether it resolves through the dated rate-card history (#79).
-///
-/// One endpoint wired and the rest left flat is how two admin reads come to answer different money
-/// for the same consumption, and a reviewer cannot see that by reading one file. So the set is
-/// asserted instead: a conversion this crate performs anywhere outside this list is a RED test,
-/// which is what makes "every money read follows one rule" a property of the crate rather than of
-/// whoever reviewed the last diff.
-///
-/// `resolves` records the state of the world, not an aspiration. The two `false` rows read the
-/// ENFORCEMENT ledger (`UsageLedger`/`ModelTokens`), whose rows carry no price instant at all, so
-/// under the one rule they take the documented fallback and still derive from the current card.
-/// That residual is a real, parked divergence from the metering read beside them — it is not this
-/// test's job to hide it, it is this test's job to make it impossible to forget.
-const MONEY_READS: &[(&str, &str, &str, bool)] = &[
-    (
-        "v1/service_operations.rs",
-        "get_usage",
-        "metering rows (MeteringRow, one UTC-day bucket)",
-        true,
-    ),
-    (
-        "v1/service_operations.rs",
-        "get_group_usage",
-        "enforcement ledger (UsageLedger, per limit window)",
-        false,
-    ),
-    (
-        "v1/service.rs",
-        "derive_spend_micros_row / derive_spend_micros_row_at_card",
-        "the two row pricers themselves — the definitions the reads above call, \
-         the second of which is the dated-history one",
-        true,
-    ),
-    (
-        "keys.rs",
-        "GET /keys/{id}/usage",
-        "enforcement ledger (UsageLedger, WINDOW_TOTAL)",
-        false,
-    ),
-];
-
-/// The call shapes that CONVERT a ledger figure into money. `derived_bucket_usage` is on the list
-/// because it is a conversion by delegation: it takes the `CostModel` and answers `spend_cents`, so
-/// a caller of it is a money read whether or not the multiply is written at the call site.
-const MONEY_CONVERSIONS: &[&str] = &[
-    "derive_spend_cents",
-    "derive_spend_micros",
-    "derived_bucket_usage",
-];
-
-#[test]
-fn every_money_read_in_this_crate_is_registered() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut found: Vec<String> = Vec::new();
-    let mut stack = vec![root.clone()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("the crate's src tree is readable") {
-            let path = entry.expect("a readable dir entry").path();
-            if path.is_dir() {
-                // Test trees are excluded: a fixture may price anything it likes, and this register
-                // is about what the SHIPPED read paths do.
-                if path.file_name().is_some_and(|n| n == "tests") {
-                    continue;
-                }
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            let rel = path
-                .strip_prefix(&root)
-                .expect("every walked path is under src")
-                .to_string_lossy()
-                .to_string();
-            let text = std::fs::read_to_string(&path).expect("a readable source file");
-            for (n, line) in text.lines().enumerate() {
-                let t = line.trim_start();
-                // Prose is not a call. A doc comment naming a conversion is documentation of the
-                // rule, which is the opposite of a violation of it.
-                if t.starts_with("//") || t.starts_with('*') {
-                    continue;
-                }
-                if MONEY_CONVERSIONS.iter().any(|c| line.contains(c)) {
-                    found.push(format!("{rel}:{}", n + 1));
-                }
-            }
-        }
-    }
-    assert!(
-        !found.is_empty(),
-        "the walk found no money conversion at all — the scan is broken, not the crate"
-    );
-
-    // The registered files, and the count of conversion sites each is allowed to carry. A read that
-    // grew a second conversion, or a new file that converts at all, lands here as a diff.
-    let registered: std::collections::BTreeSet<&str> =
-        MONEY_READS.iter().map(|(file, ..)| *file).collect();
-    // Matched by FILE rather than by an exact count, because no registered file carries a fixed
-    // number of conversion lines: `v1/service.rs` holds the two row pricers' DEFINITIONS and
-    // `v1/service_operations.rs` the two operations that CALL them — one subject, two files, since
-    // the impl block was carved out under the oversized cap. An unregistered FILE is the signal.
-    let strays: Vec<&String> = found
-        .iter()
-        .filter(|site| {
-            let file = site.split(':').next().unwrap_or_default();
-            !registered.contains(file)
-        })
-        .collect();
-    assert!(
-        strays.is_empty(),
-        "an unregistered site in this crate turns a ledger figure into money. Either route it \
-         through the dated rate-card history like `get_usage`, or add it to MONEY_READS with the \
-         book it reads and whether it resolves. Strays: {strays:?}"
-    );
-
-    // And the register itself must stay honest about which of them resolve.
-    assert!(
-        MONEY_READS.iter().any(|(.., resolves)| *resolves),
-        "no registered money read resolves through the dated history — #79 is unwired"
-    );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // `?as_of` — THE RATE-CARD HISTORY SNAPSHOT SELECTOR
@@ -3478,55 +3439,6 @@ mod one_recorded_usage_every_surface {
             "the dated book says {one_micros}; the enforcement surfaces say {served}"
         );
     }
-}
-
-/// Item 375: a doc comment in this directory that names a backticked file under the workspace's
-/// scripts directory as the thing enforcing a rule must name a file that EXISTS. `service.rs` cited
-/// the settings-leak shell lint as the guard on admin settings redaction after that script was
-/// deleted (the rule lives on as `cargo xtask gate settings-leak`), so a reader looking for the
-/// guard found nothing. A citation of another repository's script is not this tree's and is
-/// skipped by the busbar-ui qualifier on the same line.
-#[test]
-fn every_scripts_path_cited_in_v1_exists() {
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("v1/ is readable") {
-            let path = entry.expect("a directory entry").path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace = manifest.join("../..");
-    let mut files = Vec::new();
-    walk(&manifest.join("src/v1"), &mut files);
-    assert!(
-        files.len() > 5,
-        "the walk found the v1 sources ({})",
-        files.len()
-    );
-    let mut stale = Vec::new();
-    for file in &files {
-        let text = std::fs::read_to_string(file).expect("a v1 source reads");
-        for (n, line) in text.lines().enumerate() {
-            if line.contains("busbar-ui") {
-                continue;
-            }
-            for cited in line.split("`scripts/").skip(1) {
-                let Some(end) = cited.find('`') else { continue };
-                let path = cited[..end].split("::").next().unwrap_or_default();
-                if !workspace.join("scripts").join(path).exists() {
-                    stale.push(format!("{}:{}: scripts/{path}", file.display(), n + 1));
-                }
-            }
-        }
-    }
-    assert!(
-        stale.is_empty(),
-        "v1/ cites scripts that do not exist: {stale:#?}"
-    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

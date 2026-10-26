@@ -410,6 +410,7 @@ fn bind_in_store(
 /// # Errors
 ///
 /// [`KeysetError::NoEntropy`] only.
+#[cfg(test)]
 pub fn bind_ephemeral(durability: &mut Durability) -> Result<KeysetSource, KeysetError> {
     let token = crate::root::kernel::new_kernel().durability_token();
     bind(durability, None, &token, StepName::Meter, 0)

@@ -1410,6 +1410,7 @@ impl AdminService {
         type Fetched = (
             Vec<busbar_kernel::governance::MeteringRow>,
             std::collections::HashMap<String, String>,
+            Vec<busbar_kernel::governance::UsageAdjustment>,
         );
         type UsageFetchError = (&'static str, busbar_kernel::governance::RecordStoreError);
         let joined = tokio::task::spawn_blocking(move || -> Result<Fetched, UsageFetchError> {
@@ -1423,11 +1424,15 @@ impl AdminService {
                 .into_iter()
                 .map(|k| (k.id, k.name))
                 .collect();
-            Ok((rows, names))
+            // The day's root adjustments, folded into its rows below.
+            let adjustments = gov
+                .usage_adjustments(bucket)
+                .map_err(|e| ("usage.adjustments", e))?;
+            Ok((rows, names, adjustments))
         })
         .await;
         let cost = self.app.cost.clone();
-        let (rows, names) = match joined {
+        let (mut rows, names, adjustments) = match joined {
             Ok(Ok(f)) => f,
             // The real store error is logged here — this is the only place it exists, and the wire
             // body deliberately carries none of it so store internals never reach even an
@@ -1460,6 +1465,17 @@ impl AdminService {
         // by the pricing: a row's card is resolved by its own instant (#79). `?as_of=<it>` re-derives
         // every figure below, and a card published after these rows were earned leaves it as it was.
         let mut priced_by: Option<u64> = None;
+        // THE ROWS AS ADJUSTED: every root `adjust` of the day moves its rows' counts before any is
+        // priced, so the figures below are counts x card over the one ledger's adjusted counts.
+        if let Err(why) = fold_adjustments(&mut rows, &adjustments) {
+            diag_error!(
+                ADMIN_STORE_OPERATION_FAILED,
+                operation = "usage.adjustments",
+                error = %why,
+                "admin store operation failed"
+            );
+            return Err(AdminError::Internal);
+        }
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =

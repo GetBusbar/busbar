@@ -196,8 +196,8 @@ pub(crate) fn digest<R: ChainedRecord>(record: &R) -> String {
 }
 
 /// Build a record at a given chain position and SEAL it with its digest. The one construction path:
-/// `seq` and `prev_hash` arrive as arguments from whatever owns the position ([`Chain`], or the
-/// admin ring which allocates under its own lock), never from the caller's payload.
+/// `seq` and `prev_hash` arrive as arguments from whatever owns the position ([`Chain`]), never
+/// from the caller's payload.
 pub(crate) fn seal<R: ChainedRecord>(
     scope: &str,
     seq: u64,

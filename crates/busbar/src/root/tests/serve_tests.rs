@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33, TODO U6-U7): a request the decisions
+//! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33): a request the decisions
 //! plane's door claims reaches that plane's driver through its route on the data router (mounted at
 //! the router's construction, ARCHITECT Q-SW1), behind the deployment's auth gate, is admitted and
 //! charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
@@ -489,9 +489,15 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
+    // Composed with no egress, the host states no provider's protocol at open, so the model states
+    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            plane.served().dialects[0]
+        ))
+        .expect("a section"),
     );
     let served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -568,9 +574,15 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
+    // Composed with no egress, the host states no provider's protocol at open, so the model states
+    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            plane.served().dialects[0]
+        ))
+        .expect("a section"),
     );
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -10607,7 +10619,8 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
     )
     .expect("the linked door binds");
     let facing = (reg.facing)(
-        br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#,
+        // No provider facts reach a bare facing probe, so each model states its own `protocol` (#51).
+        br#"{"decisions":{"models":{"b":{"provider":"typesafe","protocol":"jev"},"a":{"provider":"typesafe","protocol":"jev"}}}}"#,
         b"",
         None,
         &[],

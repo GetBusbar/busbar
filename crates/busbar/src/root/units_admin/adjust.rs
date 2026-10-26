@@ -132,14 +132,18 @@ pub(crate) fn adjust_effect(
         .and_then(serde_json::Value::as_u64)
         .ok_or(GovernanceError::Validation)?;
     let Ok(pool) = text("pool") else {
-        return Ok(refused(
+        return Ok(super::error_answer_with_message(
+            400,
+            "invalid_request",
             "`pool` is required: name the pool the corrected unit was dispatched through",
         ));
     };
     if !pool_known(pool) {
-        return Ok(refused(&format!(
-            "`pool` names `{pool}`, which is not a configured pool"
-        )));
+        return Ok(super::error_answer_with_message(
+            400,
+            "invalid_request",
+            &format!("`pool` names `{pool}`, which is not a configured pool"),
+        ));
     }
     let mut delta = BTreeMap::new();
     for (class, n) in obj

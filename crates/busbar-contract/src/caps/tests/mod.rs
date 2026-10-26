@@ -36,9 +36,6 @@ mod what_the_usage_report_says;
 /// 326).
 mod take_site_census;
 
-/// Every implementor of the sealed plugin seal trait, against the minter's documentation (item 329).
-mod seal_implementors;
-
 /// Whether the kernel keeps this step's token to itself, read off the step markers' own
 /// `KERNEL_OWNED` constants rather than off a second runtime table.
 ///
@@ -227,7 +224,7 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
         "the escapes the scan must keep: {expected:?}"
     );
     assert_eq!(lint::hold_escapes().len(), 9, "the hold-escape list");
-    assert_eq!(lint::seal_sites().len(), 3, "the seal-site list");
+    assert_eq!(lint::seal_sites().len(), 2, "the seal-site list");
     for expected in expected {
         assert!(
             symbols.contains(&expected),

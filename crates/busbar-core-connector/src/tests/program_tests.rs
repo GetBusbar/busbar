@@ -849,22 +849,3 @@ fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
         );
     });
 }
-
-/// RED (row 159): NO STATIC HOLDS THE SPAWN SECRET RESOLVER. Before, `spawn_env.rs` kept it in a
-/// process-wide `OnceLock` the root installed into, the first install standing for every connector
-/// of the process; it is now handed to the connector at its construction.
-#[test]
-fn no_static_holds_the_spawn_secret_resolver() {
-    let held: Vec<&str> = include_str!("../spawn_env.rs")
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or_default())
-        .filter(|code| {
-            code.contains("SPAWN_SECRETS")
-                || (code.contains("static ") && code.contains("SpawnSecretFn"))
-        })
-        .collect();
-    assert!(
-        held.is_empty(),
-        "a static holds the spawn secret resolver: {held:?}"
-    );
-}

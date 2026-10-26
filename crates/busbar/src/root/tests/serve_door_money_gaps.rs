@@ -114,9 +114,7 @@ fn card_of(entry: &str) -> BTreeMap<String, busbar_kernel::config::RateEntryCfg>
 // ── GAP 1: a pre-routing refusal leaves a prior charge intact ──────────────────────────────────
 
 /// A PRE-ROUTING REFUSAL ON THE DOOR NEVER REFUNDS A PRIOR CHARGE. Door successor of
-/// `plane_node.rs::a_pre_routing_refusal_leaves_a_prior_charge_intact` (legacy
-/// `ingress_integration_tests.rs::test_pre_routing_failure_does_not_refund_prior_charge`, coverage
-/// map row 378). 1.5.5 behaviour, as the original pinned it: a key carrying one legitimately
+/// `plane_node.rs::a_pre_routing_refusal_leaves_a_prior_charge_intact`. 1.5.5 behaviour, as the original pinned it: a key carrying one legitimately
 /// charged request (one 1-cent flat fee, admitted on the real admission charge) sends a body that
 /// is not JSON; it is refused 400 before any model resolves, was never charged, so refunds nothing:
 /// the prior request and its fee stay on the key's bucket (requests 1, spend 1 cent).
@@ -168,8 +166,7 @@ async fn the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal() {
 // ── GAP 3: an aliased lane prices at the rate card of its config name ─────────────────────────
 
 /// AN ALIASED LANE PRICES AT THE RATE CARD UNDER ITS CONFIG NAME, ON THE DOOR. Door successor of
-/// `plane_node.rs::an_aliased_lane_prices_at_the_rate_card_under_its_config_name` (legacy
-/// `usage_tap_tests.rs::ledger_prices_an_aliased_lane_at_the_rate_card`, coverage map row 629).
+/// `plane_node.rs::an_aliased_lane_prices_at_the_rate_card_under_its_config_name`.
 /// 1.5.5 behaviour, as the original pinned it: the card is keyed by the CONFIG model name; a lane
 /// whose `upstream_model` differs is sent the wire name but ledgered and priced under its config
 /// name, so 600 input and 400 output tokens at 1,000 micro-units each land as 1,000 tokens on the
@@ -247,9 +244,7 @@ async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
 const FIRST_FRAME: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}"#;
 
 /// THE DOOR'S REPORT CARRIES THE END A STATUS LINE CANNOT. Door successor of
-/// `plane_node.rs::the_tap_reports_the_end_a_status_line_cannot` (legacy
-/// `src/unit/tests/chain.rs::the_tap_reports_the_end_a_status_line_cannot`, coverage map row
-/// 688). 1.5.5 behaviour, as the original pinned it for its two fixtures (a 2xx stream cut after
+/// `plane_node.rs::the_tap_reports_the_end_a_status_line_cannot`. 1.5.5 behaviour, as the original pinned it for its two fixtures (a 2xx stream cut after
 /// one content frame, and a 2xx transfer that failed before its first byte): both answer the caller
 /// under a 200 status line and neither completes, so the caller holds the cut (the one relayed
 /// frame, no terminator) or nothing; and the key's ledger holds no tokens. The plane ledgered nothing, so nothing bills:
@@ -338,16 +333,14 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
 /// `finish_reason` (or on a usage-only chunk).
 const FIRST_FRAME_WITH_USAGE: &str = r#"{"id":"chatcmpl-root","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":600,"completion_tokens":400,"total_tokens":1000}}"#;
 
-/// A STREAM ITS FAR END CUT AFTER ITS FIRST FRAME BILLS WHAT ITS PLANE LEDGERED (owner ruling
-/// 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."). The far
+/// A STREAM ITS FAR END CUT AFTER ITS FIRST FRAME BILLS WHAT ITS PLANE LEDGERED. The far
 /// end streams one frame carrying 600 input and 400 output tokens under a 200 head, then cuts the
 /// stream before its end. The plane ledgered those 1,000 tokens, so the door takes that ledger as
 /// final: the key's ledger holds the 1,000 tokens, its group's spend derives 100 cents against
 /// the card (1,000 micro-units a token, no request fee), and one metering row carries 600 in and
 /// 400 out. Core does not override the plane's ledger because of the cut or the caller's status.
 ///
-/// RED: the cut stream's ledgered tokens dropped, its charge withheld, or its metering row skipped
-/// (status row 183, as #1282 wrote it).
+/// RED: the cut stream's ledgered tokens dropped, its charge withheld, or its metering row skipped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bills_what_its_plane_ledgered_for_a_stream_cut_after_its_first_frame() {
     let _one = PUBLISHING.lock().await;
@@ -445,9 +438,7 @@ fn rerank_pin() -> Option<crate::root::kernel::PinnedHistory> {
 }
 
 /// A RERANK'S SEARCH UNITS REACH THE PRICE, THROUGH THE DOOR. Door successor of
-/// `plane_node.rs::a_reranks_search_units_reach_the_price_on_both_books` (legacy
-/// `rerank_search_units_tests.rs::a_reranks_search_units_reach_the_price`, coverage map row 584)
-/// and of the unbilled arm of `a_same_dialect_rerank_puts_identical_search_units_on_both_books`.
+/// `plane_node.rs::a_reranks_search_units_reach_the_price_on_both_books` and of the unbilled arm of `a_same_dialect_rerank_puts_identical_search_units_on_both_books`.
 /// 1.5.5 behaviour, as the originals pinned it: a card pricing `search_units` at 2,000 micro-units
 /// (0.2 cents) each derives 10 cents for 50 units and 0 cents for 1 unit (one unit rounds to
 /// nothing); a rerank whose far end bills no units derives 0 cents.

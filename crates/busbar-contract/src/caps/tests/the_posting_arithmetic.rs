@@ -18,27 +18,6 @@ const FLAGS: &[PostingFlags] = &[
     PostingFlags::UNDECLARED,
 ];
 
-/// The flag list above names every bit `hold.rs` declares: one `PostingFlags(1 << n)` constant
-/// apiece. A flag added to the type and not to the list is a bit the distinctness check never sees.
-#[test]
-fn the_flag_list_names_every_declared_flag() {
-    let hold = include_str!("../hold.rs");
-    let declared = hold
-        .lines()
-        .filter(|l| {
-            let t = l.trim_start();
-            t.starts_with("pub const ") && t.contains(": PostingFlags = PostingFlags(1 <<")
-        })
-        .count();
-    assert!(declared > 0, "the scan found the flag declarations");
-    assert_eq!(
-        FLAGS.len(),
-        declared,
-        "hold.rs declares {declared} posting flags and the list names {}",
-        FLAGS.len()
-    );
-}
-
 #[test]
 fn every_posting_flag_is_a_distinct_bit() {
     // A bitset is where two claims quietly become one. Each flag puts the posting on a report

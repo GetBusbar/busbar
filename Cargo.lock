@@ -333,6 +333,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "idna_adapter",
+ "libloading",
  "metrics",
  "opentelemetry-proto",
  "prost",
@@ -678,8 +679,6 @@ dependencies = [
  "http-body",
  "http-body-util",
  "httpdate",
- "hyper",
- "hyper-util",
  "indexmap",
  "libc",
  "loom",
@@ -771,7 +770,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=8728b88b80c1537e07352e8ae09615bf3ba5ab04#8728b88b80c1537e07352e8ae09615bf3ba5ab04"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=f1c3ca0e1672d546427c8a0c47babdd20ca67a58#f1c3ca0e1672d546427c8a0c47babdd20ca67a58"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -790,7 +789,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=b3e74232c96e1403b6c4c42ac1dfd5a19c12b344#b3e74232c96e1403b6c4c42ac1dfd5a19c12b344"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=b1eca3619e9fd09ed92c109c46f46ea1be45ae66#b1eca3619e9fd09ed92c109c46f46ea1be45ae66"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -814,7 +813,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=1cdd3ea22875bb434784a00906bc10d906a1919d#1cdd3ea22875bb434784a00906bc10d906a1919d"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8#6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -3010,7 +3009,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "h2",
  "http",
  "http-body",
  "http-body-util",

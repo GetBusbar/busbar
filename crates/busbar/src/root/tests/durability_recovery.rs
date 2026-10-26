@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE THREE DISASTER-RECOVERY VERBS, PROVEN ACROSS A RESTART OVER A REAL STORE (status row 187,
-//! audit PL2#4; OWNER 2026-10-20). Each cell boots a node's book over the build's linked ephemeral
+//! THE THREE DISASTER-RECOVERY VERBS, PROVEN ACROSS A RESTART OVER A REAL STORE. Each cell boots a node's book over the build's linked ephemeral
 //! store, opened through its door on the store axis exactly as boot opens the configured store,
 //! runs one verb through the verb store the boot binds ([`node_verb_store`]), boots a SECOND book
 //! over the SAME store, and reads the effect back from the store and the chain — never from the

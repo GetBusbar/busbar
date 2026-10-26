@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PINNED PLANES, FOR THE TESTS THAT READ THE TREE OFF DISK (ARCHITECT row 106 (A),
-//! condition 5).
+//! THE PINNED PLANES, FOR THE TESTS THAT READ THE TREE OFF DISK.
 //!
 //! A plane crate that left this tree for its own repo (`GetBusbar/busbar-plane-<key>`) comes back as
 //! a `git` row of the root `[workspace.dependencies]`, pinned at one rev, and cargo fetches its
@@ -111,8 +110,8 @@ pub fn pinned_dirs(root: &Path) -> Vec<(String, PathBuf)> {
 
 /// Where `rel` (a repo-relative path) is read: the tree's own file, or, under `crates/<package>/`
 /// of a pinned plane no crate on disk is, that plane's checkout. Under `crates/<package>-plugin/`,
-/// the same plane's cdylib twin in that same checkout, at the pinned rev (ARCHITECT ruling on #1072
-/// (2): a plane's both-ways witness lives in its twin, and a citation of it is read there). A path
+/// the same plane's cdylib twin in that same checkout, at the pinned rev (a plane's both-ways witness lives in its
+/// twin, and a citation of it is read there). A path
 /// that resolves to nothing stays the tree's own, which does not exist, so a citation of it fails
 /// closed.
 pub fn resolve(root: &Path, rel: &str) -> PathBuf {

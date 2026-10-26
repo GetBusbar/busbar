@@ -242,7 +242,7 @@ pub struct UnitCtx {
 /// A running count a test rig keeps of what its unit spent, in nano-units.
 ///
 /// NOT a money figure the exit reads. The exit spends and settles the hold by the settlement
-/// writer's one `amount` (TODO L1689); a second figure here could only disagree with it. No
+/// writer's one `amount`; a second figure here could only disagree with it. No
 /// production leg accrues onto this.
 #[derive(Debug, Default)]
 pub struct AccrualMeter {
@@ -1413,7 +1413,3 @@ mod call_binding_tests;
 #[cfg(test)]
 #[path = "tests/teller_verified_destination_tests.rs"]
 mod teller_verified_destination_tests;
-
-#[cfg(test)]
-#[path = "tests/teller_seal_doc_tests.rs"]
-mod teller_seal_doc_tests;

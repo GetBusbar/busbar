@@ -1354,6 +1354,21 @@ use busbar_kernel::host_services::{InstanceFacts, KernelServices, Offload};
 struct Rows(Arc<MemoryStore>);
 
 impl RecordRows for Rows {
+    fn claim(
+        &self,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<bool, busbar_contract::kinds::StoreError> {
+        busbar_contract::records::RecordStore::redeem_plane_token(
+            &*self.0,
+            busbar_kernel::host_records::CLAIM_KIND,
+            token,
+            expires_at,
+            now,
+        )
+        .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
+    }
     fn record_put(&self, s: RecordSchemaId, k: &[u8], v: &RecordBytes) -> Result<(), StoreError> {
         self.0.record_put(s, k, v)
     }

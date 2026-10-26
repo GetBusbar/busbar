@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SECRET'S SOURCE NEVER REACHES A CALLER (coordinator ruling 2026-10-07, the cell the retired tool-plane crate's
-//! `credential_secret_leak_tests` was until #511 deleted it): on every door plane this build links,
+//! A SECRET'S SOURCE NEVER REACHES A CALLER: on every door plane this build links,
 //! a secret reference that does not resolve leaves the caller-facing status line, headers and body
 //! free of its source (the variable's name, the file's path, the reference as written) and of the
 //! words a source's refusal is phrased in ("environment variable", "is unset", the file source's
@@ -595,6 +594,6 @@ async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_i
     assert_eq!(status, StatusCode::OK, "the kept generation serves");
 }
 
-// The scan's fixed-class half and its kept RED arm (status row 127).
+// The scan's fixed-class half and its kept RED arm.
 #[path = "secret_source_class.rs"]
 mod class;

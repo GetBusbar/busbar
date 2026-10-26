@@ -104,6 +104,10 @@ pub use audit::AuditWindowAt;
 mod recovery;
 pub use recovery::{boot_recovery, node_verb_store};
 
+/// The first-party anti-downgrade floor the store keeps per host.
+mod plugin_floor;
+pub use plugin_floor::hold as hold_plugin_floor;
+
 /// How many sealed audit records a node keeps in memory: a CACHE of the newest, never the record.
 /// The journal holds every one (`audit.v4`), and a window older than this is read back off it.
 pub const AUDIT_RING: usize = 1_024;
@@ -837,6 +841,9 @@ fn build_inner(
     durability.restart_findings = findings;
     Ok(durability)
 }
+
+#[cfg(test)]
+pub(crate) use audit::tests::Scratch;
 
 #[cfg(test)]
 #[path = "../tests/durability.rs"]

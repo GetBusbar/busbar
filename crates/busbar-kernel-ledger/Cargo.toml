@@ -13,12 +13,6 @@ license = "Apache-2.0"
 name = "busbar_kernel_ledger"
 path = "src/lib.rs"
 
-[features]
-# Test handles for the kernel's and the composition root's suites: a test builds a priced row by
-# hand (`LedgerEntry::with_count`/`with_tier`). Never on in a shipped build; `busbar-kernel`'s
-# `test-support` turns it on.
-test-support = []
-
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
 # `serde`, for ONE type: an open meter class's configured rate (`cost::UnitRate`, #83a O1 — the

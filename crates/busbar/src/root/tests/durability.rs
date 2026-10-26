@@ -740,7 +740,7 @@ fn a_mid_log_corrupt_journal_boots_quarantines_and_records_it() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// H3 (ARCHITECT 2026-10-07): THE JOURNAL KEPT BY THE CONFIGURED STORE
+// H3: THE JOURNAL KEPT BY THE CONFIGURED STORE
 // ---------------------------------------------------------------------------------------------
 
 /// A book over `slots` with no data directory, as node `node`: the production boot's shape.
@@ -933,9 +933,8 @@ fn a_full_lane_refuses_new_money_and_drops_no_record() {
     );
 }
 
-/// **A LONG OUTAGE DOES NOT WEDGE THE BOOK** (audit root r4 B-3; ARCHITECT 2026-10-07 H3 ruling,
-/// the `durability` module docs: a full lane fails closed "until the store takes what waits" and "no
-/// record is dropped"; BUSBAR-1.6.0.md THE DESIGN §7 l.991-998). With the store refusing, the journal
+/// **A LONG OUTAGE DOES NOT WEDGE THE BOOK** (a full lane fails closed "until the
+/// store takes what waits" and "no record is dropped"). With the store refusing, the journal
 /// keeps appending past the lane's bound — what a fail-closed node still writes (admin units, the
 /// checkpoint cadence, accruals) — so the batch it retains grows past the bound too. Once the store
 /// recovers and the lane drains, the next append's re-offer is taken whole: every record reaches the
@@ -1074,7 +1073,7 @@ fn a_chain_read_between_two_parts_of_a_queued_record_warns_nothing() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// H3 follow-up (ARCHITECT 2026-10-07): THE DEPLOYMENT KEYSET AND THE NODE'S IDENTITY IN THE STORE
+// H3 follow-up: THE DEPLOYMENT KEYSET AND THE NODE'S IDENTITY IN THE STORE
 // ---------------------------------------------------------------------------------------------
 
 /// A book over `slots` as node `node`, its deployment keyset bound the way the boot binds it.
@@ -1091,8 +1090,7 @@ fn keyed_store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -
     durability
 }
 
-/// **A RESTART OVER THE SAME STORE VERIFIES THE PRIOR BOOT'S RECORDS** (ARCHITECT 2026-10-07 H3
-/// ruling, follow-up (1)): with no data directory the deployment keyset is kept in the store and
+/// **A RESTART OVER THE SAME STORE VERIFIES THE PRIOR BOOT'S RECORDS**: with no data directory the deployment keyset is kept in the store and
 /// read back, so the audit records a predecessor signed verify under the key this boot holds, and
 /// `/admin/verify`'s walks find nothing.
 ///
@@ -1445,7 +1443,7 @@ fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
     );
 }
 
-/// **RACING FIRST BOOTS KEEP ONE DEPLOYMENT KEYSET** (ARCHITECT 2026-10-07 H3 ruling): minting the
+/// **RACING FIRST BOOTS KEEP ONE DEPLOYMENT KEYSET**: minting the
 /// keyset redeems the store's single-use claim first, so a boot that lost it takes the key the
 /// winner keeps rather than keeping its own over it.
 ///
@@ -1523,7 +1521,7 @@ fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
     );
 }
 
-/// **RACING FIRST BOOTS OF ONE HOST TAKE ONE NODE ID** (ARCHITECT 2026-10-07 H3 ruling): minting a
+/// **RACING FIRST BOOTS OF ONE HOST TAKE ONE NODE ID**: minting a
 /// host's id redeems the store's claim on that host first, so the boot that lost it takes the id
 /// the winner keeps.
 ///
@@ -1715,8 +1713,7 @@ fn a_restart_after_the_lease_lapsed_resumes_the_chain() {
     assert_eq!(next.id, first.id, "a released lease is taken at once");
 }
 
-/// **A BOOT WHILE ITS PREDECESSOR STILL REFRESHES THE LEASE TAKES A FRESH ID** (Q128, the
-/// overlap): the lease is refreshed while the second process watches it, so its holder is live, and
+/// **A BOOT WHILE ITS PREDECESSOR STILL REFRESHES THE LEASE TAKES A FRESH ID**: the lease is refreshed while the second process watches it, so its holder is live, and
 /// the second journals under an id of its own and leaves the host's chain untouched.
 ///
 /// RED before the fix: the second process took the host's id and wrote over the first's chain.
@@ -1777,7 +1774,7 @@ fn dir_store_book(
     .expect("the directory opens")
 }
 
-/// **A NODE WITH A DATA DIRECTORY KEEPS ITS ID IN IT, AND A RESTART READS IT BACK** (Q128): the id
+/// **A NODE WITH A DATA DIRECTORY KEEPS ITS ID IN IT, AND A RESTART READS IT BACK**: the id
 /// is the directory's own, so two directories on one host name are two identities.
 ///
 /// RED before the fix: the id came from the host name in the store, and nothing was kept in the
@@ -1814,7 +1811,7 @@ fn a_restart_over_the_same_data_dir_keeps_its_id() {
     assert_eq!(full.trim().len(), 32, "a 128-bit id: {full:?}");
 }
 
-/// **MIGRATION: THE HOST NAME'S OLD REGISTRY ID IS ADOPTED, AND THE CHAIN KEEPS READING** (Q128):
+/// **MIGRATION: THE HOST NAME'S OLD REGISTRY ID IS ADOPTED, AND THE CHAIN KEEPS READING**:
 /// a data directory written by a build that keyed the node by its host name has no id file; its
 /// first boot on this build adopts the id the registry holds under that name, keeps it in the
 /// directory, and the chain written under it reads back whole.
@@ -1867,8 +1864,7 @@ fn the_first_boot_adopts_the_host_names_registry_id_and_the_chain_keeps_reading(
     );
 }
 
-/// **A DATA-DIRECTORY NODE THAT ADOPTED ITS HOST NAME'S ID HOLDS THAT NAME'S LEASE** (Q128, the
-/// mixed pair): a live node with no data directory and the same name then takes a fresh id, so the
+/// **A DATA-DIRECTORY NODE THAT ADOPTED ITS HOST NAME'S ID HOLDS THAT NAME'S LEASE**: a live node with no data directory and the same name then takes a fresh id, so the
 /// two never journal under one identity.
 ///
 /// RED before the fix: both took the host name's registry id.

@@ -153,10 +153,6 @@ pub async fn read_capped<E>(
 pub const ERR_NET_CONNECT: &str = "connect";
 /// `err_type` recorded when the upstream did not answer within the attempt's deadline.
 pub const ERR_NET_TIMEOUT: &str = "timeout";
-/// `err_type` recorded when the transport failed after the connection opened.
-pub const ERR_NET_TRANSPORT: &str = "transport";
-/// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
-pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 
 // ── CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM (OWNER HARD RULE 2026-10-02, "BUSBAR IS
 //    INVISIBLE TO UPSTREAMS") ──────────────────────────────────────────────────────────────────────

@@ -14,6 +14,7 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 
+use super::audit::tests::inputs;
 use super::*;
 use crate::root::store_double::RecordSlots;
 use crate::root::units_admin::{AuditView, NodeAudit};
@@ -88,7 +89,7 @@ fn node_over(
 fn seal(durability: &mut Durability, unit: u64) {
     durability
         .seal_unit(
-            audit_inputs(unit),
+            inputs(unit),
             busbar_kernel::test_support::tokens::pass(),
             &token(),
         )
