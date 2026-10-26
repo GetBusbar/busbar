@@ -15,7 +15,17 @@ guarded:
 on:
   # All five on every move (OWNER 2026-10-24: busbar uses the app; no hand-run oracle passes). D-1
   # is re-signed at 510 cells.
-  move: [fmt, clippy, test, deny, oracle]
+  move:
+    - fmt
+    - clippy
+    - test
+    - deny
+    - oracle
+    # The conformance suites (testing/conformance/suites.tsv): every move and every landing, never
+    # blocking (owner 2026-10-26: a suite not run or not passed in dev is a gap in our CI).
+    - checks: [conformance]
+      blocks: false
+  landed: [conformance]
   # CodeQL (off GitHub code scanning default setup, 2026-10-26): daily at dev's tip and on request;
   # it reports, never gates.
   schedule:
@@ -429,3 +439,13 @@ checks:
       echo "codeql: $high high/critical findings (ceiling $CODEQL_MAX_HIGH), $(wc -l < "$out/results.tsv" | tr -d ' ') in all"
       [ "$high" -le "$CODEQL_MAX_HIGH" ] || { echo "codeql: high/critical findings rose past $CODEQL_MAX_HIGH"; exit 1; }
     requires: [curl, zstd, jq, arch-x86_64]
+  conformance:
+    # busbar's own suites (the OAuth2 AS, TLS, the supply chain) by the fleet's one driver
+    # (busbar-release template/conformance): verdicts to target/conformance/verdicts/, brought into
+    # conformance/verdicts/ by scripts/conformance/import.sh.
+    priority: low
+    requires: [cc, git, curl, docker]
+    run: |
+      if [ ! -f testing/conformance/run.sh ]; then echo "no testing/conformance/run.sh on this head yet"; exit 0; fi
+      exec bash testing/conformance/run.sh
+    outputs: [target/conformance/]
