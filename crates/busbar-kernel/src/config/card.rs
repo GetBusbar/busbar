@@ -412,10 +412,6 @@ pub const ONLY_PUT: &str = "the rate card changes only through PUT /config/setti
 /// The audit action of a configuration file edited back to its first-boot seed after a PUT.
 pub const FILE_DIFFERS_ACTION: &str = "card.file_differs";
 
-/// The notice `--validate` prints: it never opens the store, so it cannot judge the file's card.
-pub const VALIDATE_NOTICE: &str =
-    "after first boot the rate card changes only through PUT /config/settings";
-
 /// The audit action of a refused card edit.
 pub const EDIT_REFUSED_ACTION: &str = "card.edit_refused";
 

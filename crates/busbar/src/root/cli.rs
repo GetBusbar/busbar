@@ -444,9 +444,6 @@ fn validate_config_command() -> i32 {
         config_path.display(),
         providers_path.display(),
     );
-    // `--validate` never opens the store, so it cannot judge the file's rate card against the
-    // history: it says the rule instead (MONEY-DESIGN §3a). On stderr, so stdout stays 1.5.5's bytes.
-    eprintln!("[info] {}", busbar_kernel::config::card::VALIDATE_NOTICE);
     if loaded.deploy.plugins.enabled {
         println!(
             "  plugins:   enabled — {} validated, {} skipped (untrusted) in '{}'",
