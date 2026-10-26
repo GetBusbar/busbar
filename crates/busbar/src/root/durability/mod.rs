@@ -168,7 +168,9 @@ pub use store_identity::{host_identity, keep_keyset, persisted_node, stored_keys
 pub use store_identity::node_id;
 // Its callers are the admin verify (`units_admin`, `root-admin`) and the tests.
 #[cfg(any(test, feature = "root-admin"))]
-pub use store_identity::{stored_chains, walk_stored_chains};
+pub use store_identity::walk_stored_chains;
+// Every other node's chain, read by the boot's rate-card migration (`root::card_history`).
+pub use store_identity::stored_chains;
 
 /// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
 /// journal rebuilt from the chain at boot. A private child module, as `replay` is.

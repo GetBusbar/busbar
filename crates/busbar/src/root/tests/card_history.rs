@@ -522,6 +522,8 @@ fn a_node_whose_card_differs_from_the_card_in_force_alarms() {
 /// **B3: THE MIGRATION PRICES EVERY INSTANT AS DEV'S REBUILD DID**, a REFUSED correction included:
 /// one sealed over a card its chain does not hold at that number is left out, as dev's boot left
 /// it out, and a valid one is rebuilt over its own base. Spend equality, card for card.
+// The correction records are the admin plane's (`units_admin`).
+#[cfg(feature = "root-admin")]
 #[test]
 fn the_migration_prices_every_instant_as_devs_rebuild_did_with_a_refused_correction() {
     use crate::root::kernel::{card_from_raw, CardApplied, CardForm, CorrectionBase, RootHistory};
