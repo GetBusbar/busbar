@@ -26,7 +26,7 @@ fn cred(text: &str) -> Cred {
 
 fn bytes(w: &mut super::SealedWrite) -> Vec<u8> {
     let mut out = Vec::new();
-    let _ = w.drive::<()>(&mut |b: &[u8]| {
+    let _ = crate::abi::sdk::test_support::chip::drive_sealed::<()>(w, |b: &[u8]| {
         out.extend_from_slice(b);
         std::task::Poll::Ready(Ok(b.len()))
     });

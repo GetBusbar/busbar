@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! JSON WHOSE STRING MEMBERS MAY BE CREDENTIALS (CHIP-DESIGN v4.1 §8 and §17, "the show-once mint
-//! is JSON-safe"): a plugin that is handed a credential in a JSON reply (a minted token) and hands
+//! JSON WHOSE STRING MEMBERS MAY BE CREDENTIALS (the chip design, its sections on secrets at rest and on
+//! the fresh-verification changes: "the show-once mint is JSON-safe"): a plugin that is handed a credential in a JSON reply (a minted token) and hands
 //! it on in a JSON answer never holds it as text.
 //!
 //! * [`json_reply`] reads a reply body into the plugin's own type: every [`Cred`] member is
@@ -198,10 +198,10 @@ impl SealedJson {
     pub fn encoded(&self) -> Result<SealedWrite, NotJsonText> {
         // Measured first, then written into a buffer of exactly that size: a growing buffer would
         // leave the credential behind in every allocation it outgrew.
-        let mut counted = Counted(0);
-        self.write(&mut counted)?;
-        let mut buf = Zeroizing::new(Vec::with_capacity(counted.0));
-        self.write(&mut *buf)?;
+        let mut len = 0;
+        self.write(&mut |b| len += b.len())?;
+        let mut buf = Zeroizing::new(Vec::with_capacity(len));
+        self.write(&mut |b| buf.extend_from_slice(b))?;
         debug_assert_eq!(buf.len(), buf.capacity());
         let secure = self.members.iter().any(|(_, m)| match m {
             Member::Sealed(c) => c.secure_required(),
@@ -210,46 +210,42 @@ impl SealedJson {
         Ok(SealedWrite::from_bytes(buf, secure))
     }
 
-    fn write(&self, out: &mut impl std::io::Write) -> Result<(), NotJsonText> {
-        // Writing to a `Vec` or a counter does not fail, and a `Value` or a `str` always
-        // serializes: the one refusal is a credential that is not text.
-        let put = |out: &mut dyn std::io::Write, b: &[u8]| {
-            let _ = out.write_all(b);
-        };
-        put(out, b"{");
+    /// Hand the encoding to `put`, piece by piece. A credential's piece is encoded into a buffer
+    /// wiped on drop.
+    fn write(&self, put: &mut dyn FnMut(&[u8])) -> Result<(), NotJsonText> {
+        // A `Value` or a `str` always serializes: the one refusal is a credential that is not text.
+        let json = |v: &dyn erased::Json| Zeroizing::new(v.to_json());
+        put(b"{");
         for (i, (name, member)) in self.members.iter().enumerate() {
             if i > 0 {
-                put(out, b",");
+                put(b",");
             }
-            let _ = serde_json::to_writer(&mut *out, name.as_str());
-            put(out, b":");
+            put(&json(&name.as_str()));
+            put(b":");
             match member {
-                Member::Public(v) => {
-                    let _ = serde_json::to_writer(&mut *out, v);
-                }
+                Member::Public(v) => put(&json(v)),
                 Member::Sealed(c) => {
                     let text = core::str::from_utf8(c.wire()).map_err(|_| NotJsonText {
                         member: name.clone(),
                     })?;
-                    let _ = serde_json::to_writer(&mut *out, text);
+                    put(&json(&text));
                 }
             }
         }
-        put(out, b"}");
+        put(b"}");
         Ok(())
     }
 }
 
-/// A writer that counts.
-struct Counted(usize);
-
-impl std::io::Write for Counted {
-    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        self.0 += b.len();
-        Ok(b.len())
+/// One JSON-serializable value, encoded whole.
+mod erased {
+    pub(super) trait Json {
+        fn to_json(&self) -> Vec<u8>;
     }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+    impl<T: serde::Serialize + ?Sized> Json for T {
+        fn to_json(&self) -> Vec<u8> {
+            serde_json::to_vec(self).unwrap_or_default()
+        }
     }
 }
 
