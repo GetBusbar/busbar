@@ -71,7 +71,7 @@ pub use rate::ConfigClassRule;
 pub use refusal::{ReasonCode, Refusal, RefusalStep};
 pub use verb::{
     verb_name, KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
-    NEW_VERBS, READ_ONLY_NEW_VERBS,
+    NEW_VERBS,
 };
 pub use verbs::{required_scope, Verbs};
 

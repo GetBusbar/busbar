@@ -596,7 +596,7 @@ fn the_two_tables_spell_one_operations_name_two_ways() {
         .find(|row| row.method == "GET" && row.path == "/api/v1/admin/audit")
         .expect("audit is in the unit's table");
     assert_eq!(audit.verb, "get_audit");
-    assert_eq!(row.operation_id, "GetAudit");
+    assert_eq!(row.verb, KernelVerb::GetAudit);
     assert_eq!(kernel_verb(&audit), Some(KernelVerb::GetAudit));
 }
 
