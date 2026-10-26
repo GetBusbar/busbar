@@ -1,1 +1,2 @@
 # busbar core suites: <suite-id>\t<command>, run by testing/conformance/run.sh (the ModernCI conformance check).
+slsa-verifier	bash testing/conformance/slsa-verifier.sh
