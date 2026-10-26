@@ -849,8 +849,8 @@ async fn forbidden_admin_requests_audit_once_per_window() {
         );
     }
 
-    let n = crate::audit_ring::AUDIT
-        .export()
+    let n = crate::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None)
         .iter()
         .filter(|e| e.action == "admin.forbidden" && e.principal == principal_id)
         .count();

@@ -372,14 +372,14 @@ impl AuthRows {
         Ok(Arc::new(opened))
     }
 
-    /// TEST STAND-IN: the auth row serving the outbound `style`, its instance opened for its
-    /// outbound styles over `settings` (as the composition root's `OutboundAuths::serving` opens
-    /// one, without its instance cache or its tick schedule); `None` when no row this build reaches
-    /// states the style. Never shipped: the root serves outbound styles.
+    /// The auth row serving the outbound `style`, its instance opened for its outbound styles over
+    /// `settings` (as the composition root's `OutboundAuths::serving` opens one, without its
+    /// instance cache or its tick schedule); `None` when no row this build reaches states the
+    /// style. The root serves outbound styles itself; this is for a harness with no root (the
+    /// credential canary).
     ///
     /// # Errors
     /// The serving row would not open for its outbound styles.
-    #[cfg(test)]
     pub fn serving(
         &self,
         style: &str,

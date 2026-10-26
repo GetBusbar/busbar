@@ -2568,6 +2568,179 @@ mod transport_pin {
         });
     }
 
+    /// What a splicing proxy saw, one entry per tunnel in the order they were asked: the CONNECT
+    /// head, and every byte it relayed from the dialler to the far end after answering it.
+    type ProxySeen = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+    /// A CONNECT proxy on loopback, as a corporate egress proxy is: it reads the CONNECT head,
+    /// answers `200`, dials the authority it was asked for and splices the two sockets, recording
+    /// the head and every byte the dialler sent through the tunnel.
+    async fn splicing_proxy() -> (u16, ProxySeen) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: ProxySeen = Arc::default();
+        let saw = Arc::clone(&seen);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let saw = Arc::clone(&saw);
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut byte = [0_u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if sock.read(&mut byte).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head).into_owned();
+                    let authority = head
+                        .strip_prefix("CONNECT ")
+                        .and_then(|rest| rest.split(' ').next())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let slot = {
+                        let mut saw = saw.lock().unwrap();
+                        saw.push((head, Vec::new()));
+                        saw.len() - 1
+                    };
+                    let Ok(upstream) = tokio::net::TcpStream::connect(authority).await else {
+                        return;
+                    };
+                    sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let (mut down_r, mut down_w) = sock.into_split();
+                    let (mut up_r, mut up_w) = upstream.into_split();
+                    tokio::spawn(async move {
+                        let _ = tokio::io::copy(&mut up_r, &mut down_w).await;
+                    });
+                    let mut buf = [0_u8; 4096];
+                    loop {
+                        let n = down_r.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        // Recorded before it is relayed, so the far end's answer never outruns
+                        // the record of what reached it.
+                        saw.lock().unwrap()[slot].1.extend_from_slice(&buf[..n]);
+                        if up_w.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        (port, seen)
+    }
+
+    /// [`trusting`], dialling every framed connection through the proxy at `port`.
+    fn trusting_through(pki: &Pki, port: u16) -> Connector {
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::identity("plain")),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "sec",
+                    &["sec"],
+                    &[],
+                    crate::support::Knobs {
+                        secure_name: Some("localhost"),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let tls = crate::tls::client::build_client_config(&EgressTrust {
+            extra_anchors: vec![pki.ca_der.clone()],
+            ..EgressTrust::default()
+        })
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            loopback_literals(),
+            Some(Arc::new(tls)),
+            Arc::new(|_, _| {}),
+        )
+        .proxying(Some(crate::proxy::test_config("127.0.0.1", port, None, "")));
+        c.declare_over(OWNER, NeedId(0), "sec").unwrap();
+        c
+    }
+
+    /// THE KERNEL ENGINE'S PROXIED mTLS HOP, THROUGH THE CONNECTOR (u30; status row 130: the
+    /// CONNECT proxy and busbar's client identity are the connector's alone once the kernel engine
+    /// is deleted). A secured dial under a proxy asks the proxy for a tunnel to the far end's own
+    /// authority before anything else, then runs the handshake over the tunnel: the far end's key
+    /// is the one observed, busbar's sealed identity is presented to a far end that asks for one,
+    /// and the proxy relays only ciphertext (the request bytes never cross it in the clear).
+    ///
+    /// RED: with no identity sealed, the same proxied dial reaches the mutual far end and is
+    /// refused by it, so the identity the green arm presents is the sealed one, carried through
+    /// the tunnel.
+    #[test]
+    fn a_proxied_dial_tunnels_first_then_presents_the_sealed_identity_over_tls() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let server = pki.leaf("localhost");
+            let client = pki.leaf("busbar.client");
+            let (far, seen) = tls_far_end(&pki, &server, true).await;
+            let (port, proxied) = splicing_proxy().await;
+            let c = trusting_through(&pki, port);
+
+            let (_, got) = exchange(&c, &far).await;
+            assert!(got.is_err(), "no identity: the mutual far end refuses");
+            assert_eq!(
+                proxied
+                    .lock()
+                    .unwrap()
+                    .first()
+                    .map(|(head, _)| head.clone()),
+                Some(format!("CONNECT {far} HTTP/1.1\r\nHost: {far}\r\n\r\n")),
+                "the unsealed dial went through the proxy too"
+            );
+
+            let anchors = Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![client.der.clone()],
+                    private_key: client.key.clone().into(),
+                }),
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                .expect("sealed");
+            let (id, got) = exchange(&c, &far).await;
+            assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
+            let facts = c.facts(OWNER, id).expect("facts");
+            assert!(facts.client_identity, "the identity was presented");
+            assert_eq!(facts.peer_key_pin.as_deref(), Some(server.pin.as_str()));
+            assert_eq!(
+                seen.lock().unwrap().clone(),
+                Some((b"first".to_vec(), true))
+            );
+            let tunnels = proxied.lock().unwrap().clone();
+            assert_eq!(tunnels.len(), 2, "one tunnel per dial: {tunnels:?}");
+            let (head, relayed) = tunnels[1].clone();
+            assert_eq!(
+                head,
+                format!("CONNECT {far} HTTP/1.1\r\nHost: {far}\r\n\r\n"),
+                "the proxy was asked for the far end's own authority, and nothing came before it"
+            );
+            assert!(
+                relayed.first() == Some(&0x16),
+                "the first byte through the tunnel is a TLS handshake record"
+            );
+            assert!(
+                !relayed.windows(5).any(|w| w == b"first"),
+                "the proxy never saw a decrypted request byte"
+            );
+        });
+    }
+
     /// A TLS far end on loopback serving `leaf`, answering `answer` once it read five bytes: its
     /// address, and, per connection once it is done, every byte it read (empty: the dialler left, or
     /// failed its handshake, before writing any).

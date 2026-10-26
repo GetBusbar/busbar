@@ -12,7 +12,7 @@
 //! validates the block and lists its secret references, [`seam::AsPlaneSeam::build`] builds the
 //! type-erased runtime object for one config generation, [`seam::AsPlaneSeam::mount`] mounts its
 //! routes, and [`seam::AsPlaneSeam::verify_dpop`] verifies a DPoP presentation at a protected
-//! resource. The kernel never names those types (ARCHITECT ruling 2026-10-03, D4).
+//! resource. The kernel never names those types.
 //!
 //! OFF COSTS NOTHING: with no `oauth_as:` block no runtime object is built, so `mount` is handed
 //! `None` and mounts no route, and nothing is stored, signed or swept.

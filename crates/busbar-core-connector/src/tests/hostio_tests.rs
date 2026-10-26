@@ -13,6 +13,8 @@ use busbar_contract::conn::Program;
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::support::worker;
+
 use super::*;
 
 const OWNER: u64 = 1;
@@ -22,13 +24,6 @@ fn ticket(n: u32) -> Ticket {
         slot: 0x00ff_0000 + n,
         generation: 1,
     }
-}
-
-fn worker() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
 }
 
 #[test]

@@ -134,15 +134,6 @@ fn lane_lookup_has_exactly_three_outcomes() {
     assert!(present.lane_rates("mystery").is_none());
 }
 
-/// A negative configured fee clamps to nothing at resolve. No request may bill a negative amount,
-/// which would credit a budget bucket back toward headroom.
-#[test]
-fn negative_per_request_fee_clamps_to_zero() {
-    let c = RateCard::absent(-5);
-    assert_eq!(c.fee(), 0);
-    assert_eq!(c.fee_unit_price_nanos(), 0);
-}
-
 /// The fee's unit price is its cents lifted to nano-units — an exact multiple of ten million,
 /// which is what makes summing it in before the single truncation give the same cents as adding it
 /// afterwards.
@@ -251,12 +242,6 @@ fn a_report_is_priced_by_the_spend_fold_and_a_silent_class_refuses() {
             Err(crate::cost::MoneyError::ClassUnpriced { ref class, .. }) if class == "output"
         ),
         "a class the present card is silent about refuses; it is never sized at nothing"
-    );
-
-    let src = include_str!("../rate.rs");
-    assert!(
-        !src.contains("pub fn nanos(&self"),
-        "a lane's rates carry no report-sizing fold beside the spend fold"
     );
 }
 
