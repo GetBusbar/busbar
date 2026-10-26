@@ -40,7 +40,7 @@ pub async fn tail(
     // attempt). What is left is logged; with a data directory it is spooled and replays at boot.
     if let Some(recorder) = governance.as_ref().and_then(|g| g.recorder()) {
         let delivered = recorder.drain(true, RECORD_DRAIN).await;
-        recorder.stop();
+        recorder.stop().await;
         tracing::info!(delivered, "spend recorder drained on shutdown");
     }
     // THE PLANE RECORD WRITE-BEHIND, drained before the store closes.

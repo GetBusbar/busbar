@@ -72,23 +72,20 @@ impl Snapshot {
 struct BookLedger(Weak<GovState>);
 
 impl Ledger for BookLedger {
-    fn take_pending(&self) -> Vec<CellCount> {
-        self.0.upgrade().map(|g| g.take_pending()).unwrap_or_default()
+    fn take_pending(&self, mark: &dyn Fn(&str)) -> Vec<CellCount> {
+        self.0
+            .upgrade()
+            .map(|g| g.take_pending(mark))
+            .unwrap_or_default()
     }
 
     fn take_metering(&self) -> Vec<MeteringDelta> {
         self.0.upgrade().map(|g| g.take_metering()).unwrap_or_default()
     }
 
-    fn carried(&self, cells: &[CellCount], seq: u64) {
+    fn landed(&self, cells: &[CellCount]) {
         if let Some(g) = self.0.upgrade() {
-            g.carried(cells, seq);
-        }
-    }
-
-    fn landed(&self, cells: &[CellCount], seq: u64) {
-        if let Some(g) = self.0.upgrade() {
-            g.landed(cells, seq);
+            g.landed(cells);
         }
     }
 
@@ -130,6 +127,17 @@ impl GovState {
     pub fn set_strict_spend_recording(&self, on: bool) {
         self.strict
             .store(on, std::sync::atomic::Ordering::Relaxed);
+        if let Some(r) = self.recorder.get() {
+            r.stamps().set_strict(on);
+        }
+    }
+
+    /// Whether `bucket` has deltas in the recorder's accumulator or an unresolved carve: its cell
+    /// is not evicted by the sweep.
+    pub(crate) fn unrecorded(&self, bucket: &str) -> bool {
+        self.recorder
+            .get()
+            .is_some_and(|r| r.stamps().unrecorded(bucket))
     }
 
     /// STRICT MODE's gate at `now_ms`: `None` with strict mode off (nothing on the request path
@@ -178,18 +186,11 @@ impl GovState {
         self.foreign.load_full()
     }
 
-    /// `cells`' amounts added to `posted_hi` (signed; a cell not holding the window is skipped).
+    /// `cells`' amounts added to `posted_hi` (signed; another window's entry is skipped).
     pub(crate) fn adjust_posted(&self, cells: &[CellCount]) {
         for delta in cells {
             let mut guard = self.budget.write(&delta.bucket);
-            if let Some(cell) = guard
-                .get_mut(&delta.bucket)
-                .filter(|c| c.window_start == delta.window)
-            {
-                let mut d = delta.clone();
-                d.bucket.clear();
-                cell.posted.merge(&d);
-            }
+            guard.posted_add(delta);
         }
     }
 

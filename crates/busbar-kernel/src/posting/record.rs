@@ -256,28 +256,30 @@ pub enum DeadState {
     LandedUnknown,
 }
 
-/// A batch: what one take of the pending maps (or a merged run of never-sent takes) carried.
+/// A CARVE: cells taken out of the unsent accumulator (each cell's whole net), sealed under a new
+/// SEQUENCE and two op ids. Its `carve` record both consumes the cells and records `sent`: nothing
+/// can fold into it afterwards, so one op id always has one body.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Batch {
-    /// Its SEQUENCE: monotonic per node; a split child and every record derived from it keep it, and
-    /// the sender resolves the lowest unresolved sequence first, one in flight.
+    /// Its SEQUENCE: monotonic per node; bisect children keep it, and the sender resolves the
+    /// lowest unresolved sequence first, one in flight.
     pub seq: u64,
     /// The usage op.
     pub usage_op: Op,
     /// The metering op.
     pub metering_op: Op,
-    /// The cells, merged and sorted.
+    /// The cells, in the accumulator's stable order.
     pub cells: Vec<CellCount>,
     /// The metering rows (the provider already carries the entry-id prefix).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metering: Vec<MeteringDelta>,
-    /// When it was taken, wall-clock ms (the retention clock, and strict mode's age).
-    pub at_ms: u64,
+    /// When it was carved and first sent, wall-clock ms (the 24 h retention clock).
+    pub t_sent: u64,
 }
 
 /// One PART of a REFUSED op: the cells (usage) or rows (metering) `lo..hi` of the batch, sent
 /// alone under its own new op id. A refused part is BISECTED into two halves; a single cell refused
-/// alone is dead-lettered. Parts are never merged with anything.
+/// alone is dead-lettered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Part {
     /// The part's op.
@@ -288,33 +290,37 @@ pub struct Part {
     pub hi: usize,
 }
 
-/// A spool record.
+/// A spool record (MONEY-DESIGN §3c, "The spool").
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "r", rename_all = "snake_case")]
 pub enum Rec {
-    /// A batch, appended and synced by the spooler.
-    Batch(Batch),
-    /// The sender is about to send batch `seq` for the FIRST time: synced before the send. A batch
-    /// with this record is never merged again; it replays under its own ops.
-    Sent {
-        /// The batch.
-        seq: u64,
+    /// One window's take, added into the unsent accumulator.
+    Fold {
+        /// The window's sequence (diagnostic).
+        window_seq: u64,
+        /// The take's cells.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cells: Vec<CellCount>,
+        /// The take's metering rows.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        metering: Vec<MeteringDelta>,
     },
-    /// A contiguous run of never-sent batches merged, in sequence order, into `into` (a fresh op
-    /// pair), synced before its first send.
-    Merge {
-        /// The merged batches' sequences.
-        seqs: Vec<u64>,
-        /// The batch that replaces them (it carries the lowest of `seqs`).
-        into: Batch,
-    },
+    /// A carve: consumes its cells from the accumulator and records them sent.
+    Carve(Batch),
     /// `op` answered applied.
     Ready {
         /// The op.
         op: Op,
     },
-    /// Batch `seq`'s `kind` body now stands as `parts` (after a REFUSED op was bisected), written
-    /// before any new part is sent. The parts keep the batch's sequence.
+    /// `op` first answered applied-unknown at `t_first`.
+    Failing {
+        /// The op.
+        op: Op,
+        /// The first failure, wall-clock ms.
+        t_first: u64,
+    },
+    /// Batch `seq`'s `kind` body now stands as `parts` (a REFUSED op bisected), written before any
+    /// new part is sent. The parts keep the batch's sequence.
     Split {
         /// The batch.
         seq: u64,
@@ -323,7 +329,8 @@ pub enum Rec {
         /// Every part of the body, the done ones included.
         parts: Vec<Part>,
     },
-    /// The `kind` body of batch `seq`, from index `lo` to `hi`, was dead-lettered.
+    /// The `kind` body of batch `seq`, from index `lo` to `hi`, was dead-lettered. For a usage
+    /// body it also moves those cells' current accumulator entries into the dead letter.
     Dead {
         /// The batch.
         seq: u64,
@@ -333,21 +340,6 @@ pub enum Rec {
         lo: usize,
         /// Last index, exclusive.
         hi: usize,
-    },
-    /// A never-sent batch rewritten without the dead-lettered `(bucket, window)` cells, under a
-    /// fresh op pair (safe: its ops never left the node). Audited.
-    Rewrite {
-        /// The batch, as it now stands.
-        into: Batch,
-    },
-    /// `bucket` was deleted: every batch with a sequence at or below `seq` leaves its cells out,
-    /// on its first send and on every replay. Written before the store deletes the key, so a
-    /// re-created bucket keeps the counts of later batches.
-    Drop {
-        /// The bucket.
-        bucket: String,
-        /// The last sequence it filters.
-        seq: u64,
     },
 }
 
@@ -370,7 +362,7 @@ pub fn usage_body<'c>(
     for cell in merged(cells) {
         let mut plain: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
         let mut sib: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
-        let mut add = |into: &mut BTreeMap<String, BTreeMap<String, i64>>,
+        let add = |into: &mut BTreeMap<String, BTreeMap<String, i64>>,
                        model: String,
                        class: &str,
                        n: i64| {

@@ -5,25 +5,34 @@
 //! 2026-10-25: "Stores need to not be in the hot path; latency is crucial").
 //!
 //! - The request path only emits deltas into its budget shard's pending map ([`Ledger`]).
-//! - THE SPOOLER, every flush window, takes the pending maps one shard at a time, builds ONE batch
-//!   with a monotonic SEQUENCE and two op ids, and (with a data directory) appends and `fsync`s it.
-//! - THE SENDER posts batches in sequence order, exactly ONE in flight, so a refund's `-1` never
-//!   lands before the `+1` it cancels. A synced `sent` record precedes a batch's first send; a run
-//!   of never-sent batches may be merged under fresh op ids; a sent batch only ever replays.
+//! - THE SPOOL WRITER is one OS thread of its own, fed by a std channel, and the only owner of the
+//!   UNSENT ACCUMULATOR (one entry per cell: a sum, so a cell's `+1` and `-1` net out). Every flush
+//!   window it takes the pending maps one shard at a time, adds the take into the accumulator and,
+//!   with a data directory, writes ONE synced `fold` record carrying it together with every record
+//!   queued since. No runtime thread ever waits on a disk.
+//! - THE SENDER (a task) ASKS the writer for a batch: the writer CARVES up to the cap out of the
+//!   accumulator (each cell's whole net), under a new SEQUENCE and two op ids, with ONE synced
+//!   `carve` record that consumes the cells and records them sent, and hands back the sealed body.
+//!   The sender resolves the lowest unresolved sequence first, exactly ONE in flight, so a refund's
+//!   `-1` never lands before the `+1` it cancels.
+//! - THE HEARTBEAT (a task) writes an idempotent per-node record every second while work is
+//!   unresolved or strict mode is on ([`PostStore::heartbeat`], one seam).
 //!
-//! What an answer proves (S5): READY applied; Conflict on a spooled op applied (alarmed); REFUSED
-//! nothing applied, so the op splits per cell (or metering row) under new op ids, and a piece still
-//! refused alone is dead-lettered; Overloaded not applied, retried; anything else applied-unknown,
-//! replayed with the identical body under the same op id; near the op-id retention, dead-lettered
-//! `landed-unknown` for an operator's verdict.
+//! What an answer proves (S5), per op: READY applied; Conflict on a spooled op applied (alarmed);
+//! REFUSED nothing applied, so that op is BISECTED and a single cell refused alone is
+//! dead-lettered; Overloaded not applied, retried; anything else applied-unknown, replayed with the
+//! identical body under the same op id, without limit while the heartbeat fails and for 10 minutes
+//! of a SUCCEEDING heartbeat at most, then dead-lettered `landed-unknown`; a carve unresolved 24 h
+//! after it was sent is dead-lettered, never replayed.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use busbar_contract::abi::store::OP_ID_RETENTION_SECS;
+use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::{MeteringDelta, RecordStore, UsageDelta, UsageLedger};
 use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 use serde::{Deserialize, Serialize};
@@ -34,35 +43,44 @@ use super::spool::{self, Ledgerette, Spool};
 /// Strict mode refuses when an age passes this.
 pub const STRICT_AGE_MS: u64 = 2_000;
 
-/// The idle probe's cadence.
-pub const PROBE_EVERY: Duration = Duration::from_secs(1);
+/// The heartbeat's cadence.
+pub const HEARTBEAT_EVERY: Duration = Duration::from_secs(1);
 
-/// Boot replay's deadline: past it the boot fails, as hydrate's store error does.
+/// Boot replay's base deadline: past it (and its extensions) the boot fails, as hydrate's store
+/// error does.
 pub const REPLAY_DEADLINE: Duration = Duration::from_secs(120);
-
-/// An op still applied-unknown this close to the stores' op-id retention can no longer be replayed
-/// safely: it is dead-lettered `landed-unknown`.
-pub const RETENTION_MARGIN_MS: u64 = (OP_ID_RETENTION_SECS - 3_600) * 1_000;
-
-/// The spool is compacted (to nothing) when the queue is empty and it is past this size.
-const COMPACT_BYTES: u64 = 4 * 1024 * 1024;
-
-/// The pause before an unresolved op is replayed.
-const REPLAY_PAUSE: Duration = Duration::from_millis(200);
-
-/// An op applied-unknown for this long WHILE THE STORE'S PROBES SUCCEED is dead-lettered
-/// `landed-unknown`. While probes fail it is retried with backoff without limit and never
-/// dead-lettered (MONEY-DESIGN §3c).
-pub const MAX_UNKNOWN: Duration = Duration::from_secs(10 * 60);
 
 /// Each refusal met during boot replay extends its deadline by this.
 pub const REPLAY_PER_REFUSAL: Duration = Duration::from_secs(30);
 
-/// A merged batch carries at most this many cells ...
-pub const MERGE_MAX_CELLS: usize = 4_096;
+/// A carve unresolved this long after it was sent is dead-lettered `landed-unknown`, never
+/// replayed: the contract forbids re-issuing an op id past its retention.
+pub const RETENTION_MS: u64 = OP_ID_RETENTION_SECS * 1_000;
 
-/// ... and at most this many encoded bytes.
-pub const MERGE_MAX_BYTES: usize = 256 * 1024;
+/// An op applied-unknown for this long WHILE THE HEARTBEAT SUCCEEDS is dead-lettered
+/// `landed-unknown`. While the heartbeat fails it is retried with backoff without limit.
+pub const MAX_UNKNOWN: Duration = Duration::from_secs(10 * 60);
+
+/// A carve takes at most this many cells (or metering rows) ...
+pub const CARVE_MAX_CELLS: usize = 4_096;
+
+/// ... and at most about this many encoded bytes.
+pub const CARVE_MAX_BYTES: usize = 256 * 1024;
+
+/// The spool is compacted when nothing is carved and unresolved and it is past this size ...
+const COMPACT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// ... and alarmed when it is past this one.
+const ALARM_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The unsent accumulator is alarmed past this many cells (RAM high-water).
+const ACC_ALARM_CELLS: usize = 1_000_000;
+
+/// The pause before an unresolved op is replayed.
+const REPLAY_PAUSE: Duration = Duration::from_millis(200);
+
+/// The schema of the heartbeat record (an idempotent per-node write; owner item 32).
+pub const HEARTBEAT_SCHEMA: &str = "busbar.node.heartbeat.v1";
 
 fn now_ms() -> u64 {
     crate::store::now_ms()
@@ -70,24 +88,22 @@ fn now_ms() -> u64 {
 
 // ── the seams ────────────────────────────────────────────────────────────────────────────────────
 
-/// What the recorder takes from and reports to: the governance book's pending deltas.
+/// What the recorder takes from and reports to: the governance book.
 pub trait Ledger: Send + Sync {
     /// Every shard's pending deltas, taken one shard at a time (their positive parts join
-    /// `posted_hi` as they are taken).
-    fn take_pending(&self) -> Vec<CellCount>;
-    /// `cells` ride batch `seq`: their RAM cells stay resident until a batch at or above `seq` is
-    /// READY.
-    fn carried(&self, cells: &[CellCount], seq: u64);
+    /// `posted_hi` as they are taken). `mark` is called with each taken bucket INSIDE its shard's
+    /// critical section (lock order: shard, then the unrecorded set), so the sweep never sees a
+    /// cell whose deltas are in neither the pending map nor the unrecorded set.
+    fn take_pending(&self, mark: &dyn Fn(&str)) -> Vec<CellCount>;
     /// The pending metering rows.
     fn take_metering(&self) -> Vec<MeteringDelta>;
-    /// `cells` of batch `seq` answered READY (or were dead-lettered): their negative parts join
-    /// `posted_hi`, and a cell no later batch carries may leave RAM again.
-    fn landed(&self, cells: &[CellCount], seq: u64);
-    /// `cells` were dead-lettered `refused`: they will never be in the store, so their positive
-    /// parts leave `posted_hi`.
+    /// `cells` answered READY (or were dead-lettered `landed-unknown`): their negative parts join
+    /// `posted_hi`.
+    fn landed(&self, cells: &[CellCount]);
+    /// `cells` will never reach the store (dead-lettered `refused`): their positive parts leave
+    /// `posted_hi`.
     fn unposted(&self, cells: &[CellCount]);
-    /// A cleared `refused` letter's `cells` were re-posted and answered READY: they are in the
-    /// store now.
+    /// A cleared letter's `cells` were re-posted and answered READY.
     fn reposted(&self, cells: &[CellCount]);
 }
 
@@ -101,14 +117,12 @@ pub trait PostStore: Send + Sync {
     ) -> StoreCall<'a, ()>;
     /// `add_metering_batch` under `op`.
     fn add_metering_batch<'a>(&'a self, op: Op, rows: &'a [MeteringDelta]) -> StoreCall<'a, ()>;
-    /// A cheap read proving the store answers (`record_get`).
-    fn probe(&self) -> StoreCall<'_, ()>;
+    /// THE HEARTBEAT: a write proving the store takes writes (owner item 32: a per-node record, or
+    /// an empty `add_usage_batch`).
+    fn heartbeat(&self) -> StoreCall<'_, ()>;
     /// `get_usage` of one row.
     fn get_usage<'a>(&'a self, bucket: &'a str, window: u64) -> StoreCall<'a, UsageLedger>;
 }
-
-/// The schema the idle probe reads a key of (any answer, present or absent, is a round trip).
-pub const PROBE_SCHEMA: &str = "busbar.card.v1";
 
 /// The configured store's v3 slots.
 pub struct SlotStore {
@@ -142,12 +156,12 @@ impl PostStore for SlotStore {
         self.calls.add_metering_batch(op.0, rows)
     }
 
-    fn probe(&self) -> StoreCall<'_, ()> {
+    fn heartbeat(&self) -> StoreCall<'_, ()> {
         Box::pin(async move {
-            self.calls
-                .record_get(PROBE_SCHEMA, b"\x00probe")
-                .await
-                .map(|_| ())
+            let key = crate::door::node().to_be_bytes();
+            let value = RecordBytes::new(now_ms().to_be_bytes().to_vec())
+                .map_err(|n| StoreFailure::Fault(format!("a heartbeat of {n} bytes")))?;
+            self.calls.record_put(HEARTBEAT_SCHEMA, &key, &value).await
         })
     }
 
@@ -199,9 +213,9 @@ impl PostStore for RecordsOnly {
         })
     }
 
-    fn probe(&self) -> StoreCall<'_, ()> {
+    fn heartbeat(&self) -> StoreCall<'_, ()> {
         let records = Arc::clone(&self.0);
-        blocking(move || records.get_usage("e:probe", 0).map(|_| ()))
+        blocking(move || records.get_usage("e:heartbeat", 0).map(|_| ()))
     }
 
     fn get_usage<'a>(&'a self, bucket: &'a str, window: u64) -> StoreCall<'a, UsageLedger> {
@@ -216,13 +230,9 @@ impl PostStore for RecordsOnly {
 /// Why spend cannot be recorded (strict mode's 503 reason).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Closed {
-    /// A delta has waited for READY too long (or the spooler stopped taking).
+    /// Unrecorded work has made no progress to READY for 2 s.
     Undelivered,
-    /// The store has not answered a round trip recently.
-    StoreSilent,
-    /// The data directory's spool has not synced recently.
-    SpoolStalled,
-    /// A capped bucket's fleet snapshot read has failed for too long.
+    /// A capped bucket's last fleet snapshot read failed more than 5 s ago.
     SnapshotStale,
 }
 
@@ -231,9 +241,9 @@ impl Closed {
     #[must_use]
     pub fn reason(self) -> &'static str {
         match self {
-            Closed::Undelivered => "spend recorded on this node has not reached the store for over 2 s",
-            Closed::StoreSilent => "the store has not answered for over 2 s",
-            Closed::SpoolStalled => "the spend spool on the data directory has not synced for over 2 s",
+            Closed::Undelivered => {
+                "spend recorded on this node has not reached the store for over 2 s"
+            }
             Closed::SnapshotStale => {
                 "the fleet's spend for a capped bucket could not be read for over 5 s"
             }
@@ -241,35 +251,55 @@ impl Closed {
     }
 }
 
-/// SHARED TIMESTAMPS: written by the spooler, the sender and the probe; read by the admission path
-/// without asking them, so a dead task cannot leave strict mode open.
+/// SHARED STAMPS: written by the spool writer, the sender and the heartbeat; read by the admission
+/// path without asking them, so a dead task cannot leave strict mode open.
 #[derive(Debug)]
 pub struct Stamps {
-    last_trip_ms: AtomicU64,
-    last_take_ms: AtomicU64,
-    /// The oldest unresolved batch's take, `u64::MAX` for none (dead letters excluded).
-    oldest_ms: AtomicU64,
-    /// The spool's last successful sync (or idle check); `u64::MAX` without a data directory.
-    spool_ok_ms: AtomicU64,
-    /// The flush window, ms.
-    window_ms: AtomicU64,
+    /// The last heartbeat that succeeded (the landed-unknown bound runs only while it does).
+    heartbeat_ok_ms: AtomicU64,
+    /// Whether unrecorded work exists (accumulator or unresolved carves; dead letters excluded).
+    working: AtomicBool,
+    /// The last progress toward READY (a READY, a resolved part, or work appearing).
+    progress_ms: AtomicU64,
+    /// Strict mode is on: the heartbeat writes even while idle.
+    strict: AtomicBool,
+    /// THE UNRECORDED SET: buckets with deltas in the accumulator or in an unresolved carve. A cell
+    /// in it (or with pending deltas) is never evicted by the sweep.
+    unrecorded: RwLock<HashSet<String>>,
 }
 
 impl Stamps {
-    fn new(window_ms: u64, spooled: bool) -> Self {
+    fn new() -> Self {
         let now = now_ms();
         Stamps {
-            last_trip_ms: AtomicU64::new(now),
-            last_take_ms: AtomicU64::new(now),
-            oldest_ms: AtomicU64::new(u64::MAX),
-            spool_ok_ms: AtomicU64::new(if spooled { now } else { u64::MAX }),
-            window_ms: AtomicU64::new(window_ms),
+            heartbeat_ok_ms: AtomicU64::new(now),
+            working: AtomicBool::new(false),
+            progress_ms: AtomicU64::new(now),
+            strict: AtomicBool::new(false),
+            unrecorded: RwLock::new(HashSet::new()),
         }
     }
 
-    /// Stamp a store round trip at `at_ms`.
-    pub fn tripped(&self, at_ms: u64) {
-        self.last_trip_ms.fetch_max(at_ms, Ordering::Relaxed);
+    fn progressed(&self, at_ms: u64) {
+        self.progress_ms.fetch_max(at_ms, Ordering::Relaxed);
+    }
+
+    fn heartbeat_ok(&self, now: u64) -> bool {
+        now.saturating_sub(self.heartbeat_ok_ms.load(Ordering::Relaxed)) <= STRICT_AGE_MS
+    }
+
+    /// Strict mode on or off (the heartbeat writes while idle only when on).
+    pub fn set_strict(&self, on: bool) {
+        self.strict.store(on, Ordering::Relaxed);
+    }
+
+    /// Whether `bucket` has unrecorded deltas (the sweep keeps its cell).
+    #[must_use]
+    pub fn unrecorded(&self, bucket: &str) -> bool {
+        self.unrecorded
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(bucket)
     }
 
     /// Whether spend can be recorded at `now_ms`, from the stamps alone.
@@ -278,21 +308,12 @@ impl Stamps {
     ///
     /// Why it cannot.
     pub fn check(&self, now_ms: u64) -> Result<(), Closed> {
-        let window = self.window_ms.load(Ordering::Relaxed);
-        let age = |at: u64| now_ms.saturating_sub(at);
-        if age(self.last_take_ms.load(Ordering::Relaxed)) > STRICT_AGE_MS + window {
+        // ONE age rule (the other is the fleet snapshot's, per bucket): 2 s of no recording
+        // progress while there is unrecorded work. Dead letters are not work; a bisect is progress.
+        if self.working.load(Ordering::Relaxed)
+            && now_ms.saturating_sub(self.progress_ms.load(Ordering::Relaxed)) > STRICT_AGE_MS
+        {
             return Err(Closed::Undelivered);
-        }
-        let oldest = self.oldest_ms.load(Ordering::Relaxed);
-        if oldest != u64::MAX && age(oldest) > STRICT_AGE_MS {
-            return Err(Closed::Undelivered);
-        }
-        let spool = self.spool_ok_ms.load(Ordering::Relaxed);
-        if spool != u64::MAX && age(spool) > STRICT_AGE_MS + window {
-            return Err(Closed::SpoolStalled);
-        }
-        if age(self.last_trip_ms.load(Ordering::Relaxed)) > STRICT_AGE_MS {
-            return Err(Closed::StoreSilent);
         }
         Ok(())
     }
@@ -311,9 +332,13 @@ pub struct DeadLetter {
     pub state: DeadState,
     /// Why.
     pub reason: String,
-    /// Its usage cells (later deltas for the same `(bucket, window)` fold in while it stands).
+    /// Its usage cells. Every later delta of the same `(bucket, window)` folds in while a
+    /// `refused` letter stands.
     #[serde(default)]
     pub cells: Vec<CellCount>,
+    /// The later NEGATIVE deltas a `landed-unknown` letter absorbed: posted on either verdict.
+    #[serde(default)]
+    pub absorbed: Vec<CellCount>,
     /// Its metering rows.
     #[serde(default)]
     pub metering: Vec<MeteringDelta>,
@@ -326,22 +351,65 @@ pub struct DeadLetter {
 enum DeadRec {
     /// The letter as it now stands (a later record for the same id replaces it).
     Letter(DeadLetter),
-    /// Gone: landed, or re-posted and READY.
+    /// The operator's verdict, written before any re-post (`landed: false` re-posts).
+    Verdict { id: u64, landed: bool },
+    /// Gone: its re-posts answered READY.
     Cleared { id: u64 },
-    /// A re-post under `op`, written before it is sent.
-    Reposted { id: u64, op: Op },
 }
 
 /// The operator's verdict on a dead letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// A `landed-unknown` letter did land: drop it.
+    /// A `landed-unknown` letter did land: only its absorbed negatives are posted.
     Landed,
-    /// Re-post it under a new op id.
-    Repost,
+    /// It did not land (or was `refused`): re-post it, then its absorbed negatives.
+    NotLanded,
 }
 
-// ── the queue ────────────────────────────────────────────────────────────────────────────────────
+// ── the accumulator and the carves ───────────────────────────────────────────────────────────────
+
+/// A metering row's key in the accumulator.
+type MeterKey = (String, u64, String, String, u64);
+
+fn meter_key(r: &MeteringDelta) -> MeterKey {
+    (
+        r.key_id.clone(),
+        r.bucket,
+        r.model.clone(),
+        r.provider.clone(),
+        r.priced_from_ms,
+    )
+}
+
+fn meter_add(into: &mut MeteringDelta, r: &MeteringDelta, sign: bool) {
+    let f = |a: u64, b: u64| {
+        if sign {
+            a.saturating_add(b)
+        } else {
+            a.saturating_sub(b)
+        }
+    };
+    into.requests = f(into.requests, r.requests);
+    into.billable_requests = f(into.billable_requests, r.billable_requests);
+    into.tokens_input = f(into.tokens_input, r.tokens_input);
+    into.tokens_output = f(into.tokens_output, r.tokens_output);
+    into.tokens_cache_read = f(into.tokens_cache_read, r.tokens_cache_read);
+    into.tokens_cache_write = f(into.tokens_cache_write, r.tokens_cache_write);
+    for (k, n) in &r.usage_units {
+        let slot = into.usage_units.entry(k.clone()).or_insert(0);
+        *slot = f(*slot, *n);
+    }
+    into.usage_units.retain(|_, n| *n != 0);
+}
+
+fn meter_zero(r: &MeteringDelta) -> bool {
+    r.requests == 0
+        && r.tokens_input == 0
+        && r.tokens_output == 0
+        && r.tokens_cache_read == 0
+        && r.tokens_cache_write == 0
+        && r.usage_units.is_empty()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KindState {
@@ -354,12 +422,11 @@ enum KindState {
 #[derive(Debug, Clone)]
 struct Entry {
     batch: Batch,
-    sent: bool,
     usage: KindState,
     metering: KindState,
-    /// How long it has been applied-unknown while the store's probes succeeded, ms (this boot).
+    /// How long it has been applied-unknown while the heartbeat succeeded, ms (this boot).
     unknown_ms: u64,
-    /// The last send's answer time, wall-clock ms.
+    /// The last answer's time, wall-clock ms (this boot).
     last_answer_ms: Option<u64>,
 }
 
@@ -377,7 +444,6 @@ impl Entry {
         };
         Entry {
             batch,
-            sent: false,
             usage,
             metering,
             unknown_ms: 0,
@@ -411,28 +477,126 @@ impl Entry {
     }
 }
 
+/// The state the writer thread and the sender share (short holds, never across I/O).
 #[derive(Default)]
-struct Queue {
+struct Core {
+    /// THE UNSENT ACCUMULATOR, usage: one net cell per (bucket, window).
+    acc: BTreeMap<(String, u64), CellCount>,
+    /// THE UNSENT ACCUMULATOR, metering: one row per key.
+    acc_meter: BTreeMap<MeterKey, MeteringDelta>,
+    /// Carves not yet resolved, in sequence order.
     entries: VecDeque<Entry>,
     next_seq: u64,
-    /// `(bucket, last sequence filtered)`.
-    dropped: Vec<(String, u64)>,
+    window_seq: u64,
     dead: Vec<DeadLetter>,
     next_dead: u64,
+    /// Ops whose first applied-unknown answer is recorded.
+    failing: BTreeMap<Op, u64>,
+    /// The accumulator's high-water alarm is raised.
+    alarmed: bool,
 }
 
-impl Queue {
-    /// The standing `refused` letter holding `(bucket, window)`: later deltas fold into it.
-    fn absorbing(&self, bucket: &str, window: u64) -> Option<usize> {
+impl Core {
+    fn add_cells(&mut self, cells: &[CellCount], sign: bool) {
+        for c in cells {
+            let key = (c.bucket.clone(), c.window);
+            let add = if sign { c.clone() } else { c.negated() };
+            let slot = self
+                .acc
+                .entry(key.clone())
+                .or_insert_with(|| CellCount::new(&c.bucket, c.window));
+            slot.merge(&add);
+            if slot.is_zero() {
+                self.acc.remove(&key);
+            }
+        }
+    }
+
+    fn add_rows(&mut self, rows: &[MeteringDelta], sign: bool) {
+        for r in rows {
+            let key = meter_key(r);
+            match self.acc_meter.get_mut(&key) {
+                Some(into) => {
+                    meter_add(into, r, sign);
+                    if meter_zero(into) {
+                        self.acc_meter.remove(&key);
+                    }
+                }
+                None if sign => {
+                    self.acc_meter.insert(key, r.clone());
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// The standing letter absorbing a later `(bucket, window)` delta: a `refused` letter takes it
+    /// whole; a `landed-unknown` one only its negative part (`negative`).
+    fn absorbing(&self, bucket: &str, window: u64, negative: bool) -> Option<usize> {
         self.dead.iter().position(|d| {
-            d.state == DeadState::Refused
+            (d.state == DeadState::Refused || negative)
+                && d.kind == Kind::Usage
                 && d.cells.iter().any(|c| c.bucket == bucket && c.window == window)
         })
     }
 
-    /// Whether batch `seq` leaves `bucket` out.
-    fn drops(&self, bucket: &str, seq: u64) -> bool {
-        self.dropped.iter().any(|(b, s)| b == bucket && seq <= *s)
+    /// CARVE up to the cap out of the accumulator, in its stable order, each cell's whole net.
+    fn carve(&mut self) -> Option<Batch> {
+        if self.acc.is_empty() && self.acc_meter.is_empty() {
+            return None;
+        }
+        let mut bytes = 0usize;
+        let mut cells = Vec::new();
+        let keys: Vec<(String, u64)> = self.acc.keys().cloned().collect();
+        for k in keys {
+            let size = serde_json::to_vec(&self.acc[&k]).map(|v| v.len()).unwrap_or(0);
+            if !cells.is_empty() && (cells.len() >= CARVE_MAX_CELLS || bytes + size > CARVE_MAX_BYTES)
+            {
+                break;
+            }
+            bytes += size;
+            cells.push(self.acc.remove(&k).expect("listed"));
+        }
+        let mut metering = Vec::new();
+        let keys: Vec<MeterKey> = self.acc_meter.keys().cloned().collect();
+        for k in keys {
+            let size = serde_json::to_vec(&self.acc_meter[&k])
+                .map(|v| v.len())
+                .unwrap_or(0);
+            if !(cells.is_empty() && metering.is_empty())
+                && (metering.len() >= CARVE_MAX_CELLS || bytes + size > CARVE_MAX_BYTES)
+            {
+                break;
+            }
+            bytes += size;
+            metering.push(self.acc_meter.remove(&k).expect("listed"));
+        }
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        Some(Batch {
+            seq,
+            usage_op: Op::mint(),
+            metering_op: Op::mint(),
+            cells,
+            metering,
+            t_sent: now_ms(),
+        })
+    }
+
+    fn unrecorded(&self) -> HashSet<String> {
+        self.acc
+            .keys()
+            .map(|(b, _)| b.clone())
+            .chain(
+                self.entries
+                    .iter()
+                    .flat_map(|e| e.batch.cells.iter().map(|c| c.bucket.clone())),
+            )
+            .collect()
+    }
+
+    fn working(&self) -> bool {
+        !self.acc.is_empty() || !self.acc_meter.is_empty() || !self.entries.is_empty()
     }
 }
 
@@ -441,45 +605,80 @@ impl Queue {
 pub enum Medium {
     /// A data directory: the spool and the dead-letter file live under it.
     Dir(PathBuf),
-    /// No data directory: a RAM queue.
+    /// No data directory: RAM.
     Memory,
 }
 
 /// Counters a test reads.
 #[derive(Debug, Default)]
 pub struct Stats {
-    /// Batches the spooler formed.
-    pub batches: AtomicU64,
+    /// Takes that folded something.
+    pub folds: AtomicU64,
+    /// Carves.
+    pub carves: AtomicU64,
     /// Store sends (first sends and replays, whole ops and parts).
     pub sends: AtomicU64,
     /// Replays of an unresolved op.
     pub replays: AtomicU64,
-    /// Merges of never-sent batches.
-    pub merges: AtomicU64,
     /// REFUSED answers met.
     pub refusals: AtomicU64,
+    /// Spool `fsync`s (0 without a data directory).
+    pub fsyncs: AtomicU64,
+    /// The OS thread the last `fsync` ran on (a test proves it is never a request thread).
+    pub fsync_thread: Mutex<Option<std::thread::ThreadId>>,
+}
+
+/// How a writer round is acknowledged once durable.
+enum Ack {
+    Async(tokio::sync::oneshot::Sender<Result<(), String>>),
+}
+
+impl Ack {
+    fn send(self, r: Result<(), String>) {
+        match self {
+            Ack::Async(tx) => {
+                let _ = tx.send(r);
+            }
+        }
+    }
+}
+
+enum WriterMsg {
+    /// Records (and dead-letter records) for the next round.
+    Write {
+        recs: Vec<Rec>,
+        dead: Vec<DeadRec>,
+        ack: Ack,
+    },
+    /// Records that need no `fsync` of their own (READY, `failing`): they ride the next fold's.
+    Lazy(Vec<Rec>),
+    /// The sender asks for a batch.
+    Carve(tokio::sync::oneshot::Sender<Option<Batch>>),
+    /// Take now (a drain), then write.
+    Take(Ack),
+    /// Stop after this round; acknowledged once it is written.
+    Stop(Ack),
 }
 
 /// THE RECORDER of one opened store.
 pub struct Recorder {
     ledger: Arc<dyn Ledger>,
     store: Arc<dyn PostStore>,
-    spool: Option<Mutex<Spool>>,
-    dead_file: Option<Ledgerette>,
-    queue: Mutex<Queue>,
+    core: Mutex<Core>,
     stamps: Arc<Stamps>,
-    stats: Stats,
+    stats: Arc<Stats>,
+    writer: Mutex<mpsc::Sender<WriterMsg>>,
     wake_sender: tokio::sync::Notify,
     stopped: AtomicBool,
-    window: Duration,
     /// Serializes the sender's work (the task and a boot or shutdown drain never interleave).
     sending: tokio::sync::Mutex<()>,
+    spooled: bool,
 }
 
 impl std::fmt::Debug for Recorder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Recorder")
-            .field("spooled", &self.spool.is_some())
+            .field("spooled", &self.spooled)
             .finish_non_exhaustive()
     }
 }
@@ -487,21 +686,28 @@ impl std::fmt::Debug for Recorder {
 /// What the spool and the dead-letter file held at open.
 #[derive(Debug, Default)]
 pub struct Recovered {
-    /// Unresolved batches to deliver before hydrate.
-    pub batches: usize,
-    /// Their cells (the replay deadline grows with them).
+    /// Unresolved carves to deliver before hydrate.
+    pub carves: usize,
+    /// Cells in the unsent accumulator and those carves (the replay deadline grows with them).
     pub cells: usize,
-    /// The `refused` dead letters' cells: RAM `cur` counts them (not `posted_hi`). A
+    /// The `refused` dead letters' cells: RAM `cur` counts them (never `posted_hi`). A
     /// `landed-unknown` letter is never added to `cur`.
     pub refused_cells: Vec<CellCount>,
 }
 
 impl Recovered {
-    /// Boot replay's deadline: 120 s, plus 2 s per 4,096 backlog cells.
+    /// Boot replay's base deadline: 120 s, plus 2 s per 4,096 backlog cells (each refusal met
+    /// extends it by 30 s more, as the replay runs).
     #[must_use]
     pub fn deadline(&self) -> Duration {
-        let per = u64::try_from(self.cells.div_ceil(MERGE_MAX_CELLS)).unwrap_or(u64::MAX);
+        let per = u64::try_from(self.cells.div_ceil(CARVE_MAX_CELLS)).unwrap_or(u64::MAX);
         REPLAY_DEADLINE + Duration::from_secs(per.saturating_mul(2))
+    }
+
+    /// Whether anything is to deliver.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.cells > 0 || self.carves > 0
     }
 }
 
@@ -511,12 +717,12 @@ fn io_err(e: impl std::fmt::Display) -> String {
 
 impl Recorder {
     /// A recorder over `store`, taking from `ledger` every `window`, keeping its records on
-    /// `medium`. With a data directory the spool and dead letters are read back (an `ephemeral`
-    /// store discards both first).
+    /// `medium`, its spool writer started on an OS thread of its own. With a data directory the
+    /// spool and dead letters are read back (an `ephemeral` store discards both first).
     ///
     /// # Errors
     ///
-    /// The data directory could not be read or written.
+    /// The data directory could not be read or written, or the writer thread could not start.
     pub fn open(
         ledger: Arc<dyn Ledger>,
         store: Arc<dyn PostStore>,
@@ -525,7 +731,7 @@ impl Recorder {
         window: Duration,
         syncer: Arc<dyn spool::Syncer>,
     ) -> Result<(Arc<Recorder>, Recovered), String> {
-        let mut queue = Queue::default();
+        let mut core = Core::default();
         let (spool, dead_file) = match medium {
             Medium::Dir(dir) => {
                 let spool_dir = dir.join("money-spool");
@@ -535,53 +741,75 @@ impl Recorder {
                     dead.discard().map_err(io_err)?;
                 }
                 let (s, recs) = Spool::open(&spool_dir, syncer).map_err(io_err)?;
-                fold(&mut queue, recs);
+                fold(&mut core, recs);
                 for body in dead.read().map_err(io_err)? {
                     match serde_json::from_slice::<DeadRec>(&body) {
                         Ok(DeadRec::Letter(l)) => {
-                            queue.next_dead = queue.next_dead.max(l.id + 1);
-                            queue.dead.retain(|d| d.id != l.id);
-                            queue.dead.push(l);
+                            core.next_dead = core.next_dead.max(l.id + 1);
+                            core.dead.retain(|d| d.id != l.id);
+                            core.dead.push(l);
                         }
-                        Ok(DeadRec::Cleared { id } | DeadRec::Reposted { id, .. }) => {
-                            queue.dead.retain(|d| d.id != id);
-                        }
-                        Err(_) => {}
+                        Ok(DeadRec::Cleared { id }) => core.dead.retain(|d| d.id != id),
+                        Ok(DeadRec::Verdict { .. }) | Err(_) => {}
                     }
                 }
-                (Some(Mutex::new(s)), Some(dead))
+                (Some(s), Some(dead))
             }
             Medium::Memory => (None, None),
         };
         let recovered = Recovered {
-            batches: queue.entries.len(),
-            cells: queue.entries.iter().map(|e| e.batch.cells.len()).sum(),
-            refused_cells: queue
+            carves: core.entries.len(),
+            cells: core.acc.len()
+                + core.acc_meter.len()
+                + core
+                    .entries
+                    .iter()
+                    .map(|e| e.batch.cells.len())
+                    .sum::<usize>(),
+            refused_cells: core
                 .dead
                 .iter()
                 .filter(|d| d.state == DeadState::Refused)
                 .flat_map(|d| d.cells.clone())
                 .collect(),
         };
-        let window_ms = u64::try_from(window.as_millis()).unwrap_or(u64::MAX);
+        let window_ms = u64::try_from(window.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        let (tx, rx) = mpsc::channel();
+        let stamps = Arc::new(Stamps::new());
+        *stamps
+            .unrecorded
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = core.unrecorded();
+        stamps.working.store(core.working(), Ordering::Relaxed);
         let rec = Arc::new(Recorder {
             ledger,
             store,
-            stamps: Arc::new(Stamps::new(window_ms, spool.is_some())),
-            spool,
-            dead_file,
-            queue: Mutex::new(queue),
-            stats: Stats::default(),
+            stamps,
+            spooled: spool.is_some(),
+            core: Mutex::new(core),
+            stats: Arc::new(Stats::default()),
+            writer: Mutex::new(tx),
             wake_sender: tokio::sync::Notify::new(),
             stopped: AtomicBool::new(false),
-            window,
             sending: tokio::sync::Mutex::new(()),
         });
-        rec.restamp();
+        let writer = Writer {
+            rec: Arc::downgrade(&rec),
+            rx,
+            spool,
+            dead_file,
+            window: Duration::from_millis(window_ms),
+        };
+        std::thread::Builder::new()
+            .name("busbar-spend-spool".to_string())
+            .spawn(move || writer.run())
+            .map_err(|e| format!("the spend spool writer thread could not start: {e}"))?;
         Ok((rec, recovered))
     }
 
-    /// The shared stamps strict mode reads.
+    /// The shared stamps strict mode and the sweep read.
     #[must_use]
     pub fn stamps(&self) -> Arc<Stamps> {
         Arc::clone(&self.stamps)
@@ -589,8 +817,8 @@ impl Recorder {
 
     /// Counters.
     #[must_use]
-    pub fn stats(&self) -> &Stats {
-        &self.stats
+    pub fn stats(&self) -> Arc<Stats> {
+        Arc::clone(&self.stats)
     }
 
     /// The store.
@@ -599,7 +827,19 @@ impl Recorder {
         Arc::clone(&self.store)
     }
 
-    /// Unresolved batches.
+    /// Whether a data directory backs the recorder.
+    #[must_use]
+    pub fn spooled(&self) -> bool {
+        self.spooled
+    }
+
+    /// Whether anything is unrecorded (accumulated or carved and unresolved).
+    #[must_use]
+    pub fn working(&self) -> bool {
+        self.lock().working()
+    }
+
+    /// Carves not yet resolved.
     #[must_use]
     pub fn unresolved(&self) -> usize {
         self.lock().entries.len()
@@ -611,175 +851,165 @@ impl Recorder {
         self.lock().dead.clone()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
-        self.queue
+    fn lock(&self) -> std::sync::MutexGuard<'_, Core> {
+        self.core
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Append `recs` to the spool and sync them (no-op without a data directory).
-    fn spool(&self, recs: &[Rec]) -> Result<(), String> {
-        let Some(spool) = &self.spool else {
-            return Ok(());
-        };
-        let mut s = spool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if s.failed() {
-            s.reopen().map_err(io_err)?;
-        }
-        s.append(recs).map_err(io_err)?;
-        self.stamps.spool_ok_ms.store(now_ms(), Ordering::Relaxed);
-        Ok(())
-    }
-
-    fn dead_append(&self, rec: &DeadRec) {
-        if let Some(f) = &self.dead_file {
-            if let Err(e) = f.append(&[serde_json::to_vec(rec).unwrap_or_default()]) {
-                tracing::error!(error = %e, "money: the dead-letter file could not be written");
-            }
-        }
-    }
-
-    /// Recompute the oldest-unresolved stamp (dead letters are not in the queue, so excluded).
-    fn restamp(&self) {
-        let oldest = self
+    fn post_msg(&self, msg: WriterMsg) -> bool {
+        self.writer
             .lock()
-            .entries
-            .iter()
-            .map(|e| e.batch.at_ms)
-            .min()
-            .unwrap_or(u64::MAX);
-        self.stamps.oldest_ms.store(oldest, Ordering::Relaxed);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .send(msg)
+            .is_ok()
     }
 
-    /// Start the spooler, the sender and the idle probe on the current runtime.
+    /// Queue `recs` (and `dead`) for the writer's next round, and AWAIT its `fsync`.
+    async fn sync(&self, recs: Vec<Rec>, dead: Vec<DeadRec>) -> Result<(), String> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if !self.post_msg(WriterMsg::Write {
+            recs,
+            dead,
+            ack: Ack::Async(tx),
+        }) {
+            return Err("the spend spool writer has stopped".to_string());
+        }
+        rx.await
+            .unwrap_or_else(|_| Err("the spend spool writer has stopped".to_string()))
+    }
+
+    /// Queue `recs` without waiting (a READY needs no `fsync` of its own: lost, its op replays and
+    /// dedupes).
+    fn lazy(&self, recs: Vec<Rec>) {
+        self.post_msg(WriterMsg::Lazy(recs));
+    }
+
+    /// Republish the unrecorded set and the work stamp.
+    fn restamp(&self) {
+        let (set, working) = {
+            let core = self.lock();
+            (core.unrecorded(), core.working())
+        };
+        *self
+            .stamps
+            .unrecorded
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = set;
+        let was = self.stamps.working.swap(working, Ordering::Relaxed);
+        if working && !was {
+            self.stamps.progressed(now_ms());
+        }
+    }
+
+    /// Start the sender and the heartbeat on the current runtime (the spool writer runs on its own
+    /// thread from [`Recorder::open`]).
     pub fn spawn(self: &Arc<Self>) {
-        let spooler = Arc::clone(self);
-        tokio::spawn(async move { spooler.spool_loop().await });
         let sender = Arc::clone(self);
         tokio::spawn(async move { sender.send_loop().await });
-        let prober = Arc::clone(self);
-        tokio::spawn(async move { prober.probe_loop().await });
+        let beat = Arc::clone(self);
+        tokio::spawn(async move { beat.heartbeat_loop().await });
     }
 
-    /// Stop the tasks (a test's restart; a process exit).
-    pub fn stop(&self) {
+    /// Stop the tasks and the writer thread, AWAITING the writer's last round.
+    pub async fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
         self.wake_sender.notify_one();
-    }
-
-    // ── the spooler ────────────────────────────────────────────────────────────────────────────
-
-    async fn spool_loop(self: Arc<Self>) {
-        let mut tick = tokio::time::interval(self.window);
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            if self.stopped.load(Ordering::Acquire) {
-                return;
-            }
-            let me = Arc::clone(&self);
-            // The take and the `fsync` run on the blocking pool: the spooler never parks a runtime
-            // worker on a disk.
-            let _ = tokio::task::spawn_blocking(move || me.take_once()).await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.post_msg(WriterMsg::Stop(Ack::Async(tx))) {
+            let _ = rx.await;
         }
     }
 
-    /// ONE TAKE: the pending maps into one batch with the next SEQUENCE (dead-lettered cells folded
-    /// into their letters), spooled and synced, queued for the sender. Answers whether a batch was
-    /// formed.
-    pub fn take_once(&self) -> bool {
-        let taken_at = now_ms();
-        let cells = self.ledger.take_pending();
-        let metering = self.ledger.take_metering();
-        self.stamps.last_take_ms.store(taken_at, Ordering::Relaxed);
-        let mut cells = record::merged(&cells);
-        // Later deltas of a dead-lettered (bucket, window) fold into its letter, never posted.
-        let mut folded: Vec<(DeadLetter, CellCount)> = Vec::new();
-        {
-            let mut q = self.lock();
-            cells.retain(|c| match q.absorbing(&c.bucket, c.window) {
-                Some(i) => {
-                    let letter = &mut q.dead[i];
-                    match letter
-                        .cells
-                        .iter_mut()
-                        .find(|d| d.bucket == c.bucket && d.window == c.window)
-                    {
-                        Some(d) => d.merge(c),
-                        None => letter.cells.push(c.clone()),
-                    }
-                    folded.push((letter.clone(), c.clone()));
-                    false
-                }
-                None => true,
-            });
-        }
-        for (letter, cell) in folded {
-            self.ledger.unposted(std::slice::from_ref(&cell));
-            self.dead_append(&DeadRec::Letter(letter));
-        }
-        if cells.is_empty() && metering.is_empty() {
-            if self.spool.is_some() {
-                self.stamps.spool_ok_ms.store(taken_at, Ordering::Relaxed);
-            }
-            self.compact_if_idle();
-            return false;
-        }
-        // Capped like a merge: a window that holds more is several batches, in sequence order.
-        let chunks = chunked(cells, metering);
-        for (cells, metering) in chunks {
-            let batch = {
-                let mut q = self.lock();
-                let seq = q.next_seq;
-                q.next_seq += 1;
-                Batch {
-                    seq,
-                    usage_op: Op::mint(),
-                    metering_op: Op::mint(),
-                    cells,
-                    metering,
-                    at_ms: taken_at,
-                }
-            };
-            self.ledger.carried(&batch.cells, batch.seq);
-            self.stats.batches.fetch_add(1, Ordering::Relaxed);
-            if let Err(e) = self.spool(&[Rec::Batch(batch.clone())]) {
-                // The batch stays in RAM; the spool's age feeds strict mode and is alarmed.
-                tracing::error!(error = %e, seq = batch.seq,
-                    "money spool: a batch could not be made durable on the data directory; it is held in RAM and still sent");
-            }
-            self.lock().entries.push_back(Entry::new(batch));
-        }
-        self.restamp();
-        self.wake_sender.notify_one();
-        true
-    }
+    // ── the writer thread's work ───────────────────────────────────────────────────────────────
 
-    fn compact_if_idle(&self) {
-        let Some(spool) = &self.spool else {
-            return;
+    /// ONE TAKE: the pending maps added into the accumulator (later deltas of a dead-lettered cell
+    /// fold into its letter instead). Answers the `fold` record and the letters to write.
+    fn take(&self) -> (Option<Rec>, Vec<DeadRec>) {
+        let stamps = Arc::clone(&self.stamps);
+        let mark = move |bucket: &str| {
+            stamps
+                .unrecorded
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(bucket.to_string());
         };
-        let q = self.lock();
-        if !q.entries.is_empty() {
-            return;
-        }
-        let drops: Vec<Rec> = q
-            .dropped
-            .iter()
-            .filter(|(_, s)| *s >= q.next_seq)
-            .map(|(b, s)| Rec::Drop {
-                bucket: b.clone(),
-                seq: *s,
-            })
-            .collect();
-        drop(q);
-        let mut s = spool.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if s.bytes() > COMPACT_BYTES {
-            // Nothing unresolved: the live generation is only the drops still ahead of the queue.
-            if let Err(e) = s.compact(&drops) {
-                tracing::warn!(error = %e, "money spool: compaction failed; the old generation stands");
+        let cells = self.ledger.take_pending(&mark);
+        let metering = self.ledger.take_metering();
+        let mut dead_recs = Vec::new();
+        let mut unposted: Vec<CellCount> = Vec::new();
+        let mut kept = Vec::new();
+        let rec = {
+            let mut core = self.lock();
+            for c in record::merged(&cells) {
+                let refused = core.absorbing(&c.bucket, c.window, false);
+                let neg = c.signed_part(false);
+                let landed = core.absorbing(&c.bucket, c.window, true);
+                match (refused, landed) {
+                    (Some(i), _) => {
+                        let letter = &mut core.dead[i];
+                        match letter
+                            .cells
+                            .iter_mut()
+                            .find(|d| d.bucket == c.bucket && d.window == c.window)
+                        {
+                            Some(d) => d.merge(&c),
+                            None => letter.cells.push(c.clone()),
+                        }
+                        unposted.push(c);
+                        dead_recs.push(DeadRec::Letter(letter.clone()));
+                    }
+                    (None, Some(i)) if !neg.is_zero() => {
+                        let mut neg = neg;
+                        neg.bucket.clone_from(&c.bucket);
+                        let letter = &mut core.dead[i];
+                        match letter
+                            .absorbed
+                            .iter_mut()
+                            .find(|d| d.bucket == neg.bucket && d.window == neg.window)
+                        {
+                            Some(d) => d.merge(&neg),
+                            None => letter.absorbed.push(neg),
+                        }
+                        dead_recs.push(DeadRec::Letter(letter.clone()));
+                        let mut pos = c.signed_part(true);
+                        pos.bucket.clone_from(&c.bucket);
+                        if !pos.is_zero() {
+                            kept.push(pos);
+                        }
+                    }
+                    _ => kept.push(c),
+                }
             }
+            if kept.is_empty() && metering.is_empty() {
+                None
+            } else {
+                core.add_cells(&kept, true);
+                core.add_rows(&metering, true);
+                let held = core.acc.len() + core.acc_meter.len();
+                if held > ACC_ALARM_CELLS && !core.alarmed {
+                    tracing::error!(cells = held, "money: the unsent spend accumulator has grown past its high-water mark; the store has not taken its work");
+                    core.alarmed = true;
+                } else if held <= ACC_ALARM_CELLS {
+                    core.alarmed = false;
+                }
+                core.window_seq += 1;
+                Some(Rec::Fold {
+                    window_seq: core.window_seq,
+                    cells: kept,
+                    metering,
+                })
+            }
+        };
+        if !unposted.is_empty() {
+            self.ledger.unposted(&unposted);
         }
+        if rec.is_some() {
+            self.stats.folds.fetch_add(1, Ordering::Relaxed);
+            self.restamp();
+            self.wake_sender.notify_one();
+        }
+        (rec, dead_recs)
     }
 
     // ── the sender ─────────────────────────────────────────────────────────────────────────────
@@ -799,35 +1029,62 @@ impl Recorder {
         }
     }
 
-    /// Work the LOWEST unresolved sequence once: merge a never-sent run, record `sent`, then send
-    /// or replay its two ops (and their parts, one at a time). Answers whether it resolved a batch.
+    /// The LOWEST unresolved carve, or a new one asked of the writer.
+    async fn front(&self) -> Option<Entry> {
+        if let Some(e) = self.lock().entries.front().cloned() {
+            return Some(e);
+        }
+        if self.lock().acc.is_empty() && self.lock().acc_meter.is_empty() {
+            return None;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if !self.post_msg(WriterMsg::Carve(tx)) {
+            return None;
+        }
+        let batch = rx.await.ok().flatten()?;
+        self.stats.carves.fetch_add(1, Ordering::Relaxed);
+        Some(Entry::new(batch))
+    }
+
+    /// Work the LOWEST unresolved carve once: send or replay its two ops (each tracked on its own;
+    /// parts one at a time). Answers whether it resolved a carve.
     pub async fn send_front(&self) -> bool {
         let _one = self.sending.lock().await;
-        let Some(mut entry) = self.prepare_front() else {
+        let Some(mut entry) = self.front().await else {
             return false;
         };
+        let now = now_ms();
+        // A carve unresolved 24 h after it was sent is dead-lettered, even mid-outage: its op ids
+        // may not be re-issued past their retention.
+        if now.saturating_sub(entry.batch.t_sent) > RETENTION_MS {
+            self.dead_rest(
+                &mut entry,
+                DeadState::LandedUnknown,
+                "unresolved at the op-id retention",
+            )
+            .await;
+            return self.finish(entry);
+        }
         let (u, m) = tokio::join!(
             self.work_kind(&entry, Kind::Usage),
             self.work_kind(&entry, Kind::Metering)
         );
-        let unknown = self.apply(&mut entry, Kind::Usage, u) | self.apply(&mut entry, Kind::Metering, m);
+        let unknown_u = self.apply(&mut entry, Kind::Usage, u).await;
+        let unknown_m = self.apply(&mut entry, Kind::Metering, m).await;
         let now = now_ms();
         let since = entry.last_answer_ms.replace(now).unwrap_or(now);
-        if unknown {
-            // The bound runs only while the store's probes succeed: an outage is retried without
-            // limit and never dead-lettered.
-            let answering = now.saturating_sub(self.stamps.last_trip_ms.load(Ordering::Relaxed))
-                <= STRICT_AGE_MS;
-            if answering {
+        if unknown_u || unknown_m {
+            // The bound runs only while the heartbeat succeeds: an outage is retried without limit
+            // and never dead-lettered.
+            if self.stamps.heartbeat_ok(now) {
                 entry.unknown_ms = entry.unknown_ms.saturating_add(now.saturating_sub(since));
-                let lapsed = entry.unknown_ms > MAX_UNKNOWN.as_millis() as u64;
-                let near_retention = now.saturating_sub(entry.batch.at_ms) > RETENTION_MARGIN_MS;
-                if lapsed || near_retention {
+                if entry.unknown_ms > MAX_UNKNOWN.as_millis() as u64 {
                     self.dead_rest(
                         &mut entry,
                         DeadState::LandedUnknown,
-                        "applied-unknown while the store answered other calls",
-                    );
+                        "applied-unknown while the store's heartbeat succeeded",
+                    )
+                    .await;
                 }
             }
         }
@@ -838,77 +1095,9 @@ impl Recorder {
         false
     }
 
-    /// The front entry, after merging a never-sent run (capped) and recording `sent`.
-    fn prepare_front(&self) -> Option<Entry> {
-        let q = self.lock();
-        let front = q.entries.front()?.clone();
-        if front.sent {
-            return Some(front);
-        }
-        // MERGE the contiguous run of never-sent batches at the front, in sequence order, up to the
-        // caps. Split children are never in a never-sent batch, so they are never merged.
-        let mut run: Vec<Entry> = Vec::new();
-        let (mut cells, mut bytes) = (0usize, 0usize);
-        for e in q.entries.iter().take_while(|e| !e.sent) {
-            // The drop filters apply BEFORE merging, each by its own batch's sequence (a merged
-            // batch carries the run's highest).
-            let mut e = e.clone();
-            let seq = e.batch.seq;
-            e.batch.cells.retain(|c| !q.drops(&c.bucket, seq));
-            e.batch.metering.retain(|r| !q.drops(&r.key_id, seq));
-            let size = record::encode(&Rec::Batch(e.batch.clone())).len();
-            if !run.is_empty()
-                && (cells + e.batch.cells.len() > MERGE_MAX_CELLS || bytes + size > MERGE_MAX_BYTES)
-            {
-                break;
-            }
-            cells += e.batch.cells.len();
-            bytes += size;
-            run.push(e);
-        }
-        drop(q);
-        let mut entry = if run.len() > 1 {
-            let into = Batch {
-                seq: run[run.len() - 1].batch.seq,
-                usage_op: Op::mint(),
-                metering_op: Op::mint(),
-                cells: record::merged(run.iter().flat_map(|e| e.batch.cells.iter())),
-                metering: run
-                    .iter()
-                    .flat_map(|e| e.batch.metering.iter().cloned())
-                    .collect(),
-                at_ms: run.iter().map(|e| e.batch.at_ms).min().unwrap_or_else(now_ms),
-            };
-            let seqs: Vec<u64> = run.iter().map(|e| e.batch.seq).collect();
-            if self.spool(&[Rec::Merge { seqs, into: into.clone() }]).is_err() {
-                // Not durable: send the front alone rather than an op no record vouches for.
-                front
-            } else {
-                self.stats.merges.fetch_add(1, Ordering::Relaxed);
-                let mut q = self.lock();
-                for _ in 0..run.len() {
-                    q.entries.pop_front();
-                }
-                q.entries.push_front(Entry::new(into.clone()));
-                Entry::new(into)
-            }
-        } else {
-            front
-        };
-        // `sent` is synced before the first send.
-        if let Err(e) = self.spool(&[Rec::Sent { seq: entry.batch.seq }]) {
-            tracing::error!(error = %e, "money spool: a `sent` record could not be synced; sending anyway (the batch replays under its own ops)");
-        }
-        entry.sent = true;
-        if let Some(f) = self.lock().entries.front_mut() {
-            f.sent = true;
-        }
-        Some(entry)
-    }
-
     fn put_back(&self, entry: Entry) {
-        let mut q = self.lock();
-        if let Some(f) = q.entries.front_mut() {
+        let mut core = self.lock();
+        if let Some(f) = core.entries.front_mut() {
             if f.batch.seq == entry.batch.seq {
                 *f = entry;
             }
@@ -917,52 +1106,46 @@ impl Recorder {
 
     fn finish(&self, entry: Entry) -> bool {
         {
-            let mut q = self.lock();
-            if q.entries.front().is_some_and(|f| f.batch.seq == entry.batch.seq) {
-                q.entries.pop_front();
+            let mut core = self.lock();
+            if core
+                .entries
+                .front()
+                .is_some_and(|f| f.batch.seq == entry.batch.seq)
+            {
+                core.entries.pop_front();
+            }
+            for kind in [Kind::Usage, Kind::Metering] {
+                core.failing.remove(&entry.op(kind));
             }
         }
-        self.ledger.landed(&entry.batch.cells, entry.batch.seq);
+        self.stamps.progressed(now_ms());
         self.restamp();
         true
     }
 
-    /// The usage body of `cells` of batch `seq`, without dropped buckets.
-    fn usage_of(&self, seq: u64, cells: &[CellCount]) -> Vec<(String, u64, UsageDelta)> {
-        let q = self.lock();
-        let kept: Vec<&CellCount> = cells.iter().filter(|c| !q.drops(&c.bucket, seq)).collect();
-        drop(q);
-        record::usage_body(kept)
-    }
-
-    fn metering_of(&self, seq: u64, rows: &[MeteringDelta]) -> Vec<MeteringDelta> {
-        let q = self.lock();
-        rows.iter()
-            .filter(|r| !q.drops(&r.key_id, seq))
-            .cloned()
-            .collect()
-    }
-
     /// Send `kind`'s whole op, or its undone parts one at a time.
     async fn work_kind(&self, entry: &Entry, kind: Kind) -> KindWork {
-        match &match kind {
+        let state = match kind {
             Kind::Usage => entry.usage.clone(),
             Kind::Metering => entry.metering.clone(),
-        } {
+        };
+        match state {
             KindState::Done => KindWork::Unchanged,
             KindState::Pending => {
-                let out = self.post(entry, kind, entry.op(kind), 0, entry.len(kind)).await;
+                let out = self
+                    .post(entry, kind, entry.op(kind), 0, entry.len(kind))
+                    .await;
                 KindWork::Whole(out)
             }
             KindState::Parts(parts) => {
                 let mut outs = Vec::new();
                 for (part, done) in parts {
-                    if *done {
+                    if done {
                         continue;
                     }
                     let out = self.post(entry, kind, part.op, part.lo, part.hi).await;
-                    let stop = matches!(out, Outcome::Unknown(_) | Outcome::NotApplied);
-                    outs.push((*part, out));
+                    let stop = matches!(out, Outcome::Unknown | Outcome::NotApplied);
+                    outs.push((part, out));
                     if stop {
                         break; // replay this part first: one in flight
                     }
@@ -974,10 +1157,9 @@ impl Recorder {
 
     async fn post(&self, entry: &Entry, kind: Kind, op: Op, lo: usize, hi: usize) -> Outcome {
         self.stats.sends.fetch_add(1, Ordering::Relaxed);
-        let seq = entry.batch.seq;
         let res = match kind {
             Kind::Usage => {
-                let body = self.usage_of(seq, entry.batch.cells.get(lo..hi).unwrap_or_default());
+                let body = record::usage_body(entry.batch.cells.get(lo..hi).unwrap_or_default());
                 if body.is_empty() {
                     Ok(())
                 } else {
@@ -985,11 +1167,11 @@ impl Recorder {
                 }
             }
             Kind::Metering => {
-                let body = self.metering_of(seq, entry.batch.metering.get(lo..hi).unwrap_or_default());
+                let body = entry.batch.metering.get(lo..hi).unwrap_or_default();
                 if body.is_empty() {
                     Ok(())
                 } else {
-                    self.store.add_metering_batch(op, &body).await
+                    self.store.add_metering_batch(op, body).await
                 }
             }
         };
@@ -1001,22 +1183,43 @@ impl Recorder {
             }
             Err(StoreFailure::Refused(t)) => Outcome::Refused(t),
             Err(StoreFailure::Overloaded) => Outcome::NotApplied,
-            Err(StoreFailure::Failed(t) | StoreFailure::Fault(t)) => Outcome::Unknown(t),
+            Err(StoreFailure::Failed(t) | StoreFailure::Fault(t)) => {
+                tracing::debug!(op = %op, error = %t, "money: an op's answer proves nothing; it replays under the same op id");
+                Outcome::Unknown
+            }
         };
-        if matches!(out, Outcome::Applied | Outcome::Refused(_)) {
-            self.stamps.tripped(now_ms());
-        }
-        if matches!(out, Outcome::Unknown(_) | Outcome::NotApplied) {
-            self.stats.replays.fetch_add(1, Ordering::Relaxed);
-        }
-        if matches!(out, Outcome::Refused(_)) {
-            self.stats.refusals.fetch_add(1, Ordering::Relaxed);
+        let now = now_ms();
+        match &out {
+            Outcome::Applied => {
+                self.stamps.progressed(now);
+            }
+            Outcome::Refused(_) => {
+                // A bisect makes progress.
+                self.stamps.progressed(now);
+                self.stats.refusals.fetch_add(1, Ordering::Relaxed);
+            }
+            Outcome::Unknown => {
+                self.stats.replays.fetch_add(1, Ordering::Relaxed);
+                let first = {
+                    let mut core = self.lock();
+                    let fresh = !core.failing.contains_key(&op);
+                    core.failing.entry(op).or_insert(now);
+                    fresh
+                };
+                if first {
+                    self.lazy(vec![Rec::Failing { op, t_first: now }]);
+                }
+            }
+            Outcome::NotApplied => {
+                self.stats.replays.fetch_add(1, Ordering::Relaxed);
+            }
         }
         out
     }
 
-    /// Apply `kind`'s answers to `entry`. Answers whether an op is still applied-unknown.
-    fn apply(&self, entry: &mut Entry, kind: Kind, work: KindWork) -> bool {
+    /// Apply `kind`'s answers to `entry` (that op alone). Answers whether it is still
+    /// applied-unknown.
+    async fn apply(&self, entry: &mut Entry, kind: Kind, work: KindWork) -> bool {
         let mut parts = match entry.kind(kind).clone() {
             KindState::Parts(p) => p,
             KindState::Pending => vec![(
@@ -1036,33 +1239,47 @@ impl Recorder {
         };
         let mut unknown = false;
         let mut split = false;
+        let mut ready = Vec::new();
         for (part, out) in outs {
             let Some(at) = parts.iter().position(|(p, _)| p.op == part.op) else {
                 continue;
             };
             match out {
                 Outcome::Applied => {
-                    // A READY needs no `fsync` of its own: lost, the op replays and dedupes.
-                    let _ = self.spool(&[Rec::Ready { op: part.op }]);
+                    ready.push(Rec::Ready { op: part.op });
+                    if kind == Kind::Usage {
+                        self.ledger
+                            .landed(entry.batch.cells.get(part.lo..part.hi).unwrap_or_default());
+                    }
                     parts[at].1 = true;
                 }
                 Outcome::Refused(why) if part.hi - part.lo <= 1 => {
-                    self.dead_range(entry, kind, (part.lo, part.hi), DeadState::Refused, &why);
+                    self.dead_range(entry, kind, (part.lo, part.hi), DeadState::Refused, &why)
+                        .await;
                     parts[at].1 = true;
                 }
                 Outcome::Refused(_) => {
-                    // BISECT: two halves, each under a new op.
+                    // BISECT the refused op: two halves, each under a new op, its sequence kept.
                     let mid = part.lo + (part.hi - part.lo) / 2;
-                    let halves = [
-                        (Part { op: Op::mint(), lo: part.lo, hi: mid }, false),
-                        (Part { op: Op::mint(), lo: mid, hi: part.hi }, false),
-                    ];
-                    parts.splice(at..=at, halves);
+                    let half = |lo, hi| {
+                        (
+                            Part {
+                                op: Op::mint(),
+                                lo,
+                                hi,
+                            },
+                            false,
+                        )
+                    };
+                    parts.splice(at..=at, [half(part.lo, mid), half(mid, part.hi)]);
                     split = true;
                 }
                 Outcome::NotApplied => {}
-                Outcome::Unknown(_) => unknown = true,
+                Outcome::Unknown => unknown = true,
             }
+        }
+        if !ready.is_empty() {
+            self.lazy(ready);
         }
         if split {
             let rec = Rec::Split {
@@ -1070,7 +1287,7 @@ impl Recorder {
                 kind,
                 parts: parts.iter().map(|(p, _)| *p).collect(),
             };
-            if self.spool(&[rec]).is_err() {
+            if self.sync(vec![rec], Vec::new()).await.is_err() && self.spooled {
                 // The halves are not durable: keep the refused op as it stood; it is re-sent and
                 // refused again rather than sending parts no record vouches for.
                 return unknown;
@@ -1085,7 +1302,7 @@ impl Recorder {
     }
 
     /// Dead-letter every undone part of `entry` as `state`.
-    fn dead_rest(&self, entry: &mut Entry, state: DeadState, why: &str) {
+    async fn dead_rest(&self, entry: &mut Entry, state: DeadState, why: &str) {
         for kind in [Kind::Usage, Kind::Metering] {
             let ranges: Vec<(usize, usize)> = match entry.kind(kind).clone() {
                 KindState::Done => continue,
@@ -1097,120 +1314,94 @@ impl Recorder {
                     .collect(),
             };
             for r in ranges {
-                self.dead_range(entry, kind, r, state, why);
+                self.dead_range(entry, kind, r, state, why).await;
             }
             *entry.kind(kind) = KindState::Done;
         }
     }
 
-    /// DEAD-LETTER cells (or rows) `lo..hi` of `entry`'s `kind` body: counts to the dead-letter file,
-    /// a synced spool `dead` record, an alarm. A `refused` letter's cells leave `posted_hi` and
-    /// absorb later deltas of their `(bucket, window)`; never-sent batches carrying them are
-    /// rewritten without them.
-    fn dead_range(&self, entry: &Entry, kind: Kind, (lo, hi): (usize, usize), state: DeadState, why: &str) {
+    /// DEAD-LETTER cells (or rows) `lo..hi` of `entry`'s `kind` body: counts to the dead-letter file
+    /// and a `dead` spool record in one synced round, and an alarm. A `refused` letter's cells leave
+    /// `posted_hi`; a `landed-unknown` letter's stay.
+    async fn dead_range(
+        &self,
+        entry: &Entry,
+        kind: Kind,
+        (lo, hi): (usize, usize),
+        state: DeadState,
+        why: &str,
+    ) {
         let (cells, metering): (Vec<CellCount>, Vec<MeteringDelta>) = match kind {
-            Kind::Usage => (entry.batch.cells.get(lo..hi).unwrap_or_default().to_vec(), Vec::new()),
-            Kind::Metering => (Vec::new(), entry.batch.metering.get(lo..hi).unwrap_or_default().to_vec()),
+            Kind::Usage => (
+                entry.batch.cells.get(lo..hi).unwrap_or_default().to_vec(),
+                Vec::new(),
+            ),
+            Kind::Metering => (
+                Vec::new(),
+                entry
+                    .batch
+                    .metering
+                    .get(lo..hi)
+                    .unwrap_or_default()
+                    .to_vec(),
+            ),
         };
-        let letter = {
-            let mut q = self.lock();
-            let id = q.next_dead;
-            q.next_dead += 1;
+        let (letter, moved) = {
+            let mut core = self.lock();
+            let id = core.next_dead;
+            core.next_dead += 1;
+            // A refused cell's CURRENT accumulator entry moves into the letter with it, so nothing
+            // of that cell is carved after it (the `dead` record replays the same move).
+            let mut cells = cells;
+            let mut moved = Vec::new();
+            if state == DeadState::Refused {
+                for c in &mut cells {
+                    if let Some(more) = core.acc.remove(&(c.bucket.clone(), c.window)) {
+                        c.merge(&more);
+                        moved.push(more);
+                    }
+                }
+            }
             let letter = DeadLetter {
                 id,
                 kind,
                 state,
                 reason: why.to_string(),
                 cells,
+                absorbed: Vec::new(),
                 metering,
                 at_ms: now_ms(),
             };
-            q.dead.push(letter.clone());
-            letter
+            core.dead.push(letter.clone());
+            (letter, moved)
         };
+        let _ = moved;
         tracing::error!(seq = entry.batch.seq, kind = ?kind, state = ?state, reason = %why,
             buckets = ?letter.cells.iter().map(|c| c.bucket.as_str()).collect::<Vec<_>>(),
             "money: counts were dead-lettered; they await an operator's verdict");
-        self.dead_append(&DeadRec::Letter(letter.clone()));
-        let _ = self.spool(&[Rec::Dead { seq: entry.batch.seq, kind, lo, hi }]);
-        if state == DeadState::Refused && !letter.cells.is_empty() {
-            self.ledger.unposted(&letter.cells);
-            self.rewrite_unsent(&letter);
+        match state {
+            DeadState::Refused => self.ledger.unposted(&letter.cells),
+            DeadState::LandedUnknown => self.ledger.landed(&letter.cells),
+        }
+        self.stamps.progressed(now_ms());
+        let recs = vec![Rec::Dead {
+            seq: entry.batch.seq,
+            kind,
+            lo,
+            hi,
+        }];
+        if let Err(e) = self.sync(recs, vec![DeadRec::Letter(letter)]).await {
+            tracing::error!(error = %e, "money: a dead letter could not be synced");
         }
     }
 
-    /// Every NEVER-SENT queued batch carrying one of `letter`'s `(bucket, window)` cells is
-    /// rewritten without it, under a fresh op pair (its ops never left the node), with a synced,
-    /// audited `rewrite` record. The removed counts fold into the letter.
-    fn rewrite_unsent(&self, letter: &DeadLetter) {
-        let keys: BTreeSet<(String, u64)> =
-            letter.cells.iter().map(|c| (c.bucket.clone(), c.window)).collect();
-        let mut rewrites: Vec<(Batch, Vec<CellCount>)> = Vec::new();
-        let updated = {
-            let mut q = self.lock();
-            for e in q.entries.iter_mut().filter(|e| !e.sent) {
-                let (gone, kept): (Vec<CellCount>, Vec<CellCount>) =
-                    std::mem::take(&mut e.batch.cells)
-                        .into_iter()
-                        .partition(|c| keys.contains(&(c.bucket.clone(), c.window)));
-                e.batch.cells = kept;
-                if gone.is_empty() {
-                    continue;
-                }
-                e.batch.usage_op = Op::mint();
-                e.batch.metering_op = Op::mint();
-                if e.batch.cells.is_empty() {
-                    e.usage = KindState::Done;
-                }
-                rewrites.push((e.batch.clone(), gone));
-            }
-            let at = q.dead.iter().position(|d| d.id == letter.id);
-            if let Some(i) = at {
-                for (_, gone) in &rewrites {
-                    for c in gone {
-                        let l = &mut q.dead[i];
-                        match l.cells.iter_mut().find(|d| d.bucket == c.bucket && d.window == c.window) {
-                            Some(d) => d.merge(c),
-                            None => l.cells.push(c.clone()),
-                        }
-                    }
-                }
-            }
-            at.map(|i| q.dead[i].clone())
-        };
-        for (batch, gone) in rewrites {
-            tracing::warn!(seq = batch.seq, cells = gone.len(),
-                "money audit: a never-sent batch was rewritten without dead-lettered cells, under fresh op ids");
-            self.ledger.unposted(&gone);
-            let _ = self.spool(&[Rec::Rewrite { into: batch }]);
-        }
-        if let Some(l) = updated {
-            self.dead_append(&DeadRec::Letter(l));
-        }
-    }
-
-    /// `bucket` is about to be deleted from the store: a synced `drop(bucket, seq)` record, written
-    /// BEFORE the store deletes it. Every batch up to the next take's sequence leaves its cells
-    /// out, on its first send and every replay; later batches (a re-created bucket) keep theirs.
-    pub fn drop_bucket(&self, bucket: &str) {
-        let seq = {
-            let mut q = self.lock();
-            let seq = q.next_seq;
-            q.dropped.push((bucket.to_string(), seq));
-            seq
-        };
-        if let Err(e) = self.spool(&[Rec::Drop { bucket: bucket.to_string(), seq }]) {
-            tracing::error!(error = %e, bucket, "money spool: a bucket drop could not be synced");
-        }
-    }
-
-    /// THE OPERATOR'S CLEAR of dead letter `id` (audited by the caller): `Landed` drops a
-    /// `landed-unknown` letter; `Repost` re-posts it under a NEW op id, the `reposted` record synced
-    /// before the send.
+    /// THE OPERATOR'S VERDICT on dead letter `id` (audited by the caller), written before any
+    /// re-post: `NotLanded` re-posts its counts under a NEW op id; on EITHER verdict the negatives
+    /// a `landed-unknown` letter absorbed are posted after.
     ///
     /// # Errors
     ///
-    /// No such letter, `Landed` on a `refused` letter, or the re-post did not land.
+    /// No such letter, `Landed` on a `refused` letter, or a re-post did not land.
     pub async fn clear(&self, id: u64, verdict: Verdict) -> Result<DeadLetter, String> {
         let letter = self
             .lock()
@@ -1219,52 +1410,60 @@ impl Recorder {
             .find(|d| d.id == id)
             .cloned()
             .ok_or_else(|| format!("no dead letter {id}"))?;
-        match verdict {
-            Verdict::Landed if letter.state == DeadState::Refused => {
-                return Err("a refused dead letter never landed: re-post it".to_string());
+        if verdict == Verdict::Landed && letter.state == DeadState::Refused {
+            return Err("a refused dead letter never landed: re-post it".to_string());
+        }
+        self.sync(
+            Vec::new(),
+            vec![DeadRec::Verdict {
+                id,
+                landed: verdict == Verdict::Landed,
+            }],
+        )
+        .await?;
+        let landed = |r: Result<(), StoreFailure>| match r {
+            Ok(()) | Err(StoreFailure::Conflict) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        };
+        if verdict == Verdict::NotLanded {
+            let (u, m) = (Op::mint(), Op::mint());
+            if !letter.cells.is_empty() {
+                let body = record::usage_body(&letter.cells);
+                landed(self.store.add_usage_batch(u, &body).await)?;
             }
-            Verdict::Landed => {
-                self.dead_append(&DeadRec::Cleared { id });
+            if !letter.metering.is_empty() {
+                landed(self.store.add_metering_batch(m, &letter.metering).await)?;
             }
-            Verdict::Repost => {
-                let (u, m) = (Op::mint(), Op::mint());
-                self.dead_append(&DeadRec::Reposted { id, op: u });
-                let landed = |r: Result<(), StoreFailure>| match r {
-                    Ok(()) | Err(StoreFailure::Conflict) => Ok(()),
-                    Err(e) => Err(e.to_string()),
-                };
-                if !letter.cells.is_empty() {
-                    let body = record::usage_body(&letter.cells);
-                    landed(self.store.add_usage_batch(u, &body).await)?;
-                }
-                if !letter.metering.is_empty() {
-                    landed(self.store.add_metering_batch(m, &letter.metering).await)?;
-                }
-                self.stamps.tripped(now_ms());
-                if letter.state == DeadState::Refused {
-                    // Now in the store: back into `posted_hi`.
-                    self.ledger.reposted(&letter.cells);
-                }
-                self.dead_append(&DeadRec::Cleared { id });
+            if letter.state == DeadState::Refused {
+                self.ledger.reposted(&letter.cells);
             }
         }
+        if !letter.absorbed.is_empty() {
+            let body = record::usage_body(&letter.absorbed);
+            landed(self.store.add_usage_batch(Op::mint(), &body).await)?;
+            self.ledger.landed(&letter.absorbed);
+        }
+        self.sync(Vec::new(), vec![DeadRec::Cleared { id }]).await?;
         self.lock().dead.retain(|d| d.id != id);
         Ok(letter)
     }
 
-    /// DELIVER what is queued (and, at shutdown, what is pending), until nothing is left or
-    /// `deadline` passes. Answers whether everything was delivered.
+    /// DELIVER what is unrecorded (with a last take first at shutdown), until nothing is left or
+    /// `deadline` passes; each refusal met extends it by [`REPLAY_PER_REFUSAL`]. Answers whether
+    /// everything was delivered.
     pub async fn drain(&self, take_pending: bool, deadline: Duration) -> bool {
         let mut until = tokio::time::Instant::now() + deadline;
         let mut refusals = self.stats.refusals.load(Ordering::Relaxed);
         if take_pending {
-            self.take_once();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if self.post_msg(WriterMsg::Take(Ack::Async(tx))) {
+                let _ = rx.await;
+            }
         }
         loop {
-            if self.unresolved() == 0 {
+            if !self.working() {
                 return true;
             }
-            // Every refusal met extends the deadline: bisecting costs round trips.
             let met = self.stats.refusals.load(Ordering::Relaxed);
             if met > refusals {
                 let more = u32::try_from(met - refusals).unwrap_or(u32::MAX);
@@ -1274,7 +1473,7 @@ impl Recorder {
             if tokio::time::Instant::now() >= until {
                 tracing::error!(
                     unresolved = self.unresolved(),
-                    "money: batches were still undelivered to the store at the deadline"
+                    "money: spend was still unrecorded in the store at the deadline"
                 );
                 return false;
             }
@@ -1285,21 +1484,26 @@ impl Recorder {
         }
     }
 
-    async fn probe_loop(self: Arc<Self>) {
-        let mut tick = tokio::time::interval(PROBE_EVERY);
+    /// THE HEARTBEAT: every second while work is unresolved or strict mode is on.
+    async fn heartbeat_loop(self: Arc<Self>) {
+        let mut tick = tokio::time::interval(HEARTBEAT_EVERY);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tick.tick().await;
             if self.stopped.load(Ordering::Acquire) {
                 return;
             }
-            let last = self.stamps.last_trip_ms.load(Ordering::Relaxed);
-            if now_ms().saturating_sub(last) < PROBE_EVERY.as_millis() as u64 {
-                continue;
+            if self.working() || self.stamps.strict.load(Ordering::Relaxed) {
+                self.beat().await;
             }
-            if self.store.probe().await.is_ok() {
-                self.stamps.tripped(now_ms());
-            }
+        }
+    }
+
+    /// One heartbeat write.
+    pub async fn beat(&self) {
+        if self.store.heartbeat().await.is_ok() {
+            let now = now_ms();
+            self.stamps.heartbeat_ok_ms.store(now, Ordering::Relaxed);
         }
     }
 }
@@ -1309,7 +1513,7 @@ enum Outcome {
     Applied,
     Refused(String),
     NotApplied,
-    Unknown(String),
+    Unknown,
 }
 
 #[derive(Debug)]
@@ -1319,80 +1523,223 @@ enum KindWork {
     Parts(Vec<(Part, Outcome)>),
 }
 
-/// A take's cells and rows as batches of at most [`MERGE_MAX_CELLS`] cells (or rows) and about
-/// [`MERGE_MAX_BYTES`] each, in order.
-fn chunked(
-    cells: Vec<CellCount>,
-    metering: Vec<MeteringDelta>,
-) -> Vec<(Vec<CellCount>, Vec<MeteringDelta>)> {
-    fn size<T: Serialize>(t: &T) -> usize {
-        serde_json::to_vec(t).map(|v| v.len()).unwrap_or(0)
-    }
-    let mut out: Vec<(Vec<CellCount>, Vec<MeteringDelta>)> = vec![(Vec::new(), Vec::new())];
-    let mut bytes = 0usize;
-    let mut room = |out: &mut Vec<(Vec<CellCount>, Vec<MeteringDelta>)>, add: usize| {
-        let last = out.last().expect("one chunk");
-        let n = last.0.len().max(last.1.len());
-        if n > 0 && (n >= MERGE_MAX_CELLS || bytes + add > MERGE_MAX_BYTES) {
-            out.push((Vec::new(), Vec::new()));
-            bytes = 0;
-        }
-        bytes += add;
-    };
-    for c in cells {
-        room(&mut out, size(&c));
-        out.last_mut().expect("one chunk").0.push(c);
-    }
-    for r in metering {
-        room(&mut out, size(&r));
-        out.last_mut().expect("one chunk").1.push(r);
-    }
-    out.retain(|(c, m)| !c.is_empty() || !m.is_empty());
-    out
+// ── the spool writer thread ──────────────────────────────────────────────────────────────────────
+
+/// THE ONE SPOOL WRITER: an OS thread of its own, the only writer of the spool and the dead-letter
+/// file. Every flush window it takes and writes the `fold` with every queued record in ONE `fsync`.
+struct Writer {
+    rec: std::sync::Weak<Recorder>,
+    rx: mpsc::Receiver<WriterMsg>,
+    spool: Option<Spool>,
+    dead_file: Option<Ledgerette>,
+    window: Duration,
 }
 
-/// Fold the spool's records into the queue.
-fn fold(q: &mut Queue, recs: Vec<Rec>) {
+impl Writer {
+    fn run(mut self) {
+        let mut next_take = Instant::now() + self.window;
+        let mut alarmed = false;
+        let mut lazy: Vec<Rec> = Vec::new();
+        loop {
+            let wait = next_take.saturating_duration_since(Instant::now());
+            let first = match self.rx.recv_timeout(wait) {
+                Ok(m) => Some(m),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            };
+            let mut msgs: Vec<WriterMsg> = first.into_iter().collect();
+            while let Ok(m) = self.rx.try_recv() {
+                msgs.push(m);
+            }
+            let Some(rec) = self.rec.upgrade() else {
+                return;
+            };
+            let mut stop = false;
+            let mut take_now = Instant::now() >= next_take;
+            let (mut recs, mut dead, mut acks) = (Vec::new(), Vec::new(), Vec::new());
+            let mut carves: Vec<tokio::sync::oneshot::Sender<Option<Batch>>> = Vec::new();
+            for m in msgs {
+                match m {
+                    WriterMsg::Write {
+                        recs: r,
+                        dead: d,
+                        ack,
+                    } => {
+                        recs.extend(r);
+                        dead.extend(d);
+                        acks.push(ack);
+                    }
+                    WriterMsg::Lazy(r) => lazy.extend(r),
+                    WriterMsg::Carve(tx) => carves.push(tx),
+                    WriterMsg::Take(ack) => {
+                        take_now = true;
+                        acks.push(ack);
+                    }
+                    WriterMsg::Stop(ack) => {
+                        stop = true;
+                        take_now = true;
+                        acks.push(ack);
+                    }
+                }
+            }
+            if take_now {
+                // FOLDS HAVE PRIORITY: the window's fold is first in the round, and the lazy
+                // records (READY, `failing`) ride its `fsync`.
+                let (fold, dead_recs) = rec.take();
+                let mut first: Vec<Rec> = fold.into_iter().collect();
+                first.append(&mut lazy);
+                first.append(&mut recs);
+                recs = first;
+                dead.extend(dead_recs);
+                next_take = Instant::now() + self.window;
+            }
+            // Carves last, in this same round: each `carve` record is synced before its body goes.
+            let mut carved = Vec::new();
+            for tx in carves {
+                let batch = {
+                    let mut core = rec.lock();
+                    let b = core.carve();
+                    if let Some(b) = &b {
+                        core.entries.push_back(Entry::new(b.clone()));
+                    }
+                    b
+                };
+                if let Some(b) = &batch {
+                    recs.push(Rec::Carve(b.clone()));
+                }
+                carved.push((tx, batch));
+            }
+            if !carved.is_empty() {
+                rec.restamp();
+            }
+            let result = self.write(&rec, &recs, &dead);
+            if let Err(e) = &result {
+                tracing::error!(error = %e, "money spool: a round could not be made durable on the data directory; its work stays in RAM and is still sent");
+            }
+            for ack in acks {
+                ack.send(result.clone());
+            }
+            for (tx, batch) in carved {
+                let _ = tx.send(batch);
+            }
+            if let Some(s) = self.spool.as_mut() {
+                let bytes = s.bytes();
+                if bytes > ALARM_BYTES && !alarmed {
+                    tracing::error!(bytes, "money spool: the spend spool has grown past its alarm size; the store has not taken its work");
+                    alarmed = true;
+                } else if bytes <= ALARM_BYTES {
+                    alarmed = false;
+                }
+                let live = {
+                    let core = rec.lock();
+                    core.entries.is_empty().then(|| Rec::Fold {
+                        window_seq: core.window_seq,
+                        cells: core.acc.values().cloned().collect(),
+                        metering: core.acc_meter.values().cloned().collect(),
+                    })
+                };
+                if let Some(live) = live.filter(|_| bytes > COMPACT_BYTES) {
+                    // Compaction rewrites the folds as one `fold`, and the dead-letter file from the
+                    // letters standing.
+                    match s.compact(&[live]) {
+                        Ok(()) => {
+                            if let Some(f) = &self.dead_file {
+                                let bodies: Vec<Vec<u8>> = rec
+                                    .dead_letters()
+                                    .into_iter()
+                                    .map(|l| serde_json::to_vec(&DeadRec::Letter(l)).unwrap_or_default())
+                                    .collect();
+                                if let Err(e) = f.rewrite(&bodies) {
+                                    tracing::warn!(error = %e, "money spool: the dead-letter file could not be rewritten");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "money spool: compaction failed; the old generation stands");
+                        }
+                    }
+                }
+            }
+            if stop {
+                return;
+            }
+        }
+    }
+
+    fn write(&mut self, rec: &Recorder, recs: &[Rec], dead: &[DeadRec]) -> Result<(), String> {
+        if let Some(f) = &self.dead_file {
+            if !dead.is_empty() {
+                let bodies: Vec<Vec<u8>> = dead
+                    .iter()
+                    .map(|d| serde_json::to_vec(d).unwrap_or_default())
+                    .collect();
+                f.append(&bodies).map_err(io_err)?;
+            }
+        }
+        let Some(spool) = self.spool.as_mut() else {
+            return Ok(());
+        };
+        if recs.is_empty() {
+            return Ok(());
+        }
+        if spool.failed() {
+            spool.reopen().map_err(io_err)?;
+        }
+        spool.append(recs).map_err(io_err)?;
+        rec.stats.fsyncs.fetch_add(1, Ordering::Relaxed);
+        *rec.stats
+            .fsync_thread
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::thread::current().id());
+        Ok(())
+    }
+}
+
+/// Fold the spool's records into the core: the accumulator is the sum of the folds less what the
+/// carves consumed and the drops removed; the carves not yet resolved are the queue.
+fn fold(core: &mut Core, recs: Vec<Rec>) {
     let mut ready: BTreeSet<Op> = BTreeSet::new();
     let mut entries: BTreeMap<u64, Entry> = BTreeMap::new();
     let mut dead: Vec<(u64, Kind, usize, usize)> = Vec::new();
     for r in recs {
         match r {
-            Rec::Batch(b) => {
-                q.next_seq = q.next_seq.max(b.seq + 1);
+            Rec::Fold {
+                window_seq,
+                cells,
+                metering,
+            } => {
+                core.window_seq = core.window_seq.max(window_seq);
+                core.add_cells(&cells, true);
+                core.add_rows(&metering, true);
+            }
+            Rec::Carve(b) => {
+                core.next_seq = core.next_seq.max(b.seq + 1);
+                core.add_cells(&b.cells, false);
+                core.add_rows(&b.metering, false);
                 entries.insert(b.seq, Entry::new(b));
-            }
-            Rec::Sent { seq } => {
-                if let Some(e) = entries.get_mut(&seq) {
-                    e.sent = true;
-                }
-            }
-            Rec::Merge { seqs, into } => {
-                for s in &seqs {
-                    entries.remove(s);
-                }
-                q.next_seq = q.next_seq.max(into.seq + 1);
-                entries.insert(into.seq, Entry::new(into));
             }
             Rec::Ready { op } => {
                 ready.insert(op);
             }
+            Rec::Failing { op, t_first } => {
+                core.failing.entry(op).or_insert(t_first);
+            }
             Rec::Split { seq, kind, parts } => {
                 if let Some(e) = entries.get_mut(&seq) {
-                    *e.kind(kind) = KindState::Parts(parts.into_iter().map(|p| (p, false)).collect());
+                    *e.kind(kind) =
+                        KindState::Parts(parts.into_iter().map(|p| (p, false)).collect());
                 }
             }
-            Rec::Dead { seq, kind, lo, hi } => dead.push((seq, kind, lo, hi)),
-            Rec::Rewrite { into } => {
-                if let Some(e) = entries.get_mut(&into.seq) {
-                    let sent = e.sent;
-                    *e = Entry::new(into);
-                    e.sent = sent;
+            Rec::Dead { seq, kind, lo, hi } => {
+                // The same move the live path made: the cells' accumulator entries went with them.
+                if kind == Kind::Usage {
+                    if let Some(e) = entries.get(&seq) {
+                        for c in e.batch.cells.get(lo..hi).unwrap_or_default() {
+                            core.acc.remove(&(c.bucket.clone(), c.window));
+                        }
+                    }
                 }
-            }
-            Rec::Drop { bucket, seq } => {
-                q.next_seq = q.next_seq.max(seq);
-                q.dropped.push((bucket, seq));
+                dead.push((seq, kind, lo, hi));
             }
         }
     }
@@ -1423,7 +1770,7 @@ fn fold(q: &mut Queue, recs: Vec<Rec>) {
             }
         }
     }
-    q.entries = entries.into_values().filter(|e| !e.done()).collect();
+    core.entries = entries.into_values().filter(|e| !e.done()).collect();
 }
 
 #[cfg(test)]

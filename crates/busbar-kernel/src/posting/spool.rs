@@ -229,10 +229,11 @@ impl Spool {
             .sum()
     }
 
-    /// ONE ROUND: `recs` framed into one write, then one `fsync`. A write or `fsync` that fails
-    /// seals the segment at its last synced offset, and the round is rewritten into a NEW segment
-    /// (never appended after the failure). `Err` only when the rewrite fails too: the spool is
-    /// then failed, and the caller keeps the round in RAM.
+    /// ONE ROUND: `recs` framed into one write, then one `fsync`. A write or `fsync` that fails is
+    /// never appended after: the round is re-appended to a NEW segment and synced there FIRST, and
+    /// only then is the failed segment sealed at its last synced offset (in a new manifest
+    /// generation). `Err` only when that fails too: the spool is then failed, and the caller keeps
+    /// the round in RAM.
     ///
     /// # Errors
     ///
@@ -245,62 +246,51 @@ impl Spool {
         for r in recs {
             frame::put(&mut buf, &record::encode(r));
         }
-        match self.write_synced(&buf) {
-            Ok(()) => Ok(()),
-            Err(first) => {
-                tracing::error!(error = %first, dir = %self.dir.display(),
-                    "money spool: a round failed to sync; sealing the segment and rewriting the round into a new one");
-                self.rotate()?;
-                self.write_synced(&buf)
-            }
-        }
-    }
-
-    fn write_synced(&mut self, buf: &[u8]) -> io::Result<()> {
         let synced = self.active_len;
-        let res = (|| {
-            self.active.write_all(buf)?;
+        let first = (|| {
+            self.active.write_all(&buf)?;
             self.fsyncs.fetch_add(1, Ordering::Relaxed);
             self.syncer.sync(&self.active)
         })();
-        match res {
+        match first {
             Ok(()) => {
                 self.active_len = synced + buf.len() as u64;
                 Ok(())
             }
             Err(e) => {
-                // Never appended after: seal at the last synced offset.
+                tracing::error!(error = %e, dir = %self.dir.display(),
+                    "money spool: a round failed to sync; re-appending it to a new segment, then sealing the failed one");
+                // In memory the failed segment is sealed at once: nothing is appended after it.
                 if let Some(seg) = self.manifest.segments.last_mut() {
                     seg.sealed = Some(synced);
                 }
-                Err(e)
+                self.move_to_new_segment(&buf)
             }
         }
     }
 
-    /// Seal the active segment (already marked) in a new manifest generation and open a fresh one.
-    fn rotate(&mut self) -> io::Result<()> {
+    /// The round `buf` into a NEW segment, synced, and only then the manifest generation that
+    /// seals the old segment and lists the new one.
+    fn move_to_new_segment(&mut self, buf: &[u8]) -> io::Result<()> {
         let next = self.manifest.segments.last().map_or(1, |s| s.id + 1);
+        let mut f = Self::create_segment(&self.dir, next, self.syncer.as_ref())?;
+        f.write_all(buf)?;
+        self.fsyncs.fetch_add(1, Ordering::Relaxed);
+        self.syncer.sync(&f)?;
         let mut manifest = self.manifest.clone();
-        if let Some(seg) = manifest.segments.last_mut() {
-            if seg.sealed.is_none() {
-                seg.sealed = Some(self.active_len);
-            }
-        }
         manifest.segments.push(SegMeta {
             id: next,
             sealed: None,
         });
         manifest.generation += 1;
-        let f = Self::create_segment(&self.dir, next, self.syncer.as_ref())?;
         Self::write_manifest(&self.dir, &manifest, self.syncer.as_ref())?;
         self.manifest = manifest;
         self.active = f;
-        self.active_len = 0;
+        self.active_len = buf.len() as u64;
         Ok(())
     }
 
-    /// Whether the active segment was sealed by a failed round and no rotation has succeeded since.
+    /// Whether the active segment was sealed by a failed round and no new segment has taken over.
     #[must_use]
     pub fn failed(&self) -> bool {
         self.manifest
@@ -309,13 +299,13 @@ impl Spool {
             .is_none_or(|s| s.sealed.is_some())
     }
 
-    /// Reopen after a failed rotation: a fresh segment in a new generation.
+    /// Reopen after a failed round: a fresh segment in a new generation.
     ///
     /// # Errors
     ///
     /// The fresh segment or the manifest could not be written durably.
     pub fn reopen(&mut self) -> io::Result<()> {
-        self.rotate()
+        self.move_to_new_segment(&[])
     }
 
     /// COMPACTION: `live` written into a new segment and synced, then the manifest switched to it
@@ -431,6 +421,34 @@ impl Ledgerette {
             }
         }
         Ok(())
+    }
+
+    /// REWRITE the file as `bodies` (compaction): a temporary file, synced, renamed over it, the
+    /// directory synced.
+    ///
+    /// # Errors
+    ///
+    /// The new file could not be made durable; the old one stands.
+    pub fn rewrite(&self, bodies: &[Vec<u8>]) -> io::Result<()> {
+        let Some(parent) = self.path.parent() else {
+            return Err(io::Error::other("the dead-letter file has no directory"));
+        };
+        let tmp = self.path.with_extension("tmp");
+        let mut buf = Vec::new();
+        for b in bodies {
+            frame::put(&mut buf, b);
+        }
+        {
+            let mut f = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp)?;
+            f.write_all(&buf)?;
+            f.sync_data()?;
+        }
+        std::fs::rename(&tmp, &self.path)?;
+        sync_dir(parent)
     }
 
     /// Remove the file (an ephemeral store keeps no dead letters across a restart).

@@ -714,7 +714,7 @@ impl GovState {
     ) {
         let window = budget_window(budget_period, now);
         let mut guard = self.budget.write(bucket_id);
-        let super::ShardMap { cells, pending } = &mut *guard;
+        let super::ShardMap { cells, pending, .. } = &mut *guard;
         let cell = match cells.get_mut(bucket_id) {
             Some(c) if window > c.window_start => {
                 c.roll(window);
@@ -1190,11 +1190,6 @@ impl GovState {
     /// DEGRADED-BUT-APPLIED ([`REVOCATION_DURABLE_MARKER`]), never as a bare error implying nothing
     /// happened. Same discipline `refresh_self` already applies to its tombstone path.
     pub fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        // THE DROP RECORD FIRST (MONEY-DESIGN §3c): synced before the store deletes the key and
-        // before any shard lock is taken, so no unsent batch recreates its rows.
-        if let Some(rec) = self.recorder.get() {
-            rec.drop_bucket(id);
-        }
         self.store.delete_key(id)?;
         // The targeted eviction FIRST and unconditionally: this is the step that stops the
         // credential resolving, and it must happen whether or not the full reconcile succeeds.
@@ -1204,13 +1199,9 @@ impl GovState {
         // before it lets a request admitted in the gap re-insert. The key bucket is uncapped
         // (`cost::chain_for`), so this reclaims attribution state only and can never reset a cap.
         //
-        // Its PENDING deltas go in the same critical section (MONEY-DESIGN §3c), as 1.5.5 dropped
-        // them with the cell: the writer never recreates a deleted key's rows.
-        {
-            let mut shard = self.budget.write(id);
-            shard.remove(id);
-            shard.pending.forget(id);
-        }
+        // Nothing it accrued is discarded: its pending and unrecorded deltas are still recorded
+        // (the store only tombstones a key; its rows are kept), MONEY-DESIGN §3c.
+        self.budget.write(id).remove(id);
         self.money_view.forget(id);
         if let Err(refresh_err) = refreshed {
             diag_error!(
@@ -1268,30 +1259,13 @@ impl GovState {
     /// the ones that stopped backing one. With SSO auto-provisioning creating a group per subject,
     /// that is a monotonic leak that no admin read (`groups_registry.len()` included) can see.
     pub fn reclaim_group_cells(&self, group: &str) -> usize {
-        // THE DROP RECORDS FIRST, synced, before any shard WRITE lock: the group's buckets are
-        // collected under each shard's read lock in turn, released before the drop's `fsync`.
-        if let Some(rec) = self.recorder.get() {
-            let mut ids: BTreeSet<String> = BTreeSet::new();
-            for shard in self.budget.shards.iter() {
-                let map = shard.map.read().unwrap_or_else(|p| p.into_inner());
-                ids.extend(
-                    (map.keys())
-                        .chain(map.pending.0.keys().map(|(b, _)| b))
-                        .filter(|id| crate::cost::is_bucket_of_group(id, group))
-                        .cloned(),
-                );
-            }
-            for id in ids {
-                rec.drop_bucket(&id);
-            }
-        }
         let mut dropped = 0usize;
         for mut shard in self.budget.write_all() {
             let before = shard.len();
             shard.retain(|id, _| !crate::cost::is_bucket_of_group(id, group));
+            // Its pending deltas and `posted_hi` stay: everything it accrued is still recorded, and a
+            // re-created group starts at zero without reading its old rows as foreign spend.
             dropped += before - shard.len();
-            // Its pending deltas go with it, in the same critical section.
-            (shard.pending.0).retain(|(id, _), _| !crate::cost::is_bucket_of_group(id, group));
         }
         // The per-group in-flight `concurrent` gauge is materialised on the first admission of a
         // capped group and, unlike the budget cells above, was never swept on delete — a server
@@ -1459,14 +1433,22 @@ impl GovState {
                 .get_usage(&crate::posting::record::sibling_bucket(bucket_id), window)?;
             // `billable_requests` is trusted UNCONDITIONALLY from the persisted ledger — it is
             // NEVER re-derived from `requests` (every row since schema v6 is written correctly).
+            let (plain_again, sibling_again) = (plain.clone(), sibling.clone());
             let mut cell = durable_cell(plain, sibling, window);
             // Stamp as touched NOW, not 0: an unstamped hydrated cell is instantly older than any
             // TTL, so the first post-boot sweep would discard every restored key's history before
             // that key had served a single request.
             cell.last_touch = now;
-            self.budget
-                .write(bucket_id)
-                .insert(bucket_id.to_string(), cell);
+            let mut shard = self.budget.write(bucket_id);
+            // `posted_hi` starts at what hydrate read (MONEY-DESIGN §3d).
+            let mut seeded = crate::posting::record::CellCount::new(bucket_id, window);
+            seeded.merge(&{
+                let mut c = super::state_rows(plain_again.clone(), sibling_again.clone(), window);
+                c.bucket = bucket_id.to_string();
+                c
+            });
+            shard.posted.insert(bucket_id.to_string(), seeded);
+            shard.insert(bucket_id.to_string(), cell);
         }
         Ok(())
     }
@@ -1990,7 +1972,9 @@ impl GovState {
                     if c.window_start != 0 {
                         // What a cell owes the store is in the shard's pending map, not the cell,
                         // so an evicted cell loses nothing the writer has not taken.
-                        return c.resident() || c.window_start.saturating_add(max_window) > now;
+                        return c.dirty
+                            || self.unrecorded(id)
+                            || c.window_start.saturating_add(max_window) > now;
                     }
                     // The all-time window never rolls, so age these by last use instead. The
                     // `group:` exemption is NARROW, and exactly as narrow as its own rationale: a
@@ -2007,7 +1991,8 @@ impl GovState {
                     // bucket carries no cap, enforces NOTHING; it now ages out by last touch like
                     // any other attribution cell (and, like them, only while clean).
                     still_enforces_a_cap(cost, id)
-                        || c.resident()
+                        || c.dirty
+                        || self.unrecorded(id)
                         || c.last_touch.saturating_add(max_window) > now
                 });
                 // Bound the per-cell `models` Vec too: a never-rolled cell (the all-time
@@ -2154,7 +2139,7 @@ impl GovState {
         for (bi, bucket) in buckets.iter().enumerate() {
             let gi = guard_for(&guard_shards, shard_idx[bi]);
             let window = budget_window(bucket.window, now);
-            let super::ShardMap { cells, pending } =
+            let super::ShardMap { cells, pending, .. } =
                 &mut **guards[gi].as_mut().expect("guard held");
             let cell = match cells.get_mut(bucket.bucket_id) {
                 Some(c) if window > c.window_start => {
@@ -2221,7 +2206,7 @@ impl GovState {
         let lane = charge.lane.as_deref().map(|l| (l, PER_REQUEST));
         for (bucket_id, window) in &charge.cells {
             let mut guard = self.budget.write(bucket_id);
-            let super::ShardMap { cells, pending } = &mut *guard;
+            let super::ShardMap { cells, pending, .. } = &mut *guard;
             let Some(cell) = cells.get_mut(bucket_id) else {
                 continue; // swept: nothing in memory holds the charge any more (as on dev)
             };
@@ -2296,7 +2281,7 @@ impl GovState {
     ) {
         let window = budget_window(budget_period, now);
         let mut guard = self.budget.write(bucket_id);
-        let super::ShardMap { cells, pending } = &mut *guard;
+        let super::ShardMap { cells, pending, .. } = &mut *guard;
         if let Some(cell) = cells.get_mut(bucket_id) {
             // The exact inverse of the charge's cell resolution: that lands a charge in place on a
             // cell holding this window OR a newer one, so this returns the fee from the same set.
@@ -2322,56 +2307,52 @@ impl GovState {
     /// a time under that shard's write lock only, never two locks and never across I/O. The
     /// positive part of each delta joins its cell's `posted_hi` in the same critical section; the
     /// negative part joins once READY ([`GovState::landed`]).
-    pub fn take_pending(&self) -> Vec<crate::posting::record::CellCount> {
+    pub fn take_pending(&self, mark: &dyn Fn(&str)) -> Vec<crate::posting::record::CellCount> {
+        let now = crate::store::now();
         let mut out = Vec::new();
         for mut guard in self.budget.write_all() {
-            if guard.pending.is_empty() {
+            if guard.pending.is_empty() && guard.posted.is_empty() {
                 continue;
             }
-            let super::ShardMap { cells, pending } = &mut *guard;
-            for ((bucket, window), delta) in std::mem::take(&mut pending.0) {
-                if let Some(cell) = cells.get_mut(&bucket) {
+            let shard = &mut *guard;
+            for ((bucket, window), delta) in std::mem::take(&mut shard.pending.0) {
+                if let Some(cell) = shard.cells.get_mut(&bucket) {
                     cell.dirty = false;
-                    if cell.window_start == window && !delta.is_zero() {
-                        let mut up = delta.signed_part(true);
-                        up.bucket.clear();
-                        cell.posted.merge(&up);
-                    }
                 }
-                if !delta.is_zero() {
-                    out.push(delta);
+                if delta.is_zero() {
+                    continue;
                 }
+                // Into the unrecorded set INSIDE this critical section (shard, then set).
+                mark(&bucket);
+                let mut up = delta.signed_part(true);
+                up.bucket.clone_from(&bucket);
+                debug_assert_eq!(up.window, window);
+                shard.posted_add(&up);
+                out.push(delta);
             }
+            // `posted_hi` of a window no cell holds and older than the longest window is no bound
+            // on any read a snapshot still makes: pruned.
+            let horizon = 31 * super::SECS_PER_DAY;
+            let cells = &shard.cells;
+            shard.posted.retain(|bucket, p| {
+                p.window == 0
+                    || p.window.saturating_add(horizon) > now
+                    || cells.get(bucket).is_some_and(|c| c.window_start == p.window)
+            });
         }
         out
     }
 
-    /// `cells` ride batch `seq`: their cells stay resident until a batch at or above it is READY.
-    pub fn carried(&self, cells: &[crate::posting::record::CellCount], seq: u64) {
+    /// `cells` answered READY (or were dead-lettered `landed-unknown`): their negative parts join
+    /// `posted_hi`, the store holding them now.
+    pub fn landed(&self, cells: &[crate::posting::record::CellCount]) {
         for delta in cells {
-            let mut guard = self.budget.write(&delta.bucket);
-            if let Some(cell) = guard.get_mut(&delta.bucket) {
-                cell.unsent_seq = Some(cell.unsent_seq.map_or(seq, |s| s.max(seq)));
-            }
-        }
-    }
-
-    /// Batch `seq` carrying `cells` answered READY (or was dead-lettered): their negative parts
-    /// join `posted_hi` (the store holds them now), and a cell no later batch carries may leave RAM.
-    pub fn landed(&self, cells: &[crate::posting::record::CellCount], seq: u64) {
-        for delta in cells {
-            let mut guard = self.budget.write(&delta.bucket);
-            let Some(cell) = guard.get_mut(&delta.bucket) else {
+            let mut down = delta.signed_part(false);
+            down.bucket.clone_from(&delta.bucket);
+            if down.is_zero() {
                 continue;
-            };
-            if cell.unsent_seq.is_some_and(|s| s <= seq) {
-                cell.unsent_seq = None;
             }
-            if cell.window_start == delta.window {
-                let mut down = delta.signed_part(false);
-                down.bucket.clear();
-                cell.posted.merge(&down);
-            }
+            self.budget.write(&delta.bucket).posted_add(&down);
         }
     }
 
@@ -2390,11 +2371,11 @@ impl GovState {
         }
     }
 
-    /// `posted_hi` of `bucket` in `window`, when its cell holds that window.
+    /// `posted_hi` of `bucket` in `window`.
     pub fn posted_hi(&self, bucket: &str, window: u64) -> Option<crate::posting::record::CellCount> {
-        (self.budget.read(bucket).get(bucket))
-            .filter(|c| c.window_start == window)
-            .map(|c| c.posted.clone())
+        (self.budget.read(bucket).posted.get(bucket))
+            .filter(|p| p.window == window)
+            .cloned()
     }
 
     /// Load every LIVE key, indexed by id (the token `sub` / subject id) — the sole in-memory key
@@ -2617,7 +2598,6 @@ fn durable_cell(
     let counts = super::state_rows(plain, sibling, window);
     let mut cell = BudgetCell::fresh(window);
     cell.add_counts(&counts);
-    cell.posted = counts;
     cell
 }
 

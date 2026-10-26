@@ -151,7 +151,7 @@ fn open_recorder(
         Arc::new(busbar_kernel::posting::spool::DataSync),
     )
     .map_err(|e| format!("governance boot: the spend spool could not be opened ({e})"))?;
-    if recovered.batches > 0 {
+    if recovered.any() {
         let deadline = recovered.deadline();
         let replaying = Arc::clone(&recorder);
         let delivered = std::thread::scope(|scope| {

@@ -20,7 +20,7 @@ pub(crate) mod admission;
 
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
-    DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    DEFAULT_RATE_SWEEP_INTERVAL,
 };
 // The body-cap default is no longer read by any accessor on this page (the translate cap moved to
 // its own home); the tests below still assert the uninstalled fallback against it.
@@ -92,15 +92,6 @@ pub(crate) fn rate_sweep_interval() -> u32 {
     get()
         .map(|l| l.rate_sweep_interval)
         .unwrap_or(DEFAULT_RATE_SWEEP_INTERVAL)
-}
-
-/// Write-behind flush cadence (ms) for the in-memory governance usage/budget counters. On an
-/// UNGRACEFUL crash (kill -9 / power loss) at most this many ms of accrued spend/requests can be
-/// lost; a graceful shutdown flushes fully (the flusher's shutdown arm). Default 100.
-pub(crate) fn usage_flush_interval_ms() -> u64 {
-    get()
-        .map(|l| l.usage_flush_interval_ms)
-        .unwrap_or(DEFAULT_USAGE_FLUSH_INTERVAL_MS)
 }
 
 /// Global default routing-policy timeout (ms). Per-policy `policy.timeout_ms` overrides.

@@ -158,14 +158,8 @@ struct BudgetCell {
     /// Wall-clock of the last accrual or admission charge (the all-time cell's eviction age).
     last_touch: u64,
     /// HAS PENDING DELTAS: a mutation emitted into the shard's pending map since the writer's last
-    /// take. With `unsent_seq`, what keeps the sweep from evicting the cell (and its `posted_hi`).
+    /// take. With the recorder's UNRECORDED set, what keeps the sweep from evicting the cell.
     dirty: bool,
-    /// The highest batch sequence carrying this bucket's deltas that is not yet READY.
-    unsent_seq: Option<u64>,
-    /// `posted_hi` for this window (MONEY-DESIGN §3d): the hydrated counts, plus every positive
-    /// delta handed to the writer, plus every negative one once READY. An upper bound on this node's
-    /// share of any store read of the row.
-    posted: crate::posting::record::CellCount,
 }
 
 impl BudgetCell {
@@ -179,15 +173,9 @@ impl BudgetCell {
     /// ROLL the cell to the newer `window`: the counts start over. Emits nothing: what the old
     /// window held was emitted as it happened. What is still pending or unsent keeps it resident.
     fn roll(&mut self, window: u64) {
-        let (dirty, unsent_seq) = (self.dirty, self.unsent_seq);
+        let dirty = self.dirty;
         *self = Self::fresh(window);
         self.dirty = dirty;
-        self.unsent_seq = unsent_seq;
-    }
-
-    /// Whether the sweep must keep the cell: deltas pending, or carried by a batch not yet READY.
-    fn resident(&self) -> bool {
-        self.dirty || self.unsent_seq.is_some()
     }
 
     /// Accrue one response's keyed units under `model` in segment `seg`, interning the pair on
@@ -330,12 +318,6 @@ impl Pending {
         for (class, n) in units {
             c.add_unit(&hex, model, class, signed(*n).saturating_mul(sign));
         }
-    }
-
-    /// Drop every pending delta of `bucket` (its cell was removed: a deleted key's rows are never
-    /// recreated).
-    fn forget(&mut self, bucket: &str) {
-        self.0.retain(|(b, _), _| b != bucket);
     }
 
     /// Whether anything is pending.
@@ -557,6 +539,31 @@ struct MapShard<V> {
 pub(crate) struct ShardMap<V> {
     cells: HashMap<String, V>,
     pending: Pending,
+    /// `posted_hi` per bucket (MONEY-DESIGN §3d): for its window, the hydrated counts, plus every
+    /// positive delta handed to the recorder, plus every negative one once READY (less what a
+    /// `refused` dead letter holds). An upper bound on this node's share of any store read of the
+    /// row. Kept apart from the cells, so it outlives a reclaimed group's cell (a re-created group
+    /// never reads its old rows as foreign spend); pruned by window age.
+    posted: HashMap<String, crate::posting::record::CellCount>,
+}
+
+impl<V> ShardMap<V> {
+    /// `delta` (signed) into `posted_hi` of its bucket: a newer window replaces an older one; an
+    /// older window's delta is skipped.
+    pub(crate) fn posted_add(&mut self, delta: &crate::posting::record::CellCount) {
+        let entry = self
+            .posted
+            .entry(delta.bucket.clone())
+            .or_insert_with(|| crate::posting::record::CellCount::new(&delta.bucket, delta.window));
+        if entry.window < delta.window {
+            *entry = crate::posting::record::CellCount::new(&delta.bucket, delta.window);
+        }
+        if entry.window == delta.window {
+            let mut d = delta.clone();
+            d.bucket.clone_from(&entry.bucket);
+            entry.merge(&d);
+        }
+    }
 }
 
 impl<V> std::ops::Deref for ShardMap<V> {
@@ -578,6 +585,7 @@ impl<V> Default for MapShard<V> {
             map: RwLock::new(ShardMap {
                 cells: HashMap::new(),
                 pending: Pending::default(),
+                posted: HashMap::new(),
             }),
             sweep_ticker: AtomicU32::new(0),
         }
