@@ -1,76 +1,28 @@
 # What a lane must pass to enter dev, judged by ModernCI (required check `ci`) on the lane merged
 # onto dev's tip, no worse than dev itself. Live: ModernCI decides and lands. predev is retired
 # (OWNER 2026-10-16): every lane lands on dev, and dev never gets worse.
+#
+# The five checks (KICKOFF, OWNER 2026-10-24): fmt, clippy, test, the oracle, deny + vet. The xtask
+# gate machinery and the qa/ ledgers are deleted (dd677873c4), and with them the gates, preflight's
+# header regeneration, the selftest shards, the qa/ guards and ratchets: the header is held by
+# busbar-contract's tests/abi_header in `test`; compile's no-default-features build and the
+# deletion matrix are linted in `clippy`; test-gated and doctest run in `test`.
 to: dev
 on_green: merge
 deadline: 6h
-# Guarded beyond the engine's built-ins (.ci/**, golden(s), *.golden, *.snap) and `rules:` below:
-# the proof ledgers and design-binding docs under qa/ and the gate code itself. A change to any of
-# these needs a person's approval at the exact head. qa/*.toml stays under `rules:` so a
-# ratchet-proven tightening still passes on its own (2026-10-21: #1342 entered the queue with
-# qa/*.json and xtask/src/gates/** edits and no approval asked).
-guarded:
-  - "qa/**/*.json"
-  - "qa/**/*.md"
-  - "qa/*.ledger"
-  - "qa/*.allow"
-  - "qa/*.missing"
-  - "qa/*.status"
-  - "xtask/src/gates/**"
-# Ratchets (ModernCI #1801/#1814): a rule-file edit proven to only TIGHTEN these rows is judged with
-# its own rules and asks no person (Law 9: tightening is allowed). A raise, an added row, a reorder or
-# a new file still asks the owner. Both files are under `rules: ["qa/*.toml"]` below.
-ratchets:
-  - path: qa/kind-isolation.toml
-    format: toml
-    rows:
-      law0: { key: [crate, axis], lower: [count], ignore: [cite], strike: tightens }
-      # `verdict` is NOT ignored: a changed verdict goes to a person.
-      dep: { key: [from, to, half], lower: [count], ignore: [cite, why, drain], strike: tightens }
-  - path: qa/construction.toml
-    format: toml
-    maps:
-      rules.ports-only.max_per_crate: { values: lower, strike: tightens }
-      rules.ports-only-tests.max_per_crate: { values: lower, strike: tightens }
-  # Finding ledgers (2026-10-18): a struck finding is a drained offender, a tightening; any added
-  # or reworded row still goes to a person.
-  - path: qa/c1-literals.toml
-    format: toml
-    rows:
-      finding: { key: [rule, file, item], strike: tightens }
-  - path: qa/one-memory-abi.toml
-    format: toml
-    rows:
-      finding: { key: [rule, file, item], strike: tightens }
-  - path: qa/abi-freeze.toml
-    format: toml
-    rows:
-      frozen: { key: [dir], lower: [lines], strike: tightens }
-  # Allow lists: a struck entry allows less. `reason`/`class` are NOT ignored: a changed reason or a
-  # keep->port flip goes to a person.
-  - path: qa/scripts-allowlist.toml
-    format: toml
-    rows:
-      script: { key: [path], strike: tightens }
-  - path: qa/denylist-allow.toml
-    format: toml
-    rows:
-      allow: { key: [crate, dep, via], strike: tightens }
-# The PR battery, named explicitly so a check declared below but NOT listed here is on-demand only
-# (`modernci call measure {repo, from, check}`), never run on every move.
-# test-gated runs on every move (OWNER 2026-10-16, "dev should stay green"), no worse than dev. oracle
-# joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned, since the
-# glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
+# The oracle joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned,
+# since the glibc-linked ones cannot run on the backends; until then it is manual here and absolute
+# on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated]
-  manual: [oracle, selftest-1, selftest-2, selftest-3, selftest-4]
+  move: [fmt, clippy, test, deny]
+  manual: [oracle]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
   BUSBAR_TOOL_SH: |
-    # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq`
+    # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq vet`
     # Puts each named tool, at the version pinned below, on PATH. The checks own their toolchain:
     # a tool already on PATH at exactly the pin is used; otherwise the official release asset is
     # fetched with curl, verified against the sha256 pinned here, and cached under
@@ -85,6 +37,7 @@ env:
     _bbt_deny_ver=0.20.2
     _bbt_jq_ver=1.7.1
     _bbt_rustup_ver=1.28.2
+    _bbt_vet_ver=0.10.3
     _bbt_root=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools
 
     # _bbt_pin <tool> <os-arch>: prints "<asset-url> <sha256> <path of the binary inside the asset>"
@@ -162,10 +115,20 @@ env:
     _bbt_ensure() {
       case "$1" in
         rust) _bbt_rust; return $? ;;
+        vet)
+          # cargo-vet publishes no linux-aarch64 asset to pin a sha256 to: it is built from crates.io
+          # at the pinned version (the index checksum verifies the source, --locked its dependencies)
+          # into the same cache, once per version.
+          _dir=$_bbt_root/vet-$_bbt_vet_ver
+          if [ ! -x "$_dir/bin/cargo-vet" ]; then
+            cargo install --locked --quiet cargo-vet --version "=$_bbt_vet_ver" --root "$_dir" || return 1
+          fi
+          PATH="$_dir/bin:$PATH"; export PATH
+          return 0 ;;
         nextest) _bin=cargo-nextest; _ver=$_bbt_nextest_ver; _want="cargo-nextest $_ver"; _vargs="nextest --version" ;;
         deny)    _bin=cargo-deny;    _ver=$_bbt_deny_ver;    _want="cargo-deny $_ver"; _vargs=--version ;;
         jq)      _bin=jq;            _ver=$_bbt_jq_ver;      _want="jq-$_ver"; _vargs=--version ;;
-        *) echo "tool.sh: unknown tool '$1' (known: rust nextest deny jq)" >&2; return 1 ;;
+        *) echo "tool.sh: unknown tool '$1' (known: rust nextest deny jq vet)" >&2; return 1 ;;
       esac
       # Already on PATH at exactly the pinned version.
       if command -v "$_bin" >/dev/null 2>&1; then
@@ -211,49 +174,35 @@ env:
       _bbt_ensure "$_bbt_t" || return 1
     done
 checks:
-  preflight:
+  fmt:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo fmt --all -- --check
       cargo metadata --locked --format-version 1 >/dev/null
-      cargo build -q -p xtask
-      cargo xtask gate abi-header --write
-      git diff --exit-code -- crates/busbar-contract/include
-  gates:
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
-      cargo xtask gate --all --format=tsv
     baseline: target
-    # The ledgers and ceilings are rules: a row this move arms is judged on its own.
-    rules: ["qa/*.toml"]
-    # The ceiling ratchet reads the merge-base (XTASK_CEILING_BASE): a shallow checkout cannot
-    # judge it, so only a backend with the repo's history may run this check.
-    requires: [cc, git-history]
-    needs: [preflight]
   clippy:
-    # cargo links with the system C linker: only a backend with a C compiler may run this check.
+    # Every target under every feature, then the builds no other check makes: the workspace with no
+    # default features and the kernel/contract feature-deletion matrix (plane-a2a, plane-mcp, none).
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
+      cargo clippy --workspace --all-targets --no-default-features --locked --keep-going -- -D warnings
+      cargo clippy -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked -- -D warnings
+      cargo clippy -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked -- -D warnings
+      cargo clippy -p busbar-kernel -p busbar-contract --no-default-features --locked -- -D warnings
+    scope: affected
     baseline: target
-    needs: [gates]
-  compile:
-    # cargo links with the system C linker: only a backend with a C compiler may run this check.
-    requires: [cc]
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      cargo check --workspace --all-targets --locked --keep-going
-      cargo check --workspace --exclude xtask --all-targets --no-default-features --locked
-      cargo check --release -p busbar --bin busbar --locked
-    baseline: target
-    needs: [gates]
+    needs: [fmt]
   test:
-    # As the hop's build:dlopen-cdylibs and test:workspace: the workspace's cdylibs and the four
-    # dropped-in plugins the tests dlopen, then one build and one nextest run.
+    # The workspace's cdylibs and the dropped-in plugins the tests dlopen, then one build and one
+    # nextest run of the default features; then the feature-gated suites the default run never
+    # builds (row 164: A, the busbar/kernel/core-admin gates at once, filtered to the gated binaries
+    # and modules so the default suites do not run twice; B, the plugin-pack CLI; C, the loom models
+    # in release); then the doctests. The C header's generator is a busbar-contract test
+    # (tests/abi_header), so the committed header is held here too.
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
       meta=$(cargo metadata --format-version 1 --locked)
@@ -282,123 +231,28 @@ checks:
       plugin busbar-secret-env busbar-secret-env-plugin optional
       plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
       cargo build --workspace --locked
-      # The nextest limits: every test is cut at five minutes, except the whole-registry gate run,
-      # which gets twelve and starts first. Every registered gate's RED proof runs in the
-      # selftest-1 .. selftest-4 checks, one process per gate.
-      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(list_and_a_named_gate_run_over_the_real_tree)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
+      # Every test is cut at five minutes.
+      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
       # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
       cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
+      if [ -z "$MODERNCI_ONLY" ]; then
+        cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
+        cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+        timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+        cargo test --workspace --doc --locked --no-fail-fast
+      fi
     scope: affected
     baseline: target
-    # The selftests run the gates over the real tree, merge-base included.
-    requires: [cc, git-history]
-    needs: [gates]
-  test-gated:
-    # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
-    # only. A, the busbar/kernel/core-admin gates at once (test-harness,
-    # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
-    # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
-      meta=$(cargo metadata --format-version 1 --locked)
-      cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
-      # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
-      # door and the other door fixtures, which busbar's and the connector's tests load too) and
-      # busbar's test plane. A run scoped to `busbar` alone builds no other package's examples, and a
-      # test whose fixture is absent fails rather than skips; no variable tells this step the
-      # affected set, so the build does not wait on one.
-      cargo build --locked -p busbar-plugin-loader --examples
-      cargo build --locked -p busbar --examples
-      plugin() {
-        man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
-        if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
-        ws="$(dirname "$man")/Cargo.toml"
-        pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
-        if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
-        if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
-          cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
-        else
-          cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
-        fi
-      }
-      plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
-      plugin busbar-transport-http busbar-transport-http-plugin dropped-in
-      plugin busbar-secret-env busbar-secret-env-plugin optional
-      plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
-      cargo build --workspace --locked
-      cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
-      cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
-      timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
-    baseline: target
-    requires: [cc, git-history]
-    needs: [gates]
-  doctest:
-    # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      cargo test --workspace --doc --locked --no-fail-fast
-    scope: affected
-    baseline: target
-    needs: [test]
-  deletion-matrix:
-    # cargo links with the system C linker: only a backend with a C compiler may run this check.
-    requires: [cc]
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked
-      cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked
-      cargo build -p busbar-kernel -p busbar-contract --no-default-features --locked
-    baseline: target
-    needs: [gates]
+    needs: [fmt]
   deny:
     run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust deny; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny; fi || exit 1
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust deny vet; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny vet; fi || exit 1
       cargo deny check
+      cargo vet --locked
     baseline: target
-    needs: [preflight]
+    needs: [fmt]
     requires: [cc]
-  # EVERY REGISTERED GATE'S RED PROOF (row 191). xtask/src/gates/mod.rs names this the one place
-  # every gate's cases are driven: `cargo test -p xtask` pins the dispatcher with one gate's
-  # self-test, so since baea6a8541 nothing else runs most of them. `cargo xtask selftest
-  # --shard=K/4` takes the K-th of 4 slices of the registry (dealt round-robin, every registered
-  # gate in exactly one shard, a new gate included with no list to edit), one `xtask selftest
-  # <gate>` process per gate, one after another, so no two batteries overlap while their work-unit
-  # budget is measured. A gate whose proof does not go RED, or that has none, fails its shard by
-  # name. The ceilings and ledgers the batteries plant against read the merge-base, as the gates
-  # check does. Absolute on dev's head in .ci/dev.yaml (DEV-GREEN); here on demand.
-  selftest-1:
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
-      cargo xtask selftest --shard=1/4
-    baseline: target
-    requires: [cc, git-history]
-    needs: [gates]
-  selftest-2:
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
-      cargo xtask selftest --shard=2/4
-    baseline: target
-    requires: [cc, git-history]
-    needs: [gates]
-  selftest-3:
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
-      cargo xtask selftest --shard=3/4
-    baseline: target
-    requires: [cc, git-history]
-    needs: [gates]
-  selftest-4:
-    run: |
-      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
-      cargo xtask selftest --shard=4/4
-    baseline: target
-    requires: [cc, git-history]
-    needs: [gates]
   # On every move (above): the same judge as the dev -> qa oracle (.ci/dev.yaml), here no worse than
   # dev, so a lane cannot land a customer-visible change the 1.5.5 golden does not forgive.
   oracle:
@@ -437,7 +291,7 @@ checks:
       rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
-    needs: [gates]
+    needs: [fmt]
     # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
     # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
     outputs: [target/oracle/reports/]
