@@ -180,6 +180,12 @@ impl CardStore {
         self.lock().entries.values().cloned().collect()
     }
 
+    /// Every alarm this node has raised over the history, in the order raised (each once).
+    #[must_use]
+    pub fn alarms(&self) -> Vec<String> {
+        self.lock().alarmed.iter().cloned().collect()
+    }
+
     /// The key of the entry pending confirmation on this node, if any.
     #[must_use]
     pub fn pending(&self) -> Option<EntryKey> {
