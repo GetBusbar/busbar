@@ -215,30 +215,6 @@ pub fn limit_refusal(
     match blocked {
         LimitBlocked::Limit {
             group,
-            // The per-tier token caps (`tokens_input`/…) surface as a rate limit exactly like
-            // the aggregate `tokens` metric — a 429 naming the tier — NOT as an over-quota
-            // block. Without this arm they would fall to the budget/quota arm below and return
-            // the vendor quota status (Bedrock 400), silently mislabelling the block.
-            metric:
-                metric @ ("requests" | "tokens" | "tokens_input" | "tokens_output" | "tokens_cache_read"
-                | "tokens_cache_write"),
-            window,
-            pool: limit_pool,
-            retry_after,
-            ..
-        } => (
-            StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
-            format!(
-                "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
-                     after the indicated time.",
-                window.unwrap_or("total"),
-                pool_scope_suffix(limit_pool),
-            ),
-            *retry_after,
-        ),
-        LimitBlocked::Limit {
-            group,
             metric: "concurrent",
             ..
         } => (
@@ -273,11 +249,11 @@ pub fn limit_refusal(
             ),
             *retry_after,
         ),
-        // FAIL-SAFE catch-all for any FUTURE metric not yet given an explicit arm above. It
-        // maps to a generic 429 rate limit — never the vendor quota status — so a new metric
-        // can never silently inherit `budget`'s Bedrock-400 semantics. Every metric that exists
-        // today (`requests`/`tokens`/the four `tokens_*` tiers/`concurrent`/`budget`) is matched
-        // explicitly above; this arm only exists to keep the string match exhaustive.
+        // EVERY OTHER METRIC IS A RATE LIMIT: `requests`, `tokens`, and a cap on any meter class
+        // the operator configured (`tokens_<class>`), each a 429 naming the metric word as
+        // configured — never the quota status, so no metric inherits `budget`'s answer. The
+        // metric is an opaque word here: the kernel names no plane's meter class (audit K4 #2;
+        // BUSBAR-1.6.0.md l.166, "Nothing in the kernel parses or understands ... a plane concept").
         LimitBlocked::Limit {
             group,
             metric,
@@ -646,10 +622,8 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
     crate::proxy::ingress_error(proto, status, kind, message)
 }
 
-// THE PLANE-NEUTRAL JSON-RPC ENVELOPE READER, shared by every JSON-RPC-fronted mounted plane. It
-// lives under `ingress/` because that is the shared owner `structure-lint`'s plane ledger already
-// names for the ingress concern: "one plane-neutral admission in ingress/, with the plane supplying
-// its wire reader". This is the envelope half of that.
+// The one JSON-RPC body the kernel writes: a mounted path's refusal made before any envelope was
+// read (`native::native_error`'s mounted arm). The reader is `busbar_contract::jsonrpc`.
 pub mod jsonrpc;
 
 #[cfg(test)]
@@ -667,8 +641,7 @@ pub mod byte_duplex;
 #[cfg(feature = "runtime")]
 pub mod duplex_ws;
 
-/// THE ONE JSON-RPC INGRESS SEQUENCE. Read its header: it carries the thirteen-step measurement
-/// that says which four steps are a protocol's and which nine are core's.
+/// THE RFC 9728 PROTECTED-RESOURCE DOCUMENT RENDER, from the facts a door states.
 pub mod protocol;
 
 // The error-shaping boundary: the ONE place a resolved ingress becomes a native error envelope.
@@ -793,7 +766,7 @@ async fn delegate_body_arrival(
         let uri = path.parse::<axum::http::Uri>().unwrap_or_default();
         let ctx = busbar_kernel::ingress::arrival::ArrivalCtx::new(
             crate::ingress::arrival_host::ArrivalPayload {
-                host: crate::plane_host::engine_host(&app),
+                host: crate::plane_driver::engine_host(&app),
                 gov,
                 caller_token: caller,
             },

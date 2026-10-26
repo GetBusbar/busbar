@@ -151,8 +151,8 @@ pub struct StopKeyScanner {
     /// A candidate that matched `name` whole has just closed: the next non-whitespace byte decides
     /// whether it was a member name (`:`) or a value.
     closed_match: bool,
-    token: [u8; MAX_TOKEN_BYTES],
-    token_len: usize,
+    lexeme: [u8; MAX_TOKEN_BYTES],
+    lexeme_len: usize,
 }
 
 impl StopKeyScanner {
@@ -176,8 +176,8 @@ impl StopKeyScanner {
             candidate: false,
             matched: 0,
             closed_match: false,
-            token: [0; MAX_TOKEN_BYTES],
-            token_len: 0,
+            lexeme: [0; MAX_TOKEN_BYTES],
+            lexeme_len: 0,
         })
     }
 
@@ -198,12 +198,12 @@ impl StopKeyScanner {
                 ScanState::BeforeQuote if c == b'"' => self.state = ScanState::InToken,
                 ScanState::BeforeQuote => self.state = ScanState::Gone,
                 ScanState::InToken if c == b'"' => self.state = ScanState::Found,
-                ScanState::InToken if c == b'\\' || self.token_len == MAX_TOKEN_BYTES => {
+                ScanState::InToken if c == b'\\' || self.lexeme_len == MAX_TOKEN_BYTES => {
                     self.state = ScanState::Gone;
                 }
                 ScanState::InToken => {
-                    self.token[self.token_len] = c;
-                    self.token_len += 1;
+                    self.lexeme[self.lexeme_len] = c;
+                    self.lexeme_len += 1;
                 }
             }
         }
@@ -267,7 +267,7 @@ impl StopKeyScanner {
     /// The token, once the body has supplied all of it; `None` otherwise.
     pub fn token(&self) -> Option<&str> {
         (self.state == ScanState::Found)
-            .then(|| std::str::from_utf8(&self.token[..self.token_len]).ok())
+            .then(|| std::str::from_utf8(&self.lexeme[..self.lexeme_len]).ok())
             .flatten()
     }
 }

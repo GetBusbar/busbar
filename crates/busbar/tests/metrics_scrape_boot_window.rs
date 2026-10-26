@@ -74,7 +74,7 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// A high worker count + `export.prometheus` + an OPEN auth chain (so `/metrics`, declared
+/// A high worker count + a scrape sink under `export:` + an OPEN auth chain (so `/metrics`, declared
 /// `RouteAuth::Key`, is reachable with no bearer at all — see `AuthChain::run_chain_with`'s
 /// `chain.is_empty() && !keys_in_chain` open-front-door arm) — nothing else is topology-specific.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
@@ -307,13 +307,14 @@ fn golden_meta_lines() -> Vec<String> {
     lines
 }
 
-/// RED (coordinator ruling 2026-10-14, THE DESIGN A.4.3 / A.8): the process dispatcher's `bb_*`
-/// counters are on the real binary's `/metrics`, one family each with its `# HELP` and
-/// `# TYPE … counter` lines and a sample — `bb_deadline_without_wake_total` and
-/// `bb_plugin_quarantined_total`. Before the composition root handed the scrape its dispatcher's
-/// counters (`RootInstall::host_counters`) neither family was exported at all.
+/// ORACLE ROW 86 (`/metrics` must match 1.5.5; golden cells `ops.scrape|metrics|key`,
+/// the raw-exposition export cell, `neutrality|metrics-series`): the process dispatcher's internal `bb_*`
+/// counters are NOT on the customer scrape. 1.5.5 served no `bb_deadline_without_wake_total` and no
+/// `bb_plugin_quarantined_total` family; the dispatcher keeps both as its own counts
+/// (`DispatchStats`, read by the plugin conformance suite), never as exposition families. RED on
+/// dev: both families carried `# HELP` / `# TYPE` lines and a sample (13 -> 15 families).
 #[test]
-fn the_dispatchers_bb_counters_are_scraped_with_help_and_type() {
+fn the_dispatchers_bb_counters_are_not_on_the_customer_scrape() {
     let dir = fixture_dir();
     let data_port = free_port();
     let admin_port = free_port();
@@ -339,35 +340,16 @@ fn the_dispatchers_bb_counters_are_scraped_with_help_and_type() {
             read_to_string(&log_path)
         )
     });
-    for (name, help) in [
-        (
-            "bb_deadline_without_wake_total",
-            "Plugin operations that waited and were settled by their deadline without ever being \
-             woken; 0 while every plugin wakes what it parks",
-        ),
-        (
-            "bb_plugin_quarantined_total",
-            "Plugin instances the crossing watchdog quarantined for overrunning their call budget, \
-             summed over every plugin",
-        ),
+    for name in [
+        "bb_deadline_without_wake_total",
+        "bb_plugin_quarantined_total",
     ] {
-        let lines: Vec<&str> = scrape.body.lines().collect();
         assert!(
-            lines.contains(&format!("# HELP {name} {help}").as_str()),
-            "{name}: no HELP line; exposition:\n{}",
-            scrape.body
-        );
-        assert!(
-            lines.contains(&format!("# TYPE {name} counter").as_str()),
-            "{name}: no TYPE counter line; exposition:\n{}",
-            scrape.body
-        );
-        assert!(
-            lines.iter().any(|l| l
-                .strip_prefix(name)
-                .and_then(|v| v.strip_prefix(' '))
-                .is_some_and(|v| v.parse::<u64>().is_ok())),
-            "{name}: no sample; exposition:\n{}",
+            !scrape.body.lines().any(|l| l == name
+                || l.starts_with(&format!("{name} "))
+                || l.starts_with(&format!("{name}{{"))
+                || meta_lines(l).iter().any(|m| meta_name(m) == name)),
+            "{name}: a family 1.5.5 never served is on the customer scrape; exposition:\n{}",
             scrape.body
         );
     }
@@ -457,7 +439,7 @@ fn read_to_string(path: &Path) -> String {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_metrics_admitted_in_open_relay_mode`
-/// (coverage map v2 row 137). 1.5.5: under an open auth chain (`chain: []`) a `GET /metrics` with
+/// 1.5.5: under an open auth chain (`chain: []`) a `GET /metrics` with
 /// no credential is admitted: `200`, a `content-type` that starts `text/plain` (the Prometheus text
 /// exposition), and a body that carries a series (the legacy test seeded the request counter in
 /// process; a spawned node with no traffic yet renders its scrape-time lane series, `busbar_lane_state`).

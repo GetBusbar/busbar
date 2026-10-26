@@ -63,3 +63,7 @@ pub fn worker_stripe(stripes: usize) -> usize {
         id.min(stripes - 1)
     }
 }
+
+#[cfg(test)]
+#[path = "worker_shard_tests.rs"]
+mod worker_shard_tests;

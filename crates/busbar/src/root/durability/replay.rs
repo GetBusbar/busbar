@@ -67,22 +67,6 @@ pub(super) struct Replayed {
     pub(super) uncounted: std::collections::BTreeSet<(TotalsKey, WindowStart)>,
 }
 
-impl Replayed {
-    /// What a chain that could not be read at all leaves: nothing to rebuild from.
-    pub(super) fn nothing() -> Self {
-        Replayed {
-            open: Vec::new(),
-            unheld_claims: Vec::new(),
-            incarnation: 0,
-            unreadable: Vec::new(),
-            refused: Vec::new(),
-            read: Vec::new(),
-            counted: Vec::new(),
-            uncounted: std::collections::BTreeSet::new(),
-        }
-    }
-}
-
 /// REBUILD A BOOK FROM THE CHAIN, in chain order: every hold opened, every settlement posted — each
 /// figure DERIVED from the record's counts at its epoch against `history` (#71, #79).
 ///
@@ -100,36 +84,73 @@ pub(super) fn replay_into(
     history: Option<&HistoryView<'_>>,
     keep: bool,
 ) -> Replayed {
-    let mut open: Vec<OpenHold> = Vec::new();
-    let mut held_units: std::collections::BTreeSet<(u64, TotalsKey, WindowStart, u64)> =
-        std::collections::BTreeSet::new();
-    let mut claims: Vec<ClaimTaken> = Vec::new();
-    let mut incarnation = 0;
-    let mut unreadable = Vec::new();
-    let mut refused = Vec::new();
-    let mut read = Vec::new();
-    let mut counted = Vec::new();
-    let mut uncounted = std::collections::BTreeSet::new();
-    for record in records
-        .iter()
-        .filter(|r| r.class == RecordClass::Transaction)
-    {
+    let mut replay = Replayer::new(history, keep);
+    for record in records {
+        replay.step(ledger, record);
+    }
+    replay.finish()
+}
+
+/// THE CHAIN REPLAYED ONE RECORD AT A TIME into a ledger, with what the replay leaves over: the
+/// walk [`replay_into`] runs whole and [`super::Durability::each_held_checkpoint`] pauses at each
+/// held checkpoint's record, so both derive every figure through the one body below.
+pub(super) struct Replayer<'v, 'h> {
+    history: Option<&'v HistoryView<'h>>,
+    keep: bool,
+    open: Vec<OpenHold>,
+    held_units: std::collections::BTreeSet<(u64, TotalsKey, WindowStart, u64)>,
+    claims: Vec<ClaimTaken>,
+    incarnation: u64,
+    unreadable: Vec<String>,
+    refused: Vec<Posting>,
+    read: Vec<Posting>,
+    counted: Vec<CountedLine>,
+    uncounted: std::collections::BTreeSet<(TotalsKey, WindowStart)>,
+}
+
+impl<'v, 'h> Replayer<'v, 'h> {
+    /// A replay at its start, deriving through `history`; `keep` keeps every posting read.
+    pub(super) fn new(history: Option<&'v HistoryView<'h>>, keep: bool) -> Self {
+        Replayer {
+            history,
+            keep,
+            open: Vec::new(),
+            held_units: std::collections::BTreeSet::new(),
+            claims: Vec::new(),
+            incarnation: 0,
+            unreadable: Vec::new(),
+            refused: Vec::new(),
+            read: Vec::new(),
+            counted: Vec::new(),
+            uncounted: std::collections::BTreeSet::new(),
+        }
+    }
+
+    /// Replay one record into `ledger`. A record of another class than a transaction moves nothing.
+    pub(super) fn step(&mut self, ledger: &mut Ledger, record: &JournalRecord) {
+        if record.class != RecordClass::Transaction {
+            return;
+        }
         if let Some(hold) = HoldOpened::from_record(record) {
-            incarnation = incarnation.max(hold.incarnation);
-            let reserved = hold.reserved(history);
+            self.incarnation = self.incarnation.max(hold.incarnation);
+            let reserved = hold.reserved(self.history);
             apply_opened(ledger, &hold.key, hold.window, reserved);
-            held_units.insert(hold.unit());
-            open.push(OpenHold {
+            self.held_units.insert(hold.unit());
+            self.open.push(OpenHold {
                 hold,
                 reserved,
                 dispatched: false,
                 checkpoint: None,
             });
         } else if let Some(mark) = UnitMark::from_record(record) {
-            incarnation = incarnation.max(mark.incarnation);
+            self.incarnation = self.incarnation.max(mark.incarnation);
             // A mark names the unit whose hold it marks; one for a unit whose hold is closed, or
             // was never opened, marks nothing a recovery could act on.
-            if let Some(held) = open.iter_mut().find(|held| held.hold.unit() == mark.unit()) {
+            if let Some(held) = self
+                .open
+                .iter_mut()
+                .find(|held| held.hold.unit() == mark.unit())
+            {
                 match mark.mark {
                     Mark::Dispatched => held.dispatched = true,
                     Mark::Accrued { counts, arrived_ms } => {
@@ -138,22 +159,22 @@ pub(super) fn replay_into(
                 }
             }
         } else if let Some(claim) = ClaimRecord::from_record(record) {
-            incarnation = incarnation.max(claim.taken.incarnation);
+            self.incarnation = self.incarnation.max(claim.taken.incarnation);
             if claim.voided {
-                claims.retain(|taken| *taken != claim.taken);
+                self.claims.retain(|taken| *taken != claim.taken);
             } else {
-                claims.push(claim.taken);
+                self.claims.push(claim.taken);
             }
         } else if let Some(mut posting) = Posting::from_record(record) {
-            incarnation = incarnation.max(posting.incarnation);
+            self.incarnation = self.incarnation.max(posting.incarnation);
             // What the read-time totals keep of it, by the rule the live book applies (H6), read
             // off the record as written — before any figure is derived onto it.
-            booked_of(&posting, record.node_seq).keep(&mut counted, &mut uncounted);
+            booked_of(&posting, record.node_seq).keep(&mut self.counted, &mut self.uncounted);
             if posting.kind == PostingKind::Carry {
-                if keep {
-                    read.push(posting);
+                if self.keep {
+                    self.read.push(posting);
                 }
-                continue;
+                return;
             }
             // The hold this posting closes, if it closes one: a settlement of the same unit, or the
             // counts row a hold whose counts priced to nothing closes with (`close_counted`).
@@ -164,30 +185,30 @@ pub(super) fn replay_into(
                 posting.mono,
             );
             let closes = matches!(posting.kind, PostingKind::Settlement | PostingKind::Counted)
-                .then(|| open.iter().position(|held| held.hold.unit() == unit))
+                .then(|| self.open.iter().position(|held| held.hold.unit() == unit))
                 .flatten()
-                .map(|at| open.remove(at).reserved);
+                .map(|at| self.open.remove(at).reserved);
             let figures = match posting.era {
                 RecordEra::Figures => figures_as_written(&posting),
-                RecordEra::Counts => derived_figures(&posting, closes, history),
+                RecordEra::Counts => derived_figures(&posting, closes, self.history),
             };
             match figures {
                 Ok(Some(figures)) => {
                     ledger.replay_post(&posting.key, posting.window, &posting.principal, figures);
-                    if keep {
+                    if self.keep {
                         posting.reserved = i128::from(figures.reserved);
                         posting.settled = i128::from(figures.settled);
-                        posting.overdraft = i128::from(figures.overdraft);
-                        read.push(posting);
+                        posting.overdraft = i128::from(figures.overdraft());
+                        self.read.push(posting);
                     }
                 }
                 // A counts row that priced to nothing moves nothing.
                 Ok(None) => {
-                    if keep {
-                        read.push(posting);
+                    if self.keep {
+                        self.read.push(posting);
                     }
                 }
-                Err(Negative) => unreadable.push(format!(
+                Err(Negative) => self.unreadable.push(format!(
                     "node {} record {}: a posting with a negative figure",
                     record.node, record.node_seq
                 )),
@@ -207,38 +228,44 @@ pub(super) fn replay_into(
                         );
                     }
                     posting.refusal = Some(why);
-                    if keep {
-                        read.push(posting.clone());
+                    if self.keep {
+                        self.read.push(posting.clone());
                     }
-                    refused.push(posting);
+                    self.refused.push(posting);
                 }
             }
         } else if looks_like_a_posting(record) {
-            unreadable.push(format!(
+            self.unreadable.push(format!(
                 "node {} record {}: a posting this build cannot place on a balance",
                 record.node, record.node_seq
             ));
         }
     }
-    Replayed {
-        open: open
-            .into_iter()
-            .map(|held| Recoverable {
-                hold: held.hold,
-                dispatched: held.dispatched,
-                checkpoint: held.checkpoint,
-            })
-            .collect(),
-        unheld_claims: claims
-            .into_iter()
-            .filter(|claim| !held_units.contains(&claim.unit()))
-            .collect(),
-        incarnation,
-        unreadable,
-        refused,
-        read,
-        counted,
-        uncounted,
+
+    /// What the replay left over.
+    pub(super) fn finish(self) -> Replayed {
+        Replayed {
+            open: self
+                .open
+                .into_iter()
+                .map(|held| Recoverable {
+                    hold: held.hold,
+                    dispatched: held.dispatched,
+                    checkpoint: held.checkpoint,
+                })
+                .collect(),
+            unheld_claims: self
+                .claims
+                .into_iter()
+                .filter(|claim| !self.held_units.contains(&claim.unit()))
+                .collect(),
+            incarnation: self.incarnation,
+            unreadable: self.unreadable,
+            refused: self.refused,
+            read: self.read,
+            counted: self.counted,
+            uncounted: self.uncounted,
+        }
     }
 }
 
@@ -266,15 +293,16 @@ fn figures_as_written(posting: &Posting) -> Result<Option<Figures>, Unplaced> {
             None => Ok(None),
         };
     }
+    // The overdraft a figures-era record wrote is still read, so a negative one is still unplaced;
+    // the book carries the one the ledger reckons from the other two (`Figures::overdraft`).
     match (
         u64::try_from(posting.reserved),
         u64::try_from(posting.settled),
         u64::try_from(posting.overdraft),
     ) {
-        (Ok(reserved), Ok(settled), Ok(overdraft)) => Ok(Some(Figures {
+        (Ok(reserved), Ok(settled), Ok(_)) => Ok(Some(Figures {
             reserved,
             settled,
-            overdraft,
             fee_count: fee_count_of(posting),
         })),
         _ => Err(Negative),
@@ -318,7 +346,6 @@ fn derived_figures(
     Ok(Some(Figures {
         reserved,
         settled,
-        overdraft: settled.saturating_sub(reserved),
         fee_count: fee_count_of(posting),
     }))
 }

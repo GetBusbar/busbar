@@ -1484,7 +1484,7 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
 /// identity no other cell in this binary uses.
 #[cfg(feature = "root-admin")]
 fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::AuditEntry> {
-    busbar_kernel::audit_ring::AUDIT
+    busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, usize::MAX, None, None)
         .into_iter()
         .filter(|entry| entry.principal == principal)
@@ -1513,8 +1513,12 @@ fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::Audi
 #[test]
 fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
     const WHO: &str = "operator-cifollow-one-entry";
+    // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
+    // test harness registers it, so the rows this test seals reach the seam's read model.
+    let _ = busbar_kernel::test_support::TestApp::new().build();
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
-        let ring = busbar_kernel::audit_ring::AUDIT.list_filtered(0, usize::MAX, None, None);
+        let ring =
+            busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(0, usize::MAX, None, None);
         let at = ring
             .iter()
             .position(|e| e.seq == entry.seq)
@@ -2087,7 +2091,10 @@ impl LedgerView for SeededLedger {
         .collect())
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
+    fn each_checkpoint(
+        &self,
+        each: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
+    ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
         use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
         let mut totals = std::collections::BTreeMap::new();
@@ -2106,17 +2113,20 @@ impl LedgerView for SeededLedger {
                 ..busbar_kernel_ledger::totals::Totals::zero()
             },
         );
-        vec![busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-            4,
-            1,
-            1_700_000_000,
-            Vec::new(),
-            totals,
-            0,
-            0,
-            None,
-        )
-        .expect("an unsigned seal cannot fail")]
+        each(
+            &busbar_kernel_ledger::checkpoint::Checkpoint::seal(
+                4,
+                1,
+                1_700_000_000,
+                Vec::new(),
+                totals,
+                0,
+                0,
+                None,
+            )
+            .expect("an unsigned seal cannot fail"),
+        );
+        Ok(())
     }
 
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
@@ -2284,6 +2294,13 @@ impl busbar_kernel_ledger::legacy::LegacyRows for CountingRows {
             .unwrap_or_else(|p| p.into_inner())
             .push(posting.clone());
         Ok(())
+    }
+
+    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
+        self.written
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|posting| !windows.contains(&posting.window_start));
     }
 }
 
@@ -2531,6 +2548,13 @@ impl busbar_kernel_ledger::legacy::LegacyRows for RowsThatLose {
                 .push(posting.clone());
         }
         Ok(())
+    }
+
+    fn retire(&mut self, windows: &std::collections::BTreeSet<u64>) {
+        self.kept
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|posting| !windows.contains(&posting.window_start));
     }
 }
 
@@ -2890,14 +2914,13 @@ fn verify_names_a_refused_balance_and_every_other_finding() {
 /// The other two views are this node's too: the seal it made and the marker it sealed.
 ///
 /// Both are on the same composition that answered empty above, so the change is the node's own
-/// act rather than a fixture swapped in behind the seam. The checkpoint is asserted through its
-/// sealed balances, which is the half the journal deliberately does not carry — a view rebuilt
-/// from the chain could not answer it at all.
+/// act rather than a fixture swapped in behind the seam. The checkpoint is the one the node's own
+/// sealer made, served as its chain re-derives it (ARCHITECT A1): the node keeps the seal's head,
+/// and the figures the read serves are the ones the body digest was taken over.
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
     use busbar_kernel_ledger::migration::MigrationRecords as _;
-    use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
     let units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
@@ -2912,56 +2935,36 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
         rate_card_version: 4,
     };
 
-    {
+    let sealed = {
         let mut durability = units.durability.lock().expect("durability lock");
-        let mut totals = std::collections::BTreeMap::new();
-        totals.insert(
-            (
-                TotalsKey::new(
-                    BucketId::new(KEPT.0),
-                    CapDimension::NanoUnits,
-                    BucketScope::All,
-                ),
-                A_DAY,
-            ),
-            busbar_kernel_ledger::totals::Totals {
-                settled: 8_000,
-                ..busbar_kernel_ledger::totals::Totals::zero()
-            },
-        );
-        let checkpoint = busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-            7,
-            0,
-            1_700_000_100,
-            Vec::new(),
-            totals,
-            0,
-            0,
-            None,
-        )
-        .expect("an unsigned seal cannot fail");
-        durability
-            .journal_checkpoint(&checkpoint, &token, busbar_contract::caps::StepName::Meter)
-            .expect("the memory-buffered journal takes it");
         durability
             .migration_records(&token, busbar_contract::caps::StepName::Meter)
             .write_marker(&marker)
             .expect("the marker goes on the chain");
-    }
+        durability
+            .seal_checkpoint(
+                &token,
+                busbar_contract::caps::StepName::Meter,
+                1_700_000_100,
+            )
+            .expect("the node seals")
+    };
 
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let body = |path: &str| -> serde_json::Value {
         serde_json::from_slice(&node.answer(a_ledger_request(path)).body).expect("valid JSON")
     };
 
-    let sealed = body("/api/v1/admin/ledger/checkpoints");
-    let sealed = sealed["checkpoints"].as_array().expect("checkpoints");
-    assert_eq!(sealed.len(), 1, "the seal this node made is not served");
-    assert_eq!(sealed[0]["checkpoint_seq"], 7);
-    assert_eq!(sealed[0]["body_hash_verifies"], true);
+    let served = body("/api/v1/admin/ledger/checkpoints");
+    let served = served["checkpoints"].as_array().expect("checkpoints");
+    assert_eq!(served.len(), 1, "the seal this node made is not served");
+    assert_eq!(served[0]["checkpoint_seq"], sealed.checkpoint_seq);
+    assert_eq!(served[0]["wall"], 1_700_000_100);
+    assert_eq!(served[0]["body_hash_verifies"], true);
     assert_eq!(
-        sealed[0]["totals"][0]["settled"], "8000",
-        "the sealed balances the journal does not carry"
+        served[0]["totals"].as_array().map(Vec::len),
+        Some(sealed.totals.len()),
+        "the sealed balances, re-derived"
     );
 
     let served = body("/api/v1/admin/ledger/migration");
@@ -2976,69 +2979,111 @@ fn the_seal_and_the_marker_this_node_made_are_the_ones_it_serves() {
 }
 
 /// THE CHECKPOINTS READ RENDERS THE SEAL'S VERIFICATION (OWNER Q71(3): one keyset, #82): a
-/// checkpoint the node's own chain key signed verifies against the node's audit keyset, and each
-/// refusal is served in its own words — an EDITED seal and an UNSIGNED one.
+/// checkpoint the node's own chain key signed verifies against the node's audit keyset, and one a
+/// node with no signing key sealed is served with its refusal in its own words, UNSIGNED.
 #[cfg(feature = "root-admin")]
 #[test]
 fn the_checkpoints_read_serves_whether_each_seal_verifies_against_the_audit_keyset() {
-    let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    let served = |signing: bool| -> serde_json::Value {
+        let units = crate::root::kernel::ProductionUnits::admin_only(
+            Arc::new(AnsweringDispatch),
+            open_door(),
+        );
+        let token =
+            busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
+        {
+            let mut durability = units.durability.lock().expect("durability lock");
+            if signing {
+                durability.record = busbar_kernel_audit::AuditChain::new()
+                    .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]));
+            }
+            durability
+                .seal_checkpoint(
+                    &token,
+                    busbar_contract::caps::StepName::Meter,
+                    1_700_000_100,
+                )
+                .expect("the node seals");
+        }
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let served: serde_json::Value = serde_json::from_slice(
+            &node
+                .answer(a_ledger_request("/api/v1/admin/ledger/checkpoints"))
+                .body,
+        )
+        .expect("valid JSON");
+        served["checkpoints"][0].clone()
+    };
+
+    let signed = served(true);
+    assert_eq!(signed["signed"], true);
+    assert_eq!(signed["seal_verifies"], true);
+    assert_eq!(signed["seal_refusal"], serde_json::Value::Null);
+
+    let unsigned = served(false);
+    assert_eq!(unsigned["signed"], false);
+    assert_eq!(unsigned["seal_verifies"], false);
+    assert_eq!(
+        unsigned["seal_refusal"],
+        format!(
+            "checkpoint {} carries no signature — no key in the keyset can vouch for it",
+            unsigned["checkpoint_seq"]
+        )
+    );
+}
+
+/// RED (ARCHITECT A1): A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE REFUSES THE CHECKPOINTS
+/// READ, and `GET /admin/verify` names it by its sequence number as a finding. Before the ruling
+/// the read served the held copy's figures, edited or not, as `body_hash_verifies: false`; now no
+/// figure is served for a checkpoint the chain cannot vouch for.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_and_named_by_verify() {
+    use crate::root::units_admin::{LegacyRowsRead, NodeLedger};
+    let node_book = crate::root::durability::node_book();
+    let legacy: std::sync::Arc<dyn LegacyRowsRead> = node_book.rows.clone();
+    let view = NodeLedger::new(std::sync::Arc::clone(&node_book.durability), legacy);
     let token = busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    {
-        let mut durability = units.durability.lock().expect("durability lock");
-        durability.record = busbar_kernel_audit::AuditChain::new()
-            .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]));
-        let signed = durability
+    let stray = {
+        let mut durability = node_book.durability.lock().expect("unpoisoned");
+        let sealed = durability
             .seal_checkpoint(
                 &token,
                 busbar_contract::caps::StepName::Meter,
                 1_700_000_100,
             )
-            .expect("the node seals and signs");
-        // The same seal with a figure edited after it was made, and one nobody signed.
-        let mut edited = signed.clone();
-        edited.checkpoint_seq = 2;
-        let unsigned = busbar_kernel_ledger::checkpoint::Checkpoint::seal(
-            3,
-            0,
-            1_700_000_200,
-            Vec::new(),
-            std::collections::BTreeMap::new(),
-            0,
-            0,
-            None,
-        )
-        .expect("an unsigned seal cannot fail");
-        durability.checkpoints.push(edited);
-        durability.checkpoints.push(unsigned);
-    }
+            .expect("the node seals");
+        // The held head is edited after the seal: no record on the chain carries it.
+        let mut stray = sealed.head();
+        stray.checkpoint_seq = sealed.checkpoint_seq + 40;
+        durability.checkpoints = vec![stray.clone()];
+        stray
+    };
 
-    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let served: serde_json::Value = serde_json::from_slice(
-        &node
-            .answer(a_ledger_request("/api/v1/admin/ledger/checkpoints"))
-            .body,
-    )
-    .expect("valid JSON");
-    let sealed = served["checkpoints"].as_array().expect("checkpoints");
-    assert_eq!(sealed.len(), 3);
-
-    assert_eq!(sealed[0]["signed"], true);
-    assert_eq!(sealed[0]["seal_verifies"], true);
-    assert_eq!(sealed[0]["seal_refusal"], serde_json::Value::Null);
-
-    assert_eq!(sealed[1]["seal_verifies"], false);
-    assert_eq!(
-        sealed[1]["seal_refusal"],
-        "checkpoint 2 does not hash to its own figures — it was EDITED after it was sealed"
+    assert!(
+        matches!(
+            render_ledger_view(KernelVerb::GetLedgerCheckpoints, &view),
+            Err(busbar_core_admin::GovernanceError::Store)
+        ),
+        "no figure is served for a checkpoint the chain cannot vouch for"
     );
 
-    assert_eq!(sealed[2]["signed"], false);
-    assert_eq!(sealed[2]["seal_verifies"], false);
-    assert_eq!(
-        sealed[2]["seal_refusal"],
-        "checkpoint 3 carries no signature — no key in the keyset can vouch for it"
+    let answer = crate::root::units_admin::bound::verify_effect(&view).expect("verify answers");
+    let verified: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
+    let named = format!(
+        "checkpoint {}: no record on the chain carries it",
+        stray.checkpoint_seq
     );
+    assert!(
+        verified["findings"]
+            .as_array()
+            .expect("findings")
+            .iter()
+            .any(|f| f.as_str() == Some(named.as_str())),
+        "the refusal is a finding naming the sequence number: {verified}"
+    );
+    assert_eq!(verified["book_verified"], false, "{verified}");
+    assert_eq!(verified["ok"], false, "{verified}");
 }
 
 /// A caller the node will not authenticate gets from a ledger view exactly what it gets from
@@ -4273,8 +4318,8 @@ fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
 
 /// THE CONTROLS FOR #32: a correction whose boundaries every row already splits at applies — whole
 /// UTC days, an open end, and the instant a config apply started a new price era (every unit from it
-/// on accrued under that era). A window that opens after the arrival is not a correction at all
-/// (TODO M28): [`a_future_dated_correction_is_refused_and_appends_nothing`].
+/// on accrued under that era). A window that opens after the arrival is not a correction at all:
+/// [`a_future_dated_correction_is_refused_and_appends_nothing`].
 #[test]
 fn a_correction_on_row_boundaries_applies() {
     let arrival = 2 * DAY_MS + 10 * HOUR_MS;
@@ -4306,7 +4351,7 @@ fn a_correction_on_row_boundaries_applies() {
     );
 }
 
-/// **A CORRECTION IS BACK-DATED OR IT IS REFUSED** (TODO M28; #79: a correction is "an entry whose
+/// **A CORRECTION IS BACK-DATED OR IT IS REFUSED** (#79: a correction is "an entry whose
 /// `effective_from` lies in the past"). A signed window that opens after the call arrived prices a
 /// future no booked line has reached: a forward price under an amendment's signature, standing in
 /// for a configuration write. Refused at the shape, and nothing is recorded or appended — including a
@@ -4344,7 +4389,7 @@ fn a_future_dated_correction_is_refused_and_appends_nothing() {
     assert_eq!((history.len(), records), (2, 1));
 }
 
-/// **A SIGNED CORRECTION APPLIES ONCE** (TODO M28). The signature covers the window, the figures and
+/// **A SIGNED CORRECTION APPLIES ONCE**. The signature covers the window, the figures and
 /// the reason, and nothing that tells one submission from the next, so the same signed bytes sent
 /// again after a later correction would put the earlier price back with no new operator act. The
 /// replay is refused `Conflict`, nothing is recorded and nothing appended, and the later correction
@@ -4578,8 +4623,8 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
             &an_attribution(),
         )
         .expect("the first correction applies");
-        // A thousand DIFFERENT corrections: the same signed body twice is a replay and is refused
-        // (TODO M28), so each later one moves the fee.
+        // A thousand DIFFERENT corrections: the same signed body twice is a replay and is refused,
+        // so each later one moves the fee.
         for fee in 8..1_008 {
             amend_rate_history_effect(
                 &history,
@@ -4857,7 +4902,6 @@ fn a_booked_line(
         fee_count,
         tier_bp: busbar_kernel_ledger::cost::STANDARD_TIER_BP,
         arrived_ms,
-        origin: busbar_kernel_ledger::PostingOrigin::Client,
     }
 }
 
@@ -4916,8 +4960,11 @@ impl LedgerView for PricedLedger {
         Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
-    fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
-        Vec::new()
+    fn each_checkpoint(
+        &self,
+        _: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
+    ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
+        Ok(())
     }
 
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
@@ -5244,8 +5291,11 @@ fn a_ledger_figure_past_the_served_range_fails_the_read_and_is_never_served_pinn
                 Ok(LegacySnapshot::new())
             }
         }
-        fn checkpoints(&self) -> Vec<busbar_kernel_ledger::checkpoint::Checkpoint> {
-            Vec::new()
+        fn each_checkpoint(
+            &self,
+            _: &mut dyn FnMut(&busbar_kernel_ledger::checkpoint::Checkpoint),
+        ) -> Result<(), crate::root::durability::CheckpointUnreadable> {
+            Ok(())
         }
         fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
             None
@@ -5383,9 +5433,22 @@ fn a_book_with_one_recorded_unit(
     principal: &str,
     lane: &str,
 ) -> (crate::root::durability::NodeBook, String) {
+    let book = crate::root::durability::node_book();
+    let digest = post_one_recorded_unit(&book.durability, principal, lane);
+    (book, digest)
+}
+
+/// Post ONE counts posting for `principal` on `book`: 1,000 `input` units on `lane`, arrived at
+/// `ADJUST_ARRIVED_MS`. Answers the digest of the posting's journal record — the entry an `adjust`
+/// names.
+#[cfg(feature = "root-admin")]
+fn post_one_recorded_unit(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+    principal: &str,
+    lane: &str,
+) -> String {
     use crate::root::durability::{PostingStamp, Settling, UnitCounts};
     use busbar_contract::caps::{DurableWrite, PrincipalId};
-    let book = crate::root::durability::node_book();
     let token = busbar_kernel::test_support::tokens::grant::<DurableWrite>();
     let key = busbar_kernel_ledger::totals::TotalsKey::new(
         busbar_kernel_ledger::totals::BucketId::new(principal),
@@ -5400,7 +5463,7 @@ fn a_book_with_one_recorded_unit(
             1_000,
         )]),
     };
-    let mut durability = book.durability.lock().expect("unpoisoned");
+    let mut durability = book.lock().expect("unpoisoned");
     durability
         .post_counts(
             &Settling {
@@ -5425,9 +5488,7 @@ fn a_book_with_one_recorded_unit(
         .replay()
         .expect("the journal reads back")
         .expect("the journal verifies");
-    let digest = hex::encode(records.last().expect("the posting is on the chain").hash);
-    drop(durability);
-    (book, digest)
+    hex::encode(records.last().expect("the posting is on the chain").hash)
 }
 
 /// The instant the adjusted unit arrived: its card epoch.
@@ -5667,6 +5728,7 @@ fn a_negative_reasonless_or_non_root_adjust_is_refused_and_seals_nothing() {
             busbar_contract::authz::Scope::ReadOnly,
             "admin",
             &|_| true,
+            None,
             |_| binding.ledger.recorded_counts(&digest),
         ),
         Err(busbar_core_admin::GovernanceError::Validation)
@@ -6104,6 +6166,327 @@ fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
         String::from_utf8_lossy(&answer.body)
     );
     assert!(taking.rows_under(crate::root::durability::JOURNAL_SCHEMA) >= 1);
+}
+
+/// A store whose answer the test flips: refusing, a memory-buffered journal over it chains every
+/// record, retains the refused batch and offers it again ahead of the next append (`busbar-kernel-wal`
+/// `Journal::append`, `Wal::append_batch`); answering, the retained batch lands.
+#[cfg(test)]
+struct SwitchShipper(Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(test)]
+impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for SwitchShipper {
+    fn ship(
+        &mut self,
+        _records: &[busbar_kernel_wal::Record],
+    ) -> Result<(), busbar_kernel_wal::ShipError> {
+        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(busbar_kernel_wal::ShipError::Unavailable(
+                "the store is not answering".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A memory-buffered book whose store refuses while `refusing` holds (opened while it answers).
+#[cfg(test)]
+fn a_book_whose_store_switches(
+    refusing: &Arc<std::sync::atomic::AtomicBool>,
+) -> Arc<Mutex<crate::root::durability::Durability>> {
+    Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(SwitchShipper(Arc::clone(refusing))),
+            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ))
+}
+
+/// Put one record that is not a `Policy` record on `book`'s journal, as the next posting would.
+#[cfg(test)]
+fn append_the_next_record(book: &Arc<Mutex<crate::root::durability::Durability>>) {
+    book.lock()
+        .unwrap()
+        .journal
+        .append(
+            &busbar_kernel::test_support::tokens::grant::<busbar_contract::caps::DurableWrite>(),
+            busbar_contract::caps::StepName::Meter,
+            &[
+                busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Load, vec![1])
+                    .at(7, 0),
+            ],
+        )
+        .expect("the store answers again and the next record lands");
+}
+
+/// **A CORRECTION WHOSE RECORD THE JOURNAL CHAINED AND RETAINED IS IN FORCE, AND ANSWERED "SEALED,
+/// NOT YET KEPT"** (audit root r4 B-7). The journal chains a record before the log is asked to take
+/// it, and a log that could not make it durable retains it and writes it ahead of the next append —
+/// so the record reaches the chain a restart rebuilds the dated history from. #79
+/// (`docs/design/BUSBAR-1.6.0.md` l.2282: a correction is "an appended, journaled, dated entry")
+/// makes the history the chain holds the history in force: the live node must price the correction
+/// from the moment its record is chained, and answer `503` "do not re-submit" until it is kept
+/// (ARCHITECT 2026-10-07 H3 ruling (d)). Re-sending it is then refused: it is already applied.
+///
+/// RED before the fix: the journal's `DurabilityLost` was answered `Store` and the history left
+/// untouched — then the retained record landed with the next append, and a restart repriced the
+/// window by a correction the operator was told had failed.
+#[test]
+fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
+    let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let book = a_book_whose_store_switches(&refusing);
+    refusing.store(true, std::sync::atomic::Ordering::SeqCst);
+    let history = a_seeded_history();
+    let answered = amend_rate_history_effect(
+        &history,
+        Some(&a_journal_over(&book)),
+        &a_priced_correction(5, serde_json::json!(1.5)),
+        6,
+        &an_attribution(),
+    )
+    .expect("a correction the journal chained is answered, never refused as unrecorded");
+    let (status, body) = status_and_body(&answered);
+    assert_eq!(status, 503, "{body}");
+    assert!(body.contains("do not re-submit"), "{body}");
+    assert_eq!(
+        history.len(),
+        2,
+        "the correction is in force on the live node from the moment its record is chained"
+    );
+
+    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+    append_the_next_record(&book);
+    assert_eq!(
+        replayed_amendments(&book.lock().unwrap()).len(),
+        1,
+        "the retained record landed on the chain a restart rebuilds the history from"
+    );
+    assert!(
+        matches!(
+            amend_rate_history_effect(
+                &history,
+                Some(&a_journal_over(&book)),
+                &a_priced_correction(5, serde_json::json!(1.5)),
+                7,
+                &an_attribution(),
+            ),
+            Err(busbar_core_admin::GovernanceError::Conflict)
+        ),
+        "a re-submission is refused: the correction is already applied"
+    );
+    assert_eq!(history.len(), 2);
+}
+
+/// **A COMMIT WHOSE RECORD THE JOURNAL CHAINED AND RETAINED IS ANSWERED "SEALED, NOT YET KEPT"**
+/// (audit root r4 B-7): `commit_upgrade` answers `503` "do not re-submit" (ARCHITECT 2026-10-07 H3
+/// ruling (d)), never a refusal of a commit whose record still reaches the chain.
+///
+/// RED before the fix: the journal's `DurabilityLost` was answered `Store` (a commit nothing
+/// recorded) while the retained record landed with the next append.
+#[test]
+fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
+    let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let book = a_book_whose_store_switches(&refusing);
+    refusing.store(true, std::sync::atomic::Ordering::SeqCst);
+    let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
+        .expect("json");
+    let answer =
+        bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .expect("a commit the journal chained is answered, never refused as unrecorded");
+    let text = String::from_utf8_lossy(&answer.body).into_owned();
+    assert_eq!(answer.status, 503, "{text}");
+    assert!(text.contains("do not re-submit"), "{text}");
+
+    refusing.store(false, std::sync::atomic::Ordering::SeqCst);
+    append_the_next_record(&book);
+    let commits = book
+        .lock()
+        .unwrap()
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("the journal verifies")
+        .iter()
+        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
+        .count();
+    assert_eq!(commits, 1, "the retained commit landed on the chain");
+}
+
+/// A binding over `book`'s node ledger, as [`an_adjusting_binding`] builds one, whose amendments are
+/// recorded on `book`'s journal as production binds them (`kernel.rs`, `units.admin.amendments`).
+#[cfg(feature = "root-admin")]
+fn an_adjusting_binding_over(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+) -> AdminBinding {
+    let legacy: Arc<dyn LegacyRowsRead> =
+        Arc::new(busbar_kernel_ledger::legacy::RecordingRows::new());
+    AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
+        .with_ledger_view(Arc::new(NodeLedger::new(Arc::clone(book), legacy)))
+        .with_pools(Arc::new(|pool| pool == "pool-a"))
+        .with_amendment_journal(Arc::new(a_journal_over(book)))
+}
+
+/// A store-kept book holding one recorded unit the store has taken. Answers the book and the
+/// unit's digest.
+#[cfg(feature = "root-admin")]
+fn a_store_kept_book_with_one_recorded_unit(
+    slots: &crate::root::store_double::RecordSlots,
+    principal: &str,
+    lane: &str,
+) -> (Arc<Mutex<crate::root::durability::Durability>>, String) {
+    let book = a_book_over_the_store(slots);
+    let digest = post_one_recorded_unit(&book, principal, lane);
+    assert!(
+        book.lock()
+            .unwrap()
+            .lane()
+            .expect("a book over the store")
+            .drain(std::time::Duration::from_secs(120)),
+        "the store takes the posting"
+    );
+    (book, digest)
+}
+
+/// The corrections the node journal holds for `digest`.
+#[cfg(feature = "root-admin")]
+fn corrections_of(digest: &str) -> usize {
+    busbar_kernel::audit::amend::node_corrections()
+        .iter()
+        .filter(|a| {
+            matches!(&a.body, busbar_kernel::audit::amend::AmendBody::Adjust(adj)
+                if adj.amends_hash == digest)
+        })
+        .count()
+}
+
+/// **`adjust` WHILE THE STORE REFUSES THE JOURNAL'S RECORDS IS REFUSED `503` AND SEALS NOTHING**
+/// (audit root r4 B-8; ARCHITECT 2026-10-07 H3 ruling (d), `durability/mod.rs` and
+/// `AmendmentJournal`: a durable admin verb records nothing while the store is refusing the
+/// journal's records). A count correction moves money (#71, `docs/design/BUSBAR-1.6.0.md`
+/// l.2268: the money is read-time over the counts), so it is held to the rule `amend_rate_history`
+/// and `commit_upgrade` already keep.
+///
+/// RED before the fix: `adjust` never asked the journal — it sealed the correction and answered 200.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_adjust_while_the_store_refuses_the_journal_is_refused_503_and_seals_nothing() {
+    let slots = crate::root::store_double::RecordSlots::new();
+    let (book, digest) = a_store_kept_book_with_one_recorded_unit(
+        &slots,
+        "vk_adjust_h3_refused",
+        "adjust-h3-refused",
+    );
+    slots.refuse(true);
+    // A durable verb that waited on the store saw it refuse.
+    let commit = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
+        .expect("json");
+    let seen = bound::commit_upgrade_effect(
+        &commit,
+        1_700_000_000,
+        "admin",
+        Some(&a_journal_over(&book)),
+    )
+    .expect("an answer");
+    assert_eq!(seen.status, 503, "{}", String::from_utf8_lossy(&seen.body));
+
+    let answer = adjust_through_route(
+        &an_adjusting_binding_over(&book),
+        VerbScope::Full,
+        serde_json::json!({
+            "amends": digest,
+            "now": { "input": "800" },
+            "reason": "a retried request was metered twice",
+            "pool": "pool-a",
+        }),
+    )
+    .expect("an answer");
+    let body = String::from_utf8_lossy(&answer.body).into_owned();
+    assert_eq!(answer.status, 503, "{body}");
+    assert!(body.contains("the test store refuses writes"), "{body}");
+    assert_eq!(
+        corrections_of(&digest),
+        0,
+        "nothing is sealed while the store refuses"
+    );
+}
+
+/// Marks the child process of [`an_adjust_answers_only_once_the_store_kept_its_correction`].
+#[cfg(feature = "root-admin")]
+const ADJUST_ACK_PHASE: &str = "BUSBAR_TEST_ADJUST_ACK_PHASE";
+
+/// THE CHILD HALF of [`an_adjust_answers_only_once_the_store_kept_its_correction`], run only in a
+/// process of its own: it binds the node amendment journal's sink — one per process — to its book,
+/// as the production boot does (`root::boot`, `bind_amendments`). Ignored so the default run never
+/// counts it as a pass.
+#[cfg(feature = "root-admin")]
+#[test]
+#[ignore = "child process of an_adjust_answers_only_once_the_store_kept_its_correction"]
+fn adjust_ack_phase() {
+    assert!(
+        std::env::var(ADJUST_ACK_PHASE).is_ok(),
+        "adjust_ack_phase is the child half of an_adjust_answers_only_once_the_store_kept_its_\
+         correction: run that, not this"
+    );
+    let slots = crate::root::store_double::RecordSlots::new();
+    let (book, digest) =
+        a_store_kept_book_with_one_recorded_unit(&slots, "vk_adjust_h3_ack", "adjust-h3-ack");
+    book.lock()
+        .unwrap()
+        .restore_amendments()
+        .expect("the chain reads back");
+    crate::root::durability::bind_amendments(&book);
+    slots.refuse(true);
+
+    let answer = adjust_through_route(
+        &an_adjusting_binding_over(&book),
+        VerbScope::Full,
+        serde_json::json!({
+            "amends": digest,
+            "now": { "input": "800" },
+            "reason": "a retried request was metered twice",
+            "pool": "pool-a",
+        }),
+    )
+    .expect("an answer");
+    let body = String::from_utf8_lossy(&answer.body).into_owned();
+    assert_eq!(answer.status, 503, "{body}");
+    assert!(
+        body.contains("the test store refuses writes") && body.contains("do not re-submit"),
+        "{body}"
+    );
+    assert_eq!(
+        corrections_of(&digest),
+        1,
+        "the correction is sealed and on the chain, offered again: in force, not yet kept"
+    );
+}
+
+/// **`adjust` ANSWERS 200 ONLY ONCE THE STORE KEPT ITS CORRECTION** (audit root r4 B-8; ARCHITECT
+/// 2026-10-07 H3 ruling (d): a durable admin verb answers only once the store acknowledged its
+/// record). A correction sealed and journalled whose record the store then refuses is answered
+/// `503` "sealed, not yet kept; do not re-submit" — never 200 over a record a crash would lose, and
+/// with it the money derived from the corrected counts (#71, `docs/design/BUSBAR-1.6.0.md` l.2268).
+/// See [`adjust_ack_phase`].
+///
+/// RED before the fix: `adjust` answered 200 without waiting for the store.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_adjust_answers_only_once_the_store_kept_its_correction() {
+    let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", "root::units_admin::tests::adjust_ack_phase"])
+        .args(["--ignored", "--test-threads", "1", "--nocapture"])
+        .env(ADJUST_ACK_PHASE, "1")
+        .output()
+        .expect("the test binary runs");
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "the child phase failed:\n{text}");
+    assert!(
+        text.contains("1 passed"),
+        "the child phase ran nothing:\n{text}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

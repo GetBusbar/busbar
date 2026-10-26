@@ -166,8 +166,8 @@ fn ops() -> &'static Ops {
 }
 
 fn ops_of(door: DoorFn) -> &'static Ops {
-    // SAFETY: the macro's door and table are `'static` consts.
-    let d: &Door = unsafe { &*door() };
+    // The macro's door and table are `'static` consts.
+    let d: &Door = door();
     // SAFETY: as above; the door's ops are an auth table.
     unsafe { &*d.ops.cast::<Ops>() }
 }
@@ -529,7 +529,7 @@ fn verify_on_an_outbound_only_door_is_refused() {
     assert!(t.begin_login.is_some() && t.complete_login.is_some());
 
     // SAFETY: the door's `'static` Statement and tail.
-    let st = unsafe { &*(*plugin::door()).statement };
+    let st = unsafe { &*plugin::door().statement };
     // SAFETY: as above.
     let tail = unsafe { &*st.kind_tail.cast::<AuthTail>() };
     assert_eq!((tail.caps, tail.inbound_points), (CAP_OUTBOUND, 0));
@@ -744,7 +744,7 @@ fn a_verify_and_outbound_door_serves_both_families() {
     assert_eq!(out.verdict, VERDICT_IDENTITY);
 
     // SAFETY: the door's `'static` Statement and tail.
-    let st = unsafe { &*(*both::door()).statement };
+    let st = unsafe { &*both::door().statement };
     // SAFETY: as above.
     let tail = unsafe { &*st.kind_tail.cast::<AuthTail>() };
     assert_eq!(tail.caps, CAP_OUTBOUND | CAP_INBOUND);

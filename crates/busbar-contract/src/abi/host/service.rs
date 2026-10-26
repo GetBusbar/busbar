@@ -51,6 +51,17 @@ pub struct ServiceHead {
     pub handle: CompletionHandle,
 }
 
+impl ServiceHead {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ServiceHead { …, ..ServiceHead::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        op: 0,
+        handle: CompletionHandle::ZERO,
+    };
+}
+
 /// Every service's `out`, in either table. The host writes it whole.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +86,23 @@ pub struct ServiceOut {
     pub error: AbiStr,
 }
 
+impl ServiceOut {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ServiceOut { …, ..ServiceOut::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        outcome: RawOutcome(0),
+        _reserved: [0; 3],
+        value: 0,
+        len: 0,
+        items: 0,
+        needed_bytes: 0,
+        needed_items: 0,
+        error: AbiStr::ZERO,
+    };
+}
+
 /// One named range of a result's bytes: a key and a value, each a [`Span`] into the bytes
 /// written, or absent (`offset` = [`check::SPAN_ABSENT`], `len` = `0`).
 #[repr(C)]
@@ -84,6 +112,16 @@ pub struct ItemSpan {
     pub key: Span,
     /// The value.
     pub value: Span,
+}
+
+impl ItemSpan {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ItemSpan { …, ..ItemSpan::ZERO }` so a field appended later reads as
+    /// not declared.
+    pub const ZERO: Self = Self {
+        key: Span::ZERO,
+        value: Span::ZERO,
+    };
 }
 
 /// The plugin's buffers a service writes its result into, preallocated at the sizes the plugin
@@ -99,6 +137,18 @@ pub struct ServiceBufs {
     pub spans: *mut ItemSpan,
     /// Their capacity, in spans.
     pub spans_cap: usize,
+}
+
+impl ServiceBufs {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `ServiceBufs { …, ..ServiceBufs::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        buf: std::ptr::null_mut(),
+        cap: 0,
+        spans: std::ptr::null_mut(),
+        spans_cap: 0,
+    };
 }
 
 /// The most spans one result may carry.
@@ -292,6 +342,18 @@ pub struct RecordsSecretIn {
     pub id: AbiStr,
     /// Where the secret goes.
     pub into: ServiceBufs,
+}
+
+impl RecordsSecretIn {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordsSecretIn { …, ..RecordsSecretIn::ZERO }` so a field appended
+    /// later reads as not declared.
+    pub const ZERO: Self = Self {
+        head: ServiceHead::ZERO,
+        kind: AbiStr::ZERO,
+        id: AbiStr::ZERO,
+        into: ServiceBufs::ZERO,
+    };
 }
 
 /// `value` of [`op::RECORDS_SECRET`]: not live, or no such credential.
@@ -837,6 +899,26 @@ pub struct HookCallIn {
     pub into: ServiceBufs,
 }
 
+impl HookCallIn {
+    /// The `in` of a `hook.call`, built from its parts, so a caller names no field of it.
+    #[must_use]
+    pub fn over(
+        head: ServiceHead,
+        stage: u32,
+        from: u32,
+        prompt: *const crate::abi::hook::PromptView,
+        into: ServiceBufs,
+    ) -> Self {
+        Self {
+            head,
+            stage,
+            from,
+            prompt,
+            into,
+        }
+    }
+}
+
 /// `hook.call` stage: the calling unit's decision gates.
 pub const HOOK_GATE: u32 = 0;
 /// `hook.call` stage: the calling unit's rewrite chain.
@@ -979,6 +1061,19 @@ pub struct DiskWritten {
     pub _reserved: [u8; 2],
     /// The bytes appended: `bytes.len` on READY, `0` otherwise.
     pub written: u64,
+}
+
+impl DiskWritten {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `DiskWritten { …, ..DiskWritten::ZERO }` so a field appended later reads
+    /// as not declared.
+    pub const ZERO: Self = Self {
+        size: 0,
+        rotated: 0,
+        faults: 0,
+        _reserved: [0; 2],
+        written: 0,
+    };
 }
 
 /// [`DiskWritten::rotated`]: the host rotated the file before appending.

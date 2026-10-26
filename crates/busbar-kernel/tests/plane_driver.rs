@@ -18,6 +18,9 @@ mod cases;
 #[path = "support/plane_driver_hook_cases.rs"]
 mod hook_cases;
 
+#[path = "support/plane_driver_close_cases.rs"]
+mod close_cases;
+
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -27,15 +30,16 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::hook::{MessageView, RequestView};
-use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, Span};
+use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, ProjectIn, ProjectOut, RecordWrite,
     RefusalIn, RefusalOut, UnitCount, AUDIT_APPLIED, CANCEL_ABORTED, CANCEL_FAILED,
     CANCEL_OK_PARTIAL, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ARRIVE,
-    ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
+    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS,
+    PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
+    REFUSAL_ARRIVE, ROUTE_LOCAL, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, UNITS_ESTIMATED, UNITS_REPORTED,
+    VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{ServeIn, ServeOut, REFUSAL_GATE};
 use busbar_contract::caps::OpClassId;
@@ -140,6 +144,9 @@ struct Unit {
     short: bool,
     /// The last answer was `more = 1` from this source: the next piece is its re-call.
     more_from: Option<u32>,
+    /// The answer's first piece carried `PIECE_FINAL`: a retry verdict on it does not keep the
+    /// unit.
+    final_answer: bool,
 }
 
 /// One answer, held until it is due. The `out` carries plane pointers; the host reads it only
@@ -230,6 +237,12 @@ struct Double {
     refused: Mutex<Vec<u32>>,
     /// Every caller piece of a `/scope-local*` unit: its attempt number and the member it lent.
     scope_members: Mutex<Vec<(u32, Vec<u8>)>>,
+    /// The caller reference every piece it was handed was lent, in order.
+    caller_refs: Mutex<Vec<Vec<u8>>>,
+    /// THE CLOSING CALLS each unit had, by its key: an `on_piece` answer that says its reply is
+    /// complete (`EMIT_DONE`, its last window), a `refusal` naming it, a `cancel` naming it or the
+    /// op it had in flight. A unit is let go at its first; a second finds nothing.
+    closes: Mutex<HashMap<u64, u32>>,
 }
 
 /// The double's driver-ticket wake line (R-PUSH): off, it has no wake channel.
@@ -298,6 +311,11 @@ impl Double {
         self.stats[k].fetch_add(1, Ordering::SeqCst);
     }
 
+    /// A closing call for `unit` crossed.
+    fn closed(&self, unit: u64) {
+        *self.closes.lock().unwrap().entry(unit).or_default() += 1;
+    }
+
     /// The state of the unit `ticket` serves, removed.
     fn unit_of(&self, ticket: Ticket) -> Unit {
         let unit = self.tickets.lock().unwrap().remove(&ticket);
@@ -338,6 +356,10 @@ impl Double {
     unsafe fn piece(&self, t: Ticket, i: &OnPieceIn, o: &mut OnPieceOut) -> (Answered, Hold) {
         self.count(stat::ON_PIECES);
         self.stats[stat::UNIT].store(i.unit, Ordering::SeqCst);
+        self.caller_refs
+            .lock()
+            .unwrap()
+            .push(text(i.caller_ref).to_vec());
         if i.stream != 0 {
             return (self.session_piece(i, o), Hold::No);
         }
@@ -476,6 +498,11 @@ impl Double {
         if i.from == FROM_FAR_END && (!piece.is_empty() || i.flags != 0) {
             u.far_answered = true;
             u.far_pieces += 1;
+            // The answer's head (its status, not a trailer's) carries the final mark; a new attempt
+            // starts with none (the ATTEMPT piece resets the unit above).
+            if i.flags & PIECE_HAS_STATUS != 0 && i.flags & PIECE_FIELDS == 0 {
+                u.final_answer = i.flags & PIECE_FINAL != 0;
+            }
             u.saw_last |= i.flags & PIECE_LAST != 0;
             match u.mode.as_slice() {
                 b"fault" => return (ready(Outcome::Fault), Hold::No),
@@ -489,7 +516,20 @@ impl Double {
                     self.count(stat::HOST_CALLS);
                     hold = Hold::For(Duration::from_millis(30));
                 }
+                // An answer whose last window (its reply done) comes LATE (mode `done-late`): the
+                // second far-end piece's answer is held, so a deadline, a drain or the caller
+                // going away reaches the op before its own done answer does.
+                b"done-late" | b"retry-done-late" if u.far_pieces == 2 => {
+                    hold = Hold::For(DONE_LATE);
+                }
                 b"retry" => {
+                    o.verdict = VERDICT_RETRY;
+                    return (ready(Outcome::Ready), Hold::No);
+                }
+                // An answer done before any byte, with a retry verdict (mode `done-retry`): the
+                // kernel fails it over, and the plane keeps the unit for the next attempt.
+                b"done-retry" => {
+                    o.flags = EMIT_DONE;
                     o.verdict = VERDICT_RETRY;
                     return (ready(Outcome::Ready), Hold::No);
                 }
@@ -546,6 +586,21 @@ impl Double {
                 _ => busbar_contract::abi::plane::TAP_FAULT_NONE,
             };
         }
+        // A plane that writes a record on its answer's second window (mode `row-late`): with no
+        // record path for it (the store out), the write fails the unit after its answer began.
+        if u.mode == b"row-late" && u.far_pieces == 2 {
+            let mut at = o.arena_written as usize;
+            let key = put(i, &mut at, b"late");
+            let value = put(i, &mut at, b"row");
+            *i.records_buf = RecordWrite {
+                kind: 0,
+                op: RECORD_PUT,
+                key,
+                value,
+            };
+            o.records_written = 1;
+            o.arena_written = at as u64;
+        }
         let n = u.pending.len().min(i.reply_cap);
         std::ptr::copy_nonoverlapping(u.pending.as_ptr(), i.reply_buf, n);
         u.pending.drain(..n);
@@ -566,6 +621,11 @@ impl Double {
         if u.saw_last && u.pending.is_empty() {
             o.flags = EMIT_DONE;
             o.verdict = 0;
+            // A done answer with a retry verdict (mode `retry-done-late`): an answer not marked
+            // final keeps the unit for the attempt the retry asks for.
+            if u.mode == b"retry-done-late" {
+                o.verdict = VERDICT_RETRY;
+            }
         }
         // A plane whose emitted messages are text (mode `text`): each whole message says so.
         if u.mode == b"text" && o.emitted > 0 && o.more == 0 {
@@ -632,6 +692,9 @@ enum Hold {
     /// what the driver lent it.
     Wedge,
 }
+
+/// How long a `done-late` unit's last answer is held.
+pub(crate) const DONE_LATE: Duration = Duration::from_millis(120);
 
 /// How long a wedged crossing runs on after its FAULT answer.
 pub(crate) const WEDGE: Duration = Duration::from_millis(300);
@@ -765,6 +828,9 @@ impl PlaneCalls for Double {
         out: &mut RefusalOut,
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome {
+        if input.unit != 0 {
+            self.closed(input.unit);
+        }
         // The reason crosses beside its text (`RefusalIn::text`, the kernel's own message: the
         // reason's spelling, or the walk terminal's own words): a refusal whose code names no reason,
         // or that carries no text, is FAULT. A gate's refusal carries the hook's own words instead.
@@ -891,7 +957,15 @@ impl PlaneCalls for Double {
     /// The view this plane projects: each body line `role:text` is a turn, a `sys=` line the
     /// system prompt and a `user=` line the end user. A rewrite (1.5.5's `rewrite` object) is
     /// applied by replacing the turns with its messages' `role:content`, unless the target is
-    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project. The
+    /// `/no-rewrite` (a rewrite the plane cannot read); `/unprojectable` refuses to project, and
+    /// `/refuses-rewrite` refuses to project with a rewrite (one naming a model other than the
+    /// routed one, say) while it projects the caller's own request; `/faults-rewrite` answers FAULT
+    /// to a project with a rewrite (a redaction the plane cannot apply), and `/unparseable` to every
+    /// project (a body whose document does not parse), marked `PROJECT_FAULT_UNPARSEABLE`;
+    /// `/fault-unmarked` answers FAULT without the mark, `/panics` as a panicking slot's door does,
+    /// `/no-crossing` as the host does for a refused frame or a quarantined instance, and
+    /// `/broken-answer` is a FAULT the host minted over a READY answer that broke the kind's rule.
+    /// The
     /// view names the entry its `arrive` recorded (none) and states the unit's body: a projection
     /// with no body would leave a gate-first unit nothing to screen, and the kernel would bind no
     /// gate for it.
@@ -908,7 +982,38 @@ impl PlaneCalls for Double {
             .lock()
             .unwrap()
             .push((body.clone(), rewrite.clone()));
-        if target == b"/unprojectable" {
+        if (target == b"/faults-rewrite" && !rewrite.is_empty()) || target == b"/unparseable" {
+            // The plane's own FAULT over a body it could not parse: its door mirrors the outcome
+            // into the `out` head, and the plane marks the body unparseable.
+            out.head.outcome = RawOutcome::of(Outcome::Fault);
+            out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
+            return Outcome::Fault;
+        }
+        match target.as_slice() {
+            // A FAULT the plane answered without the mark.
+            b"/fault-unmarked" => {
+                out.head.outcome = RawOutcome::of(Outcome::Fault);
+                return Outcome::Fault;
+            }
+            // A slot that panicked: the door's catcher writes nothing but `outcome = FAULT`.
+            b"/panics" => {
+                out.head.outcome = RawOutcome::of(Outcome::Fault);
+                return Outcome::Fault;
+            }
+            // A frame refused before the crossing, or a quarantined instance: the host answers
+            // FAULT and the `out` is as the host lent it.
+            b"/no-crossing" => return Outcome::Fault,
+            // The plane answered READY (the mark's bit set among its view flags, even) and the
+            // loader's check of that answer against its kind's rule refused it: a FAULT the host
+            // minted.
+            b"/broken-answer" => {
+                out.head.outcome = RawOutcome::of(Outcome::Ready);
+                out.view.flags = busbar_contract::abi::plane::PROJECT_FAULT_UNPARSEABLE;
+                return Outcome::Fault;
+            }
+            _ => {}
+        }
+        if target == b"/unprojectable" || (target == b"/refuses-rewrite" && !rewrite.is_empty()) {
             return Outcome::Refused;
         }
         let rewritten = (!rewrite.is_empty() && target != b"/no-rewrite")
@@ -1038,6 +1143,7 @@ impl PlaneCalls for Double {
         let taught = self.tickets.lock().unwrap().get(&ticket).copied();
         if let Some(key) = named.or(taught) {
             self.heads.lock().unwrap().remove(&key);
+            self.closed(key);
         }
         let u = self.unit_of(ticket);
         self.disposition(&u)
@@ -1119,6 +1225,9 @@ impl PlaneCalls for Double {
         };
         self.count(stat::CANCELS);
         self.count(stat::CANCELS_ON_WORKER);
+        if let Some(key) = self.tickets.lock().unwrap().get(&ticket).copied() {
+            self.closed(key);
+        }
         let u = self.unit_of(ticket);
         let answer = match self.disposition(&u) {
             Some(d) => Answered {
@@ -1148,6 +1257,19 @@ impl PlaneCalls for Double {
         })));
         // SAFETY: the driver's `in`, whose buffers outlive the answer.
         let (answer, hold) = unsafe { self.piece(ticket, &input, &mut out) };
+        // A done answer with a retry verdict keeps the unit for the kernel's next attempt, unless
+        // its answer was marked final (`PIECE_FINAL`).
+        let final_answer = (self.units.lock().unwrap())
+            .get(&input.unit)
+            .is_some_and(|u| u.final_answer);
+        if answer.outcome == Outcome::Ready
+            && out.flags & EMIT_DONE != 0
+            && out.more == 0
+            && (out.verdict != VERDICT_RETRY || final_answer)
+            && input.flags & PIECE_REFUSED == 0
+        {
+            self.closed(input.unit);
+        }
         match hold {
             Hold::No => slot.put(answer, out),
             Hold::Forever => {
@@ -1244,6 +1366,21 @@ use busbar_kernel::host_services::{InstanceFacts, KernelServices, Offload};
 struct Rows(Arc<MemoryStore>);
 
 impl RecordRows for Rows {
+    fn claim(
+        &self,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> Result<bool, busbar_contract::kinds::StoreError> {
+        busbar_contract::records::RecordStore::redeem_plane_token(
+            &*self.0,
+            busbar_kernel::host_records::CLAIM_KIND,
+            token,
+            expires_at,
+            now,
+        )
+        .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
+    }
     fn record_put(&self, s: RecordSchemaId, k: &[u8], v: &RecordBytes) -> Result<(), StoreError> {
         self.0.record_put(s, k, v)
     }
@@ -2497,8 +2634,10 @@ async fn a_vetoed_units_refusal_names_the_hook_and_writes_its_rejected_row() {
 /// A far end whose walk picks `m0` first when it `sends` (the attempt's request goes out and
 /// nothing comes back: its credential no longer resolves, or its connection fails), then answers
 /// `then`: the walk's credential refusal, or its exhaustion terminal. Without `sends` the walk
-/// answers `then` at once and no request goes out.
+/// answers `then` at once and no request goes out. `unsent` is why nothing left, as the walk says
+/// it (`FarEnd::unsent`): `None`, the walk names none.
 struct Gone {
+    unsent: Option<busbar_contract::abi::plane::RefusalCode>,
     sends: bool,
     then: busbar_kernel::plane_driver::Pick,
 }
@@ -2545,12 +2684,19 @@ impl busbar_kernel::plane_driver::FarEnd for Gone {
     ) -> bool {
         false
     }
+
+    fn unsent(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<busbar_contract::abi::plane::RefusalCode> {
+        self.unsent
+    }
 }
 
-/// Run one unit over `far` through the one loop; its outcome.
+/// Run one unit over `far` through the one loop; its outcome, and what its meter accrued.
 async fn drive_gone(
     units: &busbar_kernel::plane_driver::PlaneUnits<'_, common::TestUnits, Gone, cases::Caller>,
-) -> busbar_contract::caps::Outcome {
+) -> (busbar_contract::caps::Outcome, u64) {
     use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
     use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
     let kernel = Kernel::new();
@@ -2569,20 +2715,24 @@ async fn drive_gone(
         canary: &canary,
         meter: &meter,
     };
-    match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
+    let outcome = match run_unit_async(&kernel, units, &common::ctx(7), run, units).await {
         Ended::Settled { end, .. } => end.outcome(),
         Ended::AlreadySettled => panic!("nothing else holds this unit's cell"),
-    }
+    };
+    (outcome, meter.total())
 }
 
 /// What one unit over [`Gone`] came to, on a driver that `takes` the refused piece or not: its
 /// outcome, the reasons of the refused pieces the plane was handed, the `refused` record as the
-/// host holds it, and whether anything the refused piece emitted reached the caller.
+/// host holds it, and whether anything the refused piece emitted reached the caller; the caller's
+/// rendered refusal, and what the unit's meter accrued.
 struct Came {
     outcome: busbar_contract::caps::Outcome,
     refused: Vec<u32>,
     written: Stored,
     leaked: bool,
+    body: String,
+    charged: u64,
 }
 
 async fn came(far: Gone, takes: bool) -> Came {
@@ -2596,7 +2746,7 @@ async fn came(far: Gone, takes: bool) -> Came {
     let units = r
         .driver
         .unit(&steps, &far, &caller, cases::arrival("/x", b"x"), 0);
-    let outcome = drive_gone(&units).await;
+    let (outcome, charged) = drive_gone(&units).await;
     let rendered = units.take_rendered().expect("the refusal is rendered");
     let body = String::from_utf8_lossy(&rendered.body).into_owned();
     assert!(body.starts_with("refused:"), "takes={takes}: {body}");
@@ -2607,6 +2757,8 @@ async fn came(far: Gone, takes: bool) -> Came {
         refused,
         written: get(&s, b"refused"),
         leaked,
+        body,
+        charged,
     }
 }
 
@@ -2621,6 +2773,7 @@ async fn a_credential_refusal_is_handed_as_a_piece_first_only_to_a_plane_that_ta
     use busbar_contract::caps::{Outcome as Unit, ReasonCode, StepName};
     let code = busbar_contract::abi::plane::reason_code(ReasonCode::CredentialUnavailable);
     let gone = || Gone {
+        unsent: None,
         sends: true,
         then: busbar_kernel::plane_driver::Pick::Refused(ReasonCode::CredentialUnavailable),
     };
@@ -2670,6 +2823,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     };
     let taken = came(
         Gone {
+            unsent: None,
             sends: true,
             then: exhausted(),
         },
@@ -2678,6 +2832,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     .await;
     let without = came(
         Gone {
+            unsent: None,
             sends: true,
             then: exhausted(),
         },
@@ -2702,6 +2857,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     // (R-REJECTED, coordinator 2026-10-07, extends gap-2); a plane without the bit is sent nothing.
     let unsent = came(
         Gone {
+            unsent: None,
             sends: false,
             then: exhausted(),
         },
@@ -2721,6 +2877,7 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
     assert!(!unsent.leaked);
     let unsent_without = came(
         Gone {
+            unsent: None,
             sends: false,
             then: exhausted(),
         },
@@ -2737,6 +2894,71 @@ async fn a_walk_that_ends_after_a_request_went_out_is_handed_as_a_piece_first() 
         format!("{:?}", unsent_without.outcome),
         "the unit ends the same with the bit and without it"
     );
+}
+
+/// THE WALK THAT EXHAUSTED WITH NOTHING SENT NAMES WHY on its refused piece: for each way an
+/// attempt leaves nothing on the wire (no member in hand, no route, an unbound need, a target that
+/// is no path, a field name that is no token, an unrecordable dispatch, a failed auth call, a
+/// refused open) the piece carries that `Unsent*` code in place of `breaker_open`, its record
+/// write is written, the meter accrues nothing, and the unit ends, and its caller is answered,
+/// byte for byte as the `breaker_open` exhaustion. RED: the piece named `breaker_open` whether
+/// or not anything left, so a plane charged a hop that never left. A walk that says nothing left
+/// is handed `breaker_open` as before (the arm below).
+#[tokio::test]
+async fn a_walk_that_exhausted_with_nothing_sent_names_why_on_its_refused_piece() {
+    use busbar_contract::abi::plane::{nothing_sent, RefusalCode};
+    use busbar_kernel::plane_driver::Pick;
+    let exhausted = || Pick::Exhausted {
+        status: 503,
+        retry_after: Some(2),
+        detail: "The service is temporarily overloaded. Please retry shortly.",
+    };
+    let gone = |unsent| Gone {
+        unsent,
+        sends: true,
+        then: exhausted(),
+    };
+    let sent = came(gone(None), true).await;
+    let breaker =
+        busbar_contract::abi::plane::reason_code(busbar_contract::caps::ReasonCode::BreakerOpen);
+    assert_eq!(
+        sent.refused,
+        vec![breaker],
+        "a walk that sent names breaker_open"
+    );
+    assert!(!nothing_sent(breaker));
+    let classes: Vec<RefusalCode> = RefusalCode::ALL
+        .iter()
+        .copied()
+        .filter(|c| c.unsent())
+        .collect();
+    assert_eq!(classes.len(), 8, "one code per pre-byte class");
+    for code in classes {
+        let c = came(gone(Some(code)), true).await;
+        assert_eq!(
+            c.refused,
+            vec![code.code()],
+            "{code:?}: the piece names why"
+        );
+        assert!(nothing_sent(code.code()), "{code:?}");
+        assert_eq!(
+            (c.written.value, c.written.bytes),
+            (svc::FOUND, code.code().to_string().into_bytes()),
+            "{code:?}: the refused piece's record write is written"
+        );
+        assert_eq!(c.charged, 0, "{code:?}: nothing is charged");
+        assert!(!c.leaked, "{code:?}");
+        assert_eq!(
+            format!("{:?}", c.outcome),
+            format!("{:?}", sent.outcome),
+            "{code:?}: the unit ends as the walk's exhaustion does"
+        );
+        assert_eq!(
+            c.body, sent.body,
+            "{code:?}: the caller's bytes are unchanged"
+        );
+    }
+    assert_eq!(sent.charged, 0);
 }
 
 /// R-PUSH (spec :2603-2606, :3470): `next_tick_ns = 0` names no tick until the next wake of the
@@ -3124,5 +3346,121 @@ async fn a_unit_cancelled_before_its_first_piece_is_freed() {
     assert!(
         r.plane.heads.lock().unwrap().is_empty(),
         "the cancel found the unit `arrive` keyed, and freed it"
+    );
+}
+
+// ── the governed chain's caller reference ────────────────────────────────────────────────────────
+
+/// A driver whose book lends caller references under `slot` (a governed chain), over the double.
+fn governed(slot: busbar_kernel::plane_driver::CallerRefs) -> Rig {
+    let plane = Arc::new(Double::default());
+    let book = Arc::new(cases::Book::default());
+    let driver = PlaneDriver::new(
+        plane.clone(),
+        DriverConfig {
+            caps: BufferCaps::default(),
+            op_classes: vec![OpClassId::new("call")],
+            status_of: refusal_status,
+            refusal_statuses: cases::statuses(),
+            caller_refs: Some(slot),
+        },
+        book.clone(),
+        services(),
+        ("test_plane", &serde_yaml::Value::Null),
+    )
+    .expect("the instance is admitted");
+    Rig {
+        plane,
+        driver,
+        book,
+    }
+}
+
+/// One `/call` unit of the battery's verified principal through `r`: its outcome, and what the far
+/// end was sent.
+async fn verified_call(
+    r: &Rig,
+) -> (
+    busbar_contract::caps::Outcome,
+    Vec<busbar_kernel::plane_driver::OutboundRequest>,
+) {
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["ok"], cases::CHUNKS),
+        cases::Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/call", b"ping"), 0);
+    let outcome = cases::drive(&units).await;
+    (outcome, far.sent())
+}
+
+/// RED, THE GOVERNED CHAIN NEVER LENDS AN EMPTY CALLER REFERENCE: a plane reads an empty reference
+/// as an ungoverned unit, so on a driver whose book lends references, a verified principal whose
+/// reference cannot be derived (the book holds no key yet) is refused before the plane is lent the
+/// unit: no piece crosses, nothing reaches the far end. Before the fix the unit ran, and every
+/// piece was lent the empty reference.
+#[tokio::test]
+async fn red_a_governed_unit_with_no_caller_reference_is_refused_before_the_plane_runs() {
+    let slot: busbar_kernel::plane_driver::CallerRefs = Arc::default();
+    let r = governed(Arc::clone(&slot));
+    let (outcome, sent) = verified_call(&r).await;
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Verify,
+                busbar_contract::caps::ReasonCode::Unauthenticated
+            )
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(r.stats()[stat::ON_PIECES], 0, "no piece crossed");
+    assert!(sent.is_empty(), "nothing reached the far end");
+    assert!(
+        r.plane.caller_refs.lock().unwrap().is_empty(),
+        "no empty caller reference was lent"
+    );
+}
+
+/// The same governed driver, once its book holds a key: the unit runs, and every piece is lent the
+/// principal's own reference under that key (never empty, never the principal).
+#[tokio::test]
+async fn a_governed_unit_is_lent_its_principals_reference_once_the_book_holds_a_key() {
+    let slot: busbar_kernel::plane_driver::CallerRefs = Arc::default();
+    let r = governed(Arc::clone(&slot));
+    let key = busbar_kernel::auth::CallerRefKey::derive(&[7u8; 32]);
+    let expected = key.caller_ref(common::principal().as_str()).into_bytes();
+    *slot.write().unwrap() = Some(Arc::new(key));
+    let (outcome, sent) = verified_call(&r).await;
+    assert!(
+        matches!(outcome, busbar_contract::caps::Outcome::Completed),
+        "{outcome:?}"
+    );
+    assert_eq!(sent.len(), 1, "the unit reached the far end");
+    let lent = r.plane.caller_refs.lock().unwrap().clone();
+    assert!(!lent.is_empty(), "the plane was lent the unit");
+    assert!(
+        lent.iter().all(|l| *l == expected),
+        "every piece carries the principal's own reference: {lent:?}"
+    );
+}
+
+/// An UNGOVERNED driver (no book: it lends no references) still runs a verified unit, every piece
+/// lent the empty reference a plane reads as ungoverned.
+#[tokio::test]
+async fn an_ungoverned_unit_runs_lent_the_empty_reference() {
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (outcome, sent) = verified_call(&r).await;
+    assert!(
+        matches!(outcome, busbar_contract::caps::Outcome::Completed),
+        "{outcome:?}"
+    );
+    assert_eq!(sent.len(), 1);
+    let lent = r.plane.caller_refs.lock().unwrap().clone();
+    assert!(
+        !lent.is_empty() && lent.iter().all(Vec::is_empty),
+        "{lent:?}"
     );
 }

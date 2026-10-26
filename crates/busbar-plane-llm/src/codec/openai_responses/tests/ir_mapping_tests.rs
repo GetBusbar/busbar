@@ -627,6 +627,28 @@ fn rsp16_stream_blank_call_id_is_synthesized_like_buffered() {
 
 // ─────────────────────────────────────── RSP-17 ───────────────────────────────────────
 
+/// A Responses answer served at `flex` or `scale` keeps its tier in the IR, as a Chat answer does
+/// (audit: the served-tier word table made both write-only, so the tier was lost with no warn).
+/// RED before the fix: `ServedTier` read neither word.
+#[test]
+fn a_responses_answer_served_at_flex_or_scale_keeps_its_tier() {
+    for tier in ["flex", "scale"] {
+        let responses = serde_json::json!({"id": "resp_1", "object": "response", "created_at": 1,
+            "status": "completed", "model": "gpt", "service_tier": tier,
+            "output": [{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+                "content": [{"type": "output_text", "text": "hi", "annotations": []}]}],
+            "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4}});
+        let ir = ResponsesReader
+            .read_response(crate::codec::test_host::HOST, &responses)
+            .expect("read");
+        assert_eq!(
+            ir.usage.detail.service_tier.as_deref(),
+            Some(tier),
+            "{tier}"
+        );
+    }
+}
+
 /// RSP-17: the served tier crosses in both directions, buffered and streamed.
 #[test]
 fn rsp17_service_tier_crosses_both_directions() {

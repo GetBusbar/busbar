@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE SECRET AXIS OVER THE ONE DISPATCHER** (TODO step 28): [`SecretRows`] holds the kind's
+//! **THE SECRET AXIS OVER THE ONE DISPATCHER**: [`SecretRows`] holds the kind's
 //! REAL plugin (the env source, reached by KIND through `[package.metadata.busbar.both-ways]`, as
 //! `secret_door_conformance_tests` reaches it) LINKED (its door) and DROPPED IN (its `cdylib`, as
 //! the registry discovers it), and the kernel's calls — `answers`, `linked`, `shared`, `open`, and
@@ -22,7 +22,7 @@ use super::SecretRows;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
-use crate::both_ways::{secret_fixture, HOT_FIXTURES};
+use crate::both_ways::{fixture_cdylib, secret_fixture};
 use crate::hook_door_conformance_tests::hook_door_plugin;
 use secret_fixture::door::door;
 use secret_fixture::NAME;
@@ -86,7 +86,7 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
     let mut rows = SecretRows::new(dispatcher, || None);
     rows.link(door).expect("the env source's door links");
     assert!(rows.answers(NAME) && rows.linked(NAME));
-    assert!(!rows.answers("vault") && !rows.linked("vault"));
+    assert!(!rows.answers("absent") && !rows.linked("absent"));
     let t = transcript(&rows);
     assert_eq!(t[0], format!("ok {MATERIAL}"));
     assert!(
@@ -101,27 +101,25 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
         .expect("the linked env source has a shared instance");
     assert_eq!(resolves(shared.as_ref()), t);
     // RED: a name no linked row answers has no shared instance.
-    let refused = rows.shared("vault").err().expect("no row answers `vault`");
-    assert_eq!(refused, "no linked secret module answers to 'vault'");
+    let refused = rows
+        .shared("absent")
+        .err()
+        .expect("no row answers `absent`");
+    assert_eq!(refused, "no linked secret module answers to 'absent'");
 }
 
 /// A dropped-in plugin answers as the linked one does, is not linked, and leaves with its set.
 #[test]
 fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
     environment();
-    let (_, logic) = HOT_FIXTURES
-        .iter()
-        .find(|(k, _)| *k == "secret")
-        .expect("a `secret` row in Cargo.toml's [package.metadata.busbar.both-ways]");
-    // The row names the repo's logic crate; the fleet's twin shape names its cdylib `<logic>_plugin`.
-    let path = crate::both_ways::cdylib(&format!("{logic}_plugin"));
+    let path = fixture_cdylib("secret");
     let stated = rendering_of(door).expect("the door renders its Statement");
     let bytes = std::fs::read(&path).expect("the plugin's cdylib reads");
     let candidate = Candidate::from_rendering(
         stated,
         None,
         Origin::Dropped {
-            file: format!("{logic}.tar.gz"),
+            file: format!("{}.tar.gz", crate::both_ways::fixture("secret").0),
             bytes: Arc::new(bytes),
         },
     )

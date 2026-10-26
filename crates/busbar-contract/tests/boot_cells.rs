@@ -144,7 +144,7 @@ fn every_rung_of_the_ladder_routes() {
 fn every_rung_is_a_claim_that_a_boot_would_check() {
     for rung in ladder() {
         let claim = Claim {
-            transport: "http",
+            transport: "carrier",
             selector: rung.selector,
             scheme: Some("token"),
             scheme_alternatives: &[],

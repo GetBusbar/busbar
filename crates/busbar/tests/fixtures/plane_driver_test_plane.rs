@@ -27,7 +27,11 @@
 //! Its `tick` asks for the next tick `/tick-every:<ms>` after the one it ran (`0`, the default, asks
 //! for none); after `/tick-read` its next `tick` ESTABLISHes its one need and READs it on the
 //! ticket `tick` was handed (a READ that pends makes that `tick` answer PENDING), and a `drive`
-//! reads that stream again on its driver ticket. `/ticks`
+//! reads that stream again on its driver ticket. Each `/tick-hold` arms one HELD EXCHANGE for a
+//! coming `tick` to start ([`hold_step`]): ESTABLISH then READ on the driver ticket, under handles
+//! of its own; one that pends is held, its `tick` answers PENDING, and every `drive` carries each
+//! held exchange on, answering PENDING while one still waits; `/tick-reuse` makes the next one
+//! issue the first exchange's handles instead of its own (a plane bug the host refuses). `/ticks`
 //! answers the tick counters, in [`Ticked`] order.
 //!
 //! A DUPLEX SESSION's pieces (those with a stream) are answered by [`session_piece`]: a caller piece
@@ -36,6 +40,11 @@
 //! session, and the collection `FROM_KERNEL` answers `x`), any other piece is echoed `echo:<x>`, and
 //! the caller's last piece ends the reply. A far-end piece is answered `far-said:<x>`. `/sessions`
 //! answers the session counters, in [`Sessions`] order.
+//!
+//! Opened with `capture_to` (a directory), it records each generation it retires there as an empty
+//! `retired.<generation>`; opened with `unchecked_refresh: true`, every `refresh` answers READY with
+//! a snapshot whose first claim's arrival span is no span name (`[a-z0-9_]`), which the host's copy
+//! of the snapshot refuses.
 
 #![allow(clippy::missing_safety_doc, unsafe_op_in_unsafe_fn)]
 
@@ -59,10 +68,11 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::call::{MetricEntry, METRIC_SET};
 use busbar_contract::abi::mechanism::door::{
-    Door, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE, SECTION_DECLARING,
+    Door, DoorParts, KindTailHead, MetricFamily, Section, Statement, FAMILY_GAUGE,
+    SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, OpsHead, RefreshIn, TickIn, TickOut, LIFECYCLE_SLOTS,
+    CancelIn, CancelOut, DriveIn, GenIn, OpsHead, RefreshIn, TickIn, TickOut, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket, WakeFn};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
@@ -120,9 +130,15 @@ pub enum Ticked {
     DriveRead = 4,
     /// The `next_tick_ns` the last `tick` asked for.
     Next = 5,
+    /// Held exchanges `tick` started (`/tick-hold`).
+    HoldStarted = 6,
+    /// The held exchanges whose READ answered: bit `k` for the `k`th started.
+    HoldDone = 7,
+    /// Calls of held exchanges the host answered FAULT.
+    HoldFaulted = 8,
 }
 /// How many counters `/ticks` answers.
-pub const TICKED: usize = 6;
+pub const TICKED: usize = 9;
 
 /// The counters `/sessions` answers, in this order.
 #[derive(Debug, Clone, Copy)]
@@ -150,15 +166,10 @@ const fn s(b: &'static [u8]) -> AbiStr {
         len: b.len(),
     }
 }
-const NO_STR: AbiStr = AbiStr {
-    ptr: std::ptr::null(),
-    len: 0,
-};
+const NO_STR: AbiStr = AbiStr::ZERO;
 const NO_BLOB: Blob = Blob {
-    ptr: std::ptr::null(),
-    len: 0,
     fmt: BLOB_ABSENT,
-    flags: 0,
+    ..Blob::ZERO
 };
 
 /// Its declaring section, and an owned section beside it (handed at `open` as `PlaneOpenIn::owned`).
@@ -166,12 +177,11 @@ static SECTIONS: Shared<[Section; 2]> = Shared([
     Section {
         name: s(b"test_plane"),
         flags: SECTION_DECLARING,
-        _reserved: 0,
+        ..Section::ZERO
     },
     Section {
         name: s(b"test_plane_owned"),
-        flags: 0,
-        _reserved: 0,
+        ..Section::ZERO
     },
 ]);
 static DIALECTS: Shared<[AbiStr; 1]> = Shared([s(b"plain")]);
@@ -259,9 +269,8 @@ static STATUSES: Shared<[RefusalStatus; 3]> = Shared([
 static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     head: KindTailHead {
         size: std::mem::size_of::<PlaneTail>() as u32,
-        _reserved: 0,
+        ..KindTailHead::ZERO
     },
-    flags: 0,
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM | INGRESS_DUPLEX_SESSION,
     dispatch_shape: SHAPE_WHOLE,
     // The layout this plane writes its answers in: the contract's it was built against.
@@ -276,45 +285,23 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     cli_help: NO_STR,
     dialects: &DIALECTS.0 as *const AbiStr,
     dialects_len: 1,
-    dialect_auth: std::ptr::null(),
-    dialect_auth_len: 0,
-    scope_kinds: std::ptr::null(),
-    scope_kinds_len: 0,
     op_classes: &OP_CLASSES.0 as *const OpClass,
     op_classes_len: 1,
     billable_classes: &CLASSES.0 as *const BillableClass,
     billable_classes_len: 12,
-    route_cost: std::ptr::null(),
-    route_cost_len: 0,
-    fee_units: std::ptr::null(),
-    fee_units_len: 0,
-    record_kinds: std::ptr::null(),
-    record_kinds_len: 0,
-    egress_targets: std::ptr::null(),
-    egress_targets_len: 0,
-    record_chains: std::ptr::null(),
-    record_chains_len: 0,
-    trust_keys: std::ptr::null(),
-    trust_keys_len: 0,
     refusal_statuses: &STATUSES.0 as *const RefusalStatus,
     refusal_statuses_len: 3,
     caller_credential_refusal: NO_STR,
-    admin_routes: std::ptr::null(),
-    admin_routes_len: 0,
     admin_openapi: NO_BLOB,
-    metric_lanes: std::ptr::null(),
-    metric_lanes_len: 0,
-    stream_ceiling_secs: 0,
+    ..PlaneTail::ZERO
 });
 
 static FAMILIES: Shared<[MetricFamily; 1]> = Shared([MetricFamily {
     name: s(b"plane_driver_test_drives"),
     help: NO_STR,
     unit: NO_STR,
-    label_keys: std::ptr::null(),
-    label_keys_len: 0,
     kind: FAMILY_GAUGE,
-    _reserved: [0; 7],
+    ..MetricFamily::ZERO
 }]);
 
 static STATEMENT: Shared<Statement> = Shared(Statement {
@@ -326,46 +313,28 @@ static STATEMENT: Shared<Statement> = Shared(Statement {
     version: s(b"1.6.0"),
     families: &FAMILIES.0 as *const MetricFamily,
     families_len: 1,
-    diag_ids: std::ptr::null(),
-    diag_ids_len: 0,
-    secret_refs: std::ptr::null(),
-    secret_refs_len: 0,
     settings_schema: NO_BLOB,
     kind_tail: &TAIL.0.head as *const KindTailHead,
     extensions: NO_BLOB,
-    marks: 0,
-    mark_words: std::ptr::null(),
-    mark_words_len: 0,
-    rewrites: std::ptr::null(),
-    rewrites_len: 0,
     sections: &SECTIONS.0 as *const Section,
     sections_len: 2,
     needs: &NEEDS.0 as *const Need,
     needs_len: 1,
     target_from: NO_STR,
     trust_from: NO_STR,
-    answers: std::ptr::null(),
-    answers_len: 0,
-    claims: std::ptr::null(),
-    claims_len: 0,
+    ..Statement::ZERO
 });
 
 /// Its one outbound need: handed the host's connection slots only where the host binds a table.
 static NEEDS: Shared<[Need; 1]> = Shared([Need {
     direction: DIRECTION_OUTBOUND,
-    egress_class: 0,
     transport: s(b"sock"),
     auth: NO_STR,
     target_from: NO_STR,
     trust_from: NO_STR,
     details: NO_BLOB,
-    keep_response_headers: std::ptr::null(),
-    keep_response_headers_len: 0,
-    timeout_ms: 0,
     keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
-    _reserved: 0,
-    deny_response_headers: std::ptr::null(),
-    deny_response_headers_len: 0,
+    ..Need::ZERO
 }]);
 
 static OPS: Shared<Ops> = Shared(Ops {
@@ -375,7 +344,7 @@ static OPS: Shared<Ops> = Shared(Ops {
         validate: Some(ready),
         open: Some(open),
         refresh: Some(refresh),
-        retire: Some(ready),
+        retire: Some(retire),
         tick: Some(tick),
         drive: Some(drive),
         cancel: Some(cancel),
@@ -393,15 +362,19 @@ static OPS: Shared<Ops> = Shared(Ops {
     catalog: None,
 });
 
-static DOOR: Shared<Door> = Shared(Door {
-    magic: DOOR_MAGIC,
-    mechanism_version: MECHANISM_VERSION,
-    size: std::mem::size_of::<Door>() as u32,
-    kind: KindCode::Plane as u32,
-    kind_abi: KindCode::Plane.abi_version(),
-    statement: &STATEMENT.0 as *const Statement,
-    ops: &OPS.0 as *const Ops as *const OpsHead,
-    ready: None,
+// SAFETY: the Statement and plane table are this file's own `'static` data, laid out above: every
+// list points at its stated count of `'static` entries and every slot honours the call convention.
+static DOOR: Shared<Door> = Shared(unsafe {
+    Door::__from_parts(DoorParts {
+        magic: DOOR_MAGIC,
+        mechanism_version: MECHANISM_VERSION,
+        size: std::mem::size_of::<Door>() as u32,
+        kind: KindCode::Plane as u32,
+        kind_abi: KindCode::Plane.abi_version(),
+        statement: &STATEMENT.0 as *const Statement,
+        ops: &OPS.0 as *const Ops as *const OpsHead,
+        ready: None,
+    })
 });
 
 /// The claims: every path under `/call` for POST, `/open`, a claim that takes no inbound
@@ -412,27 +385,27 @@ static CLAIMS: Shared<[Claim; 3]> = Shared([
         verb: s(b"POST"),
         target: s(b"/call"),
         carrier: s(b"inbound"),
-        flags: 0,
-        refusal_dialect: 0,
-        _pad: 0,
+        ..Claim::ZERO
     },
     Claim {
         verb: s(b"POST"),
         target: s(b"/open"),
         carrier: s(b"inbound"),
         flags: CLAIM_OPEN | CLAIM_EXACT,
-        refusal_dialect: 0,
-        _pad: 0,
+        ..Claim::ZERO
     },
     Claim {
         verb: s(b"POST"),
         target: s(b"/framed"),
         carrier: s(b"frame"),
         flags: CLAIM_OPEN,
-        refusal_dialect: 0,
-        _pad: 0,
+        ..Claim::ZERO
     },
 ]);
+
+/// The claims' arrival spans (status row 173), one per claim: an arrival on `/call` opens
+/// `test_arrival`; `/open` and `/framed` open none, the RED arm of the root's span test.
+static ARRIVALS: Shared<[AbiStr; 3]> = Shared([s(b"test_arrival"), s(b""), s(b"")]);
 
 /// The admin routes the snapshot publishes, served through `serve`: an audited admin route, and a
 /// public one the kernel's admin table never serves.
@@ -458,7 +431,7 @@ static ADMIN_ROUTES: Shared<[AdminRoute; 2]> = Shared([
 const SHORT_REPLY: usize = 1 << 20;
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
-pub extern "C" fn door() -> *const Door {
+pub extern "C" fn door() -> &'static Door {
     &DOOR.0
 }
 
@@ -483,6 +456,10 @@ struct Unit {
 
 struct Inst {
     wake: WakeFn,
+    /// The directory the open settings' `capture_to` named, where `retire` records.
+    capture: Option<std::path::PathBuf>,
+    /// The open settings' `unchecked_refresh`: every refreshed snapshot fails the host's copy.
+    unchecked_refresh: bool,
     /// The host's service table, as `open` was handed it (`/clock` reads its `clock.now`).
     services: *const HostSlots,
     ctx: HostCtx,
@@ -503,6 +480,13 @@ struct Inst {
     tick_read: AtomicBool,
     /// The stream a `tick`'s READ left pending (`0` = none).
     stream: AtomicU64,
+    /// Held exchanges armed for the coming ticks (`/tick-hold`), one per `tick`.
+    holds: AtomicU64,
+    /// The held exchanges still waiting, by the order they started: each one's index and first
+    /// handle.
+    held: Mutex<Vec<(u32, u32)>>,
+    /// The next held exchange issues the first one's handles (`/tick-reuse`).
+    reuse: AtomicBool,
     ticked: [AtomicU64; TICKED],
     /// The instance's driver ticket, as its last `tick` was handed it.
     driver: Mutex<Ticket>,
@@ -568,7 +552,7 @@ extern "C" fn project(_: *mut c_void, _: *const c_void, out: *mut c_void) -> Raw
         let o = &mut *out.cast::<ProjectOut>();
         let absent = Span {
             offset: SPAN_ABSENT,
-            len: 0,
+            ..Span::ZERO
         };
         o.body = absent;
         o.rewritten = absent;
@@ -594,17 +578,43 @@ unsafe fn record(tag: &str, settings: Blob, blobs: &[(&str, Blob)]) {
     }
 }
 
-/// `refresh`: the next generation, its snapshot the first one's claims; recorded.
+/// The arrival spans an `unchecked_refresh` snapshot states, one per claim: the first is no span
+/// name, so the host's copy refuses the snapshot.
+static UNCHECKED_SPANS: Shared<[AbiStr; 3]> = Shared([s(b"Not-A-Span"), NO_STR, NO_STR]);
+
+/// `refresh`: the next generation, its snapshot the first one's claims (with `unchecked_refresh`,
+/// spans the host refuses); recorded.
 extern "C" fn refresh(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
     unsafe {
         let i = &*input.cast::<RefreshIn>();
         record("refresh", i.settings, &[]);
         let me = inst(instance);
+        let (arrival_spans, arrival_spans_len) = if me.unchecked_refresh {
+            (UNCHECKED_SPANS.0.as_ptr(), UNCHECKED_SPANS.0.len())
+        } else {
+            (me.snapshot.arrival_spans, me.snapshot.arrival_spans_len)
+        };
         let snapshot = Box::leak(Box::new(PlaneSnapshot {
             generation: i.generation,
+            arrival_spans,
+            arrival_spans_len,
             ..*me.snapshot
         }));
         (*out.cast::<PlaneRefreshOut>()).snapshot = snapshot as *const PlaneSnapshot;
+        say(out, Outcome::Ready)
+    }
+}
+
+/// `retire`: the generation retired, recorded where the open settings named `capture_to`.
+extern "C" fn retire(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+    unsafe {
+        if !instance.is_null() {
+            let generation = (*input.cast::<GenIn>()).generation;
+            if let Some(dir) = &inst(instance).capture {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join(format!("retired.{generation}")), b"");
+            }
+        }
         say(out, Outcome::Ready)
     }
 }
@@ -613,6 +623,17 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
     unsafe {
         let i = &*input.cast::<PlaneOpenIn>();
         record("open", i.open.settings, &[("owned", i.owned)]);
+        let opened = serde_json::from_slice::<serde_json::Value>(bytes(i.open.settings)).ok();
+        let capture = opened
+            .as_ref()
+            .and_then(|v| v.get("capture_to"))
+            .and_then(serde_json::Value::as_str)
+            .map(std::path::PathBuf::from);
+        let unchecked_refresh = opened
+            .as_ref()
+            .and_then(|v| v.get("unchecked_refresh"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let Some(host) = i.open.host.as_ref() else {
             return say(out, Outcome::Refused);
         };
@@ -647,7 +668,7 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
                 ptr: json.as_ptr(),
                 len: json.len(),
                 fmt: busbar_contract::abi::mechanism::call::BLOB_JSON,
-                flags: 0,
+                ..Blob::ZERO
             }
         } else {
             NO_BLOB
@@ -666,11 +687,13 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             resource_facts,
             listed: std::ptr::null(),
             listed_len: 0,
-            arrival_spans: std::ptr::null(),
-            arrival_spans_len: 0,
+            arrival_spans: ARRIVALS.0.as_ptr(),
+            arrival_spans_len: ARRIVALS.0.len(),
         });
         let me = Box::new(Inst {
             wake,
+            capture,
+            unchecked_refresh,
             services: host.services,
             ctx: host.ctx,
             snapshot,
@@ -682,6 +705,9 @@ extern "C" fn open(_: *mut c_void, input: *const c_void, out: *mut c_void) -> Ra
             tick_every_ms: AtomicU64::new(0),
             tick_read: AtomicBool::new(false),
             stream: AtomicU64::new(0),
+            holds: AtomicU64::new(0),
+            held: Mutex::new(Vec::new()),
+            reuse: AtomicBool::new(false),
             ticked: Default::default(),
             driver: Mutex::new(Ticket::NONE),
             outbox: Mutex::new(HashMap::new()),
@@ -728,6 +754,15 @@ extern "C" fn drive(instance: *mut c_void, input: *const c_void, out: *mut c_voi
                 me.stream.store(0, Ordering::SeqCst);
             }
         }
+        // Every held exchange carried on, on the driver ticket: PENDING while one still waits.
+        let driver = (*input.cast::<DriveIn>()).driver;
+        let held = std::mem::take(&mut *me.held.lock().unwrap());
+        let waiting: Vec<(u32, u32)> = held
+            .into_iter()
+            .filter(|(k, base)| !hold_step(me, driver, *k, *base))
+            .collect();
+        let pending = !waiting.is_empty();
+        me.held.lock().unwrap().extend(waiting);
         let head = &*input.cast::<busbar_contract::abi::mechanism::call::InHead>();
         if head.size as usize >= std::mem::size_of::<PlaneDriveIn>() {
             let i = &*input.cast::<PlaneDriveIn>();
@@ -748,7 +783,14 @@ extern "C" fn drive(instance: *mut c_void, input: *const c_void, out: *mut c_voi
         let o = &mut *out.cast::<OutHead>();
         o.envelope.metrics = &*metric as *const MetricEntry;
         o.envelope.metrics_len = 1;
-        say(out, Outcome::Ready)
+        say(
+            out,
+            if pending {
+                Outcome::Pending
+            } else {
+                Outcome::Ready
+            },
+        )
     }
 }
 
@@ -833,8 +875,7 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                         op: service_op::CLOCK_NOW,
                         handle: CompletionHandle {
                             ticket: Ticket::NONE,
-                            seq: 0,
-                            _reserved: 0,
+                            ..CompletionHandle::ZERO
                         },
                     },
                     reading: &mut reading,
@@ -862,6 +903,14 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 .collect(),
             b"/tick-read" => {
                 me.tick_read.store(true, Ordering::SeqCst);
+                vec![estimate(0, 0)]
+            }
+            b"/tick-hold" => {
+                me.holds.fetch_add(1, Ordering::SeqCst);
+                vec![estimate(0, 0)]
+            }
+            b"/tick-reuse" => {
+                me.reuse.store(true, Ordering::SeqCst);
                 vec![estimate(0, 0)]
             }
             t if t.starts_with(b"/tick-every:") => {
@@ -1224,10 +1273,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
         return Some(b"nest-refused:unserved".to_vec());
     };
     let mut buf = vec![0u8; 1 << 16];
-    let blank = ItemSpan {
-        key: Span { offset: 0, len: 0 },
-        value: Span { offset: 0, len: 0 },
-    };
+    let blank = ItemSpan::ZERO;
     let mut spans = [blank; 32];
     let call = UnitNestIn {
         head: ServiceHead {
@@ -1235,8 +1281,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
             op: service_op::UNIT_NEST,
             handle: CompletionHandle {
                 ticket: t,
-                seq: 0,
-                _reserved: 0,
+                ..CompletionHandle::ZERO
             },
         },
         verb: s(b"POST"),
@@ -1247,8 +1292,7 @@ unsafe fn nest(me: &'static Inst, t: Ticket, child: &[u8], body: &[u8]) -> Optio
         body: Blob {
             ptr: body.as_ptr(),
             len: body.len(),
-            fmt: 0,
-            flags: 0,
+            ..Blob::ZERO
         },
         into: ServiceBufs {
             buf: buf.as_mut_ptr(),
@@ -1289,14 +1333,11 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
         handle: CompletionHandle {
             ticket: t,
             seq,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
     };
     let mut buf = vec![0u8; 1 << 12];
-    let blank = ItemSpan {
-        key: Span { offset: 0, len: 0 },
-        value: Span { offset: 0, len: 0 },
-    };
+    let blank = ItemSpan::ZERO;
     let mut spans = [blank; 4];
     let mut into = || ServiceBufs {
         buf: buf.as_mut_ptr(),
@@ -1307,8 +1348,7 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
     let blob = Blob {
         ptr: body.as_ptr(),
         len: body.len(),
-        fmt: 0,
-        flags: 0,
+        ..Blob::ZERO
     };
     let message = MessageView {
         role: s(b"user"),
@@ -1318,17 +1358,9 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
         },
     };
     let prompt = PromptView {
-        system: AbiStr {
-            ptr: std::ptr::null(),
-            len: 0,
-        },
+        system: AbiStr::ZERO,
         message_count: 1,
-        body: Blob {
-            ptr: std::ptr::null(),
-            len: 0,
-            fmt: 0,
-            flags: 0,
-        },
+        body: Blob::ZERO,
         messages: &message,
         messages_len: 1,
     };
@@ -1423,8 +1455,7 @@ unsafe fn in_session(me: &'static Inst, t: Ticket, body: &[u8]) -> Option<Vec<u8
                 entry: Blob {
                     ptr: entry.as_ptr(),
                     len: entry.len(),
-                    fmt: 0,
-                    flags: 0,
+                    ..Blob::ZERO
                 },
                 ttl_ms: 0,
             };
@@ -1499,9 +1530,9 @@ unsafe fn session_piece(
         _ => {
             emit(i, o, &[b"far-said:".as_slice(), piece].concat());
             *i.units_buf = UnitCount {
-                class: 0,
                 source: UNITS_REPORTED,
                 amount: o.emitted,
+                ..UnitCount::ZERO
             };
             o.units_written = 1;
             if i.flags & PIECE_LAST != 0 {
@@ -1557,8 +1588,8 @@ extern "C" fn refusal(_: *mut c_void, input: *const c_void, out: *mut c_void) ->
         std::ptr::copy_nonoverlapping(value.as_ptr(), i.arena_buf.add(name.len()), value.len());
         *i.fields_buf = OutField {
             name: Span {
-                offset: 0,
                 len: name.len() as u32,
+                ..Span::ZERO
             },
             value: Span {
                 offset: name.len() as u32,
@@ -1624,8 +1655,8 @@ extern "C" fn serve(_: *mut c_void, input: *const c_void, out: *mut c_void) -> R
         std::ptr::copy_nonoverlapping(value.as_ptr(), i.arena_buf.add(name.len()), value.len());
         *i.fields_buf = OutField {
             name: Span {
-                offset: 0,
                 len: name.len() as u32,
+                ..Span::ZERO
             },
             value: Span {
                 offset: name.len() as u32,
@@ -1690,7 +1721,24 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
         if i.now_ns < n(Ticked::Next).load(Ordering::SeqCst) {
             n(Ticked::Early).fetch_add(1, Ordering::SeqCst);
         }
-        let pended = me.tick_read.swap(false, Ordering::SeqCst) && establish_and_read(me, t);
+        let mut pended = me.tick_read.swap(false, Ordering::SeqCst) && establish_and_read(me, t);
+        // One armed held exchange started; held when it pends.
+        let armed = me
+            .holds
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if armed {
+            let k = n(Ticked::HoldStarted).fetch_add(1, Ordering::SeqCst) as u32;
+            let base = if me.reuse.swap(false, Ordering::SeqCst) {
+                hold_base(0)
+            } else {
+                hold_base(k)
+            };
+            if !hold_step(me, t, k, base) {
+                me.held.lock().unwrap().push((k, base));
+                pended = true;
+            }
+        }
         let every = me.tick_every_ms.load(Ordering::SeqCst);
         let next = if every == 0 {
             0
@@ -1727,7 +1775,7 @@ unsafe fn conn_call<I>(
         handle: CompletionHandle {
             ticket,
             seq,
-            _reserved: 0,
+            ..CompletionHandle::ZERO
         },
     };
     me.count(Stat::HostCalls);
@@ -1761,8 +1809,62 @@ unsafe fn establish_and_read(me: &Inst, ticket: Ticket) -> bool {
     true
 }
 
+/// The first handle held exchange `k` issues: each counts on from its own, so no two exchanges
+/// held side by side on the one driver ticket ever issue the same handle.
+fn hold_base(k: u32) -> u32 {
+    100 + 10 * k
+}
+
+/// ONE ENTRY OF HELD EXCHANGE `k` on `ticket`: ESTABLISH its need (handle `base`, its
+/// [`hold_base`]), then READ it (the next handle), the same calls in the same order on every entry
+/// (the replay rule: a kept ESTABLISH answers its stream again without a second dial). `true` once
+/// it is over: its READ answered (bit `k` of [`Ticked::HoldDone`]), or a call failed (a FAULT
+/// counted in [`Ticked::HoldFaulted`]).
+unsafe fn hold_step(me: &Inst, ticket: Ticket, k: u32, base: u32) -> bool {
+    let faulted = |o: &ServiceOut| {
+        if o.outcome.outcome() == Outcome::Fault {
+            me.ticked[Ticked::HoldFaulted as usize].fetch_add(1, Ordering::SeqCst);
+        }
+    };
+    let Some(slots) = me.conns.as_ref() else {
+        return true;
+    };
+    let mut est = EstablishIn {
+        head: std::mem::zeroed(),
+        need: 0,
+        timeout_ms: 0,
+        target: s(b"far"),
+        within: NO_STR,
+        member: NO_STR,
+    };
+    let Some(o) = conn_call(
+        me,
+        slots.establish,
+        &mut est,
+        ticket,
+        base,
+        service::ESTABLISH,
+    ) else {
+        return true;
+    };
+    faulted(&o);
+    if o.outcome.outcome() != Outcome::Ready {
+        return true;
+    }
+    if read_at(me, ticket, o.value, base + 1).is_none() {
+        return false;
+    }
+    me.ticked[Ticked::HoldDone as usize].fetch_or(1 << k, Ordering::SeqCst);
+    true
+}
+
 /// READ `stream` on `ticket`: the bytes, or `None` while it pends.
 unsafe fn read(me: &Inst, ticket: Ticket, stream: u64) -> Option<u64> {
+    read_at(me, ticket, stream, 2)
+}
+
+/// READ `stream` on `ticket` under handle `seq`: the bytes, or `None` while it pends.
+unsafe fn read_at(me: &Inst, ticket: Ticket, stream: u64, seq: u32) -> Option<u64> {
     let slots = me.conns.as_ref()?;
     let mut buf = [0u8; 64];
     let mut io = IoIn {
@@ -1771,6 +1873,6 @@ unsafe fn read(me: &Inst, ticket: Ticket, stream: u64) -> Option<u64> {
         buf: buf.as_mut_ptr(),
         len: buf.len(),
     };
-    let o = conn_call(me, slots.read, &mut io, ticket, 2, service::READ)?;
+    let o = conn_call(me, slots.read, &mut io, ticket, seq, service::READ)?;
     (o.outcome.outcome() == Outcome::Ready).then_some(o.len)
 }

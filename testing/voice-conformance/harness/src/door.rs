@@ -247,13 +247,31 @@ pub fn judge<T: Clone + PartialEq + Debug>(
     check: Check<'_, T>,
     plant: &dyn Fn(&T) -> T,
 ) -> bool {
+    judge_planted(slice, what, seen, check, &[("planted", plant)])
+}
+
+/// One named wrong door: what it does wrong, and the wrong answer it would give.
+pub type Plant<'a, T> = (&'a str, &'a dyn Fn(&T) -> T);
+
+/// [`judge`] with SEVERAL planted wrong doors: every one of them must change the observation and be
+/// refused by `check` (each names the defect the check exists to catch). Under [`RED_ENV`] the
+/// first plant is the subject.
+pub fn judge_planted<T: Clone + PartialEq + Debug>(
+    slice: &str,
+    what: &str,
+    seen: &(T, Result<T, String>),
+    check: Check<'_, T>,
+    plants: &[Plant<'_, T>],
+) -> bool {
     let (linked, dropped) = seen;
-    let subject = if red_mode() {
-        plant(linked)
-    } else {
-        linked.clone()
+    let subject = match plants.first() {
+        Some((_, plant)) if red_mode() => plant(linked),
+        _ => linked.clone(),
     };
     let mut wrong = Vec::new();
+    if plants.is_empty() {
+        wrong.push("RED arm: the assertion plants no wrong answer".to_string());
+    }
     match dropped {
         Ok(dropped) if *dropped == subject => {}
         Ok(dropped) => wrong.push(format!(
@@ -271,13 +289,17 @@ pub fn judge<T: Clone + PartialEq + Debug>(
         }
     };
     if !red_mode() {
-        let planted = plant(linked);
-        if planted == *linked {
-            wrong.push("RED arm: the planted wrong answer changed nothing".to_string());
-        } else if let Ok(accepted) = check(&planted) {
-            wrong.push(format!(
-                "RED arm: the check accepted a planted wrong answer ({accepted})"
-            ));
+        for (name, plant) in plants {
+            let planted = plant(linked);
+            if planted == *linked {
+                wrong.push(format!(
+                    "RED arm ({name}): the planted wrong answer changed nothing"
+                ));
+            } else if let Ok(accepted) = check(&planted) {
+                wrong.push(format!(
+                    "RED arm ({name}): the check accepted a planted wrong answer ({accepted})"
+                ));
+            }
         }
     }
     if wrong.is_empty() {
@@ -285,7 +307,10 @@ pub fn judge<T: Clone + PartialEq + Debug>(
             slice,
             true,
             what,
-            &format!("{proved}; linked == dropped; planted wrong answer refused"),
+            &format!(
+                "{proved}; linked == dropped; {} planted wrong answer(s) refused",
+                plants.len()
+            ),
         );
         true
     } else {
@@ -436,6 +461,19 @@ pub fn refusal(
     status: u32,
     words: &'static str,
 ) -> Rendered {
+    refusal_for(p, unit, dialect, 0, status, words)
+}
+
+/// The kernel refuses unit `unit` on `dialect` for `reason` (its code on the plane ABI) with
+/// `status` and `words`: the door renders it.
+pub fn refusal_for(
+    p: &Plugin<Plane>,
+    unit: u64,
+    dialect: u32,
+    reason: u32,
+    status: u32,
+    words: &'static str,
+) -> Rendered {
     let mut reply = vec![0u8; 4096];
     let mut fields: Vec<OutField> = zeros(4);
     let mut arena = vec![0u8; 512];
@@ -444,6 +482,7 @@ pub fn refusal(
     i.head = in_head();
     i.cause = REFUSAL_KERNEL;
     i.status = status;
+    i.reason = reason;
     i.dialect = dialect;
     i.text = text(words);
     i.unit = unit;

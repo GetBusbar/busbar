@@ -369,12 +369,11 @@ fn cohere_cached_tokens_ride_the_stream_terminal_inside_the_input() {
 
 /// ONE COMPLETION, ONE INVOICE — whichever path read it.
 ///
-/// Cohere reports usage TWICE: a raw `tokens` bucket and a separately-metered `billed_units` bucket,
-/// and `IrUsage::to_token_usage` lets the BILLED counts win for the reserved input/output tiers
-/// because those are the counts an operator is actually invoiced on. The buffered and stream paths
-/// both read `billed_units`; `recover_truncated_usage` read only `tokens`. So the same completion
-/// billed two different figures, and which one you got was decided by nothing but whether the
-/// response tail fit the reassembly cap.
+/// Cohere reports usage TWICE: a raw `tokens` bucket and a separately-metered `billed_units` bucket.
+/// `IrUsage::to_token_usage` ledgers the RAW counts, as 1.5.5 billed them, and the billed bucket
+/// rides beside them as attribution. Every path reads both buckets through one table, so the
+/// figure a completion bills is never decided by whether the response tail fit the reassembly
+/// cap.
 ///
 /// The body is the RECORDED upstream body with the two buckets made to DISAGREE — in the recording
 /// they are equal, which is exactly the case that cannot tell the two readings apart.
@@ -415,13 +414,21 @@ fn cohere_truncated_recovery_bills_the_same_bucket_as_the_buffered_path() {
         "one completion must produce ONE invoice: the truncated-recovery path and the buffered \
          path must ledger identical counts.\n  recovered: {recovered:?}\n   buffered: {buffered:?}"
     );
+    let raw_in = recorded
+        .pointer("/usage/tokens/input_tokens")
+        .and_then(Value::as_u64);
+    let raw_out = recorded
+        .pointer("/usage/tokens/output_tokens")
+        .and_then(Value::as_u64);
     assert_eq!(
-        buffered.input, 25,
-        "and the bucket they agree on is the BILLED one (25), not the raw count: {buffered:?}"
+        Some(buffered.input),
+        raw_in,
+        "and the bucket they agree on is the RAW one 1.5.5 billed, not the billed 25: {buffered:?}"
     );
     assert_eq!(
-        buffered.output, 13,
-        "the billed output attribution must win over the raw count too: {buffered:?}"
+        Some(buffered.output),
+        raw_out,
+        "the raw output count is ledgered too, not the billed 13: {buffered:?}"
     );
 }
 
@@ -623,10 +630,9 @@ fn openai_chat_cache_write_tokens_ride_the_usage_chunk_inside_the_input() {
 
 /// BUSBAR NEVER CHARGES MORE INPUT THAN THE PROVIDER STATED — including on the Cohere billed path.
 ///
-/// Cohere is the one dialect where a bucket OTHER than `IrUsage::input_tokens` reaches the ledger:
-/// `to_token_usage` lets `billed_units.input_tokens` win, because that is the count an operator is
-/// invoiced on. A cache hit on the same turn must not be charged a second time beside it: the
-/// reader leaves `cached_tokens` inside the input (1.5.5), so whatever the buckets,
+/// Cohere carries a `billed_units.input_tokens` beside its raw input; `to_token_usage` ledgers the
+/// raw one, as 1.5.5 did. A cache hit on the same turn must not be charged a second time beside it:
+/// the reader leaves `cached_tokens` inside the input (1.5.5), so whatever the buckets,
 /// `input + cache_read` is what the provider said.
 #[test]
 fn cohere_billed_input_and_cache_read_never_exceed_the_reported_total() {
@@ -637,7 +643,7 @@ fn cohere_billed_input_and_cache_read_never_exceed_the_reported_total() {
         .and_then(Value::as_u64)
         .expect("the recording states an input total");
     // The recorded turn, with a prompt-cache hit on it. `billed_units` is present in the recording
-    // already — it is the bucket that wins — so this is the exact coexistence the hazard needs.
+    // already, so this is the exact coexistence the hazard needs.
     let body = with_member(&recorded, "/usage/cached_tokens", json!(4));
 
     let ir = CohereReader
@@ -645,7 +651,7 @@ fn cohere_billed_input_and_cache_read_never_exceed_the_reported_total() {
         .expect("cohere parses");
     assert!(
         ir.usage.detail.billed_input_tokens.is_some(),
-        "the recording must carry billed_units for this test to exercise the billed-wins path: {ir:?}"
+        "the recording must carry billed_units for this test to exercise the coexistence: {ir:?}"
     );
     let ledgered = ir.usage.to_token_usage();
     assert_eq!(
@@ -662,11 +668,10 @@ fn cohere_billed_input_and_cache_read_never_exceed_the_reported_total() {
     );
 }
 
-/// The netting is SCOPED to the billed path — every other dialect projects exactly as before.
+/// A dialect without a billed bucket projects its plain normalized totals.
 ///
-/// `billed_input_tokens` is populated by the Cohere reader alone, so a non-Cohere response must
-/// take the untouched `unwrap_or(self.input_tokens)` arm. Pinned so a future edit to the projection
-/// cannot quietly re-tier five providers while fixing one.
+/// `billed_input_tokens` is populated by the Cohere reader alone. Pinned so a future edit to the
+/// projection cannot quietly re-tier five providers while touching one.
 #[test]
 fn the_billed_netting_does_not_touch_a_dialect_without_billed_units() {
     let recorded = oracle_cell_body("llm__responses__responses__request__ok");

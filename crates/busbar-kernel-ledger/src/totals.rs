@@ -14,15 +14,17 @@
 //! ## Why every figure is a signed 128-bit integer
 //!
 //! Amounts are nano-units, so a modest deployment's yearly turnover already needs more than 64 bits
-//! of headroom once adjustments and reversals are in the same column as settlements. Signed, because
-//! an adjustment is a reversal and a reversal is negative; storing it as an unsigned figure with a
-//! separate direction flag is how a sign error becomes invisible. Nothing here is floating point,
-//! for the reason nothing in a ledger ever is.
+//! of headroom. Signed, because some figures move both ways: an unconfirmed settlement moves out of
+//! the settled column and back again, and an overdraft is carried in and out; storing them as
+//! unsigned figures with a separate direction flag is how a sign error becomes invisible. Nothing
+//! here is floating point, for the reason nothing in a ledger ever is.
 
-//! ## ONE GUARD POLICY FOR THIS FILE: EVERY BOOK OPERATOR SATURATES
+//! ## ONE GUARD POLICY FOR THE BOOK: EVERY BOOK OPERATOR SATURATES
 //!
-//! Every arithmetic operator in this file saturates — the same policy `settle.rs` states, for the
-//! same reason, so the two files that move the books cannot be read as disagreeing about it.
+//! Every arithmetic operator in this file that moves or derives a BOOK figure saturates — the same
+//! policy `settle.rs` states, for the same reason, so the two files that move the books cannot be
+//! read as disagreeing about it. The statement below is not the book: it is a money READER, and it
+//! refuses an overflow as every other reader does ([`totals_as_of`]).
 //!
 //! The two derived figures below are the ones that mattered. `headroom` subtracted four `i128`s
 //! bare and `overdraft_carried` two, in a file whose statement fold thirty lines further down
@@ -36,6 +38,13 @@
 //! Saturation is also why the figures stay derived rather than stored: pinning at a bound is only
 //! honest if the bound is recomputed from the columns every read, and a saturated figure written
 //! back into a column would be a lie the next read could not detect.
+//!
+//! ## The book is bounded
+//!
+//! A balance is kept per window, so a book nothing retired would grow by every rolling window every
+//! key ever touched. A window past [`WINDOW_RETENTION_SECS`] that a checkpoint sealed at the figures
+//! the book still holds is retired ([`Book::retirable`], [`Book::retire`]); the all-time window
+//! never is.
 
 use std::collections::BTreeMap;
 
@@ -155,6 +164,26 @@ impl std::fmt::Display for TotalsKey {
 /// A window's opening instant, in whole seconds. Windows do not overlap, so this identifies one.
 pub type WindowStart = u64;
 
+/// The all-time window: the one a `total` budget counts in. It opens at zero and never rolls, so it
+/// is never over and never retired.
+pub const ALL_TIME_WINDOW: WindowStart = 0;
+
+/// **HOW LONG A ROLLING WINDOW'S BALANCES ARE KEPT IN MEMORY**: thirty-one days from the instant the
+/// window opened.
+///
+/// The horizon 1.5.5 bounded its in-memory totals by: its budget cells were swept once
+/// `window_start + 31 days` had passed (`max_window`), and its in-memory store kept its usage and
+/// metering rows exactly as long. Thirty-one days is the longest window a budget can name, a
+/// calendar month, so a window is never retired while it can still be the current one. The durable
+/// record of every posting is the node's journal; this bounds only what the process holds.
+pub const WINDOW_RETENTION_SECS: u64 = 31 * 86_400;
+
+/// Whether `window` is past the retention horizon at `now` (wall seconds): a rolling window that
+/// opened [`WINDOW_RETENTION_SECS`] or more before `now`. The all-time window never is.
+pub fn past_retention(window: WindowStart, now: u64) -> bool {
+    window != ALL_TIME_WINDOW && window.saturating_add(WINDOW_RETENTION_SECS) <= now
+}
+
 /// One balance's running figures, as a checkpoint seals them.
 ///
 /// Every field is a running total for one key, not a delta. The identity is stated over the
@@ -175,7 +204,8 @@ pub struct Totals {
     pub open_slice_remainders: i128,
     /// How much has been moved by a correction, positive or negative.
     pub adjustments: i128,
-    /// How much has been posted that the recompute has not yet agreed with.
+    /// How much has been posted that the journal has not yet confirmed: a settlement moves here out
+    /// of `settled` until its append is acknowledged ([`crate::settle::Ledger::record_unreconciled`]).
     pub unreconciled: i128,
     /// Overdraft carried into this window from the last one.
     pub overdraft_carried_in: i128,
@@ -275,21 +305,50 @@ impl Book {
         self.totals.is_empty()
     }
 
-    /// Retire every window that opened before `window`, and say how many balances went.
+    /// **THE WINDOWS THE BOOK MAY LET GO** at `now`, measured against `sealed`, the figures a
+    /// checkpoint already sealed: every window past the retention horizon ([`past_retention`]) whose
+    /// balances the book holds exactly as `sealed` holds them, none of them with a hold still open.
     ///
-    /// The book is otherwise append-only — every accrual on a new window adds a row that stays for
-    /// the life of the ledger — so without this an integrator's only way to bound it is to throw the
-    /// whole ledger away. The retirement boundary is the checkpoint: a window sealed into one has
-    /// been signed and shipped, and the book is no longer the record of it. Retiring a window that
-    /// has NOT been sealed loses balances nobody else holds, which is why this is the owner's call
-    /// and not something the book does for itself.
+    /// Each condition is a reason the book is no longer the only record of the window. Past the
+    /// horizon, no budget can name it as current. Sealed at the same figures, a signed checkpoint
+    /// holds everything the book would drop, so nothing moved since the seal is lost with it. With
+    /// no hold open, no settlement is still on its way to it. A window that fails any one of them
+    /// stays, whole: retiring part of a window would leave the dual-write rows, which are kept per
+    /// window, holding a balance the book no longer does.
+    pub fn retirable(
+        &self,
+        sealed: &BTreeMap<(TotalsKey, WindowStart), Totals>,
+        now: u64,
+    ) -> std::collections::BTreeSet<WindowStart> {
+        let mut retirable = std::collections::BTreeSet::new();
+        let mut kept = std::collections::BTreeSet::new();
+        for (at, figures) in &self.totals {
+            let window = at.1;
+            if !past_retention(window, now) {
+                continue;
+            }
+            if figures.open_holds == 0 && sealed.get(at) == Some(figures) {
+                retirable.insert(window);
+            } else {
+                kept.insert(window);
+            }
+        }
+        retirable.retain(|window| !kept.contains(window));
+        retirable
+    }
+
+    /// Retire every balance in `windows`, and say how many balances went.
+    ///
+    /// The owner decides which windows go ([`Book::retirable`] is the rule, and
+    /// [`crate::settle::Ledger::retire_windows`] applies it to the book and the dual-write rows
+    /// in one step); retiring a window no checkpoint sealed loses balances nobody else holds.
     ///
     /// A retired window reads back as zeros through [`Book::get`], exactly like one never touched,
     /// and the survivors keep the order [`Book::iter`] and [`Book::snapshot`] already gave them — the
     /// order a checkpoint body is hashed in.
-    pub fn retain_from(&mut self, window: WindowStart) -> usize {
+    pub fn retire(&mut self, windows: &std::collections::BTreeSet<WindowStart>) -> usize {
         let before = self.totals.len();
-        self.totals.retain(|(_, at), _| *at >= window);
+        self.totals.retain(|(_, at), _| !windows.contains(at));
         before.saturating_sub(self.totals.len())
     }
 
@@ -334,8 +393,9 @@ pub struct Unpriced {
 /// forever, whatever has happened to the card since.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Statement {
-    /// The history snapshot the figures were derived against.
-    pub history_seq: HistorySeq,
+    /// The history snapshot the figures were derived against: `None` for a statement cut from the
+    /// current view of a history nothing has been appended to, which names no snapshot.
+    pub history_seq: Option<HistorySeq>,
     /// The window it covers.
     pub window: WindowStart,
     /// The balances, in key order.
@@ -354,12 +414,13 @@ impl Statement {
 
 /// Cut a statement as of a history snapshot: **re-derived from the quantities, every time**.
 ///
-/// This is the read path for money, and the one rule it has is that it never sums a cached price.
-/// The cache on a line is what the node computed at settlement; it is correct until an amendment
-/// makes it stale, and a statement that added those figures up would be a statement whose answer
-/// depended on whether the recompute had got round to that line yet. So the quantities go through
-/// the lookup again, against the view the caller named, and the cache is not read at all — which is
-/// why hand-corrupting every cached figure in a book leaves this function's answer untouched.
+/// This is the read path for money, and it can only re-derive: a booked line carries quantities and
+/// an instant and no price at all, so every figure here is the lookup's answer for the line's
+/// quantities against the view the caller named, never a figure stored beside them.
+///
+/// The sum is CHECKED, as every other money reader in this crate is. A line whose figure would carry
+/// its balance past what the row can hold is listed as [`Divergence::Overflow`] and moves no row: a
+/// sum pinned at the ceiling would be a figure nobody posted (item 28).
 ///
 /// The tier is the line's own: a tier is a property of the chain a request was admitted through,
 /// and an amendment to the price of a token is not a re-decision about which chain admitted it.
@@ -411,12 +472,29 @@ pub fn totals_as_of<'a>(
                 }
             }
             Ok(priced) => {
-                let row = rows.entry(line.key.clone()).or_default();
-                row.priced_nanos = row
-                    .priced_nanos
-                    .saturating_add(i128::try_from(priced.priced_nanos).unwrap_or(i128::MAX));
-                row.fee_count = row.fee_count.saturating_add(priced.fee_count);
-                row.lines = row.lines.saturating_add(1);
+                let row = rows.get(&line.key).copied().unwrap_or_default();
+                let summed = i128::try_from(priced.priced_nanos)
+                    .ok()
+                    .and_then(|figure| row.priced_nanos.checked_add(figure))
+                    .zip(row.fee_count.checked_add(priced.fee_count))
+                    .zip(row.lines.checked_add(1));
+                match summed {
+                    Some(((priced_nanos, fee_count), lines)) => {
+                        rows.insert(
+                            line.key.clone(),
+                            StatementRow {
+                                priced_nanos,
+                                fee_count,
+                                lines,
+                            },
+                        );
+                    }
+                    None => unpriceable.push(Unpriced {
+                        node: line.node,
+                        node_seq: line.node_seq,
+                        why: Divergence::Overflow,
+                    }),
+                }
             }
             Err(why) => unpriceable.push(Unpriced {
                 node: line.node,

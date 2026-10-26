@@ -79,16 +79,6 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
     }
 }
 
-/// [`build_client_config`] for one declared need, at boot: a bad client identity refuses the boot,
-/// naming the need.
-///
-/// # Errors
-///
-/// The need's client identity does not parse; the text names the need.
-pub fn need_client_config(need: &str, trust: &EgressTrust) -> Result<rustls::ClientConfig, String> {
-    build_client_config(trust).map_err(|e| format!("need `{need}`: {e}; refusing to boot"))
-}
-
 /// The client config for a need whose `trust_from` names an operator CA (`pem`, the PEM the need's
 /// settings hold): the public roots with every certificate of `pem` added on top as an extra trust
 /// anchor (spec section 5, the host connector: "an extra trusted root added on top of the public
@@ -286,29 +276,62 @@ impl rustls::client::danger::ServerCertVerifier for PinnedKeyVerifier {
 /// end's key pin to hold every connection to, and busbar's client identity, parsed once, to present.
 #[derive(Debug, Clone, Default)]
 pub struct Sealed {
-    /// The far end's key pin, in `busbar_contract::transport::trust::key_pin`'s spelling, trimmed.
+    /// The far end's key pin, read to its canonical spelling
+    /// (`busbar_contract::transport::trust::canonical_key_pin`): what the observed key is held to.
     pub key_pin: Option<String>,
     /// The client identity to present when the far end asks for one.
     pub identity: Option<Arc<rustls::sign::CertifiedKey>>,
 }
 
+/// Anchors that cannot be sealed: a client identity the stack cannot use, or a key pin that names
+/// no SHA-256 digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BadAnchors {
+    /// The client identity does not parse.
+    Identity(BadClientIdentity),
+    /// The key pin is neither `sha256/<base64>` nor its plain base64 alias of one digest.
+    KeyPin(busbar_contract::transport::trust::BadKeyPin),
+}
+
+impl std::fmt::Display for BadAnchors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Identity(e) => e.fmt(f),
+            Self::KeyPin(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for BadAnchors {}
+
 /// SEAL `anchors` for dialling under `base` (the connector's client config, whose crypto provider
 /// parses the identity): the identity is parsed and its key checked against its leaf here, once,
-/// so a pair the stack cannot use refuses the seal (the boot), never a dial.
+/// and the key pin read to its canonical spelling, so anchors the stack cannot hold refuse the seal
+/// (the boot), never a dial.
 ///
 /// # Errors
 ///
 /// The identity does not parse, its key is not its leaf's, or there is no client config to present
-/// it under.
+/// it under; or the key pin names no SHA-256 digest.
 pub fn seal(
     base: Option<&rustls::ClientConfig>,
     anchors: &busbar_contract::transport::trust::Anchors,
-) -> Result<Sealed, BadClientIdentity> {
+) -> Result<Sealed, BadAnchors> {
+    let key_pin = anchors
+        .key_pin
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(busbar_contract::transport::trust::canonical_key_pin)
+        .transpose()
+        .map_err(BadAnchors::KeyPin)?;
     let identity = match &anchors.client_identity {
         None => None,
         Some(identity) => {
             let base = base.ok_or_else(|| {
-                BadClientIdentity("the connector secures no connection to present it on".into())
+                BadAnchors::Identity(BadClientIdentity(
+                    "the connector secures no connection to present it on".into(),
+                ))
             })?;
             let key = rustls_pki_types::PrivateKeyDer::try_from(
                 identity
@@ -316,7 +339,7 @@ pub fn seal(
                     .expose(&busbar_kernel::seal::lend())
                     .clone(),
             )
-            .map_err(|e| BadClientIdentity(format!("private key: {e}")))?;
+            .map_err(|e| BadAnchors::Identity(BadClientIdentity(format!("private key: {e}"))))?;
             let chain: Vec<rustls_pki_types::CertificateDer<'static>> = identity
                 .cert_chain
                 .iter()
@@ -324,20 +347,13 @@ pub fn seal(
                 .map(rustls_pki_types::CertificateDer::from)
                 .collect();
             let certified =
-                rustls::sign::CertifiedKey::from_der(chain, key, base.crypto_provider())
-                    .map_err(|e| BadClientIdentity(format!("certificate chain: {e}")))?;
+                rustls::sign::CertifiedKey::from_der(chain, key, base.crypto_provider()).map_err(
+                    |e| BadAnchors::Identity(BadClientIdentity(format!("certificate chain: {e}"))),
+                )?;
             Some(Arc::new(certified))
         }
     };
-    Ok(Sealed {
-        key_pin: anchors
-            .key_pin
-            .as_deref()
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
-            .map(str::to_owned),
-        identity,
-    })
+    Ok(Sealed { key_pin, identity })
 }
 
 /// The client-certificate resolver of one dial under sealed anchors: it presents the identity when

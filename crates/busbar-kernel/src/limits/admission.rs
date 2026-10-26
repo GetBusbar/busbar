@@ -3,17 +3,16 @@
 
 //! `AdmissionGate`: the ONE non-blocking "try to get a slot, or don't" mechanic shared by every
 //! hand-rolled `tokio::sync::Semaphore` + `try_acquire` capacity gate in the gateway (the inbound
-//! request cap, the webhook-delivery cap, the tap-notification cap). Each such site is a distinct
+//! request cap, an export sink's delivery cap, the tap-notification cap). Each such site is a distinct
 //! POLICY (what happens on denial — shed a 503, drop a log, skip a tap) wrapped around the SAME
 //! mechanic (acquire-or-count-and-tell-the-caller-no). `AdmissionGate` unifies only the mechanic;
 //! it deliberately does not know or care what a caller does with a `None`.
 //!
-//! Explicitly OUT of scope (left as-is; NOT admission control): the per-lane dispatch semaphore
-//! (`main.rs`'s `sem: Semaphore::new(max_concurrent)`), `proxy/engine/walk.rs`'s deadline-racing
-//! `acquire_owned()`, and `store::in_memory`'s `try_acquire`/`try_acquire_probe` — those are the
-//! load balancer's bespoke lane-capacity model (weighted routing, breaker probes, deadline races),
-//! not a "gate at the door" admission decision, and mixing the two would blur a real architectural
-//! seam for no benefit.
+//! NOT admission control, and deliberately not built on this gate: the per-lane dispatch semaphore
+//! (`appbuild`'s `sem: Semaphore::new(max_concurrent)` on each lane) and the breaker store's own
+//! slot and probe acquisition — those are the lane-capacity model (weighted routing, breaker
+//! probes, deadline races), not a "gate at the door" admission decision, and mixing the two would
+//! blur a real architectural seam for no benefit.
 
 use std::sync::Arc;
 
@@ -73,6 +72,12 @@ impl AdmissionGate {
 /// produce. Callers depend on these exact bytes (the shed body is part of the gateway's observable
 /// contract), so change it only alongside the tests that pin it. The data-plane auth middleware
 /// answers the same bytes when an auth verifier's `max_inflight` is full (owner ruling Q134).
+///
+/// PARITY (Q128 p12#6): these are the listener's 1.5.5 default shed bytes, unchanged —
+/// v1.5.5 `crates/busbar/src/limits/admission.rs:73-89` (`inbound_overloaded_response`, same status,
+/// same `Retry-After: 1`, same body). A shed happens before any line has claimed the arrival, so
+/// BUSBAR-1.6.0.md THE DESIGN §6 item 4 ("or, with no line, from the listener's 1.5.5 default")
+/// governs it: the bytes stay 1.5.5's.
 pub(crate) fn inbound_overloaded_response() -> axum::response::Response {
     use axum::response::IntoResponse;
     let mut resp = (
@@ -111,9 +116,10 @@ pub(crate) struct InboundAdmissionLayer {
 }
 
 impl InboundAdmissionLayer {
-    /// `max_inbound_concurrent == 0` ⇒ NO layer (a true no-op) — see the caller in `main.rs`, which
-    /// gates installing this layer at all on `> 0`; this constructor itself has no zero-permit
-    /// special case, since a caller building one with `0` would just never admit anything.
+    /// `max_inbound_concurrent == 0` ⇒ NO layer (a true no-op) — see the caller,
+    /// `router::apply_inbound_concurrency_limit`, which gates installing this layer at all on
+    /// `> 0`; this constructor itself has no zero-permit special case, since a caller building one
+    /// with `0` would just never admit anything.
     pub(crate) fn new(max_inbound_concurrent: usize) -> Self {
         Self {
             gate: Arc::new(AdmissionGate::new(max_inbound_concurrent, "inbound")),

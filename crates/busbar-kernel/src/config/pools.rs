@@ -341,7 +341,7 @@ pub fn default_weight() -> u32 {
 }
 
 /// Trip mode for breaker configuration.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Deserialize, serde::Serialize, Clone, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BreakerTripMode {
     #[default]
@@ -350,7 +350,7 @@ pub enum BreakerTripMode {
 }
 
 /// Trip configuration parameters (ADR-0002 defaults).
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, serde::Serialize, Clone, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BreakerTripConfig {
     #[serde(default = "default_trip_mode")]
@@ -399,7 +399,7 @@ pub fn default_consecutive_n() -> u32 {
 }
 
 /// Breaker configuration per pool with full trip settings (ADR-0002).
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, serde::Serialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BreakerCfg {
     #[serde(default = "default_cooldown")]
@@ -409,6 +409,12 @@ pub struct BreakerCfg {
     #[serde(default)]
     pub trip: Option<BreakerTripConfig>,
 }
+
+// `Eq` by hand: the one float (`trip.threshold`) is refused at validation unless it lies in
+// (0.0, 1.0], so a configured block never holds a NaN, and the pool carriers that embed a block
+// (`CandidatePoolCfg`) keep the `Eq` they had.
+impl Eq for BreakerTripConfig {}
+impl Eq for BreakerCfg {}
 
 impl Default for BreakerCfg {
     fn default() -> Self {
@@ -680,32 +686,12 @@ pub struct CandidatePoolCfg {
     /// reroute-before-first-byte (which duplicates nothing) and no retries at all.
     #[serde(default)]
     pub repeatable: Vec<String>,
-}
-
-impl CandidatePoolCfg {
-    /// MAY THIS OPERATION BE PERFORMED TWICE? The one reader of `repeatable:`, so the default can
-    /// never be got wrong by a second caller spelling the lookup differently.
-    // Read only by the per-call dispatch path a protocol plane drives; a plane whose relay never
-    // repeats a dispatch has no caller here. Unconditional allow — the neutral seam names no plane
-    // feature.
-    #[allow(dead_code)]
-    pub fn repeatability(&self, operation: &str) -> Repeatable {
-        if self.repeatable.iter().any(|o| o == operation) {
-            Repeatable::Yes
-        } else {
-            Repeatable::No
-        }
-    }
-}
-
-/// MAY THIS OPERATION BE PERFORMED TWICE? A property of the operation the caller named, declared by
-/// the operator who vouched for it — never inferred, and never a property of the transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Repeatable {
-    /// The DEFAULT for everything an operator has not spoken about. A second execution may have a
-    /// second effect, so an after-dispatch hop (the failover walk's
-    /// `Stage::AfterDispatch`) is refused.
-    No,
-    /// The operator declared this operation safe to perform twice (a read, a search, a query).
-    Yes,
+    /// The pool's `breaker:` block, written under the pool in its section's `pools` sub-key with the
+    /// same keys as a top-level `pools:` entry's (`PoolCfg::breaker`): the same validation
+    /// (`config_validate`'s Rule 6) and the same defaults when it is absent. BUSBAR-1.6.0.md THE
+    /// DESIGN §1: "Any plugin gets all functionality" — a pool's breaker is tunable whichever plane
+    /// its members belong to. Core-owned: the host's egress reads it, and the plane is never handed
+    /// it (`serve::plane_settings` strikes it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breaker: Option<BreakerCfg>,
 }

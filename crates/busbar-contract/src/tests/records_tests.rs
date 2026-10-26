@@ -965,3 +965,72 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     ledger.apply_model_delta(&d2);
     assert_eq!(ledger.models[0].usage_units.get("search"), Some(&0));
 }
+
+/// A store that implements only the old age purge, and records each call to it: the named-retention
+/// default must route [`Retention::Age`] there and purge nothing for [`Retention::TerminalOnly`].
+struct AgePurgeOnly(std::sync::Mutex<Vec<(String, u64)>>);
+
+impl RecordStore for AgePurgeOnly {
+    fn put_key(&self, _: &VirtualKey) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_key(&self, _: &str) -> RecordStoreResult<Option<VirtualKey>> {
+        Ok(None)
+    }
+    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
+        Ok(Vec::new())
+    }
+    fn delete_key(&self, _: &str) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn get_usage(&self, _: &str, _: u64) -> RecordStoreResult<UsageLedger> {
+        Ok(UsageLedger::default())
+    }
+    fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn add_metering(&self, _: &MeteringDelta) -> RecordStoreResult<()> {
+        Ok(())
+    }
+    fn list_metering(&self, _: u64) -> RecordStoreResult<Vec<MeteringRow>> {
+        Ok(Vec::new())
+    }
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
+        self.0.lock().unwrap().push((kind.to_string(), before));
+        Ok(7)
+    }
+}
+
+#[test]
+fn the_named_retention_default_maps_age_to_the_age_purge() {
+    let s = AgePurgeOnly(std::sync::Mutex::new(Vec::new()));
+    assert_eq!(
+        s.purge_plane_records("call", 42, Retention::Age).unwrap(),
+        7
+    );
+    assert_eq!(*s.0.lock().unwrap(), vec![("call".to_string(), 42)]);
+}
+
+#[test]
+fn the_named_retention_default_purges_nothing_terminal_only() {
+    let s = AgePurgeOnly(std::sync::Mutex::new(Vec::new()));
+    // Fails closed: a store that never implemented the terminal-only predicate drops no row, and
+    // the age purge (which would drop ACTIVE rows too) is never reached.
+    assert_eq!(
+        s.purge_plane_records("task", u64::MAX, Retention::TerminalOnly)
+            .unwrap(),
+        0
+    );
+    assert!(s.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn retention_codes_round_trip_and_age_is_the_default() {
+    assert_eq!(Retention::default(), Retention::Age);
+    for r in [Retention::Age, Retention::TerminalOnly] {
+        assert_eq!(Retention::from_code(r.code()), Some(r));
+    }
+    assert_eq!(Retention::Age.code(), 0);
+    assert_eq!(Retention::TerminalOnly.code(), 1);
+    assert_eq!(Retention::from_code(2), None);
+}

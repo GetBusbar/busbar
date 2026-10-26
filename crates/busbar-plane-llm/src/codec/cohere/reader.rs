@@ -19,13 +19,11 @@ impl ProtocolReader for CohereReader {
 
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        // The provider-metered `billed_units` bucket and the cache hit are read exactly as
-        // `read_response` reads them (one table, `USAGE`): Cohere reports usage TWICE — a raw `tokens`
-        // bucket and the separately-metered `billed_units` bucket the operator is invoiced on — and
-        // `to_token_usage` lets the metered counts WIN for the reserved input/output tiers. Carrying
-        // only `tokens` here meant a head-truncated body reported the RAW counts while the identical
-        // untruncated body reported the metered ones. An unreadable count is refused on its own and
-        // bills nothing; the readable counts recover (#42; ARCHITECT ruling 2026-10-15).
+        // The usage object is read exactly as `read_response` reads it (one table, `USAGE`), so a
+        // head-truncated body ledgers what its untruncated twin ledgers: the raw `tokens` counts,
+        // as 1.5.5 billed them, with the separately-metered `billed_units` carried beside them as
+        // attribution (`to_token_usage`). An unreadable count is refused on its own and bills
+        // nothing; the readable counts recover (#42; ARCHITECT ruling 2026-10-15).
         Some(read_cohere_usage(Some(&v)).ok()?.to_token_usage())
     }
 
@@ -1482,8 +1480,9 @@ impl ProtocolReader for CohereReader {
 /// token classes, their figures and every `tokens:` cap count exactly what 1.5.5 counted").
 ///
 /// WHERE EACH COUNT IS LEDGERED (MONEY-AUDIT A-F1; the census over the pinned wire lock,
-/// `testing/llm-conformance/wire/cohere.wire.json`, is `usage_census_tests`): the billed token
-/// counts win the reserved input/output classes over the raw ones (`IrUsage::to_token_usage`),
+/// `testing/llm-conformance/wire/cohere.wire.json`, is `usage_census_tests`): the raw token
+/// counts are the reserved input/output classes, as 1.5.5 billed them, and the billed token
+/// counts ride beside them as attribution only (`IrUsage::to_token_usage`),
 /// `search_units` is the open class `search_units`, and `classifications` is the open class
 /// `classifications` (owner LEDGER-100).
 const USAGE: &[UsageCount] = &[

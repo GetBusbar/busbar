@@ -6,9 +6,10 @@
 //! DESTINATION GUARD: one destination check, in the connector, for every outbound connection).
 //! [`dest_judge`] builds the deployment's one destination judge ([`GuardJudge`]: the one
 //! [`Guard`], the system resolver, each egress class's scheme rule); the root hands that same judge
-//! to [`build`] (the connector's dial judge, [`judge`]) and to the kernel (`dest.judge` and the
-//! kernel's own clients), so every dial of every kind is judged by one guard. The root hands in
-//! the deployment's values and holds what it returns; nothing here keeps a second.
+//! to [`build_with_secrets`] (the connector's dial judge, [`judge`]) and to the kernel
+//! (`dest.judge` and the kernel's own clients), so every dial of every kind is judged by one guard.
+//! The root hands in the deployment's values and holds what it returns; nothing here keeps a
+//! second.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use busbar_contract::abi::host::conn::connector::{EGRESS_LOOPBACK_ALLOWED, EGRES
 use busbar_contract::abi::host::service::{
     DEST_INTERNAL, DEST_NO_HOST, DEST_PLAINTEXT, DEST_SCHEME, DEST_UNRESOLVABLE,
 };
+use busbar_contract::net::url_host_to_ascii;
 use busbar_contract::transport::trust::EgressTrust;
 use busbar_kernel::config::Destinations;
 use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
@@ -24,14 +26,15 @@ use busbar_kernel::host_services::{Admitted, DestJudge, DestRefusal, Refused};
 use crate::guard::{is_loopback, names_loopback, Guard, Resolve, SystemResolver};
 use crate::pool::PoolPosture;
 use crate::registry::{Entry, Transports};
-use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
+use crate::{Connector, DialJudge, Judged, JudgedAll, Verdict, WakeTicket};
 
 /// THE PROCESS'S CONNECTOR over the framer entries `entries` yields, judging every dial through
 /// `dest` ([`judge`], the node's `own_ports` refused to a loopback-allowed need), dialling a framed
 /// connection through the proxy the process's environment names ([`crate::proxy`]), securing a
 /// connection with the default outbound trust where its target asks for it, waking a plugin's
-/// ticket through `wake`, and keeping a dialled connection whose exchange finished whole under the
-/// deployment's `pool` posture ([`crate::pool`]). The trust is built before `entries` is asked for,
+/// ticket through `wake`, keeping a dialled connection whose exchange finished whole under the
+/// deployment's `pool` posture ([`crate::pool`]), and resolving a program's environment references
+/// through `spawn_secrets` at config time ([`crate::spawn_env`]). The trust is built before `entries` is asked for,
 /// so a boot that cannot secure a connection loads no transport door.
 ///
 /// # Errors
@@ -39,12 +42,13 @@ use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
 /// The default outbound trust will not build, a proxy variable is set and does not parse,
 /// `entries` refuses, two entries claim one scheme, or
 /// an entry states no claim.
-pub fn build(
+pub fn build_with_secrets(
     entries: impl FnOnce() -> Result<Vec<Entry>, String>,
     dest: Arc<dyn DestJudge>,
     own_ports: &[u16],
     wake: WakeTicket,
     pool: PoolPosture,
+    spawn_secrets: crate::spawn_env::SpawnSecretFn,
 ) -> Result<Arc<Connector>, String> {
     let tls = crate::tls::client::build_client_config(&EgressTrust::default())
         .map_err(|e| format!("its connection security: {e}"))?;
@@ -55,7 +59,8 @@ pub fn build(
     Ok(Arc::new(
         Connector::serving(view, judge(dest, own_ports), Some(Arc::new(tls)), wake)
             .pooling(pool)
-            .proxying(proxy),
+            .proxying(proxy)
+            .resolving_spawn_secrets(spawn_secrets),
     ))
 }
 
@@ -95,7 +100,10 @@ impl GuardJudge {
     }
 
     /// The name and scheme arms: the host, port and scheme to dial, and the literal when the host
-    /// is one.
+    /// is one. The host handed back is the one a URL client dials, the name the guard judged
+    /// ([`url_host_to_ascii`]: a non-ASCII name its UTS #46 punycode, `bücher.example` read as
+    /// `xn--bcher-kva.example`), so a resolution asks for the name judged and the name 1.5.5's
+    /// client resolved, never the spelling as written. An ASCII host is handed back as written.
     fn named(
         &self,
         dest: &str,
@@ -118,6 +126,11 @@ impl GuardJudge {
         if literal.is_some() {
             plaintext_to_loopback(class, https, &host)?;
         }
+        // The guard admitted the host, so it maps; a host that did not would be unjudgeable.
+        let host = match url_host_to_ascii(&host) {
+            Ok(dialled) => dialled.into_owned(),
+            Err(_) => return Err(DEST_NO_HOST),
+        };
         Ok((host, port, https, literal))
     }
 }
@@ -238,6 +251,7 @@ impl GuardJudge {
             return Some(Ok((SocketAddr::new(ip, port), vec![ip])));
         }
         let guard = self.guard.clone();
+        // The mapped name ([`GuardJudge::named`]): the one judged, and the one a URL client resolves.
         let name = host.clone();
         self.resolver.resolve(
             &name,
@@ -295,11 +309,33 @@ impl OneJudge {
         done: Judged,
         judging: impl FnOnce(Box<dyn FnOnce(Admitted) + Send>) -> Option<Admitted>,
     ) -> Option<Result<SocketAddr, Verdict>> {
+        let done: JudgedAll = Box::new(move |v, _| done(v));
+        self.pinned_all(class, done, judging)
+    }
+
+    /// [`Self::pinned`], the pended answer naming the name's other admitted addresses on the same
+    /// port, each held off the node as the pin is.
+    fn pinned_all(
+        &self,
+        class: u32,
+        done: JudgedAll,
+        judging: impl FnOnce(Box<dyn FnOnce(Admitted) + Send>) -> Option<Admitted>,
+    ) -> Option<Result<SocketAddr, Verdict>> {
         let later = Arc::clone(&self.own);
-        let pin = |v: Admitted| v.map(|(at, _)| at).map_err(|r| r.verdict);
-        let pended: Box<dyn FnOnce(Admitted) + Send> =
-            Box::new(move |v| done(not_the_node(class, &later, pin(v))));
-        judging(pended).map(|v| not_the_node(class, &self.own, pin(v)))
+        let pin = |v: &Admitted| v.as_ref().map(|(at, _)| *at).map_err(|r| r.verdict);
+        let pended: Box<dyn FnOnce(Admitted) + Send> = Box::new(move |v| {
+            let also = match &v {
+                Ok((at, addrs)) => addrs
+                    .iter()
+                    .map(|ip| SocketAddr::new(*ip, at.port()))
+                    .filter(|a| a != at)
+                    .filter(|a| not_the_node(class, &later, Ok(*a)).is_ok())
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            done(not_the_node(class, &later, pin(&v)), also);
+        });
+        judging(pended).map(|v| not_the_node(class, &self.own, pin(&v)))
     }
 }
 
@@ -323,6 +359,22 @@ impl DialJudge for OneJudge {
     ) -> Option<Result<SocketAddr, Verdict>> {
         self.pinned(class, done, |pended| {
             self.dest.judge_reaching(dest, class, pended)
+        })
+    }
+
+    fn judge_dial_all(
+        &self,
+        dest: &str,
+        class: u32,
+        reach: bool,
+        done: JudgedAll,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        self.pinned_all(class, done, |pended| {
+            if reach {
+                self.dest.judge_reaching(dest, class, pended)
+            } else {
+                self.dest.judge(dest, class, false, pended)
+            }
         })
     }
 

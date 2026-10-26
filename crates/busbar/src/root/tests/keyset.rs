@@ -6,7 +6,7 @@
 //! refusal in its exact words.
 
 use super::*;
-use crate::root::durability::{build_priced, keyset_of, DurabilityConfig, KeySetVerifier};
+use crate::root::durability::{build_priced, keyset_of, DurabilityConfig, KeySetVerifier, Scratch};
 use busbar_kernel_ledger::legacy::RecordingRows;
 use busbar_kernel_wal::NullShipper;
 
@@ -27,34 +27,6 @@ fn node(data_dir: Option<&Path>) -> Durability {
         Box::new(|| None),
     )
     .expect("the book opens")
-}
-
-/// A data directory that removes itself.
-struct Dir(PathBuf);
-
-impl Dir {
-    fn new(tag: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("busbar-keyset-{tag}-{}-{}", std::process::id(), {
-                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                format!(
-                    "{}-{}-{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_nanos()),
-                    line!(),
-                    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                )
-            }));
-        std::fs::create_dir_all(&path).expect("the fixture directory is creatable");
-        Dir(path)
-    }
-}
-
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 /// Boot a node over `dir` and bind its keyset, as the boot does.
@@ -118,7 +90,7 @@ fn an_ephemeral_node_verifies_its_own_boots_signatures() {
 /// its fingerprint sealed by a `Bootstrap` record on the journal — the first record on the chain.
 #[test]
 fn the_first_boot_with_a_data_dir_mints_caches_0600_and_seals_a_bootstrap() {
-    let dir = Dir::new("mint");
+    let dir = Scratch::new("keyset-mint");
     let (durability, bound) = boot(&dir.0);
     let file = dir.0.join(KEYSET_FILE);
     assert_eq!(
@@ -161,7 +133,7 @@ fn the_first_boot_with_a_data_dir_mints_caches_0600_and_seals_a_bootstrap() {
 /// second `Bootstrap`.
 #[test]
 fn a_restart_with_the_data_dir_signs_with_the_same_key() {
-    let dir = Dir::new("restart");
+    let dir = Scratch::new("keyset-restart");
     let (first, bound) = boot(&dir.0);
     bound.expect("the first boot mints");
     let key_id = first.record.signing_key_id().map(str::to_string);
@@ -190,10 +162,12 @@ fn a_restart_with_the_data_dir_signs_with_the_same_key() {
 /// gone — neither the file nor the store yields the fingerprint.
 #[test]
 fn keyset_missing_refuses_in_its_exact_words_when_the_file_is_gone() {
-    let dir = Dir::new("missing");
+    let dir = Scratch::new("keyset-missing");
     let (first, bound) = boot(&dir.0);
     bound.expect("the first boot mints");
-    let fingerprint = sealed_fingerprint(&first).expect("the Bootstrap is sealed");
+    let fingerprint = sealed_fingerprint(&first)
+        .expect("the chain reads back")
+        .expect("the Bootstrap is sealed");
     drop(first);
     std::fs::remove_file(dir.0.join(KEYSET_FILE)).expect("the keyset file is removed");
 
@@ -223,7 +197,7 @@ fn keyset_missing_refuses_in_its_exact_words_when_the_file_is_gone() {
 /// The file yields a DIFFERENT key than the one the `Bootstrap` sealed: the same refusal.
 #[test]
 fn keyset_missing_refuses_a_file_holding_another_key() {
-    let dir = Dir::new("other");
+    let dir = Scratch::new("keyset-other");
     let (first, bound) = boot(&dir.0);
     bound.expect("the first boot mints");
     drop(first);
@@ -257,7 +231,7 @@ fn no_data_dir_never_refuses_and_writes_nothing() {
 /// never replaced: keys are only ever added.
 #[test]
 fn a_cached_keyset_with_no_bootstrap_is_adopted_not_replaced() {
-    let dir = Dir::new("adopt");
+    let dir = Scratch::new("keyset-adopt");
     let seed = "22".repeat(32);
     std::fs::write(dir.0.join(KEYSET_FILE), format!("{seed}\n")).expect("the file is planted");
     let expected = AuditSigningKey::from_hex_seed(&seed).expect("a seed");
@@ -266,6 +240,6 @@ fn a_cached_keyset_with_no_bootstrap_is_adopted_not_replaced() {
     assert_eq!(durability.record.signing_key_id(), Some(expected.key_id()));
     assert_eq!(
         sealed_fingerprint(&durability),
-        Some(fingerprint_of_signer(&expected))
+        Ok(Some(fingerprint_of_signer(&expected)))
     );
 }

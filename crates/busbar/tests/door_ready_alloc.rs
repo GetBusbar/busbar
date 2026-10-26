@@ -17,7 +17,7 @@
 //!
 //! WHY IT EXISTS BESIDE `hot-path-alloc`: that gate's instrument
 //! (`crates/busbar-kernel/benches/plane_host_vtable_alloc.rs`) counts a plugin's call batch into
-//! the host-services table (`HostSlots`), which replaced the HOT lane row 84 deleted. This is the
+//! the host-services table (`HostSlots`), which replaced the deleted HOT lane. This is the
 //! door lane's witness, the one the request path crosses, and `hot-path-alloc:door-ready-zero`
 //! holds it.
 //!
@@ -128,8 +128,8 @@ fn inner() -> &'static Ops {
     static INNER: OnceLock<Shared<Ops>> = OnceLock::new();
     &INNER
         .get_or_init(|| {
-            // SAFETY: the test plane's door is `'static`; a plane door's `ops` is a plane `Ops`.
-            Shared(unsafe { *(*plane::door()).ops.cast::<Ops>() })
+            // SAFETY: a plane door's `ops` is a `'static` plane `Ops`.
+            Shared(unsafe { *plane::door().ops().cast::<Ops>() })
         })
         .0
 }
@@ -150,7 +150,7 @@ disarmed!(refusal, refusal);
 disarmed!(serve, serve);
 disarmed!(project, project);
 
-/// The `catalog` the door answers (the test plane states none, ARCHITECT ruling 2026-10-16, 3b C):
+/// The `catalog` the door answers:
 /// an empty listing, `200`, its body disarmed like every other op's, so the crossing measured is the
 /// host's own.
 extern "C" fn catalog(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {
@@ -168,7 +168,7 @@ extern "C" fn catalog(_: *mut c_void, _: *const c_void, out: *mut c_void) -> Raw
 
 /// The door this binary loads: the test plane's Statement and lifecycle, its request-path ops
 /// wrapped so their bodies run disarmed.
-extern "C" fn door() -> *const Door {
+extern "C" fn door() -> &'static Door {
     static OPS: OnceLock<Shared<Ops>> = OnceLock::new();
     static DOOR: OnceLock<Shared<Door>> = OnceLock::new();
     let ops = &OPS
@@ -186,11 +186,11 @@ extern "C" fn door() -> *const Door {
         .0;
     &DOOR
         .get_or_init(|| {
-            Shared(Door {
-                ops: (ops as *const Ops).cast::<OpsHead>(),
-                // SAFETY: the test plane's door is `'static`.
-                ..unsafe { *plane::door() }
-            })
+            let mut parts = plane::door().parts();
+            parts.ops = (ops as *const Ops).cast::<OpsHead>();
+            // SAFETY: the test plane's own `'static` Statement, over a `'static` plane table whose
+            // request-path slots wrap the test plane's own.
+            Shared(unsafe { Door::__from_parts(parts) })
         })
         .0
 }

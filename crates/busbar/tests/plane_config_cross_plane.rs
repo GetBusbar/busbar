@@ -53,8 +53,8 @@ fn refusal_for(section: &str, hook: &str) -> String {
 /// test and none to either protocol's config module.
 #[test]
 fn every_section_the_grammar_declares_is_refused_on_both_planes() {
-    // Both planes' validators judge a hook reference against the PROCESS section registry, read through
-    // the neutral `plane_sections` provider seam — so every plane must be registered for them to
+    // Both planes' validators judge a hook reference against the PROCESS section registry
+    // (`config_sections`), handed to the refusal — so every plane must be registered for them to
     // recognise every OTHER plane's declared section as a cross-plane reach. Idempotent by key, so
     // this is a no-op past the first run.
     register_planes();

@@ -22,6 +22,7 @@ use serde_json::Value;
 use super::arrive::Arrived;
 use super::attempt::stream_intent;
 use super::{decl, handler_of};
+use crate::codec::json_splice;
 use crate::codec::translate::TranslateCodec;
 
 #[path = "project_raw.rs"]
@@ -217,18 +218,48 @@ fn read_rewrite(rewrite: &[u8]) -> Option<RewriteReply> {
 /// rewrite's messages (and tools) into its conversation container. Answers the rewritten body when
 /// it applied; `None` leaves the arrival untouched (the previous release: a rewrite that cannot be
 /// applied leaves the request unmodified).
+///
+/// THE REWRITE IS SPLICED, NEVER RE-SERIALIZED (OWNER 2026-10-02 LLM DIALECT FIDELITY RULE,
+/// BUSBAR-1.6.0.md: "hook `rw` edits, spliced per changed block. Never parse-edit-reserialize"):
+/// only the top-level members the dialect's framing changed are written into the caller's own
+/// bytes ([`json_splice::apply_top`]); every member it did not touch reaches the far end byte for
+/// byte, in the caller's order, spacing and number spelling.
 pub fn apply_rewrite(arrived: &mut Arrived, rewrite: &[u8]) -> Option<Vec<u8>> {
     let reply = read_rewrite(rewrite)?;
     if reply.messages.is_empty() {
         return None;
     }
     let dialect = decl(arrived.dialect).and_then(|d| d.dialect())?;
+    let before = arrived.parsed.as_ref()?.as_object()?;
     let mut v = arrived.parsed.clone()?;
     let obj = v.as_object_mut()?;
     if !dialect.apply_rewrite_to_ingress_body(obj, &reply.messages, &reply.tools) {
         return None;
     }
-    let bytes = crate::codec::json::to_vec(&v).ok()?;
+    // The members the framing changed, set or removed; nothing else is touched.
+    let mut set = Vec::new();
+    for (key, value) in obj.iter() {
+        if before.get(key) != Some(value) {
+            set.push((key.as_str(), crate::codec::json::to_vec(value).ok()?));
+        }
+    }
+    let mut edits: Vec<json_splice::Edit<'_>> = set
+        .iter()
+        .map(|(key, raw)| json_splice::Edit::Set(key, raw.as_slice().into()))
+        .collect();
+    edits.extend(
+        before
+            .keys()
+            .filter(|key| !obj.contains_key(key.as_str()))
+            .map(|key| json_splice::Edit::Remove(key.as_str())),
+    );
+    // `None` from the splice with edits to make is a body it cannot place them in: the request goes
+    // on unmodified. With none, the rewrite read the same as the body: its bytes stand.
+    let bytes = if edits.is_empty() {
+        arrived.body.clone()
+    } else {
+        json_splice::apply_top(&arrived.body, &edits)?
+    };
     arrived.body.clone_from(&bytes);
     arrived.parsed = Some(v);
     Some(bytes)

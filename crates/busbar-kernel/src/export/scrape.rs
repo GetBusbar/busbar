@@ -4,7 +4,7 @@
 //! THE HOST SNAPSHOT SERVICE, KERNEL SIDE — what `snapshot.read` (`abi::host::service`) answers.
 //!
 //! `/metrics` and `/metrics/hooks` are not the kernel's (owner law 2026-09-27: "the kernel owns no
-//! route that exists for one plugin: /metrics and /metrics/hooks leave core"; ARCHITECT Q-U2-4).
+//! route that exists for one plugin: /metrics and /metrics/hooks leave core").
 //! They are LISTENER NEEDS of the scrape sink — the export instance subscribed to `metrics`, granted
 //! first-party (#65) — declared in its own `routes` list and answered by its own `serve`. What
 //! stays the host's is what only the host can hold: the recorder every emit site writes, its
@@ -101,13 +101,12 @@ pub(crate) fn read(scope: u32) -> Snapshot {
     answer
 }
 
-/// The WHOLE snapshot: with the recorder installed and a live `app`, its scrape-time gauges and the
-/// host's own counters are refreshed and every export sink's `status` folded first; NOT READY before the recorder is.
+/// The WHOLE snapshot: with the recorder installed and a live `app`, its scrape-time gauges are
+/// refreshed and every export sink's `status` folded first; NOT READY before the recorder is.
 fn whole(app: Option<&App>) -> Snapshot {
     let installed = crate::snapshot::recorder_installed();
     if let Some(app) = app.filter(|_| installed) {
         crate::snapshot::refresh_scrape_gauges(app);
-        crate::snapshot::refresh_host_counters();
         super::plugin::status();
     }
     crate::snapshot::snapshot().map_or(Snapshot::NotReady, Snapshot::Families)

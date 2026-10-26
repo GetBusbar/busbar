@@ -81,6 +81,12 @@ pub struct Declined {
     pub kind: &'static str,
     /// The message.
     pub message: Cow<'static, str>,
+    /// THE ENTRY THIS REFUSAL CONCERNS, when it is about one (abi/plane "A refused arrival", rule
+    /// 6): the ad-hoc route's model whose provider the path misnames. The door names it on the
+    /// refused `arrive`, so the kernel judges the caller's identity and grant over it first and
+    /// renders this refusal before admission, as 1.5.5's ad-hoc route ran its governance guard
+    /// before it answered the mismatch.
+    pub entry: Option<String>,
 }
 
 /// Where the model came from, when the URL names it.
@@ -200,6 +206,7 @@ fn declined(
         envelope,
         kind,
         message: message.into(),
+        entry: None,
     }
 }
 
@@ -295,13 +302,15 @@ pub fn arrive(
             Convenience::Adhoc(provider, model) => {
                 if let Some(serving) = catalogue.provider_of(&model) {
                     if serving != provider {
-                        return Err(declined(
+                        let mut refused = declined(
                             Decline::ProviderMismatch,
                             400,
                             proto,
                             KIND_INVALID_REQUEST,
                             super::refuse::model_not_found(&model, None),
-                        ));
+                        );
+                        refused.entry = Some(model);
+                        return Err(refused);
                     }
                 }
                 model

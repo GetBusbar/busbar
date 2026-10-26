@@ -26,10 +26,10 @@ use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
-    check_accept, check_arrival, check_cancel, check_claims, check_composes_over,
-    check_fault_cover, check_fault_rows, check_framer, check_framer_fields, check_head_slots,
-    check_io, check_listen, check_locate, check_offered_points, check_settings, check_status_rows,
-    check_tail,
+    check_accept, check_arrival, check_cancel, check_claim_facts, check_claims,
+    check_composes_over, check_fault_cover, check_fault_rows, check_framer, check_framer_fields,
+    check_head_slots, check_io, check_listen, check_locate, check_offered_points, check_settings,
+    check_status_rows, check_tail, check_upgrades_to,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -46,11 +46,16 @@ use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 const TRANSPORT_TAIL_FROZEN: usize = std::mem::offset_of!(TransportTail, fault_rows);
 
 /// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
-/// `check_claims`, `check_claim_rows` and `check_composes_over`: its role, every scheme it answers
+/// `check_claims` (and each row's `check_claim_facts`), `check_claim_rows`, `check_composes_over`
+/// and `check_upgrades_to`: its role, every scheme it answers
 /// for (the Statement's `claims`, the first its own) and the claims it composes over. The host's registry view reads it through
 /// [`crate::dispatch::Plugin::context`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportFacts {
+    /// The Statement's `name` (interned): what a LINKED row's key is held to, its own claim
+    /// (`BUSBAR-1.6.0.md` A.2, l.3567: the Statement carries the name; l.3561: a linked row reaches
+    /// the same table a dropped-in one does).
+    pub name: &'static str,
     /// `ROLE_CARRIER` | `ROLE_FRAMER`.
     pub role: u32,
     /// Every scheme the entry answers for, in order (interned: one allocation per distinct name for
@@ -97,7 +102,8 @@ pub struct TransportFacts {
 pub fn stated(
     door_fn: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
-    let st = crate::dispatch::load::statement_of(door_fn).map_err(|e| e.to_string())?;
+    let st = crate::dispatch::load::statement_of(crate::dispatch::load::raw(door_fn))
+        .map_err(|e| e.to_string())?;
     tail_facts(&st)
 }
 
@@ -128,6 +134,16 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     let rows: &[Claim] =
         unsafe { std::slice::from_raw_parts(tail.claim_rows, tail.claim_rows_len) };
     check_claims(rows).map_err(broke)?;
+    for row in rows {
+        let keys: &[AbiStr] = if row.facts_len == 0 {
+            &[]
+        } else {
+            // SAFETY: `check_claims` refused a NULL list with a count and held it bounded and
+            // aligned; the list is `'static` plugin data.
+            unsafe { std::slice::from_raw_parts(row.facts, row.facts_len) }
+        };
+        check_claim_facts(keys).map_err(broke)?;
+    }
     // The scheme NAMES are the Statement's alone (signed, and byte-compared at admit); the tail has
     // one row per name.
     busbar_contract::abi::transport::check::check_claim_rows(st.claims_len, &tail)
@@ -146,6 +162,14 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         unsafe { std::slice::from_raw_parts(tail.composes_over, tail.composes_over_len) }
     };
     check_composes_over(under).map_err(broke)?;
+    let upgrades_to: &[AbiStr] = if tail.upgrades_to_len == 0 {
+        &[]
+    } else {
+        // SAFETY: `check_tail` refused a NULL list with a count and held it bounded and aligned;
+        // the list is `'static` plugin data.
+        unsafe { std::slice::from_raw_parts(tail.upgrades_to, tail.upgrades_to_len) }
+    };
+    check_upgrades_to(upgrades_to).map_err(broke)?;
     let settings: &[SettingDecl] = if tail.settings_len == 0 {
         &[]
     } else {
@@ -203,6 +227,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_cover(status, faults).map_err(broke)?;
     Ok(TransportFacts {
+        name: owned(st.name, "Statement name")?,
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         offered,
@@ -244,7 +269,8 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
 pub fn linked_facts(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<TransportFacts, String> {
-    let v = crate::dispatch::load::validate::<Transport>(door).map_err(|e| e.to_string())?;
+    let v = crate::dispatch::load::validate::<Transport>(crate::dispatch::load::raw(door))
+        .map_err(|e| e.to_string())?;
     tail_facts(&v.statement)
 }
 

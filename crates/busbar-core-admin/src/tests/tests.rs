@@ -1,4 +1,5 @@
 use busbar_kernel::audit_ring;
+use busbar_kernel::config::migrated_store_module;
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
 use busbar_kernel::test_support::warn_capture::WarnCapture;
 use std::sync::Arc;
@@ -109,10 +110,12 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         "auth_modules must contain the built-in `keys` verifier: {auth_modules:?}"
     );
     assert_eq!(
-        auth_modules.iter().any(|m| m == "admin-tokens"),
+        auth_modules
+            .iter()
+            .any(|m| m == busbar_kernel::config::operator_provider()),
         busbar_kernel::preflight::linked_auth_names()
             .contains(&busbar_kernel::config::operator_provider()),
-        "auth_modules must contain `admin-tokens` iff its row is linked: {auth_modules:?}"
+        "auth_modules must contain the operator credential iff its row is linked: {auth_modules:?}"
     );
     // RED with a hook name spelled here rather than read off the root's install record (Law 1).
     assert_eq!(
@@ -473,8 +476,9 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     // A RANGE, not an equality, and the reason is a real failure: this asserted exactly 300 and
     // went red in CI. The test seeds the cell with `now + 300` from one `now()`, and the handler
     // computes the remainder from a SECOND `now()` taken when the request arrives. Between them sit
-    // a router build, a TCP bind, a task spawn and a real HTTP round trip — so on a loaded runner
-    // the wall clock ticks and the answer is 299, which is correct behaviour reported as a failure.
+    // a router build, a socket bind, a task spawn and a real request round trip — so on a loaded
+    // runner the wall clock ticks and the answer is 299, which is correct behaviour reported as a
+    // failure.
     //
     // The property worth asserting is that the cell reports ITS OWN cooldown rather than a
     // neighbour's or a default, and a couple of seconds of slack proves that just as well while
@@ -537,7 +541,7 @@ async fn test_admin_v1_admin_auth_read() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|m| m == "admin-tokens"));
+        .any(|m| m == busbar_kernel::config::operator_provider()));
 
     handle.abort();
 }
@@ -747,7 +751,7 @@ async fn test_admin_v1_hook_settings_patch_commit_on_ack_and_schema() {
     let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
-    // Kept for the readiness wait below — `HookEnv` clones share one `Arc<PluginRegistry>`, which is
+    // Kept for the readiness wait below — `HookEnv` clones share one `Arc<dyn PluginRows>`, which is
     // what the resolution is keyed on, so this really is the env the handler will resolve against.
     let env_for_warm = env.clone();
     let app = crate::new_test_app().governance(gov).hook_env(env).build();
@@ -957,7 +961,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "store": {"module": "memory"},
+            "store": {"module": migrated_store_module()},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {
                 "m0": {"provider": "test-provider", "max_concurrent": 4},
@@ -992,7 +996,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"0\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": "memory"}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": migrated_store_module()}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1005,7 +1009,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         .header("if-match", "\"not-a-version\"")
         .body(
             serde_json::json!({
-                "config": {"listen": "127.0.0.1:0", "store": {"module": "memory"}, "providers": {}, "models": {}, "pools": {}},
+                "config": {"listen": "127.0.0.1:0", "store": {"module": migrated_store_module()}, "providers": {}, "models": {}, "pools": {}},
             })
             .to_string(),
         )
@@ -1235,7 +1239,10 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     let mut app = crate::new_test_app().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        inner.admin_chain = vec![
+            "test-scope-module".to_string(),
+            busbar_kernel::config::operator_provider().to_string(),
+        ];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "viewers".to_string(),
@@ -1366,7 +1373,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
         "a role bound under another module grants nothing through this one"
     );
 
-    // The operator token is still full (admin-tokens is exempt from module ceilings).
+    // The operator token is still full (the operator credential is exempt from module ceilings).
     let r = with(
         "admintok",
         client.post(format!("http://{addr}/api/v1/admin/keys")),
@@ -1391,7 +1398,10 @@ async fn test_admin_v1_idempotency_key_is_principal_scoped() {
     let mut app = crate::new_test_app().governance(gov).build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        inner.admin_chain = vec![
+            "test-scope-module".to_string(),
+            busbar_kernel::config::operator_provider().to_string(),
+        ];
         // A role bound FULL so the second principal can also mint keys.
         let mut table = std::collections::BTreeMap::new();
         table.insert(
@@ -1503,7 +1513,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let door = Arc::new(CachingDoor(std::sync::atomic::AtomicUsize::new(0)));
     // The operator credential's provider, named once: the chain lists it and a flush addresses it.
-    let operator = "admin-tokens";
+    let operator = busbar_kernel::config::operator_provider();
     let mut app = crate::new_test_app()
         .governance(gov)
         .admin_door("ext-idp", door.clone())
@@ -1588,8 +1598,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
 }
 
 /// `PUT /api/v1/admin/admin-auth` judges a name by its module, as the boot chain does: a provider
-/// defined under another name with the operator credential's module (`ops: { module: admin-tokens
-/// }`) is the operator credential, so a chain naming it applies and the operator token still admits
+/// defined under another name with the operator credential's module (`ops: { module: <operator> }`) is the operator credential, so a chain naming it applies and the operator token still admits
 /// through it. A name that resolves to no admin module is still refused with the same 400.
 #[tokio::test]
 async fn test_admin_v1_put_auth_accepts_a_renamed_operator_provider() {
@@ -1659,7 +1668,10 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         // Chain starts as BOTH modules (so both credentials work); a role binding + an explicit
         // full ceiling make `grp:admins` a full principal through the external stand-in.
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        inner.admin_chain = vec![
+            "test-scope-module".to_string(),
+            busbar_kernel::config::operator_provider().to_string(),
+        ];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "admins".to_string(),
@@ -1703,7 +1715,10 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
         .header("if-match", "\"999\"")
-        .body(serde_json::json!({"admin_auth": ["admin-tokens"]}).to_string())
+        .body(
+            serde_json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]})
+                .to_string(),
+        )
         .send()
         .await
         .unwrap();
@@ -1792,14 +1807,13 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     handle.abort();
 }
 
-/// AF1 (security-visibility): `PUT /api/v1/admin/admin-auth` must REFUSE an EMPTY admin_auth chain.
-/// An empty chain is the anonymous, full-authority OPEN dev posture; letting the live admin API
-/// apply it would swing the door open to the whole network on one call. Before the fix the handler
-/// warned-and-applied (and the dry-run lock-out guard was fooled because an empty chain reported
-/// Full for the caller); now it is a `400` and nothing changes — the open posture is a config.yaml +
-/// restart opt-in only.
+/// `PUT /api/v1/admin/admin-auth` with an EMPTY chain is APPLIED, as 1.5.5 applied it (Q128 core-admin
+/// u19 BLOCK: the refusal was an unsigned customer-visible change; v1.5.5
+/// crates/busbar/src/admin/v1/json/handlers.rs:2108-2113 warned and fell through, and its dry-run read the
+/// open chain as full scope, so the call answered 200 `applied`). The fail-closed refusal waits for the
+/// owner's signature behind `EMPTY_CHAIN_REFUSED_LIVE`. RED before the restore: 400.
 #[tokio::test]
-async fn test_admin_v1_put_auth_refuses_empty_chain() {
+async fn test_admin_v1_put_auth_applies_an_empty_chain_as_1_5_5_did() {
     busbar_kernel::snapshot::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -1807,7 +1821,6 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
     let router = crate::build_router(app);
     let (addr, handle, client) = spin_up(router).await;
 
-    // An operator credential that DOES authenticate today asks to blank the chain: refused 400.
     let r = client
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
@@ -1818,20 +1831,19 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
         .unwrap();
     assert_eq!(
         r.status().as_u16(),
-        400,
-        "an empty admin_auth chain (the open dev posture) cannot be applied through the live API"
+        200,
+        "1.5.5 applied an empty admin_auth chain live"
     );
     let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "invalid_request");
+    assert_eq!(body["applied"], true, "{body}");
 
-    // Nothing changed: the operator credential still authenticates.
+    // The open posture is now live: the admin API answers with no credential.
     let r = client
         .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 200, "the refused PUT changed nothing");
+    assert_eq!(r.status().as_u16(), 200, "the open posture is in force");
 
     handle.abort();
 }
@@ -1857,7 +1869,10 @@ async fn test_admin_v1_put_auth_refused_on_locked_config() {
         .put(format!("http://{addr}/api/v1/admin/admin-auth"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"admin_auth": ["admin-tokens"]}).to_string())
+        .body(
+            serde_json::json!({"admin_auth": [busbar_kernel::config::operator_provider()]})
+                .to_string(),
+        )
         .send()
         .await
         .unwrap();
@@ -1906,7 +1921,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "store": {"module": "memory"},
+            "store": {"module": migrated_store_module()},
             "providers": {"test-provider": {"api_key": "none"}},
             "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
             "pools": {"p": {"members": [{"model": "m0"}]}}
@@ -3069,7 +3084,13 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
     // A RESERVED name (an on_error terminal / built-in) rejects on the register path too —
     // previously only boot validation checked this, so a runtime hook named `reject` could
     // shadow the terminal and make every consumer's on_error parse ambiguous.
-    for reserved in ["reject", "weighted", "nothing", "cheapest", "admin-tokens"] {
+    for reserved in [
+        "reject",
+        "weighted",
+        "nothing",
+        "cheapest",
+        busbar_kernel::config::operator_provider(),
+    ] {
         let shadow = client
             .post(format!("http://{addr}/api/v1/admin/hooks"))
             .header("x-admin-token", "admintok")
@@ -3672,7 +3693,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         .post(format!("http://{addr}/api/v1/admin/config/apply"))
         .header("x-admin-token", "admintok")
         .header("content-type", "application/json")
-        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": "memory"}}}).to_string())
+        .body(serde_json::json!({"config": {"providers": {}, "models": {}, "store": {"module": migrated_store_module()}}}).to_string())
         .send()
         .await
         .unwrap();
@@ -4127,7 +4148,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         }
     };
 
-    // auth: `keys` (engine-handled) is always listed; `admin-tokens` iff its row is linked.
+    // auth: `keys` (engine-handled) is always listed; the operator credential iff its row is linked.
     let auth: serde_json::Value = get("auth").await.json().await.unwrap();
     let a_items = auth["items"].as_array().unwrap();
     let keys = a_items
@@ -4136,12 +4157,14 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         .expect("the built-in keys verifier is always listed");
     assert_eq!(keys["loader"], "compiled-in");
     assert_eq!(keys["type"], "auth");
-    let admin_tokens = a_items.iter().find(|p| p["name"] == "admin-tokens");
+    let admin_tokens = a_items
+        .iter()
+        .find(|p| p["name"] == busbar_kernel::config::operator_provider());
     assert_eq!(
         admin_tokens.is_some(),
         busbar_kernel::preflight::linked_auth_names()
             .contains(&busbar_kernel::config::operator_provider()),
-        "admin-tokens listed iff linked"
+        "the operator credential is listed iff linked"
     );
     if let Some(admin_tokens) = admin_tokens {
         assert_eq!(admin_tokens["loader"], "compiled-in");
@@ -4279,7 +4302,7 @@ async fn test_admin_v1_config_validate_dry_run() {
     let proposed = serde_json::json!({
         "config": {
             "providers": { "acme": { "api_key": { "env": "ACME_KEY" } } },
-            "store": {"module": "memory"},
+            "store": {"module": migrated_store_module()},
             "models": {}
         },
         "providers": {}
@@ -4314,7 +4337,7 @@ async fn test_admin_v1_config_validate_dry_run() {
         "config": {
             "secrets": { "acme-vault": { "settings": {} } },
             "providers": {},
-            "store": {"module": "memory"},
+            "store": {"module": migrated_store_module()},
             "models": {}
         },
         "providers": {}
@@ -4367,7 +4390,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
         "config": {
             "oauth_as": null,
             "providers": {},
-            "store": {"module": "memory"},
+            "store": {"module": migrated_store_module()},
             "models": {}
         },
         "providers": {}
@@ -4394,7 +4417,7 @@ async fn test_admin_v1_config_validate_accepts_1_6_0_additive_top_level_keys() {
     handle.abort();
 }
 
-/// `POST /api/v1/admin/config/apply` accepts EXACTLY the boot config shape (ARCHITECT, FLIP-A2A;
+/// `POST /api/v1/admin/config/apply` accepts EXACTLY the boot config shape (ARCHITECT, PLANE-FLIP;
 /// DECISIONS #52, admin API and config file are ONE schema): a 1.6.0-additive top-level key the boot
 /// pre-pass lifts (`oauth_as:`, as a plane's section is) applies 200, where the plain-derived
 /// `DeployCfg` body refused it "unknown field". THE RED ARM: a key the boot loader does not know is
@@ -4420,7 +4443,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let lifted = apply(serde_json::json!({
         "oauth_as": null,
         "providers": {},
-        "store": {"module": "memory"},
+        "store": {"module": migrated_store_module()},
         "models": {}
     }))
     .await
@@ -4432,7 +4455,7 @@ async fn test_admin_v1_config_apply_accepts_the_boot_shape_and_refuses_an_unknow
     let unknown = apply(serde_json::json!({
         "not_a_config_key": true,
         "providers": {},
-        "store": {"module": "memory"},
+        "store": {"module": migrated_store_module()},
         "models": {}
     }))
     .await
@@ -7013,1230 +7036,10 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
 }
 
 // ── plugin admin endpoints, end-to-end over the live router ───────────────────────────────────────
-
-/// Serve a router whose App points its plugin surface at `dir` (allow_unsigned posture, no
-/// publishers), with a known admin token — for the install/list/remove/reload plugin endpoints.
-async fn serve_with_plugins_dir(
-    dir: std::path::PathBuf,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    // The lifecycle test installs an UNSIGNED plugin tarball, so opt in to unsigned plugins (the
-    // trust DEFAULT rejects unsigned artifacts). The trust-default behavior itself is covered by
-    // the dedicated trust tests; this test is about the install/list/reload/remove lifecycle.
-    let mut plugins_cfg = busbar_kernel::config::PluginsCfg::default();
-    plugins_cfg.trust.allow_unsigned = true;
-    let app = crate::new_test_app()
-        .governance(gov)
-        .plugins_dir(dir)
-        .plugins_cfg(plugins_cfg)
-        .build();
-    let (router, _handle) = busbar_kernel::build_router_with_limits(
-        app,
-        256 * 1024 * 1024,
-        0,
-        busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-    );
-    let (addr, handle, _) = spin_up(router).await;
-    (addr, handle)
-}
-
-/// As `serve_with_plugins_dir`, but with a caller-supplied `hook_env` — for tests that need the
-/// live `hook_env.registry` (e.g. `GET /plugins/{name}/schema`) populated from the dir's actual
-/// contents, since the plain `TestApp` builder defaults it to an empty registry regardless of
-/// `plugins_dir` (that field only feeds the filesystem-scanning install/list/remove/reload paths).
-async fn serve_with_plugins_dir_and_hook_env(
-    dir: std::path::PathBuf,
-    hook_env: busbar_kernel::hooks::HookEnv,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let mut plugins_cfg = busbar_kernel::config::PluginsCfg::default();
-    plugins_cfg.trust.allow_unsigned = true;
-    let app = crate::new_test_app()
-        .governance(gov)
-        .plugins_dir(dir)
-        .plugins_cfg(plugins_cfg)
-        .hook_env(hook_env)
-        .build();
-    let (router, _handle) = busbar_kernel::build_router_with_limits(
-        app,
-        256 * 1024 * 1024,
-        0,
-        busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-    );
-    let (addr, handle, _) = spin_up(router).await;
-    (addr, handle)
-}
-
-/// Build an UNSIGNED (structurally valid) plugin tarball in memory for the HTTP lifecycle tests.
-fn admin_test_tarball(name: &str, alias: &str) -> Vec<u8> {
-    admin_test_tarball_versioned(name, alias, "1.0.0")
-}
-
-/// As `admin_test_tarball`, with an explicit version so a test can build two SAME-NAME tarballs that
-/// differ only in version (and thus filename) - the same-name-different-file case.
-fn admin_test_tarball_versioned(name: &str, alias: &str, version: &str) -> Vec<u8> {
-    let lib = format!("junk library bytes for {name} {version} (never dlopened)").into_bytes();
-    let lib = lib.as_slice();
-    let m = busbar_kernel::plugin_admission::sign::Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "store".into(),
-        version: version.into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_kernel::plugin_admission::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: busbar_kernel::plugin_admission::sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
-    };
-    busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
-}
-
-/// THE ONE-VERSION RULE OVER THE WIRE (ARCHITECT C'): `POST /plugins` with a copy of a plugin this
-/// build LINKS, at the version its Statement states, answers exactly as every successful install
-/// has since 1.5.5 — `201 Created` with the install view (v1.5.5 had no "already installed" answer:
-/// `crates/busbar/src/admin/v1/json/handlers.rs:211` is its one success, and
-/// `crates/busbar/src/admin/v1/service.rs:1873` overwrote a same-file upload) — its note saying the
-/// linked build serves it, and NOTHING is written to the plugins directory.
-#[tokio::test]
-async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
-    use base64::Engine as _;
-    busbar_kernel::snapshot::init();
-    let (canonical, key, version, _) = crate::v1::service::tests::linked_store();
-    let tarball = crate::v1::service::tests::unsigned_copy(canonical, key, &version);
-    let file = "linked-copy.tar.gz";
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-plugins-linked-copy-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, _handle) = serve_with_plugins_dir(dir.clone()).await;
-    // The request and the install view, typed: the view's shape is every one of its fields (both
-    // optional ones present) and nothing else.
-    #[derive(serde::Serialize)]
-    struct Install<'a> {
-        file: &'a str,
-        tarball_b64: String,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    #[allow(dead_code)]
-    struct View {
-        file: String,
-        interface_version: u32,
-        name: String,
-        note: String,
-        publisher: String,
-        trust: String,
-        version: String,
-    }
-    let resp = reqwest::Client::new()
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
-        .json(&Install {
-            file,
-            tarball_b64: base64::engine::general_purpose::STANDARD.encode(&tarball),
-        })
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status().as_u16(),
-        201,
-        "the install view, as every success"
-    );
-    let v: serde_json::Value = resp.json().await.unwrap();
-    let view: View = serde_json::from_value(v.clone())
-        .unwrap_or_else(|e| panic!("the install view's shape: {e}: {v}"));
-    assert_eq!((view.file.as_str(), view.name.as_str()), (file, canonical));
-    assert_eq!(
-        view.note,
-        "this build links the plugin at this version and the linked build serves it: nothing \
-         was written"
-    );
-    assert!(!dir.join(file).exists(), "nothing is written");
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// FULL LIFECYCLE over the wire: `POST /plugins` installs an (unsigned, allow_unsigned-posture)
-/// plugin tarball → `GET /plugins?type=store` lists it as a dynamic-library row → `POST
-/// /plugins/reload` reports it → `DELETE /plugins/{file}` removes it (204) → a second DELETE is
-/// 404. Every mutation is admin-token guarded and audited; the uploaded code is never executed.
-#[tokio::test]
-async fn test_admin_v1_plugin_install_list_reload_remove() {
-    use base64::Engine as _;
-    busbar_kernel::snapshot::init();
-    let tarball = admin_test_tarball("acme-store-junk", "junkstore");
-    let file = "acme-store-junk.tar.gz";
-    let dir =
-        std::env::temp_dir().join(format!("busbar-admin-plugins-http-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    // INSTALL — 201 with a trust verdict of "unverified" (unsigned under allow_unsigned).
-    let body = serde_json::json!({
-        "file": file,
-        "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-    });
-    let resp = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 201, "install returns 201 Created");
-    let v: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(v["file"], file);
-    assert_eq!(v["trust"], "unverified");
-    assert_eq!(
-        v["name"], "acme-store-junk",
-        "identity from the signed manifest"
-    );
-    assert!(dir.join(file).exists(), "tarball published to disk");
-
-    // A mutation WITHOUT the admin token is rejected (401) — the whole surface is guarded.
-    let unauth = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(unauth.status().as_u16(), 401);
-
-    // LIST — the store catalog reports the memory head + our dynamic plugin (ready).
-    let list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let items = list["items"].as_array().unwrap();
-    assert_eq!(items[0]["name"], "memory");
-    let dyn_row = items
-        .iter()
-        .find(|p| p["loader"] == "dynamic-library")
-        .expect("dynamic-library row present");
-    assert_eq!(dyn_row["valid"], true);
-    assert_eq!(dyn_row["target"], file);
-    assert_eq!(dyn_row["name"], "acme-store-junk");
-
-    // RELOAD — reports the reconciled dynamic set (no memory head).
-    let reload: serde_json::Value = client
-        .post(format!("http://{addr}/api/v1/admin/plugins/reload"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(reload["plugins"].as_array().unwrap().len(), 1);
-
-    // REMOVE — 204, then a second remove is 404 in the frozen envelope.
-    let del = client
-        .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(del.status().as_u16(), 204);
-    assert!(!dir.join(file).exists(), "tarball removed from disk");
-
-    let del2 = client
-        .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(del2.status().as_u16(), 404);
-    let b: serde_json::Value = del2.json().await.unwrap();
-    assert_eq!(b["error"]["code"], "not_found");
-
-    // The install + remove both left audit rows (every mutation is audited).
-    let audit: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/audit"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let actions: Vec<&str> = audit["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|e| e["action"].as_str())
-        .collect();
-    assert!(
-        actions.contains(&"plugin.install"),
-        "install audited: {actions:?}"
-    );
-    assert!(
-        actions.contains(&"plugin.remove"),
-        "remove audited: {actions:?}"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// As `admin_test_tarball_versioned`, but for an arbitrary plugin `kind` (the `type=secret`
-/// support / richer `auth` rows need a non-`store` fixture to test against).
-fn admin_test_tarball_kind(name: &str, alias: &str, kind: &str) -> Vec<u8> {
-    let lib = format!("junk library bytes for {name} (never dlopened)").into_bytes();
-    let lib = lib.as_slice();
-    let m = busbar_kernel::plugin_admission::sign::Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: kind.into(),
-        version: "1.0.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_kernel::plugin_admission::supported_abi(kind)
-            .iter()
-            .max()
-            .unwrap_or(&1),
-        sha256: busbar_kernel::plugin_admission::sign::sha256_hex(lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
-    };
-    busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
-}
-
-/// `GET /plugins?type=secret` lists `kind: secret` plugins ONLY — a `kind: store`
-/// tarball dropped in the same directory does not leak into it, and vice versa (the pre-existing
-/// scan used to be unfiltered by kind at all, so this also proves the fix rather than just the
-/// addition). `type=secret` previously did not exist as an accepted value (400 `invalid_request`
-/// before this change).
-#[tokio::test]
-async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
-    use base64::Engine as _;
-    busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-plugins-secret-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    let install = |file: &'static str, tarball: Vec<u8>| {
-        let client = client.clone();
-        async move {
-            let body = serde_json::json!({
-                "file": file,
-                "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-            });
-            let resp = client
-                .post(format!("http://{addr}/api/v1/admin/plugins"))
-                .header("x-admin-token", "admintok")
-                .json(&body)
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(resp.status().as_u16(), 201, "install must succeed");
-        }
-    };
-    install(
-        "acme-secret-vault.tar.gz",
-        admin_test_tarball_kind("acme-secret-vault", "vault", "secret"),
-    )
-    .await;
-    install(
-        "acme-store-junk.tar.gz",
-        admin_test_tarball_kind("acme-store-junk", "junkstore", "store"),
-    )
-    .await;
-
-    let secret_list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=secret"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let secret_names: Vec<&str> = secret_list["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| p["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        secret_names,
-        vec!["acme-secret-vault"],
-        "type=secret lists ONLY the secret-kind plugin: {secret_list}"
-    );
-    for row in secret_list["items"].as_array().unwrap() {
-        assert_eq!(row["type"], "secret");
-    }
-
-    let store_list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let store_names: Vec<&str> = store_list["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| p["name"].as_str().unwrap())
-        .collect();
-    assert!(
-        store_names.contains(&"memory") && store_names.contains(&"acme-store-junk"),
-        "type=store still lists the compiled-in default + the store plugin: {store_list}"
-    );
-    assert!(
-        !store_names.contains(&"acme-secret-vault"),
-        "type=store must NOT leak the secret-kind plugin: {store_list}"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// `GET /plugins` list rows carry `schema_url`: a non-null, admin-prefixed RELATIVE path
-/// whenever the manifest declared `settings_schema` at all — and
-/// following it returns the SAME schema `GET /plugins/{name}/schema` would. A plugin with no
-/// `settings_schema` gets `schema_url: null` (absence, not an empty string or omitted field).
-#[tokio::test]
-async fn test_admin_v1_plugins_list_row_carries_schema_url() {
-    busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-plugins-schemaurl-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let schema = serde_json::json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {"url": {"type": "string"}},
-    });
-    let lib = b"junk lib bytes for acme-store-schemaurl".to_vec();
-    let m = busbar_kernel::plugin_admission::sign::Manifest {
-        name: "acme-store-schemaurl".into(),
-        alias: "schemaurl".into(),
-        kind: "store".into(),
-        version: "1.0.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_kernel::plugin_admission::supported_abi("store")
-            .iter()
-            .max()
-            .unwrap(),
-        sha256: busbar_kernel::plugin_admission::sign::sha256_hex(&lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: Some(schema.to_string()),
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
-    };
-    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", &lib).unwrap();
-    // Write directly to disk (not via `POST /plugins`) so `hook_env.registry` — which the
-    // per-plugin `GET /plugins/{name}/schema` endpoint resolves against, a SEPARATE path from the
-    // directory-scanning list endpoint below — can be built from the same directory's real
-    // contents up front (mirrors `test_admin_v1_plugin_schema_round_trips_from_manifest`, since the
-    // plain `TestApp`/`serve_with_plugins_dir` builder otherwise defaults `hook_env` to an empty
-    // registry regardless of `plugins_dir`).
-    std::fs::write(dir.join("acme-store-schemaurl.tar.gz"), &tarball).unwrap();
-    let policy = busbar_kernel::plugin_admission::sign::TrustPolicy {
-        allow_unsigned: true,
-        ..Default::default()
-    };
-    let registry = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
-    let hook_env = busbar_kernel::hooks::HookEnv::new(
-        std::sync::Arc::new(registry),
-        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    )
-    .expect("the registry's hook axis");
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
-    let client = reqwest::Client::new();
-
-    let list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let row = list["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["name"] == "acme-store-schemaurl")
-        .expect("the schema-carrying row is present");
-    let schema_url = row["schema_url"].as_str().expect("schema_url is non-null");
-    assert_eq!(
-        schema_url, "/api/v1/admin/plugins/acme-store-schemaurl/schema",
-        "always the admin-prefixed relative path — never absolute, never a catalog URL"
-    );
-    assert_eq!(row["schema_error"], serde_json::Value::Null);
-
-    // Following it returns the same schema.
-    let followed: serde_json::Value = client
-        .get(format!("http://{addr}{schema_url}"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(followed["schema"], schema);
-
-    // The `memory` compiled-in row (no manifest at all) has `schema_url: null` — absence, not an
-    // error, and distinct from "declared but unparseable".
-    let memory_row = list["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["name"] == "memory")
-        .expect("compiled-in memory row present");
-    assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// `GET /plugins` list rows carry `file` (the artifact
-/// filename — the exact string `DELETE /plugins/{file}` and `GET /plugins/{file}/schema` key off)
-/// and `has_schema` (mirrors `schema_url.is_some()`, so a catalog can flag configurable rows
-/// without a fetch per row). Covers a dynamic-library row WITH a schema, a dynamic-library row
-/// WITHOUT one, and the compiled-in `memory` row (no backing artifact at all).
-#[tokio::test]
-async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
-    busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-plugins-file-hasschema-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let schema = serde_json::json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {"url": {"type": "string"}},
-    });
-    let lib_with = b"junk lib bytes for acme-store-filecheck-with".to_vec();
-    let m_with = busbar_kernel::plugin_admission::sign::Manifest {
-        name: "acme-store-filecheck-with".into(),
-        alias: "filecheckwith".into(),
-        kind: "store".into(),
-        version: "1.0.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_kernel::plugin_admission::supported_abi("store")
-            .iter()
-            .max()
-            .unwrap(),
-        sha256: busbar_kernel::plugin_admission::sign::sha256_hex(&lib_with),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: Some(schema.to_string()),
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
-    };
-    let tarball_with =
-        busbar_kernel::plugin_admission::tarball::package(&m_with, "lib.so", &lib_with).unwrap();
-    // Deliberately different FILENAME than the manifest NAME, so a test that only checked `name`
-    // could not accidentally pass — `file` must be the on-disk artifact filename.
-    std::fs::write(
-        dir.join("acme-store-filecheck-with-1.0.0.tar.gz"),
-        &tarball_with,
-    )
-    .unwrap();
-
-    let lib_without = b"junk lib bytes for acme-store-filecheck-without".to_vec();
-    let m_without = busbar_kernel::plugin_admission::sign::Manifest {
-        name: "acme-store-filecheck-without".into(),
-        alias: "filecheckwithout".into(),
-        kind: "store".into(),
-        version: "1.0.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_kernel::plugin_admission::supported_abi("store")
-            .iter()
-            .max()
-            .unwrap(),
-        sha256: busbar_kernel::plugin_admission::sign::sha256_hex(&lib_without),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
-    };
-    let tarball_without =
-        busbar_kernel::plugin_admission::tarball::package(&m_without, "lib.so", &lib_without)
-            .unwrap();
-    std::fs::write(
-        dir.join("acme-store-filecheck-without-1.0.0.tar.gz"),
-        &tarball_without,
-    )
-    .unwrap();
-
-    let policy = busbar_kernel::plugin_admission::sign::TrustPolicy {
-        allow_unsigned: true,
-        ..Default::default()
-    };
-    let registry = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
-    let hook_env = busbar_kernel::hooks::HookEnv::new(
-        std::sync::Arc::new(registry),
-        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    )
-    .expect("the registry's hook axis");
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
-    let client = reqwest::Client::new();
-
-    let list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let items = list["items"].as_array().unwrap();
-
-    let with_row = items
-        .iter()
-        .find(|p| p["name"] == "acme-store-filecheck-with")
-        .expect("the schema-carrying row is present");
-    assert_eq!(
-        with_row["file"], "acme-store-filecheck-with-1.0.0.tar.gz",
-        "`file` is the on-disk artifact filename, not the manifest name"
-    );
-    assert_eq!(with_row["has_schema"], true);
-    assert!(
-        with_row["schema_url"].is_string(),
-        "sanity: has_schema tracks schema_url"
-    );
-
-    // Round-trip: `file` is exactly what `DELETE /plugins/{file}` and `GET /plugins/{file}/schema`
-    // take.
-    let file = with_row["file"].as_str().unwrap();
-    let schema_resp: serde_json::Value = client
-        .get(format!(
-            "http://{addr}/api/v1/admin/plugins/{}/schema",
-            with_row["name"].as_str().unwrap()
-        ))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(schema_resp["schema"], schema);
-    let delete_status = client
-        .delete(format!("http://{addr}/api/v1/admin/plugins/{file}"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .status();
-    assert_eq!(
-        delete_status, 204,
-        "`file` from the list row is a valid DELETE key"
-    );
-
-    let without_row = items
-        .iter()
-        .find(|p| p["name"] == "acme-store-filecheck-without")
-        .expect("the schema-less row is present");
-    assert_eq!(
-        without_row["file"], "acme-store-filecheck-without-1.0.0.tar.gz",
-        "`file` is populated even when the manifest has no schema"
-    );
-    assert_eq!(without_row["has_schema"], false);
-    assert_eq!(without_row["schema_url"], serde_json::Value::Null);
-
-    let memory_row = items
-        .iter()
-        .find(|p| p["name"] == "memory")
-        .expect("compiled-in memory row present");
-    assert_eq!(
-        memory_row["file"],
-        serde_json::Value::Null,
-        "no backing artifact for a compiled-in row"
-    );
-    assert_eq!(memory_row["has_schema"], false);
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-// ── POST /plugins/inspect ──────────────────────────────────────────────────────────────────────
-
-/// Over the wire: a candidate tarball previews cleanly, NEVER lands on disk, and never appears in
-/// `GET /plugins?type=store` afterward — inspect is genuinely stateless, not "install with extra
-/// steps".
-#[tokio::test]
-async fn test_admin_v1_plugins_inspect_previews_without_installing() {
-    use base64::Engine as _;
-    busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-plugins-inspect-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    let tarball = admin_test_tarball("acme-store-candidate", "candidate");
-    let body = serde_json::json!({
-        "file": "candidate.tar.gz",
-        "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-    });
-    let resp = client
-        .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    let v: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(v["name"], "acme-store-candidate");
-    assert_eq!(v["version"], "1.0.0");
-    assert_eq!(v["kind"], "store");
-    assert_eq!(v["source"], "manifest");
-    assert_eq!(v["trust"], "unverified");
-
-    // NOTHING was written — a subsequent list shows no such plugin, and the directory is empty.
-    assert_eq!(
-        std::fs::read_dir(&dir).unwrap().count(),
-        0,
-        "inspect must never write to plugins.dir"
-    );
-    let list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(
-        !list["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|p| p["name"] == "acme-store-candidate"),
-        "an inspected candidate must not appear in the catalog: {list}"
-    );
-
-    // A read-only-scoped token (no `full`/`mint`/`hooks-register`) can still call it — `read-only`
-    // scope, not a mutation scope (docs/admin-api.md).
-    // (This server's operator token already holds `full`, which trivially satisfies `read-only` —
-    // the scope MATRIX assignment itself is asserted structurally in contract::mod.rs's own tests;
-    // this test's job is the wire behavior, not re-deriving the scope lattice.)
-
-    // Malformed body (bad base64) is a 400, never a panic/500.
-    let bad = serde_json::json!({"file": "x.tar.gz", "tarball_b64": "not-base64!!"});
-    let bad_resp = client
-        .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
-        .json(&bad)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(bad_resp.status().as_u16(), 400);
-    let bad_body: serde_json::Value = bad_resp.json().await.unwrap();
-    assert_eq!(bad_body["error"]["code"], "invalid_request");
-
-    // Malformed JSON body entirely is also a 400.
-    let malformed_resp = client
-        .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .header("x-admin-token", "admintok")
-        .header("content-type", "application/json")
-        .body("not json")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(malformed_resp.status().as_u16(), 400);
-
-    // No admin token at all → 401, same as every other admin endpoint.
-    let unauth = client
-        .post(format!("http://{addr}/api/v1/admin/plugins/inspect"))
-        .json(&body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(unauth.status().as_u16(), 401);
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// The manifest-embedded `settings_schema` round-trips over the
-/// wire: install a tarball whose SIGNED manifest carries a JSON Schema document, then `GET
-/// /plugins/{file}/schema` returns it as real parsed JSON (not a JSON string containing JSON). A
-/// plugin installed WITHOUT a `settings_schema` reports `"schema": null` rather than 404/erroring —
-/// absence is a valid, common state (most plugins today have none), not a fault.
-#[tokio::test]
-async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
-    busbar_kernel::snapshot::init();
-    let schema = serde_json::json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-            "url": {"type": "string", "x-busbar-secret": true},
-        },
-        "required": ["url"],
-    });
-    let lib = b"junk library bytes for acme-store-withschema (never dlopened)".to_vec();
-    let m = busbar_kernel::plugin_admission::sign::Manifest {
-        name: "acme-store-withschema".into(),
-        alias: "withschema".into(),
-        kind: "store".into(),
-        version: "1.0.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_kernel::plugin_admission::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: busbar_kernel::plugin_admission::sign::sha256_hex(&lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: Some(schema.to_string()),
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
-    };
-    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", &lib).unwrap();
-    let file = "acme-store-withschema.tar.gz";
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-admin-plugins-schema-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // Drop the tarball into the plugins dir BEFORE boot (the same "file-drop-then-boot" mechanism a
-    // real operator uses) and scan it into a REAL `PluginRegistry` (the same
-    // `scan_and_validate` production boot uses) so `hook_env.registry` — what `GET .../schema`
-    // reads — is populated exactly as it would be at a real boot.
-    std::fs::write(dir.join(file), &tarball).unwrap();
-    let policy = busbar_kernel::plugin_admission::sign::TrustPolicy {
-        allow_unsigned: true,
-        ..Default::default()
-    };
-    let registry = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
-    let hook_env = busbar_kernel::hooks::HookEnv::new(
-        std::sync::Arc::new(registry),
-        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    )
-    .expect("the registry's hook axis");
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
-    let client = reqwest::Client::new();
-
-    // GET .../schema returns the schema as real JSON, resolved by NAME (not filename).
-    let got_resp = client
-        .get(format!(
-            "http://{addr}/api/v1/admin/plugins/acme-store-withschema/schema"
-        ))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    let got_status = got_resp.status();
-    let got: serde_json::Value = got_resp.json().await.unwrap();
-    assert_eq!(got_status.as_u16(), 200, "schema get body: {got}");
-    assert_eq!(got["name"], "acme-store-withschema");
-    assert_eq!(got["schema"], schema);
-    assert_eq!(got["schema_error"], serde_json::Value::Null);
-    assert_eq!(got["source"], "manifest");
-    // Unsigned tarball under an `allow_unsigned` posture (no publisher allowlist) → "unverified",
-    // the real catalog vocabulary (never "verified").
-    assert_eq!(got["trust"], "unverified");
-
-    handle.abort();
-
-    // A schemaless plugin reports `"schema": null`, not an error — dropped in and
-    // rebooted the same way, since (as above) ephemeral test apps only pick up the plugins dir at
-    // initial load.
-    let no_schema_tarball = admin_test_tarball("acme-store-junk", "junkstore");
-    std::fs::write(dir.join("acme-store-junk.tar.gz"), &no_schema_tarball).unwrap();
-    let registry2 = busbar_kernel::plugin_admission::scan_and_validate(&dir, &policy).unwrap();
-    let hook_env2 = busbar_kernel::hooks::HookEnv::new(
-        std::sync::Arc::new(registry2),
-        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    )
-    .expect("the registry's hook axis");
-    let (addr2, handle2) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env2).await;
-    let got2: serde_json::Value = client
-        .get(format!(
-            "http://{addr2}/api/v1/admin/plugins/acme-store-junk/schema"
-        ))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(got2["schema"], serde_json::Value::Null);
-    // The schema-carrying plugin from the first boot is still resolvable (both files on disk now).
-    let got1_again: serde_json::Value = client
-        .get(format!(
-            "http://{addr2}/api/v1/admin/plugins/acme-store-withschema/schema"
-        ))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(got1_again["schema"], schema);
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle2.abort();
-
-    // A manifest that SET settings_schema but to unparseable text reports `schema_error`,
-    // distinct from a manifest that never set the field at all (both used to
-    // collapse to `schema: null` via `.ok()`, silently hiding a real authoring bug).
-    let bad_lib = b"junk library bytes for acme-store-badschema (never dlopened)".to_vec();
-    let bad_m = busbar_kernel::plugin_admission::sign::Manifest {
-        name: "acme-store-badschema".into(),
-        alias: "badschema".into(),
-        kind: "store".into(),
-        version: "1.0.0".into(),
-        publisher: "acme".into(),
-        abi_version: *busbar_kernel::plugin_admission::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: busbar_kernel::plugin_admission::sign::sha256_hex(&bad_lib),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: Some("{ not valid json".into()),
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
-    };
-    let bad_tarball =
-        busbar_kernel::plugin_admission::tarball::package(&bad_m, "lib.so", &bad_lib).unwrap();
-    let bad_dir = std::env::temp_dir().join(format!(
-        "busbar-admin-plugins-badschema-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&bad_dir);
-    std::fs::create_dir_all(&bad_dir).unwrap();
-    std::fs::write(bad_dir.join("acme-store-badschema.tar.gz"), &bad_tarball).unwrap();
-    let bad_registry =
-        busbar_kernel::plugin_admission::scan_and_validate(&bad_dir, &policy).unwrap();
-    let bad_hook_env = busbar_kernel::hooks::HookEnv::new(
-        std::sync::Arc::new(bad_registry),
-        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
-    )
-    .expect("the registry's hook axis");
-    let (bad_addr, bad_handle) =
-        serve_with_plugins_dir_and_hook_env(bad_dir.clone(), bad_hook_env).await;
-    let got_bad: serde_json::Value = client
-        .get(format!(
-            "http://{bad_addr}/api/v1/admin/plugins/acme-store-badschema/schema"
-        ))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(got_bad["schema"], serde_json::Value::Null);
-    assert!(
-        got_bad["schema_error"].as_str().is_some(),
-        "corrupt settings_schema reports schema_error, not a bare null: {got_bad}"
-    );
-    // An unknown plugin name is 404, distinguishing "no schema" from "no such plugin".
-    let missing = client
-        .get(format!(
-            "http://{bad_addr}/api/v1/admin/plugins/nope/schema"
-        ))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(missing.status().as_u16(), 404);
-
-    let _ = std::fs::remove_dir_all(&bad_dir);
-    bad_handle.abort();
-}
-
-/// Bricks next boot: installing a SAME-NAME plugin under a DIFFERENT filename (e.g. a version
-/// bump `-1.1.0.tar.gz` over an installed `-1.0.0.tar.gz`) must be a 409, NOT admitted. Two files
-/// claiming the same plugin name are a hard conflict at boot (registry::conflicts()) - admitting the
-/// second bricks the next restart. A same-name upgrade must REUSE the existing filename. The old gate
-/// exempted this case (`&& existing.manifest.name != manifest.name`).
-#[tokio::test]
-async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
-    use base64::Engine as _;
-    busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-h2-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    let install = |file: &'static str, tarball: Vec<u8>| {
-        let client = client.clone();
-        let body = serde_json::json!({
-            "file": file,
-            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-        });
-        async move {
-            client
-                .post(format!("http://{addr}/api/v1/admin/plugins"))
-                .header("x-admin-token", "admintok")
-                .json(&body)
-                .send()
-                .await
-                .unwrap()
-        }
-    };
-
-    // v1.0.0 installs cleanly.
-    let v1 = admin_test_tarball_versioned("busbar-store-x", "storex", "1.0.0");
-    let r1 = install("busbar-store-x-1.0.0.tar.gz", v1).await;
-    assert_eq!(r1.status().as_u16(), 201, "first install succeeds");
-
-    // v1.1.0 - SAME manifest name, DIFFERENT filename - must be a 409 (boot would reject two files
-    // claiming the same name), NOT a silent second publish.
-    let v2 = admin_test_tarball_versioned("busbar-store-x", "storex", "1.1.0");
-    let r2 = install("busbar-store-x-1.1.0.tar.gz", v2).await;
-    assert_eq!(
-        r2.status().as_u16(),
-        409,
-        "same-name under a different filename must conflict, not brick the next boot"
-    );
-    let b: serde_json::Value = r2.json().await.unwrap();
-    assert_eq!(b["error"]["code"], "conflict");
-    assert!(
-        !dir.join("busbar-store-x-1.1.0.tar.gz").exists(),
-        "the conflicting second file must NOT be published"
-    );
-    // The original is untouched (still exactly one plugin file on disk).
-    let tars: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().ends_with(".tar.gz"))
-        .collect();
-    assert_eq!(tars.len(), 1, "only the original v1.0.0 file remains");
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// Fail-open: a CORRUPT tarball already sitting in the plugins dir makes scan_and_validate Err.
-/// The old `if let Ok(reg)` SILENTLY SKIPPED the conflict check and published anyway. Now a new
-/// install returns an error (never 201) until the offending tarball is fixed/removed.
-#[tokio::test]
-async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() {
-    use base64::Engine as _;
-    busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-m7-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    // Plant a corrupt (non-tarball) *.tar.gz that discover() picks up but examine() cannot parse.
-    std::fs::write(
-        dir.join("busbar-store-corrupt.tar.gz"),
-        b"not a real tarball",
-    )
-    .unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    let good = admin_test_tarball("busbar-store-good", "goodstore");
-    let resp = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
-            "file": "busbar-store-good.tar.gz",
-            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&good),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_ne!(
-        resp.status().as_u16(),
-        201,
-        "an unvalidatable installed set must NOT let a new install publish (fail-open closed)"
-    );
-    assert_eq!(resp.status().as_u16(), 409, "surfaced as a conflict");
-    assert!(
-        !dir.join("busbar-store-good.tar.gz").exists(),
-        "nothing published while the installed set is unvalidatable"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
-
-/// A malformed install body (bad base64) is a `400 invalid_request` in the frozen envelope, a
-/// non-tarball upload is a `400`, and an UNSIGNED upload under the STRICT default posture is a
-/// `409 conflict` (the trust gate cannot be bypassed by pushing over the API) — nothing is
-/// published in any case, and the rejects are audited.
-#[tokio::test]
-async fn test_admin_v1_plugin_install_rejections() {
-    use base64::Engine as _;
-    busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-rej-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
-    let client = reqwest::Client::new();
-
-    // Bad base64.
-    let bad = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({"file": "x.tar.gz", "tarball_b64": "!!!not base64!!!"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(bad.status().as_u16(), 400);
-    let b: serde_json::Value = bad.json().await.unwrap();
-    assert_eq!(b["error"]["code"], "invalid_request");
-
-    // Valid base64 but not a plugin tarball → structural validation fails (400).
-    let notplugin = client
-        .post(format!("http://{addr}/api/v1/admin/plugins"))
-        .header("x-admin-token", "admintok")
-        .json(&serde_json::json!({
-            "file": "nope.tar.gz",
-            "tarball_b64": base64::engine::general_purpose::STANDARD.encode(b"not a tarball"),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(notplugin.status().as_u16(), 400);
-    assert_eq!(
-        std::fs::read_dir(&dir).unwrap().count(),
-        0,
-        "nothing published"
-    );
-
-    // TRUST NO-BYPASS: a STRICT-posture server rejects an unsigned upload as 409 conflict.
-    {
-        let store = Arc::new(MemoryStore::new());
-        let gov = gov_with_signer(store, Some("admintok".to_string()));
-        let strict_dir = std::env::temp_dir().join(format!(
-            "busbar-admin-plugins-strict-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&strict_dir);
-        std::fs::create_dir_all(&strict_dir).unwrap();
-        let app = crate::new_test_app()
-            .governance(gov)
-            .plugins_dir(strict_dir.clone())
-            .plugins_cfg(busbar_kernel::config::PluginsCfg::default())
-            .build();
-        let (router, _h) = busbar_kernel::build_router_with_limits(
-            app,
-            256 * 1024 * 1024,
-            0,
-            busbar_kernel::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
-        );
-        let (strict_addr, strict_handle, _) = spin_up(router).await;
-        let tarball = admin_test_tarball("acme-store-x", "acmex");
-        let resp = client
-            .post(format!("http://{strict_addr}/api/v1/admin/plugins"))
-            .header("x-admin-token", "admintok")
-            .json(&serde_json::json!({
-                "file": "x.tar.gz",
-                "tarball_b64": base64::engine::general_purpose::STANDARD.encode(&tarball),
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status().as_u16(),
-            409,
-            "the strict default posture rejects an unsigned upload over the API"
-        );
-        let b: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(b["error"]["code"], "conflict");
-        assert_eq!(
-            std::fs::read_dir(&strict_dir).unwrap().count(),
-            0,
-            "nothing published on a trust rejection"
-        );
-        let _ = std::fs::remove_dir_all(&strict_dir);
-        strict_handle.abort();
-    }
-
-    let _ = std::fs::remove_dir_all(&dir);
-    handle.abort();
-}
+//
+// They pack, scan and sign REAL plugin tarballs, which only the composition root's admission judges
+// (this crate names no loader): they run under the root's real admission in
+// `crates/busbar/src/root/tests/admin_plugin_admission.rs`.
 
 /// The 1.5.0 mint surface: `budget_group` + `labels` round-trip through create/list, a mint naming
 /// a MISSING budget_group is a 400 that names the offender (fail-closed at the mint boundary), and
@@ -9437,7 +8240,7 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     // emits that action against this resource, and a large concurrent audit-writing burst could in
     // principle evict this test's own `signing_key.report` row before the read. Latent; accepted —
     // bracketing by seq would narrow the window but not defeat eviction.
-    let rows = audit_ring::AUDIT.list_filtered(
+    let rows = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
         0,
         audit_ring::MAX_AUDIT_ENTRIES,
         None,
@@ -10193,8 +8996,8 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
         .body(
             serde_json::json!({
                 "listen": "127.0.0.1:0",
-                "store": {"module": "memory"},
-                "store": { "module": "memory" },
+                "store": {"module": migrated_store_module()},
+                "store": { "module": migrated_store_module() },
                 "per_request_fee": 3
             })
             .to_string(),
@@ -10399,7 +9202,7 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
-                "store": { "module": "memory", "settings": { "licenseKey": { "env": var } } }
+                "store": { "module": migrated_store_module(), "settings": { "licenseKey": { "env": var } } }
             })
             .to_string(),
         )
@@ -10587,8 +9390,8 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     // so a concurrently-running sibling's legitimate APPLIED reset can land between this test's own
     // two REJECTED rows and fail the "never APPLIED" assertion. Same pattern as
     // `test_admin_v1_restart_refuses_when_it_cannot_restart`'s baseline_seq bracketing.
-    let baseline_seq = audit_ring::AUDIT
-        .list(1)
+    let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, 1, None, None)
         .first()
         .map(|e| e.seq)
         .unwrap_or(0);
@@ -10619,7 +9422,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         reset.text().await
     );
 
-    let rows: Vec<_> = audit_ring::AUDIT
+    let rows: Vec<_> = busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, Some("overlay:root"))
         .into_iter()
         .filter(|e| e.seq > baseline_seq)
@@ -10788,7 +9591,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         ),
     )
     .unwrap();
-    // `auth.admin_auth` DECLARES the admin-tokens module with a file-backed ref — the precondition
+    // `auth.admin_auth` DECLARES the operator module with a file-backed ref — the precondition
     // (main.rs's `declares_admin_tokens`) for `build_app_from_config` to re-resolve and queue a
     // rotation on every apply.
     std::fs::write(
@@ -10809,8 +9612,9 @@ pools:
       - model: m0
 auth:
   admin_auth:
-    - admin-tokens: {{ token: {{ file: {token_path:?} }} }}
-"
+    - {operator}: {{ token: {{ file: {token_path:?} }} }}
+",
+            operator = busbar_kernel::config::operator_provider()
         ),
     )
     .unwrap();
@@ -11226,8 +10030,8 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     // the binary writes to, unscoped by principal (every admin-token test shares the SAME fixed
     // operator principal id, so scoping by principal would not distinguish this test's rows from a
     // concurrent sibling's). Rows from THIS test's own restart attempts are bracketed by seq.
-    let baseline_seq = audit_ring::AUDIT
-        .list(1)
+    let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, 1, None, None)
         .first()
         .map(|e| e.seq)
         .unwrap_or(0);
@@ -11305,7 +10109,12 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 
     // Every refusal is audited — the operator's only evidence, since a real restart takes the
     // connection that would have carried the response.
-    let entries = audit_ring::AUDIT.list(audit_ring::MAX_AUDIT_ENTRIES);
+    let entries = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
+        0,
+        audit_ring::MAX_AUDIT_ENTRIES,
+        None,
+        None,
+    );
     let restarts: Vec<_> = entries
         .iter()
         .filter(|e| e.action == "admin.restart" && e.seq > baseline_seq)
@@ -11449,7 +10258,7 @@ async fn test_admin_v1_named_map_reads_project_settings_keys_never_values() {
         .identity_provider(
             "corp-oidc",
             serde_json::from_value(serde_json::json!({
-                "module": "oidc",
+                "module": "acme-idp",
                 "settings": {
                     "issuer": "https://idp.example.com",
                     "client_secret": "hunter2-idp"
@@ -11535,14 +10344,17 @@ async fn test_admin_v1_named_map_rejects_an_under_scoped_caller() {
         .export_def(
             "base-metrics",
             serde_json::from_value(serde_json::json!({
-                "module": "prometheus", "settings": {"buffer_seconds": 60}
+                "module": "acme-metrics", "settings": {"buffer_seconds": 60}
             }))
             .unwrap(),
         )
         .build();
     {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.admin_chain = vec!["test-scope-module".to_string(), "admin-tokens".to_string()];
+        inner.admin_chain = vec![
+            "test-scope-module".to_string(),
+            busbar_kernel::config::operator_provider().to_string(),
+        ];
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "viewers".to_string(),
@@ -11686,7 +10498,7 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
         .body(
             serde_json::json!({
                 "store": {
-                    "module": "memory",
+                    "module": migrated_store_module(),
                     "settings": { "url": "rediss://:hunter2-store@ledger.internal:6379" }
                 }
             })
@@ -11711,7 +10523,8 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let store = &json["settings"]["store"];
     assert_eq!(
-        store["module"], "memory",
+        store["module"],
+        migrated_store_module(),
         "the non-secret shape still introspects: {json}"
     );
     assert_eq!(
@@ -11965,12 +10778,12 @@ fn free_open_units() -> serde_json::Value {
 fn auth_modules_list_inbound_rows_only() {
     // A canonical name apart from the key, so the listing is seen to be by key.
     let inbound: busbar_kernel::preflight::LinkedAuth = (
-        "admin-tokens",
+        "inbound-row",
         "canonical-name",
-        busbar_auth_admin_tokens_plugin::door::door,
+        busbar_kernel::test_support::operator_double::door,
     );
     assert_eq!(
         busbar_kernel::preflight::inbound_auth_names(&[inbound]),
-        vec!["admin-tokens"]
+        vec!["inbound-row"]
     );
 }

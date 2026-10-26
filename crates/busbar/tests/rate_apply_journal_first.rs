@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RATE CARD IS JOURNALLED BEFORE THE CONFIG CHANGE IS SAVED (MONEY-AUDIT D-6, ARCHITECT ruling
-//! 2026-10-02).
+//! THE RATE CARD IS JOURNALLED BEFORE THE CONFIG CHANGE IS SAVED.
 //!
 //! The seam's holder journals the applied card. Raised only at the commit, after the change was
 //! persisted and swapped, a journal that refused the card left the live configuration on the new
@@ -11,11 +10,9 @@
 //! nothing persisted, nothing swapped — and a change that stages and then never commits withdraws
 //! what it staged.
 //!
-//! A test BINARY of its own, because the rate holder is a process-wide `OnceLock` this file installs.
+//! A test BINARY of its own, because the rate holder this file hands in is process-wide.
 //!
-//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
-//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
-//! build.rs): its config names a provider, whose dialect only a real plane declares, and the
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation: core names zero plane types, its tests included): its config names a provider, whose dialect only a real plane declares, and the
 //! composition root is where a plane may be linked.
 
 mod linked;
@@ -24,7 +21,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use busbar_kernel::config::transaction::{config_transaction, Outcome, TxnError};
-use busbar_kernel::rate_apply::{install_rate_apply, RateApply, RawRates};
+use busbar_kernel::rate_apply::{RateApply, RawRates};
+use busbar_kernel::test_support::rate_holders::install_rate_apply;
 
 /// The flat figure whose card the holder's journal refuses.
 const REFUSED: i64 = 666_001;

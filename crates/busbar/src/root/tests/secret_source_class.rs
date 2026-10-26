@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SCAN'S FIXED-CLASS HALF AND ITS KEPT RED ARM (status row 127). The scan beside this file
+//! THE SCAN'S FIXED-CLASS HALF AND ITS KEPT RED ARM. The scan beside this file
 //! proves a failing secret's source never reaches a door plane's caller; this file proves two more
 //! things about the same renders:
 //! * the refusal is a FIXED CLASS: two different sources failing (an unset variable, a missing file)
@@ -16,8 +16,8 @@ use axum::http::{HeaderMap, StatusCode};
 use busbar_contract::secret_ref::SecretRef;
 
 use super::{
-    assert_clean, call, member_secrets_installed, missing, program_section,
-    refused_naming_its_source, rendered, source_in, unset,
+    assert_clean, call, missing, program_section, refused_naming_its_source, rendered, source_in,
+    unset,
 };
 use crate::root::door_steps::tests::tool_door::try_rig_tools;
 use crate::root::serve::planes_tests::{Published, PUBLISHING};
@@ -40,7 +40,6 @@ async fn refused_call(instance: &'static str, secret: &SecretRef) -> Answer {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_failing_sources_reach_the_caller_as_one_fixed_refusal() {
     let _one = PUBLISHING.lock().await;
-    member_secrets_installed();
     let cases = [
         ("tools-class-env", SecretRef::env(unset("TOOLS_CLASS_ENV"))),
         (
@@ -76,7 +75,6 @@ async fn two_failing_sources_reach_the_caller_as_one_fixed_refusal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_scan_catches_a_source_spliced_into_a_real_door_render() {
     let _one = PUBLISHING.lock().await;
-    member_secrets_installed();
     let fixed = busbar_contract::conn::ConnError::Refused.text();
     let cases = [
         ("tools-red-env", SecretRef::env(unset("TOOLS_RED_ENV"))),

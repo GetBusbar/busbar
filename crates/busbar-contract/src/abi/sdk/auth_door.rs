@@ -22,11 +22,23 @@
 //!   under [`METRIC_CACHE_FLUSHED`](crate::abi::auth::METRIC_CACHE_FLUSHED), when the plugin states
 //!   that family ([`VerifyPlugin::CACHE_FAMILY`]).
 //!
-//! This kit answers every verdict READY: a plugin whose `verify` waits on I/O (a key-set fetch, a
-//! directory read) writes its own slots over [`crate::plugin_door!`].
+//! * A `verify` that WAITS on a host service (a credential's secret through `records.secret`)
+//!   implements [`VerifyPlugin::verify_ticketed`] instead of [`VerifyPlugin::verify`]: it is
+//!   handed a [`VerifyOp`], the call's ticket and the host services, and answers
+//!   [`Poll::Pending`] while a service it made pends. The op answers PENDING, the host wakes the
+//!   ticket when the service completes, and re-enters `verify` (`FLAG_RESUME`) on the SAME ticket:
+//!   the body runs again from the top, making the same services in the same order, and each
+//!   re-issued handle reads its stored answer (nothing runs twice). A TICKET-LESS `verify` (the
+//!   host's on-the-spot try) cannot pend: it answers REFUSED there, and the host submits the same
+//!   `verify` on a ticket. The verify slot's own Ready|Pending: no ABI shape changes.
+//!
+//! A `verify` that waits on its own I/O (a key-set fetch, a directory read over a need) writes its
+//! own slots over [`crate::plugin_door!`].
 
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr;
+use std::task::Poll;
 
 use crate::abi::auth::{
     AuthPoint, AuthPoints, AuthTail, IdentifyOut, IdentityBuf, StripName, VerifyIn,
@@ -35,11 +47,14 @@ use crate::abi::auth::{
 };
 use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_ABSENT};
 use crate::abi::mechanism::door::{KindTailHead, MarkWord, Statement, MARK_WORD_CARRIER};
+use crate::abi::mechanism::ticket::{CompletionHandle, Ticket};
+use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::lent::{HostBuf, Lent};
 use crate::abi::sdk::life::{Counted, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::out::Out;
 use crate::abi::sdk::safe::{Instance, SafeSlot};
+use crate::abi::sdk::services::{CredentialSecret, Pend, Services};
 pub use crate::auth_calls::{Decision, Strip, StripPlace, VerifiedIdentity};
 
 /// One `verify`'s request, as a safe plugin reads it; lent for the call.
@@ -188,7 +203,83 @@ impl From<Verdict> for Answer {
     }
 }
 
-/// AN AUTH PLUGIN THAT VERIFIES ON THE SPOT, in safe Rust.
+/// `VerifyOp` over the host services a real host's `open` handed (status row 194). #1471 ties
+/// `VerifyOp` to the tables its services were read from (`VerifyOp<'t>`) and states this alias as
+/// `VerifyOp<'static>`; a plugin names it where it names the op's type, and the same spelling
+/// compiles before and after.
+pub type StaticVerifyOp = VerifyOp;
+
+/// ONE `verify`'S HOST CALLS, on its ticket: what [`VerifyPlugin::verify_ticketed`] is handed. Each
+/// service it makes is issued the call's next completion handle, counted from `0` on every entry,
+/// so a body that runs again from the top on its RESUME (or on the host's re-call after a short
+/// answer) and makes the same services in the same order re-issues the same handles and reads the
+/// answers the host stored (THE DESIGN, the plugin ABI: a pending service is never run twice).
+#[derive(Debug)]
+pub struct VerifyOp {
+    services: Option<Services>,
+    ticket: Ticket,
+    issued: Cell<u32>,
+}
+
+impl VerifyOp {
+    /// The op on `ticket` over `services` (`None`: the host offers none, and every service is
+    /// [`ServiceError::Unserved`](crate::abi::sdk::services::ServiceError::Unserved)). The kit
+    /// builds it for every `verify`; a plugin's own unit tests build one over a hand-built table.
+    #[must_use]
+    pub const fn new(services: Option<Services>, ticket: Ticket) -> Self {
+        Self {
+            services,
+            ticket,
+            issued: Cell::new(0),
+        }
+    }
+
+    /// The call's ticket ([`Ticket::NONE`] for the host's on-the-spot try, which may not pend).
+    #[must_use]
+    pub const fn ticket(&self) -> Ticket {
+        self.ticket
+    }
+
+    /// The host services the instance was opened with, for a service this op has no call of its
+    /// own for; issue each one [`VerifyOp::handle`]. `None` when the host offers none.
+    #[must_use]
+    pub const fn services(&self) -> Option<&Services> {
+        self.services.as_ref()
+    }
+
+    /// The next completion handle on the call's ticket, in issue order.
+    #[must_use]
+    pub fn handle(&self) -> CompletionHandle {
+        let seq = self.issued.get();
+        self.issued.set(seq.saturating_add(1));
+        CompletionHandle {
+            ticket: self.ticket,
+            seq,
+            _reserved: 0,
+        }
+    }
+
+    /// [`Services::records_secret`] of credential `id` of `kind` on the call's next handle: the
+    /// secret in a zeroizing holder the plugin owns, and whether it is live (an unknown id answers
+    /// the host's dummy, not live, on the same path). [`Poll::Pending`] while the host reads it;
+    /// answer it as the verdict's `Pending`, and the RESUME reads the stored answer. On no ticket
+    /// it is [`Poll::Pending`] at once, without a crossing (the service may pend, so the host would
+    /// refuse it): the kit answers that `verify` REFUSED and the host submits it on a ticket.
+    pub fn records_secret(&self, kind: &str, id: &str) -> Pend<CredentialSecret> {
+        if self.ticket.is_none() {
+            return Poll::Pending;
+        }
+        let handle = self.handle();
+        match &self.services {
+            Some(s) => s.records_secret(handle, kind, id),
+            None => Poll::Ready(Err(crate::abi::sdk::services::ServiceError::Unserved)),
+        }
+    }
+}
+
+/// AN AUTH PLUGIN THAT VERIFIES ON THE SPOT, or on its ticket over the host's services, in safe
+/// Rust. A plugin implements exactly one of [`VerifyPlugin::verify`] (it judges with what the
+/// request carries) and [`VerifyPlugin::verify_ticketed`] (it waits on a host service).
 pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     /// The index, in the plugin's Statement `families`, of its
     /// [`METRIC_CACHE_FLUSHED`](crate::abi::auth::METRIC_CACHE_FLUSHED) counter; `None` when it
@@ -203,8 +294,25 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     fn open(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, &'static str>;
 
     /// Judge the request at one point: the verdict, the decision and the lines to strip (a bare
-    /// [`Verdict`] converts, with no strips and its default decision).
-    fn verify(&self, request: &VerifyView<'_>) -> Answer;
+    /// [`Verdict`] converts, with no strips and its default decision). A plugin that implements
+    /// [`VerifyPlugin::verify_ticketed`] instead leaves this alone: the kit never calls it then, and
+    /// its default fails closed (a reject).
+    fn verify(&self, request: &VerifyView<'_>) -> Answer {
+        let _ = request;
+        Verdict::Reject.into()
+    }
+
+    /// Judge the request at one point, over `op`: the call's ticket and the host services, so the
+    /// judgement may wait on a service ([`VerifyOp::records_secret`]). [`Poll::Pending`] while a
+    /// service it made pends (answer it whenever one answers `Pending`): the kit answers PENDING,
+    /// and the host re-enters this from the top on the same ticket when the service completes,
+    /// where each re-issued service reads its stored answer. Ticket-less, a `Pending` answers
+    /// REFUSED and the host submits the call on a ticket. The default is [`VerifyPlugin::verify`],
+    /// READY on the spot.
+    fn verify_ticketed(&self, request: &VerifyView<'_>, op: &VerifyOp) -> Poll<Answer> {
+        let _ = op;
+        Poll::Ready(self.verify(request))
+    }
 
     /// A reload (the admin cache flush is one with unchanged settings): drop the inbound cache and
     /// answer how many entries it held.
@@ -222,7 +330,8 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
 ///   `refresh` dropped are reported under [`VerifyPlugin::CACHE_FAMILY`], when the plugin states
 ///   it;
 /// * `drive` answers REFUSED (the plugin holds no driver ticket), and `cancel` answers
-///   [`CANCEL_ABANDONED`](crate::abi::auth::CANCEL_ABANDONED): `verify` never pends, so nothing is
+///   [`CANCEL_ABANDONED`](crate::abi::auth::CANCEL_ABANDONED): a pending `verify` parks nothing
+///   (its pending service is the host's, dropped with the ticket), so nothing of the plugin's is
 ///   in flight;
 /// * `retire` and `tick` hold nothing: nothing is generation data, and no tick is asked for.
 pub struct Verifier<T>(T);
@@ -266,7 +375,8 @@ impl<T: VerifyPlugin> Life for Verifier<T> {
     }
 }
 
-/// `verify`: [`VerifyPlugin::verify`], its identity written into the host's buffer.
+/// `verify`: [`VerifyPlugin::verify_ticketed`] on the call's ticket, its identity written into the
+/// host's buffer; PENDING while a service it made pends.
 #[derive(Debug)]
 pub struct Verify<T>(PhantomData<T>);
 impl<T: VerifyPlugin> SafeSlot for Verify<T> {
@@ -281,19 +391,40 @@ impl<T: VerifyPlugin> SafeSlot for Verify<T> {
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        verify_answer(h.life().plugin(), input, out)
+        verify_answer(
+            h.life().plugin(),
+            &verify_op(&instance, h.host()),
+            input,
+            out,
+        )
     }
 }
 
-/// `verify` over `plugin`: [`VerifyPlugin::verify`], its identity written into the host's buffer.
-/// THE ONE COPY: the verify door and the combined verify-and-outbound door
-/// (`abi::sdk::auth_outbound::Both`) answer `verify` through it.
+/// The [`VerifyOp`] of the `verify` `instance` runs, over the host tables `open` handed it.
+pub(crate) fn verify_op<T: Send + Sync + 'static>(
+    instance: &Instance<'_, T>,
+    host: Option<&Host>,
+) -> VerifyOp {
+    VerifyOp::new(host.and_then(Host::services), instance.ticket())
+}
+
+/// `verify` over `plugin` on `op`: [`VerifyPlugin::verify_ticketed`], its identity written into
+/// the host's buffer; PENDING while it pends on a ticket, REFUSED when it would pend on none (a
+/// ticket-less PENDING is FAULT). THE ONE COPY: the verify door and the combined
+/// verify-and-outbound door (`abi::sdk::auth_outbound::Both`) answer `verify` through it.
 pub(crate) fn verify_answer<T: VerifyPlugin>(
     plugin: &T,
+    op: &VerifyOp,
     input: Lent<'_, VerifyIn>,
     out: Out<'_, IdentifyOut>,
 ) -> Outcome {
-    let answer = plugin.verify(&VerifyView { input });
+    let answer = match plugin.verify_ticketed(&VerifyView { input }, op) {
+        Poll::Ready(answer) => answer,
+        // On the spot the call cannot pend: REFUSED there, and the host submits it on a ticket.
+        Poll::Pending if op.ticket().is_none() => return Outcome::Refused,
+        // Nothing written: a PENDING `verify` names no `needed_*` and no verdict.
+        Poll::Pending => return Outcome::Pending,
+    };
     let (id, verdict) = match &answer.verdict {
         Verdict::Identity(id) => (Some(id), VERDICT_IDENTITY),
         Verdict::Reject => (None, VERDICT_REJECT),
@@ -378,7 +509,7 @@ fn write(
         match t {
             None => Span {
                 offset: SPAN_ABSENT,
-                len: 0,
+                ..Span::ZERO
             },
             Some(s) => {
                 let at = bytes.extend(s.as_bytes());
@@ -427,7 +558,7 @@ fn write(
         |o| &o.identity.claims,
         Span {
             offset: SPAN_ABSENT,
-            len: 0,
+            ..Span::ZERO
         },
     );
     out.set(|o| &o.identity.claims_fmt, BLOB_ABSENT);
@@ -502,17 +633,14 @@ pub const fn verify_tail(facts: u32, points: AuthPoints) -> AuthTail {
     AuthTail {
         head: KindTailHead {
             size: std::mem::size_of::<AuthTail>() as u32,
-            _reserved: 0,
+            ..KindTailHead::ZERO
         },
         caps: crate::abi::auth::CAP_INBOUND,
         facts,
         login_kind: crate::abi::auth::LOGIN_KIND_NONE,
         inbound_points: points.bits(),
-        styles: ptr::null(),
-        styles_len: 0,
         operator_principal: crate::abi::sdk::door::abi_str(""),
-        credential_kinds: ptr::null(),
-        credential_kinds_len: 0,
+        ..AuthTail::ZERO
     }
 }
 
@@ -545,8 +673,8 @@ pub const fn with_credential_kinds(tail: AuthTail, kinds: &'static [AbiStr]) -> 
 pub const fn carrier(name: &'static str) -> MarkWord {
     MarkWord {
         class: MARK_WORD_CARRIER,
-        _reserved: 0,
         word: crate::abi::sdk::door::abi_str(name),
+        ..MarkWord::ZERO
     }
 }
 

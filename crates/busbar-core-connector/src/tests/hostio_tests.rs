@@ -13,6 +13,8 @@ use busbar_contract::conn::Program;
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::support::worker;
+
 use super::*;
 
 const OWNER: u64 = 1;
@@ -22,13 +24,6 @@ fn ticket(n: u32) -> Ticket {
         slot: 0x00ff_0000 + n,
         generation: 1,
     }
-}
-
-fn worker() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
 }
 
 #[test]
@@ -195,7 +190,6 @@ async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
 fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
     std::env::set_var(VAR, "hostio-spawn-value");
-    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
     worker().block_on(async {
         let io = HostIo::new();
         let program = Program {
@@ -207,7 +201,11 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
                 busbar_contract::secret_ref::SecretRef::env(VAR),
             )],
         };
-        let held = crate::spawn_env::HeldEnv::load(&program.env_refs, &scope());
+        let held = crate::spawn_env::HeldEnv::load(
+            &program.env_refs,
+            Some(crate::spawn_env::counting_env),
+            &scope(),
+        );
         assert!(
             !format!("{held:?}").contains("hostio-spawn-value"),
             "a held environment names no value"
@@ -230,7 +228,11 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             )],
             ..program
         };
-        let held = crate::spawn_env::HeldEnv::load(&unresolved.env_refs, &scope());
+        let held = crate::spawn_env::HeldEnv::load(
+            &unresolved.env_refs,
+            Some(crate::spawn_env::counting_env),
+            &scope(),
+        );
         io.admit(ticket(31), Admission::Spawn(unresolved, held));
         match env_lines(&io, 31).await {
             Err(IoRefusal::Refused(why)) => {
@@ -255,7 +257,6 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
 fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_refresh() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_ROTATED";
     std::env::set_var(VAR, "before-rotation");
-    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
     worker().block_on(async {
         let io = HostIo::new();
         let program = Program {
@@ -267,7 +268,11 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
                 busbar_contract::secret_ref::SecretRef::env(VAR),
             )],
         };
-        let held = crate::spawn_env::HeldEnv::load(&program.env_refs, &scope());
+        let held = crate::spawn_env::HeldEnv::load(
+            &program.env_refs,
+            Some(crate::spawn_env::counting_env),
+            &scope(),
+        );
         let loaded = crate::spawn_env::resolutions_of(VAR);
         assert!(loaded >= 1, "the load resolved the reference");
         let want = |v: &str| vec!["DECLARED=yes".to_owned(), format!("ROTATED={v}")];

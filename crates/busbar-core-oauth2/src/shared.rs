@@ -27,13 +27,26 @@
 //!   cannot claim the next one after an earlier claimant of it could still write. That is the
 //!   fence's whole assumption: the store honours its call deadline, and nodes' clocks agree within
 //!   the skew.
+//! * **A version is claimed once, for good.** The claim on version `v + 1` names the cell's EPOCH
+//!   ([`version_token`]): a random value the writer that CREATES a cell (the write of version 1)
+//!   picks, and every version after carries on. A retired cell's epoch dies with it, so its claims,
+//!   the retirement's own on the version after its last included, can never stand in the way of the
+//!   cell made again under the same id. The creating write's claim names no epoch (no writer knows
+//!   one yet, and every creator must race on one token); it is free whenever a cell is absent,
+//!   because a cell is retired only once its last write, and so its own creation, is older than any
+//!   claim can stand.
 //! * **`take_*` = read + claim the spend.** A take is a swap that removes the record: exactly one
 //!   taker wins the version, every other sees the record gone.
 //! * **Deletion and revocation are tombstones while they bar anything.** A bucket keeps its
 //!   barriers until they lapse. A cell holding nothing (an empty bucket, a lapsed family barrier, a
 //!   released user code) is RETIRED by the sweep: deleted under a won version claim, and only once
-//!   its last write is older than every claim of its versions can be ([`RETIRE_AFTER_SECS`]), so a
-//!   writer that finds it gone starts again at version 1 with no live claim in its way.
+//!   its last write is older than every claim of its versions can be ([`RETIRE_AFTER_SECS`]). A
+//!   writer that finds it gone creates it again, under a new epoch.
+//! * **A self-registered client that holds nothing is reclaimed.** RFC 7591 registration takes no
+//!   credential, so a registered client whose bucket has held no record (code, token, refresh
+//!   token, pushed request, device grant, consent) for [`crate::policy::REGISTERED_CLIENT_IDLE`] is
+//!   deleted by the sweep and its bucket retired. A client the operator provisioned is never in the
+//!   store, and is never reclaimed.
 //! * **Lookups by a credential** (an access token, a refresh token, a code, a pushed handle, a
 //!   device code, a consent id or a family) go through index records naming the client, one per
 //!   credential; the index is written before the bucket, so a record the bucket holds is always
@@ -57,6 +70,14 @@
 //!
 //! The consent screen's sessions and staked answers, the pushed-request notes and the minted
 //! signing key ride the same records ([`Shared`]).
+//!
+//! THE MINTED SIGNING KEY is kept as THE DESIGN rules the deployment keyset is kept: "sealed in the
+//! store", which is to say minted once for the deployment, under the store's minting claim, and
+//! kept in the store for every node to read back (the keyset itself is kept the same way, as its
+//! seed, in the store's record slots). Whoever reads the store reads it, as they read the
+//! deployment keyset and every live token the buckets hold. An operator who wants the key outside
+//! the store's reach configures `oauth_as.signing_key`, a secret reference, and nothing is minted;
+//! the build says so at `warn` when it signs with the kept key.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -128,14 +149,41 @@ fn kind(name: &str) -> String {
 
 /// A record id for `value`: its SHA-256, hex. Credentials never appear as store keys.
 fn digest(value: &str) -> String {
+    hex(ring::digest::digest(&ring::digest::SHA256, value.as_bytes()).as_ref())
+}
+
+fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    let d = ring::digest::digest(&ring::digest::SHA256, value.as_bytes());
-    d.as_ref()
+    bytes
         .iter()
-        .fold(String::with_capacity(64), |mut s, b| {
+        .fold(String::with_capacity(2 * bytes.len()), |mut s, b| {
             let _ = write!(s, "{b:02x}");
             s
         })
+}
+
+/// A fresh random value, hex: a cell's epoch, a staked answer's nonce.
+fn nonce() -> Result<String, StorageError> {
+    use ring::rand::SecureRandom as _;
+    let mut bytes = [0u8; 16];
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| {
+            StorageError::new("oauth_as store: the system's random source gave nothing")
+        })?;
+    Ok(hex(&bytes))
+}
+
+/// The claim on version `next` of the cell `id` whose epoch is `epoch`. The creating write
+/// (`next == 1`) and a cell written before epochs were kept (`epoch` empty) claim `{id}@{next}`;
+/// every other version names its epoch, so no claim of a retired cell names a version of the cell
+/// made again in its place.
+fn version_token(id: &str, epoch: &str, next: u64) -> String {
+    if next == 1 || epoch.is_empty() {
+        format!("{id}@{next}")
+    } else {
+        format!("{id}@{epoch}.{next}")
+    }
 }
 
 fn now_secs() -> u64 {
@@ -303,6 +351,9 @@ struct Cell<T> {
     /// The cell's own id, so the sweep can name it again.
     #[serde(default)]
     id: String,
+    /// The cell's epoch, picked by the write that created it ([`version_token`]).
+    #[serde(default)]
+    e: String,
 }
 
 /// The one write a swap made, or that it made none.
@@ -378,19 +429,19 @@ impl Shared {
     ) -> Result<(u64, T), StorageError> {
         self.read_cell_at(kind_name, id)
             .await
-            .map(|(v, _, value)| (v, value))
+            .map(|(v, _, _, value)| (v, value))
     }
 
-    /// The cell's version, when that version was written, and its value.
+    /// The cell's version, when that version was written, its epoch, and its value.
     async fn read_cell_at<T: for<'de> Deserialize<'de> + Default>(
         &self,
         kind_name: &str,
         id: &str,
-    ) -> Result<(u64, u64, T), StorageError> {
+    ) -> Result<(u64, u64, String, T), StorageError> {
         match self.get_body(kind_name, id).await? {
-            None => Ok((0, 0, T::default())),
+            None => Ok((0, 0, String::new(), T::default())),
             Some(body) => serde_json::from_slice::<Cell<T>>(&body)
-                .map(|c| (c.v, c.at, c.b))
+                .map(|c| (c.v, c.at, c.e, c.b))
                 .map_err(|e| decode_failed(kind_name, e)),
         }
     }
@@ -407,10 +458,24 @@ impl Shared {
     where
         T: Serialize + for<'de> Deserialize<'de> + Default,
     {
+        self.cas_cell_at(kind_name, id, move |value, _| f(value))
+            .await
+    }
+
+    /// [`Self::cas_cell`], with `f` told when the version it reads was written (Unix seconds).
+    async fn cas_cell_at<T, R>(
+        &self,
+        kind_name: &str,
+        id: &str,
+        mut f: impl FnMut(&mut T, u64) -> Result<Swap<R>, StorageError>,
+    ) -> Result<R, StorageError>
+    where
+        T: Serialize + for<'de> Deserialize<'de> + Default,
+    {
         for attempt in 0..SWAP_ATTEMPTS {
             let read_at = tokio::time::Instant::now();
-            let (v, at, mut value) = self.read_cell_at::<T>(kind_name, id).await?;
-            let (answer, retire) = match f(&mut value)? {
+            let (v, at, epoch, mut value) = self.read_cell_at::<T>(kind_name, id).await?;
+            let (answer, retire) = match f(&mut value, at)? {
                 Swap::Keep(r) => return Ok(r),
                 Swap::Write(r) => (r, false),
                 Swap::Retire(r, changed) => {
@@ -424,7 +489,9 @@ impl Shared {
                 }
             };
             let next = v + 1;
-            let token = format!("{id}@{next}");
+            // A cell made now gets an epoch of its own; every version after carries it on.
+            let epoch = if v == 0 { nonce()? } else { epoch };
+            let token = version_token(id, &epoch, next);
             if self
                 .claim(
                     &format!("{kind_name}.v"),
@@ -436,7 +503,8 @@ impl Shared {
                 within_budget(kind_name, read_at)?;
                 if retire {
                     // Retired under the won claim: a writer that read this version loses it and
-                    // reads the cell gone, and starts at version 1, whose claim lapsed long ago.
+                    // reads the cell gone, and creates it again under a new epoch, which no claim
+                    // of this one names.
                     self.calls
                         .delete_plane_record(&kind(kind_name), id)
                         .await
@@ -448,6 +516,7 @@ impl Shared {
                     b: &value,
                     at: now_secs(),
                     id: id.to_string(),
+                    e: epoch,
                 })
                 .map_err(|e| decode_failed(kind_name, e))?;
                 // Point-read records live at sequence 0 with no parent: that is where every store
@@ -477,9 +546,18 @@ impl Shared {
         client_id: &str,
         mut f: impl FnMut(&mut Bucket) -> Result<Swap<R>, StorageError>,
     ) -> Result<R, StorageError> {
-        self.cas_cell("bucket", &digest(client_id), |b: &mut Bucket| {
+        self.update_at(client_id, move |b, _| f(b)).await
+    }
+
+    /// [`Self::update`], with `f` told when the bucket's current version was written.
+    async fn update_at<R>(
+        &self,
+        client_id: &str,
+        mut f: impl FnMut(&mut Bucket, u64) -> Result<Swap<R>, StorageError>,
+    ) -> Result<R, StorageError> {
+        self.cas_cell_at("bucket", &digest(client_id), |b: &mut Bucket, at| {
             b.id = client_id.to_string();
-            f(b)
+            f(b, at)
         })
         .await
     }
@@ -634,7 +712,10 @@ impl Shared {
         Ok((row.until > now_secs()).then_some(row.subject))
     }
 
-    /// Stake one answer for `key` on session `id`.
+    /// Stake one answer for `key` on session `id`. A second answer for the same request on the same
+    /// session REPLACES one not yet spent, and is spent once on its own: each answer carries a nonce
+    /// its spend claim names. The in-process table keeps answers the same way
+    /// (`consent::Sessions::stake`).
     pub(crate) async fn stake(
         &self,
         id: &str,
@@ -650,6 +731,7 @@ impl Shared {
             approve,
             until: now_secs() + ttl.as_secs(),
             id: row_id.clone(),
+            nonce: nonce()?,
         })
         .map_err(|e| decode_failed("stake", e))?;
         self.put_body("stake", &row_id, None, 0, &body).await
@@ -677,7 +759,10 @@ impl Shared {
         let Some(row) = self.stake_row(id, key).await? else {
             return Ok(None);
         };
-        let token = format!("{}:{}", digest(id), digest(key));
+        let mut token = format!("{}:{}", digest(id), digest(key));
+        if !row.nonce.is_empty() {
+            token = format!("{token}:{}", row.nonce);
+        }
         Ok(self
             .claim("spent", &token, row.until)
             .await?
@@ -727,8 +812,10 @@ impl Shared {
 
     /// THE DEPLOYMENT'S AUTHORIZATION-SERVER SIGNING KEY (PKCS#8 DER): the one the store keeps, or
     /// `mint()`'s, kept now by the build that wins this period's minting claim. A build that lost
-    /// the claim takes the winner's and never signs with a key of its own. Kept as the deployment
-    /// keyset is kept: unsealed, in the store's own records.
+    /// the claim takes the winner's and never signs with a key of its own. Kept as THE DESIGN rules
+    /// the deployment keyset is kept, sealed in the store: once for the deployment, in a record kind
+    /// no plane can name ([`LABEL`]), read by every node on the store (see the module docs for who
+    /// else reads it, and how an operator keeps the key out of the store).
     pub(crate) async fn signing_key(
         &self,
         mint: impl FnOnce() -> Result<Vec<u8>, String>,
@@ -795,6 +882,9 @@ struct StakeRow {
     /// The row's own id, so the sweep can delete it.
     #[serde(default)]
     id: String,
+    /// This answer's own nonce: its spend claim names it, so each answer is spent once.
+    #[serde(default)]
+    nonce: String,
 }
 
 /// One credential's index row: the client it was minted for, the credential's digest (the row's
@@ -1511,59 +1601,32 @@ impl Storage for SharedStorage {
             .list_plane_records(&k, &PlaneSelector::All)
             .await
             .map_err(|f| failed("bucket", f))?;
-        let clients: Vec<String> = rows
+        let cells: Vec<Cell<Bucket>> = rows
             .iter()
             .filter_map(|body| serde_json::from_slice::<Cell<Bucket>>(body).ok())
-            .map(|cell| cell.b.id)
-            .filter(|id| !id.is_empty())
+            .filter(|cell| !cell.b.id.is_empty())
             .collect();
-        for client in clients {
+        for mut cell in cells {
+            // Judged first on the body the listing already read: a client with nothing to reclaim
+            // is not read again. Every node sweeps every client each minute, so a second read of
+            // each would be a store read per client per node per minute, to change nothing.
+            let listed = sweep_bucket(&mut cell.b, cell.at, now, &mut Vec::new());
+            let acts = match listed {
+                Swap::Keep(_) => false,
+                Swap::Write(_) => true,
+                Swap::Retire(_, changed) => {
+                    changed || now_secs().saturating_sub(cell.at) > RETIRE_AFTER_SECS
+                }
+            };
+            if !acts {
+                continue;
+            }
+            let client = cell.b.id;
             let mut freed: Vec<(String, String)> = Vec::new();
             // One bucket that will not swap (a held version, a store fault) is skipped and said,
             // never the end of the sweep: the next tick tries it again.
             let swept = s
-                .update(&client, |b| {
-                    let mut n = 0u64;
-                    freed = Vec::new();
-                    b.devices.retain(|_, g| {
-                        let keep = now < g.expires_at;
-                        if !keep {
-                            freed.push((
-                                oauth_as::device::normalize_user_code(&g.user_code),
-                                g.device_code.clone(),
-                            ));
-                        }
-                        keep
-                    });
-                    n += freed.len() as u64;
-                    let before = b.codes.len();
-                    b.codes.retain(|_, c| now < c.expires_at);
-                    n += (before - b.codes.len()) as u64;
-                    let before = b.pushed.len();
-                    b.pushed.retain(|_, p| now < p.expires_at);
-                    n += (before - b.pushed.len()) as u64;
-                    let before = b.tokens.len();
-                    b.tokens.retain(|_, t| now < t.expires_at);
-                    n += (before - b.tokens.len()) as u64;
-                    let before = b.refresh.len();
-                    b.refresh
-                        .retain(|_, r| r.expires_at.is_none_or(|exp| now < exp));
-                    n += (before - b.refresh.len()) as u64;
-                    if b.client_barrier.is_some_and(|t| now >= t.until) {
-                        b.client_barrier = None;
-                        n += 1;
-                    }
-                    let before = b.consent_barriers.len();
-                    b.consent_barriers.retain(|_, t| now < t.until);
-                    n += (before - b.consent_barriers.len()) as u64;
-                    Ok(if b.holds_nothing() {
-                        Swap::Retire(n, n > 0)
-                    } else if n == 0 {
-                        Swap::Keep(0)
-                    } else {
-                        Swap::Write(n)
-                    })
-                })
+                .update_at(&client, |b, at| Ok(sweep_bucket(b, at, now, &mut freed)))
                 .await;
             match swept {
                 Ok(n) => removed += n,
@@ -1605,6 +1668,68 @@ impl Storage for SharedStorage {
             }
         }
         Ok(removed)
+    }
+}
+
+/// Reclaim what has lapsed by `now` in one client's records, whose current version was written at
+/// `at`, noting each lapsed device grant's user code in `freed`: the sweep's one change to a
+/// bucket, judged on the listed body and then made under the version the swap reads.
+fn sweep_bucket(
+    b: &mut Bucket,
+    at: u64,
+    now: SystemTime,
+    freed: &mut Vec<(String, String)>,
+) -> Swap<u64> {
+    let mut n = 0u64;
+    freed.clear();
+    b.devices.retain(|_, g| {
+        let keep = now < g.expires_at;
+        if !keep {
+            freed.push((
+                oauth_as::device::normalize_user_code(&g.user_code),
+                g.device_code.clone(),
+            ));
+        }
+        keep
+    });
+    n += freed.len() as u64;
+    let before = b.codes.len();
+    b.codes.retain(|_, c| now < c.expires_at);
+    n += (before - b.codes.len()) as u64;
+    let before = b.pushed.len();
+    b.pushed.retain(|_, p| now < p.expires_at);
+    n += (before - b.pushed.len()) as u64;
+    let before = b.tokens.len();
+    b.tokens.retain(|_, t| now < t.expires_at);
+    n += (before - b.tokens.len()) as u64;
+    let before = b.refresh.len();
+    b.refresh
+        .retain(|_, r| r.expires_at.is_none_or(|exp| now < exp));
+    n += (before - b.refresh.len()) as u64;
+    if b.client_barrier.is_some_and(|t| now >= t.until) {
+        b.client_barrier = None;
+        n += 1;
+    }
+    let before = b.consent_barriers.len();
+    b.consent_barriers.retain(|_, t| now < t.until);
+    n += (before - b.consent_barriers.len()) as u64;
+    // A SELF-REGISTERED client that has held nothing for the idle period goes: registration takes
+    // no credential, and nothing else would ever reclaim it.
+    if b.client.as_ref().is_some_and(|c| c.registration.is_some())
+        && b.records() == 0
+        && b.pushed.is_empty()
+        && b.consents.is_empty()
+        && secs_of(now).saturating_sub(at) > crate::policy::REGISTERED_CLIENT_IDLE.as_secs()
+    {
+        b.client = None;
+        n += 1;
+    }
+    if b.holds_nothing() {
+        Swap::Retire(n, n > 0)
+    } else if n == 0 {
+        Swap::Keep(0)
+    } else {
+        Swap::Write(n)
     }
 }
 

@@ -316,12 +316,47 @@ pub struct DiskDest {
     pub path: String,
     /// Rotate before an append that finds the file at least this many bytes long; `None` = never.
     pub rotate_at: Option<u64>,
-    /// How many archives a rotation keeps (`<path>.1` .. `<path>.{keep}`).
-    pub keep: u32,
+    /// HOW the host rotates a due file. The host applies it; the plugin's manifest only states the
+    /// archives it wants kept (`declares.keep`), which [`DiskRotate::declared`] turns into this.
+    pub rotate: DiskRotate,
 }
 
-/// How many archives the host keeps for a destination it rotates (`<path>.1` .. `<path>.9`): the
-/// retention the disk lane applies, never a plugin's parameter.
+/// How the host rotates a destination it finds due ([`DiskDest::rotate_at`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskRotate {
+    /// Truncate the live file in place and append to it from empty: 1.5.5's request-log file sink
+    /// ("roll over by truncation rather than a rename", its v1.5.5 `rotate_mb` size bound,
+    /// lines 96-108 of the sink's module), one bounded file whose older lines are dropped.
+    Truncate,
+    /// Rename the live file into `<path>.1` .. `<path>.{keep}`, dropping the oldest archive past
+    /// `keep`.
+    Rename {
+        /// How many archives a rotation keeps.
+        keep: u32,
+    },
+}
+
+impl DiskRotate {
+    /// The rotation the host applies to a destination whose manifest declares `keep` for it
+    /// (`declares.keep`): `0` keeps no archive, so the file is truncated in place; `n` renames
+    /// keeping `n` archives; none declared is [`DISK_ROTATE_UNDECLARED`].
+    #[must_use]
+    pub const fn declared(keep: Option<u32>) -> Self {
+        match keep {
+            Some(0) => Self::Truncate,
+            Some(keep) => Self::Rename { keep },
+            None => DISK_ROTATE_UNDECLARED,
+        }
+    }
+}
+
+/// The rotation a destination gets when its manifest declares no `keep` for it: 1.5.5's
+/// truncation in place, the host's one default (a one-line change here and nowhere else).
+pub const DISK_ROTATE_UNDECLARED: DiskRotate = DiskRotate::Truncate;
+
+/// How many archives the host keeps for a destination it rotates by rename without a declared
+/// `keep` (`<path>.1` .. `<path>.9`): the count [`DISK_ROTATE_UNDECLARED`] names when that default
+/// is a rename (`DiskRotate::Rename { keep: DISK_KEEP }`).
 pub const DISK_KEEP: u32 = 9;
 
 /// The settings key beside a destination that states its rotation threshold, in MiB: the host's
@@ -334,7 +369,9 @@ pub const DISK_ROTATE_KEY: &str = "rotate_mb";
 pub struct DiskReport {
     /// `0` = the bytes landed; else the failed step (`DISK_OPEN_FAILED` / `DISK_APPEND_FAILED`).
     pub step: u64,
-    /// Whether the file was rotated (renamed to its first archive) before the append.
+    /// Whether the file was renamed to its first archive before the append. A truncation in place
+    /// is not reported: 1.5.5's request-log sink reported none (lines 96-108 of the sink's module
+    /// at v1.5.5).
     pub rotated: bool,
     /// The rotation steps that failed (`DISK_RETENTION_FAILED` | ...).
     pub faults: u8,

@@ -365,6 +365,13 @@ pub(crate) fn is_linked_secret(module: &str) -> bool {
     axis().is_some_and(|a| a.linked(module))
 }
 
+/// The SUGARS the loaded secret plugins' Statements declare (audit contract-admin #10, Law 1): the
+/// shorthand each answers to, the settings key its value lands under and what a refusal says that
+/// value names. The kernel reads them here and spells none; no axis installed, none is declared.
+pub(crate) fn sugars() -> busbar_contract::secret_ref::Sugars {
+    axis().map(|a| a.sugars()).unwrap_or_default()
+}
+
 /// Resolve `secret` to a UTF-8 string through the linked secret plugins alone (no `secrets:` block,
 /// no cold lane). OWED: a plane still calls this (the mcp stdio child's environment and its
 /// token-exchange subject token) until those sites move to host-held replacements; the

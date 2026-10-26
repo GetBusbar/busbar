@@ -19,7 +19,9 @@
 //! A store that refuses a batch here does not fail the commit — the bytes are on the medium — but
 //! the batch stays owed to the store and is offered again on the next commit, in order, without
 //! being written to the medium a second time. Past [`STORE_BACKLOG_RECORDS`] what is owed is read
-//! back from the segments rather than held in memory; it is never given up on.
+//! back from the segments rather than held in memory; it is never given up on, a restart included:
+//! a log that opens over records owes the store the whole of it once, because nothing durable says
+//! which records the store took before the restart, and the store's put is idempotent.
 //!
 //! Everything below is written so that the mode is a value, not a set of conditionals scattered
 //! through the append path. There is one `append_batch`; what differs is which factory built the
@@ -172,9 +174,9 @@ pub struct Wal {
     /// Records the store has not acknowledged, oldest first. On disk only: a refusal there does not
     /// fail the commit, so this is the only thing that remembers the store is still owed them.
     owed_to_store: Vec<Record>,
-    /// How many records the store's catch-up queue has left on the medium at its bound, to be read
-    /// back from there.
-    store_debt_dropped: u64,
+    /// How many records, in total, the store's catch-up queue has left on the medium at its bound.
+    /// None is dropped: each is read back from there (see `store_owed_from`).
+    store_debt_on_medium: u64,
     /// Where on the medium the store's debt continues past the queue: the segment and the byte the
     /// first record the queue did not take starts at. Every record from there to the end of the log
     /// is owed to the store, after the queue's own.
@@ -305,8 +307,27 @@ impl Wal {
         ceiling: u64,
         clock: Clock,
     ) -> Result<Self, OpenError> {
-        let (segment, recovered, quarantined) = open_tail(factory.as_mut(), ceiling, clock)?;
+        let (segment, recovered, quarantined, tail_index) =
+            open_tail(factory.as_mut(), ceiling, clock)?;
+        let quarantined = quarantine_below(
+            factory.as_mut(),
+            ceiling,
+            clock,
+            tail_index,
+            &recovered,
+            quarantined,
+        )?;
         let segments_used = segment.index() + 1;
+        // ON A DISK, WHAT THE STORE IS OWED IS ON THE MEDIUM, AND A RESTART MUST NOT FORGET IT. The
+        // queue and its mark live in this process; a store that was down when it ended is owed
+        // every record it had not taken, and nothing durable says which those were. So a log that
+        // opens over records owes the store the whole of it, oldest segment first, read back off
+        // the medium at the queue's bound like any other debt past it. The store's write is an
+        // idempotent put keyed on the record's identity, so a record it already holds is
+        // overwritten with the same bytes: a re-offer costs a write, never a record. (THE DESIGN,
+        // BUSBAR-1.6.0.md section 7: the journal is the record, the store holds its copy.)
+        let owes_store_on_open =
+            mode == Mode::OnDisk && (!recovered.records.is_empty() || tail_index > 0);
         let mut wal = Wal {
             factory,
             clock,
@@ -319,8 +340,8 @@ impl Wal {
             gap_order: VecDeque::new(),
             lost_batch: Vec::new(),
             owed_to_store: Vec::new(),
-            store_debt_dropped: 0,
-            store_owed_from: None,
+            store_debt_on_medium: 0,
+            store_owed_from: owes_store_on_open.then_some((0, 0)),
             recovered: Vec::new(),
             segments_used,
             quarantined: Vec::new(),
@@ -332,6 +353,13 @@ impl Wal {
         wal.recovered = recovered.records;
         for q in quarantined {
             wal.take_quarantine(q);
+        }
+        if owes_store_on_open {
+            // Offered at open, not on the first commit: reading the log back is boot work, beside
+            // the two reads of it the boot already makes, and never a cost on a request's path. A
+            // shipper that turns the run away leaves the rest owed from where it stopped.
+            let at = (wal.segment.index(), wal.segment.write_offset());
+            wal.offer_store_debt(&[], at);
         }
         Ok(wal)
     }
@@ -420,11 +448,18 @@ impl Wal {
         &self.owed_to_store
     }
 
-    /// How many records the store's catch-up queue has left on the medium at its bound. They are
-    /// still owed: the log reads them back from its segments and offers them, in order, once the
-    /// store takes what the queue holds.
-    pub fn store_debt_dropped(&self) -> u64 {
-        self.store_debt_dropped
+    /// How many records, in total since open, the store's catch-up queue has left on the medium at
+    /// its bound. None of them is dropped: the log reads them back from its segments and offers
+    /// them, in order, once the store takes what the queue holds.
+    pub fn store_debt_on_medium(&self) -> u64 {
+        self.store_debt_on_medium
+    }
+
+    /// Whether the store is owed records the queue does not hold, to be read back off the medium:
+    /// past the queue's bound, or everything a log opened over when it was opened. A restart
+    /// cannot know which records a store took before it, so it owes the store the whole log once.
+    pub fn owes_store_from_medium(&self) -> bool {
+        self.store_owed_from.is_some()
     }
 
     /// Give up on the `count` oldest records the log still owes, and hand them back.
@@ -699,8 +734,8 @@ impl Wal {
                 self.store_owed_from = Some((batch_at.0, batch_at.1 + frames * FRAME_BYTES as u64));
             }
         }
-        self.store_debt_dropped = self
-            .store_debt_dropped
+        self.store_debt_on_medium = self
+            .store_debt_on_medium
             .saturating_add((batch.len() - queued) as u64);
         loop {
             if self.owed_to_store.is_empty() && !self.refill_store_debt() {
@@ -779,7 +814,7 @@ impl Wal {
         // the same terms as the one a boot resumes in: a torn tail is cut, a corrupt one is set
         // aside first.
         let recovered = recover_and_truncate(&mut segment, self.factory.as_mut(), self.clock)?;
-        if let Some(q) = recovered.quarantined {
+        for q in recovered.quarantined {
             self.take_quarantine(q);
         }
         Ok(segment)
@@ -831,16 +866,18 @@ impl Wal {
 ///
 /// ## A corrupt segment on the way
 ///
-/// The walk recovers each segment it steps through on the verdict's terms: a torn tail is cut, a
-/// corrupt remainder is set aside in a quarantine before anything is cut, and every quarantine met
-/// is handed back so the log can mark its identities taken and the caller can raise the alarm. A
-/// segment whose whole content was set aside holds no complete record, so the walk steps back over
-/// it exactly as it steps over one a crash left empty.
+/// The walk recovers each segment it steps through on the verdict's terms: a torn tail is cut;
+/// acknowledged damage is copied into a quarantine and never cut — a hole is read past to the
+/// records behind it, and a corrupt remainder closes the segment to writes — and every quarantine
+/// met is handed back so the log can mark its identities taken and the caller can raise the alarm.
+/// A segment that kept no complete record is stepped back over exactly as one a crash left empty.
+/// The index returned is the segment the tail was read from; [`quarantine_below`] reads the ones
+/// beneath it.
 fn open_tail(
     factory: &mut dyn SegmentFactory,
     ceiling: u64,
     clock: Clock,
-) -> Result<(Segment, Recovered, Vec<Quarantine>), OpenError> {
+) -> Result<(Segment, Recovered, Vec<Quarantine>, u64), OpenError> {
     let mut index = factory.highest_index()?.unwrap_or(0);
     let mut quarantined = Vec::new();
     // The highest segment, held while the walk steps back below it for the tail: the appends go to
@@ -854,16 +891,79 @@ fn open_tail(
         // durable somewhere else. Appending then resumes at the boundary rather than at whatever
         // length the crash happened to leave behind.
         let mut recovered = recover_and_truncate(&mut segment, factory, clock)?;
-        // The quarantine travels in the list, not twice.
-        if let Some(q) = recovered.quarantined.take() {
-            quarantined.push(q);
-        }
+        // The quarantines travel in the list, not twice.
+        quarantined.append(&mut recovered.quarantined);
         if !recovered.records.is_empty() || index == 0 {
-            return Ok((newest.unwrap_or(segment), recovered, quarantined));
+            return Ok((newest.unwrap_or(segment), recovered, quarantined, index));
         }
         if newest.is_none() {
             newest = Some(segment);
         }
         index -= 1;
     }
+}
+
+/// Scan every segment below the one the tail was read from, set aside what acknowledged damage
+/// each holds, and name every quarantine's place in the log as a whole.
+///
+/// ## Why the segments below the tail are read at all
+///
+/// [`open_tail`] reads only the tail, and a segment below it is never written again — so damage in
+/// one was never found by anything that could set it aside or say so. It surfaced only as a chain
+/// that did not verify, and [`Wal::read_back`] read past nothing: the rest of that segment simply
+/// dropped out. So each one is scanned here, its holes and a corrupt end copied into a quarantine
+/// exactly as the tail's are, nothing in it cut (it is closed), and every quarantine handed to the
+/// caller with the others. It costs one read of the log at open; the boot reads the whole log once
+/// more when it replays the chain.
+///
+/// ## Where a quarantine sits in the log
+///
+/// A segment that kept a record: its index, the identity of its first record and of its last.
+type KeptSegment = (u64, (u64, u64), (u64, u64));
+
+/// A scan names the records on either side of a hole only inside its own segment. A hole at the
+/// start of a segment follows the last record of the segment before; a remainder at the end of one
+/// is followed by the first record of the next. Those are filled in here, from the records each
+/// segment kept, so the chain can verify across the hole and nowhere else.
+fn quarantine_below(
+    factory: &mut dyn SegmentFactory,
+    ceiling: u64,
+    clock: Clock,
+    tail_index: u64,
+    tail: &Recovered,
+    mut quarantined: Vec<Quarantine>,
+) -> Result<Vec<Quarantine>, OpenError> {
+    // Each segment that kept a record: its index, its first record and its last.
+    let mut kept: Vec<KeptSegment> = Vec::new();
+    for index in 0..tail_index {
+        let Some(backend) = factory.existing(index)? else {
+            continue;
+        };
+        let earlier = Segment::open_at(backend, index, 0, ceiling)?;
+        let mut found = crate::recover::quarantine_in_place(&earlier, factory, clock)?;
+        if let (Some(first), Some(last)) = (found.records.first(), found.records.last()) {
+            kept.push((index, first.identity(), last.identity()));
+        }
+        quarantined.append(&mut found.quarantined);
+    }
+    if let (Some(first), Some(last)) = (tail.records.first(), tail.records.last()) {
+        kept.push((tail_index, first.identity(), last.identity()));
+    }
+    quarantined.sort_by_key(|q| (q.segment, q.offset));
+    for q in &mut quarantined {
+        if q.before.is_none() {
+            q.before = kept
+                .iter()
+                .rev()
+                .find(|(index, _, _)| *index < q.segment)
+                .map(|(_, _, last)| *last);
+        }
+        if q.after.is_none() {
+            q.after = kept
+                .iter()
+                .find(|(index, _, _)| *index > q.segment)
+                .map(|(_, first, _)| *first);
+        }
+    }
+    Ok(quarantined)
 }

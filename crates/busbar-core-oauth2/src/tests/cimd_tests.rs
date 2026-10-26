@@ -4,8 +4,8 @@
 //! THE DOCUMENT CHECKS, adversarially. The flow test proves a GOOD document admits a client end
 //! to end; every test here is a document that must NOT, each aimed at the specific escalation its
 //! member exists to close. These are busbar's own checks (the tree pins `oauth-as` 1.0.0, which
-//! ships a CIMD validator behind an off-by-default `cimd` feature this tree does not enable —
-//! see the TODO in [`super`]), so they are the whole of the enforcement today and must each be
+//! ships a CIMD validator behind an off-by-default `cimd` feature this tree does not enable),
+//! so they are the whole of the enforcement today and must each be
 //! held red-able on their own.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,7 +16,7 @@ use oauth_as::scope::ScopeSet;
 use oauth_as::store::{MemoryStorage, Storage as _};
 
 use super::{
-    document_need, is_cimd_client_id, materialize, CimdFetch, CimdStore, ConnectorFetch,
+    document_need, is_cimd_client_id, materialize, site_of, CimdFetch, CimdStore, ConnectorFetch,
     DOCUMENT_NEED, FETCH_TIMEOUT, MAX_DOCUMENT_BYTES,
 };
 
@@ -340,6 +340,9 @@ struct Recorder {
     opened: Mutex<Vec<Opened>>,
     closed: Mutex<Vec<ConnId>>,
     refuse_declare: bool,
+    /// The far end never answers: every read waits, as on an address that drops the connection
+    /// attempt or a name whose resolution stalls.
+    silent: bool,
 }
 
 impl Recorder {
@@ -457,6 +460,9 @@ impl PollConns for Recorder {
         _: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<Piece, ConnError>> {
+        if self.silent {
+            return Poll::Pending;
+        }
         let mut script = self.script.lock().unwrap();
         let Some(script) = script.as_mut() else {
             return Poll::Ready(Err(ConnError::Closed));
@@ -806,4 +812,283 @@ async fn one_slow_site_cannot_hold_every_document_fetch() {
          ({} fetches started)",
         fetch.fetches.load(Ordering::SeqCst)
     );
+}
+
+/// RED (row 159): the per-site bound keys a document on what one owner holds. Every address of one
+/// IPv6 /64 is one site (before the fix each literal was its own, so one /64 minted unlimited
+/// sites); the tenants of a shared public suffix are each their own site (before the fix
+/// `alice.github.io` and `bob.github.io` shared one two-fetch share); and one owner's many names
+/// under its registrable domain are still one site.
+#[test]
+fn a_site_is_what_one_owner_holds() {
+    let site = |host: &str| site_of(&format!("https://{host}/doc"));
+    assert_eq!(
+        site("[2001:db8:1:2::1]"),
+        site("[2001:db8:1:2:ffff:ffff:ffff:ffff]"),
+        "two addresses of one /64 are two sites"
+    );
+    assert_ne!(
+        site("[2001:db8:1:2::1]"),
+        site("[2001:db8:1:3::1]"),
+        "two /64s are one site"
+    );
+    for (a, b) in [("alice.github.io", "bob.github.io"), ("a.co.uk", "b.co.uk")] {
+        assert_ne!(site(a), site(b), "`{a}` and `{b}` share one site");
+    }
+    assert_eq!(site("alice.github.io"), "alice.github.io");
+    assert_eq!(site("A.B.Attacker.Example"), site("c.attacker.example"));
+    assert_eq!(site("deep.a.co.uk"), "a.co.uk");
+    assert_eq!(
+        site("github.io"),
+        "github.io",
+        "a public suffix is its own site"
+    );
+    assert_eq!(site("192.0.2.7"), "192.0.2.7");
+    assert_ne!(site("192.0.2.7"), site("192.0.2.8"));
+}
+
+/// A document host whose documents under one IPv6 /64 never answer, and every other at once.
+struct OneSlowBlock {
+    fetches: std::sync::atomic::AtomicUsize,
+}
+
+impl CimdFetch for OneSlowBlock {
+    fn fetch<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        let mut doc = document();
+        doc["client_id"] = serde_json::json!(url);
+        let body = serde_json::to_vec(&doc).expect("serialises");
+        let slow = url.starts_with("https://[2001:db8:1:2:");
+        Box::pin(async move {
+            if slow {
+                std::future::pending::<()>().await;
+            }
+            Ok(body)
+        })
+    }
+}
+
+/// RED (row 159): a caller holding one IPv6 /64 cannot hold every document fetch by naming a
+/// document on each of sixteen of its addresses. Before the fix each address was a site of its own,
+/// the sixteen took every fetch permit, and a client on another site read as unknown.
+#[tokio::test]
+async fn one_slow_ipv6_block_cannot_hold_every_document_fetch() {
+    let fetch = Arc::new(OneSlowBlock {
+        fetches: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let handle: Arc<OneSlowBlock> = Arc::clone(&fetch);
+    let store = Arc::new(CimdStore::new(
+        MemoryStorage::new(),
+        ceiling(),
+        handle,
+        Vec::new(),
+    ));
+    for i in 1..=16 {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            let _ = store
+                .get_client(&ClientId::new(format!("https://[2001:db8:1:2::{i:x}]/doc")))
+                .await;
+        });
+    }
+    for _ in 0..1000 {
+        tokio::task::yield_now().await;
+    }
+    let found = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store.get_client(&ClientId::new(URL)),
+    )
+    .await
+    .expect("answered");
+    assert!(
+        matches!(found, Ok(Some(_))),
+        "a client on another site read as unknown while one /64's fetches were held ({} fetches \
+         started)",
+        fetch.fetches.load(Ordering::SeqCst)
+    );
+}
+
+/// RED (row 159): a request that is dropped while it waits on a document fetch leaves no flight
+/// behind. Before the fix the flight was taken out only after the fetch answered, so a caller that
+/// named a fresh URL and hung up on every request grew the table of flights without a bound.
+#[tokio::test]
+async fn an_abandoned_fetch_leaves_no_flight_behind() {
+    let fetch = Arc::new(Counting {
+        fetches: std::sync::atomic::AtomicUsize::new(0),
+        held: true,
+    });
+    let handle: Arc<Counting> = Arc::clone(&fetch);
+    let store = CimdStore::new(MemoryStorage::new(), ceiling(), handle, Vec::new());
+    for i in 0..3 {
+        let abandoned = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            store.get_client(&ClientId::new(format!("https://gone{i}.example/doc"))),
+        )
+        .await;
+        assert!(abandoned.is_err(), "the held fetch never answers");
+    }
+    assert_eq!(
+        fetch.fetches.load(Ordering::SeqCst),
+        3,
+        "each request fetched"
+    );
+    let left = store
+        .documents
+        .flights
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .len();
+    assert_eq!(left, 0, "{left} abandoned flights are still held");
+}
+
+/// RED: a far end that never answers (an address that drops the connection attempt, a name whose
+/// resolution stalls: nothing the caller has to own) lets its fetch go within a few seconds, not
+/// at the ten-second ceiling a document that is arriving is held to. Before the fix it held its
+/// fetch permit for the whole ceiling.
+#[tokio::test(start_paused = true)]
+async fn a_far_end_that_never_answers_lets_its_fetch_go_early() {
+    let table = Arc::new(Recorder {
+        script: Mutex::new(Some(Script {
+            open: Ok(()),
+            pieces: Vec::new(),
+        })),
+        silent: true,
+        ..Recorder::default()
+    });
+    let got = tokio::time::timeout(std::time::Duration::from_secs(5), fetch_over(&table, URL))
+        .await
+        .expect("a far end that never answers lets the fetch go within five seconds");
+    got.expect_err("nothing was answered");
+    assert_eq!(
+        *table.closed.lock().unwrap(),
+        vec![ConnId(7)],
+        "the connection is closed"
+    );
+}
+
+/// GREEN twin: a far end that answers is read to the end of its document.
+#[tokio::test(start_paused = true)]
+async fn a_far_end_that_answers_is_read_to_its_end() {
+    let table = Recorder::ok(200, br#"{"client_id":"x"}"#);
+    let body = tokio::time::timeout(std::time::Duration::from_secs(5), fetch_over(&table, URL))
+        .await
+        .expect("answered at once")
+        .expect("a 200 document is fetched");
+    assert_eq!(body, br#"{"client_id":"x"}"#);
+}
+
+/// A document host where no document at an address literal ever answers, and every document at a
+/// name answers at once.
+struct AddressesNeverAnswer {
+    fetches: std::sync::atomic::AtomicUsize,
+}
+
+impl CimdFetch for AddressesNeverAnswer {
+    fn fetch<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        let mut doc = document();
+        doc["client_id"] = serde_json::json!(url);
+        let body = serde_json::to_vec(&doc).expect("serialises");
+        let host = busbar_contract::net::parse_url(url)
+            .map(|p| p.host)
+            .unwrap_or_default();
+        let literal = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok();
+        Box::pin(async move {
+            if literal {
+                std::future::pending::<()>().await;
+            }
+            Ok(body)
+        })
+    }
+}
+
+/// RED: slow documents at addresses the caller does not have to own cannot hold every document
+/// fetch. A caller names two documents at each of eight addresses (four IPv4 addresses, four IPv6
+/// /64s), none of which ever answers; a metadata-document client at a name is still fetched and
+/// known. Before the fix each address was a site of its own, the sixteen took every fetch permit,
+/// and every uncached client elsewhere read as unknown.
+#[tokio::test]
+async fn documents_at_addresses_cannot_hold_every_document_fetch() {
+    let fetch = Arc::new(AddressesNeverAnswer {
+        fetches: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let handle: Arc<AddressesNeverAnswer> = Arc::clone(&fetch);
+    let store = Arc::new(CimdStore::new(
+        MemoryStorage::new(),
+        ceiling(),
+        handle,
+        Vec::new(),
+    ));
+    let mut hosts: Vec<String> = (1..=4).map(|i| format!("198.51.100.{i}")).collect();
+    hosts.extend((1..=4).map(|i| format!("[2001:db8:{i:x}::1]")));
+    for host in &hosts {
+        for doc in ["a", "b"] {
+            let store = Arc::clone(&store);
+            let url = format!("https://{host}/{doc}");
+            tokio::spawn(async move {
+                let _ = store.get_client(&ClientId::new(url)).await;
+            });
+        }
+    }
+    for _ in 0..1000 {
+        tokio::task::yield_now().await;
+    }
+    let found = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store.get_client(&ClientId::new(URL)),
+    )
+    .await
+    .expect("answered");
+    assert!(
+        matches!(found, Ok(Some(_))),
+        "a client at a name read as unknown while documents at addresses held the fetches ({} \
+         fetches started)",
+        fetch.fetches.load(Ordering::SeqCst)
+    );
+}
+
+/// A document host that answers every document at once, address literals included.
+struct AnswersAll;
+
+impl CimdFetch for AnswersAll {
+    fn fetch<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'a>>
+    {
+        let mut doc = document();
+        doc["client_id"] = serde_json::json!(url);
+        let body = serde_json::to_vec(&doc).expect("serialises");
+        Box::pin(async move { Ok(body) })
+    }
+}
+
+/// GREEN twin: a document at an address literal that answers is still fetched and known.
+#[tokio::test]
+async fn a_document_at_an_address_is_still_fetched() {
+    let store = CimdStore::new(
+        MemoryStorage::new(),
+        ceiling(),
+        Arc::new(AnswersAll),
+        Vec::new(),
+    );
+    for url in ["https://198.51.100.9/doc", "https://[2001:db8:9::1]/doc"] {
+        let found = store
+            .get_client(&ClientId::new(url))
+            .await
+            .expect("not an error");
+        assert!(found.is_some(), "the document at `{url}` is known");
+    }
 }

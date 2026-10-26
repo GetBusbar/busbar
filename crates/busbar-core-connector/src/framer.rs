@@ -25,8 +25,8 @@ use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
     PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT,
-    SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
+    SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -215,6 +215,13 @@ pub struct Yielded {
     pub ended: bool,
     /// The monotonic instant (host clock, ns) the framer asked to be called at.
     pub deadline_ns: Option<u64>,
+    /// On an `emit`: the bytes were taken and the stream's queue is at the framer's high-water
+    /// mark (`YIELD_STREAM_FULL`): the host emits nothing more on that stream until it is
+    /// writable again ([`Yielded::writable`]) or its last piece arrives.
+    pub full: bool,
+    /// The streams the framer says are writable again (`PIECE_WRITABLE` pieces), in order. Such a
+    /// piece is a signal to the host and never a frame: it is not among [`Yielded::pieces`].
+    pub writable: Vec<u64>,
 }
 
 /// The host's buffers a framer op writes into.
@@ -439,6 +446,15 @@ impl Buffers {
             .ok_or_else(|| bad("pieces"))?;
         let first_piece = into.pieces.len();
         for p in pieces {
+            if p.flags & PIECE_WRITABLE != 0 {
+                // A STREAM WRITABLE AGAIN: always an empty piece with no other flag, ending no
+                // frame and no stream. The host's signal, never a frame handed up.
+                if p.len != 0 || p.flags != PIECE_WRITABLE {
+                    return Err(bad("a writable piece with bytes or another flag"));
+                }
+                into.writable.push(p.stream);
+                continue;
+            }
             let at = usize::try_from(p.offset).map_err(|_| bad("piece"))?;
             let len = usize::try_from(p.len).map_err(|_| bad("piece"))?;
             let bytes = frame
@@ -521,6 +537,7 @@ impl Buffers {
             into.heads.push(head);
         }
         into.ended |= y.flags & YIELD_ENDED != 0;
+        into.full |= y.flags & YIELD_STREAM_FULL != 0;
         into.deadline_ns = (y.flags & YIELD_HAS_DEADLINE != 0).then_some(y.next_deadline_ns);
         Ok(y.flags & YIELD_MORE == 0)
     }
@@ -679,6 +696,12 @@ pub fn accept_offer(door: &dyn FramerDoor) -> Result<Vec<Vec<u8>>, Refused> {
     locate_as(door, "", true).map(|l| l.offer)
 }
 
+/// THE MOST ROOM THE HOST GIVES ONE `locate` ANSWER, per buffer: a short answer naming more is the
+/// transport's FAULT, never an allocation of what it named (the contract admits up to 4 GiB a
+/// buffer). An authority, an offered name and head lines are far smaller; a protocol offer is at
+/// most `MAX_ALPN_BYTES`, the handshake's own bound.
+const LOCATE_CAP: usize = 64 * 1024;
+
 fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Located, Refused> {
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
     let mut defaults_cap = 256_usize;
@@ -705,11 +728,22 @@ fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Locate
             || o.alpn_needed > alpn_cap as u64
             || o.defaults_needed > defaults_cap as u64;
         if c.outcome == Outcome::Failed && short {
-            let grow = |needed: u64, cap: usize| usize::try_from(needed).unwrap_or(0).max(cap);
-            auth_cap = grow(o.authority_needed, auth_cap);
-            name_cap = grow(o.name_needed, name_cap);
-            alpn_cap = grow(o.alpn_needed, alpn_cap);
-            defaults_cap = grow(o.defaults_needed, defaults_cap);
+            let grow = |needed: u64, cap: usize, what: &str| -> Result<usize, Refused> {
+                match usize::try_from(needed) {
+                    Ok(n) if n <= LOCATE_CAP => Ok(n.max(cap)),
+                    _ => Err(Refused {
+                        outcome: Outcome::Fault,
+                        error: format!(
+                            "the framer's locate answer asks {needed} bytes for its {what}, past \
+                             the host's {LOCATE_CAP}"
+                        ),
+                    }),
+                }
+            };
+            auth_cap = grow(o.authority_needed, auth_cap, "authority")?;
+            name_cap = grow(o.name_needed, name_cap, "name")?;
+            alpn_cap = grow(o.alpn_needed, alpn_cap, "protocol offer")?;
+            defaults_cap = grow(o.defaults_needed, defaults_cap, "head lines")?;
             continue;
         }
         ready(c)?;
@@ -762,7 +796,7 @@ pub fn encode(
 ///
 /// # Errors
 ///
-/// The entry refused to render it.
+/// The entry refused to render it; a FAULT when it answered `YIELD_MORE` (an encode answers whole).
 pub fn encode_head(
     door: &dyn FramerDoor,
     method: &[u8],
@@ -795,7 +829,18 @@ pub fn encode_head(
     let mut o: FramerOut = blank_out();
     ready(door.cross(Call::Encode(&mut i, &mut o)))?;
     let mut y = Yielded::default();
-    bufs.take(&o, &mut y)?;
+    // `encode` has no framing to continue: a re-call would render the message again from its
+    // start. So it answers whole into the buffer sized for it, and a framer that answers it
+    // `YIELD_MORE` owes bytes no re-call can ask for: a FAULT, never a truncated message sent as
+    // the whole one.
+    if !bufs.take(&o, &mut y)? {
+        return Err(Refused {
+            outcome: Outcome::Fault,
+            error: "the framer answered `encode` with YIELD_MORE: an encode renders the whole \
+                    message into one buffer sized for it"
+                .to_owned(),
+        });
+    }
     Ok(y.wire)
 }
 

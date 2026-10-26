@@ -54,6 +54,9 @@ Issues of particular interest include:
 - Admin-plane isolation (reaching the control plane from the data port).
 - Request smuggling / routing confusion between pools, models, or providers.
 - Escape from a dynamically loaded plugin into the host or another plane.
+- A path by which a plugin obtains, prints, logs, serializes or sends to the wrong host a
+  credential it was configured with, other than reading busbar's own process memory (the accepted
+  in-process residual; see [threat model T10](THREAT_MODEL.md)).
 - Denial of service against the gateway or its circuit breaker.
 - The circuit breaker mis-attributing a client fault as an upstream fault (or vice
   versa) in a way that drains a pool or leaks state across requests.

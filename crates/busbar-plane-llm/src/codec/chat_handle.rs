@@ -420,12 +420,8 @@ fn envelope_foreign_signatures(ir: &mut IrResponse, ingress_protocol: &str) {
 ///
 /// ONE PROJECTION: this delegates to [`crate::codec::ir::IrUsage::to_token_usage`], the same function the
 /// streaming A-tap and the same-protocol usage tap below already ledger through. It used to build
-/// its own `TokenUsage` from the RAW `IrUsage` totals, which silently skipped the projection's
-/// per-dialect billed override — a Cohere completion reporting `usage.billed_units` distinct from
-/// `usage.tokens` was invoiced the billed counts when streamed and the raw counts when buffered,
-/// i.e. two different bills for one completion depending only on the caller's `stream` flag. Every
-/// dialect that leaves the billed fields `None` (all five others) projects byte-identically either
-/// way, so this is a no-op outside Cohere.
+/// its own `TokenUsage`, a second projection that could drift from the one the stream ledgers: one
+/// completion must bill one figure whatever the caller's `stream` flag.
 pub fn chat_usage(r: &IrResponse) -> Option<Billing> {
     Some(Billing::Tokens(r.usage.to_token_usage()))
 }

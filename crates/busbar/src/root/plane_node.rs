@@ -50,15 +50,15 @@ use busbar_contract::caps::{
     VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, UnitKey};
-use busbar_kernel::plane_host::PlaneAnswer;
+use busbar_kernel::plane_driver::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{
     AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
 };
 use busbar_kernel::Registration;
 use busbar_kernel_audit::{
-    AuditInputs, Controls, FinishClass as RecordFinish, OpClassId as RecordOpClass, OutcomeFacts,
-    Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
+    AuditInputs, Controls, FinishClass as RecordFinish, HookApplied, OpClassId as RecordOpClass,
+    OutcomeFacts, Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
 };
 use busbar_kernel_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
 
@@ -401,6 +401,19 @@ impl Node {
             let _ = self.lane.set(lane);
         }
         let _ = self.book.set(book);
+    }
+
+    /// The lane to the configured store the book bound to this node keeps ([`Node::bind_book`]):
+    /// the lane the boot's lease on the host name is held on. `None` before a book is bound, or on
+    /// a book over no store.
+    #[must_use]
+    pub fn book_lane(&self) -> Option<crate::root::durability::JournalLane> {
+        self.book.get().and_then(|book| {
+            book.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .lane()
+                .cloned()
+        })
     }
 
     /// WHY THIS NODE REFUSES A NEW MONEY-BEARING UNIT NOW, or `None` — one atomic read while the
@@ -1417,13 +1430,6 @@ fn priced_posting(
     // history resolves which entry was in force then; a later apply is not in this view at all, so
     // there is no arm here that could read one.
     let priced = busbar_kernel_ledger::cost::price_fail_closed(&history.view(), &posting);
-    // THE CACHE IS WRITTEN AND IS NEVER READ BACK. It rides the posting so a reader has a figure to
-    // compare a re-derivation against and so a totals read need not re-price a day of postings on
-    // every request — but the figure this function RETURNS is the lookup's, taken off `priced`
-    // directly. There is no arm below that consults `posting.cached`, which is the invariant stated
-    // as code rather than as a comment: corrupt the cache and this expression answers exactly what
-    // the quantities and the history say.
-    posting.cached = priced.as_ref().ok().map(|p| p.as_cache(history.seq()));
     (posting, priced)
 }
 
@@ -2459,6 +2465,17 @@ impl busbar_kernel_egress::ports::Journal for NodeEndPost {
     fn abandoned(&self, _record: &busbar_kernel_egress::ports::Dispatched) {}
 }
 
+/// THE HOOKS A DRIVEN UNIT'S HOOK STAGE RAN, held with the unit's other facts until its one record
+/// is sealed (THE DESIGN §1: the record's "controls (... hooks applied)"), as its walk's dispatch
+/// is. A unit with no open facts keeps nothing.
+impl busbar_kernel::plane_driver::HookJournal for NodeEndPost {
+    fn hooks_ran(&self, record: &busbar_kernel::plane_driver::HooksRan) {
+        if let Some(open) = self.lock().get_mut(&record.unit) {
+            open.sealing.ran.hooks.extend(record.hooks.iter().cloned());
+        }
+    }
+}
+
 /// THE RUNNING UNIT'S CHECKPOINT, ON THE NODE'S BOOK (THE DESIGN §7): the root's flush tick hands
 /// each driven unit's accrual so far here ([`busbar_kernel::plane_driver::PlaneMoney::flush_checkpoints`]),
 /// and it is journaled as a `unit.accrued` record under the facts the unit was opened with at
@@ -2560,6 +2577,9 @@ struct Ran {
     verified: Vec<LaneId>,
     /// The lane of the verified destination its egress walk last dialled, where one dialled.
     dialled: Option<LaneId>,
+    /// Every hook its hook stage reported running, in the order they ran (THE DESIGN §1: "hooks
+    /// applied"): empty for a unit no hook ran for.
+    hooks: Vec<HookApplied>,
 }
 
 /// A unit's record-to-be while it runs: what the node saw ([`Ran`]), and its audit door's facts and
@@ -2666,13 +2686,16 @@ impl Sealing {
     ) {
         let Sealing { seal, ran } = self;
         let refused = matches!(outcome, Outcome::Refused(..));
-        // THE CONTROLS THE UNIT REALLY RAN UNDER (THE DESIGN §1: hold/settle seqs): the hold its
-        // admission opened on the chain and the settlement its one line closed it with, by seq —
-        // refs, never an amount. The hook facts stay unset: the plane's hook taps run inside its
-        // own leg and the audit step's facts carry none of them across to the node.
+        // THE CONTROLS THE UNIT REALLY RAN UNDER (THE DESIGN §1: "hold/settle seqs, slice, hooks
+        // applied"): the hold its admission opened on the chain and the settlement its one line
+        // closed it with, by seq — refs, never an amount — and every hook its hook stage reported
+        // running, in order, with its head; a hook that failed is recorded failed, never dropped.
+        let hook_failed = ran.hooks.iter().any(|hook| hook.failed);
+        let destination = ran.destination(line.served);
         let controls = Controls {
             hold_ref: ran.hold.map(|seq| seq.to_string()),
             settle_ref: line.settled_at.map(|seq| seq.to_string()),
+            hooks_applied: ran.hooks,
             ..Controls::default()
         };
         let inputs = AuditInputs {
@@ -2681,7 +2704,7 @@ impl Sealing {
                 unit_key: seal.key,
                 incarnation: 0,
                 op_class: RecordOpClass::new(seal.facts.op_class.as_str()),
-                destination: ran.destination(line.served),
+                destination,
                 parent: seal.parent,
                 pre_hook_head: None,
                 post_hook_head: None,
@@ -2693,7 +2716,7 @@ impl Sealing {
                 unit_end: outcome,
                 step: outcome.step(),
                 finish: audit_finish(seal.facts.finish),
-                hook_failed: false,
+                hook_failed,
                 emission_delta: 0,
                 stale_policy: false,
             },
@@ -2723,7 +2746,7 @@ impl Sealing {
 }
 
 /// How the plane classed the finish, in the record's own words.
-fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
+pub(crate) fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
     match finish {
         busbar_contract::FinishClass::Complete => RecordFinish::Complete,
         busbar_contract::FinishClass::TurnComplete => RecordFinish::TurnComplete,
@@ -2862,7 +2885,10 @@ fn settling_at<'a>(
 /// The same `card_at` the admin read resolves through (`busbar-core-admin/src/v1/service.rs`). TWO
 /// COPIES OF ONE RULING ARE TWO CHANCES TO GET IT WRONG — this one is written to match rather than to
 /// differ, and #43's end state is the one kernel-side implementation that retires both.
-fn card_in_force(card: Option<&crate::root::kernel::PinnedHistory>, arrived_ms: u64) -> u64 {
+pub(crate) fn card_in_force(
+    card: Option<&crate::root::kernel::PinnedHistory>,
+    arrived_ms: u64,
+) -> u64 {
     card.and_then(|pinned| pinned.view().card_at(arrived_ms).map(|(seq, _)| seq.get()))
         .unwrap_or_else(|| busbar_kernel_ledger::cost::HistorySeq::OPENING.get())
 }

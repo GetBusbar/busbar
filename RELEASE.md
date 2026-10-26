@@ -1,21 +1,23 @@
 # Releasing Busbar
 
-The branch ladder is **predev → dev → qa → main**, and ModernCI judges and moves every rung from
-this repository's branch files (OWNER 2026-10-12, "ModernCI only"; the ruling is
+The branch ladder is **dev → qa → main** (predev is retired, OWNER 2026-10-16: lanes land on
+`dev`), and ModernCI judges and moves every rung from this repository's branch files (OWNER
+2026-10-12, "ModernCI only"; the ruling is
 [`docs/design/BUSBAR-1.6.0.md`](docs/design/BUSBAR-1.6.0.md) Part 6, "BUSBAR-RELEASE RETIRED FROM
 BUSBAR"). A branch file is named for the branch being moved and says what the move must pass.
 
 | Move | Branch file | What it runs | Consent |
 |---|---|---|---|
-| a `lane-*` branch into **`predev`** | [`.ci/default.yaml`](.ci/default.yaml) | preflight, every registered gate, clippy, compile, test, doctest, deletion matrix, `cargo deny`; no worse than predev (required check `ci`) | none |
-| **`predev`** into **`dev`** | [`.ci/predev.yaml`](.ci/predev.yaml) | the gates, the oracle against the 1.5.5 golden, conformance, `scripts/verify-1.6.0-done.sh`, the Q128 audit | the owner's approval |
-| **`dev`** into **`qa`** | `.ci/dev.yaml` | the same, plus build and test, the fuzz smoke and the signing gate, the soak, the release binaries and the container | the owner (the org ruleset keeps `qa` locked) |
+| a `lane-*` branch into **`dev`** | [`.ci/default.yaml`](.ci/default.yaml) | preflight, every registered gate, clippy, compile, test, doctest, deletion matrix, `cargo deny`, the gated suites; no worse than dev (required check `ci`) | none |
+| **`dev`** into **`qa`** | [`.ci/dev.yaml`](.ci/dev.yaml) | the gates, the oracle against the 1.5.5 golden, conformance, `scripts/verify-1.6.0-done.sh`, the Q128 audit, the gated suites; all absolute | the owner's approval (the org ruleset keeps `qa` locked) |
 | **`qa`** into **`main`** | `.ci/qa.yaml` | the same; on landing, the release is signed and published from the build that was judged, never rebuilt | the owner (the org ruleset keeps `main` locked) |
 
-`.ci/dev.yaml` and `.ci/qa.yaml` are not written yet: until they land, nothing is built or published
-from `qa` or `main`. The busbar-release hop (`promote.yml`, the engine pin) is deleted. busbar-release
-remains the home of the oracle (`busbar-oracle`, pinned by `testing/shadow-oracle/oracle-rust.pin`),
-the soak and the plugin fleet generator.
+`.ci/qa.yaml` is not written yet: until it lands, nothing is published from `main`. The
+busbar-release hop (`promote.yml`, the engine pin) is deleted and no move is decided by it.
+busbar-release remains the tools repo: the home of the oracle (`busbar-oracle`, pinned by
+`testing/shadow-oracle/oracle-rust.pin` and fetched from its `dev-bin` release by `bin/oracle`), the
+soak and the plugin fleet generator. The 1.5.5 golden the oracle reads stays in this tree, in
+`testing/shadow-oracle/golden/1.5.5`.
 
 **The tag is an OUTPUT of a green release, never an input.** Nobody tags by hand; no workflow is
 triggered by a `v*` tag (`cargo xtask gate workflow-rules`, rule R1). Docker Hub tag immutability
@@ -37,8 +39,8 @@ python3 .github/scripts/roll_changelog.py 1.6.0 CHANGELOG.md
 ```
 
 That bumps `crates/busbar/Cargo.toml` + `Cargo.lock`, regenerates the committed OpenAPI schema, and
-rolls `[Unreleased]` to `[1.6.0]` with today's date. It does **not** tag. Land it on `predev` like
-any other change; it reaches `dev` with the next promotion.
+rolls `[Unreleased]` to `[1.6.0]` with today's date. It does **not** tag. Land it on `dev` like
+any other change; it reaches `qa` with the next promotion.
 
 ## Moving a version up the ladder
 
@@ -47,7 +49,7 @@ is fixed forward on the lower branch: every push re-judges it on the new head.
 
 ## Branch protection this assumes
 
-`predev` requires ModernCI's check `ci`; `qa` and `main` take the owner's consent (the org ruleset).
+`dev` requires ModernCI's check `ci`; `qa` and `main` take the owner's consent (the org ruleset).
 
 Branch protection lives in repository rulesets, not in a script (see `.github/required-status-checks.md`).
 Keep `enforce_admins: true`, `required_linear_history: true`, `allow_force_pushes: false` and

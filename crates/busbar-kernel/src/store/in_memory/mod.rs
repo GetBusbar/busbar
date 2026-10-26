@@ -274,6 +274,18 @@ impl HealthState {
         }
     }
 
+    /// Re-set the hard-down sticky cooldown and the honoured-`Retry-After` ceiling on a store already
+    /// in service (the process-lifetime plane store takes each generation's `limits.*` here). Learned
+    /// cells are untouched; an already-armed cooldown keeps its `until`.
+    pub(crate) fn set_limits(
+        &self,
+        hard_down_cooldown_secs: u64,
+        max_honored_retry_after_secs: u64,
+    ) {
+        self.unit
+            .set_limits(hard_down_cooldown_secs, max_honored_retry_after_secs);
+    }
+
     /// Construct with PRIOR HEALTH STATE restored by stable lane identity: each lane whose
     /// (member, route) appears in `restored` starts with that snapshot's breaker/cooldown/streak/
     /// hard-down/latency/counters instead of fresh state — the carry-over that makes a lane-set
@@ -284,8 +296,6 @@ impl HealthState {
     /// baseline fields (budget/cooldown/streak/dead/counters) are OVERRIDDEN by a matching
     /// snapshot — the snapshot IS the live truth the previous store held; per-pool cells are
     /// re-created eagerly so a restored Open cell blocks dispatch from the first request.
-    // Bin-target consumer is the config-apply core (next slice); the carry-over tests use it now.
-    #[allow(dead_code)]
     #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
     #[inline(never)]
     pub(crate) fn new_with_limits_restored(
@@ -711,13 +721,13 @@ impl HealthState {
         ls.last_trip_at.store(now, Ordering::Relaxed);
     }
 
-    pub(crate) fn record_success_for(&self, pool: &str, lane: usize) {
+    pub(crate) fn record_success_for(&self, pool: &str, lane: usize, now: u64) {
         let ls = self.get_lane(lane);
         // Dead lane: count the success for observability, don't touch the breaker.
         if !ls.dead.load(Ordering::Relaxed) {
             let cell = self.cell(pool, lane);
             // A HalfOpen→Closed recovery re-admits this cell to selection with a zeroed accumulator.
-            if cell.fsm().record_success(Self::now_secs()) {
+            if cell.fsm().record_success(now) {
                 self.reset_swrr_for(pool, cell.as_ref());
             }
         }

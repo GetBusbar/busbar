@@ -10,6 +10,10 @@
 //! receiver's path, so every test here failed to build. The off-by-default half is the parity
 //! guard: a document that does not write the section claims exactly what it claimed before.
 
+// A list read is `unsafe` while its pointer and length fields are pub (status row 194), and
+// safe once #1471 makes them private: the same `unsafe { x.list() }` compiles on both.
+#![allow(unused_unsafe)]
+
 use busbar_contract::abi::mechanism::door::{SECTION_CONSUMED, SECTION_DECLARING};
 use busbar_contract::abi::plane::CLAIM_EXACT;
 use busbar_plane_llm::exchange::webhook::{
@@ -75,14 +79,13 @@ fn a_section_that_does_not_read_is_refused_naming_it() {
 
 #[test]
 fn the_statement_owns_the_section_neither_declaring_nor_consumed() {
-    // SAFETY: the Statement's sections are a `'static` list of `sections_len` entries.
-    let sections =
-        unsafe { std::slice::from_raw_parts(STATEMENT.sections, STATEMENT.sections_len) };
+    let statement = STATEMENT;
+    let sections = unsafe { statement.sections() };
     let owned: Vec<&[u8]> = sections
         .iter()
         .filter(|s| s.flags & (SECTION_DECLARING | SECTION_CONSUMED) == 0)
         // SAFETY: each `AbiStr` names a `'static` string of `len` bytes.
-        .map(|s| unsafe { std::slice::from_raw_parts(s.name.ptr, s.name.len) })
+        .map(|s| unsafe { std::slice::from_raw_parts(s.name.ptr(), s.name.len()) })
         .collect();
     assert_eq!(owned, [SECTION.as_bytes()]);
 }

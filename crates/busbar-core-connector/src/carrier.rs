@@ -19,7 +19,6 @@
 //! dropped in.
 
 use std::io;
-use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
@@ -79,12 +78,6 @@ fn op_of(c: &Carry<'_>) -> u8 {
         Carry::Cancel(..) => 9,
     }
 }
-
-/// WHERE A FRAMER'S CONNECTION ON THE LEGACY WIRE SEAM FINDS ITS CARRIER ([`crate::wire::HostWire`]):
-/// asked at each dial, answering the address carrier of the connector that serves it (the first
-/// carrier in declared order whose claim serves a port, `Transports::address_carrier`), or `None`
-/// when it serves none. The wire holds it; no process-wide slot does.
-pub type AddressCarrier = Arc<dyn Fn() -> Option<Arc<dyn FramerDoor>> + Send + Sync>;
 
 /// The text of a crossing that did not answer READY.
 #[must_use]
@@ -481,12 +474,6 @@ impl Carried {
         let _ = wr.cross(self.door.as_ref(), Carry::Shut(&mut i, &mut o), None);
     }
 
-    /// Whether the connection was closed.
-    #[must_use]
-    pub fn is_shut(&self) -> bool {
-        self.shut.load(Ordering::Acquire)
-    }
-
     /// TAKE the dialled or accepted socket off the host's table as the byte stream moves on to the
     /// kernel's own serving loop, and forget the carrier's connection.
     #[must_use]
@@ -501,80 +488,6 @@ impl Carried {
 impl Drop for Carried {
     fn drop(&mut self) {
         self.close();
-    }
-}
-
-/// A CARRIED CONNECTION AS A BYTE STREAM (`futures-io` `AsyncRead`/`AsyncWrite`), with the bytes a
-/// framer took and did not answer in front of it: what the host serves over a detached connection
-/// (the kernel's own loop, an upgrade's next layer). Every byte still crosses the carrier.
-pub struct CarrierStream {
-    carried: Arc<Carried>,
-    first: std::collections::VecDeque<u8>,
-}
-
-impl std::fmt::Debug for CarrierStream {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CarrierStream")
-            .field("carried", &self.carried)
-            .finish_non_exhaustive()
-    }
-}
-
-impl CarrierStream {
-    /// `carried`, read after `first`.
-    #[must_use]
-    pub fn new(carried: Arc<Carried>, first: Vec<u8>) -> Self {
-        Self {
-            carried,
-            first: first.into(),
-        }
-    }
-}
-
-impl futures::io::AsyncRead for CarrierStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        if !self.first.is_empty() {
-            let n = self.first.len().min(buf.len());
-            for (slot, b) in buf.iter_mut().zip(self.first.drain(..n)) {
-                *slot = b;
-            }
-            return Poll::Ready(Ok(n));
-        }
-        if buf.is_empty() {
-            return Poll::Ready(Ok(0));
-        }
-        self.carried.poll_read(cx, buf).map_ok(|(n, _)| n)
-    }
-}
-
-impl futures::io::AsyncWrite for CarrierStream {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        if buf.is_empty() {
-            return Poll::Ready(Ok(0));
-        }
-        self.carried.poll_write(cx, buf, false)
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        self.carried.poll_flush(cx)
-    }
-
-    /// The layer above ends its writing: what the carrier took goes out, then the write half is
-    /// shut (the far end reads its end) and the stream keeps reading.
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        std::task::ready!(self.carried.poll_flush(cx))?;
-        if let Some(h) = self.carried.handle() {
-            self.carried.io.shut_write(h);
-        }
-        Poll::Ready(Ok(()))
     }
 }
 

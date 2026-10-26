@@ -92,8 +92,8 @@ fn screen_cfg(token: &str) -> busbar_kernel::config::HookCfg {
 /// The hook env the gate's `module` resolves in: the kernel's hook double, its manifest asking to
 /// read the prompt.
 fn screen_env() -> busbar_kernel::hooks::HookEnv {
-    let needs = crate::root::loader::sign::HookNeeds {
-        prompt: crate::root::loader::sign::NeedLevel::Ro,
+    let needs = busbar_kernel::test_support::HookNeeds {
+        prompt: busbar_contract::plugin_rows::NeedLevel::Ro,
         ..Default::default()
     };
     busbar_kernel::test_support::test_hook_env(&["test-hook"], needs)
@@ -271,9 +271,10 @@ fn governed_full(
     let reads = Arc::clone(&current);
     let hooks = super::HookStage {
         host: Arc::new(move || {
-            busbar_kernel::plane_host::engine_host(&reads.lock().expect("unpoisoned"))
+            busbar_kernel::plane_driver::engine_host(&reads.lock().expect("unpoisoned"))
         }),
         gov: Arc::clone(&gov),
+        journal: None,
     };
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -376,7 +377,8 @@ async fn an_unknown_route_is_admitted_then_refused_and_settles() {
     let _one = PUBLISHING.lock().await;
     let g = governed("serve-money-unknown", true);
     let (status, body) = g.post("/call/direct:nowhere", true).await;
-    assert_eq!((status, body.as_str()), (503, "refused:503:no_destination"));
+    // A route nothing holds is a policy refusal (`NotFound`): 404, never a server fault.
+    assert_eq!((status, body.as_str()), (404, "refused:404:no_destination"));
     assert_eq!(g.requests(), 1, "charged before its route was refused");
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
 }
@@ -703,6 +705,15 @@ async fn node_boot_hooks_arm() {
             .contains("&crate::root::plane_node::ROOT_UNIT,"),
         "this build's generated ROOT_UNITS does not carry the node's root unit"
     );
+    // THE INSTALL RECORD, as main.rs installs it (`register_planes`: `root::linked::register_stores`),
+    // before anything reads the record: the card repricer reaches the kernel as the record's holder
+    // and dater, not through a static of its own.
+    crate::root::linked::register_stores(&crate::LINKED);
+    let rows = busbar_kernel::preflight::root_rows();
+    assert!(
+        rows.rate_apply.is_some() && rows.rate_epoch.is_some(),
+        "the root's install record carries neither half (holder, dater) of the rate seam"
+    );
     // THE CONFIGURATION STEP, before the first app build (main.rs), then the boot build: the card
     // holder's opening entry.
     busbar_kernel::snapshot::init();
@@ -1004,4 +1015,76 @@ pub(super) fn neutral_framers() -> super::StreamFramers {
             .filter(|d| d.facts().claims.contains(&claim))
             .cloned()
     }))
+}
+
+/// One span a served unit opened: its name, its parent's name, and its callsite's field names.
+type SpanSeen = (&'static str, Option<&'static str>, Vec<&'static str>);
+
+/// THE SPANS A SERVED UNIT OPENS, as one capturing subscriber reads them.
+#[derive(Clone, Default)]
+struct SpanLog(Arc<std::sync::Mutex<Vec<SpanSeen>>>);
+
+impl<S> tracing_subscriber::Layer<S> for SpanLog
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let parent = ctx
+            .span(id)
+            .and_then(|s| s.parent())
+            .map(|p| p.metadata().name());
+        let fields = attrs.metadata().fields().iter().map(|f| f.name()).collect();
+        self.0
+            .lock()
+            .expect("unpoisoned")
+            .push((attrs.metadata().name(), parent, fields));
+    }
+}
+
+/// AN ARRIVAL OPENS THE SPAN ITS CLAIM STATES, AND THE UNIT'S REQUEST SPAN UNDER IT (status row
+/// 173; v1.5.5 `docs/observability.md` l.162-174: the ingress entry spans, then `forward`, at the
+/// hot-path level, exported by OTLP). `/call` states `test_arrival` (the test plane's claim data;
+/// the kernel names no dialect): its unit's `forward` opens beneath it, with 1.5.5's fields
+/// (v1.5.5 `proxy/engine/mod.rs:120`: `pool`, `ingress`, `op`, `request_id`). RED arm: `/open`
+/// states none, so no entry span opens and its `forward` has no arrival above it.
+#[tokio::test]
+async fn an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let _one = PUBLISHING.lock().await;
+    let g = governed("serve-arrival-span", true);
+    let log = SpanLog::default();
+    let _subscribed =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
+    let _called = g.post("/call/direct:m", true).await;
+    let called = log.0.lock().expect("unpoisoned").clone();
+    let arrivals: Vec<_> = called.iter().filter(|s| s.0 == "test_arrival").collect();
+    assert_eq!(arrivals.len(), 1, "one arrival, one entry span: {called:?}");
+    assert!(
+        arrivals[0].2.is_empty(),
+        "skip_all: the entry span carries no field"
+    );
+    let forward = called
+        .iter()
+        .find(|s| s.0 == "forward")
+        .unwrap_or_else(|| panic!("the unit's request span: {called:?}"));
+    assert_eq!(forward.1, Some("test_arrival"), "{called:?}");
+    assert_eq!(forward.2, vec!["pool", "ingress", "op", "request_id"]);
+
+    log.0.lock().expect("unpoisoned").clear();
+    let _opened = g.post("/open", false).await;
+    let opened = log.0.lock().expect("unpoisoned").clone();
+    assert!(
+        opened.iter().all(|s| s.0 != "test_arrival"),
+        "RED: a claim that states no span opens none: {opened:?}"
+    );
+    let forward = opened
+        .iter()
+        .find(|s| s.0 == "forward")
+        .unwrap_or_else(|| panic!("the unit's request span: {opened:?}"));
+    assert_ne!(forward.1, Some("test_arrival"), "{opened:?}");
 }

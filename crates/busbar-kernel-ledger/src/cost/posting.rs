@@ -9,10 +9,8 @@
 //! quantities against the card in force at that instant. It is derived, it is reproducible, and it
 //! is never stored as truth.
 //!
-//! A posting may carry a [`CachedPrice`] — the figure the settlement lookup answered. Nothing reads
-//! it back: the one production writer sets it on a posting it then drops, no read sums it, and no
-//! comparison against it runs. [`Posting::priced_nanos`] performs the lookup and ignores the field
-//! entirely, so a corrupted figure there cannot become a bill.
+//! A posting carries no figure at all, so there is nothing on it a reader could take for the price:
+//! [`Posting::priced_nanos`] is the lookup, every time.
 
 use busbar_contract::caps::Usage;
 
@@ -45,25 +43,6 @@ impl Quantity {
     }
 }
 
-/// What the settlement lookup answered, in the shape a posting can carry beside its quantities.
-///
-/// **NEVER A TRUTH, AND NEVER READ.** It is re-derivable from the posting and the history at any
-/// time, and the lookup is the only figure anything uses. The settlement path sets it on the posting
-/// it prices and then drops that posting; no statement, totals read or recompute reads it, and no
-/// check compares it with a lookup. A price stored on a row is the stored price #77(3) forbids, so
-/// nothing is built on this one.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct CachedPrice {
-    /// The head of the history at settlement — which snapshot the figure was computed against.
-    pub history_seq: HistorySeq,
-    /// The entry `card_at(arrived_ms)` resolved to under that snapshot.
-    pub card_seq: HistorySeq,
-    /// The summed line amounts, in nano-units, before the tier.
-    pub pre_tier_nanos: u128,
-    /// That sum through the tier multiplier.
-    pub priced_nanos: u128,
-}
-
 /// **WHAT HAPPENED.** Quantities and the instant they happened, and no money anywhere.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Posting {
@@ -85,9 +64,6 @@ pub struct Posting {
     /// Whether the quantities behind this posting were the kernel's own floor rather than a figure
     /// the destination reported. The mark travels from the usage report onto the posting.
     pub estimated: bool,
-    /// The figure the settlement lookup answered, if one was set. `None` for a posting nothing has
-    /// priced yet, which is a different thing from a figure of zero. Nothing reads it back.
-    pub cached: Option<CachedPrice>,
 }
 
 impl Posting {
@@ -116,16 +92,13 @@ impl Posting {
             arrived_ms,
             arrived_mono,
             estimated: usage.is_estimated(),
-            cached: None,
         }
     }
 
     /// **THE FIGURE A READER MUST USE**: the lookup's, always.
     ///
-    /// It does not consult [`Self::cached`] and there is no arm here that could. That is the
-    /// invariant stated as code rather than as a comment: a posting whose stored figure has been
-    /// corrupted answers exactly what the quantities and the history say, because that figure is not
-    /// on the path at all.
+    /// A posting holds quantities and an instant and no figure, so this answers exactly what the
+    /// quantities and the history say: there is no stored price that could stand in for it.
     pub fn priced_nanos(&self, view: &HistoryView<'_>) -> Result<u128, Unpriceable> {
         price(view, self).map(|p| p.priced_nanos)
     }
@@ -183,16 +156,6 @@ impl Priced {
             .map(|l| l.class.as_str())
             .collect()
     }
-
-    /// This answer in the shape a posting carries it, under a named snapshot ([`CachedPrice`]).
-    pub fn as_cache(&self, history_seq: HistorySeq) -> CachedPrice {
-        CachedPrice {
-            history_seq,
-            card_seq: self.card_seq,
-            pre_tier_nanos: self.pre_tier_nanos,
-            priced_nanos: self.priced_nanos,
-        }
-    }
 }
 
 /// Why a posting could not be priced. Every one of these is a refusal, and none of them is a zero.
@@ -244,9 +207,9 @@ pub enum Unpriceable {
 /// uses banker's (half-to-even) rounding"*. #81 restates it after the exact-count ruling — *"a
 /// per-N-units division term still uses banker's rounding (#44), because a DIVISION can genuinely
 /// be inexact where a MEASUREMENT cannot"* — so the rule survives the amendment that changed
-/// everything around it. Half-away-from-zero is the OTHER rule in #44, and it is reserved for
-/// card-build quantisation ([`crate::cost::nano_rate`]); it is not this term's rule and applying it
-/// here would be reading the wrong half of the row.
+/// everything around it. Half-away-from-zero is the OTHER rule in #44, and nothing on the money
+/// path applies it: card build rounds nothing ([`crate::cost::nano_rate`] refuses a rate that is not
+/// a whole number of nano-units, OWNER rule 21), so this division is the one rounding there is.
 ///
 /// # Where the rounding lands on a bill
 ///
@@ -339,6 +302,9 @@ pub fn price_at_card(
 
     for quantity in &posting.quantities {
         let class = quantity.class.as_str();
+        // `unit_price_nanos` comes from `class_price` below; the product is checked, because a fee
+        // lane's rate (`fee_minor × NANOS_PER_CENT`) is wider than a `u64` and the product can pass
+        // `u128::MAX`: a REFUSAL, never a wrapped figure.
         let (unit_price_nanos, priced) = match pricing.class_price(class) {
             // A plane's fee unit on its fee lane: the plane's own fee, lifted to nano-units (#44).
             ClassPrice::FeeMinor(fee_minor) => (
@@ -350,13 +316,14 @@ pub fn price_at_card(
             ClassPrice::Nanos(nanos) => (u128::from(nanos), true),
             ClassPrice::Unpriced => (0u128, false),
         };
+        let amount_nanos = u128::from(quantity.amount)
+            .checked_mul(unit_price_nanos)
+            .ok_or(Unpriceable::Overflow)?;
         lines.push(PricedLine {
             class: class.to_string(),
             quantity: quantity.amount,
             unit_price_nanos,
-            // A `u64` quantity times a `u64` rate is inside a `u128` by a whole bit: exact, with
-            // no saturation to hide behind. The SUM is the one function's, below.
-            amount_nanos: u128::from(quantity.amount) * unit_price_nanos,
+            amount_nanos,
             unpriced: !priced,
         });
     }

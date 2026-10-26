@@ -19,10 +19,26 @@
 //! bounded ([`Documents`]): a validated document answers for its client for [`DOCUMENT_TTL`] (at
 //! most [`MAX_CACHED_DOCUMENTS`] held), concurrent requests naming one uncached document wait on
 //! ONE fetch, at most [`MAX_FETCHES_PER_SITE`] fetches run at once for the documents of one site
-//! (a host's last two labels, so one owner's many hosts are one site), and at most
-//! [`MAX_CONCURRENT_FETCHES`] run at once in all, a request waiting up to [`PERMIT_WAIT`] for one
-//! of those. Past that a request naming an uncached document reads as an unknown client, as every
-//! other fetch failure does. So one owner's slow documents hold at most its own site's share.
+//! ([`site_of`]: a host's registrable domain under the Public Suffix List, so one owner's many
+//! hosts are one site and the tenants of a shared suffix are each their own; an IPv6 literal's /64,
+//! the block one end site is handed whole), the documents at address literals share ONE such
+//! share between them ([`ADDRESS_LITERALS`]), and at most [`MAX_CONCURRENT_FETCHES`] run at once in
+//! all, a request waiting up to [`PERMIT_WAIT`] for one of those. Past that a request naming an
+//! uncached document reads as an unknown client, as every other fetch failure does.
+//!
+//! What a fetch can be held by, and for how long, is what decides who can hold them all:
+//!
+//! * A far end that never answers (an address that drops the connection attempt, a name whose
+//!   resolution stalls) needs nothing the caller owns, and it holds its fetch for at most
+//!   [`ANSWER_DEADLINE`]: the far end must answer its response head by then. Addresses are
+//!   plentiful, so all of them together hold one site's share.
+//! * A far end that answers in time and then sends its document slowly holds its fetch up to
+//!   [`FETCH_TIMEOUT`], and one site holds at most its own share.
+//!
+//! So holding every fetch takes `MAX_CONCURRENT_FETCHES / MAX_FETCHES_PER_SITE` shares at once, at
+//! most one of them the addresses': the rest are registrable domains, each one the caller serves
+//! slowly or one whose name stalls, named afresh at least every [`ANSWER_DEADLINE`]. No number of
+//! addresses does it. A request names no caller this plane can see, so no bound here is per caller.
 //!
 //! ## Every failure is an UNKNOWN CLIENT, not an error
 //!
@@ -79,6 +95,12 @@ pub(crate) const MAX_DOCUMENT_BYTES: usize = 5 * 1024;
 /// slow document host must fail the one login rather than parking a handler for a minute.
 pub(crate) const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long the far end has to answer its response head. A document host that is up answers in a
+/// fraction of this; one that never answers (an address that drops the connection attempt, a name
+/// whose resolution stalls) lets its fetch go here rather than at [`FETCH_TIMEOUT`], so a caller
+/// cannot hold the fetches with far ends it does not even have to own.
+pub(crate) const ANSWER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// THE FETCH, AS A SEAM. Production installs [`ConnectorFetch`]; the flow tests install a stub, so
 /// the end-to-end proof drives the real authorize/consent/token wire without a second listener
 /// standing in for "the public internet".
@@ -108,22 +130,35 @@ pub(crate) const MAX_FETCHES_PER_SITE: usize = 2;
 /// as unknown.
 pub(crate) const PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// The site a document URL's host belongs to: its last two labels, lower-cased (an IP literal is
-/// its own site). Hosts one owner can mint freely (`a.attacker.example`, `b.attacker.example`) are
-/// one site, so their fetches share one site's bound.
+/// The share every document at an ADDRESS LITERAL takes as well as its own site's. A caller can name
+/// any number of addresses it does not own (any one that drops the connection attempt will do), so
+/// counted one site each they could hold every fetch; counted together they hold one site's share.
+/// Not a host name (it has a space), so no site is ever this.
+pub(crate) const ADDRESS_LITERALS: &str = "address literals";
+
+/// The site a document URL's host belongs to, lower-cased: what one owner holds as one unit.
+///
+/// * A NAME is its registrable domain under the Public Suffix List (`psl`): the hosts one owner
+///   can mint freely (`a.attacker.example`, `b.attacker.example`) are one site, and the tenants of a
+///   shared suffix (`alice.github.io`, `bob.github.io`, `a.co.uk`) are each their own, so one
+///   tenant's slow documents never take another's share. A name that is itself a public suffix is
+///   its own site.
+/// * An IPv6 literal is its /64: one end site is handed a /64 at the least, and every address in it
+///   is that site's to use, so the addresses of one /64 are one site.
+/// * An IPv4 literal is its own site: each address is held on its own.
 pub(crate) fn site_of(url: &str) -> String {
     let host = busbar_contract::net::parse_url(url)
         .map(|p| p.host.to_ascii_lowercase())
         .unwrap_or_default();
     let host = host.trim_end_matches('.');
-    if host.contains(':') || host.parse::<std::net::Ipv4Addr>().is_ok() {
+    if let Ok(v6) = host.parse::<std::net::Ipv6Addr>() {
+        let s = v6.segments();
+        return format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3]);
+    }
+    if host.parse::<std::net::Ipv4Addr>().is_ok() {
         return host.to_string();
     }
-    let labels: Vec<&str> = host.rsplitn(3, '.').collect();
-    match labels.as_slice() {
-        [last, second, ..] => format!("{second}.{last}"),
-        _ => host.to_string(),
-    }
+    psl::domain_str(host).unwrap_or(host).to_string()
 }
 
 /// THE DOCUMENTS ONE SERVER HOLDS AND FETCHES: the validated ones by URL, each until it expires;
@@ -140,6 +175,41 @@ pub(crate) struct Documents {
 /// One URL's fetch in flight: the client its document validated to, or `None`, once it lands.
 type Flight = Arc<tokio::sync::OnceCell<Option<Arc<Client>>>>;
 
+/// One request's hold on a URL's flight. However the request ends, answered or dropped mid-wait,
+/// the last hold to go takes the flight out of the map, so a fetch every waiter abandoned leaves no
+/// entry behind. Every hold is taken and let go under the map's lock, so the count it reads there is
+/// every holder's.
+struct Joined<'a> {
+    flights: &'a Mutex<HashMap<String, Flight>>,
+    url: &'a str,
+    flight: Option<Flight>,
+}
+
+impl Joined<'_> {
+    fn cell(&self) -> &Flight {
+        self.flight
+            .as_ref()
+            .expect("a hold keeps its flight until it is dropped")
+    }
+}
+
+impl Drop for Joined<'_> {
+    fn drop(&mut self) {
+        let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(flight) = self.flight.take() {
+            // The map's reference and this one: no other request holds the flight.
+            if Arc::strong_count(&flight) == 2
+                && flights
+                    .get(self.url)
+                    .is_some_and(|f| Arc::ptr_eq(f, &flight))
+            {
+                flights.remove(self.url);
+            }
+            drop(flight);
+        }
+    }
+}
+
 impl Default for Documents {
     fn default() -> Self {
         Self {
@@ -151,38 +221,56 @@ impl Default for Documents {
     }
 }
 
-/// One site's share of the fetches, held while its fetch runs.
+/// The shares a document's fetch takes: its site's ([`site_of`]), and [`ADDRESS_LITERALS`] as well
+/// when its host is an address.
+fn shares_of(url: &str) -> Vec<String> {
+    let literal = busbar_contract::net::parse_url(url)
+        .is_ok_and(|p| p.host.parse::<std::net::IpAddr>().is_ok());
+    let mut shares = vec![site_of(url)];
+    if literal {
+        shares.push(ADDRESS_LITERALS.to_string());
+    }
+    shares
+}
+
+/// A fetch's shares of the fetches ([`shares_of`]), held while it runs.
 struct SiteShare<'a> {
     sites: &'a Mutex<HashMap<String, usize>>,
-    site: String,
+    shares: Vec<String>,
 }
 
 impl Drop for SiteShare<'_> {
     fn drop(&mut self) {
         let mut sites = self.sites.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(n) = sites.get_mut(&self.site) {
-            *n -= 1;
-            if *n == 0 {
-                sites.remove(&self.site);
+        for share in &self.shares {
+            if let Some(n) = sites.get_mut(share) {
+                *n -= 1;
+                if *n == 0 {
+                    sites.remove(share);
+                }
             }
         }
     }
 }
 
 impl Documents {
-    /// A share of `url`'s site's fetches, or `None` when its site already holds
+    /// Every share `url`'s fetch takes ([`shares_of`]), or `None` when one of them already holds
     /// [`MAX_FETCHES_PER_SITE`].
     fn site_share(&self, url: &str) -> Option<SiteShare<'_>> {
-        let site = site_of(url);
+        let shares = shares_of(url);
         let mut sites = self.sites.lock().unwrap_or_else(|p| p.into_inner());
-        let n = sites.entry(site.clone()).or_insert(0);
-        if *n >= MAX_FETCHES_PER_SITE {
+        if shares
+            .iter()
+            .any(|share| sites.get(share).is_some_and(|n| *n >= MAX_FETCHES_PER_SITE))
+        {
             return None;
         }
-        *n += 1;
+        for share in &shares {
+            *sites.entry(share.clone()).or_insert(0) += 1;
+        }
         Some(SiteShare {
             sites: &self.sites,
-            site,
+            shares,
         })
     }
 
@@ -194,20 +282,18 @@ impl Documents {
             .map(|(client, _)| Arc::clone(client))
     }
 
-    /// The fetch in flight for `url`, joined, or a new one.
-    fn flight(&self, url: &str) -> Flight {
+    /// The fetch in flight for `url`, joined, or a new one, held while the caller waits on it.
+    fn flight<'a>(&'a self, url: &'a str) -> Joined<'a> {
         let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
-        Arc::clone(flights.entry(url.to_string()).or_default())
+        Joined {
+            flights: &self.flights,
+            url,
+            flight: Some(Arc::clone(flights.entry(url.to_string()).or_default())),
+        }
     }
 
-    /// The flight for `url` landed with `answer`: it is over, and a client it validated is held.
-    fn land(&self, url: &str, flight: &Flight, answer: Option<&Arc<Client>>) {
-        {
-            let mut flights = self.flights.lock().unwrap_or_else(|p| p.into_inner());
-            if flights.get(url).is_some_and(|f| Arc::ptr_eq(f, flight)) {
-                flights.remove(url);
-            }
-        }
+    /// The fetch for `url` answered `answer`: a client it validated is held.
+    fn hold(&self, url: &str, answer: Option<&Arc<Client>>) {
         let Some(client) = answer else { return };
         let now = std::time::Instant::now();
         let mut held = self.held.lock().unwrap_or_else(|p| p.into_inner());
@@ -261,7 +347,7 @@ pub(crate) struct ConnectorFetch {
 
 /// The fetch of a server built with no connection table ([`crate::NoConnections`]): every document
 /// fetch fails closed, so every metadata-document client is unknown.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) fn unconnected() -> Arc<dyn CimdFetch> {
     Arc::new(ConnectorFetch {
         table: <crate::NoConnections as crate::Connections>::table,
@@ -298,7 +384,9 @@ impl CimdFetch for ConnectorFetch {
                     .declare(table.owner, DOCUMENT_NEED, &document_need(), None, None)
                     .map_err(failed)?;
             }
-            let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
+            let started = tokio::time::Instant::now();
+            let deadline = started + FETCH_TIMEOUT;
+            let answer_by = started + ANSWER_DEADLINE;
             // The request's head words: the method, and the path and query the framer writes,
             // read by the one shared URL reader (a URL with no path asks for `/`).
             let path = busbar_contract::net::parse_url(url)
@@ -322,7 +410,7 @@ impl CimdFetch for ConnectorFetch {
                 table: &table,
                 conn,
             };
-            read_document(&held, url, deadline).await
+            read_document(&held, url, answer_by, deadline).await
         })
     }
 }
@@ -330,10 +418,12 @@ impl CimdFetch for ConnectorFetch {
 /// The far end's answer, read to its completion: its status judged on the head (a 3xx is refused:
 /// the document lives at the `client_id`; anything else that is not a success is refused), then
 /// the body under the document ceiling, enforced while the bytes arrive, so an oversized document
-/// costs the cap and not itself. ONE deadline for the whole exchange.
+/// costs the cap and not itself. The head must arrive by `answer_by` ([`ANSWER_DEADLINE`]); the
+/// whole exchange must end by `deadline`.
 async fn read_document(
     held: &Held<'_>,
     url: &str,
+    answer_by: tokio::time::Instant,
     deadline: tokio::time::Instant,
 ) -> Result<Vec<u8>, String> {
     let (table, conn) = (held.table, held.conn);
@@ -341,12 +431,19 @@ async fn read_document(
     let mut status: Option<u32> = None;
     let mut body: Vec<u8> = Vec::new();
     loop {
+        let (until, missed) = match status {
+            None => (
+                answer_by.min(deadline),
+                "the far end did not answer within the answer deadline",
+            ),
+            Some(_) => (deadline, "the fetch's deadline passed"),
+        };
         let piece = tokio::time::timeout_at(
-            deadline,
+            until,
             std::future::poll_fn(|cx| table.conns.poll_read(table.owner, conn, cx, &mut buf)),
         )
         .await
-        .map_err(|_| format!("fetching `{url}` failed: the fetch's deadline passed"))?
+        .map_err(|_| format!("fetching `{url}` failed: {missed}"))?
         .map_err(|e| format!("fetching `{url}` failed: {e}"))?;
         match piece.kind {
             PieceKind::Completion => break,
@@ -655,6 +752,12 @@ pub(crate) struct Records {
     /// redeemed, keyed by `request_uri` (in-process records only; the store's are read from the
     /// pushed record itself). See [`Pushed`].
     pushed: Mutex<HashMap<String, Pushed>>,
+    /// Every SELF-REGISTERED client this process's records hold, by `client_id`, with the instant
+    /// until which it holds something: the latest expiry of any record written for it, or its
+    /// registration (`None`: a record that never lapses). The sweep reclaims a client
+    /// [`crate::policy::REGISTERED_CLIENT_IDLE`] past that instant. In-process records only: the
+    /// store's sweep reads the same from each client's bucket (`shared`).
+    registered: Mutex<HashMap<String, Option<std::time::SystemTime>>>,
 }
 
 impl Records {
@@ -662,6 +765,7 @@ impl Records {
         Self {
             inner: Backend::Memory(Box::new(inner)),
             pushed: Mutex::new(HashMap::new()),
+            registered: Mutex::new(HashMap::new()),
         }
     }
 
@@ -673,7 +777,52 @@ impl Records {
                 shared,
             ),
             pushed: Mutex::new(HashMap::new()),
+            registered: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// `client` was written: when it is a self-registered client in this process's records, it is
+    /// tracked, holding something from now.
+    fn track(&self, client: &Client) {
+        if self.store().is_some() || client.registration.is_none() {
+            return;
+        }
+        let now = std::time::SystemTime::now();
+        self.registered
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(client.client_id.as_str().to_string())
+            .and_modify(|held| *held = held.map(|t| t.max(now)))
+            .or_insert(Some(now));
+    }
+
+    /// A record lasting until `until` (`None`: it never lapses) was written for `client_id`: a
+    /// tracked client holds something until then at least.
+    fn holds(&self, client_id: &ClientId, until: Option<std::time::SystemTime>) {
+        let mut registered = self.registered.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(held) = registered.get_mut(client_id.as_str()) {
+            *held = match (*held, until) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                _ => None,
+            };
+        }
+    }
+
+    /// The tracked clients that have held nothing for [`crate::policy::REGISTERED_CLIENT_IDLE`] at
+    /// `now`, taken out of the tracking.
+    fn idle(&self, now: std::time::SystemTime) -> Vec<String> {
+        let mut registered = self.registered.lock().unwrap_or_else(|p| p.into_inner());
+        let idle: Vec<String> = registered
+            .iter()
+            .filter(|(_, held)| {
+                held.is_some_and(|t| t + crate::policy::REGISTERED_CLIENT_IDLE <= now)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &idle {
+            registered.remove(id);
+        }
+        idle
     }
 
     /// The store these records are kept in, when they are the deployment's.
@@ -757,7 +906,9 @@ impl Storage for Backend {
 #[derive(Clone, Debug)]
 pub(crate) struct Pushed {
     pub(crate) client_id: String,
-    pub(crate) scope: String,
+    /// The pushed `scope`, `None` when the request named none (it is then granted the client's
+    /// default, which is what the screen names).
+    pub(crate) scope: Option<String>,
     pub(crate) redirect_uri: String,
     expires_at: std::time::SystemTime,
     /// Whether the consent screen has shown this request already.
@@ -800,7 +951,7 @@ impl CimdStore {
             return match store.pushed(request_uri).await {
                 Ok(found) => found.map(|record| Pushed {
                     client_id: record.client_id.as_str().to_string(),
-                    scope: record.scope.clone().unwrap_or_default(),
+                    scope: record.scope.clone(),
                     redirect_uri: record.redirect_uri.clone().unwrap_or_default(),
                     expires_at: record.expires_at,
                     shown: false,
@@ -870,8 +1021,8 @@ impl CimdStore {
 impl CimdStore {
     /// One fetch of the document at `url`, validated: its client, or `None` (an unknown client)
     /// when the fetch is refused or fails, the document fails validation, or
-    /// [`MAX_FETCHES_PER_SITE`] are already in flight for its site, or no fetch permit frees within
-    /// [`PERMIT_WAIT`].
+    /// [`MAX_FETCHES_PER_SITE`] are already in flight for one of its shares ([`shares_of`]), or no
+    /// fetch permit frees within [`PERMIT_WAIT`].
     async fn fetch_document(&self, url: &str) -> Option<Arc<Client>> {
         let Some(_share) = self.documents.site_share(url) else {
             tracing::debug!(
@@ -941,21 +1092,27 @@ impl Storage for CimdStore {
         if let Some(held) = self.documents.held(url) {
             return Ok(Some(held));
         }
-        let flight = self.documents.flight(url);
-        let answer = flight
+        let joined = self.documents.flight(url);
+        let answer = joined
+            .cell()
             .get_or_init(|| self.fetch_document(url))
             .await
             .clone();
-        self.documents.land(url, &flight, answer.as_ref());
+        self.documents.hold(url, answer.as_ref());
+        drop(joined);
         Ok(answer)
     }
 
     // ── EVERYTHING BELOW DELEGATES VERBATIM. No logic, no logging, no reordering: the wrapper
     //    changes ONE read and must be invisible everywhere else, or the storage-conformance
     //    properties MemoryStorage holds (atomic take_*, compare-and-swap, the revocation barrier)
-    //    would silently stop being this store's. ──
+    //    would silently stop being this store's. The one addition is bookkeeping BESIDE the
+    //    delegation, never in its way: each write that gives a self-registered client something to
+    //    hold notes until when ([`Records::holds`]), and the sweep reclaims the clients that have
+    //    held nothing for the idle period. ──
 
     fn put_client(&self, client: Client) -> impl Future<Output = Result<(), StorageError>> + Send {
+        self.records.track(&client);
         self.records.inner.put_client(client)
     }
 
@@ -974,6 +1131,11 @@ impl Storage for CimdStore {
         client_id: &ClientId,
         window: RevocationWindow,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
+        self.records
+            .registered
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(client_id.as_str());
         self.records.inner.delete_client(client_id, window)
     }
 
@@ -981,6 +1143,7 @@ impl Storage for CimdStore {
         &self,
         grant: DeviceGrant,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
+        self.records.holds(&grant.client_id, Some(grant.expires_at));
         self.records.inner.put_device_grant(grant)
     }
 
@@ -1013,6 +1176,8 @@ impl Storage for CimdStore {
         updated: DeviceGrant,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
         self.records
+            .holds(&updated.client_id, Some(updated.expires_at));
+        self.records
             .inner
             .compare_and_swap_device_grant(expected, updated)
     }
@@ -1021,6 +1186,8 @@ impl Storage for CimdStore {
         &self,
         record: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
+        self.records
+            .holds(&record.client_id, Some(record.expires_at));
         self.records.inner.put_authorization_code(record)
     }
 
@@ -1029,6 +1196,8 @@ impl Storage for CimdStore {
         expected: &AuthorizationCodeState,
         updated: AuthorizationCodeRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
+        self.records
+            .holds(&updated.client_id, Some(updated.expires_at));
         self.records
             .inner
             .compare_and_swap_authorization_code(expected, updated)
@@ -1045,6 +1214,7 @@ impl Storage for CimdStore {
         &self,
         token: IssuedToken,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
+        self.records.holds(&token.client_id, Some(token.expires_at));
         self.records.inner.put_token(token)
     }
 
@@ -1066,6 +1236,7 @@ impl Storage for CimdStore {
         &self,
         record: RefreshTokenRecord,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
+        self.records.holds(&record.client_id, record.expires_at);
         self.records.inner.put_refresh_token(record)
     }
 
@@ -1095,6 +1266,7 @@ impl Storage for CimdStore {
         &self,
         record: ConsentRecord,
     ) -> impl Future<Output = Result<(), StorageError>> + Send {
+        self.records.holds(&record.client_id, None);
         self.records.inner.put_consent(record)
     }
 
@@ -1103,6 +1275,7 @@ impl Storage for CimdStore {
         expected: Option<&ConsentRecord>,
         updated: ConsentRecord,
     ) -> impl Future<Output = Result<bool, StorageError>> + Send {
+        self.records.holds(&updated.client_id, None);
         self.records
             .inner
             .compare_and_swap_consent(expected, updated)
@@ -1146,10 +1319,12 @@ impl Storage for CimdStore {
         &self,
         record: oauth_as::par::PushedAuthorizationRequest,
     ) -> impl Future<Output = Result<WriteOutcome, StorageError>> + Send {
+        self.records
+            .holds(&record.client_id, Some(record.expires_at));
         let request_uri = record.request_uri.clone();
         let summary = Pushed {
             client_id: record.client_id.as_str().to_string(),
-            scope: record.scope.clone().unwrap_or_default(),
+            scope: record.scope.clone(),
             redirect_uri: record.redirect_uri.clone().unwrap_or_default(),
             expires_at: record.expires_at,
             shown: false,
@@ -1208,7 +1383,27 @@ impl Storage for CimdStore {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .retain(|_, p| p.expires_at > now);
-        self.records.inner.sweep_expired(now)
+        let sweep = self.records.inner.sweep_expired(now);
+        async move {
+            let mut removed = sweep.await?;
+            // The self-registered clients that have held nothing for the idle period go, each
+            // as a deletion: what it held has lapsed, so its barrier needs to bar nothing past now.
+            for id in self.records.idle(now) {
+                let window = RevocationWindow {
+                    recorded_at: now,
+                    until: now,
+                };
+                if self
+                    .records
+                    .inner
+                    .delete_client(&ClientId::new(id.as_str()), window)
+                    .await?
+                {
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        }
     }
 }
 

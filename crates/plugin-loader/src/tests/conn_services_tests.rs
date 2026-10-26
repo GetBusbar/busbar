@@ -214,15 +214,17 @@ fn bind_as(
 ) -> Result<Plugin<TestKind>, crate::dispatch::LoadError> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
-    let st: Statement = unsafe { *real.statement };
+    let st: Statement = unsafe { *real.statement() };
     let st: &'static Statement = Box::leak(Box::new(Statement {
         needs: needs.as_ptr(),
         needs_len: needs.len(),
         ..st
     }));
-    let door: &'static Door = Box::leak(Box::new(Door {
-        statement: st,
-        ..real
+    let door: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            statement: st,
+            ..real.parts()
+        })
     }));
     let v = validate_door::<TestKind>(door).expect("the door validates");
     Plugin::bind(
@@ -1075,15 +1077,17 @@ fn bound_over(table: &Arc<Scripted>) -> Plugin<TestKind> {
 fn bound_over_by(table: &Arc<Scripted>, adopter: Adopter) -> Plugin<TestKind> {
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
-    let st: Statement = unsafe { *real.statement };
+    let st: Statement = unsafe { *real.statement() };
     let st: &'static Statement = Box::leak(Box::new(Statement {
         needs: NAMED.as_ptr(),
         needs_len: NAMED.len(),
         ..st
     }));
-    let door: &'static Door = Box::leak(Box::new(Door {
-        statement: st,
-        ..real
+    let door: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            statement: st,
+            ..real.parts()
+        })
     }));
     let v = validate_door::<TestKind>(door).expect("the door validates");
     let conns: Arc<dyn DeclaredConns> = table.clone();
@@ -1762,12 +1766,12 @@ const MEMBER_NEEDS: [Need; 1] = [Need {
     ..NEEDS[0]
 }];
 
-/// RED (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): a need whose `target_from` is the
-/// member-program path is declared with ONE program per registration that names a `command` —
+/// RED (ARCHITECT round 5, the member-program upstream ruling (A)): a need whose `target_from` is
+/// the member-program path is declared with ONE program per registration that names a `command` —
 /// its `command`, `args` and `env`, every other key ignored, an `env` secret reference kept as the
 /// reference (the host resolves it at the spawn, never at the declare) — at `open` and again at
-/// every `refresh` (so the table can retire a changed or removed member); a
-/// registration naming no program is no member, and one whose program does not read is left out.
+/// every `refresh` (so the table can retire a changed or removed member); a registration naming no
+/// program is no member, and one whose program does not read is left out.
 #[test]
 fn a_member_program_need_is_declared_with_each_registrations_program() {
     use busbar_contract::conn::Program;
@@ -1776,11 +1780,11 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
     assert_eq!(
         open_with(
             &p,
-            br#"{"one":{"transport":"stdio","command":"/usr/bin/one","args":["--serve"],
+            br#"{"one":{"transport":"piped","command":"/usr/bin/one","args":["--serve"],
                  "env":{"PLAIN":"v","KEY":{"env":"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}},
                  "pin":{"mechanism":"unpinned"},"tools_allow":["a"]},
                 "web":{"url":"https://upstream.example/rpc","pin":{"mechanism":"unpinned"}},
-                "bad":{"transport":"stdio","command":"relative"},
+                "bad":{"transport":"piped","command":"relative"},
                 "pools":{"p":{"members":["one"]}}}"#
         ),
         Outcome::Ready
@@ -2518,7 +2522,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
     }]));
     // SAFETY: the real door and its Statement are `'static`.
     let real: Door = unsafe { *plug::busbar_plugin_door() };
-    let st: Statement = unsafe { *real.statement };
+    let st: Statement = unsafe { *real.statement() };
     let auth = KindCode::Auth;
     let st: &'static Statement = Box::leak(Box::new(Statement {
         kind: auth as u32,
@@ -2527,11 +2531,13 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
         needs_len: unpinned.len(),
         ..st
     }));
-    let door: &'static Door = Box::leak(Box::new(Door {
-        kind: auth as u32,
-        kind_abi: auth.abi_version(),
-        statement: st,
-        ..real
+    let door: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            kind: auth as u32,
+            kind_abi: auth.abi_version(),
+            statement: st,
+            ..real.parts()
+        })
     }));
     let v = validate_door::<AuthShaped>(door).expect("the auth-kind door validates");
     let conns: Arc<dyn DeclaredConns> = table.clone();

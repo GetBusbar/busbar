@@ -22,16 +22,19 @@
 //!
 //! Layer zero is [`Posting`]: quantities per meter class, the lane, the fee count, the tier and the
 //! instant. Layer one is [`History`]: entries of `(effective_from, card)`, appended and never
-//! rewritten. Layer two is [`price`]. Nothing priced is authoritative — a [`CachedPrice`] on a
-//! posting is what the settlement lookup answered, and nothing reads it back.
+//! rewritten. Layer two is [`price`]. Nothing priced is stored: a posting carries no figure, so
+//! every price is the lookup's answer at the moment it is asked.
 //!
 //! # The five clauses, and where each one lives
 //!
-//! 1. **Rates.** Config carries micro-units per quantity as a decimal. The one
-//!    conversion to the integer nano-unit rate happens once, at the config intake: multiply by a
-//!    thousand, exactly, on the decimal's own digits (#81: never a binary float). A rate that is not
-//!    a whole number of nano-units is REFUSED, never rounded (OWNER rule 21). See [`nano_rate`].
-//!    After that point no decimal number touches money again — the card is built from the integers.
+//! 1. **Rates.** Config carries micro-units per quantity as a decimal. The one conversion to the
+//!    integer nano-unit rate happens once, at the config intake. The reserved four classes arrive
+//!    as the double the config parser read: [`nano_rate`] reads that double's shortest decimal text
+//!    and multiplies its digits by a thousand in integers, never multiplying the double itself. An
+//!    open class's rate ([`UnitRate`]) is parsed from the configured text, exactly, and never
+//!    crosses a double. Either way a rate that is not a whole number of nano-units is REFUSED,
+//!    never rounded (OWNER rule 21): card build rounds nothing. After that point no decimal number
+//!    touches money again — the card is built from the integers.
 //! 2. **Storage.** A posting stores QUANTITIES and the instant they happened, and nothing priced.
 //!    See [`Posting`].
 //! 3. **Projections.** Minor units and micro-units are read-only views of the summed nano-units,
@@ -72,6 +75,7 @@ mod history;
 mod posting;
 mod project;
 mod rate;
+mod rollup;
 mod unit_rate;
 mod view;
 
@@ -80,8 +84,8 @@ mod view;
 pub use busbar_contract::count::Count;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
 pub use posting::{
-    checked_apply_tier, price, price_at_card, price_fail_closed, CachedPrice, Posting, Priced,
-    PricedLine, Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
+    checked_apply_tier, price, price_at_card, price_fail_closed, Posting, Priced, PricedLine,
+    Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
 };
 pub use project::{derive_spend_cents, derive_spend_micros, MeteredRow};
 pub use rate::{
@@ -90,6 +94,7 @@ pub use rate::{
     RateCard, TierRates, CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
     PER_REQUEST, PER_SESSION,
 };
+pub use rollup::{budget_remaining, sum_spend};
 pub use unit_rate::UnitRate;
 pub use view::{
     nanos_of_exact, price as price_ledger, price_exact, price_in_view, whole, LedgerEntry, Money,

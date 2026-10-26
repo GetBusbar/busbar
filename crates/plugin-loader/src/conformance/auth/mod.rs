@@ -8,7 +8,7 @@
 //!
 //! THE INBOUND AND LOGIN SCRIPT. Ported from the auth both-ways proofs (#439's
 //! `auth_door_conformance_tests`, the predev `auth_verify_conformance_tests`, and the token cases of
-//! `busbar-auth-admin-tokens`' own conformance test), over the one loader and the one dispatcher.
+//! the static-token verifier's own conformance test), over the one loader and the one dispatcher.
 //!
 //! The script drives the INBOUND family, `verify`, the way the host's identity chain calls it
 //! (`busbar_contract::auth_calls::AuthCalls`): ON THE SPOT (ticket-less, on the caller's thread),
@@ -102,11 +102,10 @@ use std::time::Duration;
 
 use busbar_contract::abi::auth::{
     self, slot, AuthTail, BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut,
-    IdentifyOut, IdentityBuf, LoginField, NamedValue, OpenOutboundIn, OpenOutboundOut,
-    OutboundReadyIn, OutboundReadyOut, StripName, VerifyIn, BEGIN_AUTHORIZE, BEGIN_FORM,
-    FORM_PASSWORD, FORM_TEXT, LOGIN_BAD_CREDENTIAL, LOGIN_IDENTITY, LOGIN_KIND_CREDENTIAL,
-    LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED, POINT_HEAD_BODY, SPAN_ABSENT, VERDICT_IDENTITY,
-    VERDICT_PASS, VERDICT_REJECT,
+    IdentifyOut, IdentityBuf, NamedValue, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
+    OutboundReadyOut, StripName, VerifyIn, BEGIN_AUTHORIZE, BEGIN_FORM, LOGIN_BAD_CREDENTIAL,
+    LOGIN_IDENTITY, LOGIN_KIND_CREDENTIAL, LOGIN_OUTAGE, LOGIN_SECURITY_CHECK_FAILED,
+    POINT_HEAD_BODY, SPAN_ABSENT, VERDICT_IDENTITY, VERDICT_PASS, VERDICT_REJECT,
 };
 use busbar_contract::abi::host::service::{ItemSpan, SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::abi::mechanism::call::{
@@ -114,6 +113,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement, MARK_WORD_CARRIER};
 use busbar_contract::abi::mechanism::ticket::Ticket;
+use busbar_contract::auth::{FieldKind, LoginOutcome};
 use busbar_contract::services::{
     Caller, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
     Stored, UNSERVED,
@@ -205,7 +205,8 @@ fn stated(s: &Subject) -> Stated {
     // are `'static` plain data (`abi/mechanism/door.rs`); an auth door's kind tail is an
     // `AuthTail` leading with its `KindTailHead` (`abi/auth/mod.rs`). Each is read unaligned.
     unsafe {
-        let st: *const Statement = std::ptr::addr_of!((*door).statement).read_unaligned();
+        let st: *const Statement =
+            busbar_contract::abi::mechanism::door::Door::read_parts(door).statement;
         assert!(!st.is_null(), "the door states no Statement");
         let st = st.read_unaligned();
         assert!(!st.kind_tail.is_null(), "an auth door states its auth tail");
@@ -762,32 +763,29 @@ unsafe fn copied(s: AbiStr) -> String {
     if s.ptr.is_null() {
         return String::new();
     }
-    // SAFETY: the caller's contract.
-    String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).into_owned()
+    // Read as the host reads plugin text (capped at `MAX_TEXT`); a range it refuses reads as absent.
+    String::from_utf8_lossy(crate::dispatch::plugin::str_bytes(s).unwrap_or_default()).into_owned()
 }
 
-/// A credential form as the transcript spells it: `name:kind[:required]` a field, in order.
+/// A credential form as the transcript spells it: `name:kind[:required]` a field, in order, read
+/// as the host's login reads it ([`crate::auth_door::login::begun`]: the field cap, each name and
+/// label through the capped text reader), so a form the host refuses is `malformed` here too.
 fn spelled_form(out: &BeginLoginOut) -> String {
-    if out.form.is_null() || out.form_len == 0 {
-        return "[]".to_string();
-    }
-    // SAFETY: a READY `begin_login` names `form_len` fields of plugin memory held under the
-    // answer's lease (or `'static`), valid until that lease is released (after this copy).
-    let fields = unsafe { std::slice::from_raw_parts(out.form, out.form_len) };
-    let fields: Vec<String> = fields
+    let Some(LoginOutcome::Prompt(form)) = crate::auth_door::login::begun(out) else {
+        return "malformed".to_string();
+    };
+    let fields: Vec<String> = form
+        .fields
         .iter()
-        .map(|f: &LoginField| {
+        .map(|f| {
             let kind = match f.kind {
-                FORM_TEXT => "text".to_string(),
-                FORM_PASSWORD => "password".to_string(),
-                other => other.to_string(),
+                FieldKind::Password => "password",
+                FieldKind::Text => "text",
             };
-            // SAFETY: as above.
-            let name = unsafe { copied(f.name) };
-            if f.required == 1 {
-                format!("{name}:{kind}:required")
+            if f.required {
+                format!("{}:{kind}:required", f.name)
             } else {
-                format!("{name}:{kind}")
+                format!("{}:{kind}", f.name)
             }
         })
         .collect();
@@ -1442,3 +1440,7 @@ fn contract(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/conformance_auth_form_tests.rs"]
+mod form_tests;

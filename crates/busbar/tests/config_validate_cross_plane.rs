@@ -12,8 +12,8 @@ use busbar_kernel::config;
 use std::collections::HashMap;
 
 /// THE `tools:` SECTION'S SECRET REFERENCES ARE ENUMERATED, so `--validate` and boot resolve each one
-/// (P3 DEL-MCP: the section is a door plane's, carried as written). Its owning plane's declaration
-/// names where references live — busbar's own RFC 8693 subject token, and a stdio child's
+/// (P3: the section is a door plane's, carried as written). Its owning plane's declaration
+/// names where references live — busbar's own RFC 8693 subject token, and a child process's
 /// environment values — and the section the registry lifted answers every reference at those paths,
 /// with its full config path, and nothing that is not a reference.
 #[test]
@@ -84,8 +84,7 @@ fn the_agents_section_enumerates_every_secret_reference_its_plane_declares() {
     );
 }
 
-/// THE BILLING SWITCH'S MONEY-SACRED ARM, at boot (#42, #77(5); /status row 124, the rigs'
-/// `h2-unpriced-refuses` arm 2): a plane section whose OWN card (`<section>.rate_card`, #47) is
+/// THE BILLING SWITCH'S MONEY-SACRED ARM, at boot: a plane section whose OWN card (`<section>.rate_card`, #47) is
 /// present — so that plane's billing is ON — and silent about one class the plane declares must
 /// refuse, naming that class, on the path boot and `--validate` both take (`deploy_from_yaml_str` →
 /// `resolve` → `config_validate::validate`). A card configuring every declared class, an explicit 0

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
 use busbar_contract::abi::mechanism::door::{
-    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_DECLARING,
+    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING, SECTION_SELECTS,
 };
 use busbar_contract::abi::mechanism::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
@@ -126,6 +126,21 @@ impl Uses {
     }
 }
 
+impl Uses {
+    /// These uses and the URL schemes of `urls`: configured URLs the document's own keys do not
+    /// spell, such as a `providers:` entry's `base_url` its catalog definition carries.
+    #[must_use]
+    pub fn reaching<'u>(mut self, urls: impl IntoIterator<Item = &'u str>) -> Self {
+        for url in urls {
+            schemes(
+                &serde_json::Value::String(url.to_string()),
+                &mut self.schemes,
+            );
+        }
+        self
+    }
+}
+
 fn refs(v: &serde_json::Value, out: &mut BTreeSet<String>) {
     match v {
         serde_json::Value::Object(map) => {
@@ -201,6 +216,10 @@ pub struct Candidate {
     pub sugar: Vec<String>,
     /// Its declaring sections (a plane's verbs).
     pub verbs: Vec<String>,
+    /// The other sections whose presence uses it (Law 7), in Statement order: a section it owns
+    /// (neither declaring nor consumed), and a section it only consumes that its Statement marks
+    /// `SECTION_SELECTS`. Config carrying one selects a plane as its verb does.
+    pub selecting: Vec<String>,
     /// The URL schemes it claims (its Statement's claims; a transport's).
     pub schemes: Vec<String>,
     /// Its connection needs, in its Statement's order (a need's index is its place here).
@@ -213,6 +232,10 @@ pub struct Candidate {
     /// DESIGN §11.11 R4): its `resolve` runs on the host's disk lane at config time, never on a
     /// request path.
     pub disk: bool,
+    /// Whether its `decide` may answer an order (`declares.hook.orders`, a `kind: hook` plugin;
+    /// `true` unless declared `false`): a hook that declared it never orders is refused when it
+    /// does ([`crate::hook_door::HookInstance::open_declaring`]).
+    pub orders: bool,
 }
 
 impl Candidate {
@@ -251,6 +274,15 @@ impl Candidate {
                 .filter(|(_, flags)| flags & SECTION_DECLARING != 0)
                 .map(|(name, _)| name.clone())
                 .collect(),
+            selecting: r
+                .sections
+                .iter()
+                .filter(|(_, flags)| {
+                    flags & SECTION_DECLARING == 0
+                        && (flags & SECTION_CONSUMED == 0 || flags & SECTION_SELECTS != 0)
+                })
+                .map(|(name, _)| name.clone())
+                .collect(),
             schemes: r.claims,
             needs: r.needs,
             name: r.name,
@@ -258,6 +290,7 @@ impl Candidate {
             stated,
             origin,
             disk: false,
+            orders: true,
         })
     }
 
@@ -276,6 +309,15 @@ impl Candidate {
         Self::from_rendering(stated, Some(&manifest.alias), origin)
             .map(|c| c.answering(&manifest.former_names))
             .map(|c| c.reading_disk(manifest.declares.disk))
+            .map(|c| c.ordering(manifest.declares.hook_orders()))
+    }
+
+    /// This candidate, a hook that may answer an order only when `orders` (its
+    /// `declares.hook.orders`).
+    #[must_use]
+    pub fn ordering(mut self, orders: bool) -> Self {
+        self.orders = orders;
+        self
     }
 
     /// This candidate, its source reading the local disk when `disk` (its `declares.disk`: a
@@ -318,6 +360,52 @@ impl Candidate {
     fn answers(&self, word: &str) -> bool {
         self.name == word || self.aliases.iter().any(|a| a == word)
     }
+
+    /// LAW 7 FOR A TRANSPORT, off its Statement alone (nothing is opened): a URL scheme the
+    /// configuration uses is one it claims, or names it (its name or an alias).
+    #[must_use]
+    pub fn serves(&self, uses: &Uses) -> bool {
+        uses.schemes
+            .iter()
+            .any(|s| self.schemes.contains(s) || self.answers(s))
+    }
+
+    /// LAW 7 FOR A PLANE: the configuration writes a section that uses it ([`plane_use`]) — its
+    /// declaring section, another its Statement owns (neither declaring nor consumed), the rule the
+    /// root opens a bound plane by, or one it consumes that its Statement marks `SECTION_SELECTS`. A
+    /// consumed section alone selects nothing.
+    #[must_use]
+    pub fn sectioned(&self, uses: &Uses) -> bool {
+        plane_use(uses, self).is_some()
+    }
+}
+
+/// THE SUGARS `candidates` DECLARE (audit contract-admin #10, Law 1: the secret shorthand is each
+/// plugin's own declaration; the host reads it and names none): each candidate's Statement
+/// rewrites, read off its rendering, declared in turn. A plugin met twice (linked and dropped in,
+/// one plugin by the one-version rule) declares once.
+///
+/// # Errors
+///
+/// A rendering that does not read back, or what [`busbar_contract::secret_ref::Sugars::declare`]
+/// refuses: two plugins claiming one sugar word or one role, a sugar that is core grammar or names
+/// no settings key.
+pub fn sugars_of(candidates: &[Candidate]) -> Result<busbar_contract::secret_ref::Sugars, String> {
+    let mut sugars = busbar_contract::secret_ref::Sugars::default();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for c in candidates {
+        if !seen.insert(c.name.as_str()) {
+            continue;
+        }
+        let r: Read = read(&c.stated).map_err(|e| {
+            format!(
+                "plugin '{}': its Statement rendering does not read back at byte {}",
+                c.name, e.at
+            )
+        })?;
+        sugars.declare(&c.name, &r.rewrites)?;
+    }
+    Ok(sugars)
 }
 
 /// THE ONE-OWNER RULE over an axis's candidates, linked and dropped in alike (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): two DIFFERENT
@@ -404,7 +492,7 @@ pub struct Selected {
 }
 
 /// STAGE 2, SELECT (BUSBAR-1.6.0.md §4 "Selection follows the classes"; pure): a plane is selected iff
-/// one of its verbs is a root key; a store, secret, auth, hook or export plugin once per entry whose
+/// a root key uses it ([`plane_use`]), under its verb; a store, secret, auth, hook or export plugin once per entry whose
 /// `module` names it (its name or an alias) and once if a reference uses its sugar; a transport iff
 /// a configured URL uses a scheme it claims. Candidates are read in order and the first that answers
 /// an entry takes it; two DIFFERENT plugins never both answer one word, which the one-owner rule
@@ -425,12 +513,14 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
     for (i, c) in candidates.iter().enumerate() {
         match c.kind {
             KindCode::Plane => {
-                if let Some(verb) = c.verbs.iter().find(|v| uses.roots.contains(*v)) {
-                    take(&mut out, i, c.kind, verb.clone());
+                // Selected under its verb, whichever of its sections uses it.
+                if let Some(at) = plane_use(uses, c) {
+                    let verb = c.verbs.first().map_or(at, String::as_str);
+                    take(&mut out, i, c.kind, verb.to_string());
                 }
             }
             KindCode::Transport => {
-                if c.schemes.iter().any(|s| uses.schemes.contains(s)) {
+                if c.serves(uses) {
                     take(&mut out, i, c.kind, c.name.clone());
                 }
             }
@@ -447,6 +537,27 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
         }
     }
     out
+}
+
+/// WHETHER THE CONFIGURATION USES THE PLANE `plane` (Law 7, BUSBAR-1.6.0.md §4 "Selection
+/// follows the classes"; pure): the section of `uses` that uses it — the first of its verbs that is
+/// a root key, else the first of its other selecting sections ([`Candidate::selecting`]: one it
+/// owns, or one it consumes that its Statement marks `SECTION_SELECTS`) that is one — or `None`,
+/// and the plane is not loaded. A section it only consumes, or only requires, is no use of it. Read
+/// off the candidate's rendered facts only, so nothing is opened: what the boot selects planes by
+/// ([`used_planes`]), and what a config apply asks of a plane that is not loaded now. A candidate
+/// of another kind is used by no section here.
+#[must_use]
+pub fn plane_use<'c>(uses: &Uses, plane: &'c Candidate) -> Option<&'c str> {
+    if plane.kind != KindCode::Plane {
+        return None;
+    }
+    plane
+        .verbs
+        .iter()
+        .chain(&plane.selecting)
+        .find(|v| uses.roots.contains(*v))
+        .map(String::as_str)
 }
 
 // ── THE REGISTRY: the linked rows, then the plugins directory's, through one admission ─────────────
@@ -537,6 +648,18 @@ pub fn registry(
 pub struct PlaneSet {
     /// Each plane with a door: linked rows first, then the dropped-in ones in scan order.
     pub doors: Vec<Candidate>,
+}
+
+/// THE PLANES THE CONFIGURATION USES, of the discovered `doors` (Law 7; [`select`]'s plane rule): each
+/// door a section the document writes uses ([`plane_use`]), in discovery order. A plane no section names is
+/// never bound, linked or dropped in alike.
+#[must_use]
+pub fn used_planes(uses: &Uses, doors: &[Candidate]) -> Vec<Candidate> {
+    doors
+        .iter()
+        .filter(|c| c.sectioned(uses))
+        .cloned()
+        .collect()
 }
 
 /// THE PLANES' ONE LOAD: every door plane of a [`PlaneSet`] selected under its own name and bound

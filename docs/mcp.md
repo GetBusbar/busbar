@@ -104,7 +104,7 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 |---|---|---|---|---|
 | `pin` | object | **yes** | — | The out-of-band trust root. Required even when it is `unpinned`. |
 | `pin.mechanism` | `pinned_pubkey` \| `cert_spki` \| `mtls` \| `unpinned` | **yes** | — | A pin whose mechanism is inferred is a pin whose meaning changes when the inference changes. |
-| `pin.key` | string | required for the three rooted mechanisms; **refused** for `unpinned` | — | Issuer public key, or certificate SPKI hash. |
+| `pin.key` | string | required for the three rooted mechanisms; **refused** for `unpinned` | — | Issuer public key, or certificate SPKI hash. For `cert_spki` and `mtls` the key is the SHA-256 of the server certificate's whole SubjectPublicKeyInfo, written `sha256/<base64>` (canonical, standard base64 with padding); the plain `<base64>` is accepted as an alias. Anything that is not one 32-byte digest in either spelling is refused when the registration is sealed (the configuration is not loaded). |
 | `transport` | `streamable_http` \| `stdio` | no | `streamable_http` | See [Transports](#transports). |
 | `url` | string | **yes** for `streamable_http`; **refused** for `stdio` | `""` | `http://` or `https://`. |
 | `command` | string | **yes** for `stdio`; **refused** otherwise | — | ABSOLUTE path of the binary Busbar spawns. |
@@ -155,7 +155,7 @@ tools:
 
   acme:
     url: https://tools.acme.example/mcp
-    pin: { mechanism: cert_spki, key: "sha256/…" }
+    pin: { mechanism: cert_spki, key: "sha256/…" }   # canonical; the plain base64 alias is accepted too
     verify_ttl: 5s
     timeout: 30s
     aud: https://tools.acme.example/mcp
@@ -226,6 +226,7 @@ It is **opt-in and declaring no MCP pool is exactly today's behaviour**: one reg
 `deny_unknown_fields` — a typo'd key must fail boot, not silently un-declare a safety rule (`crates/busbar-core/src/failover/mod.rs:135`). There is no `breaker:` key on a tool pool and no `repeatable: all`.
 
 ```yaml
+# `key:` is `sha256/<base64>` (canonical) or the plain `<base64>` alias of the same digest.
 tools:
   search-eu: { url: https://eu.search.example/mcp, pin: { mechanism: cert_spki, key: "sha256/…" } }
   search-us: { url: https://us.search.example/mcp, pin: { mechanism: cert_spki, key: "sha256/…" } }

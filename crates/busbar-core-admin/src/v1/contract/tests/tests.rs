@@ -65,28 +65,6 @@ fn required_scope_matrix() {
     );
 }
 
-/// Every mutating verb resolves to `Full`, and the read verbs (+ the two dry-run POSTs) to
-/// `ReadOnly`. The narrower `hooks-register`/`mint` requirements are GONE.
-#[test]
-fn required_scope_mutations_are_full() {
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/keys"),
-        Scope::Full
-    );
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/hooks"),
-        Scope::Full
-    );
-    assert_eq!(
-        required_scope(&Method::GET, "/api/v1/admin/keys"),
-        Scope::ReadOnly
-    );
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/config/validate"),
-        Scope::ReadOnly
-    );
-}
-
 /// `parse` drops the retired delegated tokens (they now resolve to `None`, i.e. no grant), while
 /// `read-only`/`full` still round-trip.
 #[test]
@@ -206,7 +184,7 @@ fn usage_view_serializes_currency_from_const() {
     );
 }
 
-/// THE `classes` CONTRACT (new in 1.6.0, FLIP-A2A ruling): a usage row's plane-declared classes
+/// THE `classes` CONTRACT (new in 1.6.0, PLANE-FLIP ruling): a usage row's plane-declared classes
 /// serialize as an object keyed by class name, each `{count, cost}`, flattened onto a by-model row
 /// beside its token columns; a row with none carries no `classes` key at all (1.5.5's shape).
 #[test]

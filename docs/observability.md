@@ -156,8 +156,6 @@ deliberate, and it is the signal an operator most often has nothing else to see.
 | `busbar_journal_quarantined_total` | counter | none | Journal segments whose damaged remainder boot recovery moved into a quarantine file because a record failed its checksum with valid records after it. Incremented once per quarantine, at boot. Any non-zero value is an incident: acknowledged postings and holds are off the book, so this node's figures read lower than what it served. See [Journal corruption at boot](operations.md#journal-corruption-at-boot). A torn tail after a crash is not counted. |
 | `busbar_webhook_logs_dropped_total` | counter | none | A request-log webhook delivery shed because the bounded delivery pool was saturated (the endpoint is slow or unreachable). Global backpressure. A non-zero rate means logs are being dropped silently. |
 | `busbar_file_logs_dropped_total` | counter | none | A request-log FILE append shed because that sink's bounded in-flight append pool was saturated (a slow or stalled filesystem: full disk, hung mount). The file-sink counterpart of the webhook counter above. A non-zero rate means request-log lines are being dropped. |
-| `bb_deadline_without_wake_total` | counter | none | New in 1.6.0. Plugin operations that waited for a wake and were settled by their deadline without ever being woken, summed over every plugin. It stays at 0 while every plugin wakes what it parks; a rising value names a plugin that loses wakes, so its calls end at their timeout instead of completing. |
-| `bb_plugin_quarantined_total` | counter | none | New in 1.6.0. Plugin instances the crossing watchdog quarantined because a call overran its budget, summed over every plugin. A quarantined instance answers its callers with a fault (a hook goes to its `on_error`) until a timed trial call brings a fresh instance back. Any non-zero value names a wedged plugin. |
 
 **Mint labels.** Key labels attached at mint (`labels: {"team": "growth"}`) are echoed verbatim onto that key's gauge series, so Grafana can `sum by (team)` and Alertmanager can fire per team without Busbar knowing what a team is. Label keys are operator-chosen at mint (admin-plane bounded), never request bytes.
 
@@ -195,19 +193,35 @@ documents: **every `#[tracing::instrument]` must carry an explicit `level =` (a
 "rogue" instrument with no level silently defaults to INFO, which is always-on on the hot path) and
 that level is set in one spot, not re-picked ad hoc at each call site.**
 
-**The one spot: `observability::HOTPATH_LEVEL`.** `crates/busbar/src/observability.rs` defines:
+**The one spot: `observability::HOTPATH_LEVEL`.** `crates/busbar-kernel/src/observability/mod.rs`
+defines:
 
 ```rust
-pub(crate) const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
+pub const HOTPATH_LEVEL: tracing::Level = tracing::Level::DEBUG;
 ```
 
-Every hot, per-request `#[tracing::instrument]` (the `forward` span in `proxy/engine/mod.rs`, the
-`forward_once` span in `proxy/engine/walk.rs`, and the `ingress/mod.rs` entry spans `gemini_ingress`,
-`bedrock_converse`, `bedrock_converse_stream`, `named` and `adhoc`) references
-this constant (or, where the macro's parser requires a bare identifier rather than a `crate::`-
-prefixed path, imports it with `use crate::observability::HOTPATH_LEVEL;` and writes
-`level = HOTPATH_LEVEL`). Raising or lowering hot-path verbosity for the whole request path is a
-one-line change to that constant, never a per-call-site literal.
+Every hot, per-request span references this constant (or, where the macro's parser requires a
+bare identifier rather than a path, imports it and writes `level = HOTPATH_LEVEL`). Raising or
+lowering hot-path verbosity for the whole request path is a one-line change to that constant, never
+a per-call-site literal. The request path's spans, with 1.5.5's names and fields:
+
+| Span | Fields | Opened by |
+|---|---|---|
+| `named` | `pool` | an arrival on `/{pool}/v1/messages` |
+| `adhoc` | `provider`, `model` | an arrival on `/{provider}/{model}/v1/messages` |
+| `gemini_ingress` | none | an arrival read as Gemini: an `x-goog-api-key` field, a Gemini action verb in the path (`:generateContent` and the rest), or a path under `/v1/models/` or `/v1beta/models/` |
+| `bedrock_converse`, `bedrock_converse_stream` | none | an arrival read as Bedrock (a SigV4 `authorization` field, or a `/converse` path) whose path ends in `/converse` or `/converse-stream` |
+| `forward` | `pool`, `ingress`, `op`, `request_id` | every dispatched unit, once it is admitted, beneath its entry span where it has one |
+| `forward_once` | `lane` | each dispatch of an exhaustion terminal (a fallback pool's member, the least-bad bypass, a queued slot), beneath `forward` |
+
+The entry is chosen as 1.5.5 chose it: head fields first (`authorization` with SigV4, then
+`anthropic-version`, `anthropic-beta`, `x-goog-api-key`, `x-api-key`), then the path. A request read
+as Anthropic opens no entry span. The kernel names no dialect: each entry span's name and the
+request shape that opens it are data the plane states as entry-fact claims (`CLAIM_ENTRY`, with
+`PlaneSnapshot::arrival_spans`). The kernel builds one callsite per name when it binds the routes
+and opens the span around the arrival. `forward` and `forward_once` are the kernel's own. A field
+keeps the type tracing-opentelemetry 0.33 gave it: an `i64`, `bool` or `f64` field is typed, and a
+`u64` field (`lane`, `request_id`) is its text, as 1.5.5 wrote it.
 
 `HOTPATH_LEVEL` is `DEBUG`, not the `tracing::Level::TRACE` variant, because it pairs with the
 OTHER half of the one-spot policy: `observability::log_levels()`, which builds the stderr and OTLP

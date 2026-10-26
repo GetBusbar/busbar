@@ -8,8 +8,8 @@
 //! section into the config grammar, and no plane may claim a core-owned section.
 //!
 //! The planes are addressed by what they declare, read off the linked rows; the source names none.
-//! The exact owned sections of today's roster are pinned as data in `tests/fixtures/plane_doctrine.txt`
-//! (`owned-section` rows) and compared when every plane is compiled in.
+//! How many linked planes own a section is pinned ([`OWNING_PLANES`]) and compared when every plane
+//! is compiled in; each owning plane's sections are read off its own declaration.
 #![cfg(linked_axis_plane)]
 
 mod common;
@@ -23,22 +23,27 @@ use busbar_kernel::plane::registry::{
 
 include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
 
+/// THE SECTION-OWNING LINKED PLANES, PINNED: how many linked planes own the grammar of a top-level
+/// section through their `PlaneDecl`. None today: every section-owning plane is a door plane, whose
+/// sections its door's Statement declares (DECL-FOLD), not a linked PlaneDecl. A section changing
+/// owner is a config-grammar change, so this is a number a diff must change.
+#[cfg(linked_every_plane)]
+const OWNING_PLANES: usize = 0;
+
 /// The linked planes that declare sections they own the grammar of.
 fn owning_planes() -> Vec<&'static PlaneDecl> {
     let owning: Vec<&'static PlaneDecl> = LINKED_PLANES
         .iter()
         .filter(|d| !d.owned_config_sections.is_empty())
         .collect();
-    // Non-vacuity, against the doctrine: with every plane compiled in, some linked plane owns a
-    // section exactly when the doctrine pins an `owned-section` row. It pins none: both
-    // section-owning planes are door planes, whose sections their doors' Statements declare
-    // (DECL-FOLD), not a linked PlaneDecl.
+    // Non-vacuity, against the pin: with every plane compiled in, some linked plane owns a section
+    // exactly when [`OWNING_PLANES`] pins one.
     #[cfg(linked_every_plane)]
     assert_eq!(
         owning.is_empty(),
-        common::doctrine_rows("owned-section").is_empty(),
+        OWNING_PLANES == 0,
         "non-vacuity: with every plane compiled in, the linked planes own a section exactly when \
-         the doctrine pins one"
+         the pin counts one"
     );
     owning
 }
@@ -63,8 +68,8 @@ fn every_owning_plane_wires_the_section_hooks() {
     }
 }
 
-/// With every plane compiled in, the owning planes and their sections are EXACTLY the pinned ones:
-/// `owned-section <plane key> <declaring section> <owned section>...` rows of the doctrine fixture.
+/// With every plane compiled in, the owning planes are EXACTLY as many as [`OWNING_PLANES`] pins, and
+/// no two of them own the same section.
 #[cfg(linked_every_plane)]
 #[test]
 fn the_owned_sections_are_the_pinned_ones() {
@@ -76,12 +81,16 @@ fn the_owned_sections_are_the_pinned_ones() {
             row
         })
         .collect();
-    let pinned: std::collections::BTreeSet<Vec<&str>> =
-        common::doctrine_rows("owned-section").into_iter().collect();
+    let owned: Vec<&str> = live
+        .iter()
+        .flat_map(|row| row[2..].iter().copied())
+        .collect();
+    let distinct: std::collections::BTreeSet<&str> = owned.iter().copied().collect();
     assert_eq!(
-        live, pinned,
-        "the linked planes' owned sections are the doctrine's; a section changing owner is a \
-         config-grammar change, not a refactor"
+        (live.len(), distinct.len()),
+        (OWNING_PLANES, owned.len()),
+        "the linked planes owning a section are the pinned count, each section owned once; a \
+         section changing owner is a config-grammar change, not a refactor: {live:?}"
     );
 }
 

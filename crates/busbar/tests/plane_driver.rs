@@ -120,9 +120,20 @@ fn load_open(
     sink: Arc<dyn EnvelopeSink>,
     conns: ConnTable,
 ) -> (Arc<Plugin<Plane>>, OwnedSnapshot) {
+    load_open_capped(way, dispatcher, sink, conns, 64)
+}
+
+/// [`load_open`], the host clamping the plane's `max_inflight` to `cap`.
+fn load_open_capped(
+    way: Way,
+    dispatcher: &Dispatcher,
+    sink: Arc<dyn EnvelopeSink>,
+    conns: ConnTable,
+    cap: u32,
+) -> (Arc<Plugin<Plane>>, OwnedSnapshot) {
     let bind = Bind {
         instance: Arc::from("the-instance"),
-        max_inflight_cap: 64,
+        max_inflight_cap: cap,
         sink,
         dispatcher: dispatcher.adopter(),
         conns,
@@ -350,13 +361,13 @@ fn wake(plugin: &Plugin<Plane>, t: busbar_contract::abi::mechanism::ticket::Tick
 }
 
 /// One `arrive` on `target`, READY.
-fn arrive_at(plugin: &Plugin<Plane>, target: &str) -> [u64; 8] {
+fn arrive_at(plugin: &Plugin<Plane>, target: &str) -> [u64; 16] {
     let target = target.as_bytes().to_vec();
     let mut units = [UnitCount {
         class: 0,
         source: 0,
         amount: 0,
-    }; 8];
+    }; 16];
     let mut frame = Frame::new(
         ArriveIn {
             head: in_head(),
@@ -508,8 +519,8 @@ async fn the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick() {
 }
 
 /// A plane that answers `next_tick_ns = 0` and never wakes its driver ticket is ticked once and
-/// never again (R-PUSH: `0` names no tick until a wake, and no wake comes). The llm and decisions
-/// planes answer `0` and never wake, so this is their count.
+/// never again (R-PUSH: `0` names no tick until a wake, and no wake comes). A one-direction plane
+/// that answers `0` and never wakes counts exactly this.
 #[tokio::test]
 async fn no_tick_follows_a_tick_that_asks_for_none() {
     for way in ways() {
@@ -563,14 +574,19 @@ async fn a_wake_of_the_driver_ticket_runs_drive_then_ticks_again() {
     }
 }
 
-/// A connection table whose read pends (interest under the caller's ticket) until bytes are put.
+/// A connection table whose read pends (interest under the caller's ticket) until bytes are put:
+/// for that one connection (`ready`), or for whichever reads next (`bytes`).
 #[derive(Default)]
 struct Far {
     slab: ConnSlab<()>,
     bytes: Mutex<Option<Vec<u8>>>,
+    /// Bytes for one connection's next read.
+    ready: Mutex<std::collections::HashMap<ConnId, Vec<u8>>>,
     waiting: Mutex<Vec<u64>>,
     /// Connections opened (each ESTABLISH that ran).
     opened: Mutex<u32>,
+    /// Each connection opened, in order.
+    ids: Mutex<Vec<ConnId>>,
 }
 
 impl DeclaredConns for Far {
@@ -603,7 +619,9 @@ impl Conns for Far {
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
         *self.opened.lock().unwrap() += 1;
-        self.slab.insert(caller, need, ())
+        let id = self.slab.insert(caller, need, ())?;
+        self.ids.lock().unwrap().push(id);
+        Ok(id)
     }
     fn write(
         &self,
@@ -617,7 +635,8 @@ impl Conns for Far {
     }
     fn read(&self, c: InstanceId, id: ConnId, t: u64, buf: &mut [u8]) -> Result<Piece, ConnError> {
         self.slab.get(c, id)?;
-        let Some(bytes) = self.bytes.lock().unwrap().take() else {
+        let mine = self.ready.lock().unwrap().remove(&id);
+        let Some(bytes) = mine.or_else(|| self.bytes.lock().unwrap().take()) else {
             self.waiting.lock().unwrap().push(t);
             return Err(ConnError::Pending);
         };
@@ -689,7 +708,8 @@ async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive
     }
 }
 
-/// EACH TICK STARTS A NEW CYCLE ON THE DRIVER TICKET (ARCHITECT S7-TICK (iii)): the services'
+/// EACH TICK WITH NOTHING HELD STARTS A NEW CYCLE ON THE DRIVER TICKET (ARCHITECT S7-TICK (iii)):
+/// once the `drive` that read the first tick's stream answered READY (nothing held), the services'
 /// kept answers under the driver ticket are forgotten when the next tick starts, so the second
 /// tick's ESTABLISH (handle 1 again) runs afresh instead of answering the first tick's stream; the
 /// cycle's kept count reaches the dispatcher's high-water gauge. RED before: the driver ticket is
@@ -702,9 +722,16 @@ async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
         let far = Arc::new(Far::default());
         let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
         let driver = driver_of(&plugin, dispatcher.clone());
-        for _ in 0..2 {
+        for round in 1..=2 {
             arrive_at(&plugin, "/tick-read");
             parks_after_one_tick(&driver).await;
+            // The far end answers and `drive` reads it: nothing is held on the driver ticket.
+            *far.bytes.lock().unwrap() = Some(vec![b'x'; round]);
+            let ticket = ticked(&plugin)[plane::Ticked::Ticket as usize];
+            wake(&plugin, ticket_of(ticket));
+            until("drive read the bytes", || {
+                ticked(&plugin)[plane::Ticked::DriveRead as usize] == round as u64
+            });
         }
         assert_eq!(
             *far.opened.lock().unwrap(),
@@ -714,6 +741,270 @@ async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
         assert!(
             dispatcher.stats().driver_kept_high >= 1,
             "{way:?}: the first cycle's kept ESTABLISH answer is counted"
+        );
+    }
+}
+
+/// Wait up to 5 s for `done`, without parking the runtime's thread (the schedule runs beside it).
+async fn eventually(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+
+/// `script` beside the plane's tick schedule, which must outlast it.
+async fn beside_ticks(
+    way: Way,
+    driver: &PlaneDriver,
+    script: impl std::future::Future<Output = ()>,
+) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            () = driver.ticks() => panic!("{way:?}: the schedule ended"),
+            () = script => {}
+        }
+    })
+    .await
+    .expect("the script finished");
+}
+
+/// TWO EXCHANGES HELD SIDE BY SIDE ON ONE DRIVER TICKET (THE DESIGN: every call is Ready or
+/// Pending(wake), `BUSBAR-1.6.0.md` :1282, and a Pending is honoured; R-PUSH, the `tick` row of
+/// `bb_ops_head`, :3614): the first tick's exchange pends; a wake runs `drive`, which carries it on
+/// (still PENDING), and then the re-polled tick starts a second exchange beside it. The second's
+/// far end answers first: it completes while the first stays pending, and the first, still held,
+/// then completes on its own connection when its far end answers. Each exchange dialled ONCE: a
+/// tick kept the held exchange's ESTABLISH answer, so its replay through `drive` answered its
+/// stream again. RED before: a `drive` that answered PENDING re-polled no `tick` (the second never
+/// started), and a tick's start forgot every kept answer under the driver ticket, so the held
+/// exchange's replay dialled again and its first connection's answer reached no one.
+#[tokio::test]
+async fn a_tick_keeps_every_held_exchange_and_the_second_completes_while_the_first_pends() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let far = Arc::new(Far::default());
+        let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
+        let driver = driver_of(&plugin, dispatcher.clone());
+        let t = |c: plane::Ticked| ticked(&plugin)[c as usize];
+        let opened = || *far.opened.lock().unwrap();
+        arrive_at(&plugin, "/tick-hold");
+        let script = async {
+            eventually("the first exchange pends inside the first tick", || {
+                t(plane::Ticked::HoldStarted) == 1 && !far.waiting.lock().unwrap().is_empty()
+            })
+            .await;
+            let ticket = ticket_of(t(plane::Ticked::Ticket));
+            arrive_at(&plugin, "/tick-hold");
+            wake(&plugin, ticket);
+            eventually(
+                "the re-polled tick starts a second exchange beside the first",
+                || t(plane::Ticked::HoldStarted) == 2 && opened() == 2,
+            )
+            .await;
+            let (first, second) = {
+                let ids = far.ids.lock().unwrap();
+                (ids[0], ids[1])
+            };
+            far.ready.lock().unwrap().insert(second, b"second".to_vec());
+            wake(&plugin, ticket);
+            eventually("the second exchange completes", || {
+                t(plane::Ticked::HoldDone) & 0b10 != 0
+            })
+            .await;
+            assert_eq!(
+                t(plane::Ticked::HoldDone),
+                0b10,
+                "{way:?}: the second completed while the first stays pending"
+            );
+            far.ready.lock().unwrap().insert(first, b"first".to_vec());
+            wake(&plugin, ticket);
+            eventually("the first exchange, still held, completes", || {
+                t(plane::Ticked::HoldDone) == 0b11
+            })
+            .await;
+            assert_eq!(
+                opened(),
+                2,
+                "{way:?}: each exchange dialled once; the held one's kept answer survived the ticks"
+            );
+        };
+        beside_ticks(way, &driver, script).await;
+    }
+}
+
+/// The test plane over `far`, its `max_inflight` clamped to `cap`.
+fn load_capped(way: Way, dispatcher: &Dispatcher, far: &Arc<Far>, cap: u32) -> Arc<Plugin<Plane>> {
+    let conns: Arc<dyn DeclaredConns> = far.clone();
+    let (plugin, _) = load_open_capped(
+        way,
+        dispatcher,
+        Arc::new(NoSink),
+        ConnTable::Host(conns),
+        cap,
+    );
+    assert_eq!(plugin.max_inflight(), cap, "{way:?}: the host's clamp");
+    plugin
+}
+
+/// A HANDLE IS NEVER ISSUED TWICE IN A KEPT CYCLE (THE DESIGN: Ready|Pending(wake), :1282; the
+/// replay rule): while the first exchange is held, a tick whose new exchange issues the first
+/// one's handles is answered FAULT on that call, by the existing fault answer, and nothing runs; it
+/// never reads the held exchange's kept ESTABLISH answer (its stream). The held exchange is
+/// untouched and completes on its own connection. RED before: the reused ESTABLISH answered the
+/// held exchange's stream, and the new exchange read it as its own.
+#[tokio::test]
+async fn a_tick_that_reuses_a_held_handle_is_faulted_not_answered_the_held_answer() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let far = Arc::new(Far::default());
+        let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
+        let driver = driver_of(&plugin, dispatcher.clone());
+        let t = |c: plane::Ticked| ticked(&plugin)[c as usize];
+        let opened = || *far.opened.lock().unwrap();
+        arrive_at(&plugin, "/tick-hold");
+        let script = async {
+            eventually("the first exchange is held", || {
+                t(plane::Ticked::HoldStarted) == 1 && !far.waiting.lock().unwrap().is_empty()
+            })
+            .await;
+            let ticket = ticket_of(t(plane::Ticked::Ticket));
+            arrive_at(&plugin, "/tick-hold");
+            arrive_at(&plugin, "/tick-reuse");
+            wake(&plugin, ticket);
+            eventually("the re-polled tick starts the reusing exchange", || {
+                t(plane::Ticked::HoldStarted) == 2
+            })
+            .await;
+            assert_eq!(
+                (t(plane::Ticked::HoldFaulted), t(plane::Ticked::HoldDone)),
+                (1, 0),
+                "{way:?}: the reused handle is answered FAULT, not the held exchange's answer"
+            );
+            assert_eq!(opened(), 1, "{way:?}: nothing ran under the reused handle");
+            let first = far.ids.lock().unwrap()[0];
+            far.ready.lock().unwrap().insert(first, b"first".to_vec());
+            wake(&plugin, ticket);
+            eventually("the held exchange completes on its own connection", || {
+                t(plane::Ticked::HoldDone) == 0b01
+            })
+            .await;
+        };
+        beside_ticks(way, &driver, script).await;
+    }
+}
+
+/// THE HELD SET IS BOUNDED BY THE INSTANCE'S `max_inflight`, AND A SLOT FREES PER EXCHANGE
+/// (`BUSBAR-1.6.0.md` A.4.1, :3627, the per-instance capacity; no new figure): with the host
+/// clamping it to 2, two exchanges are held and the tick that would start a third is parked, not
+/// crossed. When ONE held exchange ends, its slot frees: the third tick crosses while the other
+/// exchange still pends (no head-of-line wait on the slowest). RED before: the held count fell only
+/// when a `drive` answered that nothing was held, so the third waited on the first.
+#[tokio::test]
+async fn the_held_set_on_a_driver_ticket_is_bounded_by_max_inflight_and_frees_per_exchange() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let far = Arc::new(Far::default());
+        let plugin = load_capped(way, &dispatcher, &far, 2);
+        let driver = driver_of(&plugin, dispatcher.clone());
+        let t = |c: plane::Ticked| ticked(&plugin)[c as usize];
+        let drives = || stats(&plugin)[cases::stat::DRIVES];
+        for _ in 0..3 {
+            arrive_at(&plugin, "/tick-hold");
+        }
+        let script = async {
+            eventually("the first exchange is held", || {
+                t(plane::Ticked::HoldStarted) == 1
+            })
+            .await;
+            let ticket = ticket_of(t(plane::Ticked::Ticket));
+            wake(&plugin, ticket);
+            eventually("a second exchange is held beside it", || {
+                t(plane::Ticked::HoldStarted) == 2
+            })
+            .await;
+            let ticks = t(plane::Ticked::Ticks);
+            let seen = drives();
+            wake(&plugin, ticket);
+            eventually("the wake's drive ran", || drives() > seen).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(
+                (t(plane::Ticked::HoldStarted), t(plane::Ticked::Ticks)),
+                (2, ticks),
+                "{way:?}: at the cap the tick is parked, not crossed"
+            );
+            let second = far.ids.lock().unwrap()[1];
+            far.ready.lock().unwrap().insert(second, b"second".to_vec());
+            wake(&plugin, ticket);
+            eventually(
+                "one exchange ended: the parked tick starts the third",
+                || t(plane::Ticked::HoldStarted) == 3,
+            )
+            .await;
+            assert_eq!(
+                t(plane::Ticked::HoldDone),
+                0b010,
+                "{way:?}: the third started while the first still pends"
+            );
+        };
+        beside_ticks(way, &driver, script).await;
+    }
+}
+
+/// THE PARKED TICK IS WOKEN BY THE SLOT, NOT BY ITS CALLER: a tick submitted straight on the driver
+/// ticket (as any tick loop does, auth's among them, which stops on a PENDING answer naming no
+/// next tick) while two exchanges are held under a cap of 2 is not answered; when one held exchange
+/// ends, that same tick crosses and is answered, with no further tick submitted and no other poke.
+#[tokio::test]
+async fn a_tick_parked_at_the_cap_runs_when_a_slot_frees_without_a_poke() {
+    for way in ways() {
+        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let far = Arc::new(Far::default());
+        let plugin = load_capped(way, &dispatcher, &far, 2);
+        let drv = dispatcher.driver(&*plugin, 0).expect("a driver ticket");
+        let t = |c: plane::Ticked| ticked(&plugin)[c as usize];
+        for _ in 0..3 {
+            arrive_at(&plugin, "/tick-hold");
+        }
+        for k in 1..=2 {
+            let done = dispatcher
+                .tick(&*plugin, drv, now_ns())
+                .wait(Duration::from_secs(5))
+                .expect("a held set under its cap answers the tick");
+            assert_eq!(
+                done.outcome,
+                AbiOutcome::Pending,
+                "{way:?}: exchange {k} is held"
+            );
+        }
+        let parked = dispatcher.tick(&*plugin, drv, now_ns());
+        assert!(
+            parked.wait(Duration::from_millis(200)).is_none(),
+            "{way:?}: at the cap the tick is parked, unanswered"
+        );
+        assert_eq!(t(plane::Ticked::HoldStarted), 2, "{way:?}: not crossed");
+        let first = far.ids.lock().unwrap()[0];
+        far.ready.lock().unwrap().insert(first, b"first".to_vec());
+        // The far end's own readiness wake: the held exchange ends in the `drive` it runs.
+        wake(&plugin, drv);
+        let done = parked
+            .wait(Duration::from_secs(5))
+            .expect("the freed slot woke the parked tick");
+        assert_eq!(
+            done.outcome,
+            AbiOutcome::Pending,
+            "{way:?}: it crossed and holds the third exchange"
+        );
+        assert_eq!(
+            t(plane::Ticked::HoldStarted),
+            3,
+            "{way:?}: the third started"
+        );
+        assert_eq!(
+            t(plane::Ticked::HoldDone),
+            0b001,
+            "{way:?}: the second still pends"
         );
     }
 }
@@ -907,9 +1198,10 @@ fn admin(method: &str, path: &str, body: &str) -> Option<(u16, String)> {
 
 /// The audit rows written for `resource` under the test plane's audit verb.
 fn rows(resource: &str) -> Vec<String> {
-    busbar_kernel::audit_ring::AUDIT
-        .export()
+    busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, busbar_kernel::audit_ring::MAX_AUDIT_ENTRIES, None, None)
         .into_iter()
+        .rev()
         .filter(|e| e.action == "testkind.act" && e.resource == resource)
         .map(|e| e.outcome)
         .collect()
@@ -929,6 +1221,9 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
     let _one = PUBLISHED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
+    // test harness registers it, so the rows this test writes reach the seam's read model.
+    let _ = busbar_kernel::test_support::TestApp::new().build();
     for way in ways() {
         let item = format!("{way:?}").to_lowercase();
         let act = format!("/items/{item}/act");

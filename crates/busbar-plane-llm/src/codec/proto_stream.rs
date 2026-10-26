@@ -43,16 +43,13 @@ pub struct StreamTranslate {
     /// reframed as SSE. The stream's terminator is the `messageStop`/`metadata` frames themselves
     /// (Bedrock has no `[DONE]`), so `finish()` stays empty. See `docs/architecture.md`.
     pub ingress_eventstream: bool,
-    /// Wall-clock instant the first byte was fed, used to report a real `metrics.latencyMs` on a
-    /// Bedrock-INGRESS `metadata` frame (a native ConverseStream reports actual latency; a
-    /// hard-coded `0` was a detectable tell). Set lazily on the first `feed`. `None` until then (and
-    /// for non-Bedrock ingress, where it is never read).
-    started_at: Option<std::time::Instant>,
-    /// The clock `started_at` and the `metrics.latencyMs` it measures are read from:
-    /// [`std::time::Instant::now`] on every serving path. A caller that relays one stream twice and
-    /// compares the bytes (a piece-boundary proof) hands both relays one clock
-    /// ([`StreamTranslate::with_clock`]), so the latency they report cannot differ by scheduling.
-    clock: fn() -> std::time::Instant,
+    /// The host's monotonic reading (nanoseconds) when the first byte was fed, used to report a
+    /// real `metrics.latencyMs` on a Bedrock-INGRESS `metadata` frame (a native ConverseStream
+    /// reports actual latency; a hard-coded `0` was a detectable tell). Both ends of the duration
+    /// are the HOST's clock (`CodecHost::monotonic_ns`, the kernel's one clock); the plane reads no
+    /// clock of its own. Set lazily on the first `feed`; `None` until then, and when the host holds
+    /// no clock.
+    started_at: Option<u64>,
     /// Per-stream, INGRESS-keyed protocol framing state. All protocol-specific stream-shape
     /// decisions the translator used to make inline — the OpenAI per-chunk identity replay +
     /// include_usage trailing-usage un-fold, and the Bedrock messageStop/metadata two-frame deferral
@@ -219,7 +216,6 @@ impl StreamTranslate {
             egress_eventstream,
             ingress_eventstream,
             started_at: None,
-            clock: std::time::Instant::now,
             framing,
             tool_id_remap: ToolIdRemap::default(),
             // The wire-frame paths (`new`/`new_same_proto`) always read ids straight off the egress
@@ -238,13 +234,6 @@ impl StreamTranslate {
             #[cfg(test)]
             parse_calls: std::cell::Cell::new(0),
         })
-    }
-
-    /// The translator over `clock` instead of [`std::time::Instant::now`] (see the field).
-    #[must_use]
-    pub fn with_clock(mut self, clock: fn() -> std::time::Instant) -> Self {
-        self.clock = clock;
-        self
     }
 
     /// The translator whose ingress writer bounds each of its per-item accumulators at `cap`: the
@@ -772,10 +761,10 @@ impl StreamTranslate {
                 // (a native usage frame's real latency) are injected through the framing vtable, so this
                 // agnostic emitter names no wire event-type of its own.
                 // u128 -> u64 for JSON; saturate (elapsed never realistically exceeds u64 ms).
-                let elapsed_ms = self.started_at.map(|start| {
-                    let ms = (self.clock)().saturating_duration_since(start).as_millis();
-                    u64::try_from(ms).unwrap_or(u64::MAX)
-                });
+                let elapsed_ms = self
+                    .started_at
+                    .zip(host.monotonic_ns())
+                    .map(|(start, now)| now.saturating_sub(start) / 1_000_000);
                 self.framing
                     .inject_streaming_metrics(&out_et, &mut out_data, elapsed_ms);
                 let payload = crate::codec::json::to_vec(&out_data).unwrap_or_default();
@@ -837,11 +826,11 @@ impl StreamTranslate {
         if self.aborted {
             return Vec::new();
         }
-        // Stamp the stream's wall-clock start on the first byte fed, so a Bedrock-INGRESS `metadata`
-        // frame can report a real `metrics.latencyMs` (elapsed since the stream began) instead of a
-        // tell-tale hard-coded 0. Cheap monotonic clock read; only read on the bedrock-ingress path.
-        if self.started_at.is_none() {
-            self.started_at = Some((self.clock)());
+        // Stamp the stream's start on the first byte fed, on the host's monotonic clock, so a
+        // Bedrock-INGRESS `metadata` frame can report a real `metrics.latencyMs` (elapsed since the
+        // stream began) instead of a tell-tale hard-coded 0. One host read per stream.
+        if self.started_at.is_none() && self.ingress_eventstream {
+            self.started_at = host.monotonic_ns();
         }
         self.buf.extend_from_slice(chunk);
         let mut out: Vec<u8> = Vec::new();
@@ -1464,18 +1453,16 @@ pub fn new_stream_translator(
         ingress,
         egress,
         is_sse,
-        std::time::Instant::now,
         busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     )
 }
 
-/// [`new_stream_translator`], its stream timed on `clock` ([`StreamTranslate::with_clock`]) and its
-/// writer bounded at the plane's `translate_cap` ([`StreamTranslate::with_translate_cap`]).
+/// [`new_stream_translator`], its writer bounded at the plane's `translate_cap`
+/// ([`StreamTranslate::with_translate_cap`]).
 pub fn new_stream_translator_on(
     ingress: &str,
     egress: &str,
     is_sse: bool,
-    clock: fn() -> std::time::Instant,
     translate_cap: usize,
 ) -> Option<Box<dyn StreamTranslator>> {
     if !is_sse {
@@ -1489,9 +1476,7 @@ pub fn new_stream_translator_on(
     } else {
         StreamTranslate::new(ingress, egress)
     }?;
-    Some(Box::new(
-        st.with_clock(clock).with_translate_cap(translate_cap),
-    ))
+    Some(Box::new(st.with_translate_cap(translate_cap)))
 }
 
 /// Rewrite a same-protocol OpenAI SSE frame's bytes with its top-level `usage` member removed,

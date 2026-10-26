@@ -40,7 +40,9 @@ pub trait Store {
     /// irreducible-set posture rules.
     fn chain_break(&self, admin: &Grant<AdminVerb>) -> Result<(), StoreError>;
 
-    /// `// contract:` restore the store from a named backup.
+    /// `// contract:` restore the store from a named backup. An integrator whose store has no restore
+    /// operation answers [`StoreError::Failed`] and restores nothing; it never acknowledges a restore
+    /// that did not happen.
     fn store_restore(&self, admin: &Grant<AdminVerb>, backup_ref: &str) -> Result<(), StoreError>;
 
     /// `// contract:` reseal the epoch floor after a chain break or restore.

@@ -30,13 +30,13 @@ fn hook(kind: HookKind, global: bool) -> HookCfg {
 /// A hook registered through the ADMIN API must become live on every OTHER compiled-in plane too,
 /// not only on the pool-scoped hooks.
 ///
-/// The failure this pins is specific and silent: an operator writes an MCP server's `hooks: [screen]`
+/// The failure this pins is specific and silent: an operator writes a tool server's `hooks: [screen]`
 /// attach in the file and registers the `screen` DEFINITION later through the API. At boot the name
 /// resolved to nothing (no definition yet), so the server's gate chain was empty — and without
 /// `reresolve_plane_gates` the register would answer `200 OK` while that chain stayed empty
 /// forever, leaving the operator believing a control is attached that is not. The pool-scoped hooks'
 /// own three `resolve_*` calls exist for exactly this reason; this test exercises that same
-/// fail-open for a plane-owned attach, using MCP as the concrete plane under test.
+/// fail-open for a plane-owned attach, using the tool plane as the concrete plane under test.
 #[test]
 fn build_with_hook_makes_a_plane_attach_live() {
     let env = busbar_kernel::test_support::test_hook_env(&["test-hook"], Default::default());

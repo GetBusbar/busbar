@@ -2,16 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE JOURNAL ON THE CONFIGURED STORE: where a node with no data directory keeps its chain, and how
-//! it gets the chain back at boot (ARCHITECT 2026-10-07 H3 ruling (a)-(c); BUSBAR-1.6.0.md THE DESIGN
-//! §7: the journal carries the record body, "the in-memory ring of 1024 is only a cache, and an older
-//! `/audit/range` decodes from the journal").
+//! it gets the chain back at boot (the journal carries the record body: the in-memory ring of 1024 is
+//! only a cache, and an older `/audit/range` decodes from the journal).
 //!
 //! ## The write
 //!
 //! Each journal record goes to the configured store through its store v3 `record_put` slot, under
 //! [`JOURNAL_SCHEMA`], keyed `node ‖ node_seq ‖ part`, each big-endian, so `record_scan` returns the
-//! chain in chain order. No new store slot: an individual idempotent `record_put` is the write (the
-//! store ABI is locked, ARCHITECT H2-U10-OPID). A slot carries at most
+//! chain in chain order. No new store slot: an individual idempotent `record_put` is the write. A slot carries at most
 //! [`busbar_contract::MAX_RECORD_BYTES`] per record and a journal record is a 160-byte header plus its
 //! body, so a record crosses as one or more PARTS, each `part count (u16 BE) ‖ chunk`. A re-put of a
 //! part is an upsert of the same bytes, so a retry is harmless.
@@ -31,6 +29,9 @@
 //! away, the journal retains that batch and re-offers it on its next append (the log's own retained
 //! batch), and the node FAILS CLOSED — a new money-bearing unit is refused 503 with the reason
 //! ([`JournalLane::refuses_money`]) until the store takes what is queued. No record is dropped.
+//! The batch the journal retains grows with what the closed node still writes, past the bound if
+//! the outage is long enough, so an EMPTY lane takes a batch whole whatever its size: it is in
+//! memory either way, and the lane stays full until the store took it below the bound.
 //!
 //! ## The read
 //!
@@ -49,6 +50,8 @@ use std::time::{Duration, Instant};
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel_wal::{Record, ShipError, Shipper, MEMORY_BUFFER_RECORDS};
+
+use super::store_identity::{HeldLease, NodeLease};
 
 /// The record schema the journal's records are kept under in the configured store.
 pub const JOURNAL_SCHEMA: &str = "busbar.journal.v1";
@@ -149,8 +152,62 @@ fn put_record(calls: &dyn StoreCalls, record: &Record) -> Result<(), String> {
 ///
 /// The store refused or failed a scan, or a block answered more entries than one scan may carry.
 pub fn read_chain(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Record>, String> {
+    let (records, torn) = scan_chain(calls, node)?;
+    warn_torn(node, torn.last().copied());
+    Ok(records)
+}
+
+/// Say that the stored journal holds `seq`, a record missing a part, which is left off.
+fn warn_torn(node: u64, seq: Option<u64>) {
+    if let Some(seq) = seq {
+        // Left off, never spliced in: a record missing a part was never acknowledged whole. Only the
+        // newest can be in this state on a store that kept what it acknowledged; one further back
+        // shows as the chain break the boot's verify reports.
+        tracing::warn!(
+            node,
+            node_seq = seq,
+            "the stored journal holds a record whose parts are not all there; it is left off"
+        );
+    }
+}
+
+/// THIS NODE'S CHAIN AS THE STORE KEPT IT, read while `lane` may be putting to it and without the
+/// book's lock: what [`read_chain`] answers, save that a record missing a part is torn only when it
+/// is neither held by the lane after the scan nor whole on a second look. The lane puts in chain
+/// order and only its head is ever part-put, so the whole records read are a prefix of the chain. A
+/// record part-put at the scan is still in the lane when it is copied afterwards, or has left it
+/// whole, in which case the second scan finds it whole.
+///
+/// # Errors
+///
+/// As [`read_chain`].
+pub(super) fn read_chain_beside(lane: &JournalLane, node: u64) -> Result<Vec<Record>, String> {
+    let calls = lane.calls();
+    let (records, mut torn) = scan_chain(calls.as_ref(), node)?;
+    if !torn.is_empty() {
+        let held: std::collections::HashSet<u64> = lane
+            .queued()
+            .into_iter()
+            .filter(|record| record.node == node)
+            .map(|record| record.node_seq)
+            .collect();
+        torn.retain(|seq| !held.contains(seq));
+    }
+    if !torn.is_empty() {
+        let (_, again) = scan_chain(calls.as_ref(), node)?;
+        torn.retain(|seq| again.contains(seq));
+    }
+    warn_torn(node, torn.last().copied());
+    Ok(records)
+}
+
+/// [`read_chain`]'s scan: the whole records the store kept for `node`, oldest first, and the
+/// sequence numbers of those it holds only some parts of, oldest first. A record the lane is still
+/// putting is one of those for as long as the put takes, so whether one is torn is the caller's
+/// call.
+fn scan_chain(calls: &dyn StoreCalls, node: u64) -> Result<(Vec<Record>, Vec<u64>), String> {
     let mut records = Vec::new();
-    let mut torn: Option<u64> = None;
+    let mut torn: Vec<u64> = Vec::new();
     for block in 0u64.. {
         // `node ‖ the first seven bytes of the sequence number`: 256 numbers a block.
         let mut prefix = [0u8; 15];
@@ -193,63 +250,121 @@ pub fn read_chain(calls: &dyn StoreCalls, node: u64) -> Result<Vec<Record>, Stri
                 _ => {
                     finish(&mut at, node, &mut records, &mut torn);
                     at = (part == 0).then(|| (seq, 1, chunk.to_vec(), count));
-                    if part != 0 {
-                        torn = Some(seq);
+                    if part != 0 && torn.last() != Some(&seq) {
+                        torn.push(seq);
                     }
                 }
             }
         }
         finish(&mut at, node, &mut records, &mut torn);
     }
-    if let Some(seq) = torn {
-        // Left off, never spliced in: a record missing a part was never acknowledged whole. Only the
-        // newest can be in this state on a store that kept what it acknowledged; one further back
-        // shows as the chain break the boot's verify reports.
-        tracing::warn!(
-            node,
-            node_seq = seq,
-            "the stored journal holds a record whose parts are not all there; it is left off"
-        );
-    }
-    Ok(records)
+    Ok((records, torn))
 }
 
 /// THE WHOLE CHAIN A JOURNAL RESUMED FROM THE STORE HOLDS, oldest first, decoded and verified:
-/// what [`Journal::replay`] answers on a log that keeps every segment.
-///
-/// A memory log keeps only its newest segment resident ([`busbar_kernel_wal::Wal::memory_seeded`]);
-/// the rest of the chain is in the store. So the chain is the union of what the store holds, what
-/// waits in the lane for it, what the log retained after a refusal, and the resident segment, each
-/// `(node, node_seq)` once. The lane is copied BEFORE the store is scanned: a record leaves the lane
-/// only once the store took it, so none can fall between the two reads. Called under the book's
-/// lock, so the journal appends nothing meanwhile.
+/// what [`Journal::replay`] answers on a log that keeps every segment. [`HeldChain`] taken and read
+/// in one go, for a caller that holds the book's lock anyway.
 ///
 /// # Errors
 ///
-/// The store would not read the chain back, or the log could not be read.
+/// As [`HeldChain::read`], and the log could not be read.
 pub(super) fn whole_chain(
     journal: &busbar_kernel_wal::Journal,
     lane: &JournalLane,
 ) -> std::io::Result<Result<Vec<busbar_kernel_wal::JournalRecord>, busbar_kernel_wal::JournalBreak>>
 {
-    let node = journal.node();
-    let queued = lane.queued();
-    let stored =
-        off_runtime(|| read_chain(lane.calls().as_ref(), node)).map_err(std::io::Error::other)?;
-    let resident = journal.log().read_back()?.records;
-    let mut chain: std::collections::BTreeMap<u64, Record> = std::collections::BTreeMap::new();
-    for record in stored
-        .into_iter()
-        .chain(queued)
-        .chain(journal.log().owed().iter().cloned())
-        .chain(resident)
-        .filter(|record| record.node == node)
-    {
-        chain.entry(record.node_seq).or_insert(record);
+    HeldChain::of(journal, lane)?.read()
+}
+
+/// WHAT THE NODE HOLDS OF A CHAIN THE STORE KEEPS, copied under the book's lock so the store is
+/// read without it ([`HeldChain::read`]). The book's lock is the one every unit's open, settle and
+/// seal takes on the request path, and a scan of the store is a wait on the store plugin for every
+/// block of the chain, so a read that scanned under it stalled serving for as long as the chain
+/// took to read (THE DESIGN §11.2: no blocking on the hot path).
+///
+/// A memory log keeps only its newest segment resident ([`busbar_kernel_wal::Wal::memory_seeded`]);
+/// the rest of the chain is in the store. So the chain is the union of what the store holds, what
+/// waits in the lane for it, what the log retained after a refusal, and the resident segment, each
+/// `(node, node_seq)` once. The last three are copied here, with the lane FIRST: a record leaves
+/// the lane only once the store took it, so none can fall between the copy and the scan, which
+/// comes after both. The copy is taken under the book's lock, so the journal appends nothing
+/// meanwhile; once the lock is let go it may append again, and the store may then hold records past
+/// the copy, so the chain is CUT at the position the journal had reached: a read answers the chain
+/// as of the one moment the lock was held.
+pub(super) struct HeldChain {
+    lane: JournalLane,
+    node: u64,
+    /// The position the journal's next record takes: every record of the cut is below it.
+    through: u64,
+    /// The lane's queue, the log's retained records and its resident segment, in that order.
+    held: Vec<Record>,
+}
+
+impl HeldChain {
+    /// Copy what `journal` and `lane` hold of the chain. Under the book's lock; reads no store.
+    ///
+    /// # Errors
+    ///
+    /// The log could not be read.
+    pub(super) fn of(
+        journal: &busbar_kernel_wal::Journal,
+        lane: &JournalLane,
+    ) -> std::io::Result<Self> {
+        let mut held = lane.queued();
+        held.extend(journal.log().owed().iter().cloned());
+        held.extend(journal.log().read_back()?.records);
+        Ok(HeldChain {
+            lane: lane.clone(),
+            node: journal.node(),
+            through: journal.next_seq(),
+            held,
+        })
     }
-    let records: Vec<Record> = chain.into_values().collect();
-    Ok(busbar_kernel_wal::decode_run(&records)
-        .and_then(|decoded| busbar_kernel_wal::verify_journal(&decoded).map(|()| decoded)))
+
+    /// The configured store's name.
+    pub(super) fn store(&self) -> &str {
+        self.lane.store()
+    }
+
+    /// THE CHAIN AS OF THE COPY: the store scanned, joined to what was copied, cut at the copy's
+    /// position, decoded and verified. Without the book's lock. The lane's worker puts meanwhile:
+    /// the store may hold only the first parts of the record at the lane's head, which is being put,
+    /// not torn; only a part-short record of the cut that the node no longer holds is reported.
+    ///
+    /// # Errors
+    ///
+    /// The store would not read the chain back.
+    pub(super) fn read(
+        self,
+    ) -> std::io::Result<
+        Result<Vec<busbar_kernel_wal::JournalRecord>, busbar_kernel_wal::JournalBreak>,
+    > {
+        let HeldChain {
+            lane,
+            node,
+            through,
+            held,
+        } = self;
+        let (stored, torn) = off_runtime(|| scan_chain(lane.calls().as_ref(), node))
+            .map_err(std::io::Error::other)?;
+        let mut chain: std::collections::BTreeMap<u64, Record> = std::collections::BTreeMap::new();
+        for record in stored
+            .into_iter()
+            .chain(held)
+            .filter(|record| record.node == node && record.node_seq < through)
+        {
+            chain.entry(record.node_seq).or_insert(record);
+        }
+        warn_torn(
+            node,
+            torn.into_iter()
+                .rev()
+                .find(|seq| *seq < through && !chain.contains_key(seq)),
+        );
+        let records: Vec<Record> = chain.into_values().collect();
+        Ok(busbar_kernel_wal::decode_run(&records)
+            .and_then(|decoded| busbar_kernel_wal::verify_journal(&decoded).map(|()| decoded)))
+    }
 }
 
 /// Close the record being reassembled: whole, it joins `records`; short, it is noted as torn.
@@ -257,13 +372,13 @@ fn finish(
     at: &mut Option<(u64, u16, Vec<u8>, u16)>,
     node: u64,
     records: &mut Vec<Record>,
-    torn: &mut Option<u64>,
+    torn: &mut Vec<u64>,
 ) {
     if let Some((seq, got, bytes, count)) = at.take() {
         if got == count {
             records.push(Record::new(node, seq, bytes));
-        } else {
-            *torn = Some(seq);
+        } else if torn.last() != Some(&seq) {
+            torn.push(seq);
         }
     }
 }
@@ -297,6 +412,9 @@ struct Lane {
     moved: Condvar,
     /// The fail-closed fact, readable without the lock on the request path.
     full: AtomicBool,
+    /// The lease on this node's host name held in this store, once the boot took one
+    /// ([`JournalLane::hold_lease`]).
+    lease: HeldLease,
 }
 
 impl Lane {
@@ -421,6 +539,7 @@ impl JournalLane {
             work: Condvar::new(),
             moved: Condvar::new(),
             full: AtomicBool::new(false),
+            lease: HeldLease::default(),
         });
         let worker = Arc::clone(&lane);
         std::thread::Builder::new()
@@ -443,6 +562,24 @@ impl JournalLane {
     #[must_use]
     pub fn calls(&self) -> Arc<dyn StoreCalls> {
         Arc::clone(&self.lane.calls)
+    }
+
+    /// Keep `lease`, the boot's lease on its host name in this lane's store: what
+    /// [`JournalLane::refresh_held_lease`] and [`JournalLane::release_held_lease`] act on.
+    pub fn hold_lease(&self, lease: NodeLease) {
+        self.lane.lease.hold(lease);
+    }
+
+    /// REFRESH the held lease, if any, on every `LEASE_REFRESH_TICKS`-th call: run on the checkpoint
+    /// flush tick, off any runtime worker ([`HeldLease::refresh`]).
+    pub fn refresh_held_lease(&self) {
+        self.lane.lease.refresh(self.lane.calls.as_ref());
+    }
+
+    /// RELEASE the held lease, if any: run on a clean shutdown once the lane drained, so the next
+    /// boot of the host resumes the whole chain at once ([`HeldLease::release`]).
+    pub fn release_held_lease(&self) {
+        self.lane.lease.release(self.lane.calls.as_ref());
     }
 
     /// The journal's shipper over this lane.
@@ -589,7 +726,13 @@ impl Shipper<Record> for LaneShipper {
         }
         let lane = &self.0.lane;
         let mut state = lane.lock();
-        if state.queue.len().saturating_add(records.len()) > lane.capacity {
+        // An empty lane takes any batch whole. The journal re-offers what it retained as one batch,
+        // which a long outage grows past the bound (admin units, the checkpoint cadence and accruals
+        // still append while money is refused); turned away by an empty lane too, it would never
+        // drain and the node would refuse money until a restart lost it (audit root r4 B-3).
+        if !state.queue.is_empty()
+            && state.queue.len().saturating_add(records.len()) > lane.capacity
+        {
             state.turned_away = true;
             lane.set_full(&state);
             return Err(ShipError::Unavailable(format!(

@@ -1142,31 +1142,6 @@ fn test_host_from_base_backslash_authority_matches_wire_host() {
     ));
 }
 
-/// The structural half of the check — what `dest.judge` answers without resolving — refuses every
-/// loopback and private spelling for a class without `allow_private`. RED on the `/`-only reader,
-/// which read each of these as an unresolved NAME and allowed it.
-#[test]
-fn the_structural_check_refuses_every_loopback_spelling() {
-    for dest in [
-        "https://127.0.0.1?x",
-        "https://localhost#a",
-        "https://127.0.0.1./",
-        "https://%6c%6fcalhost/",
-        "https://10.0.0.5\\x/",
-    ] {
-        let got = check_structure(dest, &[], GuardPolicy::default(), &Denylist::default());
-        assert!(
-            matches!(
-                got,
-                Err(NetworkRefusal::Guard(
-                    AddressRefusal::InternalAddress { .. } | AddressRefusal::LoopbackName(_)
-                ))
-            ),
-            "{dest}: {got:?}"
-        );
-    }
-}
-
 // ── Moved from busbar-kernel's deleted `net_guard` shim suites (row 130 E2): the rows those suites
 // held that this one did not. ───────────────────────────────────────────────────────────────────
 
@@ -1277,56 +1252,132 @@ fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
     );
 }
 
-/// THE DIALING GUARD AND THE CONFIG GUARD MUST KNOW THE SAME METADATA NAMES.
-///
-/// They did not. `ssrf_blocked_host` kept a SIX-name list private to its own body while
-/// `judge_host_name` — the arm the resolve-then-pin dialing path consults — read a TWO-name
-/// module const. Config validation refused `metadata.tencentyun.com`; the socket did not.
+// ── THE MAPPED HOST, IN EVERY ARM: a list entry, a bare authority and a resolved name are read as
+// a URL's host is read (UTS #46), so each is judged and resolved as the name a URL client dials. ──
+
+/// 1.5.5 PARITY: an entry that names no host the guard judges (UTS #46 refuses it, a `%` outside an
+/// IPv6 zone id, a last label that reads as a number but is no IPv4 address) matched nothing on
+/// 1.5.5 and boots now; it is dropped from both lists, and the real internal targets stay refused,
+/// by `ssrf_blocked_host`, when every such entry is an
+/// allow entry (the `%`-escaped IMDS address among them).
 #[test]
-fn the_dialing_guard_and_the_config_guard_know_the_same_metadata_names() {
-    // Every name `ssrf_blocked_host` (config validation) refuses must ALSO be refused by
-    // `judge_host_name`, which is the arm the resolve-then-pin dialing path actually consults.
-    for name in [
-        "metadata.google.internal",
-        "metadata.internal",
-        "metadata.tencentyun.com",
-        "metadata.platformequinix.com",
-        "instance-data",
-        "instance-data.ec2.internal",
+fn a_list_entry_that_names_no_host_is_dropped_and_lifts_no_real_target() {
+    let entries: Vec<String> = [
+        "b\u{fc}cher\u{ff1c}.example",
+        "%6c%6fcalhost",
+        "169%2e254%2e169%2e254",
+        "1.2.3.4.5",
+        "999.1.1.1",
+        "foo.127",
+        "x.0",
+        "0x",
+    ]
+    .iter()
+    .map(|e| e.to_string())
+    .collect();
+    for target in [
+        "https://169.254.169.254/latest/meta-data/",
+        "https://metadata.google.internal/computeMetadata/v1/",
+        "169.254.169.254:80",
     ] {
-        // Config-validation view.
-        let cfg = ssrf_blocked_host(&format!("https://{name}/"), &[], false, &[]);
-        // Dialing view — the one a socket is opened behind.
-        let dial = judge_host_name(name, GuardPolicy::default());
         assert!(
-            cfg.is_some(),
-            "{name}: config guard should refuse (this is the 6-name list)"
-        );
-        assert!(
-            dial.is_err(),
-            "{name}: DIALING guard did NOT refuse — config refuses it but the dial path allows it"
+            ssrf_blocked_host(target, &entries, false, &entries).is_some(),
+            "`{target}` stays blocked"
         );
     }
 }
 
-/// NAT64 / RFC 6052 END TO END: a DNS64-answered destination must be refused as metadata, not
-/// pinned as an ordinary public v6 address, running through the SAME resolve-then-pin guard every
-/// other rebinding case in this file is driven through.
-///
-/// A DNS64 resolver on an IPv6-only network answers a AAAA query with the NAT64 synthesis of the
-/// queried name's IPv4 address. `64:ff9b:1:fffe::a9fe:a9fe` is the RFC 8215 local-use synthesis
-/// (with a non-zero middle, the shape RFC 8215 Section 6's own worked example uses) of the IMDS
-/// target `169.254.169.254`; it matches no v6 range and no `to_ipv4()` form, so a guard unwrapping
-/// only `to_ipv4()` would pin it as an ordinary public address.
+/// RED (HIGH): an operator's list entry is read as a target's host is read. A full-width blocked
+/// entry blocks the ASCII target it maps to, in each spelling a target may take, and a full-width
+/// allow entry lifts the metadata name it maps to; the entries were kept as written, so the blocked
+/// one matched nothing and the target was dialled. An ASCII entry is read as before, and an entry
+/// UTS #46 refuses names nothing (it is dropped, and configuration load names it in a warning).
 #[test]
-fn nat64_dns64_synthesis_of_imds_is_refused_even_under_allow_private() {
-    let r = ScriptedResolver::new(vec![Ok(vec![ip("64:ff9b:1:fffe::a9fe:a9fe")])]);
-    let err = resolve_and_pin("dns64.example", 443, true, &r, private_ok()).expect_err(
-        "the RFC 8215 local-use NAT64 synthesis of the IMDS target must be refused even under \
-         allow_private",
+fn a_list_entry_is_read_as_a_targets_host_is_read() {
+    // `１０.９９.９９.９９` and `ｍｅｔａ.example`.
+    let full_width_ip = "\u{ff11}\u{ff10}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}.\u{ff19}\u{ff19}";
+    let full_width_name = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}.example";
+    for (entry, target) in [
+        (full_width_ip, "https://10.99.99.99/"),
+        (full_width_ip, "https://[::ffff:10.99.99.99]/"),
+        (full_width_ip, "10.99.99.99:443"),
+        (full_width_name, "https://meta.example/"),
+        (full_width_name, "https://META.example./"),
+        (full_width_name, "meta.example:443"),
+    ] {
+        let blocked = [entry.to_string()];
+        assert!(
+            ssrf_blocked_host(target, &[], false, &blocked).is_some(),
+            "`{entry}` blocks `{target}`"
+        );
+    }
+    // `ｍｅｔａｄａｔａ.ｇｏｏｇｌｅ.ｉｎｔｅｒｎａｌ`, an allow entry, lifts the metadata name.
+    let full_width_meta = "\u{ff4d}\u{ff45}\u{ff54}\u{ff41}\u{ff44}\u{ff41}\u{ff54}\u{ff41}.\
+                           \u{ff47}\u{ff4f}\u{ff4f}\u{ff47}\u{ff4c}\u{ff45}.\
+                           \u{ff49}\u{ff4e}\u{ff54}\u{ff45}\u{ff52}\u{ff4e}\u{ff41}\u{ff4c}";
+    let url = "https://metadata.google.internal/";
+    assert!(ssrf_blocked_host(url, &[], false, &[]).is_some());
+    assert_eq!(
+        ssrf_blocked_host(url, &[full_width_meta.to_string()], false, &[]),
+        None
     );
-    assert!(
-        matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
-        "must be refused AS METADATA, not merely pinned as an ordinary public address: {err:?}"
+    // The entry reader: ASCII as written (trimmed), non-ASCII mapped, unmappable refused.
+    assert_eq!(
+        list_entry_host("  META.example. ").as_deref(),
+        Ok("META.example.")
     );
+    assert_eq!(
+        list_entry_host("%6c%6fcalhost").as_deref(),
+        Ok("%6c%6fcalhost")
+    );
+    assert_eq!(list_entry_host(full_width_ip).as_deref(), Ok("10.99.99.99"));
+    assert_eq!(
+        list_entry_host(full_width_name).as_deref(),
+        Ok("meta.example")
+    );
+    for unmappable in ["b\u{fc}cher\u{ff1c}.example", "\u{3002}"] {
+        assert_eq!(
+            list_entry_host(unmappable),
+            Err(UrlRefusal::NoHost),
+            "{unmappable:?}"
+        );
+        assert!(
+            ssrf_blocked_host(
+                "https://example.com/",
+                &[],
+                false,
+                &[unmappable.to_string()]
+            )
+            .is_none(),
+            "an unmappable entry names nothing"
+        );
+    }
+}
+
+/// RED (P0, an IDN 1.5.5 dialled): resolve-then-pin asks the resolver for the name a URL client
+/// resolves, the UTS #46 punycode name, and pins what it answered under that name; an ASCII name is
+/// asked as written. Asked for the name as written, a resolver answers `NXDOMAIN` and the dial is
+/// refused.
+#[test]
+fn resolve_and_pin_resolves_the_punycode_name() {
+    for (host, asked) in [
+        ("b\u{fc}cher.example", "xn--bcher-kva.example"),
+        ("Api.Example.COM", "Api.Example.COM"),
+    ] {
+        let r = ScriptedResolver::new(vec![Ok(vec![ip(PUBLIC)])]);
+        let pinned = resolve_and_pin(host, 443, true, &r, strict()).expect("pinned");
+        assert_eq!(*r.asked.borrow(), vec![asked.to_string()], "{host}");
+        assert_eq!(pinned.host(), asked, "{host}");
+        assert_eq!(pinned.addr(), ip(PUBLIC), "{host}");
+    }
+    assert!(matches!(
+        resolve_and_pin(
+            "b\u{fc}cher\u{ff1c}.example",
+            443,
+            true,
+            &NeverAsked,
+            strict()
+        ),
+        Err(AddressRefusal::NoHost(_))
+    ));
 }

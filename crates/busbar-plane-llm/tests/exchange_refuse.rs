@@ -287,7 +287,7 @@ fn an_unparseable_body_reads_the_dialects_400() {
 
 // ── rehomed from the legacy engine's refusal tests: literal statuses and bodies ─────────────────
 
-use busbar_contract::abi::plane::{RefusalCode, REFUSAL_ANY_DIALECT};
+use busbar_contract::abi::plane::RefusalCode;
 use busbar_plane_llm::exchange::arrive::{Decline, Declined};
 use busbar_plane_llm::exchange::refuse::{declined, model_not_found, render};
 
@@ -559,14 +559,20 @@ fn a_bedrock_refusals_errortype_is_its_body_type_for_every_kind() {
     assert!(value_of(&r, "x-amzn-errortype").is_none());
 }
 
-/// The kernel answers a model that names no pool and no configured model with the status this
-/// plane states for every dialect: 404.
+/// The kernel answers a model that names no pool and no configured model with its class default
+/// (`NotFound`, 404: a policy refusal, never a server fault), which this plane does not restate.
 fn no_destination_status() -> u16 {
-    let row = busbar_plane_llm::refusal::REFUSAL_STATUSES
-        .iter()
-        .find(|r| r.dialect == REFUSAL_ANY_DIALECT && r.reason == reason::NO_DESTINATION)
-        .expect("the plane states the no-destination status");
-    assert_eq!(row.status, 404);
+    assert!(
+        !busbar_plane_llm::refusal::REFUSAL_STATUSES
+            .iter()
+            .any(|r| r.reason == reason::NO_DESTINATION),
+        "the no-destination status is the kernel's class default, not a row"
+    );
+    assert_eq!(
+        busbar_contract::abi::plane::reason_of(reason::NO_DESTINATION)
+            .map(busbar_contract::abi::plane::class_of),
+        Some(busbar_contract::abi::plane::RefusalClass::NotFound)
+    );
     404
 }
 
@@ -801,6 +807,7 @@ fn refusal_in(
             envelope,
             kind,
             message: message.into(),
+            entry: None,
         },
     )
 }

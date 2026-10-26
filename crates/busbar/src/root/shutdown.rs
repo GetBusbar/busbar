@@ -11,7 +11,9 @@
 //! 2. the plane record write-behind, drained ([`crate::root::serve::drain_records`]);
 //! 3. the journal's lane to the configured store, drained under the same deadline
 //!    ([`crate::root::serve::RECORD_DRAIN`]): on a node with no data directory the store is where
-//!    the chain is kept, so a record still queued at exit is a settled unit the store never saw;
+//!    the chain is kept, so a record still queued at exit is a settled unit the store never saw —
+//!    and so is one the journal still holds back after a full lane turned it away, which is
+//!    re-offered each time the lane empties;
 //! 4. the node's lease on its host name, released, so the host's next boot resumes its chain.
 //!
 //! Two tails were two lists, and the line-serve one had lost steps 2 and 3 (audit busbar-src #1).
@@ -50,23 +52,43 @@ pub async fn tail(
     if !drain_records(late).await {
         tracing::warn!("plane record writes were still queued at shutdown");
     }
-    // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline.
-    if let Some(lane) = journal.and_then(|book| {
-        book.lock()
+    // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline — with
+    // what the journal holds back after a full lane turned it away: that batch is outside the lane,
+    // so it is re-offered before each drain until the journal holds nothing back (audit root r4
+    // B-6). An empty lane takes it whole, so a drained lane is followed by one more offer at most.
+    let Some(book) = journal else {
+        return;
+    };
+    let Some(lane) = book
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .lane()
+        .cloned()
+    else {
+        return;
+    };
+    let until = std::time::Instant::now() + RECORD_DRAIN;
+    let drained = loop {
+        let held = book
+            .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .lane()
-            .cloned()
-    }) {
-        let drained = tokio::task::spawn_blocking(move || lane.drain(RECORD_DRAIN))
+            .offer_held_back();
+        let draining = lane.clone();
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        let drained = tokio::task::spawn_blocking(move || draining.drain(left))
             .await
             .unwrap_or(false);
-        if !drained {
-            tracing::warn!("journal records were still queued for the store at shutdown");
+        if held == 0 || !drained || std::time::Instant::now() >= until {
+            break drained && held == 0;
         }
+    };
+    if !drained {
+        tracing::warn!("journal records were still queued for the store at shutdown");
     }
-    // THE NODE'S LEASE ON ITS HOST NAME, released once its chain reached the store, so the next
-    // boot of this host resumes it at once (Q128). Off the runtime: it waits on the store.
-    let _released = tokio::task::spawn_blocking(crate::root::durability::release_held_lease).await;
+    // THE NODE'S LEASE ON ITS HOST NAME, held on that lane, released once its chain reached the
+    // store, so the next boot of this host resumes it at once. Off the runtime: it waits on
+    // the store.
+    let _released = tokio::task::spawn_blocking(move || lane.release_held_lease()).await;
 }
 
 #[cfg(test)]

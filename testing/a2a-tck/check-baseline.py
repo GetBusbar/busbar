@@ -22,15 +22,32 @@ requirements must exist at all, and how many must have actually EXECUTED (status
 that executes nothing cannot match a baseline that executed something, and a baseline that itself
 recorded nothing is refused at load time.
 
+A REPORT IS ONLY EVIDENCE OF THE RUN THAT WROTE IT. The runner's output directory lives in a
+persistent cache, so a suite that crashes before writing its report would otherwise leave the last
+good run's report in place, and comparing that against the baseline would match. The runner removes
+the report before the suite starts AND passes `--run-started`; a report whose modification time is
+older than that moment is refused here, whichever of the two the next edit breaks.
+
+A BASELINE IS ONLY A BASELINE OF WHAT IT SAYS IT IS OF. It records the suite commit, the control and
+the time zone it was measured under; the runner states the same three for the run in front of it
+(`A2A_TCK_REF`, `A2A_TCK_CONTROL`, `TZ`), and any disagreement refuses the comparison rather than
+judging one peer against another peer's pin.
+
 USAGE
-    check-baseline.py --report <compatibility.json> --baseline <baseline.json>
+    check-baseline.py --report <compatibility.json> --baseline <baseline.json> --run-started <epoch>
     check-baseline.py --record --report <compatibility.json> --baseline <out.json> \
-        --label "<what this baseline is of>"
+        --label "<what this baseline is of>" --run-started <epoch>
+    check-baseline.py --report-only --report <compatibility.json> --run-started <epoch>
+        (a leg that is reported and never pinned: the report must exist, be this run's, be an
+        a2a-tck report, and clear the plausibility minimums -- nothing is compared. Its one caller,
+        `run-tck.sh control-scenario`, is run by hand and not in CI; in CI this mode is exercised
+        only by the selftests)
 
 EXIT
-    0  identical to the baseline, and the floors held
+    0  identical to the baseline, and the floors held (or, --report-only, the report is usable)
     1  a difference, or a floor breached
-    2  the comparison could not be made at all (missing/empty/malformed input)
+    2  the comparison could not be made at all (missing/empty/malformed/stale input, or a
+       baseline of something other than this run)
 """
 
 import argparse
@@ -40,13 +57,19 @@ import sys
 
 
 # A baseline that recorded fewer executed requirements than this is not a baseline, it is a
-# record of a broken run being blessed. Chosen well below the ~85 the pinned control actually
-# executes, so it fails on a collapse rather than on ordinary movement.
+# record of a broken run being blessed. Chosen well below what the pinned control executes -- 73 on
+# HTTP+JSON and 78 on JSON-RPC, the `floor_executed` its two baselines record -- so it fails on a
+# collapse rather than on ordinary movement.
 MIN_PLAUSIBLE_EXECUTED = 40
 
-# Likewise for the total discovered requirement set. The TCK declares ~129 requirements; a report
-# carrying a handful means discovery broke, not that the spec shrank.
+# Likewise for the total discovered requirement set. The pinned TCK declares 129 requirements (the
+# `floor_total` both baselines record); a report carrying a handful means discovery broke, not that
+# the spec shrank.
 MIN_PLAUSIBLE_TOTAL = 100
+
+# The provenance a baseline records and the runner states for the run in front of it:
+# (baseline key, environment variable the runner sets).
+PROVENANCE = (("tck_ref", "A2A_TCK_REF"), ("control", "A2A_TCK_CONTROL"), ("tz", "TZ"))
 
 # Statuses that mean NOTHING RAN. `NOT TESTED` is on this list because it was found here the
 # expensive way: the first cut of this file counted it as executed, and the "100 of 129 executed"
@@ -85,6 +108,31 @@ def load_json(path, what):
         die("The %s is not valid JSON (%s): %s" % (what, exc, path))
 
 
+def load_report(path, run_started):
+    """The report, refused unless it was written by the run that started at `run_started`."""
+    report = load_json(path, "report")
+    written = os.path.getmtime(path)
+    if written < run_started:
+        die("The report PREDATES this run: %s was written at %d, the run started at %d.\n\n"
+            "A report older than the run is an earlier run's report. It is what a suite that "
+            "crashed before writing anything leaves behind, and it is not a pass."
+            % (path, int(written), run_started))
+    return report
+
+
+def stated_provenance():
+    """The run's own provenance, as the runner states it; refused when any part is unstated."""
+    out = {}
+    for key, env in PROVENANCE:
+        val = os.environ.get(env, "")
+        if not val:
+            die("%s is not set. The runner states the suite commit (A2A_TCK_REF), the control "
+                "(A2A_TCK_CONTROL) and the time zone (TZ) of every run, so that a baseline is "
+                "only ever compared with, or recorded from, the run it describes." % env)
+        out[key] = val
+    return out
+
+
 def statuses(report):
     """requirement id -> status, from a TCK compatibility.json."""
     per = report.get("per_requirement")
@@ -105,7 +153,8 @@ def executed_count(st):
 
 
 def record(args):
-    report = load_json(args.report, "report")
+    report = load_report(args.report, args.run_started)
+    prov = stated_provenance()
     st = statuses(report)
     ex = executed_count(st)
     if len(st) < MIN_PLAUSIBLE_TOTAL:
@@ -119,9 +168,9 @@ def record(args):
     out = {
         "label": args.label,
         "recorded_by": "testing/a2a-tck/check-baseline.py --record",
-        "tck_ref": os.environ.get("A2A_TCK_REF", ""),
-        "control": os.environ.get("A2A_TCK_CONTROL", ""),
-        "tz": os.environ.get("TZ", ""),
+        "tck_ref": prov["tck_ref"],
+        "control": prov["control"],
+        "tz": prov["tz"],
         "floor_total": len(st),
         "floor_executed": ex,
         "summary": report.get("summary", {}),
@@ -136,8 +185,17 @@ def record(args):
 
 
 def check(args):
-    report = load_json(args.report, "report")
+    report = load_report(args.report, args.run_started)
     base = load_json(args.baseline, "baseline")
+
+    prov = stated_provenance()
+    for key, env in PROVENANCE:
+        pinned = base.get(key, "")
+        if pinned != prov[key]:
+            die("PROVENANCE: the baseline was recorded with %s=%r and this run states %s=%r "
+                "(%s).\n\nA baseline of a different suite commit, control or time zone is not an "
+                "expectation for this run; comparing the two would judge one peer against "
+                "another's pin." % (key, pinned, env, prov[key], args.baseline))
 
     got = statuses(report)
     want = base.get("per_requirement")
@@ -196,9 +254,9 @@ def check(args):
             "subject result from this suite can be believed.\n\n")
         for p in problems:
             sys.stderr.write("  %s\n" % p)
-        sys.stderr.write("\nTo re-pin deliberately, read the diff first, then:\n")
-        sys.stderr.write("  check-baseline.py --record --report %s --baseline %s --label '%s'\n"
-                         % (args.report, args.baseline, label))
+        sys.stderr.write("\nTo re-pin deliberately, read the diff first, then re-record from a fresh "
+                         "run (a recording is refused from any report but its own run's):\n")
+        sys.stderr.write("  testing/a2a-tck/run-tck.sh record-baselines\n")
         sys.stderr.write("=" * 78 + "\n\n")
         return 1
 
@@ -208,13 +266,38 @@ def check(args):
     return 0
 
 
+def report_only(args):
+    """A leg that is reported and never pinned still has to have produced a report."""
+    report = load_report(args.report, args.run_started)
+    st = statuses(report)
+    ex = executed_count(st)
+    if len(st) < MIN_PLAUSIBLE_TOTAL or ex < MIN_PLAUSIBLE_EXECUTED:
+        die("The report discovered %d requirements and EXECUTED %d (minimums %d/%d): %s\n\n"
+            "That is a run that measured next to nothing, and a number read off it means nothing."
+            % (len(st), ex, MIN_PLAUSIBLE_TOTAL, MIN_PLAUSIBLE_EXECUTED, args.report))
+    print("A2A TCK REPORT PRESENT -- %s" % args.report)
+    print("  %d requirements, %d executed, %d skipped; reported, not compared."
+          % (len(st), ex, len(st) - ex))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="check-baseline.py")
     ap.add_argument("--report", required=True)
-    ap.add_argument("--baseline", required=True)
+    ap.add_argument("--baseline")
     ap.add_argument("--record", action="store_true")
+    ap.add_argument("--report-only", action="store_true")
     ap.add_argument("--label", default="")
+    ap.add_argument("--run-started", type=int, required=True,
+                    help="the moment the run began, in epoch seconds; an older report is refused")
     args = ap.parse_args(argv)
+    if args.report_only:
+        if args.record or args.baseline:
+            die("--report-only compares nothing and records nothing; it takes no --record and "
+                "no --baseline.")
+        return report_only(args)
+    if not args.baseline:
+        die("--baseline is required unless --report-only is given.")
     if args.record:
         if not args.label:
             die("--record needs a --label saying what the baseline is OF.")

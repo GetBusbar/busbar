@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33, TODO U6-U7): a request the decisions
+//! THE DATA ROUTE, SERVED END TO END (SERVE-WIRE step 33): a request the decisions
 //! plane's door claims reaches that plane's driver through its route on the data router (mounted at
 //! the router's construction, ARCHITECT Q-SW1), behind the deployment's auth gate, is admitted and
 //! charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
@@ -236,7 +236,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         ..Default::default()
     })
     .expect("the guard");
-    let connector = busbar_core_connector::process::build(
+    let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
                 crate::LINKED_TRANSPORT_DOORS,
@@ -247,6 +247,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     )
     .expect("the connector builds");
 
@@ -312,7 +313,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
     let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
         "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {{file: '{}'}}, error_map: {{}}}}",
-        busbar_plane_decisions::config::PROTOCOL,
+        plane.served().dialects[0],
         key_file.display()
     ))
     .expect("a provider entry");
@@ -489,9 +490,15 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
+    // Composed with no egress, the host states no provider's protocol at open, so the model states
+    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            plane.served().dialects[0]
+        ))
+        .expect("a section"),
     );
     let served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -568,9 +575,15 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
+    // Composed with no egress, the host states no provider's protocol at open, so the model states
+    // its own (`protocol:` override, #51): the plane refuses a model whose dialect nothing states.
     sections.insert(
         section,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str(&format!(
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            plane.served().dialects[0]
+        ))
+        .expect("a section"),
     );
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -806,9 +819,9 @@ pub(super) mod session_door {
     fn hook_env() -> busbar_kernel::hooks::HookEnv {
         busbar_kernel::test_support::test_hook_env(
             &["test-hook"],
-            busbar_plugin_loader::sign::HookNeeds {
-                prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-                user: busbar_plugin_loader::sign::NeedLevel::Ro,
+            busbar_kernel::test_support::HookNeeds {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
         )
     }
@@ -907,7 +920,7 @@ pub(super) mod session_door {
             ..Default::default()
         })
         .expect("the guard");
-        busbar_core_connector::process::build(
+        busbar_core_connector::process::build_with_secrets(
             || {
                 crate::root::connector::entries(
                     crate::LINKED_TRANSPORT_DOORS,
@@ -918,6 +931,7 @@ pub(super) mod session_door {
             &[],
             Arc::new(|_, _| {}),
             busbar_core_connector::pool::PoolPosture::NONE,
+            busbar_kernel::config::secret::resolve_linked_string_at_config,
         )
         .expect("the connector builds")
     }
@@ -1147,7 +1161,7 @@ pub(super) mod session_door {
             host: {
                 let live_app = Arc::clone(&live_app);
                 Arc::new(move || {
-                    busbar_kernel::plane_host::engine_host(
+                    busbar_kernel::plane_driver::engine_host(
                         live_app
                             .get()
                             .expect("the cell's App is built before any unit"),
@@ -1155,6 +1169,7 @@ pub(super) mod session_door {
                 })
             },
             gov: Arc::clone(&gov),
+            journal: None,
         });
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
@@ -2057,6 +2072,108 @@ pub(super) mod session_door {
             );
         }
     }
+
+    /// MONEY (Q128 arch u64; THE DESIGN section 7, "the plane reports the units it did"), at the
+    /// session door's root leg: a caller's GA `session.update` sets the uplink to µ-law through
+    /// `session.audio.input.format`, the provider reads 8 bytes a millisecond from then on, and the
+    /// session's one sealed line bills what it read: six seconds of µ-law (48 000 bytes) are 6
+    /// `audio_seconds_in`. A session holds nothing on the book's chain (no hold, no settlement:
+    /// `Node::open_borrowed`), so its one line is the record its end seals with the counts the
+    /// plane reported (`Node::seal_session`, THE DESIGN section 7: "the session's end writes ONE
+    /// sealed line"), and that record is what this cell reads. RED ARM: the plane read only the
+    /// legacy `input_audio_format`, counted the 48 000 bytes at PCM16's 48 a millisecond, and the
+    /// line billed 1 second of the 6 served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_door_bills_a_ga_mulaw_uplink_at_mulaw() {
+        use base64::Engine as _;
+        let _one = PUBLISHING.lock().await;
+        let far_end = far_socket().await;
+        let mut s = session_with(
+            "serve-door-session-ga-format",
+            Opts {
+                far_end: Some(far_end),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (router, plain) = (s.router.clone(), s.plain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("its address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router.into_make_service()).await;
+        });
+
+        let route = SIDEBAND.replace("{call_id}", "call-ga-format");
+        let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
+        let open = format!(
+            "GET {route} HTTP/1.1\r\nhost: {addr}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
+             sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\
+             authorization: Bearer {plain}\r\n\r\n"
+        );
+        caller.write_all(open.as_bytes()).await.expect("the open");
+        let head = tokio::time::timeout(std::time::Duration::from_secs(10), read_head(&mut caller))
+            .await
+            .expect("the door answers the open")
+            .expect("a head");
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "the session opens: {head}"
+        );
+
+        let update = r#"{"type":"session.update","session":{"type":"realtime","audio":{"input":{"format":{"type":"audio/pcmu"}}}}}"#;
+        caller
+            .write_all(&client_text(update))
+            .await
+            .expect("the caller's GA update");
+        // One second of µ-law (8 000 bytes) a frame, six frames.
+        let second = base64::engine::general_purpose::STANDARD.encode(vec![0x7f_u8; 8_000]);
+        let append = format!(r#"{{"type":"input_audio_buffer.append","audio":"{second}"}}"#);
+        for n in 0..6 {
+            caller
+                .write_all(&client_text(&append))
+                .await
+                .expect("a second of audio");
+            let carried = next_heard(&mut s.heard)
+                .await
+                .unwrap_or_else(|| panic!("second {n} reaches the provider"));
+            assert!(carried.contains("input_audio_buffer.append"), "{carried}");
+        }
+        // The caller closes: the session ends and its one line is sealed.
+        caller
+            .write_all(&[0x88, 0x80, 0x37, 0xFA, 0x21, 0x3D])
+            .await
+            .expect("the caller's close");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (billed, sealed) = loop {
+            let records = s.audit_records();
+            let seconds = records.iter().find_map(|r| {
+                r.usage
+                    .lines
+                    .iter()
+                    .find(|l| l.class.as_str() == AUDIO_CLASS)
+                    .map(|l| l.quantity)
+            });
+            if seconds.is_some() || std::time::Instant::now() > deadline {
+                // What the session's end sealed, so a red names whether its line was never sealed
+                // or was sealed without the audio the provider read.
+                let sealed: Vec<String> = records
+                    .iter()
+                    .map(|r| format!("{:?} {:?}", r.outcome.unit_end, r.usage.lines))
+                    .collect();
+                break (seconds, sealed);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert_eq!(
+            billed,
+            Some(6),
+            "six seconds of µ-law the provider read are six billed seconds; sealed: {sealed:?}"
+        );
+    }
 }
 
 /// THE ROOT-MCP LEG'S LOOP CELLS (U14): the MCP plane served through its memory-ABI door, composed by
@@ -2437,6 +2554,7 @@ mod tools_door {
             busbar_kernel::config::pools::CandidatePoolCfg {
                 members: members.iter().map(|m| (*m).to_string()).collect(),
                 repeatable: repeatable.iter().map(|m| (*m).to_string()).collect(),
+                breaker: None,
             },
         )]
         .into();
@@ -2819,18 +2937,30 @@ mod tools_door {
         let _one = PUBLISHING.lock().await;
         let instance = "serve-door-tools-audit";
         let _published = Published(instance);
-        let (port, _heard) = tool_server().await;
+        let (port, mut heard) = tool_server().await;
         let rig = rig_tools(instance, port, registration("audited", port, ""), &|app| {
             app
         });
+        let upstream_calls =
+            |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
         for _ in 0..2 {
             let (status, answer) =
                 call(&rig, &rig.token, "audited_read_file", serde_json::json!({})).await;
             assert_eq!(status, StatusCode::OK, "{answer}");
+            assert_eq!(
+                upstream_calls(&mut heard),
+                1,
+                "one served call is exactly one upstream leg"
+            );
         }
         let (status, _) = call(&rig, &rig.token, "audited_unlisted", serde_json::json!({})).await;
         assert_ne!(status, StatusCode::OK, "an unknown tool is refused");
+        assert_eq!(
+            upstream_calls(&mut heard),
+            0,
+            "the refused call never made an upstream leg"
+        );
 
         // THE CALL LOG: three records, one chain, each linking the one before (the host's
         // verified read refuses a chain whose links do not hold).
@@ -2860,11 +2990,14 @@ mod tools_door {
         );
         assert!(mine.iter().all(|e| e.outcome == "applied"), "{mine:?}");
         let refused = log.list_filtered(0, 1000, Some(action), Some(&resource("audited_unlisted")));
-        assert!(
-            refused
-                .iter()
-                .any(|e| e.principal == rig.key.id && e.outcome == "rejected"),
-            "the refused call audited rejected: {refused:?}"
+        let rejected: Vec<_> = refused
+            .iter()
+            .filter(|e| e.principal == rig.key.id && e.outcome == "rejected")
+            .collect();
+        assert_eq!(
+            rejected.len(),
+            1,
+            "the refused call audited rejected exactly once: {refused:?}"
         );
         let all = log.list_filtered(0, 1000, None, None);
         for row in &mine {
@@ -2873,6 +3006,263 @@ mod tools_door {
                 assert_eq!(row.prev_hash, before.hash, "linked to the row before it");
             }
         }
+    }
+
+    /// DECODE: a body the door cannot read as a JSON-RPC envelope is refused at its decode and never
+    /// becomes a call on the wire — the caller hears a refusal (a client-error status, or the
+    /// envelope's own error answer) and the tool server hears nothing — while the well-formed
+    /// `tools/call` beside it on the same door is served and goes out exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_body_that_is_not_an_envelope_is_refused_at_decode_and_never_sent() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-decode";
+        let _published = Published(instance);
+        let (port, mut heard) = tool_server().await;
+        let rig = rig_tools(instance, port, registration("decoded", port, ""), &|app| {
+            app
+        });
+        let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
+        drain(&mut heard);
+
+        let (status, body) = send_as(
+            &rig.router,
+            Some(&rig.token),
+            "{\"jsonrpc\": \"2.0\", \"id\": 41, \"method\": ",
+            "tools/call",
+            Some("decoded_read_file"),
+        )
+        .await;
+        let answer = serde_json::from_slice::<serde_json::Value>(&body)
+            .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&body) }));
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "an unreadable body is refused at its decode: {answer}"
+        );
+        assert_eq!(
+            answer["error"]["code"],
+            busbar_contract::jsonrpc::PARSE_ERROR,
+            "refused with -32700, the parse error: {answer}"
+        );
+        assert_eq!(
+            rig.admitted(),
+            0,
+            "it never became a unit: nothing admitted"
+        );
+        assert!(
+            drain(&mut heard).is_empty(),
+            "the tool server heard nothing of the unreadable body"
+        );
+        assert!(rig.all_ended(), "the loop opened no unit it left open");
+
+        let (status, answer) =
+            call(&rig, &rig.token, "decoded_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        assert_eq!(calls(&mut heard), 1, "the well-formed call went out once");
+    }
+
+    /// AUTHENTICATE: behind the deployment's closed key chain, a call carrying no credential and a
+    /// call carrying a bearer this deployment never minted are both refused `401` before the door —
+    /// the tool server hears neither — and the key the deployment minted is carried through the
+    /// door to the server exactly once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_a_caller_the_chain_authenticates_reaches_the_tool_server() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-authenticate";
+        let _published = Published(instance);
+        std::env::set_var(SUBJECT, "busbar-own-subject");
+        let (port, mut heard) = tool_server().await;
+        let extra = format!(
+            "  allow_private: true\n  aud: \"http://127.0.0.1:{port}\"\n  \
+             token_exchange:\n    token_url: \"https://as.example/token\"\n    \
+             subject_token: {{ env: {SUBJECT} }}\n"
+        );
+        let rig = rig_tools(
+            instance,
+            port,
+            registration("authed", port, &extra),
+            &|app| app,
+        );
+        let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
+
+        for token in [None, Some("bb_a_bearer_this_deployment_never_minted")] {
+            let (status, body) = send_as(
+                &rig.router,
+                token,
+                &call_of("authed_read_file", serde_json::json!({})),
+                "tools/call",
+                Some("authed_read_file"),
+            )
+            .await;
+            assert_eq!(
+                status,
+                StatusCode::UNAUTHORIZED,
+                "{token:?} is refused before the door: {}",
+                String::from_utf8_lossy(&body)
+            );
+            assert_eq!(calls(&mut heard), 0, "{token:?} never reached the server");
+        }
+        assert_eq!(rig.admitted(), 0, "a refused caller opens no unit");
+        assert!(rig.all_ended(), "no unit left open");
+
+        let (status, answer) =
+            call(&rig, &rig.token, "authed_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        let requests = wire(&mut heard);
+        let sent: Vec<_> = requests
+            .iter()
+            .filter(|r| r.contains("\"tools/call\""))
+            .map(|r| r.to_ascii_lowercase())
+            .collect();
+        assert_eq!(sent.len(), 1, "the minted key's call went out once");
+        // The token the tool server receives is audience-bound: the one busbar's own subject token
+        // was exchanged for, bound to that server's resource, never the caller's.
+        assert!(
+            sent[0].contains("authorization: bearer tok-authed_read_file"),
+            "the exchanged token reached the server: {}",
+            sent[0]
+        );
+        assert!(
+            !sent[0].contains(&rig.token.to_ascii_lowercase()),
+            "never the caller's own: {}",
+            sent[0]
+        );
+        let exchanges = crate::root::door_steps::tests::tool_door::exchanges(&rig);
+        assert!(!exchanges.is_empty(), "the token endpoint was asked");
+        for (_, form) in &exchanges {
+            assert!(
+                form.contains(&format!("resource=http%3A%2F%2F127.0.0.1%3A{port}")),
+                "bound to the tool server's audience: {form}"
+            );
+        }
+    }
+
+    /// VERIFY: a caller whose grant names ANOTHER server is refused inside the unit, and the refused
+    /// server is never dialled — neither its tool endpoint nor the token endpoint its
+    /// `token_exchange:` registration would have been asked for a credential sees a byte — while the
+    /// server its grant does name is served.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_grant_for_another_server_is_refused_before_its_server_or_token_endpoint_is_touched()
+    {
+        let _one = PUBLISHING.lock().await;
+        std::env::set_var(SUBJECT, "busbar-own-subject");
+        let instance = "serve-door-tools-verify";
+        let _published = Published(instance);
+        let (granted, mut granted_heard) = tool_server().await;
+        let (fenced, mut fenced_heard) = tool_server().await;
+        let mut tools = registration("granted", granted, "");
+        let other = registration(
+            "fenced",
+            fenced,
+            &format!(
+                "  allow_private: true\n  aud: \"http://127.0.0.1:{fenced}\"\n  \
+                 token_exchange:\n    token_url: \"https://as.example/token\"\n    \
+                 subject_token: {{ env: {SUBJECT} }}\n"
+            ),
+        );
+        tools
+            .as_mapping_mut()
+            .expect("a mapping")
+            .extend(other.as_mapping().expect("a mapping").clone());
+        let rig = rig_tools(instance, granted, tools, &|app| app);
+        let (_, token) = key_on(
+            &rig,
+            busbar_kernel::governance::NewKeySpec {
+                name: "granted-only".to_string(),
+                ..Default::default()
+            },
+            // Both grants pass for every capability (docs/mcp.md, "Both must pass"): the key holds
+            // the server grant for `granted` alone, and the tool grant for a tool on EACH server,
+            // so the one thing `fenced_read_file` lacks is its server's grant.
+            Some(&[
+                ("scope_server", "granted"),
+                ("scope_tool", "granted_read_file"),
+                ("scope_tool", "fenced_read_file"),
+            ]),
+        );
+
+        let (status, answer) = call(&rig, &token, "fenced_read_file", serde_json::json!({})).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "another server's tool is refused: {answer}"
+        );
+        assert!(
+            drain(&mut fenced_heard).is_empty(),
+            "the refused server's tool endpoint never heard a byte"
+        );
+        assert!(
+            crate::root::door_steps::tests::tool_door::exchanges(&rig).is_empty(),
+            "the refused server's token endpoint was never asked"
+        );
+
+        let (status, answer) = call(&rig, &token, "granted_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "its own server is served: {answer}");
+        assert!(drain(&mut granted_heard).contains(&"call"));
+    }
+
+    /// ROUTE: a sole registration whose server answers a call with a bare `503` ends the unit with a
+    /// failure the caller reads, after exactly ONE attempt at the one registered target — no silent
+    /// success and no retry storm — and the unit ends.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_single_target_answering_503_fails_the_unit_after_exactly_one_attempt() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-single-503";
+        let _published = Published(instance);
+        let (port, mut heard) = answering_calls_with(503).await;
+        let rig = rig_tools(instance, port, registration("solo", port, ""), &|app| app);
+
+        let (status, answer) =
+            call(&rig, &rig.token, "solo_read_file", serde_json::json!({})).await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "the failure is the caller's to read: {answer}"
+        );
+        assert!(
+            answer.get("error").is_some() || answer["result"]["isError"] == true,
+            "a failure, not a silent success: {answer}"
+        );
+        let calls = drain(&mut heard).iter().filter(|w| **w == "call").count();
+        assert_eq!(calls, 1, "exactly one attempt at the one target");
+        assert_eq!(rig.admitted(), 1, "one unit");
+        assert!(rig.all_ended(), "the unit ended");
+    }
+
+    /// METER: one served `tools/call` writes exactly ONE metering row, under the presenting key,
+    /// attributed to the tool it called and to this plane, counting one request.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_served_call_writes_one_metering_row_naming_its_tool_and_plane() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-meter-row";
+        let _published = Published(instance);
+        let (port, _heard) = tool_server().await;
+        let rig = rig_tools(instance, port, registration("metered", port, ""), &|app| {
+            app
+        });
+        let charged_at = busbar_kernel::store::now();
+
+        let (status, answer) =
+            call(&rig, &rig.token, "metered_read_file", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+        rig.gov.flush_metering();
+        let rows = rig
+            .gov
+            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .expect("metering read");
+        let mine: Vec<_> = rows.iter().filter(|row| row.key_id == rig.key.id).collect();
+        assert_eq!(mine.len(), 1, "one metering row for the key: {rows:?}");
+        assert_eq!(mine[0].requests, 1, "counting one request: {:?}", mine[0]);
+        assert!(
+            mine[0].model.contains("read_file"),
+            "attributed to the tool it called: {:?}",
+            mine[0]
+        );
+        assert_eq!(
+            mine[0].provider, rig.plane_key,
+            "attributed to this plane: {:?}",
+            mine[0]
+        );
     }
 
     /// A key minted on `rig`'s book under `spec`, its grants exactly `scopes` (`(grant kind row,
@@ -3770,6 +4160,8 @@ pub(super) struct Serving {
     key: String,
     /// The app the data router serves (its cost model prices the key's usage).
     app: Arc<busbar_kernel::state::App>,
+    /// The operation classes the door's plane tail states, in its order.
+    op_classes: Vec<&'static str>,
 }
 
 #[cfg(feature = "plane-decisions")]
@@ -3918,7 +4310,7 @@ async fn serve_configured(
         ..Default::default()
     })
     .expect("the guard");
-    let connector = busbar_core_connector::process::build(
+    let connector = busbar_core_connector::process::build_with_secrets(
         || {
             crate::root::connector::entries(
                 crate::LINKED_TRANSPORT_DOORS,
@@ -3929,6 +4321,7 @@ async fn serve_configured(
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     )
     .expect("the connector builds");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -3952,6 +4345,10 @@ async fn serve_configured(
         .expect("the linked door binds"),
     );
     let section_key = plane.served().section;
+    // The plane's dialect word and its operation classes, as its door's plane tail states them
+    // (BUSBAR-1.6.0.md l.247): the door is the crate's one public item (l.3567).
+    let dialect = plane.served().dialects[0];
+    let op_classes = plane.served().op_classes;
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
@@ -4013,8 +4410,7 @@ async fn serve_configured(
     };
 
     let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
-        "{{protocol: {}, base_url: 'http://127.0.0.1:{port}', api_key: {api_key}, error_map: {{}}}}",
-        busbar_plane_decisions::config::PROTOCOL,
+        "{{protocol: {dialect}, base_url: 'http://127.0.0.1:{port}', api_key: {api_key}, error_map: {{}}}}",
     ))
     .expect("a provider entry");
     let providers = provider_routes(
@@ -4062,6 +4458,8 @@ async fn serve_configured(
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         None,
+        &(Arc::new(crate::root::egress_ports::NodeClock::new())
+            as Arc<dyn busbar_kernel_egress::ports::Clock>),
         &busbar_contract::config_time::ConfigScope::config_time(),
     )?;
     let live = Arc::clone(&served.planes[0].live);
@@ -4094,6 +4492,7 @@ async fn serve_configured(
         gov,
         key: key.id.to_string(),
         app,
+        op_classes,
     })
 }
 
@@ -4540,6 +4939,74 @@ async fn the_pools_door_seals_one_audit_record_per_unit() {
     assert_eq!(rig.chat().await.0, 200);
     let _ = rig.ledger_after(1).await;
     assert_eq!(rig.audit_records(), 1, "one record for the one unit");
+}
+
+/// AUDIT-CHAIN, ON ONE TAMPER-EVIDENT CHAIN (Law 10, status row 178): every unit the pools door
+/// answers, served (a dispatched completion) or refused inside the loop (a key whose budget the
+/// first unit spent), seals ONE record on the node's audit chain, the second the first's
+/// successor; the chain walks clean, and a record altered after its seal (the served unit re-told
+/// as the refused one) breaks the walk. This is the claim the node-axis cell made, on the door
+/// path CI's test build runs.
+/// RED: a door whose audit pass never reaches the node seals nothing; a refusal sealed off the
+/// chain leaves one record, or two that are not linked.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_seals_every_unit_served_or_refused_on_one_tamper_evident_chain() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-pools-audit-chain";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            budget_cents: Some(1),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 200, "the first unit is served");
+    let _ = rig.ledger_after(1).await;
+    assert_eq!(
+        rig.chat().await.0,
+        429,
+        "the second is refused: its budget is spent"
+    );
+    assert_eq!(far.served(), 1, "the refused unit dialled nothing");
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    while rig.audit_records() < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let records = rig.records();
+    assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+    let (served, refused) = (&records[0], &records[1]);
+    assert_eq!(
+        served.outcome.unit_end,
+        busbar_contract::caps::Outcome::Completed,
+        "the served unit: {served:?}"
+    );
+    assert!(
+        matches!(
+            refused.outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(..)
+        ),
+        "the refusal is chained as one: {:?}",
+        refused.outcome
+    );
+    assert_eq!(refused.seq, served.seq + 1, "contiguous");
+    assert_eq!(
+        refused.prev_hash, served.hash,
+        "linked to the record before"
+    );
+    assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
+
+    let mut forged = records.clone();
+    forged[0].outcome.unit_end = refused.outcome.unit_end;
+    assert!(
+        busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
+        "a record altered after its seal breaks the chain"
+    );
 }
 
 /// A NODE WHOSE JOURNAL CANNOT REACH ITS STORE FAILS CLOSED, ON THE DOOR (ARCHITECT 2026-10-07 H3
@@ -5815,6 +6282,162 @@ mod pools_door_walk_and_breaker {
         assert!(wait >= 1, "at least one second: {wait}");
     }
 
+    /// A CLOCK THE TEST HOLDS: its whole seconds stay where the test put them, so every reading
+    /// the walk takes (an admission, a cooldown it records, the wait a shed advertises) is the same
+    /// instant; its sub-second readings and its sleeps are real, so a bounded wait still ends.
+    struct HeldClock {
+        secs: u64,
+        origin: std::time::Instant,
+    }
+
+    impl HeldClock {
+        /// The door egress's clock, held at `secs`.
+        fn at(secs: u64) -> Arc<dyn busbar_kernel_egress::ports::Clock> {
+            Arc::new(HeldClock {
+                secs,
+                origin: std::time::Instant::now(),
+            })
+        }
+    }
+
+    impl busbar_kernel_egress::ports::Clock for HeldClock {
+        fn now_secs(&self) -> u64 {
+            self.secs
+        }
+
+        fn now_millis(&self) -> u128 {
+            self.origin.elapsed().as_millis()
+        }
+
+        fn now_micros(&self) -> u128 {
+            self.origin.elapsed().as_micros()
+        }
+
+        fn sleep(&self, ms: u64) -> busbar_kernel_egress::ports::BoxFut<'_, ()> {
+            Box::pin(tokio::time::sleep(std::time::Duration::from_millis(ms)))
+        }
+    }
+
+    /// The instant the held clock reads: well before the wall clock, so a cooldown recorded on the
+    /// wall clock instead of the walk's reads as years long at it.
+    const HELD_AT: u64 = 1_700_000_000;
+
+    /// ONE FAILURE BELOW THE TRIP AGAINST THE SOLE MEMBER OF POOL `p`, the walk's clock held at
+    /// [`HELD_AT`]: the far end answers `reply` and then would serve. Asserts what 1.5.5 did: the
+    /// cell stays Closed (the default breaker trips on an error rate over at least five outcomes),
+    /// cooling for a cooldown in `band`; the next call is refused 503 without reaching the far end,
+    /// its `Retry-After` the cooldown exactly.
+    async fn benched_once(
+        instance: &'static str,
+        reply: MockResponse,
+        band: std::ops::RangeInclusive<u64>,
+    ) {
+        let _one = ONE_PUBLISHER.lock().await;
+        let _published = Withdrawn(instance);
+        let clock = HeldClock::at(HELD_AT);
+        let (state, server) = mock(vec![reply, MockResponse::default()]).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                clock: Some(&clock),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+
+        let (status, _, _) = rig.chat().await;
+        assert_ne!(status, 200, "{instance}: the far end's one failure");
+        assert!(
+            matches!(
+                rig.app.store.breaker_state_in("p", 0),
+                busbar_kernel::store::BreakerState::Closed
+            ),
+            "{instance}: one failure is below the trip"
+        );
+        let cooling = rig.app.store.cooldown_remaining_in("p", 0, HELD_AT);
+        assert!(
+            band.contains(&cooling),
+            "{instance}: the member is benched for 1.5.5's cooldown {band:?}, on the walk's clock: \
+             {cooling}"
+        );
+
+        let (status, head, _) = rig.chat().await;
+        assert_eq!(status, 503, "{instance}: the benched sole member sheds");
+        let wait: u64 = head
+            .get("retry-after")
+            .expect("a Retry-After")
+            .to_str()
+            .expect("text")
+            .parse()
+            .expect("whole seconds");
+        assert_eq!(
+            wait, cooling,
+            "{instance}: the Retry-After is the cooldown, read on the same clock"
+        );
+        assert!(
+            state.next_response().is_some(),
+            "{instance}: the refused call never reached the far end"
+        );
+    }
+
+    /// A SINGLE-MEMBER POOL BENCHES ITS MEMBER ON ONE FAILURE BELOW THE TRIP, AS 1.5.5 DID: one 429
+    /// against the sole member of pool `p` leaves the cell Closed but cooling, and the next call is
+    /// refused 503 naming the cooldown as its `Retry-After` ([`benched_once`]).
+    ///
+    /// The wait, derived from v1.5.5:
+    /// - `crates/busbar/src/store/in_memory/breaker.rs:714-724`: every Closed failure that does not
+    ///   trip stores `now + compute_cooldown_with_retry_after(..)`; there is no single-member arm.
+    /// - `breaker.rs:281-388`: the streak is bumped to 1 first, so the backoff is `15 * 2^1 = 30`,
+    ///   jittered by `±(30 / 10) = ±3` and clamped to `[15, 120]`: 27..=33. A stated wait `W` is a
+    ///   floor over it: `max(27..=33, W)`, so a stated 60 is exactly 60.
+    /// - `crates/busbar/src/proxy/engine/walk.rs:49-64`: the shed advertises the soonest genuine
+    ///   cooldown remaining among the admissible members, at least 1: here the sole member's.
+    ///
+    /// A REGRESSION GUARD of that parity, without and with a stated wait (60 s), on the held clock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_single_member_pool_benches_one_failure_below_the_trip_with_1_5_5s_wait() {
+        benched_once(
+            "rehome-walk-single-bench-unstated",
+            MockResponse::RateLimit {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                provider_signal: None,
+                retry_after: None,
+            },
+            27..=33,
+        )
+        .await;
+        benched_once(
+            "rehome-walk-single-bench-stated",
+            MockResponse::RateLimit {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                provider_signal: None,
+                retry_after: Some(60),
+            },
+            60..=60,
+        )
+        .await;
+    }
+
+    /// THE COOLDOWN A TRANSIENT FAILURE ARMS AND THE WAIT A SHED ADVERTISES READ ONE CLOCK, the
+    /// walk's: one 500 against the sole member of pool `p` is recorded at the walk's `now`, as
+    /// 1.5.5's store took the record's `now_time` (`availability.rs:500-513`), so at the walk's
+    /// clock the member cools for 1.5.5's 27..=33 and the shed names that same wait. RED: the
+    /// failure recorded on the store's own wall-clock read, which at the held clock reads as a
+    /// cooldown years long.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_transient_failure_is_benched_on_the_walks_clock() {
+        benched_once(
+            "rehome-walk-single-bench-walk-clock",
+            MockResponse::ServerError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: serde_json::json!({ "error": "server error" }),
+            },
+            27..=33,
+        )
+        .await;
+    }
+
     /// A SESSION PINNED TO A TRIPPED MEMBER YIELDS (F25 row 187; legacy
     /// `forward_pool_integration_tests::test_sticky_yields_when_tripped`): with member 0's cell
     /// open (cooldown 600 s) before the requests, every session is served 200 by the healthy member
@@ -7047,6 +7670,59 @@ mod pools_door_refusals {
         assert!(text.contains("group 'ghost' is not configured"), "{text}");
         assert_eq!(far.served(), 0);
     }
+
+    /// PB-19, THE RENDERED REFUSAL IS THE DIRECT ADMISSION'S, BYTE FOR BYTE: a key naming a group
+    /// this node's config does not know is refused by the pools door with exactly the status, kind
+    /// and message the kernel's one limit-refusal spelling renders for the direct admission's own
+    /// `MissingGroup` block over the same book and card — nothing reworded on the door path — and
+    /// the far end is never dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_doors_missing_group_refusal_is_the_direct_admissions_bytes() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-ghost-group-bytes";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let finance = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                group: Some(("finance", &finance)),
+                key_group: Some("ghost"),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let key = rig.gov.lookup_by_sub(&rig.key_id).expect("the rig's key");
+        let Err(blocked) = rig
+            .gov
+            .try_admit(&rig.app.cost, &key, "p", busbar_kernel::store::now())
+        else {
+            panic!("the direct admission refuses a key naming an unconfigured group");
+        };
+        let (direct_status, direct_kind, direct_message, _) =
+            busbar_kernel::ingress::limit_refusal("", &blocked);
+
+        // The over-quota kind is OpenAI's own `insufficient_quota`, which the chat dialect's native
+        // envelope carries as both its `type` and its `code` (1.5.5's pairing, never a null code).
+        assert_eq!(direct_kind, "insufficient_quota");
+
+        let (status, _, body) = rig.chat().await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, direct_status.as_u16(), "{text}");
+        let answer: serde_json::Value = serde_json::from_slice(&body).expect("the door's JSON");
+        assert_eq!(
+            answer,
+            serde_json::json!({ "error": {
+                "message": direct_message,
+                "type": direct_kind,
+                "param": null,
+                "code": direct_kind,
+            } }),
+            "the whole refusal is the direct admission's, nothing reworded or added: {text}"
+        );
+        assert_eq!(far.served(), 0);
+    }
 }
 
 // ── what only the plane reads, the kernel routes on (ARCHITECT Q1 ArriveOut, 2026-10-05) ────────
@@ -7095,20 +7771,28 @@ fn streamed_chat() -> serde_json::Value {
 
 /// THE STREAM CEILING, NOT THE POOL'S TIMEOUT, bounds a streamed answer (the plane states
 /// `ROUTE_STREAM`; v1.5.5 bounded a stream's whole send by the stream ceiling): a stream that
-/// outlives its pool's one-second failover timeout is delivered whole. Before the plane stated the
+/// outlives its pool's two-second failover timeout is delivered whole. Before the plane stated the
 /// stream, the door cut it at the pool's timeout.
+///
+/// The pool's timeout is two seconds, not one, because the walk's deadline is whole wall-clock
+/// seconds (`RequestCtx::expired`, as 1.5.5's): a one-second budget whose walk starts late in a
+/// wall second is spent at the next second boundary, so the first pick could find it expired (a
+/// 503 request-timeout shed before anything is dialled) whenever that boundary fell between the
+/// walk's start and its pick. Two seconds leaves the pick at least one whole second; the far end's
+/// three-second pause still outlives the whole budget, so a door that bounded the stream by it
+/// would cut the answer.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_pools_door_bounds_a_stream_by_the_stream_ceiling_not_the_pools_timeout() {
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-stream-outlives-timeout";
     let _published = Withdrawn(instance);
-    let far = far_end_scripted(stream_pausing(2_000)).await;
+    let far = far_end_scripted(stream_pausing(3_000)).await;
     let rig = rig(
         instance,
         RigOpts {
             members: &[(far.port, 1)],
-            failover_timeout_secs: Some(1),
+            failover_timeout_secs: Some(2),
             ..RigOpts::default()
         },
     )
@@ -8160,18 +8844,14 @@ mod pools_door_money {
         );
     }
 
-    /// A STREAM ITS FAR END CUT BILLS NO TOKENS AND KEEPS ITS FEE (F25 row 720; legacy
-    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`,
-    /// corrected to BUSBAR-1.6.0.md, Budgets, l.1014-1019, status row 183): a streamed answer whose
-    /// far end reports its usage (11 in, 7 out) and then cuts the stream before its end bills NO
-    /// tokens, as 1.5.5 billed none (v1.5.5 `crates/busbar/src/proxy/response_body.rs`: the
-    /// transport error sets `stream_failed` (:283) and the drop-time gate bills no tokens (:642);
-    /// oracle cell `route.failover|fo|primary-cut-stream`, golden usage `{"requests":1}`, tokens
-    /// 0). It keeps its one request and its one fee (billable 1: the 200 that went out is not
-    /// reversed, v1.5.5 `crates/busbar/src/ingress/mod.rs:574-575`), and its sealed record is
-    /// Partial with no token line. A stream the CALLER left is the other case: it bills what the far
-    /// end had reported (`:633-660`). RED: the cut stream's reported tokens billed, or the fee
-    /// reversed.
+    /// A STREAM THAT DIED BILLS WHAT IT STREAMED AND KEEPS ITS FEE (F25 row 720; legacy
+    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`; owner
+    /// ruling 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."):
+    /// a streamed answer whose far end reports its usage (11 in, 7 out) and is then cut before its
+    /// end bills those 18 tokens, as its plane ledgered them; it keeps its one request and its one
+    /// fee (billable 1, the 200 that went out is not reversed), and its sealed record reports one
+    /// line per streamed tier: input 11, output 7. RED: the streamed tokens dropped, the fee
+    /// reversed, or the tiers merged.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_bills_a_dead_stream_tokens_and_keeps_its_fee() {
         let _one = ONE_PUBLISHER.lock().await;
@@ -8202,17 +8882,22 @@ mod pools_door_money {
         let (requests, _, _, billable) = rig.ledger_after(1).await;
         assert_eq!(requests, 1, "the request unit still counts");
         assert_eq!(billable, 1, "the fee it earned is kept");
-        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
         assert_eq!(
             rig.tokens_after().await,
-            0,
-            "a stream its far end cut bills no tokens"
+            18,
+            "the streamed tokens are the charge"
         );
+        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+        let mut lines = token_lines(&record);
+        lines.retain(|(_, quantity)| *quantity > 0);
+        lines.sort();
         assert_eq!(
-            reported(&record),
-            0,
-            "its record reports no token either: {:?}",
-            token_lines(&record)
+            lines,
+            vec![
+                (busbar_contract::records::UNIT_INPUT.to_string(), 11),
+                (busbar_contract::records::UNIT_OUTPUT.to_string(), 7)
+            ],
+            "one line per streamed tier"
         );
     }
 
@@ -9074,7 +9759,9 @@ mod pools_door_counts_and_routes {
             .await
             .expect("the request reaches its far end");
         let epoch_before = rig.app.store.probe_epoch_in("p", 0);
-        rig.app.store.record_success_in("p", 0);
+        rig.app
+            .store
+            .record_success_in("p", 0, busbar_kernel::store::now());
         rig.app.store.force_open_in("p", 0, 0);
         assert!(
             rig.app
@@ -9244,7 +9931,9 @@ mod pools_door_counts_and_routes {
             .store
             .record_transient_in("p", 0, "test", &cfg, None);
         for _ in 0..3 {
-            rig.app.store.record_success_in("p", 0);
+            rig.app
+                .store
+                .record_success_in("p", 0, busbar_kernel::store::now());
         }
         let _ = rig.chat().await;
         let bag = bag_of(&rig, "m0");
@@ -9619,7 +10308,7 @@ async fn every_decisions_unit_served_or_refused_seals_one_record_on_one_tamper_e
     for record in &records {
         assert_eq!(
             record.what.op_class.as_str(),
-            busbar_plane_decisions::driven::tail::OP_CLASSES[0].as_str(),
+            serving.op_classes[0],
             "sealed under the plane's operation class: {record:?}"
         );
     }
@@ -9930,7 +10619,8 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
     )
     .expect("the linked door binds");
     let facing = (reg.facing)(
-        br#"{"decisions":{"models":{"b":{"provider":"typesafe"},"a":{"provider":"typesafe"}}}}"#,
+        // No provider facts reach a bare facing probe, so each model states its own `protocol` (#51).
+        br#"{"decisions":{"models":{"b":{"provider":"typesafe","protocol":"jev"},"a":{"provider":"typesafe","protocol":"jev"}}}}"#,
         b"",
         None,
         &[],

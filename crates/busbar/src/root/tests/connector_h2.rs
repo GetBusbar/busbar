@@ -281,6 +281,15 @@ fn connector(settings: &TransportSettings, trust: &EgressTrust) -> Connector {
         ..Destinations::default()
     })
     .expect("the guard");
+    connector_judged(settings, trust, dest)
+}
+
+/// [`connector`], its dials judged by `dest`.
+fn connector_judged(
+    settings: &TransportSettings,
+    trust: &EgressTrust,
+    dest: Arc<dyn busbar_kernel::host_services::DestJudge>,
+) -> Connector {
     let view = Transports::new(
         crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS, settings)
             .expect("the linked doors open"),
@@ -650,7 +659,7 @@ async fn drive_until(c: &Connector, conn: ConnId, ready: impl Fn() -> bool) {
     assert!(ready(), "the condition held within the bound");
 }
 
-/// THE MUX (ARCHITECT ruling Q-L18-MUX): two CONCURRENT requests to one h2c origin share one
+/// THE MUX: two CONCURRENT requests to one h2c origin share one
 /// connection as streams 1 and 3. The far end answers neither until both have arrived, so the
 /// answers prove both were in flight together on the one connection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -764,7 +773,7 @@ async fn resetting_far_end() -> (u16, Arc<FarEnd>, tokio::sync::mpsc::Sender<()>
     (port, far, rst)
 }
 
-/// THE ONE REDIAL (ARCHITECT ruling Q-L18-RETRY): a request lent a pooled h2 line the far end has
+/// THE ONE REDIAL: a request lent a pooled h2 line the far end has
 /// reset, before any byte of the request left, is dialled once on a fresh connection and served
 /// there: the caller sees one answered exchange, no failover. The request the reset cut, whose
 /// bytes had left, is not re-sent.
@@ -1031,5 +1040,85 @@ async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() 
         far.request_stream_ids(),
         vec![1, 3],
         "the cut request was sent once"
+    );
+}
+
+/// ROOT CELL (P0, an IDN destination 1.5.5 dialled): a deployment whose allowlist names an IDN
+/// host by its punycode name (`advanced.allow_destinations: [xn--bcher-kva.example]`, private
+/// addresses refused) reaches the destination `bücher.example` end to end, through the connector
+/// over this build's linked doors and the one destination judge, over a resolver that knows only
+/// the punycode name (as DNS does). The judge, asked about the name as written
+/// (`bücher.example:<port>`), resolves the name it judged, the UTS #46 punycode name, and pins the
+/// loopback answer; the connector's own dial of the destination, its URL spelt as a URL client
+/// serialises it (1.5.5's `url` wrote the punycode host), resolves that same name, pins, dials and
+/// is served by the far end there. The judge asked the resolver for the name as written, which no
+/// resolver knows (`NXDOMAIN`), and refused the dial as unresolvable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn an_idn_destination_resolves_as_its_punycode_name_and_is_served() {
+    use busbar_core_connector::guard::{Guard, Resolve, Resolved};
+
+    const PUNYCODE: &str = "xn--bcher-kva.example";
+
+    /// The names asked, answered from a table: the punycode name is the loopback far end.
+    #[derive(Default)]
+    struct Names(Mutex<Vec<String>>);
+    impl Resolve for Names {
+        fn resolve(&self, host: &str, done: Resolved) {
+            self.0.lock().expect("names").push(host.to_owned());
+            done(if host == PUNYCODE {
+                Ok(vec![std::net::Ipv4Addr::LOCALHOST.into()])
+            } else {
+                Err("NXDOMAIN".into())
+            });
+        }
+    }
+    let asked = |names: &Names| std::mem::take(&mut *names.0.lock().expect("names"));
+
+    let (port, far) = h1_far_end().await;
+    let guard = Guard::from_config(&Destinations {
+        block_private_addresses: true,
+        allow: vec![PUNYCODE.to_owned()],
+        ..Destinations::default()
+    })
+    .expect("the deployment's guard");
+    let names = Arc::new(Names::default());
+    let resolver = Arc::clone(&names) as Arc<dyn Resolve>;
+    let dest = Arc::new(process::GuardJudge::new(guard, resolver));
+
+    // The destination as written: judged, resolved as its punycode name, pinned to the far end.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let dial = process::judge(Arc::clone(&dest) as _, &[]);
+    let at_once = dial.judge_dial(
+        &format!("b\u{fc}cher.example:{port}"),
+        DEFAULT_CLASS,
+        Box::new(move |v| {
+            let _ = tx.send(v);
+        }),
+    );
+    let judged = match at_once {
+        Some(v) => v,
+        None => rx.recv_timeout(Duration::from_secs(10)).expect("answered"),
+    };
+    let pinned = judged.expect("the allowlisted IDN destination is admitted");
+    let at = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    assert_eq!(pinned, at);
+    assert_eq!(
+        asked(&names),
+        vec![PUNYCODE.to_owned()],
+        "the punycode name, once"
+    );
+
+    // The connector's own dial: resolve, pin, dial, served.
+    let c = connector_judged(&TransportSettings::default(), &EgressTrust::default(), dest);
+    let host = busbar_contract::net::url_host_to_ascii("b\u{fc}cher.example")
+        .expect("an IDN name maps")
+        .into_owned();
+    let (status, body) = ask(&c, &format!("http://{host}:{port}/v1/chat/completions")).await;
+    assert_eq!((status, body.as_slice()), (Some(200), &b"ok"[..]));
+    assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "served");
+    assert_eq!(
+        asked(&names),
+        vec![PUNYCODE.to_owned()],
+        "the dial resolved it"
     );
 }

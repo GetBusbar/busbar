@@ -8,8 +8,8 @@
 # `legs/*.sh` glob never discovers it). Sourced by each `legs/<name>.sh` to locate the REAL Rust
 # conformance harness the legs shell out to: the `voice_conform` binary of the testkit crate
 # `testing/voice-conformance/harness`, which drives the streaming plane's DOOR both ways through the loader — the linked door and
-# the plane's cdylib twin (`busbar-plane-streaming-plugin`, built from the pinned plane's own
-# workspace), dlopened (ARCHITECT Q6). The legs reuse the plane's own door
+# the plane's cdylib twin (`busbar-plane-streaming-plugin`, at the rev the root pins the plane, built
+# in this workspace against the host's contract), dlopened (ARCHITECT Q6). The legs reuse the plane's own door
 # and codecs through this harness; they never reimplement a codec — or a door — in shell.
 
 # Resolved from THIS file's location (testing/voice-conformance/lib/): the battery dir, repo root,
@@ -78,7 +78,7 @@ _vc_newer_than() {
 #     false green the runner's anti-vacuity rule refuses, one level further in). The dropped-in door
 #     it loads is found beside it (or at $VOICE_CONFORM_DOOR); a door that is not there is a FAIL in
 #     every assertion, never a skip.
-#   * else the harness and the plane's cdylib twin are built (cargo is incremental, so an up-to-date pair costs a lock and a
+#   * else the harness and the plane's cdylib twin (both in this workspace) are built (cargo is incremental, so an up-to-date pair costs a lock and a
 #     stat; a harness older than the legs it serves would answer "unknown composition slice" for a leg
 #     that exists only in source) — cargo noise goes to stderr so it never pollutes the RESULT lines
 #     the runner parses on stdout.
@@ -101,13 +101,13 @@ voice_conform_bin() {
   local bin="${CARGO_TARGET_DIR:-$VC_ROOT/target}/debug/voice_conform"
   cargo build -q --manifest-path "$VC_ROOT/Cargo.toml" -p voice-conformance-harness \
     --bin voice_conform >&2 || return 1
-  local ws
-  ws="$(_vc_plane_ws)" || {
-    printf 'voice_conform: this checkout'"'"'s lock pins no busbar-plane-streaming checkout\n' >&2
-    return 1
-  }
-  cargo build -q --locked --manifest-path "$ws" -p busbar-plane-streaming-plugin \
-    --target-dir "${CARGO_TARGET_DIR:-$VC_ROOT/target}" >&2 || return 1
+  # The twin is built in THIS workspace (the harness's dev edge on it, at the rev the root pins the
+  # plane), so it compiles against the host's busbar-contract through the root's [patch], the
+  # contract the loader admits it against, exactly as the linked row is. Built from the plane's own
+  # workspace it took that repo's busbar pin instead, and a pin whose plane ops table is not the
+  # host's is refused at load in every leg (TableSlots), a finding about the build, not the door.
+  cargo build -q --locked --manifest-path "$VC_ROOT/Cargo.toml" -p busbar-plane-streaming-plugin \
+    >&2 || return 1
   [ -x "$bin" ] || return 1
   printf '%s' "$bin"
 }

@@ -119,10 +119,9 @@ fn same_proto_tap_carries_usage_detail_sub_buckets() {
 }
 
 /// Cohere reports usage TWICE — a raw `tokens` bucket and a separately-metered `billed_units`
-/// bucket, and the billed counts are what an operator is invoiced on (`to_token_usage` lets them
-/// WIN over the raw totals). A same-protocol Cohere STREAM reports them only on the terminal
-/// `message-end` usage, so an A-tap that folds only the four totals bills the streamed call off the
-/// raw counts while its buffered twin bills off the billed counts.
+/// bucket. A same-protocol Cohere STREAM reports them only on the terminal `message-end` usage; the
+/// A-tap carries the billed bucket as attribution and ledgers the raw counts, as 1.5.5 did and as
+/// its buffered twin does.
 #[test]
 fn same_proto_tap_carries_cohere_billed_units() {
     let mut t = StreamTranslate::new_same_proto("cohere").expect("same-proto translator");
@@ -158,13 +157,12 @@ fn same_proto_tap_carries_cohere_billed_units() {
         Some(3),
         "streamed Cohere must carry billed_units.classifications"
     );
-    // The billed counts are the ledgered ones (`to_token_usage` lets them win over the raw totals),
-    // so a streamed Cohere call now meters the same figures its buffered twin does.
+    // The raw counts are the ledgered ones, as 1.5.5 billed them, and as its buffered twin does.
     let ledgered = u.to_token_usage();
     assert_eq!(
         (ledgered.input, ledgered.output),
-        (120, 50),
-        "streamed Cohere must ledger the billed counts, not the raw totals"
+        (100, 40),
+        "streamed Cohere must ledger the raw totals, not the billed attribution"
     );
 }
 

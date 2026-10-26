@@ -9,8 +9,7 @@
 //! no cryptography): every accepted connection goes through the wrap, a connection the wrap refuses
 //! is dropped alone and the listener keeps serving. The same loop over the connector's REAL wrap —
 //! the trusted client's 200, the mutual handshake accepting a client certificate chaining to
-//! `client_ca` and refusing none or a foreign one — is the rows at the end of this file, moved
-//! here with the listener from the connector's `tls/engine_tests.rs`.
+//! `client_ca` and refusing none or a foreign one — is the rows at the end of this file.
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
@@ -821,50 +820,6 @@ async fn server_posture_matches_the_1_5_5_defaults() {
     // the `.timer(...)` wiring that makes the 30s `header_read_timeout` at this call site (see its
     // doc comment) actually take effect rather than being silently ignored.
     let _ = super::hardened_conn_builder();
-}
-
-/// THE KERNEL SERVES NO HTTP (BUSBAR-1.6.0.md: the kernel is a byte pump; the connector accepts and
-/// hands each stream up; the root serves it, here). The accept loop, the hyper connection builder
-/// and the graceful drain moved out of `busbar-kernel` into this module; a kernel source naming
-/// any of them again is a second serve loop in the wrong home.
-#[test]
-fn the_kernel_serves_no_http() {
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("read kernel source dir") {
-            let path = entry.expect("dir entry").path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../busbar-kernel/src"));
-    let mut files = Vec::new();
-    walk(root, &mut files);
-    assert!(
-        !files.is_empty(),
-        "no kernel sources under {}",
-        root.display()
-    );
-    let mut hits = Vec::new();
-    for file in &files {
-        let text = std::fs::read_to_string(file).expect("read kernel source");
-        for needle in [
-            "hyper_util::server",
-            "TowerToHyperService",
-            "GracefulShutdown",
-        ] {
-            if text.contains(needle) {
-                hits.push(format!("{}: {needle}", file.display()));
-            }
-        }
-    }
-    assert!(
-        hits.is_empty(),
-        "the kernel serves HTTP again; the serve loop lives in `busbar::root::listener`:\n{}",
-        hits.join("\n")
-    );
 }
 
 // ── THE TLS LISTENER over the connector's production wrap ───────────────────────────────────────

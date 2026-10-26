@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! MEMBER PROGRAMS (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): ONE long-lived program connection
+//! MEMBER PROGRAMS (ARCHITECT round 5 Q-L3B-PROGRAM (A)): ONE long-lived program connection
 //! per (instance, need, member), for a need whose `target_from` is the member-program path
 //! (`busbar_contract::section::MEMBER_PROGRAM`). Each member's program is spawned on the first open
 //! that names it ([`Member::lease`]) and kept: every later open on the member is a LEASE on the
@@ -21,16 +21,17 @@
 //!   interleave part of one message with another's.
 //! * Closing a lease leaves the program running. A program that ends (its output closed, a failed
 //!   pipe, or found exited when a lease opens) ends every lease of its generation, and the next
-//!   open spawns it anew: the next generation. A program that keeps ending is restarted under
-//!   backoff and stopped after a burst of ends ([`Supervisor`], the previous release's crash-loop
-//!   policy), so a binary that always fails becomes a refusal, not a fork loop.
+//!   open spawns it anew: the next generation. WHETHER IT MAY BE SPAWNED AGAIN IS NOT DECIDED
+//!   HERE: the supervisor of a spawned program is its carrier's (`BUSBAR-1.6.0.md` l.388). Every
+//!   spawn is a `dial` carrying the member's supervision key (`DialIn::supervision_key`), and the
+//!   carrier's verdict on it (spawned, or refused while it holds the program down) is the open's
+//!   answer. The host keeps only the spawn's hygiene ([`Connection::spawn`], `hostio`).
 //! * A member RETIRED by a re-declaration (its registration gone, or its program changed) admits
 //!   no new lease; its program is killed once its last lease closes (at once when it has none).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
-use std::time::{Duration, Instant};
 
 use busbar_contract::conn::{ConnError, Piece, PieceKind, Program, PROGRAM_GENERATION_FIELD};
 use busbar_contract::ids::StreamId;
@@ -38,47 +39,6 @@ use busbar_contract::transport::wire::WireStatusClass;
 use busbar_contract::transport::ConnFacts;
 
 use crate::compose::{Connection, Dial, Failure, Via, DEFAULT_OPEN_TIMEOUT, RECEIVE_BUFFER_BYTES};
-
-/// The first restart's backoff after a program ended (the previous release's crash-loop policy).
-const BASE_BACKOFF: Duration = Duration::from_millis(100);
-/// The ceiling the doubling backoff stops at.
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
-/// How many ends inside [`CRASH_WINDOW`] stop the restarts.
-const CRASH_THRESHOLD: usize = 5;
-/// The window the ends are counted over.
-const CRASH_WINDOW: Duration = Duration::from_secs(60);
-
-/// THE RESTART POLICY of one member's program: a circuit breaker, not a retry loop. Each end is
-/// timed; the next spawn waits a backoff doubling from [`BASE_BACKOFF`] to [`MAX_BACKOFF`], and
-/// [`CRASH_THRESHOLD`] ends inside [`CRASH_WINDOW`] stop the restarts until the member is declared
-/// anew (an operator's changed program is a new member).
-#[derive(Debug, Default)]
-struct Supervisor {
-    crashes: Vec<Instant>,
-    restart_at: Option<Instant>,
-    tripped: bool,
-}
-
-impl Supervisor {
-    fn crashed(&mut self, now: Instant) {
-        self.crashes
-            .retain(|t| now.saturating_duration_since(*t) <= CRASH_WINDOW);
-        self.crashes.push(now);
-        if self.crashes.len() >= CRASH_THRESHOLD {
-            self.tripped = true;
-            return;
-        }
-        let shift = u32::try_from(self.crashes.len().saturating_sub(1))
-            .unwrap_or(u32::MAX)
-            .min(20);
-        let backoff = BASE_BACKOFF.saturating_mul(1_u32 << shift).min(MAX_BACKOFF);
-        self.restart_at = Some(now + backoff);
-    }
-
-    fn may_restart(&self, now: Instant) -> bool {
-        !self.tripped && self.restart_at.is_none_or(|at| now >= at)
-    }
-}
 
 /// The wakers of every lease waiting on a member's program, woken together: the program's pipes
 /// are driven with this waker, so a frame read for one lease wakes them all.
@@ -158,7 +118,6 @@ struct State {
     retired: bool,
     next_lease: u64,
     leases: HashMap<u64, Inbox>,
-    supervisor: Supervisor,
 }
 
 /// ONE MEMBER'S PROGRAM: its recipe, the entry framing its pipes, and the one connection every
@@ -216,8 +175,8 @@ impl State {
     }
 
     /// The program of `generation` ended (`failure` = how, `None` = its output closed): it is
-    /// killed, every lease of its generation ends, and an end the member did not ask for is a
-    /// crash its supervisor counts.
+    /// killed and every lease of its generation ends. The end is the carrier's to count (its
+    /// supervisor saw the program's output close, or finds it ended at the `shut`).
     fn ended(&mut self, generation: u64, failure: Option<Failure>, fan: &Fan) {
         if self
             .live
@@ -226,9 +185,6 @@ impl State {
         {
             if let Some(live) = self.live.take() {
                 live.conn.close();
-            }
-            if !self.retired {
-                self.supervisor.crashed(Instant::now());
             }
         }
         for inbox in self.leases.values_mut() {
@@ -283,7 +239,6 @@ impl Member {
                 retired: false,
                 next_lease: 1,
                 leases: HashMap::new(),
-                supervisor: Supervisor::default(),
             }),
             fan: Arc::new(Fan::default()),
             supervision_key: NEXT_SUPERVISION_KEY
@@ -312,8 +267,9 @@ impl Member {
     }
 
     /// A LEASE on the member's program: spawned first when none runs (a new generation; one found
-    /// exited is ended first), refused for a retired member and while the restart policy holds the
-    /// program down. `first` (when not empty) is the lease's first message, written whole.
+    /// exited is ended first), refused for a retired member, and refused when the carrier refuses
+    /// the spawn (its supervisor holding the program down is the carrier's verdict, not this
+    /// host's). `first` (when not empty) is the lease's first message, written whole.
     pub(crate) fn lease(&self, first: &[u8]) -> Result<u64, ConnError> {
         let mut st = self.lock();
         if st.retired {
@@ -329,9 +285,6 @@ impl Member {
             st.ended(generation, None, &self.fan);
         }
         if st.live.is_none() {
-            if !st.supervisor.may_restart(Instant::now()) {
-                return Err(ConnError::Refused);
-            }
             let dial = Dial {
                 target: self.program.command.clone(),
                 tls: None,
@@ -354,11 +307,7 @@ impl Member {
                     st.live = Some(Live { conn, generation });
                     st.mid_frame = false;
                 }
-                Err(f) => {
-                    // A spawn that fails repeats on every attempt: it is counted like any end.
-                    st.supervisor.crashed(Instant::now());
-                    return Err(map(&f));
-                }
+                Err(f) => return Err(map(&f)),
             }
         }
         let generation = st.generation;

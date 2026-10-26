@@ -754,6 +754,8 @@ fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
 #[tokio::test]
 async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     let gov = gov();
+    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+    gov.hold_self_mint_state();
     let keys = keys_via(&gov, "corp");
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
@@ -796,6 +798,89 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     );
 }
 
+/// 1.5.5 PARITY CELL: with the hold unsigned, a login after an admin DISABLE mints as
+/// 1.5.5 minted (v1.5.5 crates/busbar/src/governance/state.rs:431 skips only tombstoned rows, :560
+/// mints): the subject's derived row is written back enabled at its id, the login answers a key,
+/// never 403, and a refresh mints too. RED against the hold (K3 #17), which refuses both 403.
+#[tokio::test]
+async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
+    let gov = gov();
+    let keys = keys_via(&gov, "corp");
+    let alice = principal("oidc:alice", &["eng"]);
+    let ttl = Duration::from_secs(3600);
+
+    let t0 = issue_key(&keys, &alice, ttl, false)
+        .await
+        .expect("first login issues");
+    gov.update_key(&t0.key_id, Some(false), None)
+        .unwrap()
+        .expect("the key exists");
+
+    let again = issue_key(&keys, &alice, ttl, false)
+        .await
+        .expect("1.5.5 minted a key on the next login");
+    assert_eq!(again.key_id, t0.key_id, "1.5.5 wrote the derived row back");
+    assert!(row(&gov, &t0.key_id).enabled, "and wrote it enabled");
+    issue_key(&keys, &alice, ttl, true)
+        .await
+        .expect("1.5.5 minted on a refresh too");
+}
+
+/// 1.5.5 PARITY CELL: with the hold unsigned, a second identity provider asserting the
+/// same subject is handed the subject's one self-serve key, as 1.5.5 handed it (1.5.5 keyed the
+/// binding by subject alone and recorded no provider), never 403. RED against the hold (K3 #21).
+#[tokio::test]
+async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did() {
+    let gov = gov();
+    let alice = principal("oidc:alice", &["eng"]);
+    let ttl = Duration::from_secs(3600);
+
+    let corp = issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)
+        .await
+        .expect("corp issues");
+    let partner = issue_key(&keys_via(&gov, "partner"), &alice, ttl, false)
+        .await
+        .expect("1.5.5 minted for the second provider");
+    assert_eq!(
+        partner.key_id, corp.key_id,
+        "the subject's one key, as in 1.5.5"
+    );
+}
+
+/// 1.5.5 PARITY CELL: a self-serve key is written with EMPTY labels, as 1.5.5 wrote it
+/// (v1.5.5 crates/busbar/src/governance/state.rs:487), through issue, re-issue under changed pools
+/// and refresh, so `GET /keys` (whose views serve `labels` verbatim) shows `{}` as 1.5.5 did. The
+/// minting provider rides the kernel-only `idp_provider`, which no key view carries. RED before the
+/// fix: every self-serve row carried `busbar_self_provider` in `labels`.
+#[tokio::test]
+async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
+    let gov = gov();
+    let corp = keys_via(&gov, "corp");
+    let alice = principal("oidc:alice", &["eng"]);
+    let ttl = Duration::from_secs(3600);
+
+    let issued = issue_key(&corp, &alice, ttl, false).await.expect("issues");
+    let first = row(&gov, &issued.key_id);
+    assert!(first.labels.is_empty(), "issue: {:?}", first.labels);
+    assert_eq!(first.idp_provider.as_deref(), Some("corp"));
+
+    let again = issue_key(&corp, &alice, ttl, false)
+        .await
+        .expect("re-issues");
+    assert!(row(&gov, &again.key_id).labels.is_empty(), "re-issue");
+
+    let rotated = issue_key(&corp, &alice, ttl, true)
+        .await
+        .expect("refreshes");
+    let rotated_row = row(&gov, &rotated.key_id);
+    assert!(
+        rotated_row.labels.is_empty(),
+        "refresh: {:?}",
+        rotated_row.labels
+    );
+    assert_eq!(rotated_row.idp_provider.as_deref(), Some("corp"));
+}
+
 /// K3 #21: two named providers backed by one module can both assert `oidc:alice`. The binding is
 /// keyed by subject alone, so the second provider used to be handed the first one's key (and could
 /// refresh it away). The binding now records its minting provider; another provider is refused with
@@ -803,6 +888,8 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_refused() {
     let gov = gov();
+    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+    gov.hold_self_mint_state();
     let corp = keys_via(&gov, "corp");
     let partner = keys_via(&gov, "partner");
     let alice = principal("oidc:alice", &["eng"]);
@@ -813,10 +900,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
         .expect("corp issues");
     let before = row(&gov, &issued.key_id);
     assert_eq!(
-        before
-            .labels
-            .get(crate::governance::SELF_KEY_PROVIDER_LABEL)
-            .map(String::as_str),
+        before.idp_provider.as_deref(),
         Some("corp"),
         "the binding records its minting provider"
     );
@@ -853,15 +937,17 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
 #[tokio::test]
 async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     let gov = gov();
+    // The signable rule, held for this test (`SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`).
+    gov.hold_self_mint_state();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
-    // A pre-label binding: mint one, then strip the label from the stored row.
+    // A pre-record binding: mint one, then strip the provider record from the stored row.
     let issued = issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)
         .await
         .expect("issues");
     let mut legacy = row(&gov, &issued.key_id);
-    legacy.labels.clear();
+    legacy.idp_provider = None;
     gov.store().put_key(&legacy).unwrap();
     gov.refresh().unwrap();
 
@@ -869,13 +955,15 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
         .await
         .expect("the first provider to log in adopts the legacy binding");
     assert_eq!(adopted.key_id, issued.key_id, "the same key, not a new one");
+    let adopted_row = row(&gov, &issued.key_id);
     assert_eq!(
-        row(&gov, &issued.key_id)
-            .labels
-            .get(crate::governance::SELF_KEY_PROVIDER_LABEL)
-            .map(String::as_str),
+        adopted_row.idp_provider.as_deref(),
         Some("partner"),
         "the adoption is recorded on the row"
+    );
+    assert!(
+        adopted_row.labels.is_empty(),
+        "the adoption writes no label (1.5.5's empty labels stand)"
     );
     assert_eq!(
         issue_key(&keys_via(&gov, "corp"), &alice, ttl, false)

@@ -24,11 +24,14 @@ for all SUT executor behavior". The contract is an in-band one: a message whose 
 with a given prefix asks the agent for a given behaviour -- `tck-input-required` asks it to park
 the task in `input-required`, `tck-artifact-data` asks it to attach a data artifact, and so on.
 
-This file implements that contract and nothing else. Three properties keep it honest:
+This file implements that contract, plus ONE supplementary branch named below. Three properties
+keep it honest:
 
-  * THE BEHAVIOUR IS NOT OURS TO CHOOSE. Every branch below is a transcription of a scenario the
-    TCK's own authors wrote, prefix for prefix and string for string. There is no branch here that
-    the published contract does not ask for, and none of them mentions, detects or accommodates
+  * THE BEHAVIOUR IS NOT OURS TO CHOOSE. Every scenario branch below is a transcription of a
+    scenario the TCK's own authors wrote, prefix for prefix and string for string. Exactly one
+    branch is not: `a2asup-auth-required`, which serves `testing/a2a-supplement` (SPEC 7.6.1, a
+    state no TCK fixture enters). Nothing in the TCK sends that prefix, so the official run never
+    reaches it; its own comment says why it exists. No branch mentions, detects or accommodates
     busbar. Run this agent behind any A2A gateway, or none, and it behaves identically.
   * THE PROTOCOL IS NOT OURS EITHER. Every byte on the wire -- JSON-RPC framing, SSE, task store,
     state machine, timestamps, serialisation -- is produced by the A2A project's own Python SDK at
@@ -117,9 +120,10 @@ logger = logging.getLogger('a2a-scenario-agent')
 class ScenarioExecutor(AgentExecutor):
     """Routes on the `messageId` prefix, exactly as the published scenarios specify.
 
-    Order matters in one place only: `tck-artifact-file-url` and `tck-stream-artifact-*` are
-    tested before their shorter siblings `tck-artifact-file` and `tck-stream-artifact` would
-    swallow them. Everything else is independent.
+    Order matters in two places only: `tck-message-response` is tested before any task is opened,
+    because that scenario answers a bare Message; and `tck-artifact-file-url` is tested before its
+    shorter sibling `tck-artifact-file`, which would otherwise swallow it. No other prefix is a
+    prefix of another, so everything else is independent.
     """
 
     async def execute(
@@ -393,9 +397,12 @@ def main() -> None:
     )
 
     routes = [
-        # v0.3 compatibility is enabled because a client is entitled to speak either revision
-        # to an agent that says it accepts both, and refusing the older one would be this
-        # fixture narrowing the protocol rather than the peer being tested doing so.
+        # v0.3 compatibility is enabled, although the card names a 1.0 interface only. A 1.0
+        # request is served the same either way; what the flag adds is that a request spelled
+        # with the 0.3 method names (`message/send`, `message/stream`) -- which the TCK's own
+        # `docs/SUT_REQUIREMENTS.md` still uses -- reaches the scenario contract instead of a
+        # method-not-found that this fixture alone would be producing. Answering an older
+        # spelling is the SDK's behaviour, not a scenario decision.
         *create_jsonrpc_routes(
             request_handler=handler,
             rpc_url=JSONRPC_URL,

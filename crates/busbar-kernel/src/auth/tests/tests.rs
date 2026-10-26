@@ -240,44 +240,47 @@ fn test_nonempty_chain_fails_closed_on_all_pass() {
     assert!(!mw.validate_token(Some(""))); // empty token never matches
 }
 
-/// ITEM 144 — an IDENTIFIED principal that earns no governance key is REFUSED, never admitted
-/// `key: None` (no pool ACL, no budget, spend booked to `anonymous`). The guard is "no key" alone:
-/// a ROLELESS principal, a role principal under a module with NO `role_bindings` table, and a role
-/// principal whose roles are unbound under a module that HAS one are all `NoGrant`. The two admitted
-/// shapes stay admitted: `Open` (anonymous by explicit `chain: []`) and a principal that earned a key.
+/// 1.5.5 PARITY CELL (Q128 u27, Q20): an IDENTIFIED principal that earns no governance key is
+/// judged as 1.5.5 judged it (v1.5.5 crates/busbar/src/auth/mod.rs:1543). A ROLELESS principal, and
+/// a role principal under a module with NO `role_bindings` table, are ADMITTED ungoverned
+/// (`key: None`); a roleless principal under a governed module is admitted too; a role principal
+/// whose roles are unbound under a module that HAS a table is `NoGrant`. `Open` stays anonymous and
+/// a bound role earns its key. RED against the item-144 rule, which refuses every keyless principal.
 #[test]
-fn a_principal_without_a_governance_key_is_refused() {
+fn an_ungoverned_principal_is_judged_as_1_5_5_judged_it() {
     let identified = |module: &str, principal: Principal| ChainVerdict::Identified {
         module: module.to_string(),
         principal,
         resolved: None,
     };
-    let refused =
+    let admitted_ungoverned =
         |app: &crate::state::App, v: ChainVerdict, why: &str| match resolve_data_plane_identity(
             app, v,
         ) {
-            Err(IdentityRefusal::NoGrant) => {}
-            Ok((_, gov)) => panic!(
-                "{why}: admitted with key {:?} — fails open",
-                gov.key.map(|k| k.id.clone())
-            ),
-            Err(other) => panic!("{why}: expected NoGrant, got {other:?}"),
+            Ok((who, gov)) => {
+                assert!(who.0.is_some(), "{why}: admitted as itself");
+                assert!(
+                    gov.key.is_none(),
+                    "{why}: admitted ungoverned, as 1.5.5 did"
+                );
+            }
+            Err(other) => panic!("{why}: 1.5.5 admitted it ungoverned, got {other:?}"),
         };
 
     // No bindings table for any module.
     let bare = crate::test_support::TestApp::new().build();
-    refused(
+    admitted_ungoverned(
         &bare,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
         "a roleless principal",
     );
-    refused(
+    admitted_ungoverned(
         &bare,
         identified("test-groups-module", grp_principal("test:dev", &["dev"])),
         "a role principal under a module with no role_bindings table",
     );
 
-    // A bindings table for the module: an unbound role (and no role) still earns nothing.
+    // A bindings table for the module.
     let table = bindings_for(
         "test-groups-module",
         &[("dev", binding(Some(&["pa"]), None, None))],
@@ -285,16 +288,21 @@ fn a_principal_without_a_governance_key_is_refused() {
     let governed = crate::test_support::TestApp::new()
         .role_bindings(table)
         .build();
-    refused(
+    admitted_ungoverned(
         &governed,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
         "a roleless principal under a governed module",
     );
-    refused(
+    match resolve_data_plane_identity(
         &governed,
         identified("test-groups-module", grp_principal("test:ops", &["ops"])),
-        "an unbound role under a governed module",
-    );
+    ) {
+        Err(IdentityRefusal::NoGrant) => {}
+        other => panic!(
+            "an unbound role under a governed module is refused, as 1.5.5 refused it: {:?}",
+            other.map(|(_, gov)| gov.key.map(|k| k.id.clone()))
+        ),
+    }
 
     // Positive controls: the bound role earns a key and is admitted under it; `Open` is anonymous.
     let (who, gov) = resolve_data_plane_identity(
@@ -305,6 +313,38 @@ fn a_principal_without_a_governance_key_is_refused() {
     assert!(who.0.is_some() && gov.key.is_some());
     let (who, gov) = resolve_data_plane_identity(&bare, ChainVerdict::Open).expect("open door");
     assert!(who.0.is_none() && gov.key.is_none());
+}
+
+/// THE SIGNABLE RULE, held ready (Q20, item 144): under `refuse_every` no keyless principal is
+/// admitted, whatever its roles and whatever its module's bindings. Without it, 1.5.5's three-part
+/// guard: refused only with roles under a module that has a table.
+#[test]
+fn the_refuse_every_ungoverned_rule_is_held_ready_behind_its_const() {
+    let table = bindings_for(
+        "test-groups-module",
+        &[("dev", binding(Some(&["pa"]), None, None))],
+    );
+    let none = crate::config::RoleBindings::new();
+    let roleless = grp_principal("test:nobody", &[]);
+    let ops = grp_principal("test:ops", &["ops"]);
+    for (bindings, principal, admitted_by_1_5_5) in [
+        (&none, &roleless, true),
+        (&none, &ops, true),
+        (&table, &roleless, true),
+        (&table, &ops, false),
+    ] {
+        assert!(!admits_ungoverned_under(
+            true,
+            "test-groups-module",
+            principal,
+            bindings
+        ));
+        assert_eq!(
+            admits_ungoverned_under(false, "test-groups-module", principal, bindings),
+            admitted_by_1_5_5,
+            "{principal:?}"
+        );
+    }
 }
 
 /// The EMPTY chain is the open front door (the old `none`/`passthrough` modes): every request is
@@ -706,15 +746,14 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "admin",
     ];
     let paths = [
-        "/v1beta/models/x:generateContent",
+        "/v1beta/models/x:verb", // a colon-verb path shape
         "/pa/v1/messages",
-        "/v1/chat/completions",
+        "/v1/kind/action",
         "/v1/responses", // F25 row 65: the legacy sweep's dialect this list had dropped
         "/v2/chat",
-        "/model/vendor.model/converse",
-        "/model/anthropic.claude/converse", // F25 row 65: the legacy sweep's converse path
-        "/api/v1/admin/keys",               // admin path → inferred-proto fallback
-        "/totally/unknown/path",            // unknown → fallback
+        "/model/vendor.model/converse", // F25 row 65: the legacy sweep's converse path shape
+        "/api/v1/admin/keys",           // admin path → inferred-proto fallback
+        "/totally/unknown/path",        // unknown → fallback
     ];
     for path in paths {
         let body = decode_body(unauthorized_response(&residual_app(), path, None));
@@ -810,8 +849,8 @@ async fn forbidden_admin_requests_audit_once_per_window() {
         );
     }
 
-    let n = crate::audit_ring::AUDIT
-        .export()
+    let n = crate::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None)
         .iter()
         .filter(|e| e.action == "admin.forbidden" && e.principal == principal_id)
         .count();
@@ -1612,11 +1651,9 @@ fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
     for _ in 0..2 {
         state.push(MockResponse::Ok {
             status: axum::http::StatusCode::OK,
-            body: serde_json::json!({
-                "id": "msg_1", "type": "message", "role": "assistant", "model": "m",
-                "content": [{"type": "text", "text": "hi"}], "stop_reason": "end_turn",
-                "usage": {"input_tokens": 1, "output_tokens": 1}
-            }),
+            // A kind-neutral answer: the door refuses before any lane is dialled, so no dialect
+            // ever reads it.
+            body: serde_json::json!({"id": "r1", "answer": "hi"}),
         });
     }
     state
@@ -1735,7 +1772,7 @@ fn the_operator_credential_opens_from_the_axis() {
     use crate::auth::{open_operator, OperatorCredential};
     let digest = busbar_contract::redacted::sha256_hex(b"tok");
     // This crate's test binary links no auth row, so its linked registry has none to open.
-    let linked = std::sync::Arc::new(crate::preflight::linked().expect("the linked registry"));
+    let linked = crate::preflight::linked().expect("the linked registry");
     let none = Default::default();
     let open = |digest| open_operator(&linked, digest, &none).expect("opens");
     assert!(matches!(
@@ -2850,12 +2887,8 @@ fn door_mint(gov: &crate::governance::GovState, name: &str, pools: &[&str]) -> (
 fn door_app() -> crate::test_support::TestApp {
     crate::test_support::TestApp::new()
         .lane(
-            crate::test_support::LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1",
-            )
-            .api_key("busbar-upstream-key"),
+            crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
+                .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
 }
@@ -2916,11 +2949,12 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
         "native error envelope must contain an `error` object: {env}"
     );
 
-    // Identified, but the role is unbound: no governance key → 401, same envelope.
+    // Identified, but the role is unbound under the module's bindings table: no governance key →
+    // 401, same envelope (1.5.5's guard, v1.5.5 auth/mod.rs:1543).
     let (status, ct, body) = door_post(addr, url, Some(("x-api-key", "grp:unbound"))).await;
     assert_eq!(
         status, 401,
-        "an identified principal with no governance key must be refused: {body}"
+        "an unbound role under a governed module must be refused: {body}"
     );
     assert_eq!(ct.as_deref(), Some("application/json"));
 
@@ -3302,8 +3336,8 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
 
 /// F25 row 65: rehomed from the retired engine crate's src/engine/tests/auth_native_envelope_tests.rs::test_unauthorized_body_carries_no_busbar_vocabulary.
 /// Pins: over the live stack (token mode, a wrong credential, no plane mounted), the auth-failure
-/// body for EVERY data-plane path shape the legacy swept — including `/v1/responses` and
-/// `/model/anthropic.claude/converse` — is JSON and names none of busbar's auth vocabulary.
+/// body for EVERY data-plane path shape the legacy swept — including `/v1/responses` and the
+/// converse shape — is JSON and names none of busbar's auth vocabulary.
 #[tokio::test]
 async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack() {
     const FORBIDDEN: &[&str] = &[
@@ -3325,12 +3359,12 @@ async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack()
         .build();
     let (addr, handle) = dp_serve(app).await;
     let paths = [
-        "/v1beta/models/x:generateContent",
+        "/v1beta/models/x:verb",
         "/pa/v1/messages",
-        "/v1/chat/completions",
+        "/v1/kind/action",
         "/v1/responses",
         "/v2/chat",
-        "/model/anthropic.claude/converse",
+        "/model/vendor.model/converse",
         "/totally/unknown/path",
     ];
     for path in paths {
@@ -3371,12 +3405,8 @@ async fn test_admin_prefix_is_boundary_safe() {
     crate::snapshot::init();
     let app = crate::test_support::TestApp::new()
         .lane(
-            crate::test_support::LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                "http://127.0.0.1:1",
-            )
-            .api_key("busbar-upstream-key"),
+            crate::test_support::LaneSpec::new("test-model", LANE_PROTOCOL, "http://127.0.0.1:1")
+                .api_key("busbar-upstream-key"),
         )
         .pool("apix", &[(0, 1)])
         .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
@@ -3481,9 +3511,12 @@ impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for OtherStyle {
     }
 }
 
+/// The style's lines, in its Statement's order.
+const OTHER_LINES: [&str; 2] = ["x-other-key", "authorization"];
+
 const OTHER_MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] = &[
-    busbar_contract::abi::sdk::auth_door::carrier("x-other-key"),
-    busbar_contract::abi::sdk::auth_door::carrier("authorization"),
+    busbar_contract::abi::sdk::auth_door::carrier(OTHER_LINES[0]),
+    busbar_contract::abi::sdk::auth_door::carrier(OTHER_LINES[1]),
 ];
 
 const OTHER_TAIL: &busbar_contract::abi::auth::AuthTail =
@@ -3506,17 +3539,18 @@ mod other_style {
     );
 }
 
-/// `chain: [keys]` over a registry linking the fixture style.
+/// `chain: [keys]` over a registry linking the fixture style. The test build reads no Statement
+/// (it has no loader), so the row states the lines its door's Statement states.
 fn other_style_chain() -> AuthMiddleware {
-    let registry = busbar_plugin_loader::PluginRegistry::empty()
-        .link(vec![busbar_plugin_loader::LinkedPlugin::auth_door(
-            "other-style",
-            other_style::door,
-        )])
-        .expect("the fixture links");
+    let registry = crate::test_support::rows::Rows::new()
+        .with_linked_style(
+            crate::preflight::LinkedRow::Auth(("other-style", "other-style", other_style::door)),
+            &OTHER_LINES,
+        )
+        .into_rows();
     AuthMiddleware::new(
         &chain_cfg(&["keys"]),
-        &std::sync::Arc::new(registry),
+        &registry,
         &crate::config::secret::SecretResolver::builtins_only(),
     )
     .expect("the chain builds")

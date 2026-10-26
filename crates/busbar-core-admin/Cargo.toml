@@ -24,20 +24,6 @@ license = "Apache-2.0"
 name = "busbar_core_admin"
 path = "src/lib.rs"
 
-# THE LINKED TEST-SEAM LIST: the dev-dependency crates whose `testkit::TEST_SEAM` entry this crate's
-# unit tests register and loop (build.rs emits the table; the sources name none of these crates).
-# The list is the install order. A plane served through its memory-ABI door only is no row here:
-# this crate links no loader (P2 D4); the admin tests that need a door plane's section run in the
-# composition root's tests, where the loader links the door. The one row is the kernel's NEUTRAL test
-# seam (`busbar_kernel::testkit`): its synthetic protocols and its neutral fallback plane, so a test
-# that validates a provider names a dialect some registered plane declares (ruling 2026-10-16 D).
-[package.metadata.busbar]
-test-linked = ["busbar-kernel"]
-# THE TEST REGISTRY ROW for the operator credential: the auth plugin dev-dependency whose SDK boundary
-# this crate's unit tests link onto the auth axis (build.rs emits it; the sources name no auth plugin),
-# as the composition root links it into the shipped binary.
-test-operator-auth = ["busbar-auth-admin-tokens-plugin"]
-
 [dependencies]
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 # The kernel-verb store face + idempotency window the absorbed verb-execution unit binds against
@@ -53,32 +39,20 @@ flate2 = { workspace = true }
 schemars = { workspace = true, optional = true }
 
 [features]
-default = ["plane-mcp", "plane-a2a"]
-plane-mcp = ["busbar-kernel/plane-mcp"]
-plane-a2a = ["busbar-kernel/plane-a2a"]
+default = []
 # Pulls busbar-core's `test-support` so a SIBLING crate can build an admin-configured `TestApp`, and
 # so this crate's own dev-deps resolve the fixtures.
 test-support = ["busbar-kernel/test-support"]
 # The openapi-schema derive: the moved admin-view types derive `schemars::JsonSchema` under this
-# feature, mirroring busbar-kernel/busbar-a2a. Forwards to busbar-kernel/openapi-schema so the shared
-# schema surface resolves in lock-step. It ALSO forwards to the three dev-dependency planes'
-# `openapi-schema` (a dev-dep feature only applies to test builds; it never links a plane into the
-# library): the openapi tests assemble the document from the linked plane decls, and a plane built
-# without its own feature contributes its paths but not its `openapi_schemas`, so the a2a/mcp trust
-# verbs lose their typed bodies. The binary forwards the same four; without this, `cargo test -p
-# busbar-core-admin --features openapi-schema` run alone generated a different document than CI's
-# combined `-p busbar -p busbar-kernel -p busbar-core-admin` run, where feature unification hid it.
+# feature, mirroring busbar-kernel. Forwards to busbar-kernel/openapi-schema so the shared schema
+# surface resolves in lock-step. The document with the planes' sections is the composition root's to
+# generate and test, where the planes are linked.
 openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
 
 [dev-dependencies]
-# Test-only (json body decode + public-key hex in the service tests); no production use.
-hex = { workspace = true }
+# Test-only (json body decode in the service tests); no production use.
 http-body-util = { workspace = true }
-busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support", "plane-mcp", "plane-a2a"] }
-# THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW (`test-operator-auth` above): the admin e2e tests
-# authenticate through the auth plugin the composition root links for it, from its own repo, at the
-# SAME pinned rev plugin-loader's both-ways proof drives. Dev-only: the library names no auth plugin.
-busbar-auth-admin-tokens-plugin = { workspace = true }
+busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 axum = { workspace = true, features = ["http1"] }
 reqwest = { workspace = true, features = ["json"] }

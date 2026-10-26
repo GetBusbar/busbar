@@ -2,7 +2,7 @@
 # Anthropic Messages dialect (stage 1: request, response and stream). Format: see openai_chat.toml.
 
 [dialect]
-wire = "anthropic" # the wire lock: dialects/anthropic.wire.json (notation A paths)
+wire = "anthropic" # the wire lock: testing/llm-conformance/wire/anthropic.wire.json (notation A paths)
 request = ["structure", "sampling", "tier", "blocks"]
 response = ["response"]
 stream = ["stream"]

@@ -62,7 +62,9 @@ fn every_dialect_probes_with_its_own_body_on_its_single_answer_path() {
         assert!(r.target.starts_with('/'), "{m}: {}", r.target);
         assert!(!probe_path(lane).contains("stream"), "{m}: a single answer");
         let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["content-type", "user-agent", "accept"], "{m}");
+        let mut want: Vec<&str> = lane.statics.iter().map(|(n, _)| *n).collect();
+        want.extend(["content-type", "user-agent", "accept"]);
+        assert_eq!(names, want, "{m}");
     }
     let bed = request(HOST, s.lane("bed").expect("lane")).expect("probed");
     assert!(
@@ -172,4 +174,52 @@ fn test_probe_signs_and_sends_same_encoded_path_for_reserved_chars() {
         "the signed canonical path is the transmitted wire path's own encoding (signed == sent)"
     );
     assert_eq!(probe.target, "/model/anthropic.claude-3%3A0/converse");
+}
+
+/// A probe of a lane carries the lane's declared static fields exactly as organic traffic on the
+/// lane does: an anthropic lane's probe without `anthropic-version` is answered 400 by the far end,
+/// and the breaker would read that refusal as the lane's health. A lane under an operator `auth:`
+/// override whose declaration carries no static field probes without one, as its organic traffic.
+///
+/// RED on dev: the probe wrote only `content-type`, `user-agent` and `accept`, so the
+/// `anthropic-version` lookup below finds nothing.
+#[test]
+fn a_probe_carries_the_lanes_static_fields_as_organic_traffic_does() {
+    use busbar_plane_llm::exchange::arrive::arrive;
+    use busbar_plane_llm::exchange::attempt::build;
+    let s = Shaping::from_settings(&json!({
+        "providers": {
+            "ant": { "protocol": "anthropic", "base_url": "https://b" },
+            "key": { "protocol": "anthropic", "base_url": "https://c", "auth": "api-key" }
+        },
+        "models": { "claude": { "provider": "ant" }, "keyed": { "provider": "key" } },
+        "pools": { "p": { "members": ["claude"] }, "k": { "members": ["keyed"] } }
+    }))
+    .expect("reads");
+    let head: Vec<(&[u8], &[u8])> =
+        vec![(b"content-type".as_slice(), b"application/json".as_slice())];
+    let body = br#"{"model":"claude","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}"#;
+    let arrived = arrive("POST", "/v1/messages", &head, body, &()).expect("arrives");
+
+    let probe = request(HOST, s.lane("claude").expect("lane")).expect("probed");
+    let organic = build(HOST, &arrived, &head, &s, "p", "claude").expect("built");
+    assert_eq!(field_value(&probe, "anthropic-version"), b"2023-06-01");
+    assert_eq!(
+        field_value(&probe, "anthropic-version"),
+        field_value(&organic, "anthropic-version"),
+        "the probe writes the version field organic traffic writes"
+    );
+
+    let keyed = request(HOST, s.lane("keyed").expect("lane")).expect("probed");
+    let keyed_organic = build(HOST, &arrived, &head, &s, "k", "keyed").expect("built");
+    let has = |r: &busbar_plane_llm::exchange::attempt::FarRequest| {
+        r.fields
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case("anthropic-version"))
+    };
+    assert_eq!(has(&keyed), has(&keyed_organic));
+    assert!(
+        !has(&keyed),
+        "an api-key override's declaration carries no static field"
+    );
 }

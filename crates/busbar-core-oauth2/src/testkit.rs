@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AS PLANE'S TEST-KIT — the fixture surface that names `AsPlane`, kept ON THE PLANE, so
-//! busbar-core's neutral `test_support::TestApp` names none of it.
+//! THE AS PLANE'S TEST-KIT — the fixture surface that names `AsPlane`, kept ON THE PLANE, so the
+//! kernel's neutral `test_support::TestApp` names none of it.
 //!
-//! Before the extraction, `TestApp::oauth_as(cfg)` lived in busbar-core and built the real
-//! `AsPlane` directly. Now that builder lives here, as an extension trait over `TestApp`'s public
+//! The builder lives here, as an extension trait over `TestApp`'s public
 //! `oauth_as_plane` seam (`busbar_kernel::test_support::TestApp::oauth_as_plane`) — the same relation
 //! the CRUD-shaped planes' extension traits have to their `TestAppSeam`, sized down for a
 //! singleton plane with no scratch accumulation: one config in, one plane out, no finalizer needed.
@@ -56,7 +55,7 @@ impl TestAppOauthExt for TestApp {
     }
 }
 
-/// Register this crate's `AsPlaneSeam` into busbar-core's process-wide slot, EXACTLY ONCE for the
+/// Register this crate's `AsPlaneSeam` into the kernel's process-wide slot, EXACTLY ONCE for the
 /// whole test binary — the test-binary analogue of `crates/busbar`'s `main` calling
 /// `busbar_core_oauth2::install()`. Needed because busbar-core-oauth2's OWN test binary never runs `main`, so
 /// nothing else registers the seam here; without it, `router::base_data_router` would see no seam

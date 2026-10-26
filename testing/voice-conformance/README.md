@@ -25,9 +25,8 @@ Each assertion drives a fresh instance of each door with one script and is PASS 
    subject; every conformance leg must then go RED.
 
 `lib/conform-bin.sh` builds the pair once (`cargo build -p voice-conformance-harness --bin
-voice_conform`, and the cdylib twin from the workspace this checkout's lock pins the plane at:
-`cargo build --locked --manifest-path <that workspace> -p busbar-plane-streaming-plugin
---target-dir <this target>`); `VOICE_CONFORM_BIN` names a prebuilt harness (checked for staleness
+voice_conform`, and the cdylib twin at the rev the root pins the plane, in this workspace and so
+against the host's busbar-contract: `cargo build --locked -p busbar-plane-streaming-plugin`); `VOICE_CONFORM_BIN` names a prebuilt harness (checked for staleness
 against the plane, loader, contract and harness sources), `VOICE_CONFORM_DOOR` a dropped door that
 is not in the profile directory beside it.
 
@@ -47,22 +46,23 @@ money steps, the transport), which a plane cannot see and the harness therefore 
 | `session-scope` | 1 | the `session` grant kind; every door asks for a principal; 404 off the guest list |
 | `gemini-live-route` | 1 | the Gemini Live door: claim, arrival, and the handshake across it |
 | `provider-dial` | 1 | a session's far frames ride the dialect's socket need; the host connector dials |
-| `admit-refusal` | 1 | a refusal renders in the dialect's shape and opens nothing, dials nothing |
+| `admit-refusal` | 1 | a refusal renders in the dialect's shape and opens nothing, dials nothing; a policy refusal wears its 4xx, never `server_error` |
 | `route-failover` | 1 | each ATTEMPT answered afresh on the pass need; nothing reaches the caller early |
 | `audit-record` | 1 | the audit kind and operation the kernel's one row is written under; no door row |
 | `exit-terminal` | 1 | one session, one end; an ended stream is refused on every side |
-| `tool-reply` | 1 | a tool call is relayed to the caller and never answered by busbar (Law 11) |
+| `tool-reply` | 1 | a tool call is relayed to the caller byte for byte and never answered by busbar; the turn's usage report reaches the caller too, and is reported as units (Law 11, Law 5) |
 | `twilio-route` | 1 | the Twilio claim: ws transport, one-level `/twilio` prefix, `webhook-signature` the only alternative, a principal asked for; the session opens on the `event`-tagged `start` frame |
-| `twilio-media` | 1 | inbound `media` is the caller's audio; the far end's audio is written back as `media` on the call's `streamSid`, its end as `mark`, a barge-in as `clear`; `stop` ends the session once |
+| `twilio-media` | 2 | inbound `media` is the caller's audio; `start` locks the far end in µ-law and sends it nothing else; the far end's audio is written back as `media` on the call's `streamSid`, a barge-in as `clear`, and its end sends the far end nothing; `stop` ends the session once; a far end's tool call reaches the Twilio caller as-is (Law 11) |
 | `twilio-metering` | 1 | a Twilio session's units, reported per declared class once per turn, the open turn settled when `stop` arrives mid-turn |
 | `governance` | 5 checkpoints | the 5 vision checkpoints — **NOT a conformance result** |
 
-**The session rules** the fixture legs hold the door to (`session_pump`): a caller frame reaches the
-far end as sent, except that the caller's session configuration is replaced by the locked one; a
-far-end frame reaches the caller as sent, except that usage and rate-limit reports are consumed (usage
-becomes reported units), a far-end tool result is never relayed, and a barge-in also cancels and
-truncates the far end's response at the audio the caller heard. The expectation is computed from the
-wire by the codec, never by the door.
+**The session rules** the fixture legs hold the door to (Law 5, `BUSBAR-1.6.0.md` l.1903; Law 11,
+l.2127-2136): a caller frame reaches the far end as sent, except that a frame configuring the session
+or asking for a response takes the session's locked keys (the governed byte-level splice); every
+far-end frame reaches the caller as sent, a tool call and a usage report included (a usage report also
+becomes reported units); busbar sends the far end nothing on the caller's behalf. The door's frames
+are compared byte for byte with the frames the rules owe each side, in order; the expectation is
+computed from the wire, never by the door.
 
 ### The Twilio legs
 
@@ -74,8 +74,11 @@ rule (l.847-852). Every Twilio frame is `event`-tagged JSON. The fixtures in `fi
 transcribed from Twilio's published messages
 (<https://www.twilio.com/docs/voice/media-streams/websocket-messages>), one file per message:
 `from-twilio.{connected,start,media,dtmf,mark,stop}.json` (what Twilio sends busbar; `mark` is
-Twilio's echo of a mark busbar sent) and `to-twilio.{media,mark,clear}.json` (what busbar sends
-Twilio), plus `transcript.jsonl` (one call: `client` is Twilio to busbar, `server` busbar to Twilio).
+Twilio's echo of a mark a sender wrote) and `to-twilio.{media,mark,clear}.json` (what a sender may
+write Twilio), plus `transcript.jsonl` (one call: `client` is Twilio to busbar, `server` busbar to
+Twilio). No spec line asks busbar to write Twilio a `mark` (THE DESIGN §2 l.418-419, Part 2 #45), so
+the legs read the `mark` fixtures through the codec and take no position on what the caller is told
+when the far end's audio ends; they require only that the far end is sent nothing for it.
 
 The legs are written to the spec and to Twilio's formats, not to what the reader does today, and
 they go GREEN only when the streaming plane answers them. The telephony session's far end is the

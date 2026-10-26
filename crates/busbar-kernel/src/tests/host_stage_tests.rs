@@ -9,28 +9,20 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::hooks::{
     BudgetBucketState, Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision,
     RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 
+use super::tests::{caller, verdict_now as now};
 use super::*;
 use crate::config::PolicyOnError;
 use crate::hooks::ResolvedPolicy;
 use crate::host_units::UnitRecord;
 use crate::plane_driver::{
     Bind, BoundHooks, CallerFacts, CallerKey, GatedHooks, HookBinder, HookOrder, RoutedScope,
-    SessionStage, UnitHooks, CONTENT_ROLE, GATE_UNAVAILABLE, GATE_UNAVAILABLE_STATUS,
+    SessionStage, UnitHooks, CONTENT_ROLE,
 };
-
-fn caller(instance: &str) -> Caller {
-    Caller {
-        instance: Arc::from(instance),
-        plugin: Arc::from("the-plugin"),
-        kind: KindCode::Plane,
-    }
-}
 
 fn services(clock: &Arc<AtomicU64>) -> KernelServices {
     let c = Arc::clone(clock);
@@ -49,13 +41,6 @@ fn answered() -> (Later, tokio::sync::oneshot::Receiver<Stored>) {
         }),
         rx,
     )
-}
-
-fn now(r: Ran) -> Stored {
-    match r {
-        Ran::Now(s) => s,
-        Ran::Later => panic!("the answer pended"),
-    }
 }
 
 // ── verify ───────────────────────────────────────────────────────────────────────────────────
@@ -369,8 +354,9 @@ async fn a_gate_stops_with_its_clamped_status_and_words_and_passes_otherwise() {
     assert_eq!((stop.value, stop.bytes.as_slice()), (451, &b"screened"[..]));
 }
 
-/// A gate that cannot answer decides by its own `on_error`: `reject` stops (RED), anything else
-/// passes.
+/// A gate that cannot answer decides by its own `on_error`: `reject` stops (RED) with the one
+/// shared refusal every seat answers, 1.5.5's retryable 503 and its words (THE DESIGN §11.7;
+/// v1.5.5 crates/busbar/src/proxy/engine/mod.rs:1012-1018); anything else passes.
 #[tokio::test]
 async fn a_gate_that_cannot_answer_decides_by_its_on_error() {
     let s = services(&Arc::new(AtomicU64::new(0)));
@@ -400,8 +386,10 @@ async fn a_gate_that_cannot_answer_decides_by_its_on_error() {
     assert_eq!(
         (stop.value, stop.bytes),
         (
-            u64::from(GATE_UNAVAILABLE_STATUS),
-            GATE_UNAVAILABLE.as_bytes().to_vec()
+            u64::from(crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS),
+            crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
+                .as_bytes()
+                .to_vec()
         )
     );
     assert_eq!(
@@ -437,6 +425,59 @@ async fn the_rewrite_chain_resumes_after_each_rewrite() {
     assert_eq!(done.value, 0, "no hook after it rewrote");
     let stop = call(&s, Some(1), ask(svc::HOOK_REWRITE, 0, "secret")).await;
     assert_eq!((stop.value, stop.bytes.as_slice()), (409, &b"no"[..]));
+}
+
+/// A rewrite hook declared load-bearing whose call failed: what the resolver's `on_error: reject`
+/// decorator hands every firing site (the shared refusal, minted as a transform reject).
+struct LoadBearingDown;
+
+#[async_trait::async_trait]
+impl RoutingPolicy for LoadBearingDown {
+    async fn decide(
+        &self,
+        _: &RoutingRequest<'_>,
+        _: &[Candidate<'_>],
+        _: &RoutingContext<'_>,
+        _: Duration,
+    ) -> PolicyResult {
+        Ok(RoutingDecision::Abstain)
+    }
+
+    async fn transform(&self, _: &RoutingRequest<'_>, _: Duration) -> TransformOutcome {
+        TransformOutcome::Reject {
+            status: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            message: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "load-bearing-down"
+    }
+}
+
+/// RED (THE DESIGN §11.7, HOOK Q1): an in-session rewrite whose load-bearing hook could not answer
+/// stops with the shared 503 and its words, never clamped to a 403; a hook's own out-of-band
+/// status still is.
+#[tokio::test]
+async fn a_load_bearing_rewrite_that_cannot_answer_stops_with_the_shared_503() {
+    let s = services(&Arc::new(AtomicU64::new(0)));
+    staged(
+        &s,
+        1,
+        "inst",
+        "",
+        Arc::new(hooks(vec![], vec![Arc::new(LoadBearingDown)], None)),
+    );
+    let stop = call(&s, Some(1), ask(svc::HOOK_REWRITE, 0, "x")).await;
+    assert_eq!(
+        (stop.value, stop.bytes),
+        (
+            u64::from(crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS),
+            crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
+                .as_bytes()
+                .to_vec()
+        )
+    );
 }
 
 /// SECURITY (RED): the gates are the unit's own pool's, from what the kernel recorded: a

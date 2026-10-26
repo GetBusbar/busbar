@@ -134,6 +134,82 @@
       ],
       [
         "POST",
+        "path:/{pool}/v1/messages"
+      ],
+      [
+        "POST",
+        "path:/{provider}/{model}/v1/messages"
+      ],
+      [
+        "POST",
+        "field:authorization=AWS4-HMAC-SHA256 path:*/converse"
+      ],
+      [
+        "POST",
+        "field:authorization=AWS4-HMAC-SHA256 path:*/converse-stream"
+      ],
+      [
+        "POST",
+        "field:authorization=AWS4-HMAC-SHA256"
+      ],
+      [
+        "POST",
+        "field:anthropic-version"
+      ],
+      [
+        "POST",
+        "field:anthropic-beta"
+      ],
+      [
+        "POST",
+        "field:x-goog-api-key"
+      ],
+      [
+        "POST",
+        "field:x-api-key"
+      ],
+      [
+        "POST",
+        "path:*:generateContent*"
+      ],
+      [
+        "POST",
+        "path:*:streamGenerateContent*"
+      ],
+      [
+        "POST",
+        "path:*:embedContent*"
+      ],
+      [
+        "POST",
+        "path:*:batchEmbedContents*"
+      ],
+      [
+        "POST",
+        "path:*:predict*"
+      ],
+      [
+        "POST",
+        "path:/v1/models/*"
+      ],
+      [
+        "POST",
+        "path:/v1beta/models/*"
+      ],
+      [
+        "POST",
+        "path:*/v1/messages*"
+      ],
+      [
+        "POST",
+        "path:*/converse"
+      ],
+      [
+        "POST",
+        "path:*/converse-stream"
+      ],
+      [
+        "POST",
         "/model/*/converse"
       ],
       [
@@ -197,6 +273,82 @@
       [
         "POST",
         "/v1/models"
+      ],
+      [
+        "POST",
+        "path:/{pool}/v1/messages"
+      ],
+      [
+        "POST",
+        "path:/{provider}/{model}/v1/messages"
+      ],
+      [
+        "POST",
+        "field:authorization=AWS4-HMAC-SHA256 path:*/converse"
+      ],
+      [
+        "POST",
+        "field:authorization=AWS4-HMAC-SHA256 path:*/converse-stream"
+      ],
+      [
+        "POST",
+        "field:authorization=AWS4-HMAC-SHA256"
+      ],
+      [
+        "POST",
+        "field:anthropic-version"
+      ],
+      [
+        "POST",
+        "field:anthropic-beta"
+      ],
+      [
+        "POST",
+        "field:x-goog-api-key"
+      ],
+      [
+        "POST",
+        "field:x-api-key"
+      ],
+      [
+        "POST",
+        "path:*:generateContent*"
+      ],
+      [
+        "POST",
+        "path:*:streamGenerateContent*"
+      ],
+      [
+        "POST",
+        "path:*:embedContent*"
+      ],
+      [
+        "POST",
+        "path:*:batchEmbedContents*"
+      ],
+      [
+        "POST",
+        "path:*:predict*"
+      ],
+      [
+        "POST",
+        "path:/v1/models/*"
+      ],
+      [
+        "POST",
+        "path:/v1beta/models/*"
+      ],
+      [
+        "POST",
+        "path:*/v1/messages*"
+      ],
+      [
+        "POST",
+        "path:*/converse"
+      ],
+      [
+        "POST",
+        "path:*/converse-stream"
       ],
       [
         "POST",

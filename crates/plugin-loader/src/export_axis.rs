@@ -124,7 +124,7 @@ impl<'r> ExportRows<'r> {
         let name = &row.manifest.name;
         let refused = |e: crate::dispatch::LoadError| format!("export plugin '{name}': {e}");
         let image = match row.door() {
-            Some(door) => Image::Linked(LinkedRow::of(door).map_err(refused)?),
+            Some(door) => Image::Linked(LinkedRow::of_raw(door).map_err(refused)?),
             None => match row.manifest.stated_rendering()? {
                 Some(stated) => Image::Dropped(stated),
                 None => return Err(format!("export plugin '{name}': {NO_DOOR}")),
@@ -285,7 +285,8 @@ impl<'r> ExportRows<'r> {
         })?;
         let text = settings.to_string();
         let p = self.load(row, label, Some(settings))?;
-        crate::observe::grant_series(
+        // Held by the instance: its grant goes with it.
+        let grant = crate::observe::grant_series(
             self.dispatcher.observing(),
             &row.manifest.name,
             row.first_party(),
@@ -293,8 +294,9 @@ impl<'r> ExportRows<'r> {
         )?;
         // The destinations its manifest declares: `open` binds each to the path the operator's
         // settings give it, and `disk.append` serves the instance those only.
-        p.grant_destinations(&row.manifest.declares.destinations);
-        let opened = ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?;
+        p.grant_destinations(&row.manifest.declares);
+        let opened =
+            ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?.holding(grant);
         // DISCOVERY AT BOOT (`abi::mechanism::lifecycle` READY, the one optional lifecycle op): an
         // export door that states `ready` is awaited once its instance is open over the host's
         // tables, before it is served, as a store's and an auth door's are. Only this, the open that

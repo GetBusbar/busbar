@@ -468,18 +468,6 @@
     "retired": false
   },
   {
-    "code": "BUSBAR-3022",
-    "number": 3022,
-    "class": "config",
-    "slug": "config-error-map-class-unrecognized",
-    "title": "error_map maps an error to an unrecognized status class (the mapping is ignored)",
-    "severity": "actionable",
-    "summary": "A provider's `error_map` maps an upstream error code or structured type to a string that is not one of busbar's status classes (rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length). The mapping is IGNORED and the error is classified from its upstream status instead, so a typo'd entry (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized value for the life of the process, on the first error that reaches it — never at boot, so a deployment whose providers never fail never sees this line.",
-    "action": "Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in status classification is what you want.",
-    "since": "1.6.0",
-    "retired": false
-  },
-  {
     "code": "BUSBAR-3023",
     "number": 3023,
     "class": "config",
@@ -488,6 +476,18 @@
     "severity": "actionable",
     "summary": "The persisted config overlay was present but could not be read into a document, so every caller of the overlay classifies it unreadable (BUSBAR-3005 at boot, BUSBAR-3017 on the settings read) and proceeds without it. Those report the CONSEQUENCE; this line reports the CAUSE, because the parser's message — the offending key and the sections that are accepted — exists nowhere else. The common causes are a hand-edit that mis-spelled a section name and a truncated write.",
     "action": "Read this line's message for the exact key and path, then fix or remove the overlay file and restart so the API-applied hooks, gates and groups are restored.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-3024",
+    "number": 3024,
+    "class": "config",
+    "slug": "config-metadata-entry-names-no-host",
+    "title": "A metadata host-list entry names no host (it matches nothing and is dropped)",
+    "severity": "actionable",
+    "summary": "An entry in `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` or a provider's `allow_metadata_hosts` names no host a URL client would dial: UTS #46 refuses it, it holds a `%` escape outside an IPv6 zone id, or its last label reads as a number but it is no IPv4 address (`1.2.3.4.5`, `999.1.1.1`). It could never match a destination, so it is dropped from matching and the configuration boots, as it did on 1.5.5. The built-in cloud-metadata denylist still blocks every real target. Emitted once per entry at config load, naming the key and the entry.",
+    "action": "Fix the named entry as the line says (write the host in ASCII or punycode, decoded, or as a dotted-quad address), or remove it. Nothing else changes until you do.",
     "since": "1.6.0",
     "retired": false
   },
@@ -798,7 +798,7 @@
     "slug": "admin-auth-chain-empty",
     "title": "admin_auth chain is EMPTY (open, anonymous, full-authority dev posture)",
     "severity": "actionable",
-    "summary": "An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` REFUSES to apply an empty chain (and an admin-scope dry-run reports it as no earned grant, never full), so this posture can only be entered deliberately via config.yaml at boot — never flipped open by one unnoticed API call.",
+    "summary": "An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` applies an empty chain as 1.5.5 did, with this warning, and the open posture is then live until the chain is set again.",
     "action": "Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an admin credential entry, or an admin module) before exposing the admin API to any untrusted network.",
     "since": "1.6.0",
     "retired": false
@@ -1854,7 +1854,7 @@
     "slug": "plane-demotions-unread",
     "title": "Durable plane demotion records could not be read at boot",
     "severity": "actionable",
-    "summary": "The durable plane demotion records could NOT be read at boot, so any upstream this deployment had demoted is re-opened until the first sweep looks again. Usually a durable store-read outage.",
+    "summary": "The durable plane demotion records or the operator's trust decisions could NOT be read when a plane instance was admitted, so the instance was refused rather than re-open an upstream this deployment demoted or stand over a revoke it cannot see. Usually a durable store-read outage.",
     "action": "Restore the durable governance store's read path and restart so persisted demotions are re-applied before a listener binds.",
     "since": "1.6.0",
     "retired": false

@@ -1259,12 +1259,12 @@ pub struct IrUsage {
 /// It exists because the totals were already right and the ATTRIBUTION was not, and attribution is
 /// what a customer reconciles a bill against.
 ///
-/// THE ONE EXCEPTION (1.6.0 M1, `BUSBAR-1.6.0.md` THE DESIGN, §7): the Cohere `billed_*` trio
-/// (`billed_input_tokens`/`billed_output_tokens`/`billed_classifications`) is NOT a slice of the raw
-/// totals — it is Cohere's SEPARATELY-METERED billed bucket, the counts an operator is actually
-/// invoiced on. [`IrUsage::to_token_usage`] lets `billed_input`/`billed_output` WIN over the raw
-/// totals for the ledgered reserved tiers (a deliberate, tested per-dialect change). `billable_tokens`
-/// (the normalization test surface) still ignores the whole struct.
+/// THE ONE BUCKET THAT IS NOT A SLICE: the Cohere `billed_*` trio
+/// (`billed_input_tokens`/`billed_output_tokens`/`billed_classifications`) is Cohere's
+/// SEPARATELY-METERED billed bucket, reported beside the raw totals. [`IrUsage::to_token_usage`]
+/// ledgers the raw totals, as 1.5.5 billed them; the billed token counts are attribution the Cohere
+/// writer re-emits, and `billed_classifications` is the open class `classifications`.
+/// `billable_tokens` (the normalization test surface) ignores the whole struct.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IrUsageDetail {
     /// Reasoning / thinking tokens, a SUB-BUCKET of `output_tokens` (never added to it — that would
@@ -1480,34 +1480,22 @@ impl IrUsage {
     /// with `IrUsage`, so it follows it to busbar-llm at the cutover, where it becomes an
     /// `impl From<&IrUsage> for busbar_contract::billing::TokenUsage`.
     ///
-    /// COHERE `billed_units` (1.6.0 M1, `BUSBAR-1.6.0.md` THE DESIGN, §7): Cohere reports usage TWICE — a
-    /// raw `tokens` bucket and a separately-metered `billed_units` bucket, and it is the BILLED
-    /// counts an operator is invoiced on. So `billed_input_tokens`/`billed_output_tokens`, when
-    /// present, WIN over the raw totals for the reserved input/output tiers — a DELIBERATE,
-    /// tested per-dialect ledgered-count change (no other dialect populates these, so every other
-    /// provider projects byte-identically to before). Cohere's billed `search_units` is the open
-    /// class `search_units` and its billed `classifications` the open class `classifications`
-    /// (see `open_units`; owner LEDGER-100). Both stay on `IrUsageDetail` and are re-emitted by the
-    /// Cohere writer.
-    ///
-    /// THE BILLED INPUT IS NETTED AGAINST ANY CACHE READ, so `input + cache_read` never exceeds the
-    /// input the provider stated, whichever bucket won. The Cohere reader carries no cache read
-    /// (its `cached_tokens` stays inside the input count, as 1.5.5 billed it), so on every reading
-    /// this crate makes today the netting subtracts nothing; it stays as the guard that a billed
-    /// count is never charged twice beside a cache read. `saturating_sub` floors at zero rather
-    /// than wrapping, matching every other cache normalization in this crate.
+    /// THE RAW TOKEN TOTALS ARE WHAT A KEY IS CHARGED, for every dialect. Cohere reports usage
+    /// twice, a raw `tokens` bucket and a separately-metered `billed_units` bucket, and 1.5.5 read
+    /// only `tokens` and billed those, buffered and streamed alike (v1.5.5
+    /// `crates/busbar/src/proto/cohere/reader.rs`, the `read_response` usage and the
+    /// `message-end` usage). No signed register entry moves that charge (the one that did, M-3,
+    /// was retired), and the release holds the token classes to what 1.5.5 counted (CHANGELOG
+    /// 1.6.0: "The token classes, their figures and every `tokens:` cap count exactly what 1.5.5
+    /// counted"). So Cohere's billed token counts (`billed_input_tokens`/`billed_output_tokens`)
+    /// stay on `IrUsageDetail` as attribution the Cohere writer re-emits, and never replace a
+    /// ledgered count. Cohere's billed `search_units` is the open class `search_units` and its
+    /// billed `classifications` the open class `classifications` (see `open_units`; owner
+    /// LEDGER-100).
     pub fn to_token_usage(&self) -> busbar_contract::billing::TokenUsage {
         busbar_contract::billing::TokenUsage {
-            // Billed wins over raw when the provider reported it (Cohere); else the raw total.
-            input: self
-                .detail
-                .billed_input_tokens
-                .map(|billed| billed.saturating_sub(self.cache_read_input_tokens.unwrap_or(0)))
-                .unwrap_or(self.input_tokens),
-            output: self
-                .detail
-                .billed_output_tokens
-                .unwrap_or(self.output_tokens),
+            input: self.input_tokens,
+            output: self.output_tokens,
             cache_read: self.cache_read_input_tokens,
             cache_creation: self.cache_creation_input_tokens,
             open_units: self.open_units(),

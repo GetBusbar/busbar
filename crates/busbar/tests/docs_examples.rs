@@ -30,9 +30,10 @@
 //!   HTML-comment note in the doc itself pointing at the plugin-free substitute example.
 
 // The shipped/marked examples this file validates assume the DEFAULT feature set (what a real
-// user's copy-pasted config targets) -- an admin-tokens block in an example fails closed under
-// `--no-default-features` (correct production behavior, not a bug this file should catch).
-#![cfg(feature = "auth-admin-tokens")]
+// user's copy-pasted config targets) -- an operator-credential block in an example fails closed
+// under `--no-default-features` (correct production behavior, not a bug this file should catch).
+// Gated on the operator credential's linked row (`linked_operator_auth`, build.rs).
+#![cfg(linked_operator_auth)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -285,7 +286,7 @@ fn marked_config_examples_validate() {
 /// example, and `docker/config.yaml` (the default the getbusbar/busbar image boots when nothing is
 /// mounted, which the README's `docker run` relies on) — validate clean against the shipped
 /// `providers.yaml`. The docker default once shipped without the `store:` block 1.6.0 requires
-/// (Q-STORE (B)) and the image refused to boot; this list is what catches that.
+/// and the image refused to boot; this list is what catches that.
 #[test]
 fn shipped_config_artifacts_validate() {
     let root = repo_root();
@@ -347,7 +348,7 @@ fn known_protocols() -> Vec<String> {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/dialect_registry_facts_tests.rs::test_shipped_providers_catalog_valid`
-/// (coverage map v2 row 101). 1.5.5: the shipped `providers.yaml` catalog parses, is non-trivial
+/// 1.5.5: the shipped `providers.yaml` catalog parses, is non-trivial
 /// (at least 10 providers), every entry names a protocol this build knows, and every entry's
 /// `base_url` is `https://`.
 ///

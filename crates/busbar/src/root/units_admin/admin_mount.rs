@@ -146,11 +146,87 @@ impl AdminNode {
             }
         };
 
+        // THE UNIT'S ONE RECORD (THE DESIGN §1: "The audit step writes one fixed record, for every
+        // plane"; U14: one record per unit, and a refused unit gets one too), sealed on the node's
+        // book once the unit's answer is in hand, as a request unit's is beside its line.
+        if let Some(sealing) = self.units.admin.units.take_sealing(key) {
+            self.seal(key, arrived_at, sealing);
+        }
+
         // The guard closes last, whatever happened — including a step that panicked, which the two
         // statements this replaces walked straight past. An entry or a slot that outlived its unit
         // is the leak per request this root may not have.
         drop(occupied);
         answer
+    }
+
+    /// Seal admin unit `key`'s record on the node's book: who the auth step resolved (or the
+    /// arrival, for a unit refused before anybody was), the operation class its audit door stated,
+    /// how it ended, and no amount: an admin unit counts nothing.
+    fn seal(&self, key: UnitKey, arrived_at: u64, sealing: AdminSealing) {
+        use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
+        let (facts, ended) = (sealing.facts, sealing.ended);
+        let subject = self
+            .units
+            .admin
+            .units
+            .principal(key)
+            .map_or(Subject::Arrival, |p| {
+                Subject::PrincipalId(p.as_str().to_string())
+            });
+        let inputs = AuditInputs {
+            subject,
+            what: What {
+                unit_key: key,
+                incarnation: 0,
+                op_class: busbar_kernel_audit::OpClassId::new(facts.op_class.as_str()),
+                destination: None,
+                parent: None,
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            wall: arrived_at,
+            // The admin units' own order: the key each was drawn as, in arrival order.
+            mono: key.get(),
+            origin: self
+                .kernel
+                .origin(busbar_contract::caps::OriginKind::Client),
+            outcome: OutcomeFacts {
+                unit_end: ended,
+                step: ended.step(),
+                finish: crate::root::plane_node::audit_finish(facts.finish),
+                hook_failed: false,
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            usage: Usage {
+                lines: Vec::new(),
+                tier_bp: 10_000,
+                fee_count: 0,
+                rate_card_version: crate::root::plane_node::card_in_force(
+                    crate::root::kernel::ROOT_CARD.pin().as_ref(),
+                    arrived_at.saturating_mul(1_000),
+                ),
+                bucket_chain_ref: String::new(),
+            },
+            controls: Controls::default(),
+            correlation_label: None,
+        };
+        let token = self.kernel.durability_token();
+        let sealed = self
+            .units
+            .durability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .seal_unit(inputs, sealing.pass, &token);
+        if let Err(lost) = sealed {
+            tracing::error!(
+                step = lost.step().as_str(),
+                unit = key.get(),
+                "the journal lost an admin unit's audit record: it is sealed on the chain and \
+                 cached, and a restart will not read it back"
+            );
+        }
     }
 }
 
@@ -402,7 +478,6 @@ pub(crate) fn error_answer(status: u16, code: &str) -> AdminAnswer {
 /// Two of its ten errors carry a message this file cannot derive from the code alone — the door's,
 /// and the scope refusal's, which names the scope that would have sufficed. They are the same
 /// envelope from the same source; only the second string differs.
-#[cfg(feature = "root-admin")]
 pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) -> AdminAnswer {
     AdminAnswer {
         status,

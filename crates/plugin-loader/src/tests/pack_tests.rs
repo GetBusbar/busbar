@@ -549,6 +549,28 @@ fn nested_secret_field_is_rejected_inline_and_via_ref() {
     validate_secret_fields(&flattened).unwrap();
 }
 
+/// A SECRET MARKER ONE OBJECT DOWN IS REFUSED IN 1.5.5's WORDS (ruling (B), 2026-10-19: pack keeps
+/// 1.5.5's refusal of a nested marker; v1.5.5 `crates/plugin-pack/src/main.rs:298-304`). A marked
+/// `held.value` sits at nesting depth 2, and the refusal names that depth and says to
+/// flatten the field. RED before the fix: the refusal's words were not 1.5.5's.
+#[test]
+fn a_nested_secret_marker_is_refused_in_1_5_5_words() {
+    let nested = serde_json::json!({
+        "$schema": SCHEMA_2020_12, "type": "object",
+        "properties": {
+            "held": {
+                "type": "object",
+                "properties": {"value": {"type": "string", "x-busbar-secret": true}},
+            },
+        },
+    });
+    assert_eq!(
+        validate_secret_fields(&nested).unwrap_err(),
+        "x-busbar-secret: true is only allowed on a direct root-level property (found at nesting \
+         depth 2) — flatten the field to a root property instead"
+    );
+}
+
 /// A self-referencing `$ref` cycle is rejected with a specific "cyclic" error, not an infinite
 /// loop / stack overflow (`resolving.insert` returning `false` on a repeat name is the guard).
 #[test]

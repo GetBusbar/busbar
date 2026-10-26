@@ -11,10 +11,12 @@
 //!   then writes, reads, waits and closes it. Ownership is the shared book
 //!   ([`busbar_contract::conn::ConnSlab`]): a connection another instance owns, a closed one and a
 //!   need nobody declared are refused.
-//! * [`endpoint`] is the pure check an open's target passes before any dial: a cloud metadata host,
-//!   in any spelling, is refused by name.
-//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any outbound
-//!   connection may be dialled at (private refused unless allowlisted, metadata always).
+//! * [`endpoint`] is the pure check an open's target passes before any dial: it names a host. A
+//!   dial no judge judges also refuses a cloud metadata or link-local host there, by name.
+//! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any judged
+//!   outbound connection may be dialled at (private refused unless allowlisted; cloud metadata and
+//!   link-local refused unless an IP or CIDR allowlist entry, or a provider's 1.5.5 carve-out,
+//!   names them).
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
 //! * [`dtls`] is its datagram sibling — the DTLS engine a media association runs on (the RFC 7983
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
@@ -34,8 +36,8 @@
 //!   connection as carrier -> \[TLS\] -> framer; [`pool`] keeps a dialled connection whose exchange
 //!   finished whole for the next open to the same place; [`listen`] has the carrier listen for each
 //!   inbound need and composes each accepted connection the same way, begun on the accept side;
-//!   [`registry`] is the view of which entry serves which scheme; [`wire`] presents an entry over
-//!   carried connections to the kernel's transport seam.
+//!   [`registry`] is the view of which entry serves which scheme; [`wire`] is the boot fold's
+//!   admission of an entry (its key, and no layer it composes over).
 //! * [`process`] builds the process's one connector for the root: the deployment's one destination
 //!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
 //! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
@@ -43,8 +45,10 @@
 //!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran; [`proxy_route`] is the
 //!   choice it fills, which proxy (if any) a dial goes through.
 //!
-//! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
-//! raw pointers as a plugin does.
+//! No `unsafe` is written here outside two places: the reactor registration in [`io::register`],
+//! one call to tokio's `AsyncFd::register_with_interest` on a descriptor the registration owns
+//! (RUSTSEC-2026-0386), and the tests' framer entry, which writes a host sink through its raw
+//! pointers as a plugin does.
 //!
 //! No thread is started per connection: every socket's readiness is the registering worker's
 //! reactor's, and every wait is not-ready with a wake. The threads that are started: a name lookup
@@ -116,7 +120,7 @@ use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
-use crate::pool::{PoolKey, PoolPosture, Pools, SealRef};
+use crate::pool::{PoolKey, PoolPosture, Pools, Same};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
@@ -129,6 +133,11 @@ pub type Verdict = u64;
 /// Where a pended judgement goes: the address to dial, or the verdict refusing it. Called once,
 /// from any thread.
 pub type Judged = Box<dyn FnOnce(Result<SocketAddr, Verdict>) + Send>;
+
+/// Where a pended judgement goes with the name's OTHER admitted addresses, in the resolver's order:
+/// a connect the pinned address refuses moves on to each in turn, as 1.5.5's client did. Called
+/// once, from any thread.
+pub type JudgedAll = Box<dyn FnOnce(Result<SocketAddr, Verdict>, Vec<SocketAddr>) + Send>;
 
 /// A need's `egress_class` `0`: the connector's default class (`busbar_contract::abi::host::conn::
 /// Need::egress_class`). A need declared in another class is judged under that class, never this.
@@ -159,6 +168,24 @@ pub trait DialJudge: Send + Sync {
         done: Judged,
     ) -> Option<Result<SocketAddr, Verdict>> {
         self.judge_dial(dest, class, done)
+    }
+
+    /// [`DialJudge::judge_dial`] (with the need's private reach when `reach`) whose pended answer
+    /// also names the resolved name's other admitted addresses, each held to the same judgement.
+    /// The default names none.
+    fn judge_dial_all(
+        &self,
+        dest: &str,
+        class: u32,
+        reach: bool,
+        done: JudgedAll,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        let done: Judged = Box::new(move |v| done(v, Vec::new()));
+        if reach {
+            self.judge_dial_reaching(dest, class, done)
+        } else {
+            self.judge_dial(dest, class, done)
+        }
     }
 
     /// THE STATIC ARM ALONE: the refusal `dest` (`host:port`) meets under class `class` before any
@@ -325,7 +352,15 @@ struct DeclaredNeed {
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
-type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
+/// The judgement's answer, the waker of the read or wait that found it unanswered, and the name's
+/// other admitted addresses ([`JudgedAll`]).
+type Answer = Arc<
+    Mutex<(
+        Option<Result<SocketAddr, Verdict>>,
+        Option<Waker>,
+        Vec<SocketAddr>,
+    )>,
+>;
 
 /// The trust anchors sealed per destination (the transport pin, ARCHITECT 2026-10-03), by the need's owner, the need and
 /// the destination's authority (lower-case, `host:port`).
@@ -629,6 +664,11 @@ pub struct Connector {
     /// ([`Connector::pair`]): what an open serving that unit (`OpenDesc::unit`) over a datagram
     /// framer's need bridges with.
     pairs: Mutex<HashMap<u64, Arc<datagram::Pairing>>>,
+    /// HOW A PROGRAM'S ENVIRONMENT REFERENCES RESOLVE ([`spawn_env`]): the resolver the composition
+    /// root handed this connector ([`Connector::resolving_spawn_secrets`]), handed on to every
+    /// environment a declaration loads. `None` = no reference resolves, and a program that states
+    /// one is not spawned (fail-closed).
+    spawn_secrets: Option<spawn_env::SpawnSecretFn>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -658,6 +698,7 @@ impl Default for Connector {
             io: hostio::process(),
             proxy: None,
             pairs: Mutex::new(HashMap::new()),
+            spawn_secrets: None,
         }
     }
 }
@@ -728,6 +769,15 @@ impl Connector {
     #[must_use]
     pub fn with_io(mut self, io: Arc<HostIo>) -> Self {
         self.io = io;
+        self
+    }
+
+    /// The same connector resolving its programs' environment references through `secrets`, at
+    /// config time: the need's declaration and the refresher's lease, never a spawn
+    /// ([`spawn_env`]).
+    #[must_use]
+    pub fn resolving_spawn_secrets(mut self, secrets: spawn_env::SpawnSecretFn) -> Self {
+        self.spawn_secrets = Some(secrets);
         self
     }
 
@@ -816,18 +866,15 @@ impl Connector {
         answer: &Answer,
     ) -> Option<Result<SocketAddr, Verdict>> {
         let answering = Arc::clone(answer);
-        let done: Judged = Box::new(move |v| {
+        let done: JudgedAll = Box::new(move |v, also| {
             let mut a = answering.lock().expect("judgement");
             a.0 = Some(v);
+            a.2 = also;
             if let Some(w) = a.1.take() {
                 w.wake();
             }
         });
-        if reach {
-            self.judge.judge_dial_reaching(dest, class, done)
-        } else {
-            self.judge.judge_dial(dest, class, done)
-        }
+        self.judge.judge_dial_all(dest, class, reach, done)
     }
 
     /// The same connector keeping dialled connections under `posture` (the deployment's
@@ -993,9 +1040,9 @@ impl Connector {
             .get(&(owner, need))
             .map(|n| Arc::clone(&n.door))
             .ok_or(ConnError::Refused)?;
-        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let located = framer::locate(door.as_ref(), target).map_err(|_| ConnError::Refused)?;
-        endpoint::check(&located.authority).map_err(|_| ConnError::Refused)?;
+        endpoint::named(&located.authority).map_err(|_| ConnError::Refused)?;
         if !scheme_admits(egress_class, located.secure) {
             return Err(ConnError::Refused);
         }
@@ -1107,7 +1154,7 @@ impl Connector {
                 let member = kept.unwrap_or_else(|| {
                     Arc::new(program::Member::new(
                         p.clone(),
-                        spawn_env::HeldEnv::load(&p.env_refs, scope),
+                        spawn_env::HeldEnv::load(&p.env_refs, self.spawn_secrets, scope),
                         Via {
                             door: Arc::clone(&door),
                             io: Arc::clone(&self.io),
@@ -1177,7 +1224,7 @@ impl Connector {
                 tls: None,
                 program: Some((
                     program.clone(),
-                    spawn_env::HeldEnv::load(&program.env_refs, scope),
+                    spawn_env::HeldEnv::load(&program.env_refs, self.spawn_secrets, scope),
                 )),
                 members: None,
             }),
@@ -1187,7 +1234,8 @@ impl Connector {
 
     /// Bind the one listener for `owner`'s INBOUND `need` on `bind` (`ip:port`), over the transport
     /// the need was declared over, secured by `tls` where set (the protocols agreed off the offer
-    /// the entry states for an ACCEPTING listener, [`framer::accept_offer`]), bounded by `limits`.
+    /// the entry states for an ACCEPTING listener, [`framer::accept_offer`], else off the
+    /// transport's registered list), bounded by `limits`.
     /// Answers the address bound. Called on a worker.
     ///
     /// # Errors
@@ -1204,16 +1252,33 @@ impl Connector {
     ) -> Result<SocketAddr, ConnError> {
         self.slab.check_need(owner, need)?;
         // A need declared without a transport binds nothing.
-        let door = self
+        let (door, registered) = self
             .over
             .lock()
             .expect("needs")
             .get(&(owner, need))
-            .map(|d| Arc::clone(&d.door))
+            .map(|d| (Arc::clone(&d.door), d.alpn.clone()))
             .ok_or(ConnError::Refused)?;
         // The listener's offer is the entry's own for its ACCEPTING side, never its dial offer;
-        // an entry that states none (it refuses the question) makes no offer.
-        let alpn = framer::accept_offer(door.as_ref()).unwrap_or_default();
+        // the transport's registered list stands only for an entry that states none (it answers
+        // no offer, or refuses the question), as it stands for a dial whose `locate` answers none
+        // (`compose`). A TLS listener never goes out with no protocol to agree where its
+        // transport registered one. An entry that refuses the question is logged: its listener
+        // binds without an offer of its own.
+        let alpn = match framer::accept_offer(door.as_ref()) {
+            Ok(offer) if !offer.is_empty() => offer,
+            Ok(_) => registered,
+            Err(refused) => {
+                tracing::warn!(
+                    owner = owner.0,
+                    need = need.0,
+                    error = %refused,
+                    "inbound listener: the entry's locate refused the accepting-side protocol \
+                     offer; the listener binds with the transport's registered protocol list"
+                );
+                registered
+            }
+        };
         let mut listeners = self.listeners.lock().expect("listeners");
         if listeners.contains_key(&(owner, need)) {
             return Err(ConnError::Refused);
@@ -1297,7 +1362,7 @@ impl Connector {
         let Some(j) = judging.as_mut() else {
             return Ok(true);
         };
-        let got = {
+        let (got, also) = {
             let mut a = j.answer.lock().expect("judgement");
             match a.0 {
                 None => {
@@ -1306,7 +1371,7 @@ impl Connector {
                     }
                     return Ok(false);
                 }
-                Some(got) => got,
+                Some(got) => (got, std::mem::take(&mut a.2)),
             }
         };
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
@@ -1364,10 +1429,16 @@ impl Connector {
             j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
             return Err(ConnError::Refused);
         }
+        // The name's other admitted addresses a refused connect falls back to, each held to the
+        // need's class and `within` as the pinned one is.
+        let also: Vec<SocketAddr> = also
+            .into_iter()
+            .filter(|&at| class_admits(j.egress_class, secure, &j.within, &target, at))
+            .collect();
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
         let early = std::mem::take(&mut j.early);
         *judging = None;
-        let conn = planned.dial_at(addr).map_err(|f| map(&f))?;
+        let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
         let line = self.ride(held, conn);
         for (bytes, end, text) in early {
             line.emit(EXCHANGE_STREAM, &bytes, end, text)
@@ -1403,7 +1474,7 @@ impl Connector {
         within: &[IpAddr],
         reach: bool,
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
-        let answer: Answer = Arc::new(Mutex::new((None, None)));
+        let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
         // A destination the need holds a private reach to is judged with it (the one guard, as an
         // allowlist entry naming it; the class unchanged).
         let judged = self.judge_into(planned.authority(), judged_class, reach, &answer);
@@ -1443,7 +1514,7 @@ impl Connector {
                 Some(_) => {}
             }
             proxied.target_judged = true;
-            let answer: Answer = Arc::new(Mutex::new((None, None)));
+            let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
             let proxy_authority = proxied.spec.endpoint();
             return match self.judge_into(&proxy_authority, judged_class, true, &answer) {
                 None => Ok((
@@ -2155,7 +2226,7 @@ impl Connector {
         ),
         poolable: bool,
     ) -> Result<Held, ConnError> {
-        endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
             target: target.to_owned(),
             tls: tls.or_else(|| self.tls.clone()),
@@ -2171,6 +2242,9 @@ impl Connector {
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
         };
+        // The very client config the dial is secured with: a pooled line is lent only to an open
+        // secured with it.
+        let trust = dial.tls.clone().map(Same);
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
         // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
         // destination is held to them; one that pins the far end's key and is not secured has no
@@ -2206,7 +2280,7 @@ impl Connector {
             }
         };
         // The very seal the dial is held to: a pooled line is lent only to an open held to it.
-        let sealed = anchors.clone().map(SealRef);
+        let sealed = anchors.clone().map(Same);
         if anchors
             .as_ref()
             .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
@@ -2263,6 +2337,7 @@ impl Connector {
                     class: (judged_class, egress_class),
                     reach,
                     anchored_as,
+                    trust,
                     sealed,
                 },
             )

@@ -9,18 +9,17 @@
 //! during the build, the rates of that rejected apply had already entered the history and the
 //! journal. So the seam rides the same commit the process-wide limits do: `InstalledLimits::keep`.
 //!
-//! A test BINARY of its own, because the rate holder is a process-wide `OnceLock` this file installs.
+//! A test BINARY of its own, because the rate holder this file hands in is process-wide.
 //!
-//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
-//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
-//! build.rs): its config names a provider, whose dialect only a real plane declares, and the
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation: core names zero plane types, its tests included): its config names a provider, whose dialect only a real plane declares, and the
 //! composition root is where a plane may be linked.
 
 mod linked;
 
 use std::sync::Mutex;
 
-use busbar_kernel::rate_apply::{install_rate_apply, RateApply, RawRates};
+use busbar_kernel::rate_apply::{RateApply, RawRates};
+use busbar_kernel::test_support::rate_holders::install_rate_apply;
 
 /// The holder, writing down the flat figure of every apply it hears — the only writer of the dated
 /// history and of the journal, so what it never hears neither of them holds.

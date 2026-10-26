@@ -137,3 +137,92 @@ agent_pools:
         "the model pool resolves onto the model plane"
     );
 }
+
+/// A POOL UNDER A PLANE'S VERB REFUSES EVERY FIELD ITS PLANE DOES NOT HONOUR. A plane's pool is
+/// the reserved `pools` sub-key of its own section and carries `members:` by bare name and
+/// `repeatable:`; each other family below used to be dropped without a word by the old projection
+/// of a top-level pool onto a plane, so a gate the operator wrote on such a pool never fired. One RED
+/// per field family, on pools of `tools:` entries and of `agents:` entries alike, and a control: the
+/// carried fields alone resolve. No 1.5.5 config reaches this path: v1.5.5's deployment grammar
+/// (crates/busbar/src/config/mod.rs:2573, `deny_unknown_fields`) has no plane sections.
+#[test]
+fn a_plane_pool_refuses_each_field_its_plane_does_not_honour() {
+    register_planes();
+    let base = r#"
+providers: {}
+models: {}
+hooks:
+  audit:
+    kind: gate
+    module: audit-hook
+    phase: [request]
+tools:
+  search-eu:
+    url: "https://eu.example/t"
+    pin: { mechanism: unpinned }
+  search-us:
+    url: "https://us.example/t"
+    pin: { mechanism: unpinned }
+agents:
+  planner-eu:
+    url: "https://a1.example/card"
+    pin: { mechanism: unpinned }
+  planner-us:
+    url: "https://a2.example/card"
+    pin: { mechanism: unpinned }
+"#;
+    let defs: std::collections::HashMap<String, ProviderDef> = std::collections::HashMap::new();
+    let resolve_pool = |section: &str, members: &str, extra: &str| {
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(base).expect("the base parses");
+        let pool: serde_yaml::Value =
+            serde_yaml::from_str(&format!("members: {members}\n{extra}")).expect("the pool parses");
+        doc[section]["pools"] = serde_yaml::from_str("{}").unwrap();
+        doc[section]["pools"]["p"] = pool;
+        let raw = serde_yaml::to_string(&doc).expect("the config renders");
+        let deploy: DeployCfg =
+            deploy_from_yaml_str(&raw).unwrap_or_else(|e| panic!("the config parses: {e}\n{raw}"));
+        resolve(&deploy, &defs)
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
+    };
+    for (section, members) in [
+        ("tools", "[search-eu, search-us]"),
+        ("agents", "[planner-eu, planner-us]"),
+    ] {
+        // The control: what the plane honours resolves.
+        resolve_pool(section, members, "repeatable: [read]\n")
+            .unwrap_or_else(|e| panic!("a carried field is refused for {members}: {e}"));
+        for (extra, named) in [
+            ("hooks: [audit]\n", "hooks"),
+            ("failover: { max_hops: 2 }\n", "failover"),
+            ("on_exhausted: reject\n", "on_exhausted"),
+            ("affinity: { mode: session }\n", "affinity"),
+            (
+                "upstream_credentials: passthrough\n",
+                "upstream_credentials",
+            ),
+            ("weights: { x: 3 }\n", "weights"),
+            ("tier: large\n", "tier"),
+            ("attempt_timeout_ms: 500\n", "attempt_timeout_ms"),
+        ] {
+            let refused = resolve_pool(section, members, extra);
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|e| e.contains(&format!("{section}.pools"))
+                        && e.contains(&format!("unknown field `{named}`"))),
+                "a {section} pool must refuse `{named}:`, naming it: {refused:?}"
+            );
+        }
+        let rich = members
+            .replace("[", "[{ model: ")
+            .replacen(", ", ", weight: 3 }, ", 1);
+        let refused = resolve_pool(section, &rich, "");
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.contains(&format!("{section}.pools"))),
+            "a {section} pool must refuse a member's own keys: {refused:?}"
+        );
+    }
+}

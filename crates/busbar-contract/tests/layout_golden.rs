@@ -241,20 +241,12 @@ fn compute_layout() -> String {
         MechOutHead,
         [size, outcome, _reserved, wake_at_ns, lease, error, envelope, extensions]
     );
-    record!(
-        s,
-        MechDoor,
-        [
-            magic,
-            mechanism_version,
-            size,
-            kind,
-            kind_abi,
-            statement,
-            ops,
-            ready
-        ]
-    );
+    // The door's fields are private (status row 195, the sealed door): it records its own offsets.
+    for (field, at) in MechDoor::__layout() {
+        writeln!(s, "MechDoor.{field}={at}").unwrap();
+    }
+    writeln!(s, "MechDoor.__size={}", std::mem::size_of::<MechDoor>()).unwrap();
+    writeln!(s, "MechDoor.__align={}", std::mem::align_of::<MechDoor>()).unwrap();
     record!(
         s,
         MechMetricFamily,
@@ -882,6 +874,7 @@ fn compute_layout() -> String {
     record!(s, tkind::FramerOut, [head, yielded, framing, datagram]);
     record!(s, tkind::KeyingMaterial, [size, profile, bytes, len]);
     record!(s, tkind::DatagramRoute, [offset, len, path, lane]);
+    record!(s, tkind::DatagramPath, [path, _reserved, addr]);
     record!(
         s,
         tkind::DatagramLane,
@@ -1852,7 +1845,7 @@ fn abi_layout_matches_golden() {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
 
     if let Some(mode) = std::env::var_os("BUSBAR_UPDATE_GOLDEN") {
-        // THE RE-SEED IS JUDGED, NOT TRUSTED (TODO l.1829-1831): it used to write whatever layout it
+        // THE RE-SEED IS JUDGED, NOT TRUSTED: it used to write whatever layout it
         // found, and the "do not re-seed" below was a sentence a re-seed never reads. A diff that
         // moves, resizes or removes what a peer already reads is refused unless the seed names it.
         let breaks = layout_breaks(&existing, &actual);
@@ -1968,7 +1961,7 @@ fn layout_breaks(old: &str, new: &str) -> Vec<String> {
     out
 }
 
-/// RED ARM, THE RE-SEED (TODO l.1829-1831): a moved field, a resize, an insert and a removal are
+/// RED ARM, THE RE-SEED: a moved field, a resize, an insert and a removal are
 /// each a break the re-seed refuses; an append and a new struct are not; the layout against itself
 /// is clean.
 #[test]

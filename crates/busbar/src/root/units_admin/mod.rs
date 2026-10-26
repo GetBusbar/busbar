@@ -51,6 +51,7 @@ use busbar_kernel::teller::UnitCtx;
 use busbar_kernel_audit::{expose, AuditChain, AuditKeySet, AuditRecord};
 use busbar_kernel_scope::Scope;
 
+use crate::root::durability::CheckpointUnreadable;
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
@@ -295,8 +296,21 @@ pub trait LedgerView: Send + Sync {
     /// pinned at `i64::MAX`.
     fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError>;
 
-    /// The sealed checkpoints, oldest first.
-    fn checkpoints(&self) -> Vec<Checkpoint>;
+    /// THE SEALED CHECKPOINTS, OLDEST FIRST, each handed to `each` in turn with the balances it
+    /// sealed (Q128 kernel-ledger HIGH 1, ARCHITECT ruling A1). Handed over one at a time rather
+    /// than returned as a list: a node keeps each seal's head, and the figures are re-derived from
+    /// its chain as the read reaches them, so a read never holds more than one checkpoint's
+    /// figures.
+    ///
+    /// # Errors
+    ///
+    /// The first checkpoint whose figures cannot be served: its record is not on the chain, the
+    /// chain re-derives figures that are not the sealed ones, or the journal cannot be read. The
+    /// refusal names its sequence number and carries no figure.
+    fn each_checkpoint(
+        &self,
+        each: &mut dyn FnMut(&Checkpoint),
+    ) -> Result<(), CheckpointUnreadable>;
 
     /// The keyset a checkpoint's seal is verified against — the audit chain's own (Q71(3): one
     /// keyset, #82). Empty by default: a view bound to no chain vouches for no signature.
@@ -397,14 +411,19 @@ pub trait LedgerView: Send + Sync {
     }
 
     /// What the `verify` verb checks (owner answer Q71(2)): the sealed checkpoints, oldest first,
+    /// each handed to `each` through the same re-derivation [`LedgerView::each_checkpoint`] reads,
     /// and the book's balances as they stand NOW — both as of one moment, so a settlement landing
     /// between the two reads cannot read as an imbalance.
     ///
     /// The book is an option, and `None` is "this view holds no book", NEVER "the book is empty":
     /// the verifier then checks the checkpoints alone and says it did not verify a book. The default
     /// is exactly that, which is the true answer for a view with no book behind it.
-    fn verify_snapshot(&self) -> (Vec<Checkpoint>, Option<BookTotals>) {
-        (self.checkpoints(), None)
+    fn verify_snapshot(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
+        VerifySnapshot {
+            read: self.each_checkpoint(each),
+            book: None,
+            anchored: None,
+        }
     }
 
     /// What this node's boot reconciliation found: the book it rebuilt from its journal against a
@@ -429,12 +448,22 @@ pub trait LedgerView: Send + Sync {
 
     /// [`LedgerView::verify_snapshot`] with the anchor's head, all as of one moment. `None`
     /// is "this view holds no anchor", which the verifier writes down as such; the default is that.
-    fn verify_snapshot_anchored(
-        &self,
-    ) -> (Vec<Checkpoint>, Option<BookTotals>, Option<AnchoredHead>) {
-        let (checkpoints, book) = self.verify_snapshot();
-        (checkpoints, book, None)
+    fn verify_snapshot_anchored(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
+        self.verify_snapshot(each)
     }
+}
+
+/// What one `verify` read took as of one moment: whether every held checkpoint was handed over
+/// (`Err` names the first that could not be, and the checkpoints after it were not), the book's
+/// balances now, and the anchor's head.
+#[derive(Debug)]
+pub struct VerifySnapshot {
+    /// Every held checkpoint handed over, or the first that could not be.
+    pub read: Result<(), CheckpointUnreadable>,
+    /// The book's balances now; `None` = this view holds no book.
+    pub book: Option<BookTotals>,
+    /// The anchor's head; `None` = this view holds no anchor.
+    pub anchored: Option<AnchoredHead>,
 }
 
 /// The book's balances, per bucket, dimension, scope and window — what a checkpoint seals and what
@@ -468,8 +497,8 @@ impl LedgerView for UnopenedLedger {
         Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
-    fn checkpoints(&self) -> Vec<Checkpoint> {
-        Vec::new()
+    fn each_checkpoint(&self, _: &mut dyn FnMut(&Checkpoint)) -> Result<(), CheckpointUnreadable> {
+        Ok(())
     }
 
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
@@ -663,16 +692,27 @@ impl LedgerView for NodeLedger {
         ))
     }
 
-    fn checkpoints(&self) -> Vec<Checkpoint> {
-        self.lock().checkpoints.clone()
+    /// Re-derived from this node's chain as of one hold of the lock a seal takes, so the held set
+    /// the walk reads is the one the ring holds ([`Durability::held_walk`]); the walk itself, which
+    /// reads the store, runs without it.
+    ///
+    /// [`Durability::held_walk`]: crate::root::durability::Durability::held_walk
+    fn each_checkpoint(
+        &self,
+        each: &mut dyn FnMut(&Checkpoint),
+    ) -> Result<(), CheckpointUnreadable> {
+        let walk = self.lock().held_walk();
+        walk.each(each)
     }
 
     fn checkpoint_keys(&self) -> AuditKeySet {
         crate::root::durability::keyset_of(&self.lock().record)
     }
 
+    /// The chain as of one hold of the lock, read without it: the read scans the store.
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
-        self.lock().migration_marker()
+        let chain = self.lock().chain_at();
+        chain.migration_marker()
     }
 
     /// The deployment's dated history, pinned — a relay and no more.
@@ -711,18 +751,25 @@ impl LedgerView for NodeLedger {
         self.lock().refused_balances()
     }
 
-    /// Read off this node's own journal, under the same lock every other read takes.
+    /// Read off this node's own journal as of one hold of the lock every other read takes, and
+    /// without it: the read scans the store.
     fn recorded_counts(&self, amends: &str) -> Option<RecordedCounts> {
-        adjust::recorded_in(&self.lock(), amends)
+        let chain = self.lock().chain_at();
+        adjust::recorded_in(chain, amends)
     }
 
-    /// Both halves under ONE hold of the lock a settlement takes.
-    fn verify_snapshot(&self) -> (Vec<Checkpoint>, Option<BookTotals>) {
-        let durability = self.lock();
-        (
-            durability.checkpoints.clone(),
-            Some(durability.ledger.book().snapshot()),
-        )
+    /// Both halves as of ONE hold of the lock a settlement takes: the book and the chain taken
+    /// under it, the walk of the chain, which reads the store, after it.
+    fn verify_snapshot(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
+        let (walk, book) = {
+            let durability = self.lock();
+            (durability.held_walk(), durability.ledger.book().snapshot())
+        };
+        VerifySnapshot {
+            read: walk.each(each),
+            book: Some(book),
+            anchored: None,
+        }
     }
 
     fn restart_findings(&self) -> Vec<String> {
@@ -739,23 +786,28 @@ impl LedgerView for NodeLedger {
 
     /// The inputs under the book's lock, the walk (which reads the store) without it.
     fn stored_chain_findings(&self) -> Vec<String> {
-        let Some((calls, own, keys)) = self.lock().stored_walk_inputs() else {
+        let Some((lane, own, keys)) = self.lock().stored_walk_inputs() else {
             return Vec::new();
         };
-        crate::root::durability::walk_stored_chains(calls.as_ref(), own, &keys).findings
+        crate::root::durability::walk_stored_chains(&lane, own, &keys).findings
     }
 
-    /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads
-    /// cannot read as a head that differs.
-    fn verify_snapshot_anchored(
-        &self,
-    ) -> (Vec<Checkpoint>, Option<BookTotals>, Option<AnchoredHead>) {
-        let durability = self.lock();
-        (
-            durability.checkpoints.clone(),
-            Some(durability.ledger.book().snapshot()),
-            durability.anchored_head(),
-        )
+    /// All three as of ONE hold of the lock a seal takes, so a checkpoint sealed between reads
+    /// cannot read as a head that differs; the walk of the chain, which reads the store, after it.
+    fn verify_snapshot_anchored(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
+        let (walk, book, anchored) = {
+            let durability = self.lock();
+            (
+                durability.held_walk(),
+                durability.ledger.book().snapshot(),
+                durability.anchored_head(),
+            )
+        };
+        VerifySnapshot {
+            read: walk.each(each),
+            book: Some(book),
+            anchored,
+        }
     }
 }
 
@@ -918,15 +970,46 @@ impl AuditView for NodeAudit {
         take(&durability.record, Some(&durability.audit_records));
     }
 
+    /// A window the cache covers is answered under one hold of the lock. An older one is read off
+    /// the chain as of one hold and WITHOUT the lock — the read scans the store, and every unit's
+    /// settle waits on this lock (THE DESIGN §11.2) — then answered under a second hold, with what
+    /// was sealed in between added from the cache so the records and the chain's head are still of
+    /// one moment ([`Durability::audit_window_since`]).
+    ///
+    /// [`Durability::audit_window_since`]: crate::root::durability::Durability::audit_window_since
     fn read_window(
         &self,
         from: u64,
         to: u64,
         take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
     ) {
-        let durability = self.lock();
-        let records = durability.audit_window(from, to);
-        take(&durability.record, Some(&records));
+        use crate::root::durability::AuditWindowAt;
+        loop {
+            let (chain, sealed_before) = {
+                let durability = self.lock();
+                match durability.audit_window_at(from, to) {
+                    AuditWindowAt::Cached(records) => {
+                        take(&durability.record, Some(&records));
+                        return;
+                    }
+                    AuditWindowAt::OnChain {
+                        chain,
+                        sealed_before,
+                    } => (chain, sealed_before),
+                }
+            };
+            // A window the journal would not read back is not answered at all, which the range
+            // read renders as the store failure it is; never as an empty window.
+            let Some(mut records) = chain.audit_window(from, to) else {
+                return;
+            };
+            let durability = self.lock();
+            if durability.audit_window_since(&mut records, sealed_before, from, to) {
+                take(&durability.record, Some(&records));
+                return;
+            }
+            // More was sealed while the chain was read than the cache still holds: read it again.
+        }
     }
 
     fn keys(&self) -> AuditKeySet {
@@ -1207,9 +1290,14 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 VerbScope::ReadOnly => busbar_contract::authz::Scope::ReadOnly,
             };
             let principal = &self.attribution.principal;
-            return adjust::adjust_effect(request, scope, principal, &*self.pools, |amends| {
-                self.ledger.recorded_counts(amends)
-            })
+            return adjust::adjust_effect(
+                request,
+                scope,
+                principal,
+                &*self.pools,
+                self.amendments.as_deref(),
+                |amends| self.ledger.recorded_counts(amends),
+            )
             .map(|answer| answer.pack());
         }
         // The four verbs owner answer Q71(2) binds (see `bound`). Admitted by the verbs unit — scope
@@ -1326,7 +1414,7 @@ fn json_answer(body: Vec<u8>) -> AdminAnswer {
 
 /// Whether `view` already holds `correction`: an amendment entry by the same author for the same
 /// reason over the same window, carrying every figure the correction names. That is what the same
-/// body produces each time it is applied, so a second one is a replay (TODO M28).
+/// body produces each time it is applied, so a second one is a replay.
 fn already_applied(
     view: busbar_kernel_ledger::cost::HistoryView<'_>,
     correction: &crate::root::kernel::Correction,
@@ -1399,7 +1487,7 @@ fn amend_rate_history_effect(
     if effective_until.is_some_and(|until| until <= effective_from) {
         return Err(GovernanceError::Validation);
     }
-    // A CORRECTION IS BACK-DATED OR IT IS NOT A CORRECTION (TODO M28; #79 "an entry whose
+    // A CORRECTION IS BACK-DATED OR IT IS NOT A CORRECTION (#79 "an entry whose
     // `effective_from` lies in the past"). A window that opens after the instant the correction
     // arrived prices a future no booked line has reached yet: that is a forward price, which is a
     // configuration write, and an amendment signed today must not be able to stand in for one.
@@ -1504,7 +1592,10 @@ fn amend_rate_history_effect(
     // principal that submitted it and the canonical bytes of the correction.
     //
     // AHEAD, not after: an amendment the journal will not take is REFUSED (`Store`) and the history
-    // is not touched, so no correction can price a window without its durable record. A history with
+    // is not touched, so no correction can price a window without its durable record. And the
+    // converse: a record the journal chained but could not keep yet is retained and lands ahead of
+    // the next append (`AmendmentJournal::seal_policy`), so its correction is applied as the chain
+    // will hold it (#79) and answered 503 "do not re-submit" below. A history with
     // no opening entry is refused first, so a record is never written for a correction that would
     // then not apply (the holder never returns to empty once resolved).
     //
@@ -1537,7 +1628,7 @@ fn amend_rate_history_effect(
     };
     let seq = history
         .amend(&correction, |card, base| {
-            // A CORRECTION APPLIES ONCE (TODO M28). The body names the window, the cells, the fee
+            // A CORRECTION APPLIES ONCE. The body names the window, the cells, the fee
             // and the reason, and nothing that makes one submission different from the next — so
             // the same bytes, sent again after a later correction moved the window on, would put
             // the earlier price back with no new operator act. Under the apply lock (this closure
@@ -1858,7 +1949,7 @@ impl AmendmentJournal {
     ///
     /// # Errors
     ///
-    /// `Store` when the journal could not make the record durable — the caller then refuses the
+    /// `Store` when the record can never land ([`Self::seal_policy`]) — the caller then refuses the
     /// amendment rather than applying a correction nothing recorded.
     pub fn record(
         &self,
@@ -1891,17 +1982,33 @@ impl AmendmentJournal {
     /// record before it), at most [`crate::root::durability::ACK_DEADLINE`], without the book's
     /// lock. A journal on a disk answers at once: the disk took it.
     ///
+    /// A record the log still OWES is not kept, on a disk or in the store: its write, its sync or
+    /// its hand-over to the store failed, and the log retained it to write ahead of the next append
+    /// ([`Self::seal_policy`]).
+    ///
     /// # Errors
     ///
-    /// The store refused or did not answer in time. The record stays on the chain and is offered
-    /// again.
+    /// The log still owes the record, or the store refused or did not answer in time. The record
+    /// stays on the chain and is offered again.
     pub fn acked(&self, node_seq: u64) -> Result<(), String> {
         let (lane, node) = {
             let durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+            let node = durability.journal.node();
+            let owed = durability.journal.log().owed().iter().any(|record| {
+                let (of, seq) = record.identity();
+                of == node && seq <= node_seq
+            });
+            if owed {
+                return Err(
+                    "the journal could not make the record durable; it is retained on \
+                     this node's journal and written ahead of the next record"
+                        .to_string(),
+                );
+            }
             if !durability.durable_in_store() {
                 return Ok(());
             }
-            (durability.lane().cloned(), durability.journal.node())
+            (durability.lane().cloned(), node)
         };
         lane.map_or(Ok(()), |lane| {
             lane.wait_acked(node, node_seq, crate::root::durability::ACK_DEADLINE)
@@ -1911,9 +2018,17 @@ impl AmendmentJournal {
     /// Append one `Policy`-class record whose body the caller built, dated `wall_secs`, and answer
     /// with its node sequence and chain hash — the position an operator cites it by.
     ///
+    /// SEALED IS SEALED, KEPT OR NOT (#79). The journal chains the record before the log is asked to
+    /// take it, and a log that could not make it durable RETAINS it and writes it ahead of the next
+    /// append (`busbar-kernel-wal` `Journal::append`, `Wal::append_batch`): it reaches the chain a
+    /// restart rebuilds from. So a `DurabilityLost` the log holds or owes the record for answers
+    /// its position like any other seal — the caller applies what it records and asks
+    /// [`Self::acked`], which says it is not kept yet.
+    ///
     /// # Errors
     ///
-    /// `Store` when the journal could not make the record durable; the caller then refuses.
+    /// `Store` when the log neither holds nor owes the record, so it can never land; the caller
+    /// then refuses. A log that retains on every arm never answers it.
     pub fn seal_policy(
         &self,
         body: Vec<u8>,
@@ -1922,19 +2037,46 @@ impl AmendmentJournal {
         let entry = busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Policy, body)
             .at(wall_secs, 0);
         let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
-        let ack = durability
+        match durability.journal.append(
+            &self.token,
+            busbar_contract::caps::StepName::Route,
+            &[entry],
+        ) {
+            Ok(ack) => {
+                let sealed = ack
+                    .sealed
+                    .last()
+                    .ok_or(busbar_core_admin::GovernanceError::Store)?;
+                Ok((sealed.node_seq, sealed.hash))
+            }
+            Err(_lost) => {
+                // The record was sealed last, so it is the number just below the journal's next
+                // and the chain's head.
+                let journal = &durability.journal;
+                let sealed = (journal.node(), journal.next_seq().saturating_sub(1));
+                let log = journal.log();
+                if log.holds(sealed.0, sealed.1)
+                    || log.owed().iter().any(|r| r.identity() == sealed)
+                {
+                    Ok((sealed.1, journal.head()))
+                } else {
+                    Err(busbar_core_admin::GovernanceError::Store)
+                }
+            }
+        }
+    }
+
+    /// The node sequence of the newest record on this journal: at or past every record sealed on it
+    /// before the call — an amendment the node amendment journal's sink put on this book as it was
+    /// sealed included (`durability::bind_amendments`).
+    #[must_use]
+    pub fn sealed_through(&self) -> u64 {
+        self.book
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .journal
-            .append(
-                &self.token,
-                busbar_contract::caps::StepName::Route,
-                &[entry],
-            )
-            .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
-        let sealed = ack
-            .sealed
-            .last()
-            .ok_or(busbar_core_admin::GovernanceError::Store)?;
-        Ok((sealed.node_seq, sealed.hash))
+            .next_seq()
+            .saturating_sub(1)
     }
 }
 
@@ -2057,10 +2199,19 @@ fn render_ledger_view(
                 .map_err(refused)?
                 .into_bytes()
         }
+        // A held checkpoint whose figures the chain does not reproduce refuses the read, named
+        // by its sequence number in the node's log and served as no figure at all (ARCHITECT A1).
         KernelVerb::GetLedgerCheckpoints => render_checkpoints(
-            &view.checkpoints(),
+            view,
             &crate::root::durability::KeySetVerifier::new(view.checkpoint_keys()),
         )
+        .map_err(|unreadable| {
+            tracing::warn!(
+                checkpoint_seq = unreadable.checkpoint_seq(),
+                "ledger checkpoints read refused: {unreadable}"
+            );
+            busbar_core_admin::GovernanceError::Store
+        })?
         .into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
             // As the totals arm above: a refused row is off the ledger side of the identity too,
@@ -2353,70 +2504,83 @@ fn render_totals(
 /// `seal_verifies` is [`Checkpoint::verify_seal`] against the
 /// audit keyset (Q71(3): one keyset), and `seal_refusal` is its refusal in its own words — EDITED,
 /// UNSIGNED or a signature the keyset rejects — or `null` when the seal verifies.
-fn render_checkpoints(checkpoints: &[Checkpoint], keys: &dyn CheckpointVerifier) -> String {
+///
+/// The checkpoints are rendered as the view hands them over, one at a time
+/// ([`LedgerView::each_checkpoint`]); one the view cannot hand over refuses the whole read, and
+/// nothing rendered before it is served.
+fn render_checkpoints(
+    view: &dyn LedgerView,
+    keys: &dyn CheckpointVerifier,
+) -> Result<String, CheckpointUnreadable> {
     let mut out = String::from("{\"checkpoints\":[");
-    for (i, cp) in checkpoints.iter().enumerate() {
-        if i > 0 {
+    let mut first = true;
+    view.each_checkpoint(&mut |cp| {
+        if !std::mem::take(&mut first) {
             out.push(',');
         }
-        out.push_str("{\"checkpoint_seq\":");
-        out.push_str(&cp.checkpoint_seq.to_string());
-        out.push_str(",\"node\":");
-        out.push_str(&cp.node.to_string());
-        out.push_str(",\"wall\":");
-        out.push_str(&cp.wall.to_string());
-        out.push_str(",\"backup_watermark\":");
-        out.push_str(&cp.backup_watermark.to_string());
-        out.push_str(",\"store_seq_high_water\":");
-        out.push_str(&cp.store_seq_high_water.to_string());
-        out.push_str(",\"body_hash\":");
-        json_string(&hex32(&cp.body_hash), &mut out);
-        out.push_str(",\"body_hash_verifies\":");
-        out.push_str(if cp.body_hash_verifies() {
-            "true"
-        } else {
-            "false"
-        });
-        // The signature's PRESENCE is a fact an operator needs; its bytes are not something an
-        // administrative read hands out. A checkpoint nobody signed and a checkpoint whose signature
-        // this response withheld would otherwise look the same.
-        out.push_str(",\"signed\":");
-        out.push_str(if cp.signature.is_some() {
-            "true"
-        } else {
-            "false"
-        });
-        match cp.verify_seal(keys) {
-            Ok(()) => out.push_str(",\"seal_verifies\":true,\"seal_refusal\":null"),
-            Err(refusal) => {
-                out.push_str(",\"seal_verifies\":false,\"seal_refusal\":");
-                json_string(&refusal.to_string(), &mut out);
-            }
+        render_checkpoint(cp, keys, &mut out);
+    })?;
+    out.push_str("]}");
+    Ok(out)
+}
+
+/// One checkpoint's object, appended to `out`.
+fn render_checkpoint(cp: &Checkpoint, keys: &dyn CheckpointVerifier, out: &mut String) {
+    out.push_str("{\"checkpoint_seq\":");
+    out.push_str(&cp.checkpoint_seq.to_string());
+    out.push_str(",\"node\":");
+    out.push_str(&cp.node.to_string());
+    out.push_str(",\"wall\":");
+    out.push_str(&cp.wall.to_string());
+    out.push_str(",\"backup_watermark\":");
+    out.push_str(&cp.backup_watermark.to_string());
+    out.push_str(",\"store_seq_high_water\":");
+    out.push_str(&cp.store_seq_high_water.to_string());
+    out.push_str(",\"body_hash\":");
+    json_string(&hex32(&cp.body_hash), out);
+    out.push_str(",\"body_hash_verifies\":");
+    out.push_str(if cp.body_hash_verifies() {
+        "true"
+    } else {
+        "false"
+    });
+    // The signature's PRESENCE is a fact an operator needs; its bytes are not something an
+    // administrative read hands out. A checkpoint nobody signed and a checkpoint whose signature
+    // this response withheld would otherwise look the same.
+    out.push_str(",\"signed\":");
+    out.push_str(if cp.signature.is_some() {
+        "true"
+    } else {
+        "false"
+    });
+    match cp.verify_seal(keys) {
+        Ok(()) => out.push_str(",\"seal_verifies\":true,\"seal_refusal\":null"),
+        Err(refusal) => {
+            out.push_str(",\"seal_verifies\":false,\"seal_refusal\":");
+            json_string(&refusal.to_string(), out);
         }
-        out.push_str(",\"heads\":[");
-        for (j, head) in cp.heads.iter().enumerate() {
-            if j > 0 {
-                out.push(',');
-            }
-            out.push_str("{\"node\":");
-            out.push_str(&head.node.to_string());
-            out.push_str(",\"node_seq\":");
-            out.push_str(&head.node_seq.to_string());
-            out.push_str(",\"hash\":");
-            json_string(&hex32(&head.hash), &mut out);
-            out.push('}');
+    }
+    out.push_str(",\"heads\":[");
+    for (j, head) in cp.heads.iter().enumerate() {
+        if j > 0 {
+            out.push(',');
         }
-        out.push_str("],\"totals\":[");
-        for (j, ((key, window), totals)) in cp.totals.iter().enumerate() {
-            if j > 0 {
-                out.push(',');
-            }
-            render_totals_cell(key, *window, totals, &mut out);
+        out.push_str("{\"node\":");
+        out.push_str(&head.node.to_string());
+        out.push_str(",\"node_seq\":");
+        out.push_str(&head.node_seq.to_string());
+        out.push_str(",\"hash\":");
+        json_string(&hex32(&head.hash), out);
+        out.push('}');
+    }
+    out.push_str("],\"totals\":[");
+    for (j, ((key, window), totals)) in cp.totals.iter().enumerate() {
+        if j > 0 {
+            out.push(',');
         }
-        out.push_str("]}");
+        render_totals_cell(key, *window, totals, out);
     }
     out.push_str("]}");
-    out
 }
 
 /// One sealed balance, as the checkpoint holds it.
@@ -2558,6 +2722,17 @@ fn render_migration(marker: Option<&busbar_kernel_ledger::migration::MigrationMa
 #[derive(Default)]
 pub struct AdminUnits {
     inner: Mutex<HashMap<UnitKey, AdminInFlight>>,
+    /// Each unit's record-to-be once its audit door handed back its facts and pass: taken where the
+    /// unit's answer is in hand and its one record is sealed ([`AdminNode::answer`]).
+    sealing: Mutex<HashMap<UnitKey, AdminSealing>>,
+}
+
+/// AN ADMIN UNIT'S RECORD, READY TO SEAL (THE DESIGN §1: one fixed record for every unit; U14: a
+/// refused unit gets a record too): what its audit door sealed, and how the unit ended.
+struct AdminSealing {
+    facts: busbar_contract::AuditFacts,
+    pass: Pass<Audit>,
+    ended: Outcome,
 }
 
 /// What one in-flight admin unit carries between its steps.
@@ -2575,6 +2750,8 @@ struct AdminInFlight {
     /// travel past the step that verified it.
     principal: Option<PrincipalId>,
     answer: Option<AdminAnswer>,
+    /// How the unit ended, as its audit step was told: the outcome its one record carries.
+    ended: Option<Outcome>,
 }
 
 impl std::fmt::Debug for AdminUnits {
@@ -2589,6 +2766,7 @@ impl AdminUnits {
     pub fn new() -> Self {
         AdminUnits {
             inner: Mutex::new(HashMap::new()),
+            sealing: Mutex::new(HashMap::new()),
         }
     }
 
@@ -2604,14 +2782,48 @@ impl AdminUnits {
                 listed: None,
                 principal: None,
                 answer: None,
+                ended: None,
             },
         );
     }
 
-    /// Close a unit and take whatever it answered. Called once, on the exit path.
+    /// Close a unit and take whatever it answered. Called once, on the exit path. A record the
+    /// unit never sealed goes with it.
     pub fn close(&self, key: UnitKey) -> Option<AdminAnswer> {
+        self.sealing
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&key);
         let mut table = self.lock();
         table.remove(&key).and_then(|unit| unit.answer)
+    }
+
+    /// Unit `key`'s audit step was told how it ended.
+    fn set_ended(&self, key: UnitKey, outcome: Outcome) {
+        if let Some(unit) = self.lock().get_mut(&key) {
+            unit.ended = Some(outcome);
+        }
+    }
+
+    /// Unit `key`'s audit door handed back its facts and pass (`Units::audited`): held with how it
+    /// ended until its record is sealed. A unit that is not open, or whose end no audit step was
+    /// told, keeps nothing.
+    fn audited(&self, key: UnitKey, facts: busbar_contract::AuditFacts, pass: Pass<Audit>) {
+        let ended = self.lock().get(&key).and_then(|unit| unit.ended);
+        if let Some(ended) = ended {
+            self.sealing
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(key, AdminSealing { facts, pass, ended });
+        }
+    }
+
+    /// Unit `key`'s record-to-be, taken once to seal it.
+    fn take_sealing(&self, key: UnitKey) -> Option<AdminSealing> {
+        self.sealing
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&key)
     }
 
     /// How many units are open. Zero between requests is the property that says nothing leaked.
@@ -3306,8 +3518,8 @@ fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
 
 /// What an operation that changed something and has nothing to say answers with.
 ///
-/// A recovery verb's whole result is its effect: the chain broke, the store restored, the floor
-/// resealed. There is no document to return and none was ever specified, so the answer carries no
+/// A recovery verb's whole result is its effect: the chain broke, or the floor resealed (a restore
+/// is refused, never answered here, row 187). There is no document to return and none was ever specified, so the answer carries no
 /// body and declares no content type — inventing a document here would put a schema on the wire that
 /// nothing describes and that a client would then be entitled to depend on.
 fn applied_answer() -> AdminAnswer {
@@ -3783,6 +3995,7 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> SeatVerdict<Audit> {
+        root.admin.units.set_ended(ctx.key, *outcome);
         audit(&root.admin, token, ctx, outcome)
     }
 
@@ -3793,7 +4006,25 @@ impl RegisteredUnits for AdminPlane {
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> SeatVerdict<Audit> {
+        // The outcome the loop ends a refused unit on: the decision's step, else Admit.
+        let ended = Outcome::Refused(
+            refusal
+                .step()
+                .unwrap_or(busbar_contract::caps::StepName::Admit),
+            refusal.reason(),
+        );
+        root.admin.units.set_ended(ctx.key, ended);
         audit_refused(&root.admin, token, ctx, refusal)
+    }
+
+    fn audited(
+        &self,
+        root: &ProductionUnits,
+        ctx: &UnitCtx,
+        facts: busbar_contract::AuditFacts,
+        pass: Pass<Audit>,
+    ) {
+        root.admin.units.audited(ctx.key, facts, pass);
     }
 
     fn encode(
@@ -3841,3 +4072,7 @@ pub use claims::RootClaimJournal;
 #[cfg(test)]
 #[path = "tests/units_admin.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/admin_unit_records.rs"]
+mod admin_unit_records;

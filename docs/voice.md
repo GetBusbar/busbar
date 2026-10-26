@@ -277,7 +277,8 @@ sequence before a byte of the actual protocol runs (`crates/busbar-voice/src/mou
 2. **hooks-tap** — a `prompt: rw`-style rewrite over the same parameters, after the gate and before
    any credential is leased. A committed rewrite replaces the locked session parameters the mint or
    dial then carries.
-3. **the governed open** (`run_gauntlet_session`, verify-strictly-before-charge) — a denied
+3. **the governed open** (the kernel's one loop, `busbar_kernel::teller::run_unit_async`: verify,
+   then approve and admit, so verify is strictly before any charge) — a denied
    destination (an upstream model on the plane's own denial set) refuses with `403` before any
    lease or durable row exists: zero bytes, zero charge.
 4. **the serving leg** — past a clean open, the mint/broker/socket logic proper.
@@ -383,7 +384,7 @@ that is an audit tap, not the ceiling.
 
 Every governed session-open fires the operator's `streams`-container gate and tap, exactly as
 described in [The one choke point](#the-one-choke-point-every-route-runs-through) above — the same
-seam every other plane's hooks fire through (`plane_host::admission_gates_decide` / `plane_host::admission_transform`), attached by
+seam every other plane's hooks fire through (the plane driver's per-entry gates and rewrite chain), attached by
 container name `streams` since the plane has no per-registration noun to key a hook on
 (`crates/busbar-voice/src/mount.rs:75-79`). A rejecting gate is byte-identical in cost to an
 unattached one when no hook is configured.

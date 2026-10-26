@@ -72,7 +72,6 @@ fn the_source_holds_nothing_mutable() {
     const DOOR_STATE: &[(&str, &str)] = &[
         ("plane_door.rs", "shapings: Mutex<"),
         ("plane_door.rs", "units: Mutex<"),
-        ("plane_door.rs", "tickets: Mutex<"),
         ("plane_door.rs", "fn guard<T>(m: &Mutex<T>)"),
     ];
     let mut offenders = Vec::new();

@@ -785,12 +785,18 @@ fn doc_for(
             ],
         },
         KernelVerb::StoreRestore => VerbDoc {
-            summary: "Restore the store from a named backup (disaster recovery)",
-            description: "The body names the backup; there is no default. A body that names none \
-                          is refused before it reaches the store. Otherwise admitted through the \
-                          same gates as every other new verb, then handed to the store."
+            summary: "Refused: the configured store has no restore operation (disaster recovery)",
+            description: "Refused, always: the configured store has no restore operation, \
+                          so this node restores nothing, records nothing and changes \
+                          nothing. Restores happen off-node, with the store's own tooling. \
+                          A body that names no `backup_ref` is refused 400 before anything \
+                          else; an admitted call is refused 503 `unavailable`, and the node \
+                          logs one error line naming the verb."
                 .to_string(),
-            success: Success::NoContent("Applied: the store is restored. No body"),
+            success: Success::NoContent(
+                "Never answered: this build has no restore operation (an admitted call is refused \
+                 503)",
+            ),
             request: Some(schema_of(req_gen.subschema_for::<StoreRestoreReq>())),
             query: Vec::new(),
             errors: vec![
@@ -804,9 +810,14 @@ fn doc_for(
                 gated_403(),
                 (
                     "404",
-                    "`not_found`: the store holds no backup under `backup_ref`".to_string(),
+                    "`not_found`: never answered: there is no restore operation to look \
+                     `backup_ref` up in"
+                        .to_string(),
                 ),
-                unavailable_503("the node could not take the unit, or the store failed"),
+                unavailable_503(
+                    "the configured store has no restore operation, so nothing was restored \
+                     (restores happen off-node), or the node could not take the unit",
+                ),
             ],
         },
         KernelVerb::ResealEpochFloor => VerbDoc {

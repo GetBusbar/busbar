@@ -11,19 +11,19 @@
     "The differ refuses any entry that accepts `status` or `effects.usage` without kind=breaking and a `changelog` field, and any entry with neither `cells` nor `classes` (a total blanket).",
     "  EVERY entry, improvement or breaking, owes a `changelog` line that appears verbatim in CHANGELOG.md (BUSBAR-1.6.0.md's owner rule accepts an improvement 'named in the CHANGELOG' too), or an explicit `\"changelog\": null` with a `changelog_reason`; a breaking entry may never waive. scripts/changelog-register-check.sh is the gate.",
     "EVERY entry also carries (1.6.0 items 52/119, Law 10; gate `changelog-register` rows entry-signed / entry-expires / entry-premise):",
-    "  `signoff`  {who, when, ruling} — the owner, the date, and the ruling that accepted THIS scope; an agent cannot sign.",
+    "  `signoff`  {who, when, ruling} — WHO is exactly \"owner (Matthew Jackson)\" plus `signed`, naming where the owner signed THIS scope, or \"ruling:<id>\" for an entry an agent or the architect registered under a standing owner ruling (no owner signature claimed; #59: an agent never signs under the owner's name). `signed` and <id> must resolve in the tree: \"#N\" a Part 2 decision row of docs/design/BUSBAR-1.6.0.md, \"§<text>\" the one line of that spec or docs/design/1.6.0-QUESTIONS.md containing <text>, anything else a 1.6.0-QUESTIONS.md row id.",
     "  `expires`  {baseline, by} — the golden baseline the entry forgives against and the date it lapses (re-sign or retire).",
     "  `premise`  a condition the runner (busbar-release src/premise.rs, pin 57da1eb) evaluates against the CANDIDATE recording before the entry may forgive: false or unevaluable WITHHOLDS the entry and the cell scores DIVERGING."
   ],
   "accepted": [
     {
       "id": "D-1 diagnostic codes",
-      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller|boot\\.deprecated-env|egress\\.image-detail)\\|",
-      "expected_cells": 495,
+      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller|boot\\.deprecated-env|egress\\.image-detail)\\|([^L]|L[^A]|LA[^W]|LAW[^0])|^boot\\.refusal\\|LAW0\\-(EXP|HOOKWORD)\\-[A-Za-z_\\-]+\\|validate$",
+      "expected_cells": 509,
       "kind": "improvement",
       "changelog": "Every error and warning line carries a diagnostic code.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell — the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) — is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged. WIDENED 2026-10-02 (owner R2, ORACLE batch, escalate.q 04:20Z): the five boot.deprecated-env cells (582) and the four egress.image-detail cells (585) recorded from the published 1.5.5 join the scope; each differs from 1.5.5 only by the `diag=BUSBAR-NNNN` suffix on a boot log line (the DEPRECATED text and every override's behaviour are 1.5.5's). Scope count 481 -> 490. SCOPE COUNT 490 -> 492 (2026-10-05, busbar Q128 U2, ARCHITECT Q-U2-1 \"prove it with oracle cells for both refusals\"): boot.refusal|BOOT-102|validate and boot.refusal|BOOT-103|validate (a second prometheus / a second otlp instance) joined the corpus with their 1.5.5 golden recorded from the published binary; they are exec-driven cells of a family this scope already names, and each differs from 1.5.5 only by the `BUSBAR-NNNN:` code on its `[error]` line (the refusal text is 1.5.5's byte for byte). The regex, the transform and its REACH are unchanged; two more cells exist for it to reach. COUNT 2026-10-06 (P6 ORACLE-STRICT): 492 -> 495, the three neutrality|routes|{decisions,ws,oauth-as}-shaped-404 cells the corpus generator holds join cells.json and fall under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (ARCHITECT ruling, option A restricted; D2-PROTO busbar #545): 495 -> 496, the NEW cell neutrality|models-empty|surface joins cells.json and falls under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (OWNER 2026-09-30 headroom removal, HEADROOM-REMOVE): 496 -> 495, plugins.load|headroom-hook is retired whole (golden/1.5.5/retired.tsv) because the plugin it lists is out of the product; it leaves the corpus and so this scope. Regex, transform and reach unchanged.",
+      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5. SCOPE COUNT 461 -> 462 (2026-09-07): the new boot.refusal|BOOT-152b|boot cell — the boot-mode twin of BOOT-152, which records the provider-credential refusal that replaced the 1.5.5 degrade (register entry F-016) — is an exec-driven boot cell, so it falls inside this family scope like every other one. The transform's REACH is unchanged; one more cell exists for it to reach. SCOPE COUNT 462 -> 480 (2026-09-24, owner ruling Q53): the 18 config.migrate cells for the configs v1.5.3, v1.5.4 and v1.5.5 shipped (TODO item 48) joined the corpus with their 1.5.5 golden reference; they are exec-driven cells of a family this scope already names, so they fall inside it like the 138 config.migrate cells before them. The regex, the transform and its REACH are unchanged; eighteen more cells exist for it to reach. SCOPE COUNT 480 -> 481 (owner ruling 2026-09-28): BOOT-MCP-01 (the fixed /mcp mount refusing any other path at boot) is new 1.6.0 surface with no 1.5.5 golden; an exec-driven boot cell of a family this scope already names, counted in exactly as BOOT-152b was (461 -> 462). The regex, the transform and its REACH are unchanged. WIDENED 2026-10-02 (owner R2, ORACLE batch, escalate.q 04:20Z): the five boot.deprecated-env cells (582) and the four egress.image-detail cells (585) recorded from the published 1.5.5 join the scope; each differs from 1.5.5 only by the `diag=BUSBAR-NNNN` suffix on a boot log line (the DEPRECATED text and every override's behaviour are 1.5.5's). Scope count 481 -> 490. SCOPE COUNT 490 -> 492 (2026-10-05, busbar Q128 U2, ARCHITECT Q-U2-1 \"prove it with oracle cells for both refusals\"): boot.refusal|BOOT-102|validate and boot.refusal|BOOT-103|validate (a second prometheus / a second otlp instance) joined the corpus with their 1.5.5 golden recorded from the published binary; they are exec-driven cells of a family this scope already names, and each differs from 1.5.5 only by the `BUSBAR-NNNN:` code on its `[error]` line (the refusal text is 1.5.5's byte for byte). The regex, the transform and its REACH are unchanged; two more cells exist for it to reach. COUNT 2026-10-06 (P6 ORACLE-STRICT): 492 -> 495, the three neutrality|routes|{decisions,ws,oauth-as}-shaped-404 cells the corpus generator holds join cells.json and fall under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (ARCHITECT ruling, option A restricted; D2-PROTO busbar #545): 495 -> 496, the NEW cell neutrality|models-empty|surface joins cells.json and falls under the existing `neutrality` family of the regex; regex, transform and reach unchanged. COUNT 2026-10-07 (OWNER 2026-09-30 headroom removal, HEADROOM-REMOVE): 496 -> 495, plugins.load|headroom-hook is retired whole (golden/1.5.5/retired.tsv) because the plugin it lists is out of the product; it leaves the corpus and so this scope. Regex, transform and reach unchanged. SCOPE 495 -> 509 (2026-10-20, PR #1292, OWNER widen-to-signed-behaviour ruling): the 14 boot.refusal|LAW0-(EXP|HOOKWORD)-*|validate cells (6be108b345) carry the same signed behaviour: the 1.5.5 golden's `[error] config errors:` is `[error] BUSBAR-3015: config errors:` on 1.6.0, a prefix this entry's transform already strips; the config.migrate|LAW0-MIG-* cells are not added (see Q-STORE for INLINE; 14X does not diverge). The transform is line-precise, so any other difference on these cells stays a divergence.",
       "transform": {
         "candidate": [
           [
@@ -42,6 +42,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -98,6 +99,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -148,6 +150,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage; split out 2026-09-05 (round-3 audit); re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)",
         "resigned": {
@@ -168,6 +171,7 @@
       "by": "owner (Matthew Jackson), 2026-09-24 ruling Q54 (via Q61)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q61",
         "when": "2026-09-24",
         "ruling": "Q54 as answered in Q61: keep identity-providers + export resets, 1.5.5 sentence shape with the longer list",
         "resigned": {
@@ -214,6 +218,7 @@
       "by": "owner (Matthew Jackson), 2026-09-24 rulings Q42 and Q46 (the `units:` rate-card key), under spec #66",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-24",
         "ruling": "Q42 (generic billable-class rule; remedy `units: { search_units: 0 }`) and Q46(B) (the `units:` key names only declared classes), under spec #66 OWNER-LOCKED 2026-09-20 (money is unitless: no currency key)",
         "resigned": {
@@ -269,6 +274,7 @@
       "by": "owner (Matthew Jackson), 2026-09-24 ruling Q66 (answered in Q67): accept the additive difference",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q67",
         "when": "2026-09-24",
         "ruling": "Q66 (answered in Q67, 2026-09-24): ACCEPT the additive difference on neutrality|NEUT-U-providers|validate [effects.stderr]; the providers.<name> unknown-field refusal keeps 1.5.5's exit status and sentence, and its expected-key list gains exactly max_output_key, anthropic_adaptive_thinking, native_structured_output and model_capabilities",
         "resigned": {
@@ -309,6 +315,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 oracle-phase0 parity triage",
         "resigned": {
@@ -351,6 +358,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-22",
         "ruling": "2026-09-22 credential-leak triage (parked by the agent with cell, diff, root cause and recommendation; approved on that report -- the path-shaped-heuristic alternative was offered and rejected)",
         "resigned": {
@@ -389,6 +397,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -407,19 +416,20 @@
       "kind": "improvement",
       "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$",
-      "expected_cells": 5,
+      "cells": "^llm\\|bedrock\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$|^llm\\|(anthropic\\|(bedrock|cohere|gemini|openai|responses)|bedrock\\|(anthropic|cohere|gemini|openai|responses)|cohere\\|(anthropic|bedrock|gemini|openai|responses)|gemini\\|(anthropic|bedrock|cohere|openai|responses)|openai\\|(anthropic|bedrock|cohere|gemini|responses)|responses\\|(anthropic|bedrock|cohere|gemini|openai))\\|request\\|ok_stream_whole_answer$",
+      "expected_cells": 36,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
+      "rationale": "Spec fidelity: on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|bedrock|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|bedrock|anthropic|request|ok_stream (messageStart, an empty-start contentBlockStart, delta, stop, messageStop, metadata), and its judged difference is body /len 6 -> 5: the text block's contentBlockStart is gone. That is exactly the signed behaviour (\"on the AWS ConverseStream wire a text block starts with its first contentBlockDelta; contentBlockStart is emitted only for tool-use blocks. 1.5.5 emitted an empty contentBlockStart for text; 1.6.0 matches AWS\"), and the regex signed 2026-09-04 (`^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the stream-synthesis behaviour (a stream:true request served as a spec-shaped event stream, not a buffered application/json body) also produces its difference on the 20 ok_stream_whole_answer cells of the anthropic, cohere, gemini and openai doors (every backend but the door's own): llm|anthropic|bedrock|request|ok_stream_whole_answer, llm|anthropic|cohere|request|ok_stream_whole_answer, llm|anthropic|gemini|request|ok_stream_whole_answer, llm|anthropic|openai|request|ok_stream_whole_answer, llm|anthropic|responses|request|ok_stream_whole_answer, llm|cohere|anthropic|request|ok_stream_whole_answer, llm|cohere|bedrock|request|ok_stream_whole_answer, llm|cohere|gemini|request|ok_stream_whole_answer, llm|cohere|openai|request|ok_stream_whole_answer, llm|cohere|responses|request|ok_stream_whole_answer, llm|gemini|anthropic|request|ok_stream_whole_answer, llm|gemini|bedrock|request|ok_stream_whole_answer, llm|gemini|cohere|request|ok_stream_whole_answer, llm|gemini|openai|request|ok_stream_whole_answer, llm|gemini|responses|request|ok_stream_whole_answer, llm|openai|anthropic|request|ok_stream_whole_answer, llm|openai|bedrock|request|ok_stream_whole_answer, llm|openai|cohere|request|ok_stream_whole_answer, llm|openai|gemini|request|ok_stream_whole_answer, llm|openai|responses|request|ok_stream_whole_answer. Classes stay body and headers. WIDENED AGAIN 2026-10-20 (OWNER ruling \"widen the entries\", relayed by the coordinator, PR #1292): the same synthesis also covers the ok_stream_whole_answer cells of the bedrock door (5; body 6 -> 5 events, no empty contentBlockStart) and the responses door (5; 1.5.5 application/json -> 1.6.0 text/event-stream, the same stream:true-answered-whole difference), and llm|bedrock|gemini|request|ok_stream (the gemini-upstream cell added 2026-10-13; 6 -> 5 events). All 30 ok_stream_whole_answer cells of the six doors are now listed.",
       "premise": {
         "cell": "llm|bedrock|anthropic|request|ok_stream",
         "status": 200
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -438,19 +448,20 @@
       "kind": "improvement",
       "changelog": "Responses API streams carry the lifecycle frames the spec declares:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$",
-      "expected_cells": 5,
+      "cells": "^llm\\|responses\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "expected_cells": 6,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Spec fidelity: the Responses API stream includes response.content_part.added / response.output_text.done / response.content_part.done with contiguous sequence_number; 1.5.5 omitted them. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
+      "rationale": "Spec fidelity: the Responses API stream includes response.content_part.added / response.output_text.done / response.content_part.done with contiguous sequence_number; 1.5.5 omitted them. Owner rule: maximum spec compliance wins over 1.5.5 bytes. COUNT 2026-10-20 (status row 86, oracle cause I): 5 -> 6. llm|responses|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its 1.5.5 golden is byte-identical to llm|responses|anthropic|request|ok_stream except the model name, so the Responses stream writer produces for it the same body this entry already accepts on that sibling. The regex signed 2026-09-04 (`^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$`) already named it. Added by exact upstream name; classes and premise unchanged.",
       "premise": {
         "cell": "llm|responses|anthropic|request|ok_stream",
         "body_contains": "event: response.content_part.added"
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 parity triage",
         "resigned": {
@@ -489,6 +500,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 PR-2 attempt-seam D-table decision",
         "resigned": {
@@ -519,6 +531,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 PR-2 attempt-seam D-table decision",
         "resigned": {
@@ -559,6 +572,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 PR-2 attempt-seam D-table decision; re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)",
         "resigned": {
@@ -601,6 +615,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 PR-2 attempt-seam D-table decision",
         "resigned": {
@@ -620,12 +635,12 @@
       "changelog": "An Anthropic response carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?$",
-      "expected_cells": 9,
+      "expected_cells": 10,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members, output_tokens_details and server_tool_use required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults or the carried value.",
+      "rationale": "Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members, output_tokens_details and server_tool_use required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults or the carried value. COUNT 2026-10-20 (status row 86, oracle cause I): 9 -> 10. llm|anthropic|gemini|request|ok_stream joined the corpus on 2026-10-13 (677e192454), after this entry was signed. Its judged difference is the signed behaviour: message_start's message gains `container: null` (\"Anthropic's published Message / stream-event schemas mark stop_details, container, citations, the cache and service_tier usage members ... required; 1.5.5 omitted them. 1.6.0 emits the spec's null/zero defaults\"). The regex signed 2026-09-04 (`(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?`) already named it, and this restores exactly that regex. Classes and premise unchanged.",
       "premise": {
         "all": [
           {
@@ -642,6 +657,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 maximum spec compliance",
         "resigned": {
@@ -683,6 +699,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 maximum spec compliance",
         "resigned": {
@@ -720,6 +737,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 maximum spec compliance",
         "resigned": {
@@ -818,6 +836,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-15",
         "ruling": "2026-09-15 register decision on F-011b's deferred /paths leaves; re-adjudicated 2026-09-24 by P3A-register under items 47/52/119 (narrowed or premise-bound; forgives no more than before)",
         "resigned": {
@@ -838,6 +857,7 @@
       "by": "owner (Matthew Jackson), 2026-09-24 ruling Q56 (via Q61)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q61",
         "when": "2026-09-24",
         "ruling": "Q56 as answered in Q61: accept additive — core admin verbs served on every node; owner-signed entry",
         "resigned": {
@@ -1008,6 +1028,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-04",
         "ruling": "2026-09-04 E7 conformance-rig triage",
         "resigned": {
@@ -1038,48 +1059,9 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-05",
         "ruling": "2026-09-05 llm-codec audit",
-        "resigned": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 1 (LLM wire spec-fidelity), all 45 re-signed as they stand"
-        }
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      }
-    },
-    {
-      "id": "F-014 Bedrock totalTokens counts the cache tokens AWS counts",
-      "kind": "improvement",
-      "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
-      "cells": "^llm\\|bedrock\\|[a-z_]+\\|request\\|ok(_stream)?$",
-      "expected_cells": 11,
-      "classes": [
-        "body"
-      ],
-      "rationale": "AWS Converse reports inputTokens as the NON-cached input only and documents the full input as inputTokens + cacheReadInputTokens + cacheWriteInputTokens (its worked caching example totals 16 input + 4 output + 695 cache-write as totalTokens 715). 1.5.5's Bedrock writer derived totalTokens = inputTokens + outputTokens while emitting the two cache counts beside it as ADDITIVE siblings, so on a cache-bearing response the published parts summed PAST the published total and a consumer reading totalTokens -- the field AWS points accounting consumers at -- lost every cache token. Both write sites (the buffered Converse body and the streamed metadata frame) now publish the AWS sum. The component fields are untouched, a response with no cache activity is byte-identical to 1.5.5 (the omitted cache buckets add zero), and this is a Bedrock-INGRESS body shape only: nothing Busbar ledgers reads totalTokens, since the Bedrock reader never parses it. The oracle's mock reports no cache tokens, so no recorded cell moves today.",
-      "changelog": "Bedrock `usage.totalTokens` counts the cache tokens AWS counts.",
-      "premise": {
-        "all": [
-          {
-            "cell": "llm|bedrock|responses|request|ok",
-            "pointer": "/usage/cacheWriteInputTokens",
-            "exists": true
-          },
-          {
-            "cell": "llm|bedrock|responses|request|ok",
-            "pointer": "/usage/totalTokens",
-            "equals": 18
-          }
-        ]
-      },
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-09-05",
-        "ruling": "2026-09-05 round-3 audit",
         "resigned": {
           "who": "owner (Matthew Jackson)",
           "when": "2026-09-30",
@@ -1109,6 +1091,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-05",
         "ruling": "2026-09-05 oracle Phase 0 group-budget-total cell",
         "resigned": {
@@ -1140,6 +1123,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1171,6 +1155,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1202,6 +1187,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1220,7 +1206,7 @@
       "kind": "improvement",
       "changelog": "**An Anthropic `redacted_thinking` block closes only if it opened.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
       "expected_cells": 5,
       "classes": [
         "body",
@@ -1233,6 +1219,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1251,7 +1238,7 @@
       "kind": "improvement",
       "changelog": "**A streamed chat `usage` trailer arrives even when the stream ended without a stop reason.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|openai|responses)\\|request\\|ok_stream$",
       "expected_cells": 5,
       "classes": [
         "body",
@@ -1272,6 +1259,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1290,19 +1278,20 @@
       "kind": "improvement",
       "changelog": "**One stream states one id.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error@fixture)$",
-      "expected_cells": 31,
+      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|((anthropic|bedrock|cohere|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error@fixture)|gemini\\|request\\|(ok_stream_array|stream_upstream_error@fixture))$|^llm\\|responses\\|responses\\|request\\|stream_upstream_cut$",
+      "expected_cells": 32,
       "classes": [
         "body",
         "headers"
       ],
-      "rationale": "Spec fidelity: a stream is not guaranteed to carry exactly one IR MessageStart. Five of the six readers gate it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream message_start frame, so ANY egress fed from an Anthropic ingress can see two. 1.5.5's Anthropic, OpenAI-Chat, Gemini and Cohere writers each answered the second one by synthesizing a FRESH id, and the Responses writer latched only its sequence_number reset, not response.id -- so one message announced itself twice under two different identities. Every published streaming contract here fixes the id for the life of the message (a native OpenAI stream repeats ONE id on every chunk; a native Gemini stream's responseId is constant; the Responses SDK reads event.response.id on the terminal event to finalize), and the official SDKs latch the id from the FIRST frame that supplies it -- so the client was left correlating against an id nothing else in the stream ever mentions, and the Responses duplicate additionally disagreed with its own response.completed. 1.6.0 gives each of the five writers a per-stream id cell captured on the opening event and replayed thereafter, carried across a mid-stream Protocol::clone for the same reason the sibling open-block state already is. Byte-identical on every stream with a single opening event, which is every stream from the five gating readers. Stream bodies only; no status or usage class is waived. Owner rule: maximum spec compliance wins over 1.5.5 bytes.",
+      "rationale": "Spec fidelity: a stream is not guaranteed to carry exactly one IR MessageStart. Five of the six readers gate it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream message_start frame, so ANY egress fed from an Anthropic ingress can see two. 1.5.5's Anthropic, OpenAI-Chat, Gemini and Cohere writers each answered the second one by synthesizing a FRESH id, and the Responses writer latched only its sequence_number reset, not response.id -- so one message announced itself twice under two different identities. Every published streaming contract here fixes the id for the life of the message (a native OpenAI stream repeats ONE id on every chunk; a native Gemini stream's responseId is constant; the Responses SDK reads event.response.id on the terminal event to finalize), and the official SDKs latch the id from the FIRST frame that supplies it -- so the client was left correlating against an id nothing else in the stream ever mentions, and the Responses duplicate additionally disagreed with its own response.completed. 1.6.0 gives each of the five writers a per-stream id cell captured on the opening event and replayed thereafter, carried across a mid-stream Protocol::clone for the same reason the sibling open-block state already is. Byte-identical on every stream with a single opening event, which is every stream from the five gating readers. Stream bodies only; no status or usage class is waived. Owner rule: maximum spec compliance wins over 1.5.5 bytes. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the Responses writer replays the opening event's captured response.id (and its captured model and created_at) on the in-band response.failed that ends a cut stream, where 1.5.5 minted a fresh id there. That is this entry's behaviour on a cell it did not list: llm|responses|responses|request|stream_upstream_cut (+1). Body and headers only.",
       "premise": {
         "cell": "llm|anthropic|openai|request|ok_stream",
         "status": 200
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 round-5 codec audit",
         "resigned": {
@@ -1315,6 +1304,91 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "#1467 metadata host-list entries are mapped to their ASCII host, and a host holding % outside a zone id is DEST_NO_HOST",
+      "kind": "breaking",
+      "status": "owner-approved 2026-10-21",
+      "changelog": "1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.",
+      "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (PR #1467 \"Owner sign-off, three items\", approved as proposed)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-21",
+        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): #1467 items 1 and 2 approved as proposed: Unicode/full-width metadata list entries map to their ASCII host, and a host holding % outside a zone id is DEST_NO_HOST"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^egress\\.guard\\|(unicode-blocked-entry|unicode-allow-entry|percent-host-dest-no-host)$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-001|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-002|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-003|validate",
+            "status": 1
+          },
+          {
+            "cell": "cli|--print-metadata-blocklist",
+            "body_contains": "metadata.google.internal"
+          }
+        ]
+      },
+      "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', items 1 and 2, approved as proposed. (1) 1.5.5 compared `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and a provider's `allow_metadata_hosts` as raw strings, so a Unicode or full-width entry matched nothing and its target was dialled; 1.6.0 maps each entry through the same UTS #46 mapping as the target (`list_entry_host`), so `１０.９９.９９.９９` blocks `https://10.99.99.99/`. (2) A host holding a `%` outside an IPv6 zone id (a bare `%6c%6fcalhost`) is refused by the destination guard as DEST_NO_HOST; a `://` URL's host is decoded first and a zone id is judged as its address, as before. Every other ASCII host gets 1.5.5's verdicts and texts. No oracle cell is touched today: no shipped, example or oracle config holds a Unicode list entry, and no cell asks the guard to judge a host holding a `%`. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed guard cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set, the list surfaces this entry changes. Proof: net_tests a_list_entry_is_read_as_a_targets_host_is_read, a_bare_authoritys_host_is_mapped_as_a_urls_is; contract judged_host_refuses_a_percent_outside_an_ipv6_zone_id; guard a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable; dest_judge_refuses_a_bare_host_holding_a_percent_escape; config_validate test_metadata_list_entries_are_mapped."
+    },
+    {
+      "id": "#1467 an unjudgeable metadata host-list entry boots with one BUSBAR-3024 warning line",
+      "kind": "improvement",
+      "status": "owner-approved 2026-10-21",
+      "changelog": "1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no host still boots but is dropped with one BUSBAR-3024 warning line.",
+      "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (PR #1467 \"Owner sign-off, three items\", approved as proposed)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-21",
+        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): #1467 item 3 approved as proposed: an unjudgeable metadata host-list entry still boots, is dropped from matching, and is named in a new BUSBAR-3024 warning"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^boot\\.warning\\|BUSBAR-3024-(number-label|percent-escape|unmappable)\\|validate$",
+      "expected_cells": 0,
+      "classes": [
+        "effects.stderr"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "boot.refusal|BOOT-001|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-002|validate",
+            "status": 1
+          },
+          {
+            "cell": "boot.refusal|BOOT-003|validate",
+            "status": 1
+          },
+          {
+            "cell": "cli|--print-metadata-blocklist",
+            "body_contains": "metadata.google.internal"
+          }
+        ]
+      },
+      "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', item 3, approved as proposed. An entry in `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` or a provider's `allow_metadata_hosts` that names no host the guard judges (a `%` outside an IPv6 zone id, a number-like last label that is no IPv4 address such as `db.1` or `1.2.3.4.5`, or non-ASCII UTS #46 cannot map) still boots as on 1.5.5, is dropped from matching, and is named in one BUSBAR-3024 warning line (CONFIG_METADATA_ENTRY_NAMES_NO_HOST). Such a config boots and validates exactly as on 1.5.5, so this entry forgives ONLY the added stderr line: its exit status and every other byte must stay 1.5.5's. No oracle cell is touched today: BOOT-001/002/003 hold CIDR entries (refused with 1.5.5's text, as before), cli|--print-metadata-blocklist runs the baseline config with no operator entry, and no shipped, example or oracle config holds a `%` or number-label entry. None of them is in `cells`; all must stay byte-identical. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed warning cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set. Proof: config_validate test_a_metadata_entry_naming_no_host_boots_with_one_warning_line."
     },
     {
       "id": "K-1 rotate refuses an overlong key id like its siblings",
@@ -1344,6 +1418,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-06",
         "ruling": "2026-09-06 oracle overlong-id coverage",
         "resigned": {
@@ -1400,6 +1475,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q32",
         "when": "2026-09-06",
         "ruling": "2026-09-06 rate-card history decision; decision #79 (2026-09-22) + Q19 as ruled in Q32 (2026-09-24): accepted-difference for billing|rate-card|history-mid-window",
         "resigned": {
@@ -1420,6 +1496,7 @@
       "by": "owner (Matthew Jackson), OWNER ANSWERS 2026-09-27 Q93 (rate-card-version-visible), option A as recommended",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q93",
         "when": "2026-09-27",
         "ruling": "docs/design/1.6.0-QUESTIONS.md Q93 (OWNER ANSWERS 2026-09-27: Q79-Q95 \"as recommended\"): A, serve the rate-card version on the usage and audit responses as an `additive` register entry (#44, #10); BUSBAR-1.6.0.md l.1248-1249"
       },
@@ -1479,6 +1556,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-07",
         "ruling": "2026-09-07 provider-credential fail-closed decision (\"no carve outs, fix it\")",
         "resigned": {
@@ -1570,6 +1648,7 @@
       "by": "owner (Matthew Jackson), 2026-09-28 ruling",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-28",
         "ruling": "ship 1.6.0's refund: the refund reaches the bucket the charge reached",
         "resigned": {
@@ -1620,6 +1699,7 @@
       "by": "owner (Matthew Jackson), 2026-09-24 ruling Q40 (via Q47)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q47",
         "when": "2026-09-24",
         "ruling": "Q40 as ruled in Q47: busbar_lane_state reads the pool's own cell (2 tripped, 1 only on a real half-open probe)",
         "resigned": {
@@ -1632,8 +1712,8 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "cells": "^(crosscut\\.traps\\|exhausted\\-retry\\-after\\-floor|documented\\|changelog\\|retry\\-after\\-floor|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|anthropic\\|cohere\\|request\\|upstream_down|llm\\|anthropic\\|gemini\\|request\\|upstream_down|llm\\|anthropic\\|openai\\|request\\|upstream_down|llm\\|bedrock\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|cohere\\|request\\|upstream_down|llm\\|bedrock\\|gemini\\|request\\|upstream_down|llm\\|bedrock\\|openai\\|request\\|upstream_down|llm\\|cohere\\|anthropic\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|cohere\\|gemini\\|request\\|upstream_down|llm\\|cohere\\|openai\\|request\\|upstream_down|llm\\|gemini\\|anthropic\\|request\\|upstream_down|llm\\|gemini\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|gemini\\|openai\\|request\\|upstream_down|llm\\|openai\\|anthropic\\|request\\|upstream_down|llm\\|openai\\|cohere\\|request\\|upstream_down|llm\\|openai\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|anthropic\\|request\\|upstream_down|llm\\|responses\\|cohere\\|request\\|upstream_down|llm\\|responses\\|gemini\\|request\\|upstream_down|llm\\|responses\\|openai\\|request\\|upstream_down|route\\.failover\\|fo\\|all\\-down|route\\.failover\\|fo\\|all\\-down\\-stream|route\\.failover\\|fo\\|primary\\-429|route\\.failover\\|fo\\|primary\\-5xx|route\\.failover\\|fo\\|primary\\-cut\\-body|route\\.failover\\|fo\\|primary\\-cut\\-stream|route\\.failover\\|fo\\|primary\\-down|route\\.failover\\|fo\\|second\\-request\\-after\\-trip)$",
-      "expected_cells": 34,
+      "cells": "^(crosscut\\.traps\\|exhausted\\-retry\\-after\\-floor|documented\\|changelog\\|retry\\-after\\-floor|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|anthropic\\|cohere\\|request\\|upstream_down|llm\\|anthropic\\|gemini\\|request\\|upstream_down|llm\\|anthropic\\|openai\\|request\\|upstream_down|llm\\|bedrock\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|cohere\\|request\\|upstream_down|llm\\|bedrock\\|gemini\\|request\\|upstream_down|llm\\|bedrock\\|openai\\|request\\|upstream_down|llm\\|cohere\\|anthropic\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|cohere\\|gemini\\|request\\|upstream_down|llm\\|cohere\\|openai\\|request\\|upstream_down|llm\\|gemini\\|anthropic\\|request\\|upstream_down|llm\\|gemini\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|gemini\\|openai\\|request\\|upstream_down|llm\\|openai\\|anthropic\\|request\\|upstream_down|llm\\|openai\\|cohere\\|request\\|upstream_down|llm\\|openai\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|anthropic\\|request\\|upstream_down|llm\\|responses\\|cohere\\|request\\|upstream_down|llm\\|responses\\|gemini\\|request\\|upstream_down|llm\\|responses\\|openai\\|request\\|upstream_down|route\\.failover\\|fo\\|all\\-down|route\\.failover\\|fo\\|all\\-down\\-stream|route\\.failover\\|fo\\|primary\\-429|route\\.failover\\|fo\\|primary\\-5xx|route\\.failover\\|fo\\|primary\\-cut\\-body|route\\.failover\\|fo\\|primary\\-cut\\-stream|route\\.failover\\|fo\\|primary\\-down|route\\.failover\\|fo\\|second\\-request\\-after\\-trip|llm\\|openai\\|openai\\|request\\|stream_upstream_cut|llm\\|cohere\\|cohere\\|request\\|stream_upstream_cut|llm\\|gemini\\|gemini\\|request\\|stream_upstream_error@fixture)$",
+      "expected_cells": 37,
       "classes": [
         "effects.metrics"
       ],
@@ -1649,7 +1729,7 @@
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells)."
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): on each of these 34 cells the ONLY effects.metrics difference from 1.5.5 is busbar_lane_state{pool,lane} for the tripped lane reading 2 where 1.5.5 read 1 (every other metrics path is identical). route.failover|fo|primary-cut-body JOINS the list on this measurement: its spend series no longer moves since the cut-body billing fix landed, so lane_state 1 -> 2 is now its only metrics difference; any cell whose metrics move in any other path stays unnamed. Owner ruling Q40 as ruled in Q47: the gauge reads the pool's own cell, 2 when tripped, 1 only on a real half-open probe. SCOPE is the enumerated cell ids, not a family. PREMISE (evaluated, and bounded by what the runner's premise grammar can see — it reads status/body, never effects): the build serves the documented three-state per-(pool,lane) gauge and a HEALTHY lane still reads 0 on the scrape, so the forgiveness cannot cover a build whose healthy lanes moved. First registered from P3A-register's measurement of 05c826a66 (33 cells). WIDENED 2026-10-20 (OWNER ruling Q40, via the metrics lane, PR #1292): the same lane_state 1 -> 2 is the metrics difference on llm|openai|openai|request|stream_upstream_cut, llm|cohere|cohere|request|stream_upstream_cut, llm|gemini|gemini|request|stream_upstream_error@fixture (+3). The two anthropic cells (stream_upstream_cut, stream_upstream_error@fixture) are not listed until a candidate record shows lane_state to be their metrics difference."
     },
     {
       "id": "Q41 an audit entry carries its record's scheme (served read)",
@@ -1658,6 +1738,7 @@
       "by": "owner (Matthew Jackson), 2026-09-24 ruling Q41 (via Q47)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q47",
         "when": "2026-09-24",
         "ruling": "Q41 as ruled in Q47: AuditEntry.scheme is required; regenerate openapi.json; upgrade notes list the change",
         "resigned": {
@@ -1680,16 +1761,16 @@
           {
             "cell": "admin.ops|GetAudit|ok",
             "pointer": "/items/0/scheme",
-            "equals": 2
+            "equals": 1
           },
           {
             "cell": "admin.ops|GetAudit|ok",
             "pointer": "/items/3/scheme",
-            "equals": 2
+            "equals": 1
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): GET /api/v1/admin/audit's four items each GAIN `scheme: 2`; every 1.5.5 member is unchanged. kind=additive so the runner still proves the candidate a JSON superset of the 1.5.5 page — a changed or removed audit member stays red. PREMISE (evaluated): the served entries carry scheme 2."
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): GET /api/v1/admin/audit's four items each GAIN `scheme: 1` (1.5.5 hash kept; scheme 2 only for records with '|'), Q41 ruling 2026-10-20; every 1.5.5 member is unchanged. kind=additive so the runner still proves the candidate a JSON superset of the 1.5.5 page — a changed or removed audit member stays red. PREMISE (evaluated): the served entries carry scheme 2."
     },
     {
       "id": "Q41 an audit entry carries its record's scheme (teller audit-record script)",
@@ -1698,6 +1779,7 @@
       "by": "owner (Matthew Jackson), 2026-09-24 ruling Q41 (via Q47)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q47",
         "when": "2026-09-24",
         "ruling": "Q41 as ruled in Q47: AuditEntry.scheme is required; regenerate openapi.json; upgrade notes list the change",
         "resigned": {
@@ -1720,21 +1802,11 @@
           {
             "cell": "admin.ops|GetAudit|ok",
             "pointer": "/items/0/scheme",
-            "equals": 2
-          },
-          {
-            "cell": "teller|audit-record",
-            "pointer": "/audit_entry_delta",
             "equals": 1
-          },
-          {
-            "cell": "teller|audit-record",
-            "pointer": "/newest_action",
-            "equals": "key.create"
           }
         ]
       },
-      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the only difference is effects.script /audit_after/items/0/scheme and /newest_entry/scheme: absent -> 2. effects.script is a money-rated class, so only kind=breaking may take it. PREMISE (evaluated): the served audit entries carry scheme 2 and the teller step still seals exactly one key.create record (the step's own contract)."
+      "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the only difference is effects.script /audit_after/items/0/scheme and /newest_entry/scheme: absent -> 1 (1.5.5 hash kept; scheme 2 only for records with '|'), Q41 ruling 2026-10-20. effects.script is a money-rated class, so only kind=breaking may take it. PREMISE (evaluated): the served audit entries carry scheme 2 and the teller step still seals exactly one key.create record (the step's own contract)."
     },
     {
       "id": "#34 a new audit record signs under digest v3, which drops currency",
@@ -1743,6 +1815,7 @@
       "by": "owner (Matthew Jackson), #34 ruling 2026-09-29 (remove and migrate)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-29",
         "ruling": "#34 OWNER 2026-09-29: remove `currency` from the signed audit digest and migrate: new records sign under a versioned recipe v3 without it, every existing record verifies under the recipe it was sealed under",
         "resigned": {
@@ -1782,6 +1855,7 @@
       "by": "owner (Matthew Jackson), spec #79 OWNER-LOCKED 2026-09-22",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-22",
         "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures",
         "resigned": {
@@ -1842,6 +1916,7 @@
       "by": "owner (Matthew Jackson), spec #79 OWNER-LOCKED 2026-09-22",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-22",
         "ruling": "spec #79 (docs/design/BUSBAR-1.6.0.md, OWNER-LOCKED 2026-09-22): a posting prices against the card in force when it arrived; publishing a new card never reprices the window before its effective_from. Registered under the architect ruling of 2026-09-24 that a cell whose only difference is a direct, measured consequence of an owner-locked row is registered citing that row with a premise pinning the exact figures",
         "resigned": {
@@ -1901,6 +1976,7 @@
       "by": "owner (Matthew Jackson), approval of AUTH-ROW (2) 2026-09-27",
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
         "when": "2026-09-27",
         "ruling": "ARCHITECT relay 2026-09-27 (AUTH-ROW): the owner approved the misconfiguration behaviour change (the admin-token check is chosen by module, not by provider name) as an accepted difference",
         "resigned": {
@@ -1942,14 +2018,14 @@
       "id": "581 busbar is invisible to upstreams except what it governs",
       "kind": "breaking",
       "changelog": "busbar is invisible to upstreams. On a same-dialect route every client header and body field passes through unchanged, except the fields busbar governs: credential headers (each dialect declares its own, e.g. Authorization, x-api-key, api-key, x-goog-api-key), replaced by busbar's upstream credential; tenant selectors (e.g. OpenAI-Organization, OpenAI-Project), set from busbar's config and never from the caller; the model, which is mapped; hook rewrites; and the HTTP hop-by-hop headers plus Host and Content-Length, re-derived for the upstream connection. On a translated route busbar translates what maps and drops the rest. There are no feature allowlists; beta and version headers are ordinary fields. 1.5.5 forwarded no client header.",
-      "by": "owner (Matthew Jackson), 2026-10-02 HARD RULE \"BUSBAR IS INVISIBLE TO UPSTREAMS\" (escalate.q 03:40Z, refined 04:00Z) ; scope extended to the 43 same-dialect cells under the same HARD RULE, owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"",
-      "cells": "^(concurrency\\|inbound-shed\\|n8|concurrency\\|lane-atcapacity\\|n4|concurrency\\|ok\\|n8|crosscut\\.traps\\|exhausted-retry-after-floor|crosscut\\.traps\\|x-request-id-present|documented\\|changelog\\|retry-after-floor|documented\\|readme\\|six-protocols\\|anthropic|documented\\|readme\\|six-protocols\\|cohere|documented\\|readme\\|six-protocols\\|gemini|documented\\|readme\\|six-protocols\\|openai-chat|documented\\|readme\\|six-protocols\\|openai-responses|egress\\.headers\\|forwarded\\|anthropic-beta|egress\\.headers\\|forwarded\\|openai-beta|llm\\|anthropic\\|anthropic\\|request\\|ok|llm\\|anthropic\\|anthropic\\|request\\|ok_stream|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|bedrock\\|request\\|ok|llm\\|bedrock\\|bedrock\\|request\\|ok_stream|llm\\|bedrock\\|bedrock\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|ok|llm\\|cohere\\|cohere\\|request\\|ok_stream|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|ok|llm\\|gemini\\|gemini\\|request\\|ok_stream_array|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|ok|llm\\|openai\\|openai\\|request\\|ok_stream|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|responses\\|request\\|ok|llm\\|responses\\|responses\\|request\\|ok_stream|llm\\|responses\\|responses\\|request\\|upstream_down|queue\\|serve\\|n3|queue\\|timeout\\|n2|route\\.failover\\|fb\\|all-down|route\\.failover\\|fb\\|member-down|route\\.failover\\|fo\\|all-down|route\\.failover\\|fo\\|all-down-stream|route\\.failover\\|fo\\|all-up|route\\.failover\\|fo\\|primary-429|route\\.failover\\|fo\\|primary-5xx|route\\.failover\\|fo\\|primary-cut-body|route\\.failover\\|fo\\|primary-cut-stream|route\\.failover\\|fo\\|primary-down|route\\.failover\\|fo\\|primary-slow|route\\.failover\\|fo\\|second-request-after-trip)$",
-      "expected_cells": 45,
+      "by": "ruling:§busbar is invisible to upstreams. On a same-dialect route (registered under a standing ruling; no owner signature on this entry); 2026-10-02 HARD RULE \"BUSBAR IS INVISIBLE TO UPSTREAMS\" (escalate.q 03:40Z, refined 04:00Z) ; scope extended to the 43 same-dialect cells under the same HARD RULE, owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"",
+      "cells": "^(concurrency\\|inbound-shed\\|n8|concurrency\\|lane-atcapacity\\|n4|concurrency\\|ok\\|n8|crosscut\\.traps\\|exhausted-retry-after-floor|crosscut\\.traps\\|x-request-id-present|documented\\|changelog\\|retry-after-floor|documented\\|readme\\|six-protocols\\|anthropic|documented\\|readme\\|six-protocols\\|cohere|documented\\|readme\\|six-protocols\\|gemini|documented\\|readme\\|six-protocols\\|openai-chat|documented\\|readme\\|six-protocols\\|openai-responses|egress\\.headers\\|forwarded\\|anthropic-beta|egress\\.headers\\|forwarded\\|openai-beta|llm\\|anthropic\\|anthropic\\|request\\|ok|llm\\|anthropic\\|anthropic\\|request\\|ok_stream|llm\\|anthropic\\|anthropic\\|request\\|upstream_down|llm\\|bedrock\\|bedrock\\|request\\|ok|llm\\|bedrock\\|bedrock\\|request\\|ok_stream|llm\\|bedrock\\|bedrock\\|request\\|upstream_down|llm\\|cohere\\|cohere\\|request\\|ok|llm\\|cohere\\|cohere\\|request\\|ok_stream|llm\\|cohere\\|cohere\\|request\\|upstream_down|llm\\|gemini\\|gemini\\|request\\|ok|llm\\|gemini\\|gemini\\|request\\|ok_stream_array|llm\\|gemini\\|gemini\\|request\\|upstream_down|llm\\|openai\\|openai\\|request\\|ok|llm\\|openai\\|openai\\|request\\|ok_stream|llm\\|openai\\|openai\\|request\\|upstream_down|llm\\|responses\\|responses\\|request\\|ok|llm\\|responses\\|responses\\|request\\|ok_stream|llm\\|responses\\|responses\\|request\\|upstream_down|queue\\|serve\\|n3|queue\\|timeout\\|n2|route\\.failover\\|fb\\|all-down|route\\.failover\\|fb\\|member-down|route\\.failover\\|fo\\|all-down|route\\.failover\\|fo\\|all-down-stream|route\\.failover\\|fo\\|all-up|route\\.failover\\|fo\\|primary-429|route\\.failover\\|fo\\|primary-5xx|route\\.failover\\|fo\\|primary-cut-body|route\\.failover\\|fo\\|primary-cut-stream|route\\.failover\\|fo\\|primary-down|route\\.failover\\|fo\\|primary-slow|route\\.failover\\|fo\\|second-request-after-trip|llm\\|anthropic\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|ok_cachepoint_document@fixture|llm\\|bedrock\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|bedrock\\|bedrock\\|request\\|stream_upstream_cut|llm\\|cohere\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|gemini\\|request\\|ok_stream|llm\\|gemini\\|gemini\\|request\\|ok_stream_array_whole_answer|llm\\|gemini\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|gemini\\|request\\|stream_upstream_cut|llm\\|openai\\|openai\\|request\\|ok_stream_whole_answer|llm\\|responses\\|responses\\|request\\|ok_citation@fixture|llm\\|responses\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|responses\\|request\\|stream_upstream_error@fixture|hooks\\|hooked\\-pool\\|embedded\\-system\\-turn@hooks\\-webrequest|hooks\\|hooked\\-pool\\|ok@hooks\\-webrequest|hooks\\|hooked\\-pool\\|ok_stream@hooks\\-webrequest|hooks\\|hooked\\-pool\\|unmodelled\\-block@hooks\\-webrequest|hooks\\|unhooked\\-pool\\|ok@hooks\\-webrequest)$",
+      "expected_cells": 63,
       "classes": [
         "body",
         "effects.egress"
       ],
-      "rationale": "Same-dialect routes forward every client header and body field; 1.5.5 forwarded no client header. The two cells send an anthropic-beta / openai-beta header on a same-dialect route: 1.5.5's upstream request carries neither, the candidate's carries `anthropic-beta: prompt-caching-2024-07-31` / `openai-beta: assistants=v2` and nothing else differs. The translated route (egress.headers|forwarded|anthropic-beta-cross) is identical to 1.5.5 and is NOT in scope: it carries no beta header on either build. The cells for the invisible-upstream rule's other fields (INVISIBLE-UPSTREAM card) join `cells` when recorded. Premise: the same-dialect upstream really carries the header, the translated one does not. KIND NOTE: the signed draft said `additive`, but the additive judge requires the candidate's arrays to be a position-wise superset of 1.5.5's, and the forwarded header lands mid-list (before host and content-length), so C13/C14 scored FAIL `additive: not a superset at /upstream/0/headers/5/0`; `improvement` (additive or strictly better, per this file's own legend) is the kind the register can express. SCOPE EXTENDED 2026-10-05 under the same HARD RULE (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"): the oracle drives every cell with curl, so on a SAME-dialect route the upstream receives the caller's own `user-agent: curl/8.5.0` and `accept: */*` where 1.5.5 sent the native SDK's values (BUSBAR-1.6.0.md Part 2 decision 76; owner Q10 scopes user-agent pass-through to same-dialect routes). The acceptance is PRECISE (busbar-release header_accept, PR #158): only the named headers, only these 45 cells, only from the exact golden value to the exact candidate value listed in `headers`; every other difference on these cells, including any other value of these headers, stays a divergence and is judged by the other entries (Q40's lane_state, S-5's chat members, PR2-D9). A translated hop keeps the far dialect's SDK fingerprint and `accept` (cross-dialect hops inside the failover cells are byte-identical to 1.5.5 and untouched). KIND: `breaking` because the register lets only a breaking entry with a changelog line take `effects.egress`; the changelog line is unchanged. Measured: busbar predev 244a861e35 + t-config, engine 99780d7, Latchkey cli-ace59174.",
+      "rationale": "Same-dialect routes forward every client header and body field; 1.5.5 forwarded no client header. The two cells send an anthropic-beta / openai-beta header on a same-dialect route: 1.5.5's upstream request carries neither, the candidate's carries `anthropic-beta: prompt-caching-2024-07-31` / `openai-beta: assistants=v2` and nothing else differs. The translated route (egress.headers|forwarded|anthropic-beta-cross) is identical to 1.5.5 and is NOT in scope: it carries no beta header on either build. The cells for the invisible-upstream rule's other fields (INVISIBLE-UPSTREAM card) join `cells` when recorded. Premise: the same-dialect upstream really carries the header, the translated one does not. KIND NOTE: the signed draft said `additive`, but the additive judge requires the candidate's arrays to be a position-wise superset of 1.5.5's, and the forwarded header lands mid-list (before host and content-length), so C13/C14 scored FAIL `additive: not a superset at /upstream/0/headers/5/0`; `improvement` (additive or strictly better, per this file's own legend) is the kind the register can express. SCOPE EXTENDED 2026-10-05 under the same HARD RULE (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"): the oracle drives every cell with curl, so on a SAME-dialect route the upstream receives the caller's own `user-agent: curl/8.5.0` and `accept: */*` where 1.5.5 sent the native SDK's values (BUSBAR-1.6.0.md Part 2 decision 76; owner Q10 scopes user-agent pass-through to same-dialect routes). The acceptance is PRECISE (busbar-release header_accept, PR #158): only the named headers, only these 45 cells, only from the exact golden value to the exact candidate value listed in `headers`; every other difference on these cells, including any other value of these headers, stays a divergence and is judged by the other entries (Q40's lane_state, S-5's chat members, PR2-D9). A translated hop keeps the far dialect's SDK fingerprint and `accept` (cross-dialect hops inside the failover cells are byte-identical to 1.5.5 and untouched). KIND: `breaking` because the register lets only a breaking entry with a changelog line take `effects.egress`; the changelog line is unchanged. Measured: busbar predev 244a861e35 + t-config, engine 99780d7, Latchkey cli-ace59174. WIDENED 2026-10-20 (OWNER ruling, PR #1292): the same signed behaviour (the caller's own user-agent reaches the upstream on a same-dialect route) also produces the user-agent difference on the 13 cells it was not listing -- the stream_whole_answer, cut and @fixture cells of the same-dialect doors: llm|anthropic|anthropic|request|ok_stream_whole_answer, llm|bedrock|bedrock|request|ok_cachepoint_document@fixture, llm|bedrock|bedrock|request|ok_stream_whole_answer, llm|bedrock|bedrock|request|stream_upstream_cut, llm|cohere|cohere|request|ok_stream_whole_answer, llm|gemini|gemini|request|ok_stream, llm|gemini|gemini|request|ok_stream_array_whole_answer, llm|gemini|gemini|request|ok_stream_whole_answer, llm|gemini|gemini|request|stream_upstream_cut, llm|openai|openai|request|ok_stream_whole_answer, llm|responses|responses|request|ok_citation@fixture, llm|responses|responses|request|ok_stream_whole_answer, llm|responses|responses|request|stream_upstream_error@fixture. Each is judged by the oracle (ids in cells.json). Every other difference on these cells stays a divergence. The oracle client's UA is pinned to curl/8.5.0 (harness lane); runner drift does not widen this entry. WIDENED 2026-10-20 (OWNER ruling, relayed by the coordinator from the harness lane's measurement, PR #1292): the same signed behaviour also produces the user-agent difference (curl/8.5.0 for the SDK value) on the five hooks cells hooks|hooked-pool|embedded-system-turn@hooks-webrequest, hooks|hooked-pool|ok@hooks-webrequest, hooks|hooked-pool|ok_stream@hooks-webrequest, hooks|hooked-pool|unmodelled-block@hooks-webrequest, hooks|unhooked-pool|ok@hooks-webrequest.",
       "premise": {
         "all": [
           {
@@ -1969,7 +2045,7 @@
         ]
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§busbar is invisible to upstreams. On a same-dialect route",
         "when": "2026-10-02",
         "ruling": "2026-10-02 owner HARD RULE \"INVISIBLE, EXCEPT WHAT BUSBAR GOVERNS\" (escalate.q:108-109); R4 signed; scope extended 2026-10-05 under the same rule (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\")"
       },
@@ -2062,6 +2138,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q91",
         "when": "2026-09-27",
         "ruling": "Q91 owner answer 2026-09-27 option A; ARCHITECT ruling escalate.q:110 (2026-10-02T04:00Z); R5 signed",
         "amended": {
@@ -2077,9 +2154,9 @@
     },
     {
       "id": "RULE21-576 the plain gemini route bills toolUsePromptTokenCount as input (ledger x rate card)",
-      "kind": "improvement",
+      "kind": "breaking",
       "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
-      "by": "owner (Matthew Jackson), RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
+      "by": "ruling:§MONEY IS LEDGER × RATE CARD (registered under a standing ruling; no owner signature on this entry); RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
       "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens@fixture$",
       "expected_cells": 1,
       "classes": [
@@ -2101,7 +2178,7 @@
         ]
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§MONEY IS LEDGER × RATE CARD",
         "when": "2026-10-14",
         "ruling": "RULE 21 (OWNER 2026-10-14, verbatim \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"): where v1.5.5 differs from ledger x rate card, 1.5.5 was wrong; register the oracle cell as an accepted difference citing this ruling. Ledger classes per entry 576 (owner 2026-10-02, LEDGER-SIMPLE 2026-10-03)."
       },
@@ -2114,7 +2191,7 @@
       "id": "LEDGER-SIMPLE a streamed grounded Gemini turn ledgers its stated-total gap as unitemized_tokens",
       "kind": "improvement",
       "changelog": "**Every count a provider reports is ledgered under its own class** (owner ruling LEDGER-100).",
-      "by": "owner (Matthew Jackson), 2026-10-03: LEDGER-SIMPLE \"We bill 100% of what the plane ledgers. Plane says it did x, rate card says x costs y, we bill\" (settling REV-L19; LEDGER-100)",
+      "by": "ruling:LEDGER-100 (registered under a standing ruling; no owner signature on this entry); 2026-10-03: LEDGER-SIMPLE \"We bill 100% of what the plane ledgers. Plane says it did x, rate card says x costs y, we bill\" (settling REV-L19; LEDGER-100)",
       "cells": "^usage\\.gemini\\|stream-grounded\\|no-tool-use-count$",
       "expected_cells": 1,
       "classes": [
@@ -2170,7 +2247,7 @@
         ]
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:LEDGER-100",
         "when": "2026-10-03",
         "ruling": "LEDGER-SIMPLE (owner 2026-10-03, settling REV-L19): \"We bill 100% of what the plane ledgers. Plane says it did x, rate card says x costs y, we bill\"; LEDGER-100 (owner 2026-10-03 16:15Z)"
       },
@@ -2197,6 +2274,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§two owner-signed exceptions (2026-10-02)",
         "when": "2026-10-02",
         "ruling": "2026-10-02 RULING HOOK Q1 (OWNER): SIGN, escalate.q:104; R6 signed"
       },
@@ -2222,6 +2300,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "§two owner-signed exceptions (2026-10-02)",
         "when": "2026-10-02",
         "ruling": "2026-10-02 RULING HOOK Q2 (OWNER): SIGN, escalate.q:105; R7 signed"
       },
@@ -2234,7 +2313,7 @@
       "id": "ABI-o1 published 1.5.5 JSON-contract plugins no longer load",
       "kind": "breaking",
       "changelog": "1.6.0 Breaking: a published 1.5.5 JSON-contract plugin no longer loads; boot refuses it with a message naming the rebuild against the 1.6.0 SDK (see the SDK migration note).",
-      "by": "owner (Matthew Jackson), spec section 11.8 (owner-locked \"No legacy loading\") + ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:111)",
+      "by": "ruling:§11.8 No legacy loading (registered under a standing ruling; no owner signature on this entry); spec section 11.8 (owner-locked \"No legacy loading\") + ARCHITECT ruling 2026-10-02T04:00Z (escalate.q:111)",
       "cells": "^plugins\\.abi\\|json-contract\\|store-sqlite@1\\.5-line$",
       "expected_cells": 1,
       "classes": [
@@ -2264,7 +2343,7 @@
         ]
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§11.8 No legacy loading",
         "when": "2026-10-01",
         "ruling": "spec section 11.8 owner-locked \"No legacy loading\"; ARCHITECT ruling escalate.q:111; R8 signed (2026-10-01T23:45Z)"
       },
@@ -2277,7 +2356,7 @@
       "id": "ORPH-Q3a Bedrock usage carries cacheDetails",
       "kind": "additive",
       "changelog": "A Bedrock response served from an Anthropic upstream carries `usage.cacheDetails`, the per-TTL split of the cache-write tokens (additive: billed counts are unchanged).",
-      "by": "owner (Matthew Jackson), 2026-10-01T23:44Z ORPH-Q3a = A; STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z)",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-01T23:44Z ORPH-Q3a = A; STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z)",
       "cells": "^llm\\.cache-details\\|bedrock\\|anthropic-cache-split$",
       "expected_cells": 0,
       "classes": [
@@ -2289,7 +2368,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-01",
         "ruling": "ORPH-Q3a = A (owner 2026-10-01T23:44Z, escalate.q); Q57; LLM DIALECT FIDELITY (escalate.q:114)"
       },
@@ -2302,7 +2381,7 @@
       "id": "ORPH-Q3b buffered OpenAI chat citations are nested url_citation annotations",
       "kind": "improvement",
       "changelog": "A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the shape the published Chat Completions schema defines.",
-      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); ORPH-Q3b = A",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); ORPH-Q3b = A",
       "cells": "^llm\\.citations\\|openai\\|(cohere|gemini)-buffered$",
       "expected_cells": 0,
       "classes": [
@@ -2314,7 +2393,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-01",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114); ORPH-Q3b = A"
       },
@@ -2341,6 +2420,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q35",
         "when": "2026-09-24",
         "ruling": "BUSBAR-1.6.0.md l.3897 Q33c (OWNER RULINGS 2026-09-24, second batch); 1.6.0-QUESTIONS.md Q35"
       },
@@ -2353,7 +2433,7 @@
       "id": "R21 an OpenAI transcription answered in its own dialect is metered",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.",
-      "by": "owner (Matthew Jackson), queue rule 21 (OWNER 2026-10-14: \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\")",
+      "by": "ruling:§MONEY IS LEDGER × RATE CARD (registered under a standing ruling; no owner signature on this entry); queue rule 21 (OWNER 2026-10-14: \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\")",
       "cells": "^llm\\|openai\\|openai\\|request\\|transcription_metered$",
       "expected_cells": 0,
       "classes": [
@@ -2365,7 +2445,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§MONEY IS LEDGER × RATE CARD",
         "when": "2026-10-14",
         "ruling": "queue rule 21 (MONEY, OWNER 2026-10-14): never an owner question; fix to ledger x rate card and register the cell citing the ruling"
       },
@@ -2378,7 +2458,7 @@
       "id": "#62 a stream the client cancels after its first byte keeps its charge",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20) and #77(2)",
+      "by": "ruling:#62 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20) and #77(2)",
       "cells": "^route\\.failover\\|fo\\|client-cancel-after-first-byte-stream$",
       "expected_cells": 0,
       "classes": [
@@ -2390,7 +2470,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#62",
         "when": "2026-09-20",
         "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED) and #77(2); applied by ARCHITECT GG-PICK ruling 2026-10-02"
       },
@@ -2403,8 +2483,8 @@
       "id": "#62 an upstream cut after the first byte bills what streamed",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
-      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_cut$",
+      "by": "ruling:#62 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
       "expected_cells": 1,
       "classes": [
         "effects.usage"
@@ -2415,7 +2495,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#62",
         "when": "2026-09-20",
         "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED); applied by ARCHITECT ruling 2026-10-13 (status row 155, row-159 plane-llm L1#2, option (b))"
       },
@@ -2428,7 +2508,7 @@
       "id": "#62 a stream whose translation aborts after its first byte bills what streamed",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a translated stream that busbar cannot keep translating after its first byte is billed for the tokens the far end reported before the abort. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
+      "by": "ruling:#62 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
       "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_translate_abort$",
       "expected_cells": 0,
       "classes": [
@@ -2440,7 +2520,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#62",
         "when": "2026-09-20",
         "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED); applied to the translate abort by ARCHITECT ruling 2026-10-17"
       },
@@ -2453,8 +2533,8 @@
       "id": "S-16 same-dialect response headers are the upstream's, all but the governed",
       "kind": "improvement",
       "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
-      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)",
-      "cells": "^llm\\|(anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|gemini\\|gemini|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture)$",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)",
+      "cells": "^llm\\|((anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture)|gemini\\|gemini\\|request\\|(ok|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture))$",
       "expected_cells": 21,
       "classes": [
         "headers"
@@ -2465,7 +2545,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-02",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02, pre-approved register entries), F2 response headers; applied by ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)"
       },
@@ -2478,7 +2558,7 @@
       "id": "S-16b relayed upstream server/date on the raw header-order cells",
       "kind": "breaking",
       "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
-      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B) ; applied to ops.raw|header-order and route.cheapest|card-swap, owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B) ; applied to ops.raw|header-order and route.cheapest|card-swap, owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"",
       "cells": "^(ops\\.raw\\|header-order|route\\.cheapest\\|card-swap)$",
       "expected_cells": 2,
       "classes": [
@@ -2506,7 +2586,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-02",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02, pre-approved register entries), F2 response headers; applied by ARCHITECT ruling 2026-10-02 (FOLD-LLM option B); applied to the two raw header-order cells 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\")"
       },
@@ -2519,7 +2599,7 @@
       "id": "DF-WIRE same-dialect request bodies are the caller's bytes",
       "kind": "improvement",
       "changelog": "A same-dialect request reaches the upstream as the caller's own bytes.",
-      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs) ; route.529|failover|primary named owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\" ; route.cheapest|card-swap named by the ARCHITECT 2026-10-05 under the same premise",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs) ; route.529|failover|primary named owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\" ; route.cheapest|card-swap named by the ARCHITECT 2026-10-05 under the same premise",
       "cells": "^(llm\\.fidelity\\|(anthropic|openai|responses|cohere|gemini|bedrock)\\|request-bytes|route\\.529\\|failover\\|primary|route\\.cheapest\\|card-swap)$",
       "expected_cells": 2,
       "classes": [
@@ -2559,7 +2639,7 @@
         ]
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-02",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02) + R4 (HARD RULE invisible to upstreams, 2026-10-02); DIALECT-FIDELITY-DESIGN FINAL F2/F6; route.529|failover|primary named 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"); route.cheapest|card-swap named 2026-10-05 by the ARCHITECT under the existing premise"
       },
@@ -2572,7 +2652,7 @@
       "id": "DF-DROP an untranslatable content block is dropped, not sent as empty text",
       "kind": "improvement",
       "changelog": "A request translated between LLM dialects no longer carries an empty text block in place of a content block the target dialect cannot represent, and an answer translated back no longer delivers one; the block is dropped with a warning and an audit row naming its wire path.",
-      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops",
       "cells": "^llm\\.unmodelled-block\\|(anthropic|openai)\\|(bedrock|cohere|gemini|openai|anthropic)$",
       "expected_cells": 0,
       "classes": [
@@ -2584,7 +2664,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-01",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
       },
@@ -2597,7 +2677,7 @@
       "id": "DF-SITES no value is substituted for one the target dialect cannot carry",
       "kind": "breaking",
       "changelog": "A request translated between LLM dialects no longer has a value substituted for one the target dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead of relabelled `png`, and a Gemini `thinkingBudget: -1` (\"the model decides\") is dropped on a target with no such setting instead of sent as the `medium` effort; each drop is warned and audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is answered with the caller's own 400 error instead of being translated.",
-      "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
       "cells": "^llm\\.no-substitution\\|(anthropic|openai|responses|gemini|cohere)\\|(bedrock|openai|responses|anthropic)$",
       "expected_cells": 0,
       "classes": [
@@ -2610,7 +2690,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-01",
         "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
       },
@@ -2623,7 +2703,7 @@
       "id": "PLANELOG the llm plane's warnings are written to its own plugin log file",
       "kind": "improvement",
       "changelog": "1.6.0 Changed: a plugin's log lines, the LLM plane's included (it is a plugin in 1.6.0), are written to that plugin's own log file under `plugins.logs.dir` (for example `logs/plugins/llm.log`), not to the Busbar log.",
-      "by": "owner (Matthew Jackson), signed 2026-10-04 (PLANELOG, OWNER SIGNED on the p3-flip-llm park); 2026-09-28 PLUGIN LOGGING amendment (\"all plugins should log to their plugin's log file\"), #85",
+      "by": "ruling:§OWNER 2026-09-28 amends PLUGIN LOGGING (registered under a standing ruling; no owner signature on this entry); signed 2026-10-04 (PLANELOG, OWNER SIGNED on the p3-flip-llm park); 2026-09-28 PLUGIN LOGGING amendment (\"all plugins should log to their plugin's log file\"), #85",
       "cells": "^egress\\.image-detail\\|high\\|(anthropic|bedrock|gemini)$",
       "expected_cells": 3,
       "classes": [
@@ -2656,7 +2736,7 @@
         ]
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-09-28 amends PLUGIN LOGGING",
         "when": "2026-10-04",
         "ruling": "OWNER SIGNED 2026-10-04 (PLANELOG): the llm plane's warnings move to its own plugin log file per the 2026-09-28 PLUGIN LOGGING amendment, #85 'log changes from 1.5.5' (BUSBAR-1.6.0.md)"
       },
@@ -2671,8 +2751,8 @@
       "kind": "breaking",
       "changelog": "A config with no `store:` block is refused at boot and by `--validate`; `busbar --migrate-config` inserts `store: {module: memory}`, the in-memory store such a config ran on in 1.5.x.",
       "by": "owner (Matthew Jackson), OWNER RULED Q-STORE = (B) (2026-09-27) + Q-STEP7-a (2026-10-04: D1 approved, D2 signed #46)",
-      "cells": "^config\\.migrate\\|[^|]+\\|migrate$",
-      "expected_cells": 78,
+      "cells": "^config\\.migrate\\|[^|]+\\|migrate$|^config\\.migrate\\|LAW0\\-MIG\\-OPERATOR\\-INLINE\\|boot$",
+      "expected_cells": 79,
       "classes": [
         "body",
         "effects.stderr"
@@ -2735,6 +2815,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q-STEP7-a",
         "when": "2026-10-04",
         "ruling": "2026-09-27 OWNER RULED Q-STORE = (B); Q-STEP7-a (1.6.0-QUESTIONS.md) answered 2026-10-04: \"Approve D1\" (the oracle baseline names its store), \"Sign #46\" (this entry)"
       },
@@ -2742,7 +2823,7 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "rationale": "OWNER RULED Q-STORE = (B) (2026-09-27, docs/design/BUSBAR-1.6.0.md): 1.6.0 refuses a config with no `store:` block, and `busbar --migrate-config` inserts `store: {module: memory}`, the store 1.5.5 ran such a config on (v1.5.5 GOVERNANCE_STORE_MEMORY via default_governance_store, config/mod.rs:3026/3061). Q-STEP7-a (1.6.0-QUESTIONS.md, answered by the owner 2026-10-04): D1, approved, makes the oracle's run-time inputs name that store (busbar-release recorder/store_baseline.rs: the configs the engine writes and boots, each capture cell's config, the admin config-apply/validate bodies and every script cell's config via `upgrade-config`; no stored cell definition is edited, no golden re-recorded), so every other 1.5.5 golden stays the 1.5.5 answer. D2, signed as #46, is this entry: the cells that move BECAUSE of the ruling are exactly the 78 `config.migrate|<tag>|migrate` cells, since every corpus config lacks `store:` and none carries a 1.4.x `governance:`. The migrated document (body) gains `store:\\n  module: memory` as its last root key, and stderr gains `  - store: inserted `store: {module: memory}` (1.6.0 requires a `store:` block; ...)` under CHANGES: the header appears on the 9 cells whose 1.5.5 golden printed none, and the count is +1 on the other 69 (goldens print 1,2,3,4,6,9,29,31,32). The transform removes exactly that block and that line and decrements the count (ascending, so no count is rewritten twice); the cell then scores ACCEPTED, never PASS, and anything else that moved stays red. The 78 `validate-migrated` cells do not move (the migrated config validates). PREMISE (evaluated): the v1.5.5 corpus config's migrated body names the memory store, so a build that does not insert the block withholds the entry. kind=breaking: a 1.5.5 config with no store block no longer boots unchanged. COUNT RULES BOUND TO THE STORE LINE (2026-10-06, relayed ARCHITECT/oracle-strict ruling): the engine applies a `transform` to BOTH sides, so a bare `CHANGES (N)` -> `(N-1)` rule also decremented the GOLDEN's count and 45 cells could never match. Each count rule now matches only a `CHANGES (N):` header followed, in the same text, by the inserted `store:` bullet (`CHANGES \\\\(N\\\\):((?s:.*?)<store bullet>)` -> `CHANGES (N-1):\\\\1`), so the golden, which has no such bullet, is never rewritten; the bullet itself is removed after the counts. The regex scope, the cells and the reach are unchanged."
+      "rationale": "OWNER RULED Q-STORE = (B) (2026-09-27, docs/design/BUSBAR-1.6.0.md): 1.6.0 refuses a config with no `store:` block, and `busbar --migrate-config` inserts `store: {module: memory}`, the store 1.5.5 ran such a config on (v1.5.5 GOVERNANCE_STORE_MEMORY via default_governance_store, config/mod.rs:3026/3061). Q-STEP7-a (1.6.0-QUESTIONS.md, answered by the owner 2026-10-04): D1, approved, makes the oracle's run-time inputs name that store (busbar-release recorder/store_baseline.rs: the configs the engine writes and boots, each capture cell's config, the admin config-apply/validate bodies and every script cell's config via `upgrade-config`; no stored cell definition is edited, no golden re-recorded), so every other 1.5.5 golden stays the 1.5.5 answer. D2, signed as #46, is this entry: the cells that move BECAUSE of the ruling are exactly the 78 `config.migrate|<tag>|migrate` cells, since every corpus config lacks `store:` and none carries a 1.4.x `governance:`. The migrated document (body) gains `store:\\n  module: memory` as its last root key, and stderr gains `  - store: inserted `store: {module: memory}` (1.6.0 requires a `store:` block; ...)` under CHANGES: the header appears on the 9 cells whose 1.5.5 golden printed none, and the count is +1 on the other 69 (goldens print 1,2,3,4,6,9,29,31,32). The transform removes exactly that block and that line and decrements the count (ascending, so no count is rewritten twice); the cell then scores ACCEPTED, never PASS, and anything else that moved stays red. The 78 `validate-migrated` cells do not move (the migrated config validates). PREMISE (evaluated): the v1.5.5 corpus config's migrated body names the memory store, so a build that does not insert the block withholds the entry. kind=breaking: a 1.5.5 config with no store block no longer boots unchanged. COUNT RULES BOUND TO THE STORE LINE (2026-10-06, relayed ARCHITECT/oracle-strict ruling): the engine applies a `transform` to BOTH sides, so a bare `CHANGES (N)` -> `(N-1)` rule also decremented the GOLDEN's count and 45 cells could never match. Each count rule now matches only a `CHANGES (N):` header followed, in the same text, by the inserted `store:` bullet (`CHANGES \\\\(N\\\\):((?s:.*?)<store bullet>)` -> `CHANGES (N-1):\\\\1`), so the golden, which has no such bullet, is never rewritten; the bullet itself is removed after the counts. The regex scope, the cells and the reach are unchanged. SCOPE 78 -> 79 (2026-10-20, PR #1292): config.migrate|LAW0-MIG-OPERATOR-INLINE|boot runs the same migrate over a 1.5 config with no `store:` block (its golden body ends at identity-providers), so it moves for the same signed reason: the migrated body gains `store:\\n  module: memory` and CHANGES gains the store bullet. Its sibling LAW0-MIG-OPERATOR-14X already names a sqlite store and does not move."
     },
     {
       "id": "Q133 a wedged hook is quarantined and comes back through a timed trial call",
@@ -2763,6 +2844,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q133",
         "when": "2026-10-07",
         "ruling": "2026-10-07 OWNER SIGNED in-session: Q133 quarantine-exit (docs/design/1.6.0-QUESTIONS.md Q133, R2); signed by owner 2026-10-07"
       },
@@ -2790,6 +2872,7 @@
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
+        "signed": "Q134",
         "when": "2026-10-07",
         "ruling": "2026-10-07 OWNER SIGNED in-session: Q134 = 503 when the auth verify max_inflight is full, chosen over keeping 401 or waiting for a slot (docs/design/1.6.0-QUESTIONS.md Q134, R8); signed by owner 2026-10-07"
       },
@@ -2811,9 +2894,9 @@
         ]
       },
       "changelog": "1.6.0 Added: a model entry takes `protocol`, an optional override of the dialect its provider's `protocol` sets.",
-      "by": "owner (Matthew Jackson), 2026-10-07 in-session signature: NEUT-U-models protocol (optional per-model override per decision #51); entry staged by DECISIONS-FIX (coordinator Q11)",
+      "by": "ruling:#51 (registered under a standing ruling; no owner signature on this entry); 2026-10-07 in-session signature: NEUT-U-models protocol (optional per-model override per decision #51); entry staged by DECISIONS-FIX (coordinator Q11)",
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#51",
         "when": "2026-10-07",
         "ruling": "2026-10-07 OWNER SIGNED in-session: NEUT-U-models protocol, an optional per-model override per decision #51; omitted means the provider's catalog default"
       },
@@ -2836,7 +2919,7 @@
       "id": "EGRESS-WIDEN the one destination guard also judges a2a peer fetches, streaming upstreams and duplex dials",
       "kind": "breaking",
       "changelog": "1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.",
-      "by": "owner (Matthew Jackson), 2026-10-07 in-session signature: egress widening (one guard for every dial); staged by the ARCHITECT 2026-10-07T23:05Z (E1 parity)",
+      "by": "ruling:§Destination guard — ONE check for every outbound connection (registered under a standing ruling; no owner signature on this entry); 2026-10-07 in-session signature: egress widening (one guard for every dial); staged by the ARCHITECT 2026-10-07T23:05Z (E1 parity)",
       "cells": "^egress\\.guard\\|(a2a-peer-fetch|streaming-upstream|duplex-dial)\\|private$",
       "expected_cells": 0,
       "classes": [
@@ -2849,7 +2932,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§Destination guard — ONE check for every outbound connection",
         "when": "2026-10-07",
         "ruling": "2026-10-07 OWNER SIGNED in-session: egress widening (one guard for every dial), the unsigned accepted difference the ARCHITECT staged 2026-10-07T23:05Z (E1 parity)"
       },
@@ -2879,9 +2962,9 @@
         "status": 1
       },
       "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "by": "ruling:#34 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#34",
         "when": "2026-09-18",
         "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
       },
@@ -2929,9 +3012,9 @@
         ]
       },
       "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "by": "ruling:#34 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#34",
         "when": "2026-09-18",
         "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
       },
@@ -2962,9 +3045,9 @@
         "status": 1
       },
       "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "by": "ruling:#34 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#34",
         "when": "2026-09-18",
         "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
       },
@@ -3012,9 +3095,9 @@
         ]
       },
       "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "by": "ruling:#34 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#34",
         "when": "2026-09-18",
         "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
       },
@@ -3062,9 +3145,9 @@
         ]
       },
       "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "by": "ruling:#34 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#34",
         "when": "2026-09-18",
         "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
       },
@@ -3095,9 +3178,9 @@
         "status": 1
       },
       "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "by": "ruling:#34 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#34",
         "when": "2026-09-18",
         "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
       },
@@ -3140,9 +3223,9 @@
         ]
       },
       "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
-      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "by": "ruling:#34 (registered under a standing ruling; no owner signature on this entry); BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#34",
         "when": "2026-09-18",
         "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
       },
@@ -3153,10 +3236,360 @@
       "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-webrequest` ships as `busbar-hook-webrequest`. CELL: boot.warning|BOOT-W22|boot. BYTES MOVED (golden -> candidate): body.text trust WARN line `plugin=busbar-webrequest file=busbar-webrequest-` -> `plugin=busbar-hook-webrequest file=busbar-hook-webrequest-`. The transform rewrites only those name bytes back to the 1.5.5 name."
     },
     {
+      "id": "N34-STORE-BOOT-POSTGRES plugin name busbar-store-postgres-plugin -> busbar-store-postgres",
+      "kind": "breaking",
+      "cells": "^store\\.boot\\|postgres\\|(key-value|localhost|loopback|multi-host|sslmode-disable|sslmode-require|url-options)$",
+      "expected_cells": 7,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "plugin load failed: plugin 'busbar-store-postgres' open failed: ",
+            "plugin load failed: plugin 'busbar-store-postgres-plugin' open failed: "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "store.boot|postgres|localhost",
+        "body_contains": "plugin 'busbar-store-postgres' open failed: "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, so `busbar-store-postgres-plugin` ships as `busbar-store-postgres`; the same rename N34-BOOT-171 accepts for sqlite. CELLS: the seven store.boot|postgres cells whose 1.5.5 golden carries the plugin's open-failure line (key-value, localhost, loopback, multi-host, sslmode-disable, sslmode-require, url-options; loopback-validate and private-validate carry no plugin name and are not matched). BYTES MOVED (golden -> candidate): body.json log line `plugin load failed: plugin 'busbar-store-postgres-plugin' open failed: ` -> `plugin load failed: plugin 'busbar-store-postgres' open failed: `. The transform rewrites only those name bytes back to the 1.5.5 name; any other byte of the log, the upstream capture or the exit stays a divergence."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-auth-github plugin name busbar-auth-github-plugin -> busbar-auth-github",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|auth-github$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-auth-github-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-auth-github-plugin-\\1 "
+          ],
+          [
+            " busbar-auth-github       github ",
+            " busbar-auth-github-plugin github "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|auth-github",
+        "body_contains": " busbar-auth-github       github "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-auth-github-plugin` ships as `busbar-auth-github` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|auth-github. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-auth-github-plugin-` -> `busbar-auth-github-`; the NAME column `busbar-auth-github-plugin` -> `busbar-auth-github` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-auth-ldap plugin name busbar-auth-ldap-plugin -> busbar-auth-ldap",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|auth-ldap$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-auth-ldap-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-auth-ldap-plugin-\\1 "
+          ],
+          [
+            " busbar-auth-ldap         ldap ",
+            " busbar-auth-ldap-plugin  ldap "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|auth-ldap",
+        "body_contains": " busbar-auth-ldap         ldap "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-auth-ldap-plugin` ships as `busbar-auth-ldap` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|auth-ldap. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-auth-ldap-plugin-` -> `busbar-auth-ldap-`; the NAME column `busbar-auth-ldap-plugin` -> `busbar-auth-ldap` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-auth-oidc plugin name busbar-auth-oidc-plugin -> busbar-auth-oidc",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|auth-oidc$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-auth-oidc-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-auth-oidc-plugin-\\1 "
+          ],
+          [
+            " busbar-auth-oidc         oidc ",
+            " busbar-auth-oidc-plugin  oidc "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|auth-oidc",
+        "body_contains": " busbar-auth-oidc         oidc "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-auth-oidc-plugin` ships as `busbar-auth-oidc` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|auth-oidc. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-auth-oidc-plugin-` -> `busbar-auth-oidc-`; the NAME column `busbar-auth-oidc-plugin` -> `busbar-auth-oidc` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-hashicorp-vault plugin name busbar-hashicorp-vault -> busbar-secret-vault",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|hashicorp-vault$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-secret-vault-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-hashicorp-vault-\\1 "
+          ],
+          [
+            " busbar-secret-vault      vault ",
+            " busbar-hashicorp-vault   vault "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|hashicorp-vault",
+        "body_contains": " busbar-secret-vault      vault "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-hashicorp-vault` ships as `busbar-secret-vault` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|hashicorp-vault. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-hashicorp-vault-` -> `busbar-secret-vault-`; the NAME column `busbar-hashicorp-vault` -> `busbar-secret-vault` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-store-mysql plugin name busbar-store-mysql-plugin -> busbar-store-mysql",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|store-mysql$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            " busbar-store-mysql       mysql ",
+            " busbar-store-mysql-plugin mysql "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|store-mysql",
+        "body_contains": " busbar-store-mysql       mysql "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-store-mysql-plugin` ships as `busbar-store-mysql` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|store-mysql. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the NAME column `busbar-store-mysql-plugin` -> `busbar-store-mysql` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-store-postgres plugin name busbar-store-postgres-plugin -> busbar-store-postgres",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|store-postgres$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            " busbar-store-postgres    postgres ",
+            " busbar-store-postgres-plugin postgres "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|store-postgres",
+        "body_contains": " busbar-store-postgres    postgres "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-store-postgres-plugin` ships as `busbar-store-postgres` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|store-postgres. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the NAME column `busbar-store-postgres-plugin` -> `busbar-store-postgres` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-store-sqlite plugin name busbar-store-sqlite-plugin -> busbar-store-sqlite",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|store-sqlite$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            " busbar-store-sqlite      sqlite ",
+            " busbar-store-sqlite-plugin sqlite "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|store-sqlite",
+        "body_contains": " busbar-store-sqlite      sqlite "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-store-sqlite-plugin` ships as `busbar-store-sqlite` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|store-sqlite. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the NAME column `busbar-store-sqlite-plugin` -> `busbar-store-sqlite` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-store-valkey plugin name busbar-store-valkey-plugin -> busbar-store-valkey",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|store-valkey$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            " busbar-store-valkey      valkey ",
+            " busbar-store-valkey-plugin valkey "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|store-valkey",
+        "body_contains": " busbar-store-valkey      valkey "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-store-valkey-plugin` ships as `busbar-store-valkey` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|store-valkey. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the NAME column `busbar-store-valkey-plugin` -> `busbar-store-valkey` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
+      "id": "N34-PLUGINS-LOAD-webrequest-hook plugin name busbar-webrequest -> busbar-hook-webrequest",
+      "kind": "breaking",
+      "cells": "^plugins\\.load\\|webrequest-hook$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "^busbar-hook-webrequest-([0-9]+\\.[0-9]+\\.[0-9]+-<TRIPLE>\\.tar\\.gz) ",
+            "busbar-webrequest-\\1 "
+          ],
+          [
+            " busbar-hook-webrequest   webrequest ",
+            " busbar-webrequest        webrequest "
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "plugins.load|webrequest-hook",
+        "body_contains": " busbar-hook-webrequest   webrequest "
+      },
+      "changelog": "Breaking, signed off by the owner (plugin fleet naming, 2026-09-27): every first-party plugin is named `busbar-<kind>-<name>`, and the repo, the crate, the signed manifest name and the release asset prefix are that one name.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #34 (OWNER-RATIFIED 2026-09-18)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-18",
+        "ruling": "docs/design/BUSBAR-1.6.0.md Part 2 #34 (line 2213): 'Universal crate naming ... OWNER-RATIFIED 2026-09-18 (scheme A)'; 'ALL plugin instances = busbar-<kind>-<name> (owner-confirmed 2026-09-18)'; with the 2026-09-27 OWNER plugin-fleet ruling (5) NAMING (line 4018: 'every plugin repo is renamed to busbar-<kind>-<name> NOW (repo = crate = artifact prefix)') and the plugin-declared legacy-name/alias mapping (line 4070)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "DECISION: Part 2 #34, every plugin instance is named busbar-<kind>-<name>, and the signed manifest name and the release asset prefix are that one name, so `busbar-webrequest` ships as `busbar-hook-webrequest` (1.5.5 names: plugins.yaml legacy name_1_5_5.* and testing/shadow-oracle/plugin-digests.tsv). CELL: plugins.load|webrequest-hook. BYTES MOVED (golden -> candidate): body.text --list-plugins row, the FILE column's asset prefix `busbar-webrequest-` -> `busbar-hook-webrequest-`; the NAME column `busbar-webrequest` -> `busbar-hook-webrequest` (with the column's padding, NAME being `{:<24}`). The transform rewrites only those name bytes back to the 1.5.5 name; the version, alias, kind, signature and STATUS columns and the stderr stay compared byte for byte."
+    },
+    {
       "id": "FID-CHAT translated Chat answers and requests carry the Chat members the IR maps",
       "kind": "improvement",
       "changelog": "A translated OpenAI Chat answer carries a model refusal in `message.refusal` / `delta.refusal` and the serving `service_tier`, an image answer omits `created` when the upstream sent none, and a translated request keeps a `developer` system prompt in the `developer` role.",
-      "by": "owner (Matthew Jackson), 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
       "cells": "^llm\\.fidelity\\|openai\\|(refusal|service-tier|image-created|developer-role)$",
       "expected_cells": 0,
       "classes": [
@@ -3168,7 +3601,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-02",
         "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
       },
@@ -3181,7 +3614,7 @@
       "id": "FID-RESPONSES translated Responses requests and answers carry the Responses members the IR maps",
       "kind": "improvement",
       "changelog": "A translated OpenAI Responses request keeps a `developer` system prompt as a `developer` input item and sends a JSON tool result as the `function_call_output` text, and a translated Responses stream ends at `response.failed` and names the serving `service_tier`.",
-      "by": "owner (Matthew Jackson), 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
       "cells": "^llm\\.fidelity\\|responses\\|(developer-item|json-tool-output|failed-terminal|service-tier)$",
       "expected_cells": 0,
       "classes": [
@@ -3193,7 +3626,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-02",
         "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
       },
@@ -3206,7 +3639,7 @@
       "id": "FID-GEMINI translated Gemini requests and answers carry the Gemini members the IR maps",
       "kind": "improvement",
       "changelog": "A translated Gemini request or answer carries `functionCall.id` / `functionResponse.id`, a failed tool result as `functionResponse.response.error`, a `fileData.mimeType`, the caller's transcription prompt and temperature, and reads Vertex `createTime`, a `functionResponse.id` as the call id, and the image content-policy stops as safety stops.",
-      "by": "owner (Matthew Jackson), 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
       "cells": "^llm\\.fidelity\\|gemini\\|(call-ids|response-error|filedata-mime|transcription-prompt|create-time|image-policy-stops)$",
       "expected_cells": 0,
       "classes": [
@@ -3218,7 +3651,7 @@
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
         "when": "2026-10-02",
         "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
       },
@@ -3231,19 +3664,19 @@
       "id": "R-22 a translated Anthropic stream's error event carries request_id",
       "kind": "improvement",
       "changelog": "A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires.",
-      "by": "owner (Matthew Jackson), rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS)",
-      "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|stream_upstream_error$",
-      "expected_cells": 0,
+      "by": "ruling:§NAMED CONFORMANCE GAPS ARE 0 (registered under a standing ruling; no owner signature on this entry); rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS)",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
       "classes": [
         "body"
       ],
-      "rationale": "When a translated stream into Anthropic ingress fails part way, busbar writes the `event: error` frame itself. v1.5.5 wrote `{\"type\":\"error\",\"error\":{\"type\",\"message\"}}` (crates/busbar/src/proto/anthropic/writer.rs:626-666 at the v1.5.5 tag), but the event body is Anthropic's ErrorResponse, and the published schema (testing/llm-conformance/spec-digests.tsv row anthropic) REQUIRES `request_id` (nullable). So the llm spec-conformance rig fails such a row on `required`, and owner rule 22 makes that a defect. 1.6.0 adds a minted `req_...` id, the same mint this writer's buffered error envelope already uses (anthropic/auth.rs error_envelope). It is an additive member; an SDK reads it as the event's request id. Body only. No oracle cell records a translated stream failing part way (the stream_upstream_error cells are same-dialect, where the far end's frame is relayed verbatim), so the cells are OWED: `cells` names them and expected_cells is 0, the way ORPH-Q3b writes owed cells. The premise probes the existing translated Anthropic stream cell.",
+      "rationale": "When a translated stream into Anthropic ingress fails part way, busbar writes the `event: error` frame itself. v1.5.5 wrote `{\"type\":\"error\",\"error\":{\"type\",\"message\"}}` (crates/busbar/src/proto/anthropic/writer.rs:626-666 at the v1.5.5 tag), but the event body is Anthropic's ErrorResponse, and the published schema (testing/llm-conformance/spec-digests.tsv row anthropic) REQUIRES `request_id` (nullable). So the llm spec-conformance rig fails such a row on `required`, and owner rule 22 makes that a defect. 1.6.0 adds a minted `req_...` id, the same mint this writer's buffered error envelope already uses (anthropic/auth.rs error_envelope). It is an additive member; an SDK reads it as the event's request id. Body only. SCOPE (OWNER ruling 2026-10-20, PR #1292): the `error` frame is busbar's own wherever a stream is cut after its first event, so the one cell the oracle runs for it is llm|anthropic|anthropic|request|stream_upstream_cut (golden: {\"error\":{\"message\",\"type\"},\"type\":\"error\"}; 1.6.0 adds request_id). The earlier scope named five translated stream_upstream_error cells the oracle never records (Law 10: a name that never runs); it is replaced by the cell that runs. The same-dialect stream_upstream_error@fixture cell relays the far end's frame verbatim and is not in scope. The premise probes the existing translated Anthropic stream cell.",
       "premise": {
         "cell": "llm|anthropic|openai|request|ok_stream",
         "status": 200
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§NAMED CONFORMANCE GAPS ARE 0",
         "when": "2026-10-14",
         "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS: the anthropic writer's error frame)"
       },
@@ -3256,7 +3689,7 @@
       "id": "C-22 bedrock budget refusal is a declared Converse error",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only InvokeModel declares.",
-      "by": "owner (Matthew Jackson), rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C)",
+      "by": "ruling:§NAMED CONFORMANCE GAPS ARE 0 (registered under a standing ruling; no owner signature on this entry); rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C)",
       "cells": "^llm\\|bedrock\\|bedrock\\|request\\|over_budget_total$",
       "expected_cells": 1,
       "classes": [
@@ -3279,9 +3712,34 @@
         ]
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:§NAMED CONFORMANCE GAPS ARE 0",
         "when": "2026-10-14",
         "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C: ThrottlingException/429)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "GEN-LIMITS an apply's limits are in force only once its generation is live",
+      "kind": "improvement",
+      "changelog": "A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982); applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4, PR #1208)",
+      "cells": "^admin\\.ops\\|(PostConfigApply|PutConfigSettings)\\|limits-refused-in-flight$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "v1.5.5 installed a candidate configuration's operational limits process-wide BEFORE validating it (crates/busbar/src/main.rs:2704 `limits::InstallGuard::install(&cfg.limits)` ahead of :2711 `config_validate::validate(&cfg)` at the v1.5.5 tag) and kept them in force for the whole build, rolling back only when the build failed. So while an apply was being validated and built — including one that was then refused — requests served by the running generation read the candidate's body caps, gauge limit, probe timings and hook content ceiling. BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982): a reload 'builds and checks new lists, swaps them in atomically — requests already inside finish on the old ones — and is refused, leaving the running generation serving, if any check fails'. 1.6.0 validates first, reads the candidate's limits through a build-scoped view no other thread sees (busbar_kernel::config::limits::BuildScope), and publishes them only when the generation goes live (AppHandle::swap, InstalledLimits::keep). The steady state is identical: an accepted apply's limits are in force from its swap, a refused one never changes a live limit. Only the transient window during an apply differs. No oracle cell observes a request served DURING an apply, so the cells are OWED: `cells` names them and expected_cells is 0, the way R-22 writes owed cells. The premise probes the existing successful apply cell. Proof: crates/busbar-kernel/src/tests/tests.rs a_built_generations_limits_are_in_force_only_once_it_is_live.",
+      "premise": {
+        "cell": "admin.ops|PostConfigApply|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-19",
+        "ruling": "BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982), applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4: keep the fix over 1.5.5's install-before-validate, v1.5.5 main.rs:2704/2711); not a fresh owner signature"
       },
       "expires": {
         "baseline": "1.5.5",
@@ -3292,7 +3750,7 @@
       "id": "#24/#77(9) amend_rate_history is served on a node with no operator key",
       "kind": "breaking",
       "changelog": "1.6.0 Breaking: `POST /api/v1/admin/ledger/amend-rate-history` is served on every node and needs only a `full` admin grant, with no operator key or signature.",
-      "by": "owner (Matthew Jackson), OWNER-LOCKED #24 (BUSBAR-1.6.0.md l.2202) and #77(9) (l.2279); applied by the coordinator 2026-10-19 (u18 BLOCK ruling)",
+      "by": "ruling:#24 (registered under a standing ruling; no owner signature on this entry); OWNER-LOCKED #24 (BUSBAR-1.6.0.md l.2202) and #77(9) (l.2279); applied by the coordinator 2026-10-19 (u18 BLOCK ruling)",
       "cells": "^ledger\\|amend\\|(adjusting-entries|refused-unsigned)$",
       "expected_cells": 2,
       "classes": [
@@ -3323,7 +3781,7 @@
         ]
       },
       "signoff": {
-        "who": "owner (Matthew Jackson)",
+        "who": "ruling:#24",
         "when": "2026-09-08",
         "ruling": "#24 and #77(9) OWNER-LOCKED (the admin API is dumb, owner 2026-09-08): amend_rate_history is additive admin surface and no verb carries operator signatures; this scope applied by the coordinator 2026-10-19"
       },
@@ -3331,6 +3789,163 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "SPEND-LEDGER a stream that ledgered cost before its upstream error is charged",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
+      "by": "owner (Matthew Jackson), 2026-10-20 ruling on PR #1292",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|stream_upstream_error@fixture$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.usage"
+      ],
+      "rationale": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged. The cell streams one Anthropic message_start that states 11 input tokens, then an upstream error. 1.5.5 recorded usage {requests 1} with no spend (spend_cents null); 1.6.0 ledgers the 11 input tokens the stream stated before the error and spends 110 cents (11 x the oracle rate card's input_utok 100000 = 1,100,000 utok). The other five stream_upstream_error@fixture cells state no usage before their error, so their usage is 1.5.5's and they are not in scope. The premise holds the candidate to the signed figure: this entry forgives the usage difference only when the candidate spends exactly 110 cents.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "status": 200
+          },
+          {
+            "cell": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
+            "pointer": "/effects/usage/spend_cents",
+            "equals": 110
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-20",
+        "ruling": "OWNER 2026-10-20: spend is what the plane ledgers; a cut stream that ledgered cost is charged"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "M-2R the openai and cohere doors trip the breaker on an in-band error inside a 200 stream",
+      "kind": "breaking",
+      "changelog": "**A stream that dies mid-flight is no longer served, and billed, as a completed one.**",
+      "by": "owner (Matthew Jackson), 2026-10-20 \"Keep and sign\"",
+      "cells": "^llm\\|(openai\\|openai|cohere\\|cohere)\\|request\\|stream_upstream_error@fixture$",
+      "expected_cells": 2,
+      "classes": [
+        "effects.metrics"
+      ],
+      "rationale": "An upstream that answers 200 and then sends an in-band error inside the stream has failed. 1.5.5 already recorded that failure on the lane's breaker for the anthropic, gemini and bedrock doors; the openai and cohere doors served it as a completed stream and recorded none. 1.6.0 treats all five alike, so on these two cells the lane's metrics gain the failure the breaker recorded: busbar_lane_available{pool,lane} null -> -1 (the first differing pointer in the judged fail list, /busbar_lane_available{pool=\"m-openai-chat\",lane=\"m-openai-chat\"} and /busbar_lane_available{pool=\"m-cohere\",lane=\"m-cohere\"}) and the lane_state gauge beside it. This replaces the retired M-2 (retired in 75fcf12d75): the same CHANGELOG line, \"A stream that dies mid-flight is no longer served, and billed, as a completed one.\", now carries it. Metrics only; no status, body or usage class is waived. The premise probes the two cells' 200 status.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|openai|openai|request|stream_upstream_error@fixture",
+            "status": 200
+          },
+          {
+            "cell": "llm|cohere|cohere|request|stream_upstream_error@fixture",
+            "status": 200
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-20",
+        "ruling": "OWNER 2026-10-20 \"Keep and sign\": the openai and cohere doors trip the breaker on an in-band error inside a 200 stream, the same as 1.5.5 already did for anthropic, gemini and bedrock"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "row 194 the sigv4 door signs the walked request's method, query and content type",
+      "kind": "improvement",
+      "status": "owner-approved 2026-10-21",
+      "changelog": "1.6.0 Changed: the SigV4 auth plugin signs the real method, query string and content type of each outbound request it signs; a POST of `application/json` with no query string signs byte-for-byte as 1.5.5 did.",
+      "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (row 194; busbar-auth-sigv4 #23 @ 433c113b27)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-21",
+        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): the busbar-auth-sigv4 door signs the walked request's real method, query and content type, keeps the AWS comma-merge of a repeated header name, and a POST of application/json with an empty query signs as 1.5.5's bytes"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^egress\\.auth\\|sigv4\\|(get-no-query|query-canonical|non-json-content-type)$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "egress.auth|sigv4|session-token",
+            "pointer": "/steps/0/status",
+            "equals": 200
+          },
+          {
+            "cell": "egress.auth|sigv4|session-token",
+            "pointer": "/upstream/0/method",
+            "equals": "POST"
+          },
+          {
+            "cell": "egress.auth|sigv4|session-token",
+            "pointer": "/upstream/0/path",
+            "equals": "/model/m-cap/converse"
+          },
+          {
+            "cell": "egress.auth|sigv4|session-token",
+            "body_contains": "SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token"
+          }
+        ]
+      },
+      "rationale": "OWNER 2026-10-21 (relayed by the coordinator; replaces the earlier revert-to-1.5.5 ruling). 1.5.5 signed only the request its Bedrock door sent: a POST of a JSON body to the model path, no query (v1.5.5 proxy/egress.rs `sign_and_wire_path_parts`). 1.6.0's busbar-auth-sigv4 door (PR #23, reviewed head 433c113b27) signs the walked request's own method, its query canonicalised per SigV4 (each name and value decoded once, re-encoded over the unreserved set with uppercase hex, sorted by name then value, a repeated name kept) and the content type it is sent with, and comma-merges a repeated header name as the AWS spec does. For POST + application/json + empty query every signed byte is 1.5.5's (plugin test the_signer_signs_every_request_1_5_5_could_send_as_1_5_5_signed_it, against the moved 1.5.5 sign_v4); the other shapes are pinned by independent hmac/hashlib vectors (the_walked_methods_queries_and_content_types_sign_to_independent_vectors). The one measured SigV4 cell, egress.auth|sigv4|session-token, is that 1.5.5 shape (POST /model/m-cap/converse, application/json, no query): it is NOT in `cells` and must stay byte-identical, so this entry forgives no measured cell today. It registers the contract change: `cells` names the owed GET, query and non-JSON cells and expected_cells is 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's measured cell to the 1.5.5 shape the ruling keeps (status 200, POST to the converse path, the 1.5.5 SignedHeaders set). Newer heads of busbar-auth-sigv4 #23 carry the same behaviour and the same two tests: f26347c76f, c1ea9d4225."
+    },
+    {
+      "id": "row 194 the oidc door refuses a redirect to a private, loopback or cloud-metadata host",
+      "kind": "breaking",
+      "status": "owner-approved 2026-10-21; the DNS-name rule owner-approved 2026-10-22",
+      "changelog": "1.6.0 Changed: the OIDC auth plugin refuses a discovery or JWKS redirect to a cloud metadata or IPv6 link-local host from any host, and a redirect to a private or loopback host (an IP literal, or the localhost name) unless the hop that sent it is itself on a private or loopback host; each hop is judged by the host that redirected, so a chain that leaves through a public host cannot come back into the private network. The check reads the literal host only, with no DNS lookup, so an identity provider reached by any other DNS name counts as public.",
+      "by": "owner (Matthew Jackson), rulings 2026-10-21 and 2026-10-22 relayed by the coordinator (row 194; busbar-auth-oidc #41 @ 506a47037c)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-21",
+        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): busbar-auth-oidc refuses a public-to-private/loopback redirect and a redirect to a cloud-metadata or IPv6 link-local host; 1.5.5 followed up to 10 https redirects with no address check",
+        "widened": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-22",
+          "ruling": "owner-approved 2026-10-22 (relayed by coordinator): an oidc identity provider reached by a DNS name counts as public, so its redirect to a private IP is refused (1.5.5 followed it)"
+        }
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^egress\\.auth\\|oidc-redirect\\|(public-to-private|public-to-loopback|cloud-metadata|ipv6-link-local)$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "egress.auth|login-hop|oidc",
+            "pointer": "/steps/0/status",
+            "equals": 401
+          },
+          {
+            "cell": "egress.auth|login-hop|oidc",
+            "pointer": "/upstream/0/path",
+            "equals": "/token"
+          },
+          {
+            "cell": "egress.auth|login-hop|oidc",
+            "body_contains": "client_secret=oracle-oidc-secret%3A0001%2F%2B%3D"
+          }
+        ]
+      },
+      "rationale": "OWNER 2026-10-21 (relayed by the coordinator; replaces the earlier revert-to-1.5.5 ruling), widened by OWNER 2026-10-22 (the DNS-name rule). 1.5.5's oidc module (busbar-auth-oidc v1.0.6 reqwest_fetcher.rs) followed up to 10 https redirects on its discovery and JWKS fetches with no address check. 1.6.0's busbar-auth-oidc door (PR #41, reviewed head 506a47037c) keeps that policy (at most 10, https only, reqwest 0.12.28's texts after 1.5.5's `request to {url} failed: ` prefix) and refuses two redirects before the next hop is asked. Each refusal names the URL that was ASKED (the configured or discovered discovery/JWKS URL), not the redirect target: `request to {asked URL} failed: a redirect to a cloud metadata address is not allowed` for a redirect to a cloud-metadata or IPv6 link-local host, from any host; `request to {asked URL} failed: a redirect to a private or loopback address is not allowed` for a redirect to a private or loopback host (an IP literal, or the localhost name: `localhost` and `*.localhost`, busbar-contract net.rs host_is_private_or_loopback) unless the hop that sent it is itself on a private or loopback host. THE RULE, exactly: each hop is judged by the host that redirected (fetch.rs `refused_hop(&at, &next, url)`, `at` being the hop that answered the redirect), so a chain that leaves through a public host cannot come back into the private network (asked https://10.0.0.7/... -> https://cdn.idp.example/jwks -> https://10.0.0.8/jwks is refused). The check reads the literal host only, with no DNS lookup. An identity provider reached by any other DNS name (e.g. keycloak.corp) counts as public, so its redirect to a private or loopback host is refused, where 1.5.5 followed it (OWNER 2026-10-22, relayed by the coordinator: approved). An identity provider on a private IP or at localhost may redirect to private or loopback hosts. A redirect to a DNS name that resolves privately is followed, and the dial guard judges it. A public-to-public https redirect is followed; the token POST follows no redirect, as on 1.5.5. Every other oidc error text is 1.5.5's. No oracle cell drives a redirect: egress.auth|login-hop|oidc serves its issuer, JWKS and token endpoint directly from the loopback capture mock, and plugins.load|auth-oidc lists the module. Neither is in `cells`; both must stay byte-identical. So this entry forgives no measured cell today; it registers the contract change, with `cells` naming the owed redirect cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's measured login hop to its 1.5.5 recording (the callback's 401 and the token POST with the injected client_secret), a cell in which no redirect occurs, so the new refusal has nothing to act on and the recording must stay 1.5.5's. Proof at 506a47037c (auth-oidc/src/tests/fetch_tests.rs): a_redirect_to_a_private_or_metadata_address_is_refused (asserts the asked URL in each refusal), a_public_to_public_https_redirect_is_followed, a_redirected_discovery_is_followed_to_its_document, a_redirected_key_set_is_followed_across_pending. Newer heads of busbar-auth-oidc #41 carry the same behaviour and the same tests: cf4d45a394. NOT FORGIVEN by this entry, and outside the owner's 2026-10-21 and 2026-10-22 approvals: the plugin PR discloses one known difference pending a contract accessor. The SDK `exchange()` returns head and body as one result, so a generic failure after the response head (a reset, a stall after headers) prints the send text `error sending request for url (<asked>)` where 1.5.5 printed `reading {url} response body failed: {e}`. No oracle cell measures it, and this entry's `cells` and classes do not reach it."
     }
   ]
 }

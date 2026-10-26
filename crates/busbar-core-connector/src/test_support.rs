@@ -5,7 +5,7 @@
 //! tests that need a real handshake.
 //! TLS stays in the connector (THE DESIGN; 1.6.0-TODO P2), so no other crate names a TLS library —
 //! not even in a test — and every row that needs a real handshake lives in this crate's own suite
-//! (the kernel dials nothing and holds no TLS, so no kernel row needs one).
+//! (a plane's transport battery rides the kernel's TLS test double instead).
 //!
 //! Test machinery only: compiled under `cfg(test)` for this crate's own suite, and under the
 //! `test-support` feature for a PLUGIN REPO'S conformance test (its host connector's TLS far ends,
@@ -17,14 +17,10 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 
-use busbar_contract::transport::wire::ConnectionSecurity;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// A private test CA and a `localhost` leaf it signed: the CA's certificate as PEM (what a suite's
 /// test trust anchors are), the leaf's certificate and its private key, DER (what a far end serves
@@ -159,19 +155,6 @@ impl ServerTls {
         Ok(Self(Arc::new(config)))
     }
 
-    /// The protocols this far end agrees by ALPN, in order.
-    #[must_use]
-    pub fn alpn(&self) -> Vec<Vec<u8>> {
-        self.0.alpn_protocols.clone()
-    }
-
-    /// The connector's own TLS wrap ([`crate::tls::Tls`]) over this far end's config — what a
-    /// listener a test serves is handed.
-    #[must_use]
-    pub fn security(&self) -> Arc<dyn ConnectionSecurity> {
-        Arc::new(crate::tls::Tls::new(Arc::clone(&self.0)))
-    }
-
     /// Run the server handshake on a blocking std stream. The handshake may FAIL (a client refusing
     /// the certificate, or this end refusing a client that presented no identity); the ClientHello
     /// has been read either way, so what it carried is on the session on both arms.
@@ -192,29 +175,6 @@ impl ServerTls {
         };
         Ok(StdServerSession { conn, tcp, refused })
     }
-
-    /// Run the server handshake on a tokio stream, reading the ClientHello's ALPN offer first.
-    /// `Err` when no ClientHello was read; otherwise the offer, and the handshake's outcome.
-    ///
-    /// # Errors
-    /// No ClientHello arrived.
-    pub async fn accept(
-        &self,
-        tcp: tokio::net::TcpStream,
-    ) -> io::Result<(Vec<Vec<u8>>, io::Result<TokioServerSession>)> {
-        let start =
-            tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), tcp).await?;
-        let offered: Vec<Vec<u8>> = start
-            .client_hello()
-            .alpn()
-            .map(|names| names.map(<[u8]>::to_vec).collect())
-            .unwrap_or_default();
-        let session = start
-            .into_stream(Arc::clone(&self.0))
-            .await
-            .map(TokioServerSession);
-        Ok((offered, session))
-    }
 }
 
 /// One accepted connection on a blocking std stream.
@@ -229,12 +189,6 @@ impl StdServerSession {
     #[must_use]
     pub fn handshake_ok(&self) -> bool {
         self.refused.is_none()
-    }
-
-    /// Why this end refused the handshake, as the TLS stack words it.
-    #[must_use]
-    pub fn refusal(&self) -> Option<&str> {
-        self.refused.as_deref()
     }
 
     /// The server name the ClientHello carried.
@@ -277,53 +231,6 @@ impl Write for StdServerSession {
     }
     fn flush(&mut self) -> io::Result<()> {
         rustls::Stream::new(&mut self.conn, &mut self.tcp).flush()
-    }
-}
-
-/// One accepted connection on a tokio stream.
-pub struct TokioServerSession(tokio_rustls::server::TlsStream<tokio::net::TcpStream>);
-
-impl TokioServerSession {
-    /// The protocol ALPN agreed.
-    #[must_use]
-    pub fn alpn(&self) -> Option<&[u8]> {
-        self.0.get_ref().1.alpn_protocol()
-    }
-}
-
-impl AsyncRead for TokioServerSession {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for TokioServerSession {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
-    }
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().0).poll_flush(cx)
-    }
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().0).poll_shutdown(cx)
-    }
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[io::IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().0).poll_write_vectored(cx, bufs)
-    }
-    fn is_write_vectored(&self) -> bool {
-        self.0.is_write_vectored()
     }
 }
 

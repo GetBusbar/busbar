@@ -10,8 +10,7 @@
 //! The HTTP handshake and the router path that carries it are transport concerns, so they live HERE at
 //! the acceptor — never in the neutral pump, which names no protocol and reads only `Vec<u8>` frames.
 //! [`accept`] takes the axum [`WebSocketUpgrade`] extractor a data route received, and on upgrade hands
-//! the plane the split socket as the frame channel; [`serve`] wires that straight into the pump for a
-//! plane that supplies a [`DuplexPlane`]. A caller that wants the raw channel (to funnel one socket's
+//! the plane the split socket as the frame channel. A caller that wants the raw channel (to funnel one socket's
 //! write side elsewhere, as a proxy topology does) uses [`channel`] on the already-upgraded socket.
 //!
 //! Text and binary WS messages both arrive as `Vec<u8>` frames; control frames (ping/pong/close) are
@@ -19,15 +18,10 @@
 //! message — the plane maps its own wire (text or binary) to bytes at this boundary and the pump stays
 //! framing-agnostic, exactly as its `serve_messages` header describes.
 
-use std::sync::Arc;
-
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use futures::channel::mpsc::{channel as bounded, unbounded, Receiver, UnboundedSender};
 use futures::{SinkExt, StreamExt};
-
-use crate::ingress::byte_duplex::{serve_messages, DuplexPlane};
-use crate::plane_host::{run_gauntlet_session, GauntletPlane, GauntletRequest};
 
 /// How many inbound frames one accepted socket may hold for a reader that has not taken them yet. The
 /// queue is what stands between a client's write rate and this node's memory: unbounded, every frame a
@@ -187,71 +181,4 @@ pub fn bridge(upgrade: WebSocketUpgrade, pipe: crate::plane_routes::SessionPipe)
                 () = outbound => {}
             }
         })
-}
-
-/// SERVE one inbound WS session on the neutral pump: accept the upgrade, then drive `plane`'s two
-/// callbacks (`classify` + `handle`) over the upgraded socket through
-/// [`serve_messages`](crate::ingress::byte_duplex::serve_messages) until the peer closes. The one-call
-/// path a plane whose whole socket IS its session uses; the HTTP-upgrade boundary and the pump are wired
-/// once, here, so the plane supplies only session logic.
-pub fn serve<P>(upgrade: WebSocketUpgrade, plane: Arc<P>) -> Response
-where
-    P: DuplexPlane,
-{
-    accept(upgrade, move |stream, sink| async move {
-        serve_messages(stream, sink, plane).await;
-    })
-}
-
-/// ACCEPT a WS-upgrade only AFTER the open-pass gauntlet admits it — the governed sibling of [`accept`].
-///
-/// A live session must be admitted by [`run_gauntlet_session`] (verify STRICTLY before any charge)
-/// BEFORE the socket is bound to anything: the HTTP→WS handshake is the point of no return, so running
-/// the destination verify first is what keeps a refused session from ever reaching the pump. This runs
-/// the gauntlet SYNCHRONOUSLY (its `verify_destination` is sync) and, on `Refuse`, returns the plane's
-/// OWN finished refusal `Response` WITHOUT calling `on_upgrade` — so a refused session upgrades no
-/// socket, spawns no task and charges nothing. Only on `Proceed` is the upgrade accepted and the split
-/// socket handed to `on_socket`. This is the seam a plane's WS-accept arrival uses instead of a bare
-/// `on_upgrade`, which would bind the socket before the gauntlet could reject it.
-///
-/// (`result_large_err` on the inner gate: the refusal is the plane's own by-value `Response`, carried
-/// verbatim so its shaping matches [`run_gauntlet_session`]'s.)
-#[allow(clippy::result_large_err)]
-pub fn accept_gauntlet<F, Fut>(
-    upgrade: WebSocketUpgrade,
-    req: GauntletRequest<'_>,
-    plane: Box<dyn GauntletPlane + '_>,
-    on_socket: F,
-) -> Response
-where
-    F: FnOnce(Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>) -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    match run_gauntlet_session(req, plane) {
-        // The gauntlet refused the destination: return its finished refusal, bind no socket.
-        Err(refusal) => refusal,
-        // Admitted: only now accept the upgrade and hand the split socket to the plane.
-        Ok(_admitted) => accept(upgrade, on_socket),
-    }
-}
-
-/// SERVE one inbound WS session on the neutral pump, gated by the open-pass gauntlet — the governed
-/// sibling of [`serve`]. Runs [`run_gauntlet_session`] (verify STRICTLY before any charge) and, only on
-/// `Proceed`, accepts the upgrade and drives `plane` over the socket through
-/// [`serve_messages`](crate::ingress::byte_duplex::serve_messages); on `Refuse` it returns the gauntlet
-/// plane's finished refusal and never binds the socket. The one-call path a plane whose whole socket IS
-/// its session uses when that session must be admitted before it is served.
-#[allow(clippy::result_large_err)]
-pub fn serve_gauntlet<P>(
-    upgrade: WebSocketUpgrade,
-    req: GauntletRequest<'_>,
-    gate: Box<dyn GauntletPlane + '_>,
-    plane: Arc<P>,
-) -> Response
-where
-    P: DuplexPlane,
-{
-    accept_gauntlet(upgrade, req, gate, move |stream, sink| async move {
-        serve_messages(stream, sink, plane).await;
-    })
 }

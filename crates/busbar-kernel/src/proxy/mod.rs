@@ -5,13 +5,7 @@
 // content flattening. That second implementation is gone: the hook projection reads the IR the
 // protocol's own reader produced, so nothing under `proxy/` names a dialect to decide what a
 // request SAYS any more.
-// The NEUTRAL proxy vocabulary that stays in core once a plane's engine moved out to its own crate.
-// Core's own staying call sites name these at `crate::proxy::*` via the re-export below; the relocated
-// engine names them across the crate boundary as `busbar_kernel::proxy::*`.
-pub mod proxy_vocab;
-pub use proxy_vocab::{
-    gate_rejected, max_upstream_buffered_bytes, read_capped, GateRejected, ReadEnd, StageShape,
-};
+// The stage taps (`StageShape`, the fan-out, the bounded spawn) are the hook kind's: `crate::hooks::taps`.
 
 // NOTE: cross-protocol max-tokens defaulting lives in `IrReq::prepare_for_egress` — the IR owns its
 // cross-protocol semantics; the engine is operation-blind. Precedence unit tests drive the IR method.

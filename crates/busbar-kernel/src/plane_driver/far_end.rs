@@ -58,6 +58,7 @@ use crate::proxy::egress_unit::{
     Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
 };
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
+use busbar_contract::abi::plane::RefusalCode;
 use busbar_contract::abi::transport::{
     FAULT_NONE, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
@@ -73,7 +74,7 @@ use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
-/// The bytes one read of the far end takes.
+/// The bytes one read of the far end takes: the size of a unit's one read buffer ([`Scratch`]).
 const READ_BYTES: usize = 16 * 1024;
 
 /// The longest pause between two offers of a held far end's frame its connection's buffer had no
@@ -337,12 +338,15 @@ impl Egress {
                 live: None,
                 probe: None,
                 refused: None,
+                unsent: None,
+                sent: false,
                 failed: None,
             }),
             probe_of: None,
             described: None,
             signals: None,
             constraint: Mutex::new(None),
+            scratch: Mutex::new(Vec::new()),
         }
     }
 
@@ -373,12 +377,15 @@ impl Egress {
                 live: None,
                 probe: Some(member),
                 refused: None,
+                unsent: None,
+                sent: false,
                 failed: None,
             }),
             probe_of: Some(destination),
             described: None,
             signals: None,
             constraint: Mutex::new(None),
+            scratch: Mutex::new(Vec::new()),
         })
     }
 }
@@ -483,6 +490,12 @@ struct State {
     /// The unit is refused for this before its next member: an attempt's re-resolved credential
     /// was unavailable.
     refused: Option<ReasonCode>,
+    /// Why the walk's last attempt left nothing on the wire (an `Unsent*` code): the reason the
+    /// walk's exhausted refused piece names in place of `BreakerOpen` while no attempt was sent.
+    unsent: Option<RefusalCode>,
+    /// An attempt of this walk was sent (its connection opened): the walk's exhaustion then names
+    /// `BreakerOpen`, whatever an attempt after it left unsent.
+    sent: bool,
     /// Why the last attempt failed over, in the walk's failover vocabulary (the `routing` stage
     /// tap's `previous_failure`).
     failed: Option<&'static str>,
@@ -502,6 +515,9 @@ pub struct EgressFarEnd<'e> {
     signals: Option<Arc<dyn MemberSignals>>,
     /// The hooks' constraint on the walk, once the request stage set one.
     constraint: Mutex<Option<Constraint>>,
+    /// The unit's one read buffer, lent to each read of the far end in turn ([`Scratch`]); empty
+    /// until the first read.
+    scratch: Mutex<Vec<u8>>,
 }
 
 /// ONE MEMBER'S LIVE STANDING, as the ranking hooks read it (1.5.5 fed every candidate these from
@@ -710,6 +726,39 @@ impl Drop for Head {
     }
 }
 
+/// THE UNIT'S READ BUFFER, LENT TO ONE READ: a unit's reads of its far end share one
+/// [`READ_BYTES`] buffer, allocated at its first read, instead of each read zeroing a fresh one;
+/// a piece leaves it as a copy of the piece's own length. The buffer goes back to the far end when
+/// the read is done, or when the read's future is dropped mid-await. A read that finds it already
+/// lent (no unit reads twice at once) is lent a fresh one.
+struct Scratch<'a> {
+    buf: Vec<u8>,
+    home: &'a Mutex<Vec<u8>>,
+}
+
+impl<'a> Scratch<'a> {
+    fn lend(home: &'a Mutex<Vec<u8>>) -> Self {
+        let mut buf = std::mem::take(
+            &mut *home
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if buf.len() != READ_BYTES {
+            buf = vec![0u8; READ_BYTES];
+        }
+        Scratch { buf, home }
+    }
+}
+
+impl Drop for Scratch<'_> {
+    fn drop(&mut self) {
+        *self
+            .home
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = std::mem::take(&mut self.buf);
+    }
+}
+
 /// Why an attempt ended before any answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoAnswer {
@@ -876,9 +925,18 @@ impl EgressFarEnd<'_> {
         }
         live.fault_reason = reason;
         self.record(live, token, classified, now);
+        // A FAULT READ INSIDE A SUCCESS (an in-band error after a success head, a body the plane
+        // could not render) is the breaker's compensating transient and nothing more: its head was
+        // already counted as the answer it was, so it counts no upstream failure, as a cut after
+        // the head counts none ([`Self::cut`]). 1.5.5 recorded the stream's terminal error on the
+        // breaker, with its trip, and emitted no `busbar_upstream_failures_total` for it (v1.5.5
+        // `crates/busbar/src/proxy/response_body.rs:451-479`; the oracle's in-band stream-error
+        // cells, `stream_upstream_error@fixture`).
+        let inside_success =
+            held.after_success && matches!(held.class, Some(WireStatusClass::Success));
         let hard = matches!(classified.disposition, Disposition::HardDown);
         let client_fault = matches!(classified.disposition, Disposition::ClientFault);
-        if !client_fault && !(hard && live.passthrough) {
+        if !inside_success && !client_fault && !(hard && live.passthrough) {
             let pool = Self::metric_pool(&live.pool, &live.member).to_string();
             e.telemetry.upstream_failure_stated(
                 &pool,
@@ -1196,14 +1254,21 @@ impl EgressFarEnd<'_> {
             }
         });
         let extensions = busbar_contract::abi::auth::scope_extensions(scope.as_deref());
-        let (destination, record) = {
+        // EVERY ATTEMPT THAT LEAVES NOTHING ON THE WIRE says why (`State::unsent`): the walk's
+        // exhausted refused piece names it, so the plane can tell a hop that never left from one
+        // that left and failed over. The attempt still fails over as before.
+        let live = {
             let w = self.lock();
-            let Some(live) = w.live.as_ref() else {
-                return false;
-            };
-            (live.member.destination, live.record.clone())
+            w.live
+                .as_ref()
+                .map(|live| (live.member.destination, live.record.clone()))
+        };
+        let Some((destination, record)) = live else {
+            self.lock().unsent = Some(RefusalCode::UnsentNoAttempt);
+            return false;
         };
         let Some(route) = e.routes.get(&destination).cloned() else {
+            self.lock().unsent = Some(RefusalCode::UnsentNoRoute);
             return false;
         };
         // THE NEED IT RIDES: the one the far request names, bound for the member; a need the member
@@ -1214,6 +1279,7 @@ impl EgressFarEnd<'_> {
         else {
             let mut w = self.lock();
             self.settle(&mut w);
+            w.unsent = Some(RefusalCode::UnsentNeedUnbound);
             return false;
         };
         // THE TARGET IS A PATH. Joined onto the operator's base_url, anything else could move the
@@ -1239,6 +1305,13 @@ impl EgressFarEnd<'_> {
                 live.answered = true;
             }
             self.settle(&mut w);
+            w.unsent = Some(if !path {
+                RefusalCode::UnsentTargetNotPath
+            } else if !named {
+                RefusalCode::UnsentFieldName
+            } else {
+                RefusalCode::UnsentUnrecorded
+            });
             if unrecorded {
                 // A dispatch this node cannot prove it recorded must not happen, on this member
                 // or any other: the unit is refused at once with the internal error, as 1.5.5
@@ -1276,6 +1349,7 @@ impl EgressFarEnd<'_> {
                     // Not the destination's fault: nothing recorded against it; the next member.
                     let mut w = self.lock();
                     self.settle(&mut w);
+                    w.unsent = Some(RefusalCode::UnsentAuthFailed);
                     return false;
                 }
             }
@@ -1353,6 +1427,7 @@ impl EgressFarEnd<'_> {
             Ok(conn) => {
                 {
                     let mut w = self.lock();
+                    w.sent = true;
                     if let Some(live) = w.live.as_mut() {
                         live.keep = keep;
                         live.conn = Some(conn);
@@ -1367,6 +1442,7 @@ impl EgressFarEnd<'_> {
             }
             Err(err) => {
                 let _ = self.no_answer(token, NoAnswer::of(err));
+                self.lock().unsent = Some(RefusalCode::UnsentOpenRefused);
                 false
             }
         }
@@ -1447,10 +1523,10 @@ impl EgressFarEnd<'_> {
             };
             (conn, live.answered, wait)
         };
-        let mut buf = vec![0u8; READ_BYTES];
+        let mut scratch = Scratch::lend(&self.scratch);
         let read = tokio::time::timeout(
             Duration::from_millis(wait_ms),
-            std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut buf)),
+            std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut scratch.buf)),
         )
         .await;
         let piece = match read {
@@ -1465,6 +1541,7 @@ impl EgressFarEnd<'_> {
             Err(_) | Ok(Err(_)) => return Some(self.cut(token)),
             Ok(Ok(piece)) => piece,
         };
+        let buf = &scratch.buf;
         let out = match piece.kind {
             PieceKind::Completion => self.end(true),
             // THE FAR END'S HEAD (HEAD-FIELDS: a framer yields the response head as the FIRST
@@ -1481,6 +1558,8 @@ impl EgressFarEnd<'_> {
             }),
             PieceKind::Body => self.first(token, &piece, buf[..piece.len].to_vec()),
         };
+        // The buffer goes back before a failed-over answer is read through on it.
+        drop(scratch);
         // A failure the walk fails over is read through before it is recorded and left.
         let failing = self
             .lock()
@@ -1804,7 +1883,7 @@ impl EgressFarEnd<'_> {
     async fn failed_over(&self, token: &Pass<Route>) -> FarPiece {
         let e = self.egress;
         let mut left = e.error_body_max;
-        let mut buf = vec![0u8; READ_BYTES];
+        let mut scratch = Scratch::lend(&self.scratch);
         while left > 0 {
             let (conn, wait_ms) = {
                 let w = self.lock();
@@ -1827,7 +1906,7 @@ impl EgressFarEnd<'_> {
             };
             let read = tokio::time::timeout(
                 Duration::from_millis(wait_ms),
-                std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut buf)),
+                std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut scratch.buf)),
             )
             .await;
             match read {
@@ -1951,6 +2030,28 @@ impl FarEnd for EgressFarEnd<'_> {
         self.next_member(token)
     }
 
+    /// A TERMINAL'S DISPATCH OPENS `forward_once` (status row 173): 1.5.5 opened it, at the
+    /// hot-path level, around each degraded dispatch (a spill into a fallback pool, the least-bad
+    /// bypass, a queued slot) and around no attempt of the walk itself, naming the member's lane
+    /// index, the index its breaker cells are keyed by (v1.5.5 `proxy/engine/walk.rs:382`,
+    /// `fields(lane = i)`; `docs/observability.md` l.162-174).
+    fn attempt_span(&self, _token: &Pass<Route>) -> tracing::Span {
+        let lane = self
+            .lock()
+            .live
+            .as_ref()
+            .filter(|l| l.degraded)
+            .map(|l| l.member.destination.get());
+        match lane {
+            Some(lane) => tracing::span!(
+                crate::observability::HOTPATH_LEVEL,
+                "forward_once",
+                lane = lane
+            ),
+            None => tracing::Span::none(),
+        }
+    }
+
     fn send<'a>(
         &'a self,
         token: &'a Pass<Route>,
@@ -2029,6 +2130,11 @@ impl FarEnd for EgressFarEnd<'_> {
 
     fn failure(&self, _token: &Pass<Route>) -> Option<&'static str> {
         self.lock().failed
+    }
+
+    fn unsent(&self, _token: &Pass<Route>) -> Option<RefusalCode> {
+        let w = self.lock();
+        w.unsent.filter(|_| !w.sent)
     }
 
     fn constrain(&self, _token: &Pass<Route>, constraint: Constraint) {

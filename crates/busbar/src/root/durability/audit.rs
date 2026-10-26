@@ -87,28 +87,67 @@ impl Durability {
     /// [`AUDIT_RING`] of them. From the cache when it covers `from`; otherwise read back off the
     /// journal, which keeps every record — so a window older than the cache is never answered as
     /// empty.
+    ///
+    /// `None` when the journal could not be read back, or does not verify: there is no window to
+    /// answer with then, and an empty one would say the chain holds nothing there (audit R1#3).
     #[must_use]
-    pub fn audit_window(&self, from: u64, to: u64) -> Vec<AuditRecord> {
+    pub fn audit_window(&self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
+        match self.audit_window_at(from, to) {
+            AuditWindowAt::Cached(records) => Some(records),
+            AuditWindowAt::OnChain { chain, .. } => chain.audit_window(from, to),
+        }
+    }
+
+    /// [`Durability::audit_window`] as of this hold of the book's lock: the cache's records when
+    /// it covers `from`, else the chain as of now ([`Durability::chain_at`]) to be read once the
+    /// lock is let go — on a node resumed from the store that read scans the store through its
+    /// plugin, which no unit's settle may wait on (THE DESIGN §11.2) — and finished under the lock
+    /// again by [`Durability::audit_window_since`].
+    #[must_use]
+    pub fn audit_window_at(&self, from: u64, to: u64) -> AuditWindowAt {
         let covered = self.audit_records.first().is_some_and(|r| r.seq <= from);
         let pick = |r: &&AuditRecord| r.seq >= from && r.seq <= to;
         if covered || self.audit_records.is_empty() && !self.keeps_chain() {
-            return self
-                .audit_records
-                .iter()
-                .filter(pick)
-                .take(AUDIT_RING)
-                .cloned()
-                .collect();
+            let cached = self.audit_records.iter().filter(pick).take(AUDIT_RING);
+            return AuditWindowAt::Cached(cached.cloned().collect());
         }
-        let Ok(Ok(records)) = self.chain() else {
-            return Vec::new();
-        };
-        records
-            .iter()
-            .filter_map(|r| decode_audit(r).ok().flatten())
-            .filter(|r| r.seq >= from && r.seq <= to)
-            .take(AUDIT_RING)
-            .collect()
+        AuditWindowAt::OnChain {
+            chain: self.chain_at(),
+            sealed_before: self.record.next_seq(),
+        }
+    }
+
+    /// FINISH A WINDOW READ OFF THE CHAIN, under the book's lock again: `window` is what
+    /// [`ChainAt::audit_window`] read of the chain as of the hold when the audit chain's next
+    /// position was `sealed_before`, and every record sealed since that falls in the window is
+    /// added from the cache, so the window and the head a range read folds in beside it answer as of
+    /// THIS hold (`AuditView::read`). `false` when the cache no longer reaches back to the first of
+    /// them, which only a run of more than [`AUDIT_RING`] seals during the read can do: the window
+    /// is then taken again.
+    #[must_use]
+    pub fn audit_window_since(
+        &self,
+        window: &mut Vec<AuditRecord>,
+        sealed_before: u64,
+        from: u64,
+        to: u64,
+    ) -> bool {
+        let since = from.max(sealed_before);
+        if since > to || window.len() >= AUDIT_RING || self.record.next_seq() <= since {
+            return true;
+        }
+        match self.audit_records.first() {
+            Some(oldest) if oldest.seq <= since => {}
+            _ => return false,
+        }
+        window.extend(
+            self.audit_records
+                .iter()
+                .filter(|r| r.seq >= since && r.seq <= to)
+                .cloned(),
+        );
+        window.truncate(AUDIT_RING);
+        true
     }
 
     /// WHAT A WALK OF THE RETAINED AUDIT CHAIN FINDS, as `GET /admin/verify` reports it: a record
@@ -149,9 +188,52 @@ impl Durability {
     }
 }
 
+/// AN AUDIT WINDOW AS OF ONE HOLD OF THE BOOK'S LOCK ([`Durability::audit_window_at`]).
+pub enum AuditWindowAt {
+    /// The cache covers the window: its records, taken under the lock.
+    Cached(Vec<AuditRecord>),
+    /// The window is older than the cache: the chain as of the hold, read without the lock
+    /// ([`ChainAt::audit_window`]), and the position the audit chain's next record took then.
+    OnChain {
+        /// The chain as of the hold.
+        chain: ChainAt,
+        /// The audit chain's next position at the hold: every record before it is on `chain`.
+        sealed_before: u64,
+    },
+}
+
+impl ChainAt {
+    /// The sealed audit records at positions `from` through `to` on the chain as of the hold,
+    /// oldest first, at most [`AUDIT_RING`] of them. `None` when the chain could not be read back,
+    /// or does not verify, as [`Durability::audit_window`].
+    #[must_use]
+    pub fn audit_window(self, from: u64, to: u64) -> Option<Vec<AuditRecord>> {
+        let store = self.store().map(str::to_string);
+        let records = match self.read() {
+            Ok(Ok(records)) => records,
+            Ok(Err(broken)) => {
+                tracing::error!(?broken, "the chain an audit window reads does not verify");
+                return None;
+            }
+            Err(e) => {
+                let why = unreadable_in(store.as_deref(), &e);
+                tracing::error!(why = %why, "an audit window was not read back");
+                return None;
+            }
+        };
+        let window: Vec<AuditRecord> = records
+            .iter()
+            .filter_map(|r| decode_audit(r).ok().flatten())
+            .filter(|r| r.seq >= from && r.seq <= to)
+            .take(AUDIT_RING)
+            .collect();
+        Some(window)
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/durability_audit.rs"]
-mod tests;
+pub(super) mod tests;
 
 #[cfg(test)]
 #[path = "../tests/durability_audit_node.rs"]

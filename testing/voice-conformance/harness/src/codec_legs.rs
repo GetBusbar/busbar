@@ -15,9 +15,11 @@
 //! except that a frame configuring the session or asking for a response takes the session's
 //! locked keys (the plane's governed splice, `busbar_plane_streaming::splice`); a far-end frame
 //! reaches the caller as it arrived, every one of them (a usage report also becomes reported
-//! units), and nothing goes to the far end on the caller's behalf (Law 11). Compared on the
-//! correlation fingerprint, the same rule the codec half uses. The expectation is computed from the
-//! wire by the codec and the splice, never by the door.
+//! units), and nothing goes to the far end on the caller's behalf (Law 11). Compared BYTE FOR BYTE,
+//! frame by frame, per side and in order (Law 5, `BUSBAR-1.6.0.md` l.1903: a relay "sends the
+//! client's bytes with governed byte-level splices"): a frame the reader decodes to nothing, or a
+//! member it does not model, is held to the same rule as a modelled one. The reader serves only the
+//! units. The expectation is computed from the wire by the splice, never by the door.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -38,7 +40,9 @@ use busbar_plugin_loader::dispatch::Plugin;
 use bytes::Bytes;
 use serde_json::Value;
 
-use crate::door::{judge, open, result, Log, Rig, Session, PUBLIC, SESSION};
+use crate::door::{
+    judge_planted, open, result, Emission, Log, Plant, Rig, Session, PUBLIC, SESSION,
+};
 
 // ── the two dialects ────────────────────────────────────────────────────────────────────────────
 
@@ -391,18 +395,20 @@ pub fn relay(p: &Plugin<Plane>, dialect: Dialect, wires: &[Wire]) -> Log {
     s.log
 }
 
-/// What the session rules say the door must relay for a sequence of wires.
+/// What the session rules say the door must relay for a sequence of wires: the exact frames each
+/// side is owed, in order, and the token units the far end's reports add up to.
 pub struct Expected {
-    far: Vec<Norm>,
-    caller: Vec<Norm>,
+    far: Vec<Vec<u8>>,
+    caller: Vec<Vec<u8>>,
     tokens: Vec<(u32, u64)>,
     answered: bool,
 }
 
 /// The caller frame `bytes` as the session's lock leaves it: a frame configuring the session, or
 /// asking for a response, takes the locked keys; any other frame is as it arrived. `None` for a
-/// governed frame that cannot be read as one object (it goes nowhere).
+/// frame that is not JSON, or a governed frame that cannot be read as one object (it goes nowhere).
 fn governed(dialect: Dialect, locked: &SessionConfig, bytes: &[u8]) -> Option<Vec<u8>> {
+    serde_json::from_slice::<Value>(bytes).ok()?;
     let mut st = DecodeState::default();
     let evs = dialect.read_up(bytes, &mut st);
     let configures = evs.iter().any(|e| {
@@ -430,13 +436,12 @@ fn governed(dialect: Dialect, locked: &SessionConfig, bytes: &[u8]) -> Option<Ve
     }
 }
 
-/// The session rules over `wires`, read by the codec (never by the door).
+/// The session rules over `wires`, computed from the wire (never by the door).
 pub fn expect(dialect: Dialect, wires: &[Wire]) -> Expected {
     let locked = read_settings(SESSION)
         .expect("the leg's section reads")
         .session;
     let mut st = DecodeState::default();
-    let mut sent = DecodeState::default();
     let mut x = Expected {
         far: Vec::new(),
         caller: Vec::new(),
@@ -448,7 +453,7 @@ pub fn expect(dialect: Dialect, wires: &[Wire]) -> Expected {
         match w.dir {
             Dir::Up => {
                 if let Some(bytes) = governed(dialect, &locked, &w.bytes) {
-                    x.far.extend(norm_up(&dialect.read_up(&bytes, &mut sent)));
+                    x.far.push(bytes);
                 }
             }
             Dir::Down => {
@@ -464,7 +469,7 @@ pub fn expect(dialect: Dialect, wires: &[Wire]) -> Expected {
                         }
                     }
                 }
-                x.caller.extend(norm_down(&evs));
+                x.caller.push(w.bytes.clone());
             }
         }
     }
@@ -505,8 +510,9 @@ pub fn decode_relay(dialect: Dialect, log: &Log) -> Relayed {
 }
 
 /// The door's relay of a session against the session rules: every answer READY, no record row,
-/// every far frame on the dialect's socket need, both sides' frames on the expected fingerprint,
-/// the far end's token reports as reported units (and the session fee once the far end answered).
+/// every far frame on the dialect's socket need, both sides' frames byte for byte the frames the
+/// session rules owe them, the far end's token reports as reported units (and the session fee once
+/// the far end answered).
 pub fn relay_check(dialect: Dialect, log: &Log, x: &Expected) -> Result<String, String> {
     if !log.anomalies.is_empty() {
         return Err(format!(
@@ -532,18 +538,16 @@ pub fn relay_check(dialect: Dialect, log: &Log, x: &Expected) -> Result<String, 
             ));
         }
     }
-    let r = decode_relay(dialect, log);
-    if fingerprint(&r.far) != fingerprint(&x.far) {
-        return Err(format!(
-            "the far end was sent {:?}; the session rules say {:?}",
-            r.far, x.far
-        ));
-    }
-    if fingerprint(&r.caller) != fingerprint(&x.caller) {
-        return Err(format!(
-            "the caller was sent {:?}; the session rules say {:?}",
-            r.caller, x.caller
-        ));
+    for (to_far, side, want) in [(true, "far end", &x.far), (false, "caller", &x.caller)] {
+        let sent: Vec<&[u8]> = log
+            .emissions
+            .iter()
+            .filter(|e| e.to_far == to_far)
+            .map(|e| e.frame.as_slice())
+            .collect();
+        if let Some(e) = frames_differ(&sent, want) {
+            return Err(format!("the {side} {e}"));
+        }
     }
     if let Some(u) = log.units.iter().find(|u| u.1 != UNITS_REPORTED) {
         return Err(format!("a unit was not reported by the far end: {u:?}"));
@@ -571,11 +575,32 @@ pub fn relay_check(dialect: Dialect, log: &Log, x: &Expected) -> Result<String, 
         ));
     }
     Ok(format!(
-        "the {} door relayed {} far / {} caller concept(s) by the session rules, {} token unit(s)",
+        "the {} door relayed {} far / {} caller frame(s) byte for byte by the session rules, {} \
+         token unit(s)",
         dialect.name(),
-        r.far.len(),
-        r.caller.len(),
+        x.far.len(),
+        x.caller.len(),
         tokens.len()
+    ))
+}
+
+/// How the frames a side was `sent` differ from the frames it is owed, if they do: the first frame
+/// that differs, both ways, as text.
+fn frames_differ(sent: &[&[u8]], want: &[Vec<u8>]) -> Option<String> {
+    fn text(b: Option<&[u8]>) -> String {
+        b.map_or_else(
+            || "<none>".to_string(),
+            |b| String::from_utf8_lossy(b).into_owned(),
+        )
+    }
+    let n = sent.len().max(want.len());
+    let i = (0..n).find(|&i| sent.get(i).copied() != want.get(i).map(Vec::as_slice))?;
+    Some(format!(
+        "was sent {} frame(s), owed {}; frame {i} was {} where the session rules owe {}",
+        sent.len(),
+        want.len(),
+        text(sent.get(i).copied()),
+        text(want.get(i).map(Vec::as_slice))
     ))
 }
 
@@ -584,6 +609,64 @@ pub fn plant_units(log: &Log) -> Log {
     let mut planted = log.clone();
     planted.units.push((1, UNITS_REPORTED, 7));
     planted
+}
+
+/// THE PLANTED WRONG DOOR that RE-ENCODES instead of relaying bytes (Law 5, `BUSBAR-1.6.0.md`
+/// l.1903: a relay "sends the client's bytes"): the first frame it emits loses a member no reader
+/// models (`event_id`), or gains one, and is re-serialized. Every concept the reader reads is
+/// unchanged, so only a byte-level comparison refuses it. A log with no frame gains one the session
+/// never owed.
+pub fn plant_rewrite(log: &Log) -> Log {
+    let mut planted = log.clone();
+    let first = planted.emissions.iter().enumerate().find_map(|(i, e)| {
+        let v = serde_json::from_slice::<Value>(&e.frame).ok()?;
+        v.as_object().cloned().map(|o| (i, o))
+    });
+    match first {
+        Some((i, mut o)) => {
+            if o.remove("event_id").is_none() {
+                o.insert("event_id".to_string(), Value::from("evt_planted"));
+            }
+            planted.emissions[i].frame = bytes_of(&Value::Object(o));
+        }
+        None => planted.emissions.push(Emission {
+            to_far: false,
+            frame: b"{}".to_vec(),
+            need: 0,
+            verb: String::new(),
+            target: String::new(),
+        }),
+    }
+    planted
+}
+
+/// THE PLANTED WRONG DOOR that DROPS a frame: the last frame it owed is never emitted (a far-end
+/// transcript, `goAway` or `response.output_item.done` the reader decodes to nothing is dropped as
+/// silently as a modelled one). A log with no frame gains one the session never owed.
+pub fn plant_drop(log: &Log) -> Log {
+    let mut planted = log.clone();
+    if planted.emissions.pop().is_none() {
+        planted.emissions.push(Emission {
+            to_far: true,
+            frame: b"{}".to_vec(),
+            need: 0,
+            verb: String::new(),
+            target: String::new(),
+        });
+    }
+    planted
+}
+
+/// The relay legs' planted wrong doors: a phantom unit, a re-encoded frame, a dropped frame.
+pub fn relay_plants() -> [Plant<'static, Log>; 3] {
+    const UNITS: &dyn Fn(&Log) -> Log = &plant_units;
+    const REWRITE: &dyn Fn(&Log) -> Log = &plant_rewrite;
+    const DROP: &dyn Fn(&Log) -> Log = &plant_drop;
+    [
+        ("a token the far end never sent", UNITS),
+        ("a frame re-encoded, not relayed", REWRITE),
+        ("a frame dropped", DROP),
+    ]
 }
 
 /// Judge one relay of `wires` on both doors, with `codec` (the codec half's verdict) folded in.
@@ -597,7 +680,7 @@ fn judge_relay(
 ) -> bool {
     let x = expect(dialect, wires);
     let seen = rig.both(|p| relay(p, dialect, wires));
-    judge(
+    judge_planted(
         slice,
         what,
         &seen,
@@ -606,7 +689,7 @@ fn judge_relay(
             let door = relay_check(dialect, log, &x)?;
             Ok(format!("codec: {codec}; door: {door}"))
         },
-        &plant_units,
+        &relay_plants(),
     )
 }
 
@@ -693,8 +776,9 @@ fn spec_codec(dialect: Dialect, fixture: &str, frame: &[u8]) -> (Result<String, 
                 Dir::Down,
             )
         }
-        // A documented drop is a far-end concept with no shared home: pushed from the far end, the
-        // door must carry it on no wire at all.
+        // A documented drop is a far-end concept with no shared IR home: the reader decodes it to
+        // nothing, and pushed from the far end the door relays its bytes to the caller unchanged
+        // (a relay is byte-level, Law 5), which the door half holds it to.
         Decoded::Empty => match drop_reason(dialect, fixture) {
             Some(reason) => (Ok(format!("documented drop — {reason}")), Dir::Down),
             None => (
@@ -833,22 +917,10 @@ fn replay_codec(dialect: Dialect, wires: &[Wire], skeleton: &[&str]) -> Result<S
 /// `replay <root>`: each dialect's captured transcript, codec half and door half.
 pub fn replay(rig: &Rig, root: &Path) -> i32 {
     // The skeletons the codec re-derives; the door's relay must show the same concepts in the
-    // order it emitted them, less the far end's usage, which a session consumes into units.
-    let cases: [(Dialect, &[&str], &[&str]); 2] = [
+    // order it emitted them: it relays every frame, the far end's usage reports included.
+    let cases: [(Dialect, &[&str]); 2] = [
         (
             Dialect::OpenAi,
-            &[
-                "config",
-                "connect",
-                "audio-in",
-                "speech-start",
-                "tool-args",
-                "tool-close",
-                "tool-result",
-                "audio-out",
-                "speech-start",
-                "cancel",
-            ],
             &[
                 "config",
                 "connect",
@@ -877,22 +949,10 @@ pub fn replay(rig: &Rig, root: &Path) -> i32 {
                 "audio-done",
                 "usage",
             ],
-            &[
-                "config",
-                "connect",
-                "audio-in",
-                "tool-open",
-                "tool-args",
-                "tool-close",
-                "tool-result",
-                "audio-out",
-                "speech-start",
-                "audio-done",
-            ],
         ),
     ];
     let mut fails = 0;
-    for (dialect, codec_skeleton, door_skeleton) in cases {
+    for (dialect, skeleton) in cases {
         let what = format!("{}-transcript", dialect.name());
         let lines = match read_jsonl(&root.join(dialect.name()).join("transcript.jsonl")) {
             Ok(lines) => lines,
@@ -903,22 +963,22 @@ pub fn replay(rig: &Rig, root: &Path) -> i32 {
             }
         };
         let wires = transcript_wires(&lines);
-        let codec = replay_codec(dialect, &wires, codec_skeleton);
+        let codec = replay_codec(dialect, &wires, skeleton);
         let x = expect(dialect, &wires);
         let seen = rig.both(|p| relay(p, dialect, &wires));
-        let pass = judge(
+        let pass = judge_planted(
             "default",
             &what,
             &seen,
             &|log: &Log| {
                 let codec = codec.clone()?;
                 let door = relay_check(dialect, log, &x)?;
-                ordered_subsequence(&decode_relay(dialect, log).tags, door_skeleton)?;
+                ordered_subsequence(&decode_relay(dialect, log).tags, skeleton)?;
                 Ok(format!(
-                    "codec: {codec}; door: {door}, skeleton {door_skeleton:?} in emitted order"
+                    "codec: {codec}; door: {door}, skeleton {skeleton:?} in emitted order"
                 ))
             },
-            &plant_units,
+            &relay_plants(),
         );
         if !pass {
             fails += 1;

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, `docs/design/BUSBAR-1.6.0.md`, "All P-item
-//! behaviours match 1.5.5"; the drive log's P1/P2, commit 470351a480; TODO L-ENG9).
+//! behaviours match 1.5.5"; the drive log's P1/P2, commit 470351a480).
 //!
 //! THE 1.5.5 BEHAVIOUR. 1.5.5 had one plane (owner correction 2026-09-28). On it
 //! every limit reason reached the caller as its own status and kind, and none of them became an
@@ -28,7 +28,19 @@ use busbar_contract::unit::RefusalReason;
 /// Every reason has exactly one class, read the same way from each of its three spellings.
 #[test]
 fn p_item_refusal_reason_collapse_every_reason_has_one_class_by_every_spelling() {
-    assert_eq!(ReasonCode::ALL.len(), RefusalCode::ALL.len());
+    // One wire code per reason, and beside them only the walk's unsent codes: kernel-to-plane
+    // piece reasons that are no reason (`reason_of` decodes them to nothing).
+    assert_eq!(
+        ReasonCode::ALL.len(),
+        RefusalCode::ALL.iter().filter(|c| !c.unsent()).count()
+    );
+    for code in RefusalCode::ALL.iter().filter(|c| c.unsent()) {
+        assert_eq!(
+            busbar_contract::abi::plane::reason_of(code.code()),
+            None,
+            "{code:?}"
+        );
+    }
     for reason in ReasonCode::ALL {
         let class = class_of(*reason);
         assert_eq!(wire_code(*reason).class(), class, "{reason:?}");

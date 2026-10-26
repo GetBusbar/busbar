@@ -31,7 +31,7 @@ fn deploy_yaml(sections: &str) -> DeployCfg {
 }
 
 // (`resolve_provider_hook_and_core_fallback_agree` is RETIRED with its subject: no plane implements
-// the `resolve_provider` hook since the retired engine crate's deletion (DEV-GREEN row 83), so the
+// the `resolve_provider` hook since the retired engine crate's deletion, so the
 // served provider merge IS core's `merge_provider_fallback`, the one path; covered by
 // busbar-kernel `ir/tests/lane_caps_tests.rs` (F25 rows 485-487) and `config/tests/tests.rs`.)
 
@@ -251,4 +251,52 @@ agents:
         errs.iter().any(|e| e.contains("at least TWO members")),
         "{errs:?}"
     );
+}
+
+/// A POOL'S `breaker:` BLOCK IS EVERY PLANE'S (BUSBAR-1.6.0.md THE DESIGN §1: "Any plugin gets all
+/// functionality ... A capability one plane has and a sibling plane lacks is a gap to close"). The
+/// top-level `pools:` have always carried a `breaker:` block held to Rule 6; a pool written under
+/// another plane's section (`<verb>.pools`) takes the same key, so it is held to the same rule in
+/// the same words, and the block it states goes with it to its plane's egress.
+///
+/// RED before the fix: the plane's pool carrier had no `breaker` key, so the block was never read,
+/// never held to Rule 6 and never applied.
+#[test]
+fn a_planes_pool_breaker_block_is_held_to_the_same_rule_and_carried() {
+    let pool = |base: u64| {
+        let deploy = deploy_yaml(&format!(
+            r#"
+tools:
+  search-eu: {{ url: "https://eu.example/t", pin: {{ mechanism: unpinned }} }}
+  search-us: {{ url: "https://us.example/t", pin: {{ mechanism: unpinned }} }}
+  pools:
+    search:
+      members: [search-eu, search-us]
+      breaker: {{ base_cooldown_secs: {base}, max_cooldown_secs: 300 }}
+"#
+        ));
+        resolve(&deploy, &HashMap::new()).expect("the pool resolves")
+    };
+    let refused = busbar_kernel::config_validate::validate(&pool(0)).expect_err("refused");
+    assert!(
+        refused.iter().any(|e| e
+            == "pool 'search' breaker base_cooldown_secs must be >= 1 (got 0); a zero cooldown \
+                re-admits a tripped backend immediately, defeating the breaker's back-off"),
+        "the top-level pools' Rule 6, in its own words: {refused:?}"
+    );
+    let carried = pool(30);
+    let block = carried.plane_pools["tools"]["search"]
+        .breaker
+        .as_ref()
+        .expect("the block goes with the pool to its plane");
+    assert_eq!(
+        (block.base_cooldown_secs, block.max_cooldown_secs),
+        (30, 300)
+    );
+    if let Err(errors) = busbar_kernel::config_validate::validate(&carried) {
+        assert!(
+            !errors.iter().any(|e| e.contains("breaker")),
+            "a sound block is not refused: {errors:?}"
+        );
+    }
 }

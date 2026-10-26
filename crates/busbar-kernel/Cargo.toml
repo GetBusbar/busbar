@@ -55,11 +55,11 @@ busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 # the budget unit's both saturate, so a total one past the u128 ceiling wrapped to ONE nano-unit —
 # an astronomical bill deriving as nearly free. One judge is the fix; this edge is what makes the
 # one judge reachable from here. The ledger unit depends only on `busbar-contract` + `sha2`, so the
-# edge is acyclic, it is kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED grants), and it
-# is already in this crate's compile closure via `busbar-plugin-loader`.
+# edge is acyclic and it is kernel -> kernel (an intra-tier edge ARCHITECTURE_ALLOWED grants).
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
-# The one durable whole-file publish (`durable`), re-exported at `busbar_kernel::durable` for the
-# overlay, the plugin install path and the admin verbs.
+# The write-ahead log the kernel's journal rides (`busbar_kernel_wal`). The one durable whole-file
+# publish is NOT this crate's: `busbar_kernel::durable` is a seam the composition root fills with it
+# (the kernel never names the loader, THE DESIGN l.322).
 busbar-kernel-wal = { path = "../busbar-kernel-wal" }
 # THE AMENDMENT JOURNAL (item 404): the hook seam and the export dispatch record every content read
 # as an access amendment, and the correction a root admin makes to a recorded count is an adjustment
@@ -82,7 +82,10 @@ busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 # The folded `timing` module (former busbar-timing, OWNER Q70) calls `atexit(3)` for its process-exit
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
-busbar-plugin-loader = { path = "../plugin-loader" }
+# NO PLUGIN LOADER (BUSBAR-1.6.0.md THE DESIGN l.322: "The kernel never names the loader"). The
+# plugin registry reaches the kernel as the contract's `plugin_rows::PluginRows` view, and every
+# loader-backed capability (the registry build, the per-kind axes, the plugin admission, the durable
+# write) as a seam the composition root installs (`preflight::RootInstall`).
 # THE STAND-IN LINKED ROWS are no crate at all: the composition root links the build's store and
 # ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no root,
 # so the in-crate R-FIX3 doubles stand in, linked only — `test_support::store_double` (the store row
@@ -98,7 +101,7 @@ tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "io-std", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# The engine-built OAuth mint hops (`egress_auth`) and login-hop client (`auth/token.rs`) form-
+# The engine-built OAuth mint hops (`egress_auth`) form-
 # encode through `serde_urlencoded` — the crate reqwest's `.form()` was, so the wire bytes are
 # unchanged.
 serde_urlencoded = { workspace = true }
@@ -144,10 +147,11 @@ httpdate = { workspace = true }
 # admin auth module, the operator credential's included, resolves through the auth kind's registry by
 # the key the configuration names. The composition root links the build's auth rows
 # (`preflight::install_linked_auth`); this crate names none of them.
-default = ["hooks-ranking", "plane-mcp", "plane-a2a"]
-# The build links the ranking hooks: the composition root registers their row (it owns the crate
-# edge); here it only decides whether a test build's stand-in rows carry that row.
-hooks-ranking = []
+# No `hooks-ranking` feature (THE DESIGN l.1443: the `hooks-ranking` kernel feature is deleted): the
+# composition root links the ranking row under its own feature, and a test build's stand-in hook
+# rows carry the kernel's ranking double in every build (`test_support::hook_axis_stand_in`, answered
+# in process: the kernel never names the loader, THE DESIGN l.322).
+default = ["plane-mcp", "plane-a2a"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
@@ -198,7 +202,7 @@ loom-model = ["dep:loom"]
 # capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
 # `tokio/net`: the test kit's mock servers bind loopback sockets (`test_support`); the shipped
 # kernel asks for no socket layer (THE DESIGN §5).
-test-support = ["tokio/net", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support"]
+test-support = ["tokio/net", "busbar-kernel-identity/stand-in"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this

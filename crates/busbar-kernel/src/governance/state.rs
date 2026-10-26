@@ -107,20 +107,36 @@ impl GovState {
         // a durable one returns every persisted revoked subject.
         let denylist: std::collections::HashSet<String> =
             store.list_denylist()?.into_iter().collect();
+        let caches = Arc::new(RwLock::new(GovCaches {
+            by_id,
+            by_credential,
+        }));
+        let refresh_lock = Arc::new(std::sync::Mutex::new(()));
         // The set was just read from the store, so the staleness clock starts NOW. `RevocationSync`
         // owns its own handle to the store: its refresh runs on the blocking pool and so cannot
-        // borrow from `GovState`.
-        let denylist = crate::governance::revocation::RevocationSync::new(
+        // borrow from `GovState`. Each re-sync also reloads the key caches from the store, so a key
+        // minted, rotated, disabled or deleted on another node of the fleet is seen here within the
+        // same window as a peer's revoke.
+        let denylist = crate::governance::revocation::RevocationSync::reloading(
             store.clone(),
             denylist,
             busbar_kernel::store::now(),
+            {
+                let (store, caches, lock) = (store.clone(), caches.clone(), refresh_lock.clone());
+                Box::new(move || reload_caches(store.as_ref(), &caches, &lock))
+            },
         );
+        // THE PER-BOOT CALLER-REFERENCE KEY (row 159 H2 residual, ARCHITECT ruling): the key a
+        // verified principal's reference is derived under when the node has neither signing
+        // material nor a signing audit chain to bind a deployment keyset from. Random per process,
+        // zeroised on drop, never logged. Session ownership without a durable key does not survive
+        // a restart anyway, so a per-boot key is the honest one.
+        let mut boot_caller_ref = zeroize::Zeroizing::new([0u8; 32]);
+        getrandom::fill(boot_caller_ref.as_mut_slice())
+            .expect("OS randomness for the per-boot caller-reference key");
         Ok(Self {
             store,
-            caches: RwLock::new(GovCaches {
-                by_id,
-                by_credential,
-            }),
+            caches,
             concurrent: RwLock::new(HashMap::new()),
             admin_token_hash: RwLock::new(
                 admin_token
@@ -130,16 +146,19 @@ impl GovState {
             budget: Sharded::new(),
             pending_metering: PendingMetering::new(),
             money_view: money_view::MoneyView::default(),
-            caller_refs: Arc::new(RwLock::new(
-                signer
-                    .as_ref()
-                    .map(|s| Arc::new(crate::auth::CallerRefKey::derive(&s.secret_bytes()))),
-            )),
+            caller_refs: Arc::new(RwLock::new(Some(Arc::new(match signer.as_ref() {
+                Some(s) => crate::auth::CallerRefKey::derive(&s.secret_bytes()),
+                None => crate::auth::CallerRefKey::derive(&boot_caller_ref[..]),
+            })))),
             deployment_caller_ref: RwLock::new(None),
+            boot_caller_ref,
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             denylist,
-            refresh_lock: std::sync::Mutex::new(()),
+            refresh_lock,
             self_mint_lock: std::sync::Mutex::new(()),
+            self_mint_holds: std::sync::atomic::AtomicBool::new(
+                SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE,
+            ),
             store_calls: std::sync::OnceLock::new(),
         })
     }
@@ -418,8 +437,8 @@ impl GovState {
     /// (`crate::auth::CallerRefKey`, HKDF label `busbar caller-ref v1`): derived from this node's
     /// token-signing material, else from the DEPLOYMENT KEYSET the book binds
     /// ([`Self::bind_deployment_caller_ref`]; row 159 H2). Either way the same principal has the same
-    /// reference on every node of the deployment and across restarts, and a verified principal is
-    /// never lent an empty one. `None` before either is bound.
+    /// reference on every node of the deployment and across restarts. A node with neither derives
+    /// it from its per-boot random key, so a verified principal is never lent an empty one.
     #[must_use]
     pub fn caller_ref_key(&self) -> Option<Arc<crate::auth::CallerRefKey>> {
         self.caller_refs
@@ -447,17 +466,20 @@ impl GovState {
     }
 
     /// Re-derive [`Self::caller_ref_key`]: the signing material when the node has one, else the
-    /// deployment keyset's material, else none.
+    /// deployment keyset's material, else this boot's random key. Never none.
     fn refresh_caller_refs(&self) {
         let key = match self.signing_material() {
-            Some(m) => Some(crate::auth::CallerRefKey::derive(&m.signer.secret_bytes())),
-            None => self
+            Some(m) => crate::auth::CallerRefKey::derive(&m.signer.secret_bytes()),
+            None => match *self
                 .deployment_caller_ref
                 .read()
                 .unwrap_or_else(|e| e.into_inner())
-                .map(|m| crate::auth::CallerRefKey::derive(&m)),
+            {
+                Some(m) => crate::auth::CallerRefKey::derive(&m),
+                None => crate::auth::CallerRefKey::derive(&self.boot_caller_ref[..]),
+            },
         };
-        *self.caller_refs.write().unwrap_or_else(|e| e.into_inner()) = key.map(Arc::new);
+        *self.caller_refs.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(key));
     }
 
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.
@@ -2504,21 +2526,29 @@ impl GovState {
     /// `delete_key`/`rotate_key` below, and this crate's own tests. Nothing outside busbar-core
     /// names it, so the cache-reload door is not part of the engine's public surface.
     pub fn refresh(&self) -> RecordStoreResult<()> {
-        // Serialize the whole load→swap so a slow refresh can't clobber a newer one's cache with
-        // strictly-older store state (lost-update guard; see `refresh_lock`). A later refresh's
-        // `load` cannot begin until an earlier refresh has swapped, so its snapshot is never older.
-        let _refresh_guard = self.refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let fresh = Self::load(self.store.as_ref())?;
-        let fresh_cred =
-            Self::load_by_credential(self.store.as_ref(), &fresh, busbar_kernel::store::now())?;
-        // Both indices live under the single `caches` lock, so the swap below is ONE atomic critical
-        // section — a concurrent reader holding `caches_read` sees either the entire old pair or the
-        // entire new pair, never a new `by_id` against a stale `by_credential` (or vice versa).
-        let mut c = self.caches_write();
-        c.by_id = fresh;
-        c.by_credential = fresh_cred;
-        Ok(())
+        reload_caches(self.store.as_ref(), &self.caches, &self.refresh_lock)
     }
+}
+
+/// RELOAD BOTH KEY CACHES from `store` and swap them in: after this node's own mutation, and on every
+/// fleet re-sync ([`super::revocation::RevocationSync`]).
+///
+/// Serialized on `lock` for the whole load→swap so a slow reload can't clobber a newer one's cache
+/// with strictly-older store state (lost-update guard): a later reload's load cannot begin until an
+/// earlier one has swapped. Both indices live under the one `caches` lock, so a concurrent reader sees
+/// either the entire old pair or the entire new pair.
+fn reload_caches(
+    store: &dyn RecordStore,
+    caches: &RwLock<GovCaches>,
+    lock: &std::sync::Mutex<()>,
+) -> RecordStoreResult<()> {
+    let _refresh_guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let fresh = GovState::load(store)?;
+    let fresh_cred = GovState::load_by_credential(store, &fresh, busbar_kernel::store::now())?;
+    let mut c = caches.write().unwrap_or_else(|p| p.into_inner());
+    c.by_id = fresh;
+    c.by_credential = fresh_cred;
+    Ok(())
 }
 
 /// Whether an ALL-TIME (`window_start == 0`) budget cell still backs an ENFORCED cap — the exact

@@ -31,9 +31,16 @@ pub use crate::{export_door, plugin_door};
 pub mod capture;
 // THE SAFE SURFACE (THE DESIGN, plugins and the plugin ABI): a slot body with no `unsafe` — host-lent memory read and
 // host buffers filled through `Lent`/`HostBuf`, the instance typed through `Instance`.
+// `#[macro_use]`: the lists `lent.rs` states its accessors from are the test support's too (its
+// pointer and length pairs, status row 194): one list, read in both places.
+#[macro_use]
 pub mod lent;
 pub mod safe;
 pub use lent::{open_failed, HostBuf, Lent, LentList, SignalScalar};
+// THE GENERATION BORROW: what an op's `out` may name at runtime, held by the borrow checker to
+// memory that lives until the instance's next refresh generation (status row 194).
+pub mod generation;
+pub use generation::Gen;
 // A SLOT'S `out`, WRITTEN BY THE SDK: scalars set, every pointer through an SDK writer.
 pub mod out;
 pub use out::{Out, Scalar};
@@ -48,8 +55,8 @@ pub use safe::{Instance, Safe, SafeSlot};
 // THE HOST SERVICES, PLUGIN SIDE: the one home of every safe host-service wrapper.
 pub mod services;
 pub use services::{
-    Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed, TrustItem, TrustItems,
-    Wake,
+    CredentialSecret, Judged, Names, Pend, Records, ServiceError, Services, Signature, Signed,
+    StaticServices, StaticWake, TrustItem, TrustItems, Wake,
 };
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;
@@ -73,6 +80,12 @@ pub use publish::{Generations, Keyed};
 pub mod trust;
 // THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
 pub mod life;
+// THE PLUGIN TEST SUPPORT: the all-zero value of a reviewed ABI struct and a door's Statement read
+// as Rust values, so a plugin's own tests drive its door with no `unsafe` (BUSBAR-1.6.0.md
+// l.272-274). Compiled for this crate's tests and behind the dev-only `test-seal` feature, as the
+// test kit is (`tests/feature_invariance.rs`); no shipped image carries it.
+#[cfg(any(test, feature = "test-seal"))]
+pub mod test_support;
 
 /// The "decision observability" signal catalog: a plugin author references
 /// `busbar_contract::abi::sdk::Signal::CandidateBreakerState` (etc.) at compile time to declare which

@@ -19,12 +19,23 @@ path = "src/main.rs"
 
 [dependencies]
 busbar-contract = { path = "../../../crates/busbar-contract" }
+# THE KERNEL'S STATUS CHOICE (`plane_driver::refusal_status`): the status the plane driver hands a
+# refusal of a plane that states no row of its own, which the admit-refusal slice renders through
+# the door (a policy refusal answers its 4xx, never `server_error`).
+busbar-kernel = { path = "../../../crates/busbar-kernel", default-features = false }
 # THE PLANE UNDER TEST: its linked door (`busbar_plane_streaming::door::door`) and its codecs, which
 # compute every expectation from the wire, at the rev the root pins (GetBusbar/busbar-plane-streaming,
-# row 106). The dropped-in door is that repo's cdylib twin, `busbar-plane-streaming-plugin`, built
-# from the pinned plane's own workspace (`lib/conform-bin.sh`).
+# row 106). The dropped-in door is that repo's cdylib twin, `busbar-plane-streaming-plugin`, at the
+# same rev, built in this workspace (the dev edge below; `lib/conform-bin.sh`).
 busbar-plane-streaming = { workspace = true }
 # THE ONE LOADER both doors are loaded through (`load_linked`, `load_dropped`).
 busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
 serde_json = { workspace = true }
 bytes = { workspace = true }
+
+[dev-dependencies]
+# THE DROPPED-IN DOOR, in this workspace's graph so `lib/conform-bin.sh` builds it with
+# `cargo build -p busbar-plane-streaming-plugin` against the host's busbar-contract (the root's
+# [patch]), the contract the loader admits it against. A dev edge only: the harness never links it;
+# it dlopens the cdylib cargo leaves beside the harness binary.
+busbar-plane-streaming-plugin = { workspace = true }

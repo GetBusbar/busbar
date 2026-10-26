@@ -110,6 +110,9 @@ impl Catalogue for One {
 fn the_adhoc_surface_refuses_a_model_another_provider_serves() {
     let d = arrive("POST", "/wrong/m/v1/messages", &json(), b"{}", &One).expect_err("refused");
     assert_eq!((d.why, d.status), (Decline::ProviderMismatch, 400));
+    // Q128 u58: the refusal names the entry it concerns, so the kernel holds it behind the
+    // caller's identity and grant (1.5.5 ran the ad-hoc route's governance guard first).
+    assert_eq!(d.entry.as_deref(), Some("m"));
     assert_eq!(
         d.message,
         "The model 'm' does not exist or you do not have access to it."
@@ -404,11 +407,15 @@ fn the_adhoc_route_reaches_configured_models_only() {
     .expect("the door takes the route as asked");
     assert_eq!(a.model, "../secret");
     assert!(catalogue.lane("../secret").is_none(), "no far end to reach");
-    let row = busbar_plane_llm::refusal::REFUSAL_STATUSES
+    // The no-destination status is the kernel's class default (`NotFound`, 404), not a row.
+    assert!(!busbar_plane_llm::refusal::REFUSAL_STATUSES
         .iter()
-        .find(|r| r.reason == reason::NO_DESTINATION)
-        .expect("the no-destination status");
-    assert_eq!(row.status, 404);
+        .any(|r| r.reason == reason::NO_DESTINATION));
+    assert_eq!(
+        busbar_contract::abi::plane::reason_of(reason::NO_DESTINATION)
+            .map(busbar_contract::abi::plane::class_of),
+        Some(busbar_contract::abi::plane::RefusalClass::NotFound)
+    );
     let r = kernel_refusal(
         HOST,
         a.dialect,
@@ -1401,6 +1408,7 @@ fn the_two_operation_misses_render_distinct_404s_in_every_dialect() {
                 envelope: dialect,
                 kind: "not_found_error",
                 message: "This endpoint does not support that operation.".into(),
+                entry: None,
             },
         );
         assert_eq!((protocol_miss.status, endpoint_miss.status), (404, 404));
@@ -1518,4 +1526,33 @@ fn every_recorded_body_model_resolves_the_same_model_both_spellings() {
         seen += 1;
     }
     assert!(seen > 0, "the corpus has a body-model request");
+}
+
+/// Q128 arch u59: A HOOK'S REWRITE IS SPLICED INTO THE CALLER'S BYTES, never re-serialized (the
+/// OWNER 2026-10-02 LLM DIALECT FIDELITY RULE: "hook `rw` edits, spliced per changed block"). The
+/// body arrives with its members out of sorted order, spaced, with a number spelled `1.50` and an
+/// escaped slash; only `messages` changes, and every other member's bytes reach the far end as the
+/// caller wrote them. RED: the whole body was re-serialized (keys sorted, spacing dropped, `1.50`
+/// read back as `1.5`, the escape normalized).
+#[test]
+fn a_hook_rewrite_splices_only_the_members_it_changes() {
+    use busbar_plane_llm::exchange::project::apply_rewrite;
+    let body = br#"{ "temperature" : 1.50, "model": "m0",
+  "metadata": {"z": "a\/b", "a": 1},
+  "messages": [{"role": "user", "content": "x"}] }"#;
+    let mut arrived = ok("/v1/chat/completions", &json(), body);
+    let rewrite = br#"{"messages":[{"role":"user","content":"compressed"}],"tools":[]}"#;
+    let bytes = apply_rewrite(&mut arrived, rewrite).expect("the rewrite applies");
+    let text = String::from_utf8(bytes.clone()).expect("utf-8");
+    assert!(
+        text.starts_with(r#"{ "temperature" : 1.50, "model": "m0","#),
+        "untouched members keep their bytes and order: {text}"
+    );
+    assert!(
+        text.contains(r#""metadata": {"z": "a\/b", "a": 1},"#),
+        "an untouched object keeps its bytes: {text}"
+    );
+    let v: Value = serde_json::from_slice(&bytes).expect("the spliced body is JSON");
+    assert_eq!(v["messages"][0]["content"], "compressed");
+    assert_eq!(arrived.body, bytes, "the arrival's body is the spliced one");
 }

@@ -72,9 +72,9 @@ pub enum TranslatedResponse {
     /// A final ingress body + its own content-type (a non-JSON ingress wire — speech audio — or the
     /// opaque egress→ingress bridge).
     Typed(WireBody),
-    /// Synthesized native stream frames (a wants-stream ingress answered by a BUFFERED upstream — e.g.
-    /// an event-stream client served a non-SSE buffered body). Delivered under the ingress stream
-    /// content-type.
+    /// Synthesized native stream frames (a wants-stream ingress answered by a BUFFERED upstream —
+    /// e.g. an event-stream client served a buffered, non-event-stream body). Delivered under the
+    /// ingress stream content-type.
     StreamFrames(Vec<u8>),
     /// JSON path only: the ingress protocol does not serve this operation → the caller renders the 404
     /// (`DETAIL_ENDPOINT_UNSUPPORTED_OPERATION`). The egress read succeeded, but NO completion reaches
@@ -246,6 +246,14 @@ pub trait CodecHost: Sync {
     /// The host's wall clock, whole seconds since the Unix epoch, or `None` when the host holds no
     /// clock (the caller then writes what its dialect writes for an unstamped time).
     fn wall_clock_now(&self) -> Option<u64>;
+
+    /// The host's MONOTONIC clock, nanoseconds from an origin fixed for the process's life (the
+    /// kernel's one clock, `clock.now`'s `mono_ns`), or `None` when the host holds none: a codec
+    /// that measures a duration (a stream's reported latency) reads both ends of it here, never a
+    /// clock of its own, and a host with no clock measures none.
+    fn monotonic_ns(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// ONE ROW OF A PROTOCOL'S SUPPORT MATRIX — a verb the protocol speaks and the codec that speaks it.

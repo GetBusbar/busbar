@@ -71,7 +71,6 @@ fn posting(lane: String, quantities: &[(&str, u64)], fee_count: u64) -> Posting 
         arrived_ms: 0,
         arrived_mono: 0,
         estimated: false,
-        cached: None,
     }
 }
 

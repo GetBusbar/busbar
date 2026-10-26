@@ -12,9 +12,13 @@
 //!
 //! It lived in a neutral leaf for exactly that reason, and it is here now for one more: a transport
 //! that resolved a name itself was a transport that had to remember to guard it, and every new
-//! carrier was a new place to forget. The provider dial is judged by the same metadata denylist
-//! twice: once at configuration time, as 1.5.5 judged it, and again over every address its name
-//! resolves to when it is dialled ([`DialDenylist`]).
+//! carrier was a new place to forget.
+//!
+//! What this file holds is the readers and the resolve-then-pin discipline the kernel's own dials
+//! use ([`resolve_and_pin`]) and the configuration-time denylist ([`ssrf_blocked_host`]). The
+//! judgement a plugin's dial asks through `dest.judge` is the connector's destination guard
+//! (`busbar-core-connector` `guard.rs`), built on the same `busbar_contract::net` readers; this
+//! file keeps no second copy of it.
 //!
 //! ## RESOLVE THEN PIN, and why a name check is not a guard
 //!
@@ -58,14 +62,13 @@
 //! They live in `busbar_contract::net`, the one URL and host reader, and are re-exported here
 //! unchanged: a plugin that links only the contract reads a host exactly as this guard does.
 
-use std::net::{IpAddr, SocketAddr};
-
 // THE PURE PRIMITIVES, re-exported from the one reader in `busbar_contract::net`: the metadata list,
 // the v4/v6 range predicates, the alternate IPv4 spellings, the WHATWG host extraction and the
 // per-scheme URL reader. They moved there so a plugin that links only the contract judges a host
 // exactly as this guard does (BUSBAR-1.6.0.md, the engine-folds paragraph: a shared reader is "a
 // pure, stateless helper in `busbar-contract` outside `abi/`"); what stays here is the guard
 // itself — the policy, the denylist, and resolve-then-pin.
+// `IpAddr` and `SocketAddr` come through it too: the contract re-exports the address value types.
 pub use busbar_contract::net::*;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -518,9 +521,8 @@ pub fn judge_addresses(
     judge_addresses_under(host, addrs, policy, &Denylist::default())
 }
 
-/// THE ADDRESS JUDGEMENT UNDER A DEPLOYMENT'S LISTS — the one decision every judge that carries a
-/// [`Denylist`] asks (`dest.judge`, the connector's dial, the pooled client's dial table, the check
-/// over a sealed destination). An address the list names (metadata, or operator-blocked) is refused
+/// THE ADDRESS JUDGEMENT UNDER A DEPLOYMENT'S LISTS — the decision [`pin_answer`] and so
+/// [`resolve_and_pin`] ask. An address the list names (metadata, or operator-blocked) is refused
 /// unless the list's overrides lift it, and an address it lifts is admitted whole, as 1.5.5's
 /// `allow_all_metadata` / `allow_metadata_hosts` admitted it; every other address meets the policy's
 /// own judgement ([`judge_address`]). Under the default list this IS [`judge_address`], metadata first.
@@ -608,6 +610,10 @@ pub fn resolve_and_pin(
     resolver: &dyn Resolver,
     policy: GuardPolicy,
 ) -> Result<PinnedTarget, AddressRefusal> {
+    // The name judged, resolved and pinned is the one a URL client dials: a non-ASCII host is its
+    // UTS #46 punycode name ([`url_host_to_ascii`]); an ASCII host is as written.
+    let mapped = url_host_to_ascii(host).map_err(|_| AddressRefusal::NoHost(host.to_string()))?;
+    let host = mapped.as_ref();
     judge_host_name(host, policy)?;
     if let Ok(addr) = host.parse::<IpAddr>() {
         return pin_answer(host, port, https, &[addr], policy);
@@ -683,12 +689,45 @@ struct HostSet {
     v6: Vec<std::net::Ipv6Addr>,
 }
 
+/// AN OPERATOR'S LIST ENTRY (`security.blocked_metadata_hosts`, `security.allow_metadata_hosts`, a
+/// provider's `allow_metadata_hosts`) READ AS A TARGET'S HOST IS READ: trimmed, then mapped to the
+/// ASCII name or address a URL client dials ([`url_host_to_ascii`], the mapping
+/// [`extract_normalized_host`] reads every target through), so an entry written `ｍｅｔａｄａｔａ.ｉｎｔｅｒｎａｌ`
+/// or `１６９.２５４.１６９.２５４` names the target it reads as. An ASCII entry is handed back trimmed,
+/// as written. The list judgement drops trailing root dots and compares case-blind after this.
+///
+/// # Errors
+///
+/// [`UrlRefusal::NoHost`] when a non-ASCII entry maps to nothing (UTS #46 refuses it, or it maps to
+/// only root dots): it would match no target at all, so configuration load refuses it, naming it.
+pub fn list_entry_host(entry: &str) -> Result<std::borrow::Cow<'_, str>, UrlRefusal> {
+    let entry = entry.trim();
+    if entry.is_ascii() {
+        return Ok(std::borrow::Cow::Borrowed(entry));
+    }
+    let mapped = url_host_to_ascii(entry)?;
+    if mapped.trim_end_matches('.').is_empty() {
+        return Err(UrlRefusal::NoHost);
+    }
+    Ok(mapped)
+}
+
 impl HostSet {
-    /// Canonicalize a list of operator-written entries.
+    /// Canonicalize a list of operator-written entries, each read as a target's host is
+    /// ([`list_entry_host`]). An entry that names no host the guard judges (UTS #46 refuses it, a
+    /// `%` outside an IPv6 zone id, a last label that reads as a number but is no IPv4 address)
+    /// could match no target: it is dropped here, as 1.5.5 matched it to nothing, and configuration
+    /// load names it in a warning line.
     fn parse(entries: &[String]) -> Self {
         let mut set = HostSet::default();
         for entry in entries {
-            let norm = entry.trim().trim_end_matches('.');
+            let Ok(mapped) = list_entry_host(entry) else {
+                continue;
+            };
+            if judged_host(&mapped).is_err() {
+                continue;
+            }
+            let norm = mapped.trim_end_matches('.');
             if norm.is_empty() {
                 continue;
             }
@@ -956,351 +995,5 @@ impl Denylist {
         ip_is_cloud_metadata(&addr)
             || self.blocked.matches(&addr.to_string())
             || self.blocked.matches(host)
-    }
-
-    /// Whether the list lifts the guard's metadata refusal of the NAME `host`: the guard is off
-    /// (`allow_all`), or the name is carved out. 1.5.5's overrides spoke for names and addresses
-    /// alike.
-    #[must_use]
-    pub fn lifts_name(&self, host: &str) -> bool {
-        self.allow_all || self.allowed.matches(host)
-    }
-}
-
-/// THE DIAL TABLE: the [`Denylist`] each configured host is judged under when it is dialled.
-///
-/// The carve-outs are per provider, while the client that dials is shared by every provider of a
-/// plane. So the table is keyed by the HOST a provider's URLs name, each host holding the union of the
-/// carve-outs of every provider that names it, and every other host is judged under the
-/// deployment-wide lists alone. One table, built once per configuration; the judgement is
-/// [`Denylist::refuses_address`], the rule the configuration-time check states.
-#[derive(Debug, Default, Clone)]
-pub struct DialDenylist {
-    /// The deployment-wide lists, for a host no provider names.
-    default: Denylist,
-    /// Per-host lists, keyed lowercase without a trailing dot.
-    by_host: std::collections::HashMap<String, Denylist>,
-}
-
-impl DialDenylist {
-    /// Build the table. `blocked`, `allowed` and `allow_all` are the deployment-wide
-    /// `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and
-    /// `security.allow_all_metadata`; `per_url` pairs each URL a provider names (its base and its
-    /// token endpoint) with that provider's own `allow_metadata_hosts`, read by the one URL reader.
-    #[must_use]
-    pub fn new<'a>(
-        blocked: &[String],
-        allowed: &[String],
-        allow_all: bool,
-        per_url: impl IntoIterator<Item = (&'a str, &'a [String])>,
-    ) -> Self {
-        let mut carve_outs: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        for (url, own) in per_url {
-            if let Some(host) = extract_normalized_host(url) {
-                carve_outs
-                    .entry(dial_key(&host))
-                    .or_insert_with(|| allowed.to_vec())
-                    .extend(own.iter().cloned());
-            }
-        }
-        DialDenylist {
-            default: Denylist::new(blocked, allowed, allow_all),
-            by_host: carve_outs
-                .into_iter()
-                .map(|(host, own)| (host, Denylist::new(blocked, &own, allow_all)))
-                .collect(),
-        }
-    }
-
-    /// Judge every address `host` answered with. A mixed answer is refused whole, for the reason
-    /// [`judge_addresses`] gives: checking only the good address checks whichever one the resolver
-    /// put first.
-    ///
-    /// # Errors
-    ///
-    /// The first answered address the host's lists refuse.
-    pub fn judge(&self, host: &str, addrs: &[IpAddr]) -> Result<(), AddressRefusal> {
-        let lists = self.by_host.get(&dial_key(host)).unwrap_or(&self.default);
-        // A provider may be private or loopback (1.5.5's provider rule), so only the list refuses.
-        let provider = GuardPolicy {
-            allow_private: true,
-            ..GuardPolicy::default()
-        };
-        judge_addresses_under(host, addrs, provider, lists)
-    }
-}
-
-/// THE DIAL TABLE A CLIENT JUDGES THROUGH: one [`DialDenylist`], replaced whole when a configuration
-/// is committed ([`DialTable::publish`]) and read by every resolution after it, so a warm client
-/// reused across an apply judges under the new lists. A handle, cloned into each client; the lock is
-/// taken once per new connection, never per request.
-#[derive(Clone, Default)]
-pub struct DialTable(std::sync::Arc<std::sync::RwLock<std::sync::Arc<DialDenylist>>>);
-
-impl DialTable {
-    /// A table holding `lists`.
-    #[must_use]
-    pub fn new(lists: DialDenylist) -> Self {
-        DialTable(std::sync::Arc::new(std::sync::RwLock::new(
-            std::sync::Arc::new(lists),
-        )))
-    }
-
-    /// Replace the lists every holder of this table judges by.
-    pub fn publish(&self, lists: DialDenylist) {
-        *self
-            .0
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = std::sync::Arc::new(lists);
-    }
-
-    /// Judge one resolution's answer under the lists in force now ([`DialDenylist::judge`]).
-    ///
-    /// # Errors
-    ///
-    /// The first answered address the lists refuse.
-    pub fn judge(&self, host: &str, addrs: &[IpAddr]) -> Result<(), AddressRefusal> {
-        let lists = std::sync::Arc::clone(
-            &self
-                .0
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        lists.judge(host, addrs)
-    }
-}
-
-/// A host as the dial table keys it: lowercase, without the FQDN-root dot.
-fn dial_key(host: &str) -> String {
-    host.trim_end_matches('.').to_ascii_lowercase()
-}
-
-/// Why the network guard would not let a destination be dialled.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NetworkRefusal {
-    /// The destination is not one this check applies to: only an upstream is dialled at an address.
-    NotAnUpstream,
-    /// The destination named a cloud-metadata host, under the precedence rule.
-    ///
-    /// Its own arm rather than a [`AddressRefusal`], because the denylist is a deployment's statement
-    /// about which addresses exist to be reached at all, and the guard below it is about what a
-    /// name resolved to. An operator reading a refusal needs to know which of the two answered.
-    MetadataDenied(String),
-    /// The guard refused the scheme, the name, or an answered address.
-    Guard(AddressRefusal),
-}
-
-impl std::fmt::Display for NetworkRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NetworkRefusal::NotAnUpstream => {
-                write!(f, "only an upstream destination is dialled at an address")
-            }
-            NetworkRefusal::MetadataDenied(host) => write!(
-                f,
-                "host `{host}` is on the cloud-metadata denylist; that is not an upstream this \
-                 node dials"
-            ),
-            NetworkRefusal::Guard(g) => write!(f, "{g}"),
-        }
-    }
-}
-
-/// THE CHECK: judge a sealed destination and pin the address a transport will connect to.
-///
-/// Run once per destination, before any dial, for every carrier. The order is the design's:
-///
-/// 1. The denylist, over the destination's own authority AND over that authority joined with each
-///    declared path. The host a connecting stack reads is the one it finds after WHATWG
-///    normalization, and the AUTHORITY is where a spelling that moves the boundary lives — a
-///    backslash that terminates it early, a tab inside the literal, a percent-encoded dot. The
-///    joined candidates are judged for completeness rather than because a path can smuggle a host
-///    past the base: [`join_path`] always separates the two, so a joined candidate's authority ends
-///    exactly where the base's does and its verdict is the base's. That is a property of the join
-///    and is pinned as one — a join that stopped separating them would make the re-check
-///    load-bearing, and it is the re-check that would then catch it.
-/// 2. The structural refusals, so a hostile name never reaches a resolver.
-/// 3. EXACTLY ONE resolution, through the caller's own seam.
-/// 4. Every answered address, judged; a mixed answer refused whole.
-/// 5. The pin.
-///
-/// A destination whose address is a program has no address to judge: nothing is resolved and
-/// nothing is pinned. Spawning a process is not a network hop, and pretending it needed a guard
-/// would put a check where there is nothing to check.
-///
-/// # Errors
-///
-/// The destination is not an upstream, its host is on the denylist, or the guard refused the
-/// scheme, the name, or an address the resolver answered with.
-pub fn check_destination(
-    dest: &busbar_contract::VerifiedDestination,
-    paths: &[&str],
-    resolver: &dyn Resolver,
-    policy: GuardPolicy,
-    denylist: &Denylist,
-) -> Result<Option<PinnedTarget>, NetworkRefusal> {
-    check_destination_facts(&dest.facts(), paths, resolver, policy, denylist)
-}
-
-/// The same check, over the facts a destination was sealed FROM.
-///
-/// The sealed value is the door a transport reaches the guard through, and it stays the published
-/// one. But a composition root judges a candidate BEFORE it is sealed — that is the whole point of
-/// judging it, and the seal is what the judgement produces — so it holds facts and no seal. Given
-/// only the sealed entry, such a caller had no way in and wrote the ordering out a second time,
-/// which is the one thing this file exists to stop: two copies of an address judgement drift, and
-/// the copy that drifts is the one nobody re-derived.
-///
-/// So the ordering lives here, once, and [`check_destination`] is a projection onto it rather than a
-/// second opinion. Nothing about the sealing rule is loosened by that: a seal was never what made
-/// the judgement correct, it is what records that the judgement happened.
-///
-/// # Errors
-///
-/// The destination is not an upstream, its host is on the denylist, or the guard refused the
-/// scheme, the name, or an address the resolver answered with.
-pub fn check_destination_facts(
-    facts: &busbar_contract::DestinationFacts,
-    paths: &[&str],
-    resolver: &dyn Resolver,
-    policy: GuardPolicy,
-    denylist: &Denylist,
-) -> Result<Option<PinnedTarget>, NetworkRefusal> {
-    let busbar_contract::DestinationFacts::Upstream { address, .. } = facts else {
-        return Err(NetworkRefusal::NotAnUpstream);
-    };
-    let Some(authority) = address.authority() else {
-        // A spawned program is not a network hop.
-        return Ok(None);
-    };
-    match check_structure(authority, paths, policy, denylist)? {
-        Structure::Pinned(pinned) => Ok(Some(pinned)),
-        Structure::Name { host, port, https } => {
-            let addrs = resolver.resolve(&host).map_err(|reason| {
-                NetworkRefusal::Guard(AddressRefusal::Unresolvable {
-                    host: host.clone(),
-                    reason,
-                })
-            })?;
-            pin_answer_under(&host, port, https, &addrs, policy, denylist)
-                .map(Some)
-                .map_err(NetworkRefusal::Guard)
-        }
-    }
-}
-
-/// What the structural half of THE CHECK decided about a destination it did not refuse.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Structure {
-    /// An IP literal: judged and pinned without a resolver.
-    Pinned(PinnedTarget),
-    /// A name that passed everything decidable without an answer: the one resolution answers for
-    /// it, and [`pin_answer`] judges what it answered.
-    Name {
-        /// The name, unbracketed.
-        host: String,
-        /// The port.
-        port: u16,
-        /// Whether the scheme is `https`.
-        https: bool,
-    },
-}
-
-/// THE STRUCTURAL HALF of [`check_destination_facts`]: steps 1 and 2 of its order, and the pin of
-/// an IP literal, with no resolver consulted. A caller that resolves on its own schedule (a service
-/// whose resolution may pend) runs this first, resolves a [`Structure::Name`], and judges the answer
-/// with [`pin_answer`]; so a refusal decidable from the name answers before any resolution, exactly
-/// as it does here.
-///
-/// # Errors
-///
-/// The host is on the denylist, or the guard refused the scheme, the name, or the literal address.
-pub fn check_structure(
-    authority: &str,
-    paths: &[&str],
-    policy: GuardPolicy,
-    denylist: &Denylist,
-) -> Result<Structure, NetworkRefusal> {
-    // The denylist, over the base and over every path it is joined with.
-    if !denylist.allow_all {
-        for candidate in std::iter::once(authority.to_string())
-            .chain(paths.iter().map(|p| join_path(authority, p)))
-        {
-            if let Some(host) =
-                judge_against_lists(&candidate, &denylist.allowed, &denylist.blocked)
-            {
-                return Err(NetworkRefusal::MetadataDenied(host));
-            }
-        }
-    }
-
-    // An authority may be spelled as a URL or as a bare `host:port`; both reach the same judgement,
-    // because which of the two a lane's configuration used is not a security question.
-    let (https, host, port) = match split_url(authority) {
-        Ok((https, host, port, _path)) => {
-            judge_scheme(authority, https, policy).map_err(NetworkRefusal::Guard)?;
-            (https, host, port)
-        }
-        Err(AddressRefusal::Scheme { .. }) => {
-            let (host, port) = split_authority(authority).ok_or_else(|| {
-                NetworkRefusal::Guard(AddressRefusal::NoHost(redact_userinfo(authority)))
-            })?;
-            (true, host, port)
-        }
-        Err(other) => return Err(NetworkRefusal::Guard(other)),
-    };
-
-    match judge_host_name(&host, policy) {
-        // The list's overrides speak for the metadata NAMES too, as 1.5.5's did.
-        Err(AddressRefusal::MetadataName(_)) if denylist.lifts_name(&host) => {}
-        other => other.map_err(NetworkRefusal::Guard)?,
-    }
-    if let Ok(addr) = host.parse::<IpAddr>() {
-        return pin_answer_under(&host, port, https, &[addr], policy, denylist)
-            .map(Structure::Pinned)
-            .map_err(NetworkRefusal::Guard);
-    }
-    Ok(Structure::Name { host, port, https })
-}
-
-/// Join a configured base with a declared path, the way a caller building a request would.
-///
-/// The SEPARATOR is the security-relevant part, and it is unconditional: exactly one `/` sits
-/// between the authority and the fragment however the fragment was written. That is what makes a
-/// declared path unable to name a host — a fragment opening with `@`, `//` or a `\` the WHATWG fold
-/// turns into a terminator lands after a delimiter that has already closed the authority. Dropping
-/// the separator to be tidy about a path that "already has one" would hand the fragment the
-/// boundary; the join is naive about the slash on purpose.
-fn join_path(base: &str, path: &str) -> String {
-    let base = base.trim_end_matches('/');
-    if path.starts_with('/') {
-        format!("{base}{path}")
-    } else {
-        format!("{base}/{path}")
-    }
-}
-
-/// Split a bare `host:port` authority — a lane that names an address rather than a URL.
-///
-/// A bracketed IPv6 literal comes back unbracketed, so it reads the same here as it does to
-/// [`judge_host_name`] and to `IpAddr::from_str`. A missing port defaults to the secure one,
-/// because an authority with no scheme said nothing about plaintext and fail-closed is the reading
-/// to take.
-fn split_authority(authority: &str) -> Option<(String, u16)> {
-    if authority.is_empty() || authority.contains('@') {
-        return None;
-    }
-    if let Some(inner) = authority.strip_prefix('[') {
-        let (host, tail) = inner.split_once(']')?;
-        let port = match tail.strip_prefix(':') {
-            Some(p) => p.parse().ok()?,
-            None => 443,
-        };
-        return Some((host.to_string(), port));
-    }
-    match authority.rsplit_once(':') {
-        Some((host, port)) if !host.contains(':') => Some((host.to_string(), port.parse().ok()?)),
-        _ => Some((authority.to_string(), 443)),
     }
 }

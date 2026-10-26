@@ -203,6 +203,13 @@ impl Leases {
         id
     }
 
+    /// Hold `lease` under a new lease of its own; its number.
+    fn fresh(&self, lease: Lease) -> u64 {
+        let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        self.lock().insert((id, 0), lease);
+        id
+    }
+
     /// Hold `bytes` under a new lease named in `head.lease`; the blob of `fmt` naming them. Empty
     /// bytes lease nothing and answer an absent blob.
     pub fn blob(&self, head: &mut OutHead, bytes: Vec<u8>, fmt: u32) -> Blob {
@@ -214,7 +221,7 @@ impl Leases {
             ptr: held.as_ptr(),
             len: held.len(),
             fmt,
-            flags: 0,
+            ..Blob::ZERO
         };
         self.hold(head, Lease::Bytes(held));
         blob
@@ -242,10 +249,7 @@ impl Leases {
     /// leases nothing and answers the empty string.
     pub fn str(&self, head: &mut OutHead, text: String) -> AbiStr {
         if text.is_empty() {
-            return AbiStr {
-                ptr: std::ptr::null(),
-                len: 0,
-            };
+            return AbiStr::ZERO;
         }
         let held: Box<[u8]> = text.into_bytes().into();
         let s = AbiStr {
@@ -262,6 +266,12 @@ impl Leases {
     /// release (zeroize there what is secret).
     pub fn keep<T: Send + Sync + 'static>(&self, head: &mut OutHead, owned: T) -> u64 {
         self.hold(head, Lease::Kept(Box::new(owned)))
+    }
+
+    /// As [`Leases::keep`], always under a new lease, for a kind door that writes the number into
+    /// its answer's head itself (the store door's typed answers).
+    pub(crate) fn keep_new<T: Send + Sync + 'static>(&self, owned: T) -> u64 {
+        self.fresh(Lease::Kept(Box::new(owned)))
     }
 
     /// Release `lease` and every part chained under it: READY when it was held, REFUSED when it
@@ -294,10 +304,8 @@ impl Leases {
 
 fn absent() -> Blob {
     Blob {
-        ptr: std::ptr::null(),
-        len: 0,
         fmt: crate::abi::mechanism::call::BLOB_ABSENT,
-        flags: 0,
+        ..Blob::ZERO
     }
 }
 
@@ -413,7 +421,10 @@ impl<L> std::fmt::Debug for Held<L> {
 }
 
 impl<L: Life> Held<L> {
-    fn new(life: L, host: Option<Host>) -> Self {
+    /// The instance state over `life`, with no lease held and the host tables `host`. A kind
+    /// whose `open` the generic slot cannot serve (the store's, whose connect step pends) builds
+    /// it itself.
+    pub(crate) fn new(life: L, host: Option<Host>) -> Self {
         Self {
             life,
             leases: Leases::default(),

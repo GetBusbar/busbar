@@ -145,7 +145,6 @@ fn a_cut_at_every_byte_offset_recovers_the_longest_complete_prefix() {
 }
 
 /// **A WRITE THAT STOPPED AT ANY BYTE, WITH ZEROS AFTER IT, IS A TORN TAIL — NEVER CORRUPTION**
-/// (Q128 kernel-wal 5).
 ///
 /// The shape a crash mid-commit really leaves on a segment that claimed its space ahead: the file
 /// keeps its length, the bytes up to where the write stopped are there, and everything after is the
@@ -192,7 +191,7 @@ fn a_zero_padded_tear_at_every_byte_offset_is_torn_never_corrupt() {
             recovered.verdict
         );
         assert!(
-            recovered.quarantined.is_none() && sink.quarantined().is_empty(),
+            recovered.quarantined.is_empty() && sink.quarantined().is_empty(),
             "a write that stopped at byte {stop} was quarantined"
         );
         assert_eq!(
@@ -221,8 +220,12 @@ fn a_cut_mid_record_drops_the_whole_record_not_a_short_one() {
     assert_eq!(recover_from(&bytes), written);
 }
 
+/// **A FLIPPED BYTE ANYWHERE COSTS THAT RECORD AND NO OTHER**. Every byte
+/// of every frame is flipped in turn. The frame is whole, so the damage is acknowledged: the record
+/// it is in is set aside and every record behind it is kept. RED before the fix: the scan stopped at
+/// the damaged record for good, and every record behind it was cut with it.
 #[test]
-fn a_single_flipped_byte_anywhere_stops_the_scan_at_that_record() {
+fn a_single_flipped_byte_anywhere_sets_aside_that_record_and_no_other() {
     let written = records(3, 1, 4, 200);
     let bytes = lay_down(&written);
     for offset in 0..bytes.len() {
@@ -230,12 +233,12 @@ fn a_single_flipped_byte_anywhere_stops_the_scan_at_that_record() {
         damaged[offset] ^= 0xFF;
         let recovered = recover_from(&damaged);
         let record_index = offset / FRAME_BYTES;
+        let mut kept = written.clone();
+        kept.remove(record_index);
         assert_eq!(
-            recovered.len(),
-            record_index,
-            "flipping byte {offset} should leave the {record_index} records before it"
+            recovered, kept,
+            "flipping byte {offset} should set aside record {record_index} alone"
         );
-        assert_eq!(recovered, written[..record_index].to_vec());
     }
 }
 
@@ -261,7 +264,7 @@ fn recovery_cuts_the_backing_so_the_next_append_lands_on_a_boundary() {
     assert_eq!(shared.lock().unwrap().len(), 2 * FRAME_BYTES);
     assert_eq!(segment.write_offset(), 2 * FRAME_BYTES as u64);
     // A torn tail is a crash mid-append: cut silently, nothing set aside.
-    assert!(recovered.quarantined.is_none());
+    assert!(recovered.quarantined.is_empty());
     assert!(sink.quarantined().is_empty());
 }
 

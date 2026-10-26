@@ -10,6 +10,14 @@
 //! field and the transport adds `host` after it, the bytes 1.5.5's `Client::new().get()` sent
 //! (oracle cell `egress.fetch|plugins|url`).
 //!
+//! THE URL IS THE OPERATOR'S OWN DESTINATION: every download declares its need pinned to the URL
+//! it fetches, in the egress default class, so the one guard judges its address as operator
+//! infrastructure (`crate::guard::judged_class`; THE DESIGN §5 egress-class table, Q128 ruling 14):
+//! a loopback or private registry, plaintext included, is reached as 1.5.5's downloader reached it,
+//! cloud metadata and the operator's extra refusals are refused, and the dial is held to the URL's
+//! host. The provider class's refuse-unless-allowlisted default (ARCHITECT ruling CRATES-14) is a
+//! provider's and an IdP's, never the download's.
+//!
 //! The download's own rules are the kernel's deleted `preflight::plugin_fetch_downloader`'s,
 //! verbatim: the pre-check before any dial and the verdict on the answer's status are the kernel's
 //! pure rules (`busbar_kernel::preflight::plugin_fetch_admits` and `plugin_fetch_status_refusal`:
@@ -21,7 +29,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_PROVIDER};
+use busbar_contract::abi::host::conn::connector::{DIRECTION_OUTBOUND, EGRESS_DEFAULT};
 use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
 use busbar_contract::conn::{
     ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
@@ -81,11 +89,12 @@ pub fn download(
 }
 
 /// The download's need for the URL's own scheme (`scheme`, lower-cased, as the URL spells it): the
-/// provider class, as the kernel engine judged the download.
+/// egress default class, declared pinned to the URL, so its address is judged as the operator's own
+/// (module docs).
 fn need(scheme: &str) -> ReadNeed {
     ReadNeed {
         direction: DIRECTION_OUTBOUND,
-        egress_class: EGRESS_PROVIDER,
+        egress_class: EGRESS_DEFAULT,
         transport: scheme.to_owned(),
         auth: String::new(),
         target_from: String::new(),
@@ -121,12 +130,11 @@ async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<
         Some((scheme, _)) => (table.plain_need, scheme.to_ascii_lowercase()),
         None => return Err(sending()),
     };
-    if table.declared.declared(table.owner, need_id) != Some(Ok(())) {
-        table
-            .declared
-            .declare(table.owner, need_id, &need(&scheme), None, None)
-            .map_err(|_| sending())?;
-    }
+    // Pinned to this URL, every download: the need dials this URL's host and no other.
+    table
+        .declared
+        .declare(table.owner, need_id, &need(&scheme), Some(url), None)
+        .map_err(|_| sending())?;
     let path = busbar_contract::net::parse_url(url)
         .map_err(|_| sending())?
         .path;

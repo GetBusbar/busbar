@@ -81,7 +81,13 @@ Implement `VerifyPlugin` (`abi::sdk::auth_door`): `open(settings, secrets)` and 
 answering `Verdict::Identity`, `Reject` or `Pass`. The inbound verdict cache lives inside your plugin;
 `refresh` drops it. Build the Statement with `abi::sdk::door::statement(name, version, max_inflight)`,
 add the tail with `with_tail(.., &TAIL)` where `TAIL = verify_tail(facts)`, and name each header you read
-with `carrier("x-name")` in `mark_words`. Then `auth_verify_door!(MyPlugin, STATEMENT)`. A verify door
+with `carrier("x-name")` in `mark_words`. Then `auth_verify_door!(MyPlugin, STATEMENT)`. A `verify` that
+reads a host-held credential implements `verify_ticketed(request, op)` instead of `verify`: declare the
+kind with `with_credential_kinds(tail, KINDS)`, read the secret with `op.records_secret(kind, id)`
+(a `CredentialSecret`: the bytes in a zeroizing holder, and whether the credential is live; an unknown
+id answers the host's dummy, not live), and answer `Poll::Pending` whenever it does. The kit answers
+PENDING, the host re-enters `verify` on the same ticket when the read completes, and the re-issued
+read answers the stored secret. A verify door
 refuses the login and outbound operations; a plugin that serves them writes its own `plugin_door!` over
 `abi::auth::Ops`.
 

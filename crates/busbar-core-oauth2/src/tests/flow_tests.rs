@@ -686,6 +686,173 @@ async fn a_multi_scope_or_default_scope_request_is_approved_on_its_first_consent
     }
 }
 
+// ── what the consent screen says it is asking for ───────────────────────────────────────────────
+//
+// A request that names no scope is granted the client's registered default (RFC 6749 §3.3). The
+// screen is where the operator decides, so it must name THAT scope: the one the token will carry.
+
+/// What the consent screen's `Requesting:` line names.
+fn requesting(page: &str) -> String {
+    page.split_once("<p>Requesting: <code>")
+        .and_then(|(_, rest)| rest.split_once("</code>"))
+        .map(|(scope, _)| scope.to_string())
+        .unwrap_or_else(|| panic!("the screen names what it is asking for: {page}"))
+}
+
+/// Drive one authorization request for `client_id` (`scope_param` is `&scope=…`, or empty for a
+/// request naming no scope) through the consent screen, an approval, the code and the token, and
+/// answer what the screen said it was asking for and what the minted token carries.
+async fn shown_and_granted(
+    origin: &str,
+    app: &busbar_kernel::state::App,
+    client_id: &str,
+    scope_param: &str,
+) -> (String, String) {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let mut jar = Jar::new(false);
+    let authorize = format!(
+        "{origin}/authorize?response_type=code&client_id={}\
+         &redirect_uri=http%3A%2F%2F127.0.0.1%3A9999%2Fcb&state=s1{scope_param}\
+         &code_challenge={CHALLENGE}&code_challenge_method=S256",
+        encode_component(client_id)
+    );
+    let (status, headers, body) =
+        send(&client, &mut jar, reqwest::Method::GET, &authorize, None).await;
+    assert_eq!(status, 302, "authorize must redirect to consent: {body}");
+    let consent = location(&headers, origin);
+    let (status, _headers, page) =
+        send(&client, &mut jar, reqwest::Method::GET, &consent, None).await;
+    assert_eq!(status, 200, "the consent screen must render: {page}");
+    let shown = requesting(&page);
+
+    let return_to = percent_decode(
+        &query_param(&consent, "return").expect("the screen carries the pending request"),
+    );
+    let (status, headers, body) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::POST,
+        &format!("{origin}/consent"),
+        Some(&[("return", return_to.as_str())]),
+    )
+    .await;
+    assert_eq!(status, 302, "an approval must redirect back: {body}");
+    let back = location(&headers, origin);
+    let (status, headers, body) = send(&client, &mut jar, reqwest::Method::GET, &back, None).await;
+    assert_eq!(status, 302, "the approved request must redirect: {body}");
+    let redirect = location(&headers, origin);
+    let code = query_param(&redirect, "code")
+        .unwrap_or_else(|| panic!("the approved request must carry a code: {redirect}"));
+    let (status, _headers, body) = send(
+        &client,
+        &mut jar,
+        reqwest::Method::POST,
+        &format!("{origin}/token"),
+        Some(&[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("client_id", client_id),
+            ("redirect_uri", REDIRECT_URI),
+            ("code_verifier", VERIFIER),
+        ]),
+    )
+    .await;
+    assert_eq!(status, 200, "the code must be exchangeable: {body}");
+    let token: serde_json::Value = serde_json::from_str(&body).expect("a token response is JSON");
+    let access = token["access_token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no access_token: {body}"));
+    let record = oauth_as_plane(app)
+        .expect("configured")
+        .server()
+        .introspect(access)
+        .await
+        .expect("introspection must not fail")
+        .expect("the freshly minted token must be live");
+    (shown, record.scope.to_string())
+}
+
+/// Register a public client whose registration allows and defaults to `default`.
+async fn register_defaulting_to(
+    app: &busbar_kernel::state::App,
+    client_id: &str,
+    default: &[&str],
+) {
+    let scopes = ScopeSet::from_tokens(default.iter().copied()).expect("scope");
+    oauth_as_plane(app)
+        .expect("configured")
+        .server()
+        .register_client(Client {
+            client_id: ClientId::new(client_id),
+            auth: ClientAuth::Public,
+            grant_types: vec![GrantType::AuthorizationCode, GrantType::RefreshToken],
+            redirect_uris: vec![REDIRECT_URI.to_string()],
+            allowed_scopes: scopes.clone(),
+            default_scopes: scopes,
+            name: None,
+            registration: None,
+        })
+        .await
+        .expect("register client");
+}
+
+/// RED: a request naming no scope is shown the client's default, which is what its token carries.
+/// Before the fix the screen said `no scopes` while the approval minted a token for `read write`.
+#[tokio::test]
+async fn a_request_naming_no_scope_is_shown_the_default_it_is_granted() {
+    const DEFAULTED: &str = "flow-test-defaulted";
+    let (origin, app) = serve().await;
+    register_defaulting_to(&app, DEFAULTED, &["read", "write"]).await;
+    let (shown, granted) = shown_and_granted(&origin, &app, DEFAULTED, "").await;
+    assert_eq!(granted, "read write", "the registered default is granted");
+    assert_eq!(
+        shown, granted,
+        "the consent screen must name the scope the approval grants"
+    );
+}
+
+/// RED: a metadata-document client whose document names no scope is granted the operator's whole
+/// `default_grant`, and a request of its naming no scope is shown exactly that. Before the fix the
+/// screen said `no scopes`.
+#[tokio::test]
+async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_granted() {
+    let (origin, app) = serve().await;
+    oauth_as_plane(&app)
+        .expect("configured")
+        .server()
+        .store()
+        .set_fetcher(Arc::new(StubDocumentHost(serde_json::json!({
+            "client_id": CIMD_CLIENT_ID,
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "client_name": "an agent",
+        }))));
+    let (shown, granted) = shown_and_granted(&origin, &app, CIMD_CLIENT_ID, "").await;
+    assert_eq!(granted, SCOPE, "the operator's default_grant is granted");
+    assert_eq!(
+        shown, granted,
+        "the consent screen must name the scope the approval grants"
+    );
+}
+
+/// GREEN twin: a request that names its scope is shown that scope, and a client whose default is
+/// empty is shown `no scopes` for a request naming none, which is then exactly what it is granted.
+#[tokio::test]
+async fn the_consent_screen_names_a_requested_scope_and_an_empty_grant() {
+    const EMPTY: &str = "flow-test-empty-default";
+    let (origin, app) = serve().await;
+    let (shown, granted) = shown_and_granted(&origin, &app, CLIENT_ID, "&scope=read").await;
+    assert_eq!((shown.as_str(), granted.as_str()), (SCOPE, SCOPE));
+
+    register_defaulting_to(&app, EMPTY, &[]).await;
+    let (shown, granted) = shown_and_granted(&origin, &app, EMPTY, "").await;
+    assert_eq!(granted, "", "an empty default grants nothing");
+    assert_eq!(shown, "no scopes", "and the screen says so");
+}
+
 // ── all three registration mechanisms, end to end ───────────────────────────────────────────────
 //
 // The ruling this plane ships under is ALL THREE ON, NO TOGGLES, and a mounted endpoint is not an
@@ -773,7 +940,7 @@ async fn mint_access_token(origin: &str, client_id: &str) -> String {
 
 /// RFC 3986 percent-encoding for one query VALUE, so a `client_id` that is itself a URL survives
 /// the trip through the authorization request's query string byte-for-byte.
-fn encode_component(s: &str) -> String {
+pub(crate) fn encode_component(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
@@ -825,6 +992,77 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
         .expect("the freshly minted token must be live");
     assert_eq!(record.client_id.as_str(), client_id);
     assert_eq!(record.scope.to_string(), SCOPE);
+}
+
+/// POST one RFC 7591 registration body to `/register`, answering its status.
+async fn register(origin: &str, body: &str) -> u16 {
+    reqwest::Client::new()
+        .post(format!("{origin}/register"))
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .expect("register")
+        .status()
+        .as_u16()
+}
+
+/// A registration the policy admits, under `name`.
+fn registration(name: &str) -> String {
+    serde_json::json!({
+        "redirect_uris": [REDIRECT_URI],
+        "token_endpoint_auth_method": "none",
+        "response_types": ["code"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "client_name": name,
+        "scope": SCOPE,
+    })
+    .to_string()
+}
+
+/// RED: registrations this server refuses do not close registration for everyone else. One caller
+/// sends registrations the policy refuses (a name impersonating the deployment) and bodies that do
+/// not parse; a legitimate registration on the same node still succeeds. Before the fix six refused
+/// registrations spent the whole per-minute budget, and every registration on the node was refused
+/// for the rest of the minute.
+#[tokio::test]
+async fn refused_registrations_do_not_close_registration_for_everyone() {
+    let (origin, _app) = serve().await;
+    for i in 0..10 {
+        let status = register(&origin, &registration(&format!("busbar {i}"))).await;
+        assert_ne!(
+            status, 201,
+            "a name impersonating the deployment is refused"
+        );
+    }
+    for _ in 0..10 {
+        let status = register(&origin, "{ not a registration").await;
+        assert_ne!(status, 201, "a body that does not parse is refused");
+    }
+    assert_eq!(
+        register(&origin, &registration("an agent")).await,
+        201,
+        "a legitimate registration is admitted after another caller's refusals"
+    );
+}
+
+/// GREEN twin: the node keeps its ceiling. Sixty registrations a minute are admitted and the next
+/// is refused, whoever sends it.
+#[tokio::test]
+async fn admitted_registrations_keep_the_ceiling() {
+    let (origin, _app) = serve().await;
+    for i in 0..60 {
+        assert_eq!(
+            register(&origin, &registration(&format!("agent {i}"))).await,
+            201,
+            "registration {i} is inside the ceiling"
+        );
+    }
+    assert_ne!(
+        register(&origin, &registration("one too many")).await,
+        201,
+        "the sixty-first registration in a minute is refused"
+    );
 }
 
 /// The metadata document URL that IS the client id on the CIMD path.

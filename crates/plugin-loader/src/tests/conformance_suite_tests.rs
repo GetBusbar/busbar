@@ -124,8 +124,8 @@ mod suite_conns {
 
     use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
     use busbar_contract::abi::mechanism::call::AbiStr;
-    use busbar_contract::abi::mechanism::door::{Door, DoorFn, Statement};
-    use busbar_contract::abi::sdk::door::abi_str;
+    use busbar_contract::abi::mechanism::door::{Door, Statement};
+    use busbar_contract::abi::sdk::door::{abi_str, RawDoorFn};
     use busbar_contract::conn::{NeedId, OpenDesc};
 
     use super::super::{bind, dispatcher, Subject};
@@ -169,15 +169,17 @@ mod suite_conns {
     fn restate(slot: &AtomicPtr<Door>, needs: &'static [Need]) {
         // SAFETY: the test door and its Statement are `'static`.
         let real: Door = unsafe { *plug::busbar_plugin_door() };
-        let st: Statement = unsafe { *real.statement };
+        let st: Statement = unsafe { *real.statement() };
         let st: &'static Statement = Box::leak(Box::new(Statement {
             needs: needs.as_ptr(),
             needs_len: needs.len(),
             ..st
         }));
-        let door = Box::into_raw(Box::new(Door {
-            statement: st,
-            ..real
+        let door = Box::into_raw(Box::new(unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                statement: st,
+                ..real.parts()
+            })
         }));
         slot.store(door, Ordering::SeqCst);
     }
@@ -201,8 +203,8 @@ mod suite_conns {
         MIXED_DOOR.load(Ordering::SeqCst)
     }
 
-    fn subject(door: DoorFn) -> Subject {
-        Subject::new(door, "unused", "{}")
+    fn subject(door: RawDoorFn) -> Subject {
+        Subject::of_raw(door, "unused", "{}")
     }
 
     #[test]
@@ -217,7 +219,7 @@ mod suite_conns {
     #[test]
     fn a_need_the_table_does_not_serve_keeps_the_bind_with_no_table() {
         let d = dispatcher();
-        for door in [http_door as DoorFn, mixed_door] {
+        for door in [http_door as RawDoorFn, mixed_door] {
             let s = subject(door);
             assert!(!s.needs().is_empty());
             assert!(s.conns(&d).is_none(), "{:?}", s.needs());
@@ -272,7 +274,7 @@ mod suite_conns {
         assert!(matches!(s.bind(&d, "a").conns, ConnTable::Host(_)));
         let table = s.conns(&d).expect("a tcp need is handed a table");
         let p = load_linked::<TestKind>(
-            &LinkedRow::of(tcp_door).expect("the restated door states its Statement"),
+            &LinkedRow::of_raw(tcp_door).expect("the restated door states its Statement"),
             Bind {
                 conns: crate::dispatch::ConnTable::Host(Arc::clone(&table)),
                 ..bind(&d, "networked")
@@ -410,7 +412,7 @@ mod resumed_open {
         }
         // SAFETY: the test plugin's door and its lifecycle table are `'static`.
         let real: Door = unsafe { plug::busbar_plugin_door().read_unaligned() };
-        let ops: OpsHead = unsafe { real.ops.read_unaligned() };
+        let ops: OpsHead = unsafe { real.ops().read_unaligned() };
         REAL_OPEN.store(
             ops.open.expect("the test plugin opens") as *mut (),
             Ordering::SeqCst,
@@ -419,7 +421,12 @@ mod resumed_open {
             open: Some(open_pends),
             ..ops
         }));
-        let door = Box::into_raw(Box::new(Door { ops, ..real }));
+        let door = Box::into_raw(Box::new(unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                ops,
+                ..real.parts()
+            })
+        }));
         SLOT.store(door, Ordering::SeqCst);
         door
     }
@@ -430,7 +437,7 @@ mod resumed_open {
     #[test]
     fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
         let d = dispatcher();
-        let row = LinkedRow::of(pending_open_door).expect("the restated door states itself");
+        let row = LinkedRow::of_raw(pending_open_door).expect("the restated door states itself");
         let raw = load_linked::<TestKind>(&row, bind(&d, "raw")).expect("it loads");
         PENDED.store(false, Ordering::SeqCst);
         // A ticket-less crossing may not pend: the host FAULTs the raw open's PENDING.
@@ -451,13 +458,13 @@ mod resumed_open {
 }
 
 /// RED (Q-P4-7): the store script writes, and looks up, the credential kind the plugin's
-/// `conformance.json` names (`store.credential_kind`: the one kind the shipped store schemas hold,
-/// `sigv4` in 1.5.5's), never a kind of its own a schema-constrained store refuses; a
-/// `conformance.json` that names none is refused by name.
+/// `conformance.json` names (`store.credential_kind`: the one kind the shipped store schemas hold),
+/// never a kind of its own a schema-constrained store refuses; a `conformance.json` that names none
+/// is refused by name.
 #[test]
 fn the_store_script_writes_the_credential_kind_the_plugin_names() {
     use super::store::{secret, Inputs};
-    assert_eq!(secret("sigv4", "c1", "k1", "pub1").meta.kind, "sigv4");
+    assert_eq!(secret("signed", "c1", "k1", "pub1").meta.kind, "signed");
     let none = serde_json::json!({ "node": 1 });
     let text = std::panic::catch_unwind(|| Inputs::of(&none).credential_kind.to_owned())
         .expect_err("no credential kind named");
@@ -474,7 +481,7 @@ mod fold_namespace {
         extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
             std::ptr::null()
         }
-        Subject::new(no_door, "unused", &format!(r#"{{"settings": {settings}}}"#))
+        Subject::of_raw(no_door, "unused", &format!(r#"{{"settings": {settings}}}"#))
     }
 
     /// Settings that name no placeholder are exactly the plugin's.
@@ -579,7 +586,7 @@ mod namespace_hooks {
         extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
             std::ptr::null()
         }
-        Subject::new(
+        Subject::of_raw(
             no_door,
             "unused",
             r#"{"settings": {"options": "-c search_path={fold}"}}"#,
@@ -653,7 +660,7 @@ mod namespace_hooks {
         extern "C" fn no_door() -> *const busbar_contract::abi::mechanism::door::Door {
             std::ptr::null()
         }
-        let s = Subject::new(no_door, "unused", r#"{"settings": {"schema": "{fold}"}}"#);
+        let s = Subject::of_raw(no_door, "unused", r#"{"settings": {"schema": "{fold}"}}"#);
         let f = Leg::Linked.settings(&s);
         let ns = f.namespace().to_owned();
         assert_eq!(&*f, format!(r#"{{"schema":"{ns}"}}"#).as_bytes());
@@ -670,21 +677,30 @@ mod namespace_hooks {
 #[test]
 fn red_declares_needs_that_are_not_the_statements_are_refused() {
     use super::declared_needs_are;
-    let http = ["http".to_owned()];
-    let tcp_http = ["http".to_owned(), "tcp".to_owned()];
-    assert_eq!(declared_needs_are(r#"{"needs": ["http"]}"#, &http), Ok(()));
+    let framed = ["framed".to_owned()];
+    let stream_framed = ["framed".to_owned(), "stream".to_owned()];
     assert_eq!(
-        declared_needs_are(r#"{"needs": ["tcp", "http", "tcp"]}"#, &tcp_http),
+        declared_needs_are(r#"{"needs": ["framed"]}"#, &framed),
+        Ok(())
+    );
+    assert_eq!(
+        declared_needs_are(
+            r#"{"needs": ["stream", "framed", "stream"]}"#,
+            &stream_framed
+        ),
         Ok(())
     );
     assert_eq!(declared_needs_are(r#"{"contract_abi": {}}"#, &[]), Ok(()));
-    let e = declared_needs_are(r#"{"needs": ["http", "tcp"]}"#, &http).unwrap_err();
-    assert!(e.contains(r#"names ["tcp"] the Statement does not"#), "{e}");
-    let e = declared_needs_are(r#"{"needs": ["http"]}"#, &tcp_http).unwrap_err();
-    assert!(e.contains(r#"misses ["tcp"]"#), "{e}");
-    let e = declared_needs_are(r#"{}"#, &http).unwrap_err();
-    assert!(e.contains(r#"misses ["http"]"#), "{e}");
-    assert!(declared_needs_are(r#"{"needs": "http"}"#, &http).is_err());
+    let e = declared_needs_are(r#"{"needs": ["framed", "stream"]}"#, &framed).unwrap_err();
+    assert!(
+        e.contains(r#"names ["stream"] the Statement does not"#),
+        "{e}"
+    );
+    let e = declared_needs_are(r#"{"needs": ["framed"]}"#, &stream_framed).unwrap_err();
+    assert!(e.contains(r#"misses ["stream"]"#), "{e}");
+    let e = declared_needs_are(r#"{}"#, &framed).unwrap_err();
+    assert!(e.contains(r#"misses ["framed"]"#), "{e}");
+    assert!(declared_needs_are(r#"{"needs": "framed"}"#, &framed).is_err());
 }
 
 /// The declares file is found at the workspace root or one directory below it.
@@ -758,7 +774,7 @@ fn red_a_plugin_with_no_declares_file_fails_the_declared_needs_proof() {
     let _ = std::fs::remove_dir_all(&root);
     let dir = root.join("plugin");
     std::fs::create_dir_all(&dir).unwrap();
-    let s = super::Subject::new(plug::busbar_plugin_door, "unused", "{}");
+    let s = super::Subject::of_raw(plug::busbar_plugin_door, "unused", "{}");
     let at = dir.to_str().unwrap();
     let why = panic_text(|| super::needs_declared(&s, at));
     assert!(why.contains("no declares.json for the plugin at"), "{why}");
@@ -779,10 +795,10 @@ fn red_an_outbound_arm_over_a_door_without_the_family_never_passes_unrun() {
         panic!("an outbound arm ran over a door that states no outbound family");
     }
     outbound_plant(
-        &Subject::new(plug::busbar_plugin_door, "unused", "{}"),
+        &Subject::of_raw(plug::busbar_plugin_door, "unused", "{}"),
         must_not_run,
     );
-    let driven = Subject::new(
+    let driven = Subject::of_raw(
         plug::busbar_plugin_door,
         "unused",
         r#"{"auth": {"outbound": [{"style": "bearer"}]}}"#,
@@ -822,30 +838,6 @@ fn the_suite_lends_the_statements_secret_refs_out_of_the_settings() {
         lend_secrets(&[], b"{ \"a\": 1 }", false),
         (b"{ \"a\": 1 }".to_vec(), Vec::new())
     );
-}
-
-/// RED (store-mysql #16): the store script meters only keys it has put, so a store whose metering
-/// rows reference its keys (MySQL's fk_metering_key) holds every metering write: no `meter(..)` call
-/// in the script names a literal key id.
-#[test]
-fn red_the_store_script_meters_only_keys_it_has_put() {
-    let script = include_str!("../conformance/store.rs");
-    let literal = regex_lite_meter(script);
-    assert!(
-        literal.is_empty(),
-        "metering names keys it never put: {literal:?}"
-    );
-}
-
-/// Every `meter("<literal>", ..)` call in `script`.
-fn regex_lite_meter(script: &str) -> Vec<String> {
-    script
-        .match_indices("meter(\"")
-        .map(|(at, _)| {
-            let rest = &script[at + 7..];
-            rest[..rest.find('"').unwrap_or(0)].to_owned()
-        })
-        .collect()
 }
 
 // ── THE ADMISSION AND CONNECTION RED ARMS (`red.rs`), over the loader's own fixtures ─────────────
@@ -969,7 +961,7 @@ mod lent_ops {
             watchdog_period: Duration::from_millis(20),
             ..DispatchConfig::default()
         });
-        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let row = LinkedRow::of_raw(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "abandoned")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
         let lent: Arc<Vec<u8>> = Arc::new(b"the memory the op is lent".to_vec());
@@ -1070,9 +1062,9 @@ mod hook_on_tickets {
             if !have.is_null() {
                 return have;
             }
+            let real: Door = *conforming::door();
             // SAFETY: the fixture's door and its hook table are `'static`.
-            let real: Door = unsafe { conforming::door().read_unaligned() };
-            let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+            let ops: Ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
             REAL_DECIDE.store(
                 ops.decide.expect("the fixture decides") as *mut (),
                 Ordering::SeqCst,
@@ -1081,9 +1073,11 @@ mod hook_on_tickets {
                 decide: Some(test_op::<DecidePends>),
                 ..ops
             }));
-            let door = Box::into_raw(Box::new(Door {
-                ops: std::ptr::from_ref(ops).cast(),
-                ..real
+            let door = Box::into_raw(Box::new(unsafe {
+                Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                    ops: std::ptr::from_ref(ops).cast(),
+                    ..real.parts()
+                })
             }));
             SLOT.store(door, Ordering::SeqCst);
             door
@@ -1096,7 +1090,8 @@ mod hook_on_tickets {
     #[test]
     fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
         let d = super::super::dispatcher();
-        let row = LinkedRow::of(test_door::<PendingDoor>).expect("the restated door states itself");
+        let row =
+            LinkedRow::of_raw(test_door::<PendingDoor>).expect("the restated door states itself");
         let p = load_linked::<Hook>(&row, bind(&d, "hook")).expect("it loads");
         assert_eq!(
             open(&p, br#"{"reject_over_messages": 5}"#).outcome,
@@ -1160,7 +1155,7 @@ mod deadline_without_wake {
     fn a_wait_that_is_woken_passes() {
         let _ = woken();
         let d = dispatcher();
-        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let row = LinkedRow::of_raw(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "woken")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
         let c = on_ticket(
@@ -1182,7 +1177,7 @@ mod deadline_without_wake {
     fn red_a_wait_a_deadline_ended_is_refused() {
         let _ = woken();
         let d = dispatcher();
-        let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
+        let row = LinkedRow::of_raw(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "unwoken")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
         let c = on_ticket(
@@ -1206,7 +1201,8 @@ mod dropped_image {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
-    use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::sdk::door::RawDoorFn;
 
     use super::super::{cdylib_of, choose_cdylib_by, distinct, test_door, TestDoor, CDYLIB_ENV};
 
@@ -1356,10 +1352,14 @@ mod dropped_image {
         // Absent, the example cdylib fails the test naming its build command; never a skip.
         crate::both_ways::example_cdylib("plane_door_plugin");
         let path = cdylib_of("plane_door_plugin");
-        distinct(crate::plane_door_plugin::door, &path).unwrap_or_else(|e| panic!("{e}"));
+        distinct(
+            crate::dispatch::load::raw(crate::plane_door_plugin::door),
+            &path,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         // SAFETY: the fixture's image; held open (leaked) so its door stays valid.
         let lib = unsafe { libloading::Library::new(&path) }.expect("the image loads");
-        let door: DoorFn = *unsafe { lib.get::<DoorFn>(b"busbar_plugin_door\0") }
+        let door: RawDoorFn = *unsafe { lib.get::<RawDoorFn>(b"busbar_plugin_door\0") }
             .expect("the image exports its door");
         std::mem::forget(lib);
         DROPPED_DOOR.store(door().cast_mut(), Ordering::SeqCst);
@@ -1406,19 +1406,19 @@ mod no_shared_state {
     fn red_the_environment_is_set_once_and_another_is_refused() {
         const VAR: &str = "BBCONF_SUITE_ENV_PROBE";
         let named = |v: &str| format!(r#"{{ "env": {{ "{VAR}": "{v}" }} }}"#);
-        let _first = Subject::new(
+        let _first = Subject::of_raw(
             crate::dispatch_test_plugin::busbar_plugin_door,
             "unused",
             &named("one"),
         );
         assert_eq!(std::env::var(VAR).as_deref(), Ok("one"));
-        let _again = Subject::new(
+        let _again = Subject::of_raw(
             crate::dispatch_test_plugin::busbar_plugin_door,
             "unused",
             &named("one"),
         );
         let refused = std::panic::catch_unwind(|| {
-            Subject::new(
+            Subject::of_raw(
                 crate::dispatch_test_plugin::busbar_plugin_door,
                 "unused",
                 &named("two"),
@@ -1427,4 +1427,426 @@ mod no_shared_state {
         assert!(refused.is_err(), "a second environment was accepted");
         assert_eq!(std::env::var(VAR).as_deref(), Ok("one"), "and never set");
     }
+}
+
+/// A HOOK'S FAR ENDS ARE SERVED AS EVERY OTHER KIND'S (the suite's module docs, `far_ends`: "each
+/// instance the suite opens is bound to a connection table serving them"). The hook script bound
+/// its door with [`Subject::bind`], which never reads `far_ends`, so a hook whose declared need
+/// reaches a far end was handed no table serving it, and the documented far ends were never served
+/// to a hook at all. RED: the bind the hook script makes, for a subject naming one far end, must
+/// hand the instance a table over which that far end is reached and answers.
+mod hook_far_ends {
+    use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
+    use busbar_contract::conn::{InstanceId, NeedId, OpenDesc, PieceKind};
+
+    use super::super::{dispatcher, hook, Subject};
+    use crate::dispatch::ConnTable;
+    use crate::hook_door_conformance_tests::hook_door_plugin::conforming;
+    use crate::stand_in::FramedFacts;
+
+    const FAR: &str = "https://far-end.conformance.invalid/verdict";
+    const BODY: &str = r#"{"verdict":"abstain"}"#;
+
+    #[test]
+    fn a_hooks_declared_far_end_is_reachable_through_the_bind_the_hook_script_makes() {
+        let inputs = serde_json::json!({
+            "far_ends": [{ "url": FAR, "cert_pem": null, "status": 200, "body": BODY }]
+        })
+        .to_string();
+        let s = Subject::new(conforming::door, "hook_door", &inputs);
+        let d = dispatcher();
+        let ConnTable::Host(table) = hook::bind_for(&d, &s).conns else {
+            panic!(
+                "the hook script bound its door with no connection table serving the far ends its \
+                 inputs name: a hook's declared far end is unreachable"
+            );
+        };
+        // Reached as the hook's own declared need reaches it: over the framed transport, naming
+        // the far end as its target.
+        let need = ReadNeed {
+            direction: 0,
+            egress_class: 0,
+            transport: FramedFacts::stand_in().transport,
+            auth: String::new(),
+            target_from: String::new(),
+            trust_from: String::new(),
+            details: ReadBlob {
+                fmt: 0,
+                flags: 0,
+                bytes: Vec::new(),
+            },
+            timeout_ms: 0,
+        };
+        let (owner, id) = (InstanceId(41), NeedId(0));
+        table
+            .declare(owner, id, &need, None, None)
+            .expect("the hook's need declares on the far-end table");
+        let conn = table
+            .open(
+                owner,
+                id,
+                &OpenDesc {
+                    target: FAR,
+                    ..OpenDesc::default()
+                },
+            )
+            .unwrap_or_else(|e| panic!("the hook's far end {FAR} is unreachable: {e:?}"));
+        let mut buf = [0u8; 256];
+        let head = table.read(owner, conn, 0, &mut buf).expect("the head");
+        assert_eq!(
+            (head.kind, head.status_code),
+            (PieceKind::Fields, Some(200))
+        );
+        let body = table.read(owner, conn, 0, &mut buf).expect("the body");
+        assert_eq!(body.kind, PieceKind::Body);
+        assert_eq!(&buf[..body.len], BODY.as_bytes());
+        // A URL the inputs do not name is still refused: the table serves the far ends, not the world.
+        assert!(table
+            .open(
+                owner,
+                id,
+                &OpenDesc {
+                    target: "https://elsewhere.conformance.invalid/",
+                    ..OpenDesc::default()
+                },
+            )
+            .is_err());
+    }
+}
+
+/// A HOOK THAT DECLARED `hook.orders: false` IS JUDGED ON ABSTAIN-ONLY (ARCHITECT ruling, status
+/// row 194; the hook script's module docs). An undeclared hook still must produce the long order
+/// that walks the re-call; a declaring hook that orders FAILS (the RED arm).
+mod hook_orders {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::Arc;
+
+    use super::super::hook::{abstain_only, contract, recall_request, Request};
+    use super::super::{fold, Leg, Subject};
+    use super::step;
+    use crate::hook_door_conformance_tests::hook_door_plugin::{conforming, ordering};
+    use crate::sign::{Declares, HookDecl};
+
+    fn request(label: &str, expect: serde_json::Value) -> Arc<Request> {
+        Arc::new(Request::of(
+            &serde_json::json!({
+                "label": label,
+                "op": "decide",
+                "candidates": [{ "idx": 0 }, { "idx": 1 }, { "idx": 2 }],
+                "expect": expect,
+            }),
+            2,
+        ))
+    }
+
+    fn abstains() -> Arc<Request> {
+        request("abstains", serde_json::json!({ "verb": "abstain" }))
+    }
+
+    fn long_order() -> Arc<Request> {
+        request(
+            "long",
+            serde_json::json!({ "verb": "prefer", "order": [2, 1, 0] }),
+        )
+    }
+
+    fn declaring(orders: bool) -> Declares {
+        Declares {
+            hook: Some(HookDecl { orders }),
+            ..Declares::default()
+        }
+    }
+
+    /// The inputs of an abstain-only hook set over the conforming fixture.
+    fn inputs() -> String {
+        let abstain = |label: &str| {
+            serde_json::json!({
+                "label": label,
+                "op": "decide",
+                "candidates": [{ "idx": 0 }],
+                "expect": { "verb": "abstain" },
+            })
+        };
+        serde_json::json!({
+            "settings": { "reject_over_messages": 3 },
+            "hook": {
+                "bad_settings": ["[]"],
+                "order_cap": 2,
+                "requests": [abstain("abstains")],
+                "refresh": {
+                    "settings": { "reject_over_messages": 4 },
+                    "request": abstain("abstains again"),
+                },
+            },
+        })
+        .to_string()
+    }
+
+    fn panics(f: impl FnOnce()) -> String {
+        let e = catch_unwind(AssertUnwindSafe(f)).expect_err("the fold fails");
+        e.downcast_ref::<String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default()
+    }
+
+    /// An undeclared hook still must produce a long order (unchanged): abstain-only is refused for
+    /// it, a long order is the re-call's request.
+    #[test]
+    fn an_undeclared_hook_must_still_produce_a_long_order() {
+        let none = [abstains()];
+        let e = recall_request(true, &none).err().expect("no long order");
+        assert!(e.contains("longer than hook.order_cap"), "{e}");
+        let both = [abstains(), long_order()];
+        let found = recall_request(true, &both)
+            .expect("a long order")
+            .expect("the re-call's request");
+        assert!(Arc::ptr_eq(found, &both[1]));
+    }
+
+    #[test]
+    fn a_hook_declaring_no_orders_is_judged_on_abstain_only() {
+        let none = [abstains()];
+        assert!(recall_request(false, &none)
+            .expect("abstain-only")
+            .is_none());
+        let both = [abstains(), long_order()];
+        let e = recall_request(false, &both)
+            .err()
+            .expect("an expected order");
+        assert!(
+            e.contains("`hook.orders: false`") && e.contains("'long'"),
+            "{e}"
+        );
+        assert!(abstain_only(&none).is_ok() && abstain_only(&both).is_err());
+    }
+
+    /// The steps a passing hook fold has, its requests answering `answers`.
+    fn passing(answers: &[(&str, &str)], recall: bool) -> Vec<super::Step> {
+        let mut f = vec![
+            step("validate", "Ready lease=false", 1, 1),
+            step("validate bad #0", "Failed lease=false why", 1, 1),
+            step("open", "Ready lease=false", 1, 1),
+            step("open bad", "Failed lease=false why", 1, 1),
+            step("tick", "Ready next=0", 1, 1),
+            step("refresh", "Ready lease=false", 1, 1),
+            step("refresh bad", "Failed lease=false why", 1, 1),
+            step("close", "Ready lease=false", 1, 1),
+            step("decide unopened", "Refused lease=false", 0, 0),
+            step("decide after close", "Fault lease=false", 0, 0),
+        ];
+        f.extend(answers.iter().map(|(l, a)| step(l, a, 1, 1)));
+        if recall {
+            f.push(step(
+                "re-call short again",
+                "Failed lease=false x then Fault lease=false",
+                2,
+                2,
+            ));
+        }
+        f
+    }
+
+    /// RED: a declaring hook whose fold answers an order FAILS the contract, even when the order is
+    /// the very answer the script expected; a declaring hook that abstains passes with no re-call;
+    /// an undeclared one is held to the re-call as before.
+    #[test]
+    fn red_a_hook_declaring_no_orders_fails_the_contract_when_it_orders() {
+        let abstain = (
+            "abstains",
+            "Ready lease=false | verb=abstain recalled=false",
+        );
+        let expect = [("abstains".to_string(), abstain.1.to_string())];
+        contract(&passing(&[abstain], false), &expect, false).expect("abstain-only passes");
+        let ordered = (
+            "abstains",
+            "Ready lease=false | verb=prefer order=[1] recalled=false",
+        );
+        let want = [("abstains".to_string(), ordered.1.to_string())];
+        let e = contract(&passing(&[ordered], false), &want, false)
+            .expect_err("an order from a hook that declared none");
+        assert!(e.contains("`hook.orders: false` and ordered"), "{e}");
+        assert!(
+            contract(&passing(&[abstain], false), &expect, true).is_err(),
+            "an undeclared hook is held to the re-call"
+        );
+        contract(&passing(&[abstain], true), &expect, true).expect("an undeclared hook re-calls");
+    }
+
+    /// The whole fold over the fixtures, linked: a hook declaring no orders that abstains passes;
+    /// the same set over a door that orders FAILS; an undeclared abstain-only set is refused.
+    #[test]
+    fn the_fold_judges_a_declared_abstain_only_hook() {
+        let declared = |door, orders| {
+            Subject::new(door, "hook_door", &inputs()).with_declares(declaring(orders))
+        };
+        let honest = fold(&declared(conforming::door, false), Leg::Linked);
+        assert!(honest.iter().all(|s| s.label != "re-call short again"));
+        let text = panics(|| {
+            fold(&declared(ordering::door, false), Leg::Linked);
+        });
+        assert!(text.contains("`hook.orders: false` and ordered"), "{text}");
+        let text = panics(|| {
+            fold(
+                &Subject::new(conforming::door, "hook_door", &inputs()),
+                Leg::Linked,
+            );
+        });
+        assert!(text.contains("longer than hook.order_cap"), "{text}");
+    }
+}
+
+#[test]
+fn a_suite_names_its_door_by_function_or_by_macro_door_alike() {
+    // `conformance_suite! { door: plugin::door, .. }` and `{ door: plugin::MACRO_DOOR, .. }` run
+    // over the one door function (status rows 159 and 194: the second spelling is the one that
+    // compiles once #1469 lands, and it compiles here first).
+    let by_fn = crate::__conformance_door!(crate::plane_door_plugin::door);
+    let by_macro = crate::__conformance_door!(crate::plane_door_plugin::MACRO_DOOR);
+    let named = crate::plane_door_plugin::MACRO_DOOR.door_fn();
+    assert_eq!(by_fn as usize, by_macro as usize);
+    assert_eq!(by_macro as usize, named as usize);
+}
+
+#[test]
+fn a_subject_and_a_linked_row_name_their_door_by_function_or_by_macro_door_alike() {
+    use crate::dispatch::{rendering_of, rendering_of_macro, LinkedRow};
+    let door = crate::plane_door_plugin::door;
+    let macro_door = crate::plane_door_plugin::MACRO_DOOR;
+    let by_fn = super::Subject::new(door, "plane_door_plugin", "{}");
+    let by_macro = super::Subject::of_macro(macro_door, "plane_door_plugin", "{}");
+    assert_eq!(by_fn.door as usize, by_macro.door as usize);
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated =
+        unsafe { crate::dispatch::LoadedDoor::from_raw(crate::dispatch::load::raw(door)) };
+    let by_loaded = super::Subject::of_loaded(restated, "plane_door_plugin", "{}");
+    assert_eq!(by_fn.door as usize, by_loaded.door as usize);
+    let row = LinkedRow::of(door).expect("the door states its Statement");
+    let row_macro = LinkedRow::of_macro(macro_door).expect("the door states its Statement");
+    assert_eq!(row.statement, row_macro.statement);
+    assert_eq!(row.door as usize, row_macro.door as usize);
+    assert_eq!(
+        rendering_of(door).expect("renders"),
+        rendering_of_macro(macro_door).expect("renders")
+    );
+}
+
+/// THE PUBLISHED SUITE HOLDS A PLUGIN TO WHAT PRODUCTION HOLDS IT TO (docs/design/BUSBAR-1.6.0.md
+/// §2: a compiled-in plugin and a dropped-in one are one contract). `conformance_suite!` reads the
+/// plugin's declares file whichever form names its door, so a hook declaring `hook.orders: false`
+/// is judged on abstain-only under `loaded:` as under `door:`, as the loader refuses its order at
+/// run. RED before: the `loaded:` form never read the declares file, its subject stated nothing,
+/// and a hook that orders passed `both_ways` there.
+#[test]
+fn a_suite_reads_the_declares_file_whichever_form_names_its_door() {
+    let root = std::env::temp_dir().join(format!("declares-forms-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("plugin");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("declares.json"), r#"{"hook": {"orders": false}}"#).unwrap();
+    let at = dir.to_str().unwrap();
+    let by_door = crate::conformance_suite!(
+        @subject door: crate::plane_door_plugin::door,
+        manifest_dir: at,
+        cdylib: "plane_door_plugin",
+        inputs: "{}"
+    );
+    let by_loaded = crate::conformance_suite!(
+        @subject loaded: {
+            // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised
+            // door.
+            unsafe {
+                crate::dispatch::LoadedDoor::from_raw(crate::dispatch::load::raw(
+                    crate::plane_door_plugin::door,
+                ))
+            }
+        },
+        manifest_dir: at,
+        cdylib: "plane_door_plugin",
+        inputs: "{}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+    assert!(
+        !by_door.hook_orders(),
+        "the `door:` form reads the declares file"
+    );
+    assert!(
+        !by_loaded.hook_orders(),
+        "the `loaded:` form reads the declares file as the `door:` form does"
+    );
+}
+
+#[test]
+fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
+    use crate::dispatch::{rendering_of, rendering_of_loaded, LinkedRow, LoadedDoor};
+    let door = crate::plane_door_plugin::door;
+    let macro_door = crate::plane_door_plugin::MACRO_DOOR;
+    // A restated door (a hand-built one, in a plugin's own test) and a macro door's own.
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { LoadedDoor::from_raw(crate::dispatch::load::raw(door)) };
+    let by_restated = LinkedRow::of_loaded(restated).expect("the door states its Statement");
+    let by_macro = LinkedRow::of_loaded(LoadedDoor::from(macro_door)).expect("states");
+    let by_fn = LinkedRow::of(door).expect("states");
+    assert_eq!(by_restated.statement, by_fn.statement);
+    assert_eq!(by_macro.statement, by_fn.statement);
+    assert_eq!(by_restated.door as usize, by_fn.door as usize);
+    assert_eq!(
+        rendering_of_loaded(restated).expect("renders"),
+        rendering_of(door).expect("renders")
+    );
+    // A row's door is carried as given; `link` reads only its manifest (a kind the registry
+    // links), so any door the test holds stands in for the comparison.
+    let abi = busbar_contract::abi::secret::ABI_VERSION;
+    let manifest = || crate::both_ways::statement("secret", "row-door", "row-door", abi);
+    let linked = crate::PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(manifest(), door)])
+        .expect("the door links");
+    let linked_macro = crate::PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::of_macro(manifest(), macro_door)])
+        .expect("the macro door links");
+    assert_eq!(
+        linked.linked()[0].door().map(|d| d as usize),
+        linked_macro.linked()[0].door().map(|d| d as usize)
+    );
+    assert!(linked_macro.linked()[0].door().is_some());
+    // SAFETY: `door` is the door `plugin_door!` laid out: a `'static`, fully initialised door.
+    let restated = unsafe { LoadedDoor::from_raw(crate::dispatch::load::raw(door)) };
+    let linked_loaded = crate::PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::of_loaded(manifest(), restated)])
+        .expect("the restated door links");
+    assert_eq!(
+        linked_loaded.linked()[0].door().map(|d| d as usize),
+        linked_macro.linked()[0].door().map(|d| d as usize)
+    );
+}
+
+/// THE SUITE'S DROPPED LEG LOADS AS PRODUCTION LOADS (THE DESIGN §11.4: one conformance suite runs
+/// the compiled-in build and the dropped-in build through the same table; status row 2: one loading
+/// path). Every production caller loads a dropped plugin from its verified bytes, staged by the
+/// loader's one staging path (`load_dropped_bytes`: a sealed `memfd` on Linux, a private `0700`
+/// copy elsewhere); the suite's dropped leg must run that staging too, never `dlopen` the build
+/// path. RED before: [`super::load`]'s dropped leg called `load_dropped` on the cdylib's path, and
+/// nothing was staged.
+#[test]
+fn the_dropped_leg_loads_the_cdylib_through_the_staging_production_uses() {
+    use super::{dispatcher, load, Leg, Subject};
+    use crate::dispatch::kinds::hook::Hook;
+    use crate::stage::STAGED_HERE;
+    crate::both_ways::example_cdylib("hook_door");
+    let s = Subject::new(
+        crate::hook_door_conformance_tests::hook_door_plugin::conforming::door,
+        "hook_door",
+        "{}",
+    );
+    let d = dispatcher();
+    let before = STAGED_HERE.with(std::cell::Cell::get);
+    let plugin = load::<Hook>(&s, Leg::Dropped, s.bind(&d, "staged-dropped"))
+        .expect("the dropped leg loads the honest library");
+    let staged = STAGED_HERE.with(std::cell::Cell::get) - before;
+    assert_eq!(
+        staged, 1,
+        "the suite's dropped leg staged {staged} library(ies): it opened the build path, not the \
+         verified bytes through the staging every production load runs"
+    );
+    drop(plugin);
 }

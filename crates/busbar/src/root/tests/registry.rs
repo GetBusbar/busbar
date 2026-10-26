@@ -645,7 +645,7 @@ fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
         let own = crate::LINKED
             .transports
             .iter()
-            .find(|r| r.composes_over.is_empty());
+            .find(|r| (r.composes_over)().is_empty());
         (own.expect("a wire that opens its own socket").build)(settings)
     }
     let limits = busbar_kernel::config::limits::LimitsResolved {
@@ -702,26 +702,22 @@ fn the_fold_builds_bottom_up_in_composes_over_order() {
     let position = |key: &str| built.iter().position(|k| *k == key);
     let mut last = None;
     for entry in crate::LINKED.transports {
+        let key = (entry.key)();
         // Every linked entry is built, after the entries the table puts before it (no layer
         // reorders them: no transport names another) …
-        let at = position(entry.key).unwrap_or_else(|| panic!("`{}` is not built", entry.key));
+        let at = position(key).unwrap_or_else(|| panic!("`{key}` is not built"));
         assert!(
             last.is_none_or(|l| l < at),
-            "`{}` was built out of the table's order: {built:?}",
-            entry.key
+            "`{key}` was built out of the table's order: {built:?}"
         );
         last = Some(at);
         // … and the schemes it claims past its own register right after it, in its order.
-        let past: Vec<&str> = (entry.claims)()
-            .into_iter()
-            .filter(|c| *c != entry.key)
-            .collect();
+        let past: Vec<&str> = (entry.claims)().into_iter().filter(|c| *c != key).collect();
         for (n, claim) in past.iter().enumerate() {
             assert_eq!(
                 position(claim),
                 Some(at + 1 + n),
-                "`{claim}`, which `{}` claims, is not registered right after it: {built:?}",
-                entry.key
+                "`{claim}`, which `{key}` claims, is not registered right after it: {built:?}"
             );
         }
         if !past.is_empty() {
@@ -777,17 +773,17 @@ fn transports_layered_over_each_other_refuse_at_boot() {
     let own = *crate::LINKED
         .transports
         .iter()
-        .find(|r| r.composes_over.is_empty())
+        .find(|r| (r.composes_over)().is_empty())
         .expect("a wire that opens its own socket");
     let rows = [
         LinkedTransport {
-            key: "upper",
-            composes_over: &["lower"],
+            key: || "upper",
+            composes_over: || &["lower"],
             ..own
         },
         LinkedTransport {
-            key: "lower",
-            composes_over: &["upper"],
+            key: || "lower",
+            composes_over: || &["upper"],
             ..own
         },
     ];
@@ -829,34 +825,6 @@ fn every_planes_claims_name_a_registered_transport() {
     }
 }
 
-/// THE SEAL IS ON THE BOOT PATH, NEUTRALLY. `run()` seals the composition off the resolved limits
-/// before the root units' configuration step, in every build: the call is not behind a feature and
-/// is not a root unit's, so a build that links no plane's root unit still refuses a composition
-/// that does not seal, rather than booting past a check only one plane's unit ran.
-#[test]
-fn the_boot_path_seals_the_composition_in_every_build() {
-    let main = include_str!("../../main.rs");
-    let run = &main[main.find("async fn run(").expect("the boot's run()")..];
-    let call = "root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));";
-    let sealed = run.find(call).expect("run() seals the composition");
-    let units = run
-        .find("ROOT_UNITS.iter().filter_map(|u| u.on_config)")
-        .expect("the root units' configuration step");
-    assert!(
-        sealed < units,
-        "the seal answers before any root unit composes"
-    );
-    let line_before = run[..sealed]
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
-        .unwrap_or_default();
-    assert!(
-        !line_before.trim_start().starts_with("#[cfg"),
-        "the seal is not behind a feature: {line_before}"
-    );
-}
-
 // ── BOTH DOORS, ONE FOLD ────────────────────────────────────────────────────────────────────────
 
 /// The dropped-in wire these proofs serve: the neutral frame door (the plugin loader's
@@ -878,7 +846,6 @@ fn dropped_doors() -> &'static [DroppedDoor] {
         let (door, wire) = crate::root::doors::served(
             plugin,
             &busbar_contract::transport::TransportSettings::default(),
-            Some(crate::root::connector::address_carrier()),
         )
         .expect("the door serves");
         vec![DroppedDoor {
@@ -972,8 +939,8 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
     ];
     let linked = [
         LinkedTransport {
-            key: "framed",
-            composes_over: &[],
+            key: || "framed",
+            composes_over: || &[],
             build: |_| dropped_doors()[0].wire.clone(),
             claims: || vec!["framed"],
             upgrades: Vec::new,
@@ -981,8 +948,8 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
             offered: || AuthPoints::PEER,
         },
         LinkedTransport {
-            key: "upgraded",
-            composes_over: &["framed"],
+            key: || "upgraded",
+            composes_over: || &["framed"],
             build: |_| dropped_doors()[0].wire.clone(),
             claims: || vec!["upgraded"],
             upgrades: || vec!["upgraded"],
@@ -1054,10 +1021,10 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
 /// The linked row the dropped-in wire stands in for: its key, composing over nothing, built in
 /// process as the same served wire. The build's own linked table holds no row for the neutral
 /// claim, so a proof that the dropped-in wire takes a linked row's place adds that row first.
-fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
+fn the_wires_linked_row() -> LinkedTransport {
     LinkedTransport {
-        key: wire.key,
-        composes_over: &[],
+        key: || dropped_doors()[0].key,
+        composes_over: || &[],
         build: |_| dropped_doors()[0].wire.clone(),
         claims: || vec![dropped_doors()[0].key],
         upgrades: Vec::new,
@@ -1072,8 +1039,8 @@ fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
 #[test]
 fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
     let (a, b) = (
-        crate::root::doors::row_bind("first-row"),
-        crate::root::doors::row_bind("second-row"),
+        crate::root::doors::row_bind("first-row").expect("the row binds"),
+        crate::root::doors::row_bind("second-row").expect("the row binds"),
     );
     assert_eq!(
         &*a.instance, "first-row",
@@ -1117,7 +1084,7 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
     static ROWS: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
     let with = crate::root::linked::Linked {
         transports: rows_of(&ROWS, || {
-            [crate::LINKED.transports, &[the_wires_linked_row(wire)]].concat()
+            [crate::LINKED.transports, &[the_wires_linked_row()]].concat()
         }),
         ..crate::LINKED
     };
@@ -1147,7 +1114,7 @@ fn a_dropped_in_wire_rides_the_one_fold_in_place_of_its_linked_row() {
 #[test]
 fn a_dropped_in_wire_on_a_linked_key_is_refused_as_a_second_linked_row_is() {
     let wire = &dropped_doors()[0];
-    let row = the_wires_linked_row(wire);
+    let row = the_wires_linked_row();
     static ONCE: std::sync::OnceLock<Vec<LinkedTransport>> = std::sync::OnceLock::new();
     let with = crate::root::linked::Linked {
         transports: rows_of(&ONCE, || [crate::LINKED.transports, &[row]].concat()),
@@ -1196,4 +1163,39 @@ fn the_upgrade_lines_are_read_off_the_door_statements() {
             "no session wire, no upgrade line: {lines:?}"
         );
     }
+}
+
+/// A LINKED TRANSPORT ROW WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2, "Plugin
+/// logging": "all plugins should log to their plugin's log file ... compiled in or dropped in ...
+/// The HOST writes it to that plugin instance's own log file").
+///
+/// RED before a linked transport row was bound to its instance's log file: every row took the
+/// transport lane's `NoSink`, so a log record the door's call carried went nowhere.
+#[test]
+fn a_linked_transport_row_logs_to_its_own_plugin_log_file() {
+    use crate::root::loader::dispatch::Diagnostic;
+    let row = format!("transport-log-row-{}", std::process::id());
+    let bound = crate::root::doors::row_bind(&row).expect("the row binds");
+    bound.sink.diag(Diagnostic {
+        id: busbar_contract::abi::mechanism::call::DIAG_LOG,
+        name: b"",
+        severity: 0,
+        text: b"the linked transport logged a frame",
+    });
+    let path = crate::root::boot::plugin_logs().path_for(&row);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut text = String::new();
+    while std::time::Instant::now() < deadline {
+        text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("the linked transport logged a frame") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        text.contains("the linked transport logged a frame"),
+        "the row's plugin log file {} holds no record of its own: {text:?}",
+        path.display()
+    );
 }

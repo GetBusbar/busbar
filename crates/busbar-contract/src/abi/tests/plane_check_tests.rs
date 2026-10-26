@@ -16,7 +16,9 @@ use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::call::Outcome::{Failed, Pending, Ready, Refused};
 use crate::abi::mechanism::call::{AbiStr, Blob, MAX_TEXT};
 use crate::abi::mechanism::check::{check_needs, fault};
-use crate::abi::mechanism::door::{Section, SECTION_DECLARING, SECTION_REQUIRED};
+use crate::abi::mechanism::door::{
+    Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
+};
 use crate::abi::plane::*;
 use crate::caps::ReasonCode;
 
@@ -1125,8 +1127,11 @@ fn a_claim_states_only_known_flags() {
     // A signed-ingress path is a known flag (ARCHITECT ruling 2026-10-16, 3b A).
     let signed = claim("V", "/t", CLAIM_EXACT | CLAIM_SIGNED_INGRESS);
     assert_eq!(check_claims(&[signed], 1), Ok(()));
-    // RED: a bit none of the known claim bits.
-    let unknown = claim("V", "/t", CLAIM_RAW_AFFIX << 1);
+    // An entry fact is a known flag (status row 173).
+    let entry = claim("V", "path:/t/*", CLAIM_ENTRY);
+    assert_eq!(check_claims(&[entry], 1), Ok(()));
+    // RED: a bit none of the known claim bits, the first past `CLAIM_ENTRY`.
+    let unknown = claim("V", "/t", CLAIM_ENTRY << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
@@ -1415,6 +1420,27 @@ fn exactly_one_section_is_the_declaring_one() {
     let mut unnamed = section(SECTION_DECLARING);
     unnamed.name = z();
     assert_eq!(check_sections(&[unnamed]), f(Rule::Missing, "section.name"));
+}
+
+/// A plane's section may select it without being its verb (`SECTION_SELECTS`, Law 7), never as
+/// well as being its verb. RED: before the bit was known, the selecting section was an unknown code.
+#[test]
+fn a_selecting_section_is_not_the_declaring_one() {
+    assert_eq!(
+        check_sections(&[
+            section(SECTION_DECLARING),
+            section(SECTION_CONSUMED | SECTION_REQUIRED | SECTION_SELECTS),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        check_sections(&[section(SECTION_DECLARING | SECTION_SELECTS)]),
+        f(Rule::Contradiction, "section.flags")
+    );
+    assert_eq!(
+        check_sections(&[section(SECTION_SELECTS)]),
+        f(Rule::NotExactlyOne, "section.declaring")
+    );
 }
 
 #[test]
@@ -2508,6 +2534,19 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
     // The kernel's own refusals, rendered by the owning plane (ARCHITECT ruling 2026-10-16, 3b B).
     (44, RefusalCode::MethodNotAllowed, "method_not_allowed"),
     (45, RefusalCode::Internal, "internal"),
+    // The walk's exhaustion with nothing sent: kernel-to-plane piece reasons alone.
+    (46, RefusalCode::UnsentNoAttempt, "unsent_no_attempt"),
+    (47, RefusalCode::UnsentNoRoute, "unsent_no_route"),
+    (48, RefusalCode::UnsentNeedUnbound, "unsent_need_unbound"),
+    (
+        49,
+        RefusalCode::UnsentTargetNotPath,
+        "unsent_target_not_path",
+    ),
+    (50, RefusalCode::UnsentFieldName, "unsent_field_name"),
+    (51, RefusalCode::UnsentUnrecorded, "unsent_unrecorded"),
+    (52, RefusalCode::UnsentAuthFailed, "unsent_auth_failed"),
+    (53, RefusalCode::UnsentOpenRefused, "unsent_open_refused"),
 ];
 
 #[test]
@@ -2529,6 +2568,18 @@ fn every_wire_refusal_code_is_pinned_to_its_number_and_word() {
             assert_eq!(reason_of(*number), None, "{word}: no plane carries it");
             continue;
         }
+        if code.unsent() {
+            // The walk's exhaustion with nothing sent: the kernel's piece reason, never a reason a
+            // plane states, and the one family `nothing_sent` reads beside the credential's.
+            assert_eq!(reason_of(*number), None, "{word}: no plane states it");
+            assert!(nothing_sent(*number), "{word}: nothing left");
+            continue;
+        }
+        assert_eq!(
+            nothing_sent(*number),
+            *code == RefusalCode::CredentialUnavailable,
+            "{word}: only the credential's refusal and the unsent codes say nothing left"
+        );
         let reason = reason_of(*number).expect("a pinned code names a reason");
         assert_eq!(reason.as_str(), *word, "code {number}");
         assert_eq!(reason_code(reason), *number);
@@ -3494,7 +3545,9 @@ fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
         check_claims(&[claim("V", "/model/*/converse", CLAIM_RAW_AFFIX)], 0),
         Ok(())
     );
-    assert!(check_claims(&[claim("V", "/t", CLAIM_RAW_AFFIX << 1)], 0).is_err());
+    // `CLAIM_RAW_AFFIX << 1` is `CLAIM_ENTRY` now (status row 173): the first bit past the known
+    // claim bits stays refused.
+    assert!(check_claims(&[claim("V", "/t", CLAIM_ENTRY << 1)], 0).is_err());
 }
 
 /// A RAW AFFIX MATCHES THE RAW PATH AS BYTES, so the previous release's rule (`starts_with` the
@@ -3532,6 +3585,56 @@ fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
     assert!(
         !raw_affix_matches("/model/converse", "/model/converse"),
         "not a raw affix"
+    );
+}
+
+/// AN ENTRY FACT (status row 173, `CLAIM_ENTRY`): its target is one or more predicates, `field:`
+/// (present, or its value's prefix) and at most one `path:` pattern, in which `*` is any run of
+/// bytes and a whole segment `{}` or `{<field>}` one non-empty segment, a named one captured. A
+/// malformed target, or the flag beside another, is refused at bind.
+#[test]
+fn an_entry_facts_target_is_its_predicates_and_its_path_captures_named_segments() {
+    use crate::abi::plane::check::EntryPredicate::{Field, Path};
+    use crate::abi::plane::check::{check_claim_target, entry_fact, entry_path_matches};
+    assert_eq!(entry_fact("field:x-key"), Some(vec![Field("x-key", None)]));
+    assert_eq!(
+        entry_fact("field:authorization=SCHEME path:*/end"),
+        Some(vec![Field("authorization", Some("SCHEME")), Path("*/end")])
+    );
+    for bad in [
+        "",
+        "field:",
+        "field:X",
+        "field:a=",
+        "path:x",
+        "path:/a path:/b",
+        "path:/a{b}",
+        "path:/{a/b}",
+        "path:/{A}",
+        "other:x",
+    ] {
+        assert_eq!(entry_fact(bad), None, "RED: `{bad}` is no entry fact");
+    }
+    let mut caps = Vec::new();
+    assert!(entry_path_matches("/{pool}/v1/x", "/p%20q/v1/x", &mut caps));
+    assert_eq!(caps, vec![("pool", &b"p%20q"[..])]);
+    caps.clear();
+    assert!(!entry_path_matches("/{pool}/v1/x", "/a/b/v1/x", &mut caps));
+    assert!(caps.is_empty(), "a failed match captures nothing");
+    assert!(entry_path_matches("/{}/{model}/x", "/a/b/x", &mut caps));
+    assert_eq!(caps, vec![("model", &b"b"[..])]);
+    caps.clear();
+    assert!(entry_path_matches("*:act*", "/m/n:act", &mut caps));
+    assert!(entry_path_matches("/m/*", "/m/", &mut caps));
+    assert!(!entry_path_matches("/m/*", "/m", &mut caps));
+    assert_eq!(check_claim_target("path:/m/*", CLAIM_ENTRY), Ok(()));
+    assert_eq!(
+        check_claim_target("path:/m/*", CLAIM_ENTRY | CLAIM_OPEN),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(
+        check_claim_target("nope", CLAIM_ENTRY),
+        f(Rule::Contradiction, "claim.entry")
     );
 }
 

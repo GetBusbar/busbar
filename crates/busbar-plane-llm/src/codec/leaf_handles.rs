@@ -368,6 +368,15 @@ impl IrHandle for ModerationRespHandle {
 // ─────────────────────────────── transcription ───────────────────────────────
 pub struct TranscriptionReqHandle(pub TranscriptionReq);
 pub struct TranscriptionRespHandle(pub TranscriptionResp);
+/// The refusal a transcription writer's empty write becomes (see
+/// [`TranscriptionReqHandle::write_egress_request`]).
+fn unwritable(egress_proto: &str) -> String {
+    format!(
+        "this request cannot be written onto {egress_proto}: its audio carries the delimiter of \
+         the form it would be sent in"
+    )
+}
+
 impl Sealed for TranscriptionReqHandle {}
 impl Sealed for TranscriptionRespHandle {}
 
@@ -391,6 +400,14 @@ impl IrHandle for TranscriptionReqHandle {
         model: &str,
     ) -> EgressWire {
         let bytes = super::leaf_codec::transcription_write_request(egress_proto, &self.0);
+        // A transcription request always carries its model, so a writer that wrote NOTHING refused
+        // the request (an audio part carrying its form's delimiter): it is refused at the seam,
+        // never sent upstream as an empty body in the caller's name.
+        if bytes.is_empty() {
+            return EgressWire::Unrepresentable {
+                reason: unwritable(egress_proto),
+            };
+        }
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(v) => EgressWire::Json(v),
             Err(_) => {

@@ -402,10 +402,8 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
 /// the migration or restore fails this against a hash a PAST build computed, not one this build did.
 #[test]
 fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
-    // The frozen pre-cleave `serde(AuditRecord)` rows and their frozen tail hash — copied verbatim
-    // from `crate::audit::tests::boot_verify_golden` (that module is private).
-    const AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
-    const AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
+    // `boot_verify_golden`'s frozen pre-cleave `serde(AuditRecord)` rows and their frozen hashes.
+    use crate::audit::boot_verify_golden::{AD_1, AD_2};
     const AD_HEAD_HASH: &str = "52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa";
     const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
@@ -481,11 +479,7 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     assert!(ring.iter().all(|e| !e.recorded_here));
 }
 
-/// A tracing layer that records the `diag = "BUSBAR-NNNN"` field of every ERROR event, so a test can
-/// assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose. The peer
-/// of the journal restore tests' capture layer.
-#[derive(Clone, Default)]
-struct DiagCapture(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+use crate::test_support::warn_capture::DiagCapture;
 
 /// Serializes every test that restores an admin audit stream holding an undecodable row, because they
 /// all hit the same process-wide tracing callsite (BUSBAR-2047). tracing caches a callsite's interest
@@ -509,34 +503,6 @@ fn capture_into(cap: &DiagCapture) -> IsolatedCapture {
     IsolatedCapture {
         _guard: guard,
         _lock: lock,
-    }
-}
-
-impl<S> tracing_subscriber::Layer<S> for DiagCapture
-where
-    S: tracing::Subscriber,
-{
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if *event.metadata().level() != tracing::Level::ERROR {
-            return;
-        }
-        struct V<'a>(&'a mut Option<String>);
-        impl tracing::field::Visit for V<'_> {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if field.name() == "diag" {
-                    *self.0 = Some(format!("{value:?}"));
-                }
-            }
-        }
-        let mut diag = None;
-        event.record(&mut V(&mut diag));
-        if let Some(d) = diag {
-            self.0.lock().unwrap().push(d);
-        }
     }
 }
 
@@ -1173,6 +1139,139 @@ fn a_live_admin_record_with_a_bar_in_a_field_recomputes_under_its_declared_schem
     assert_eq!(e.hash, busbar_contract::redacted::sha256_hex(&sealed));
 }
 
+// ── Q128 arch u26 #2: GET /audit recomputes by the PUBLISHED recipe ─────────────────────────────
+
+/// The recipe `AuditEntry.hash` publishes (its doc, which the served OpenAPI document carries),
+/// rebuilt here from the served JSON alone: no kernel framing or digest code is called, so a drift
+/// between what the node seals and what the contract states turns this red. Scheme 1 is the 1.5.5
+/// pipe join; scheme 2 is `prev_hash|seq`, a zero byte, then each field as an 8-byte big-endian
+/// length and its bytes (`ts` as its 8-byte big-endian value).
+fn hash_by_the_published_recipe(served: &serde_json::Value) -> String {
+    use sha2::{Digest as _, Sha256};
+    let text = |k: &str| served[k].as_str().expect("a served text field").to_string();
+    let num = |k: &str| served[k].as_u64().expect("a served integer field");
+    let mut preimage = Vec::new();
+    match num("scheme") {
+        1 => preimage.extend_from_slice(
+            format!(
+                "{}|{}|{}|{}|{}|{}|{}",
+                text("prev_hash"),
+                num("seq"),
+                num("ts"),
+                text("action"),
+                text("resource"),
+                text("outcome"),
+                text("principal")
+            )
+            .as_bytes(),
+        ),
+        2 => {
+            preimage.extend_from_slice(format!("{}|{}", text("prev_hash"), num("seq")).as_bytes());
+            preimage.push(0x00);
+            preimage.extend_from_slice(&8u64.to_be_bytes());
+            preimage.extend_from_slice(&num("ts").to_be_bytes());
+            for k in ["action", "resource", "outcome", "principal"] {
+                let field = text(k);
+                preimage.extend_from_slice(&(field.len() as u64).to_be_bytes());
+                preimage.extend_from_slice(field.as_bytes());
+            }
+        }
+        other => panic!("a served record declares scheme {other}, which no recipe publishes"),
+    }
+    hex::encode(Sha256::digest(&preimage))
+}
+
+/// EVERY RECORD `GET /audit` SERVES RECOMPUTES BY THE PUBLISHED RECIPE, under the scheme it declares,
+/// and the node's own verifier agrees with that recipe. The records cover both schemes: a `|` in
+/// each of `action`, `resource` and `outcome` (scheme 2), a `|` only in `principal` (scheme 1, the
+/// last field reads back), empty and non-ASCII fields.
+///
+/// RED on dev before p12#1: every record declared scheme 2 while the node's `digest` framed scheme 2
+/// as one length-prefixed buffer over all seven fields, so `digest(entry)` disagreed with the served
+/// `hash`, and a record with no `|` anywhere was not served under 1.5.5's formula (scheme 1).
+#[test]
+fn every_served_audit_record_recomputes_by_the_published_recipe() {
+    ensure_global_audit_stream_registered();
+    let tag = "q128b-u26-2:";
+    let cases: [(&str, String, &str, &str); 6] = [
+        ("test.write", format!("{tag}plain"), "applied", "admin"),
+        ("test.write", format!("{tag}res|bar"), "applied", "admin"),
+        (
+            "test|write",
+            format!("{tag}action-bar"),
+            "rejected",
+            "admin",
+        ),
+        (
+            "test.write",
+            format!("{tag}outcome-bar"),
+            "app|lied",
+            "admin",
+        ),
+        (
+            "test.write",
+            format!("{tag}principal-bar"),
+            "applied",
+            "iss|sübject",
+        ),
+        ("test.write", format!("{tag}empty-principal"), "applied", ""),
+    ];
+    for (i, (action, resource, outcome, principal)) in cases.iter().enumerate() {
+        emit_admin_hostless(
+            1_700_001_000 + i as u64,
+            action,
+            resource,
+            outcome,
+            principal,
+        );
+    }
+    // What the `GET /audit` handler serializes: the read model's entries, as JSON.
+    let served = serde_json::to_value(AUDIT_LOG.list_filtered(
+        0,
+        crate::audit_ring::MAX_AUDIT_ENTRIES,
+        None,
+        None,
+    ))
+    .expect("the served page serializes");
+    let mine: Vec<&serde_json::Value> = served
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter(|e| e["resource"].as_str().is_some_and(|r| r.starts_with(tag)))
+        .collect();
+    assert_eq!(mine.len(), cases.len(), "every emitted record is served");
+    let schemes: std::collections::BTreeSet<u64> =
+        mine.iter().filter_map(|e| e["scheme"].as_u64()).collect();
+    assert_eq!(
+        schemes,
+        [1, 2].into_iter().collect(),
+        "the cases reach both published schemes"
+    );
+    for e in mine {
+        let published = hash_by_the_published_recipe(e);
+        assert_eq!(
+            e["hash"].as_str(),
+            Some(published.as_str()),
+            "the served hash is the published recipe's: {e}"
+        );
+        let entry: AuditEntry =
+            serde_json::from_value(e.clone()).expect("a served entry reads back");
+        assert_eq!(
+            digest(&entry),
+            published,
+            "the node's verifier agrees with the published recipe: {e}"
+        );
+        let bar_before_last = ["action", "resource", "outcome"]
+            .iter()
+            .any(|k| e[*k].as_str().is_some_and(|v| v.contains('|')));
+        assert_eq!(
+            e["scheme"].as_u64(),
+            Some(if bar_before_last { 2 } else { 1 }),
+            "scheme 1 exactly when the pipe join reads back: {e}"
+        );
+    }
+}
+
 // ── Q128 p12#2: a failed boot restore does not fork the chain ───────────────────────────────────
 
 /// A store that answers every read with an error: the boot restore's read failing.
@@ -1273,9 +1372,8 @@ fn a_failed_boot_restore_does_not_fork_the_chain_at_seq_one() {
 
 // ── Q128 p12#3: a part-way legacy migration resumes ─────────────────────────────────────────────
 
-/// The frozen pre-cleave legacy rows (the same bytes `boot_verify_golden` pins).
-const LEGACY_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
-const LEGACY_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
+// The frozen pre-cleave legacy rows (the bytes `boot_verify_golden` pins).
+use crate::audit::boot_verify_golden::{AD_1 as LEGACY_1, AD_2 as LEGACY_2};
 
 /// A copy an earlier boot left part-way (legacy seq 1 copied, seq 2 not) is finished on the next
 /// boot, and the restored chain carries the whole legacy history.
@@ -1359,4 +1457,154 @@ fn a_legacy_migration_refuses_to_splice_onto_a_chain_that_disagrees() {
         )
         .unwrap();
     assert_eq!(rows.len(), 1, "nothing was copied");
+}
+
+/// v1.5.5's own digest, re-stated from `git show v1.5.5:crates/busbar/src/admin/audit.rs`
+/// (`AuditEntry::compute_hash`) and computed on RustCrypto's sha2, independently of this build's
+/// canonicaliser: `sha256(prev_hash|seq|ts|action|resource|outcome|principal)`, lowercase hex.
+fn v1_5_5_hash(prev: &str, seq: u64, ts: u64, act: &str, res: &str, out: &str, pr: &str) -> String {
+    use sha2::Digest as _;
+    let canonical = format!("{prev}|{seq}|{ts}|{act}|{res}|{out}|{pr}");
+    sha2::Sha256::digest(canonical.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// THE S-7 READ-BACK GATE (b): a 1.5.5 deployment's admin audit table — rows in v1.5.5's own serde
+/// shape (`busbar_api::AuditRecord`), hashed by v1.5.5's own formula — reads back through the boot
+/// migration and restore with EVERY record intact (every field, byte for byte), the chain verifies,
+/// and the next admin record this build seals CONTINUES the 1.5.5 chain: seq one past the 1.5.5
+/// tail, `prev_hash` the 1.5.5 tail's hash, and `hash` the 1.5.5 formula over its own fields.
+///
+/// The last part is what pins the admin log's own chain: its link is admin record to admin record
+/// under 1.5.5's digest, which is what `GET /audit` serves. A journal whose only chain links every
+/// record class under one digest cannot produce that `prev_hash` or that `hash`.
+#[test]
+fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain() {
+    let rows = [
+        (
+            1_699_000_001u64,
+            "key.create",
+            "key:vk_a",
+            "applied",
+            "admin",
+        ),
+        (
+            1_699_000_050,
+            "hook.register",
+            "hook:compress",
+            "applied",
+            "admin",
+        ),
+        (
+            1_699_000_051,
+            "hook.register",
+            "hook:bad",
+            "rejected",
+            "vk_ops",
+        ),
+        (1_699_000_400, "key.revoke", "key:vk_a", "applied", "admin"),
+        (
+            1_699_000_999,
+            "plugin.install",
+            "plugin:store-sqlite",
+            "applied",
+            "anonymous",
+        ),
+    ];
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let mut prev = String::new();
+    let mut legacy = Vec::new();
+    for (i, (ts, act, res, out, pr)) in rows.iter().enumerate() {
+        let seq = i as u64 + 1;
+        let hash = v1_5_5_hash(&prev, seq, *ts, act, res, out, pr);
+        // Exactly the JSON v1.5.5 serialised a row as: its struct's field order, no extra field.
+        let json = format!(
+            r#"{{"seq":{seq},"ts":{ts},"action":"{act}","resource":"{res}","outcome":"{out}","principal":"{pr}","prev_hash":"{prev}","hash":"{hash}"}}"#
+        );
+        let row: busbar_contract::records::AuditRecord =
+            serde_json::from_str(&json).expect("a 1.5.5 row decodes as this build's record");
+        store
+            .append_audit(&row)
+            .expect("legacy table takes the row");
+        legacy.push(row);
+        prev = hash;
+    }
+
+    assert_eq!(
+        migrate_legacy_table_to_plane_records(store.as_ref()).expect("migrates"),
+        rows.len(),
+        "every 1.5.5 row is carried over"
+    );
+    let h = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let restored = h.restore_from_store(plane.as_ref()).expect("restores");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "the 1.5.5 chain verifies after the read-back: {:?}",
+        restored.chain_breaks
+    );
+    assert_eq!(restored.records, rows.len());
+    assert_eq!(restored.unreadable, 0);
+
+    // Every record intact, as `GET /audit` serves it (newest first).
+    let mut served = h
+        .log
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
+    served.reverse();
+    assert_eq!(served.len(), legacy.len());
+    for (got, want) in served.iter().zip(&legacy) {
+        assert_eq!(
+            (
+                got.seq,
+                got.ts,
+                got.action.as_str(),
+                got.resource.as_str(),
+                got.outcome.as_str(),
+                got.principal.as_str(),
+                got.prev_hash.as_str(),
+                got.hash.as_str(),
+            ),
+            (
+                want.seq,
+                want.ts,
+                want.action.as_str(),
+                want.resource.as_str(),
+                want.outcome.as_str(),
+                want.principal.as_str(),
+                want.prev_hash.as_str(),
+                want.hash.as_str(),
+            ),
+            "1.5.5 record {} reads back exactly",
+            want.seq
+        );
+    }
+
+    // The next admin record continues the 1.5.5 chain under the 1.5.5 digest.
+    let (ts, act, res, out, pr) = (
+        1_700_000_000u64,
+        "hook.delete",
+        "hook:compress",
+        "applied",
+        "admin",
+    );
+    let (suffix, _scheme) = admin_suffix(ts, act, res, out, pr);
+    let (seq, prev_hash, hash) = h.emit_full(ADMIN_LOG, suffix);
+    let tail = legacy.last().expect("a tail");
+    assert_eq!(
+        seq,
+        tail.seq + 1,
+        "the numbering continues past the 1.5.5 tail"
+    );
+    assert_eq!(
+        prev_hash, tail.hash,
+        "the link is the 1.5.5 tail's own hash"
+    );
+    assert_eq!(
+        hash,
+        v1_5_5_hash(&tail.hash, seq, ts, act, res, out, pr),
+        "the new record's hash is 1.5.5's formula, so a 1.5.5 verifier walks it"
+    );
 }

@@ -203,7 +203,7 @@ async fn spin_up(
     (addr, handle, reqwest::Client::new())
 }
 
-/// OWNER RULING Q25b (#42): with a rate card PRESENT, a usage read over a class the card does not
+/// With a rate card PRESENT, a usage read over a class the card does not
 /// price answers a NAMED `409 unpriced_class` whose message names the lane and the class — on all
 /// three usage reads — instead of the bare `500 internal` they answered after 789d55a78.
 ///
@@ -312,7 +312,7 @@ async fn assert_unpriced_usage_read_is_named(prefix: &str) {
     );
 }
 
-/// ARCHITECT RULING (card-epoch): `POST /config/apply` accepts EXACTLY the shape boot config
+/// `POST /config/apply` accepts EXACTLY the shape boot config
 /// accepts, PLANE SECTIONS INCLUDED — no `unknown field`. A plane's fee is that plane's own reserved
 /// key (#47: `<section>.fees`, lifted off the section by the 1.6.0 pre-pass), so a live fee change
 /// is an apply carrying the plane section, and the applied App must price that plane at the new fee.
@@ -720,7 +720,7 @@ async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
 }
 
 /// The unknown-section refusal keeps 1.5.5's EXACT sentence shape — "expected `a`, `b`, or `c`",
-/// serial comma, `or` before the last name — with the longer list (owner ruling Q54: 1.5.5's four
+/// serial comma, `or` before the last name — with the longer list (1.5.5's four
 /// sections plus `identity-providers` and `export`, the two named-map sections a 1.5.5-shaped config
 /// serves; a configured plane's section joins the list). 1.5.5 answered "expected `groups`, `hooks`, `root`, or `plugin_versions`"; a rewording
 /// onto "expected one of …" is a customer-visible change no ruling allows.
@@ -2497,9 +2497,10 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_unpriced_usage_reads().await;
     // Every linked engine plane's own error-surface driver (its trust verbs), called here for the
     // same reason as every line above it: a condition witnessed only by a sibling test is witnessed
-    // nowhere. Looped from the kernel's test-seam registry, so this names no plane. Since FLIP-A2A no
-    // engine plane mounts trust verbs (each verb-mounting plane is served through its door, and its
-    // verbs are driven by its door driver above), so the registry may hold none; a plane whose driver
+    // nowhere. Looped from the kernel's test-seam registry, so this names no plane. Since the
+    // agent-style plane's door flip no engine plane mounts trust verbs (each verb-mounting plane is
+    // served through its door, and its verbs are driven by its door driver above), so the registry
+    // may hold none; a plane whose driver
     // went missing still leaves its declared verbs unwitnessed and fails the over-claim walk below.
     crate::ensure_seam();
     for drive in busbar_kernel::test_support::seam::test_plane_seams()
@@ -2822,11 +2823,13 @@ fn overlay_reset_doc_row_matches_the_section_set() {
 fn linked_export_axis() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        busbar_kernel::test_support::export_axis::install_first_party_door(
+        static SINKS: [crate::root_install::ExportDoor; 1] = [(
             busbar_export_prometheus::NAME,
             busbar_export_prometheus::ALIAS,
             busbar_export_prometheus::door::door,
-        );
+        )];
+        crate::ensure_seam();
+        crate::root_install::link_exports(&SINKS);
     });
 }
 
@@ -2839,7 +2842,7 @@ fn linked_export_axis() {
 /// then watch the DELETE get refused because the reference would be left dangling. Every other
 /// fixture leaves it off, since a config whose chain names an undefined provider cannot resolve.
 /// `base_export == false` writes a config that declares NO exporter at all — the deployment that
-/// booted without `export.prometheus`, so `/metrics` was never registered on the router.
+/// booted without a scrape sink under `export:`, so `/metrics` was never registered on the router.
 fn write_named_map_fixture(
     tag: &str,
     reference_corp_ad: bool,
@@ -3837,8 +3840,7 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
 }
 
 /// THE DOOR PLANE'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the door's
-/// own `serve` op (ARCHITECT Q-L3B-VERBS; P3 DEL-MCP: the deleted engine's error-surface driver
-/// witnessed these): an unregistered name is `404 not_found` on every verb, and `connect` on a
+/// own `serve` op: an unregistered name is `404 not_found` on every verb, and `connect` on a
 /// `passthrough` registration is `400 invalid_request` (its credential belongs to a caller, and an
 /// operator's refresh has none).
 async fn drive_door_verb_errors() {
@@ -3889,7 +3891,7 @@ fn issuer_key_info(issuer: &ed25519_dalek::SigningKey) -> String {
 }
 
 /// THE AGENT DOOR'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the linked
-/// door's own `serve` op (ARCHITECT Q-L3B-VERBS), the door published over the section the
+/// door's own `serve` op, the door published over the section the
 /// named-map fixture boots with:
 /// * an unregistered name is `404 not_found` on `connect` and `approve` (before anything is read);
 /// * `approve` whose body is not the one-field `{"fingerprint": …}` document (an unknown field

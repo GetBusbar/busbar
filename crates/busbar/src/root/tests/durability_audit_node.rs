@@ -29,10 +29,13 @@ fn every_record_the_book_seals_names_this_node() {
     );
     assert_eq!(
         restarted.audit_window(1, 2),
-        before,
+        Some(before),
         "the journal lost the sealing node"
     );
     let after = seal(&mut restarted, 3..=3);
     assert_eq!(after[0].node, node);
-    assert!(AuditChain::verify_chain(&restarted.audit_window(1, 3)).is_ok());
+    let window = restarted
+        .audit_window(1, 3)
+        .expect("the journal reads back");
+    assert!(AuditChain::verify_chain(&window).is_ok());
 }

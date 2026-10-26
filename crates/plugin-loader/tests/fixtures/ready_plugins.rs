@@ -101,7 +101,7 @@ pub mod without_ready {
     }
 }
 
-/// The AUTH witnesses (the shape busbar-auth-oidc takes): `auth` states `ready` over
+/// The AUTH witnesses (the shape a discovering token verifier takes): `auth` states `ready` over
 /// [`Discovers`]; `auth_secret` declares the secret reference `client_secret` and opens only when
 /// it is handed exactly that secret, resolved, and its settings no longer carry the reference.
 /// Every auth op refuses: the witnesses are about boot.
@@ -215,9 +215,10 @@ pub mod auth {
     }
 }
 
-/// THE EXPORT WITNESS (the shape busbar-export-webhook takes): the same lifecycle on the export
-/// kind's door, stating `ready`, every kind op answering at once. `READIES` counts its `ready` calls,
-/// so a test can tell the open that delivers (asked) from the instance `check` opens (never asked).
+/// THE EXPORT WITNESS (the shape a host-carried request sink takes): the same lifecycle on the
+/// export kind's door, stating `ready`, every kind op answering at once. `READIES` counts its
+/// `ready` calls, so a test can tell the open that delivers (asked) from the instance `check` opens
+/// (never asked).
 pub mod export {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::Poll;
@@ -282,12 +283,11 @@ pub mod export {
     const TAIL: busbar_contract::abi::export::Tail = busbar_contract::abi::export::Tail {
         head: busbar_contract::abi::mechanism::door::KindTailHead {
             size: std::mem::size_of::<busbar_contract::abi::export::Tail>() as u32,
-            _reserved: 0,
+            ..busbar_contract::abi::mechanism::door::KindTailHead::ZERO
         },
         streams: STREAMS.as_ptr(),
         streams_len: STREAMS.len(),
-        routes: std::ptr::null(),
-        routes_len: 0,
+        ..busbar_contract::abi::export::Tail::ZERO
     };
 
     /// Its Statement: the name, and the export tail.

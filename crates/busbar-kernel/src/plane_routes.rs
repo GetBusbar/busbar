@@ -235,6 +235,11 @@ pub struct PlaneReqCtx {
     /// alone (a passthrough member's outbound auth call); `None` when the caller presented none or
     /// the route bypassed the gate. A plane handler never reads it.
     pub caller_credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The head fields the auth gate consumed (stripped from [`Self::headers`]), each by its
+    /// lower-case name with its value's scheme word: the value up to its first space, empty when it
+    /// has none. The word names how a credential is spelled, never the credential; an entry fact
+    /// reads a consumed field by it (status row 173).
+    pub consumed_fields: Vec<(String, String)>,
     /// The live engine handle, type-erased. The core adapter erases the router's `Arc<AppHandle>`
     /// state here; a plane still coupled to the engine downcasts it (a transitional reach that the
     /// per-subsystem App-sever removes), but the SEAM names no core type.
@@ -244,7 +249,7 @@ pub struct PlaneReqCtx {
     /// by calling typed methods on it rather than naming `busbar_kernel::plane_host::*_over`. Carried
     /// alongside `engine` during the transition: `engine` is the residual downcast the per-subsystem
     /// App-sever removes, `host` is the durable seam that replaces it.
-    pub host: Arc<dyn crate::plane_host::EngineHost>,
+    pub host: Arc<dyn crate::plane_driver::EngineHost>,
     /// The plane's own per-generation runtime slot (the same `Arc<dyn Any>` the plane's `build` fn
     /// produced), so the handler reads its plane state without a host round-trip.
     pub slot: Arc<dyn Any + Send + Sync>,

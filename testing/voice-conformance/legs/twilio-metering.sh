@@ -9,9 +9,9 @@
 # bill"; the TODO's STREAMING: THREE WAYS AUDIO IS SERVED AND NOT BILLED, first bullet).
 #
 # THE DOOR'S HALF (judged, linked AND dropped door): caller audio arrives as Twilio `media` frames
-# (8000 µ-law bytes a second); the far end's tokens and the closed turn's audio seconds are reported
-# as cumulative REPORTED units once per turn (a short answer's re-call does not count its audio
-# twice); a call that ends mid-turn (`stop` arrives while a turn is open) settles that open turn's
+# (8000 µ-law bytes a second); the far end's tokens are reported as cumulative REPORTED units once
+# per turn, and the open turn's audio seconds in every answer as they stream (a short answer's
+# re-call does not count its audio twice); a call that ends mid-turn (`stop` arrives while a turn is open) settles that open turn's
 # audio once instead of discarding it; a call whose far end never answered reports its audio and no
 # fee; a turn already closed is not counted again at `stop`, and a second `stop` reports nothing.
 # RED arm: a door that reports the mid-turn call without the open turn's second fails.

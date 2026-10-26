@@ -12,7 +12,10 @@
 //! wait answers not-ready with the caller's waker registered, never a block.
 //!
 //! * [`register`] puts a non-blocking descriptor on the calling worker's reactor, for both
-//!   directions;
+//!   directions. It takes only a value that OWNS its descriptor (`T: AsFd`, by value; a bare
+//!   `RawFd` is not one), and the [`Registered`] holds that value until [`Registered::deregister`]
+//!   hands it back, so the descriptor the reactor watches stays open and unchanged for the whole
+//!   registration (RUSTSEC-2026-0386: tokio's safe `AsyncFd` constructors accepted any raw fd);
 //! * [`Registered::poll_ready`] answers Ready once the direction may make progress, or Pending
 //!   with the waker registered;
 //! * [`Ready::clear_ready`] says the direction answered `WouldBlock` after all, so the next
@@ -21,7 +24,7 @@
 //! * [`Registered::deregister`] takes the descriptor back off the reactor.
 
 use std::io;
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::task::{Context, Poll};
 
 use tokio::io::unix::{AsyncFd, AsyncFdReadyGuard};
@@ -41,13 +44,27 @@ pub enum Direction {
 
 /// A descriptor registered on the calling worker's reactor.
 #[derive(Debug)]
-pub struct Registered<T: AsRawFd>(AsyncFd<T>);
+pub struct Registered<T: AsFd>(AsyncFd<Owned<T>>);
+
+/// The value [`register`] took, with the descriptor it lent at registration: the one descriptor the
+/// reactor is told about for the registration's whole life, whatever the value would lend later.
+#[derive(Debug)]
+struct Owned<T: AsFd> {
+    io: T,
+    fd: RawFd,
+}
+
+impl<T: AsFd> AsRawFd for Owned<T> {
+    fn as_raw_fd(&self) -> RawFd {
+        self.fd
+    }
+}
 
 /// One direction's observed readiness, from [`Registered::poll_ready`]. Dropping it keeps the
 /// readiness; [`Ready::clear_ready`] clears exactly what was observed.
-pub struct Ready<'a, T: AsRawFd>(AsyncFdReadyGuard<'a, T>);
+pub struct Ready<'a, T: AsFd>(AsyncFdReadyGuard<'a, Owned<T>>);
 
-impl<T: AsRawFd> Ready<'_, T> {
+impl<T: AsFd> Ready<'_, T> {
     /// The direction answered `WouldBlock`: wait for a fresh edge before the next attempt.
     pub fn clear_ready(mut self) {
         self.0.clear_ready();
@@ -56,10 +73,14 @@ impl<T: AsRawFd> Ready<'_, T> {
 
 /// `io.register`: put the non-blocking `io` on the calling worker's reactor.
 ///
+/// `io` is taken by value and must own its descriptor (`AsFd`): the registration holds it until
+/// [`Registered::deregister`] hands it back, so the descriptor cannot be closed or reused under the
+/// reactor.
+///
 /// # Errors
 ///
 /// [`NOT_ON_A_WORKER`] when the caller is not on a worker; the reactor's own refusal otherwise.
-pub fn register<T: AsRawFd>(io: T) -> io::Result<Registered<T>> {
+pub fn register<T: AsFd>(io: T) -> io::Result<Registered<T>> {
     // A plugin driving its connection from a dispatcher worker (an export sink delivering a batch,
     // an auth plugin's `ready` fetching its key set) runs on no task: its socket goes on the
     // reactor of the process's one runtime, the one the root installed at boot
@@ -69,7 +90,21 @@ pub fn register<T: AsRawFd>(io: T) -> io::Result<Registered<T>> {
     if tokio::runtime::Handle::try_current().is_err() {
         return Err(io::Error::other(NOT_ON_A_WORKER));
     }
-    AsyncFd::with_interest(io, Interest::READABLE | Interest::WRITABLE).map(Registered)
+    let fd = io.as_fd().as_raw_fd();
+    let owned = Owned { io, fd };
+    // SAFETY: tokio's contract for `register_with_interest` (RUSTSEC-2026-0386) is that the
+    // descriptor `as_raw_fd` answers is valid and open, stays open on the same file description
+    // for the `AsyncFd`'s whole life, and is the same on every call. `fd` is what `io.as_fd()`
+    // lent: by I/O safety it is open and belongs to `io`, which cannot close it through a shared
+    // borrow. `Owned::as_raw_fd` answers that one `fd` on every call. `io` is moved into the
+    // `AsyncFd` and never handed out mutably (`Registered` lends only `&T`, never `get_mut`), so it
+    // is neither dropped nor changed while registered: it leaves only through `into_inner`
+    // ([`Registered::deregister`]) or the `AsyncFd`'s drop, and both take the descriptor off the
+    // reactor before `io` is returned or dropped.
+    #[allow(unsafe_code)]
+    let registered =
+        unsafe { AsyncFd::register_with_interest(owned, Interest::READABLE | Interest::WRITABLE) };
+    registered.map(Registered).map_err(io::Error::from)
 }
 
 /// The process's one runtime, as the root installed it at boot.
@@ -97,7 +132,7 @@ pub(crate) fn enter_process_runtime() -> Option<tokio::runtime::EnterGuard<'stat
     PROCESS_REACTOR.get().map(tokio::runtime::Handle::enter)
 }
 
-impl<T: AsRawFd> Registered<T> {
+impl<T: AsFd> Registered<T> {
     /// `io.poll_ready`: Ready once `dir` may make progress; Pending with `cx`'s waker registered.
     ///
     /// # Errors
@@ -118,13 +153,13 @@ impl<T: AsRawFd> Registered<T> {
     /// `io.deregister`: take the descriptor back off the reactor.
     #[must_use]
     pub fn deregister(self) -> T {
-        self.0.into_inner()
+        self.0.into_inner().io
     }
 
     /// The descriptor.
     #[must_use]
     pub fn get_ref(&self) -> &T {
-        self.0.get_ref()
+        &self.0.get_ref().io
     }
 
     /// One non-blocking attempt of `op` in `dir`, repeated across fresh edges: `WouldBlock` clears

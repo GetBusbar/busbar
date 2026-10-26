@@ -40,6 +40,14 @@ pub mod authz;
 // nowhere else (the unsafe policy above).
 #[allow(unsafe_code, missing_docs, missing_debug_implementations)]
 pub mod abi;
+// THE COUNTING ALLOCATOR A PLUGIN'S ALLOCATION GATES READ (ARCHITECT ruling 2026-10-21: plugin
+// crate roots keep the literal `#![forbid(unsafe_code)]`, so the `GlobalAlloc` impl lives here). Not
+// in a release build: compiled for this crate's own tests and, through the dev-only, EMPTY
+// `alloc-counter` feature, for a plugin's `[dev-dependencies]` edge; `tests/test_seal_is_dev_only.rs`
+// refuses any non-dev edge or `default` that enables it. Its one `#[allow(unsafe_code)]` sits on the
+// `unsafe impl GlobalAlloc` block alone; the rest of the module stays under the crate's `deny`.
+#[cfg(any(test, feature = "alloc-counter"))]
+pub mod alloc_counter;
 // THE SANS-IO `hyper` DRIVE framers expand (`hyper_io!(<buffer>)`): a macro only, so the contract
 // depends on neither `hyper` nor a buffer crate (ARCHITECT ruling 2026-09-30 (c)).
 mod sdk_hyper;
@@ -219,3 +227,11 @@ pub use wire::{
 /// here (W4.b P2) from the deleted `busbar-substrate::config::auth` so the below-kernel `busbar-core-config`
 /// spine can name it without a path back to the engine; `busbar_kernel::config::auth` re-exports it.
 pub const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";
+
+/// This crate's own test binary counts its allocations through [`alloc_counter::Counting`], the
+/// counter a plugin's gates use: one allocator, so the contract's own alloc gates
+/// (`abi::sdk::tests`) and the plugins' read the same impl. `#[cfg(test)]` only: a `#[global_allocator]`
+/// in a library would be inherited by every binary that links it.
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: alloc_counter::Counting = alloc_counter::Counting::new();

@@ -523,17 +523,16 @@ fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived
     );
 }
 
-/// A STREAM ITS FAR END CUT BILLS NO TOKENS AND IS NOT METERED, ITS REQUEST STILL COUNTS AND ITS
-/// FEE STANDS AS ITS PLANE REPORTED IT (status row 183; BUSBAR-1.6.0.md, Budgets, l.1014-1019): a
-/// unit whose 2xx stream the far end cut after the far end reported 40 input tokens ledgers none of
-/// them and writes no metering row (v1.5.5 `proxy/response_body.rs`: a transport error sets
-/// `stream_failed` (:283) and the drop-time gate bills no tokens (:642)); its admitted request and
-/// the fee its plane reported stay, as 1.5.5's finish kept the fee of a 2xx head
-/// (`ingress/mod.rs:574-575`; oracle cell `route.failover|fo|primary-cut-stream`, golden usage
-/// `{"requests":1}`, tokens 0).
-/// RED: the cut stream's reported tokens ledgered, or its end metered on its head's 2xx alone.
+/// A STREAM ITS FAR END CUT BILLS AND METERS WHAT ITS PLANE LEDGERED, AND KEEPS ITS FEE (owner
+/// ruling 2026-10-20: "spend is what it is. if spend occurred it occurred. null is not a fix."): a
+/// unit whose 2xx stream the far end cut after the plane reported 40 input tokens ledgers those
+/// 40, writes their metering row against the serving member, and keeps the fee its plane
+/// reported. The cut is a fact of the end, never a reason for core to override the plane's
+/// ledger.
+/// RED: the cut stream's reported tokens dropped, or its metering row skipped (status row 183, as
+/// #1282 wrote it).
 #[test]
-fn a_stream_cut_by_its_far_end_bills_no_tokens_meters_nothing_and_keeps_its_fee() {
+fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
     let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
     admit(&r);
     let report = [
@@ -546,7 +545,6 @@ fn a_stream_cut_by_its_far_end_bills_no_tokens_meters_nothing_and_keeps_its_fee(
     ];
     let _ = r.money.checkpoint(&ctx(1), &report);
     r.money.served(&ctx(1), "m", "acme");
-    r.money.far_cut(UnitKey::new(1));
     r.money.settle_end_as(
         UnitKey::new(1),
         UnitEnd {
@@ -554,17 +552,26 @@ fn a_stream_cut_by_its_far_end_bills_no_tokens_meters_nothing_and_keeps_its_fee(
             cut: true,
         },
     );
-    assert!(metering_rows(&r).is_empty(), "a cut stream meters nothing");
+    let rows = metering_rows(&r);
+    assert_eq!(rows.len(), 1, "a cut stream meters what it spent: {rows:?}");
+    let row = &rows[0];
     assert_eq!(
-        usage(&r),
-        (0, 5),
-        "no token of the cut stream bills, and the fee its plane reported stands"
+        (row.model.as_str(), row.provider.as_str(), row.requests),
+        ("m", "acme", 1)
     );
+    assert_eq!(
+        (row.tokens_input, row.tokens_output),
+        (40, 0),
+        "the row carries the tokens the plane ledgered"
+    );
+    let (tokens, spend) = usage(&r);
+    assert_eq!(tokens, 40, "every token the plane ledgered bills");
+    assert!(spend >= 5, "and the fee its plane reported stands: {spend}");
     let u = r
         .gov
         .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
         .expect("usage");
-    assert_eq!(u.requests, 1, "the request unit still counts");
+    assert_eq!(u.requests, 1, "the request unit counts once");
 }
 
 /// A unit that failed over ledgers AND meters under the member that served it, never the model
@@ -1137,7 +1144,7 @@ fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
 }
 
 /// A SESSION'S FEE IS REFUNDED WHEN ITS OPEN FAILS, AS ITS OWN FEE UNIT (ARCHITECT Q-L5-FEE (A);
-/// Q17-6; TODO row 17): a session plane declares `per_session` as its fee unit and a billable class.
+/// Q17-6): a session plane declares `per_session` as its fee unit and a billable class.
 /// A session whose far end never answered reports no fee unit, and its end gives back ONE
 /// `per_session` from the plane's fee lane; a session whose far end answered reports it `1` and
 /// keeps its fee. The fee unit is never ledgered as usage.
@@ -1302,9 +1309,8 @@ fn a_unit_with_no_new_counts_writes_nothing() {
 /// EVERY VERIFIED PRINCIPAL IS LENT A STABLE, NON-EMPTY CALLER REFERENCE (row 159 H2): a book with
 /// no signing material (an OIDC or plugin-auth chain names no `auth.signing_key`) lends one keyed by
 /// the deployment keyset it binds, through the live slot every plane driver holds, so two principals
-/// get two references and one principal gets one reference on every node of the deployment. RED:
-/// with the slot read before the keyset is bound (or never bound), every principal is lent nothing,
-/// which the plane reads as the one ungoverned owner.
+/// get two references and one principal gets one reference on every node of the deployment. Before
+/// the keyset is bound (or when none is), the node's per-boot key lends them, never nothing.
 #[test]
 fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     let node = |material: Option<[u8; 32]>| {
@@ -1323,8 +1329,11 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
         };
         (lent("oidc:alice"), lent("oidc:bob"))
     };
-    // The RED shape: nothing bound, nothing lent, and the two principals are indistinguishable.
-    assert_eq!(node(None), (String::new(), String::new()));
+    // Nothing bound: the per-boot key still lends two principals two non-empty references, and
+    // they are not the deployment keyset's.
+    let (boot_alice, boot_bob) = node(None);
+    assert!(!boot_alice.is_empty() && !boot_bob.is_empty());
+    assert_ne!(boot_alice, boot_bob);
     let keyset = [7u8; 32];
     let (alice, bob) = node(Some(keyset));
     assert!(
@@ -1336,6 +1345,37 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
     assert_eq!(node(Some(keyset)), (alice.clone(), bob));
     // Another deployment's keyset gives another reference.
     assert_ne!(node(Some([8u8; 32])).0, alice);
+    assert_ne!(
+        boot_alice, alice,
+        "the keyset, once bound, keys the reference"
+    );
+}
+
+/// A NODE WITH NO SIGNING KEY AND A NON-SIGNING AUDIT CHAIN STILL LENDS EVERY VERIFIED PRINCIPAL ITS
+/// OWN REFERENCE (residual of a5d0098cc3, row 159 H2; ARCHITECT ruling: a verified principal is never
+/// lent the empty reference). Such a node binds no deployment keyset (`AuditChain::derived_secret`
+/// answers `None`), so the reference is keyed by a per-boot random key the node generates at start.
+/// RED: nothing bound means nothing lent, and the plane reads the empty reference as the one
+/// ungoverned owner, so two verified callers share one session owner.
+#[test]
+fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_references() {
+    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let money = PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted::default()));
+    let slot = money.caller_refs().expect("the book lends a slot");
+    let lent = |p: &str| {
+        slot.read()
+            .unwrap()
+            .as_ref()
+            .map(|k| k.caller_ref(p))
+            .unwrap_or_default()
+    };
+    let (alice, bob) = (lent("oidc:alice"), lent("oidc:bob"));
+    assert!(
+        !alice.is_empty() && !bob.is_empty(),
+        "a verified principal was lent the empty reference"
+    );
+    assert_ne!(alice, bob, "two verified principals share one reference");
+    assert_eq!(lent("oidc:alice"), alice, "one principal, one reference");
 }
 
 /// The signing material, when the node has one, still keys the reference (it wins over the
@@ -1359,4 +1399,145 @@ fn the_signing_material_keys_the_reference_and_the_keyset_backs_it() {
         slot.read().unwrap().as_ref().unwrap().caller_ref("p"),
         by_keyset
     );
+}
+
+/// The signer every reference test below keys by.
+fn signer_nine() -> Option<crate::governance::signing::TokenSigner> {
+    use crate::governance::signing::TokenSigner;
+    Some(TokenSigner::from_secret_bytes(&[9u8; 32], "k"))
+}
+
+/// The reference the node's live slot lends principal `p`, empty when the slot holds no key.
+fn lent_to_p(gov: &GovState) -> String {
+    gov.caller_ref_slot()
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|k| k.caller_ref("p"))
+        .unwrap_or_default()
+}
+
+/// One boot of a node over a fresh book, built with `signer`.
+fn booted(signer: Option<crate::governance::signing::TokenSigner>) -> GovState {
+    let store = Arc::new(MemoryStore::new());
+    GovState::new_with_signer(store, None, signer).expect("gov")
+}
+
+/// A node BUILT with a signer keys the reference by that signer from its first unit, never by its
+/// per-boot key: two boots with the same signer lend one principal one reference, and it is the
+/// reference a signer set after a keyless start lends.
+#[test]
+fn a_node_built_with_a_signer_keys_the_reference_by_it_not_by_the_boot_key() {
+    let first_boot = booted(signer_nine());
+    let second_boot = booted(signer_nine());
+    let by_signer = lent_to_p(&first_boot);
+    assert!(!by_signer.is_empty());
+    assert_eq!(
+        lent_to_p(&second_boot),
+        by_signer,
+        "a per-boot key keyed a node built with a signer"
+    );
+    let keyless = booted(None);
+    let by_boot = lent_to_p(&keyless);
+    assert_ne!(by_boot, by_signer);
+    keyless.set_signing_key(signer_nine());
+    assert_eq!(lent_to_p(&keyless), by_signer);
+}
+
+/// A reload that drops the signer on a node with no deployment keyset falls back to this boot's
+/// key, never to the empty reference: the reference is the one the node lent before the signer.
+#[test]
+fn dropping_the_signer_with_no_keyset_falls_back_to_the_boot_key_never_to_nothing() {
+    let gov = booted(None);
+    let by_boot = lent_to_p(&gov);
+    assert!(!by_boot.is_empty());
+    gov.set_signing_key(signer_nine());
+    assert_ne!(
+        lent_to_p(&gov),
+        by_boot,
+        "the signer did not key the reference"
+    );
+    gov.set_signing_key(None);
+    assert!(
+        gov.caller_ref_slot().read().unwrap().is_some(),
+        "dropping the signer emptied the slot"
+    );
+    assert_eq!(
+        lent_to_p(&gov),
+        by_boot,
+        "dropping the signer did not fall back to the boot key"
+    );
+}
+
+/// THE CHECKPOINT'S CHECK BUILDS NOTHING (row 159 K2#4): `adds_up` answers exactly what the checked
+/// sums by class name answer — an undeclared class is never added, two indices naming one class
+/// add together, and a class whose counts overflow a `u64` does not add up — without the counts
+/// vector or the sums map the piece path used to build.
+#[test]
+fn the_checkpoint_check_agrees_with_the_checked_sums() {
+    let unit = |class: u32, amount: u64| UnitCount {
+        class,
+        source: UNITS_REPORTED,
+        amount,
+    };
+    let one = ["input".to_string(), "output".to_string()];
+    let twice = ["input".to_string(), "input".to_string()];
+    let cases: [(&[String], Vec<UnitCount>); 8] = [
+        (&one[..], vec![]),
+        (&one[..], vec![unit(0, 3), unit(1, 4)]),
+        (&one[..], vec![unit(0, u64::MAX), unit(1, u64::MAX)]),
+        (&one[..], vec![unit(0, u64::MAX), unit(0, 1)]),
+        (&one[..], vec![unit(1, 1), unit(0, 2), unit(1, u64::MAX)]),
+        (&one[..], vec![unit(7, u64::MAX), unit(7, u64::MAX)]),
+        (&twice[..], vec![unit(0, u64::MAX), unit(1, 1)]),
+        (
+            &twice[..],
+            vec![unit(0, u64::MAX / 2), unit(1, u64::MAX / 2)],
+        ),
+    ];
+    for (classes, units) in &cases {
+        let counts: Vec<(u32, u64)> = units.iter().map(|u| (u.class, u.amount)).collect();
+        assert_eq!(
+            super::adds_up(classes, units),
+            super::named(classes, &counts, u64::checked_add).is_some(),
+            "{classes:?} {counts:?}"
+        );
+    }
+}
+
+/// EVERY OPEN UNIT IS ONE UNIT, whichever lock holds it (row 159 K2#4): units spread over the
+/// shards are each counted open, each checkpointed once per epoch, and each closed by its end.
+#[test]
+fn units_over_every_shard_are_counted_checkpointed_and_closed() {
+    let epoch = FlushEpoch::new();
+    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let money = PlaneMoney::new(r.gov.clone(), r.posted.clone()).with_epoch(epoch.clone());
+    let keys: Vec<u64> = (1..=3 * super::SHARDS as u64).collect();
+    for k in &keys {
+        money.open(UnitKey::new(*k), r.unit.clone());
+    }
+    assert_eq!(money.open_units(), keys.len());
+    for k in &keys {
+        assert_eq!(
+            money.checkpoint(&ctx(*k), &reported(*k)),
+            Checkpoint::Continue
+        );
+    }
+    epoch.bump();
+    let site = Journaled::default();
+    assert_eq!(money.flush_checkpoints(&site), keys.len());
+    let mut handed = site.taken();
+    handed.sort_by_key(|(key, _)| *key);
+    assert_eq!(
+        handed,
+        keys.iter()
+            .map(|k| (UnitKey::new(*k), input(*k)))
+            .collect::<Vec<_>>(),
+        "each unit's own last counts, once"
+    );
+    assert_eq!(money.flush_checkpoints(&site), 0, "once per epoch");
+    for k in &keys {
+        money.settle_end(UnitKey::new(*k), 200);
+    }
+    assert_eq!(money.open_units(), 0, "every end closes its unit");
 }

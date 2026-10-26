@@ -112,19 +112,17 @@ pub fn residual_default_dialect() -> Option<&'static str> {
     registry::residual_default_protocol()
 }
 
-// The vendor-plausible auth-failure wire MESSAGE for an ingress protocol. This string lands verbatim
-// in the native error body (`error.message` for anthropic/openai/gemini/responses, the bare
-// top-level `message` for cohere, the `message` beside `__type` for bedrock). It MUST read like the
-// copy the REAL vendor returns for a bad/missing credential and carry NO busbar-internal vocabulary
-// ("lane", "virtual key", "passthrough", …): any such word is a deterministic protocol tell that
-// also discloses busbar's auth model. Canonical source of truth; `auth.rs::vendor_auth_failure_message`
-// is a thin delegation wrapper to this, not a copy. Strings sampled from real 401/403 bodies:
-//   anthropic → "invalid x-api-key"; openai/responses → "Incorrect API key provided.";
-//   gemini → "API key not valid. Please pass a valid API key."; cohere → "invalid api token";
-//   bedrock → "" (AWS conveys AccessDenied via __type / x-amzn-errortype, not message prose).
+// The upstream-plausible auth-failure wire MESSAGE for an ingress protocol. This string lands
+// verbatim in the protocol's native error body, wherever that protocol carries its message. It MUST
+// read like the copy the real upstream returns for a bad or missing credential and carry NO
+// busbar-internal vocabulary ("lane", "virtual key", "passthrough", ...): any such word is a
+// deterministic protocol tell that also discloses busbar's auth model. Canonical source of truth;
+// `auth.rs::vendor_auth_failure_message` is a thin delegation wrapper to this, not a copy. Each
+// protocol's declaration states its own copy (an empty one where the protocol conveys the denial in
+// its head rather than its message).
 //
-// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_message` so the per-vendor copy
-// lives in the writer vtable, not in this agnostic function. An unknown future proto falls back to
+// Thin wrapper: dispatches through `ProtocolWriter::auth_failure_message` so each protocol's copy
+// lives in its declaration, not in this agnostic function. An unknown future proto falls back to
 // the default generic copy.
 // RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at its historical path.
 

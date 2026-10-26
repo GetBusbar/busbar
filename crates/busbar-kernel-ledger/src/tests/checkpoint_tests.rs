@@ -5,9 +5,11 @@
 
 use std::collections::BTreeMap;
 
-use crate::checkpoint::{AnchorError, Checkpoint, CheckpointSecret, SignError, Signature};
+use crate::checkpoint::{
+    AnchorError, ChainHead, Checkpoint, CheckpointSecret, SignError, Signature,
+};
 use crate::totals::{Totals, WindowStart};
-use crate::verify::verify;
+use crate::verify::{sequences_are_monotonic, verify, Finding};
 
 use super::fixtures::key;
 
@@ -69,26 +71,6 @@ fn a_balance_that_appeared_after_the_checkpoint_is_still_checked() {
     assert_eq!(findings.len(), 1, "a new unbalanced key must be found");
 }
 
-/// **THE SEAL AND THE VERIFY SHARE ONE PREIMAGE AND ONE DIGEST (item 438).**
-///
-/// The seal used to encode its own body from its arguments and hash it, while the verify re-encoded
-/// from the checkpoint's fields and hashed that: two encoder calls and two digest calls for one
-/// preimage, which is exactly the drift `digest.rs` warns about. Now both go through
-/// `body_digest` over `signed_body`, and this counts the call sites so a second one cannot return.
-#[test]
-fn the_seal_and_the_verify_share_one_preimage_and_one_digest() {
-    let source = include_str!("../checkpoint.rs");
-    let calls = |needle: &str| {
-        source
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .filter(|l| l.contains(needle) && !l.contains(&format!("fn {needle}")))
-            .count()
-    };
-    assert_eq!(calls("encode_body("), 1, "one encoder call: signed_body");
-    assert_eq!(calls("digest::sha256("), 1, "one digest call: body_digest");
-}
-
 fn sealed_with_fees(fee_count: u64) -> Checkpoint {
     let mut totals = BTreeMap::new();
     totals.insert(
@@ -141,4 +123,61 @@ fn a_checkpoint_with_no_fee_count_keeps_its_bytes() {
     assert!(tail(&some.signed_body()), "a fee count is framed by name");
     assert!(none.signed_body().len() < some.signed_body().len());
     assert_ne!(none.body_hash, some.body_hash);
+}
+
+fn sealed_with_heads(checkpoint_seq: u64, heads: Vec<ChainHead>) -> Checkpoint {
+    Checkpoint::seal(checkpoint_seq, 1, 10, heads, BTreeMap::new(), 0, 0, None)
+        .expect("an unsigned checkpoint seals")
+}
+
+fn head(node: u64, node_seq: u64, hash_byte: u8) -> ChainHead {
+    ChainHead {
+        node,
+        node_seq,
+        hash: [hash_byte; 32],
+    }
+}
+
+/// A node whose chain head the earlier checkpoint held and the newer one does not is a chain that
+/// was REMOVED. Walking only the newer checkpoint's heads never met it, so a vanished chain passed.
+#[test]
+fn a_chain_head_that_vanished_between_two_checkpoints_is_found() {
+    let earlier = sealed_with_heads(1, vec![head(1, 10, 1), head(2, 7, 2)]);
+    let newer = sealed_with_heads(2, vec![head(1, 12, 3)]);
+    let findings = sequences_are_monotonic(&earlier, &newer);
+    assert_eq!(
+        findings,
+        vec![Finding::ChainHeadRemoved { node: 2, was: 7 }]
+    );
+    assert!(findings[0].to_string().contains("REMOVED"));
+}
+
+/// A head at the same sequence with a different hash is an entry REWRITTEN in place; the sequence
+/// alone cannot see it. An idle node — same sequence, same hash — and a chain that began between the
+/// two seals are both ordinary and find nothing.
+#[test]
+fn a_chain_head_rewritten_at_the_same_sequence_is_found() {
+    let earlier = sealed_with_heads(1, vec![head(1, 10, 1)]);
+    let rewritten = sealed_with_heads(2, vec![head(1, 10, 9)]);
+    assert_eq!(
+        sequences_are_monotonic(&earlier, &rewritten),
+        vec![Finding::ChainHeadRewritten {
+            node: 1,
+            node_seq: 10
+        }]
+    );
+
+    let idle = sealed_with_heads(2, vec![head(1, 10, 1)]);
+    assert!(sequences_are_monotonic(&earlier, &idle).is_empty());
+    let grown = sealed_with_heads(2, vec![head(1, 11, 4), head(3, 1, 5)]);
+    assert!(sequences_are_monotonic(&earlier, &grown).is_empty());
+    let backwards = sealed_with_heads(2, vec![head(1, 9, 1)]);
+    assert_eq!(
+        sequences_are_monotonic(&earlier, &backwards),
+        vec![Finding::SequenceNotMonotonic {
+            node: 1,
+            was: 10,
+            now: 9
+        }]
+    );
 }

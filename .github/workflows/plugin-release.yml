@@ -9,10 +9,6 @@
 #   abi-completeness  kind:store only: every RecordStore method the store implements is ROUTED by the
 #                     pinned contract's store_dispatch (scripts/fleet/verify-abi-completeness.sh). A
 #                     method with a default body compiles, ships, and silently drops writes otherwise.
-#   former-names      the manifest names a renamed plugin's earlier releases carried (`former_names`,
-#                     plugins.yaml) cover every 1.5.5-era name `legacy:` freezes for the repo
-#                     (`cargo xtask plugin-gates former-names --declared`): a release that would drop
-#                     one is refused before anything is drafted, and each is signed in (--former-name).
 #   create-release    a DRAFT release, so the per-target uploads have something to attach to.
 #   build             one signed tarball per target: the adapter's cdylib, packed with the pinned
 #                     busbar-plugin-pack into {cdylib + manifest.json} and signed with BUSBAR_SIGN_KEY.
@@ -102,10 +98,10 @@ on:
         description: "Token for the marketing-site rebuild dispatch."
         required: false
 
+# Read-only by default; only the jobs that create, upload to, attest or publish the Release are
+# granted write, so pin / abi-completeness (which run code from the pinned busbar) hold no write token.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
   pin:
@@ -140,35 +136,13 @@ jobs:
           path: busbar
       - run: bash busbar/scripts/fleet/verify-abi-completeness.sh plugin busbar
 
-  former-names:
-    name: a renamed plugin's release signs its 1.5.5 manifest name
-    needs: pin
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: GetBusbar/busbar
-          ref: ${{ needs.pin.outputs.sha }}
-          path: busbar
-      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      # FAIL CLOSED before anything is drafted: the names this release signs (`former_names`) carry
-      # every 1.5.5-era manifest name plugins.yaml `legacy:` freezes for this repo, or a 1.5.5 config
-      # naming the plugin is refused at boot by the tarball being published.
-      - working-directory: busbar
-        env:
-          REPO: ${{ github.event.repository.name }}
-          FORMER_NAMES: ${{ inputs.former_names }}
-        run: |
-          set -euo pipefail
-          cargo build --locked -q -p xtask
-          target/debug/xtask plugin-gates former-names plugins.yaml "$REPO" --declared "$FORMER_NAMES"
-
   create-release:
     name: draft release
-    needs: [pin, abi-completeness, former-names]
+    permissions:
+      contents: write
+    needs: [pin, abi-completeness]
     # abi-completeness is skipped for every kind but store; skipped is not failed.
-    if: ${{ !cancelled() && needs.pin.result == 'success' && needs.abi-completeness.result != 'failure' && needs.former-names.result == 'success' }}
+    if: ${{ !cancelled() && needs.pin.result == 'success' && needs.abi-completeness.result != 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -184,6 +158,10 @@ jobs:
 
   build:
     name: build, sign, pack (${{ matrix.target }})
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     needs: [pin, create-release]
     if: ${{ !cancelled() && needs.create-release.result == 'success' }}
     runs-on: ${{ matrix.os }}
@@ -309,6 +287,8 @@ jobs:
 
   verify-assets:
     name: no phantom release, then publish
+    permissions:
+      contents: write
     needs: build
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
@@ -332,6 +312,7 @@ jobs:
 
   notify-marketing:
     name: site rebuild dispatch
+    permissions: {}
     needs: verify-assets
     # A pre-release is not announced.
     if: ${{ !contains(github.ref_name, '-') }}

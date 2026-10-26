@@ -22,7 +22,12 @@
 //!    admitted (the plugin passes a non-SigV4 credential, the `keys` bearer path admits it);
 //! 5. a body over the size cap under a MALFORMED SigV4 authorization line is refused AT THE CAP
 //!    (413), before any verdict, and nothing reaches the upstream: the body the kernel holds for the
-//!    `HeadBody` verify is bounded by the cap (ARCHITECT ruling D1 2026-10-05, inbound buffering).
+//!    `HeadBody` verify is bounded by the cap.
+//!
+//! And a second node whose `auth.chain` does NOT name `keys` (`chain: []`, admin on its token):
+//! `POST /keys {"issue_aws_credential": true}` still answers 1.5.5's 201 with the AccessKeyId and
+//! the secret access key beside the token. 1.5.5 minted the credential whatever
+//! the chain (v1.5.5 `crates/busbar/src/admin/mod.rs:919`, `:997-1000`, `:1103-1108`, `:1118`).
 #![cfg(unix)]
 // A bootable data plane with the bedrock path ingress, the admin listener, the admin-token door and
 // the SigV4 auth plugin must all be linked.
@@ -65,7 +70,7 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     let upstream = Upstream::spawn();
     let data_port = common::boot::free_port();
     let admin_port = common::boot::free_port();
-    write_configs(&dir, data_port, admin_port, upstream.port);
+    write_configs(&dir, data_port, admin_port, upstream.port, "[keys]");
 
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
@@ -100,7 +105,7 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
         .as_str()
         .unwrap_or_else(|| node.fail(&format!("the mint carried no AWS secret: {minted}")))
         .to_string();
-    // 1.5.5's POST /keys credential bytes (row 159, K3#4): the AccessKeyId is `AKIA` then 16 of
+    // 1.5.5's POST /keys credential bytes: the AccessKeyId is `AKIA` then 16 of
     // [A-Z0-9], 20 in all, and the secret access key 40 of [A-Za-z0-9+/]. The shape is the linked
     // signed-request row's own Statement marks; the host draws over it and names no format (RED before the
     // row states it: the mint has no shape to draw and fails closed).
@@ -227,7 +232,7 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     assert_outbound_signed(&node, &seen[1], &vk_akid);
 
     // ── 5. over the cap, under a malformed SigV4 line: refused at the cap, before a verdict ──────
-    // (ARCHITECT D1 2026-10-05, INBOUND BUFFERING.) The body a signed ingress buffers for the
+    // The body a signed ingress buffers for the
     // verifier is capped at `limits.request_body_max_bytes` BEFORE the buffer: a body over it is
     // refused with the opaque auth refusal, the same bytes as a bad signature, and never buffered
     // whole, never verified, never forwarded.
@@ -277,6 +282,105 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
         2,
         "an over-cap request must never reach the upstream"
     );
+
+    drop(node);
+}
+
+/// 1.5.5 MINTED THE AWS CREDENTIAL WHATEVER THE CHAIN: with an `auth.chain` that
+/// does not name `keys`, `POST /keys {"issue_aws_credential": true}` answers 201 with the token,
+/// the AccessKeyId and the secret access key in 1.5.5's shapes (v1.5.5
+/// `crates/busbar/src/admin/mod.rs:997-1000` mints `mint_signed_with_aws` on the flag alone, and
+/// `:1103-1108` writes both fields). A plain mint on the same node carries neither field.
+#[test]
+fn the_aws_credential_mints_when_the_chain_does_not_name_keys() {
+    let dir = fixture_dir();
+    let upstream = Upstream::spawn();
+    let data_port = common::boot::free_port();
+    let admin_port = common::boot::free_port();
+    write_configs(&dir, data_port, admin_port, upstream.port, "[]");
+
+    let log_path = dir.join("out.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let log_err = log.try_clone().unwrap();
+    let child = Command::new(common::boot::exe())
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env(
+            UPSTREAM_CREDS_ENV,
+            format!("{UPSTREAM_AKID}:{UPSTREAM_SECRET}"),
+        )
+        .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
+        .env("RUST_LOG", "warn")
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("spawn busbar");
+    let mut node = Node {
+        child,
+        dir,
+        log_path,
+    };
+    node.wait_listening(data_port, admin_port);
+
+    let minted = node.mint(
+        admin_port,
+        br#"{"name":"no-keys-in-chain","issue_aws_credential":true}"#,
+    );
+    if minted.status != 201 {
+        node.fail(&format!(
+            "1.5.5 answers 201 to an AWS-credential mint whatever the chain, got {}:\n{}",
+            minted.status, minted.text
+        ));
+    }
+    let body: serde_json::Value = serde_json::from_slice(&minted.body).unwrap_or_else(|e| {
+        node.fail(&format!(
+            "the mint answered non-JSON ({e}): {}",
+            minted.text
+        ))
+    });
+    let akid = body["aws_access_key_id"].as_str().unwrap_or_default();
+    if !(akid.len() == 20
+        && akid.starts_with("AKIA")
+        && akid[4..]
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+    {
+        node.fail(&format!("the AccessKeyId is not 1.5.5's shape: {body}"));
+    }
+    let secret = body["aws_secret_access_key"].as_str().unwrap_or_default();
+    if !(secret.len() == 40
+        && secret
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/'))
+    {
+        node.fail("the secret access key is not 1.5.5's shape");
+    }
+    if !(body["token"]
+        .as_str()
+        .is_some_and(|t| t.starts_with("bbk_"))
+        && body["state"] == "active"
+        && body["group_provisioned"] == false
+        && body["expires_at"].is_u64()
+        && body["id"].is_string())
+    {
+        node.fail(&format!(
+            "the mint body is not 1.5.5's CreatedKeyView: {body}"
+        ));
+    }
+
+    // A plain mint (no flag) on the same node carries neither AWS field.
+    let plain = node.mint(admin_port, br#"{"name":"plain"}"#);
+    let plain: serde_json::Value = serde_json::from_slice(&plain.body).unwrap_or_else(|e| {
+        node.fail(&format!(
+            "the plain mint answered non-JSON ({e}): {}",
+            plain.text
+        ))
+    });
+    if !(plain["aws_access_key_id"].is_null() && plain["aws_secret_access_key"].is_null()) {
+        node.fail(&format!(
+            "a bearer-only key must not carry AWS fields: {plain}"
+        ));
+    }
 
     drop(node);
 }
@@ -608,6 +712,24 @@ impl Node {
         }
     }
 
+    /// `POST /api/v1/admin/keys` with `body` under the admin token, retried only while the admin
+    /// listener answers nothing at all (bounded); whatever it answers is returned as answered.
+    fn mint(&self, admin_port: u16, body: &[u8]) -> Response {
+        let host = format!("127.0.0.1:{admin_port}");
+        let headers = vec![
+            ("authorization".to_string(), format!("Bearer {ADMIN_TOKEN}")),
+            ("content-type".to_string(), "application/json".to_string()),
+        ];
+        let deadline = Instant::now() + IO_TIMEOUT;
+        loop {
+            let r = send(admin_port, &host, "/api/v1/admin/keys", &headers, body);
+            if r.status != 0 || Instant::now() >= deadline {
+                return r;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
     /// `POST /api/v1/admin/keys {"issue_aws_credential": true}` under the admin token, retried only
     /// while the admin listener is not yet answering (bounded).
     fn mint_aws_key(&self, admin_port: u16) -> serde_json::Value {
@@ -656,7 +778,8 @@ fn fixture_dir() -> PathBuf {
     d
 }
 
-fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16) {
+/// The node's configs; `chain` is the `auth.chain` value, verbatim YAML.
+fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16, chain: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
         format!(
@@ -687,7 +810,7 @@ identity-providers:
     module: admin-tokens
     token: {{ env: BUSBAR_ADMIN_TOKEN }}
 auth:
-  chain: [keys]
+  chain: {chain}
   signing_key: {{ file: "{signing}" }}
   admin_auth:
     - admin-tokens

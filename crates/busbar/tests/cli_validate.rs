@@ -44,7 +44,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
 }
 
 /// The `store:` line a fixture config carries unless the block under test writes its own: a config
-/// names its store (owner ruling Q-STORE = (B), 2026-09-27).
+/// names its store.
 fn store_unless_written(extra: &str) -> &'static str {
     if extra.lines().any(|l| l.starts_with("store:")) {
         ""
@@ -178,7 +178,7 @@ fn validate_ok_on_valid_config_without_plugins() {
 }
 
 /// A 1.5.5-shaped config whose root `pools:` names a pool after a reserved sub-key (`tier`, `work`)
-/// validates exactly as 1.5.5 did (Q-STEP9-a, ARCHITECT 2026-10-07): the root `pools:` section keeps
+/// validates exactly as 1.5.5 did: the root `pools:` section keeps
 /// 1.5.5's two reserved words and no more, so both are pools and both are counted.
 #[cfg(linked_section_pools)]
 #[test]
@@ -376,7 +376,7 @@ fn validate_trust_gate_matches_boot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE SIGNING GATE'S READING, PINNED (scripts/signing-gate.sh, ARCHITECT ruling (A)): when a
+/// THE SIGNING GATE'S READING, PINNED: when a
 /// linked row answers the config's reference, `--validate` exits 0 whatever an unsigned tarball's
 /// fate, and the gate judges its refusing arms by these exact lines of the summary instead: the
 /// count `0 validated, 1 skipped` and the skip line `skipped: <manifest name> (<file>) — ... manifest
@@ -418,7 +418,7 @@ fn validate_summary_names_an_unsigned_tarball_as_the_signing_gate_reads_it() {
 }
 
 /// THE SIGNING GATE'S REFERENCE reaches the dropped-in tarball under test, even when this build links
-/// the same plugin (ARCHITECT C': one plugin, one identity whichever door it arrives by).
+/// the same plugin.
 /// scripts/signing-gate.sh writes `store: { module: <ref> }`, its reference the tarball's MANIFEST
 /// NAME (`$MANIFEST_NAME`, what its release packs). busbar links busbar-store-memory under that same
 /// canonical name, alias `memory`, so the linked row answers the reference and `--validate` exits
@@ -662,7 +662,7 @@ fn migrate_config_omits_changes_and_warnings_sections_when_empty() {
     let dir = fixture_dir("migrate-clean");
     std::fs::create_dir_all(&dir).unwrap();
     let legacy = dir.join("legacy.yaml");
-    // Names its store, so the Q-STORE insertion has nothing to add either.
+    // Names its store, so the store insertion has nothing to add either.
     std::fs::write(
         &legacy,
         "listen: \"127.0.0.1:8080\"\nstore: {module: memory}\n",
@@ -1072,7 +1072,7 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
 /// only to each other would exit 0 here and look correct doing it.
 ///
 /// GATED ON `linked_section_tools`, set exactly when the linked door declaring `tools:` is in the
-/// build (the `linked-section` row; the linked row that once carried a `stdio-serve` axis is gone): the collision check lives in that
+/// build (the `linked-section` row; no linked row carries a serve-mode axis any more): the collision check lives in that
 /// plane and is compiled out with it — a binary without that
 /// plane has no `tools:` to collide in, so `--validate` exiting 0 there is the correct answer, not the
 /// missed refusal this test exists to pin. The config configures that plane and nothing else (no
@@ -1397,7 +1397,7 @@ models:
 // `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
 // "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
 // reaches the credential field this test is about. The 18 sibling provider tests in this file are
-// already `plane-llm`-gated for exactly that reason; these two were not, so
+// already gated on the linked provider-pool section for exactly that reason; these two were not, so
 // `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
 // is asking about. The question here genuinely needs a provider lane, so it is gated rather than
 // re-fixtured.
@@ -1424,14 +1424,14 @@ fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `api_key: none` — the explicit keyless declaration for a local ollama / vLLM — validates CLEAN
+/// `api_key: none` — the explicit keyless declaration for a local, keyless upstream — validates CLEAN
 /// with no variable set for it anywhere. This is the migration path off the removed
 /// degrade-to-an-empty-credential behaviour, so it has to work at the outermost surface.
 // PROVIDER-SHAPED, THEREFORE CODEC-SHAPED. The fixture declares a `mock` provider on protocol
 // `anthropic`, and a build with no wire codec compiled in refuses that config at BUSBAR-3015 --
 // "no protocol with a wire codec compiled in, so no provider lane can be served" -- before it ever
 // reaches the credential field this test is about. The 18 sibling provider tests in this file are
-// already `plane-llm`-gated for exactly that reason; these two were not, so
+// already gated on the linked provider-pool section for exactly that reason; these two were not, so
 // `cargo test -p busbar --test cli_validate --no-default-features` failed both on an error neither
 // is asking about. The question here genuinely needs a provider lane, so it is gated rather than
 // re-fixtured.
@@ -1473,7 +1473,7 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 // `decisions.models.<m>.provider` naming a provider `providers:` does not define booted; a
 // `decisions.hooks` entry naming an undefined hook booted; and a model whose provider resolves to
 // a dialect this plane does not speak (non-`jev`) booted instead of failing closed
-// (BUSBAR-1.6.0.md #51, OWNER-LOCKED: "the decisions plane (only jev) handed `anthropic` fails").
+//
 // All three now refuse at `config::resolve` — the ONE function both `--validate` (`root/cli.rs`)
 // and real boot (`main.rs`) call — so these `--validate` runs stand in for both call sites without
 // this file needing a boot-and-kill harness; `validate_ok_on_valid_config_without_plugins` above
@@ -1484,13 +1484,13 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 // plane's door states it as its one dialect and consumes `providers:`, so its folded section's
 // `PlaneCfg::known_dialects` (`busbar_kernel::plane_driver::door`) is unioned into the provider
 // wire-codec check (`config_validate::validate_providers_with`) for exactly this reason, so `jev`
-// is a legal `protocol:` value even though no `busbar-llm-codec` dialect module translates it.
+// is a legal `protocol:` value even though no provider wire-codec module translates it.
 
 /// A config whose sole provider speaks `protocol` and whose `decisions:` block is `decisions_yaml`
 /// verbatim. Mirrors `write_configs_with_api_key`'s shape (own `providers.yaml` + `config.yaml`,
 /// not the shared `write_configs` helper) because these tests vary the provider's `protocol:`,
 /// which `write_configs` hard-codes to `anthropic`.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
@@ -1522,8 +1522,8 @@ models: {{}}
 /// speaks an unknown protocol is refused naming the dialects the plane speaks ("this plane speaks
 /// only: <d>, <d>."), so the binary itself says which protocols the linked plane reads. Exactly
 /// two are required; a refusal that stops naming them fails here, loudly.
-#[cfg(feature = "plane-decisions")]
-fn decision_dialect() -> String {
+#[cfg(linked_section_decisions)]
+fn door_dialect() -> String {
     let dir = fixture_dir("decisions-dialect-probe");
     write_decisions_configs(
         &dir,
@@ -1534,7 +1534,7 @@ fn decision_dialect() -> String {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         code, 1,
-        "a foreign dialect on the decision plane is refused: {stderr}"
+        "a foreign dialect on the plane is refused: {stderr}"
     );
     let spoken = stderr
         .split("this plane speaks only: ")
@@ -1549,13 +1549,13 @@ fn decision_dialect() -> String {
 /// CONTROL: a `decisions:` block naming a real `jev`-protocol provider validates clean. Proves the
 /// three refusals below are each triggered by their OWN defect, not by the mere presence of a
 /// `decisions:` section or by `protocol: jev` itself.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_ok_on_a_good_decisions_config() {
     let dir = fixture_dir("decisions-ok");
     write_decisions_configs(
         &dir,
-        &decision_dialect(),
+        &door_dialect(),
         "decisions:\n  models:\n    verdicts:\n      provider: mock\n",
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
@@ -1568,7 +1568,7 @@ fn validate_ok_on_a_good_decisions_config() {
 }
 
 /// THE SECOND DIALECT: a model whose provider speaks the plane's second dialect validates clean too.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_ok_on_a_config_in_the_planes_second_dialect() {
     let dir = fixture_dir("plane-ok-second-dialect");
@@ -1586,13 +1586,13 @@ fn validate_ok_on_a_config_in_the_planes_second_dialect() {
 }
 
 /// DEFECT 1: `decisions.models.<m>.provider` names a provider absent from `providers:`.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
     let dir = fixture_dir("decisions-badprovider");
     write_decisions_configs(
         &dir,
-        &decision_dialect(),
+        &door_dialect(),
         "decisions:\n  models:\n    verdicts:\n      provider: ghost\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
@@ -1616,13 +1616,13 @@ fn validate_refuses_a_decisions_model_naming_an_undefined_provider() {
 }
 
 /// DEFECT 2: `decisions.hooks` names a hook absent from the top-level `hooks:` registry.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
     let dir = fixture_dir("decisions-badhook");
     write_decisions_configs(
         &dir,
-        &decision_dialect(),
+        &door_dialect(),
         "decisions:\n  models:\n    verdicts:\n      provider: mock\n  hooks: [ghost-hook]\n",
     );
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
@@ -1641,12 +1641,12 @@ fn validate_refuses_a_decisions_hook_naming_an_undefined_hook() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// DEFECT 3 (#51, OWNER-LOCKED): a model whose provider resolves to a dialect the decisions plane
+/// DEFECT 3: a model whose provider resolves to a dialect the decisions plane
 /// does not speak must FAIL CLOSED — the exact row #51 cites: "the decisions plane (only jev)
 /// handed `anthropic` fails". `write_decisions_configs`'s default catalog protocol IS `anthropic`
 /// (the shipped default, `providers.rs::DEFAULT_PROTOCOL`), so this is also the config an operator
 /// gets by simply OMITTING `protocol:` on a provider meant for the decisions plane.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() {
     let dir = fixture_dir("decisions-baddialect");
@@ -1658,7 +1658,7 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
         code, 1,
-        "a dialect the decision plane does not speak fails closed: {stderr}"
+        "a dialect the plane does not speak fails closed: {stderr}"
     );
     assert!(
         stderr.contains("decisions.models.verdicts.provider"),
@@ -1668,7 +1668,7 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
         stderr.contains("anthropic"),
         "the refusal names the resolved dialect: {stderr}"
     );
-    let dialect = decision_dialect();
+    let dialect = door_dialect();
     assert!(
         stderr.contains(&dialect),
         "the refusal names the dialect the plane speaks (`{dialect}`): {stderr}"
@@ -1681,7 +1681,7 @@ fn validate_refuses_a_decisions_model_whose_provider_speaks_a_foreign_dialect() 
 /// that is a scalar where a mapping belongs, or that carries a member the plane does not declare,
 /// fails `--validate` naming the block, rather than landing as an untyped capture that does
 /// nothing. The control is `validate_ok_on_a_good_decisions_config`.
-#[cfg(feature = "plane-decisions")]
+#[cfg(linked_section_decisions)]
 #[test]
 fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
     for (case, block, member) in [
@@ -1693,7 +1693,7 @@ fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
         ),
     ] {
         let dir = fixture_dir(&format!("decisions-door-{case}"));
-        write_decisions_configs(&dir, &decision_dialect(), block);
+        write_decisions_configs(&dir, &door_dialect(), block);
         let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(code, 1, "{case}: the door refuses the block: {stderr}");
@@ -1721,11 +1721,11 @@ fn validate_refuses_a_decisions_block_its_door_does_not_accept() {
 /// `boot.refusal|BOOT-020|validate`). The list is the linked provider wire codecs', so these cells
 /// also need the linked door that declares `pools:`: a build with no provider codec refuses every provider
 /// lane first (BUSBAR-3015), and that is the correct answer there, not a missed 1.5.5 line.
-#[cfg(all(feature = "plane-decisions", linked_section_pools))]
+#[cfg(all(linked_section_decisions, linked_section_pools))]
 const PROTOCOLS_1_5_5: &str =
     "must be one of: anthropic, openai, gemini, bedrock, responses, cohere\n";
 
-#[cfg(all(feature = "plane-decisions", linked_section_pools))]
+#[cfg(all(linked_section_decisions, linked_section_pools))]
 #[test]
 fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
     let dir = fixture_dir("bogus-protocol-no-decisions");
@@ -1744,16 +1744,16 @@ fn validate_unknown_protocol_lists_only_the_configured_planes_dialects() {
 /// `protocol: jev` with no `decisions:` section refuses as 1.5.5 refuses it: no configured plane
 /// speaks it. (The CONTROL `validate_ok_on_a_good_decisions_config` above is the same provider WITH
 /// the section, which validates clean.)
-#[cfg(all(feature = "plane-decisions", linked_section_pools))]
+#[cfg(all(linked_section_decisions, linked_section_pools))]
 #[test]
-fn validate_refuses_the_decision_protocol_when_no_decisions_section_is_configured() {
-    let dir = fixture_dir("decision-protocol-no-decisions");
-    let dialect = decision_dialect();
+fn validate_refuses_the_planes_protocol_when_its_section_is_not_configured() {
+    let dir = fixture_dir("plane-protocol-no-section");
+    let dialect = door_dialect();
     write_decisions_configs(&dir, &dialect, "");
     let (code, _stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
         code, 1,
-        "the decision protocol with no decision plane configured fails validate: {stderr}"
+        "the plane's protocol with the plane's section unconfigured fails validate: {stderr}"
     );
     assert!(
         stderr.contains(&format!(
@@ -1841,8 +1841,7 @@ fn write_stated_store(dir: &Path, name: &str, alias: &str, kind_abi: u32, lib: &
 /// STAGES 0-2 (BUSBAR-1.6.0.md §3): `--validate` reads a dropped-in plugin's stated facts off its
 /// signed manifest and selects it WITHOUT opening it (the library bytes are not a library, so a
 /// `dlopen` would refuse the run) — and its report is 1.5.5's bytes: the stage report is debug
-/// logging, never a `plugin: … — selected as …` line (ARCHITECT 2026-10-06; oracle
-/// `plugins.store-persist|store-sqlite`).
+/// logging, never a `plugin: … — selected as …` line.
 #[cfg(linked_section_pools)]
 #[test]
 fn validate_selects_a_dropped_plugin_without_opening_it_and_reports_in_1_5_5s_words() {
@@ -1904,7 +1903,7 @@ fn validate_refuses_a_selected_plugin_built_for_another_host() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE MINT ENDPOINT'S SCHEME, AT `--validate` (ARCHITECT ruling D1 2026-10-05, MINT CLASS (B); RED):
+/// THE MINT ENDPOINT'S SCHEME, AT `--validate`:
 /// the token endpoint need is operator-infrastructure, so the connector would dial plaintext, and
 /// the 1.5.5 rule is `--validate`'s to keep: an `http` `token_url` on a PUBLIC host is refused (it
 /// would POST the client secret in clear), and on a loopback host it is not, as in 1.5.5.
@@ -1957,5 +1956,105 @@ models:
     assert!(
         !refused(&stdout, &stderr),
         "an http token_url on loopback is 1.5.5's to allow: stdout={stdout} stderr={stderr}"
+    );
+}
+
+/// One provider `mock` whose credential is `api_key`, presented under the style `style`, with
+/// `extra` (config-side lines, indented under the provider): `--validate`'s exit code and its whole
+/// output. `run_busbar` sets `MOCK_KEY` to `test-key-value`.
+#[cfg(all(linked_section_pools, linked_every_auth))]
+fn validate_lane(tag: &str, api_key: &str, style: &str, extra: &str) -> (i32, String) {
+    let dir = fixture_dir(tag);
+    write_configs(&dir, "");
+    let api_key = api_key.replace("{dir}", &dir.display().to_string());
+    std::fs::write(
+        dir.join("sa.json"),
+        r#"{"client_email":"a@b","private_key":"not a key"}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("pair.txt"), "client-id:client-secret").unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            "listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\nproviders:\n  mock:\n    \
+             api_key: {api_key}\n    auth: {style}\n{extra}models:\n  test-model:\n    \
+             provider: mock\n"
+        ),
+    )
+    .unwrap();
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    let _ = std::fs::remove_dir_all(&dir);
+    (code, format!("stdout={stdout} stderr={stderr}"))
+}
+
+/// `--validate` AGREES WITH BOOT ON A MALFORMED OAUTH CREDENTIAL (oracle BOOT-035; RED). An
+/// `oauth-client-credentials` credential that is no `client_id:client_secret` is refused when the
+/// lane is bound at boot, so `--validate` must refuse it too (exit 1). The credential's shape is the
+/// auth plugin's to judge, and that plugin declares its token-endpoint needs. A check bind that
+/// refuses such a plugin passes its row over, drops every refusal, and `--validate` goes green on a
+/// config boot will not start.
+#[cfg(all(linked_section_pools, linked_every_auth))]
+#[test]
+fn validate_refuses_a_malformed_oauth_client_credential_as_boot_does() {
+    let (code, out) = validate_lane(
+        "cred-shape",
+        "{ env: MOCK_KEY }",
+        "oauth-client-credentials",
+        "    token_url: \"https://127.0.0.1/token\"\n    scope: oracle\n",
+    );
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("oauth-client-credentials credential")
+            && out.contains("client_id:client_secret"),
+        "the credential refusal is named: {out}"
+    );
+}
+
+/// GREEN twin of the BOOT-035 refusal: a well-formed `client_id:client_secret` under the same lane
+/// is accepted by the auth plugin's check bind, so `--validate` stays clean (the check bind refuses
+/// only what the plugin names as the credential's own fault, and never dials the token endpoint).
+#[cfg(all(linked_section_pools, linked_every_auth))]
+#[test]
+fn validate_accepts_a_well_formed_oauth_client_credential() {
+    let (code, out) = validate_lane(
+        "cred-pair",
+        "{ file: \"{dir}/pair.txt\" }",
+        "oauth-client-credentials",
+        "    token_url: \"https://127.0.0.1/token\"\n    scope: oracle\n",
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("credential"), "no credential refusal: {out}");
+}
+
+/// The same agreement for `jwt-bearer`: a service account whose key is no key is refused by
+/// `--validate`, by the auth plugin that serves the style, as boot refuses it.
+#[cfg(all(linked_section_pools, linked_every_auth))]
+#[test]
+fn validate_refuses_a_malformed_jwt_bearer_service_account_as_boot_does() {
+    let (code, out) = validate_lane("bad-key", "{ file: \"{dir}/sa.json\" }", "jwt-bearer", "");
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("jwt-bearer credential (from ") && out.contains(") is invalid: "),
+        "the credential refusal is named: {out}"
+    );
+}
+
+/// `--validate` NAMES AN UNREADABLE SERVICE-ACCOUNT KEY FILE IN 1.5.5's WORDS (oracle BOOT-036):
+/// `provider '<p>' jwt-bearer credential (from <source>) is invalid: could not read
+/// service-account key file …`, the same line as a malformed one.
+#[cfg(all(linked_section_pools, linked_every_auth))]
+#[test]
+fn validate_names_an_unreadable_jwt_bearer_key_file_in_1_5_5s_words() {
+    let (code, out) = validate_lane(
+        "unreadable-key",
+        "{ file: \"{dir}/pair.txt\" }",
+        "jwt-bearer",
+        "",
+    );
+    assert_eq!(code, 1, "{out}");
+    assert!(
+        out.contains("provider 'mock' jwt-bearer credential (from file:")
+            && out.contains(") is invalid: could not read service-account key file"),
+        "the unreadable key file is refused in 1.5.5's words: {out}"
     );
 }

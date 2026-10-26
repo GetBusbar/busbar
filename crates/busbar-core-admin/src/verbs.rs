@@ -234,25 +234,8 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
             .ok_or(busbar_contract::verb_store::StoreError::Failed)
     }
 
-    /// The gate the three disaster-recovery verbs run through before they reach the store.
-    ///
-    /// Identical to what [`Verbs::execute`] runs for any other new verb — scope, then rate class —
-    /// because these three are new verbs; the only thing that makes them different is that their
-    /// effect lands on [`Store`] rather than [`Governance`], and where an effect lands is not a
-    /// reason to be admitted differently. Each is a plain scoped verb (#77(9), OWNER-LOCKED,
-    /// `docs/design/BUSBAR-1.6.0.md` l.2279): no operator key, signature or second approver.
-    fn admit_recovery_verb(
-        &self,
-        verb: KernelVerb,
-        actor: &str,
-        granted: VerbScope,
-        now: u64,
-    ) -> Result<(), Refusal> {
-        self.admit(verb, actor, granted, now).map(|_| ())
-    }
-
     /// `chain_break` — deliberately break the journal chain. Admitted through
-    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// [`Verbs::admit`] and only then handed to the store.
     pub fn chain_break(
         &self,
         admin: &Grant<AdminVerb>,
@@ -260,14 +243,15 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         granted: VerbScope,
         now: u64,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::ChainBreak, actor, granted, now)?;
+        self.admit(KernelVerb::ChainBreak, actor, granted, now)?;
         self.bound_store()
             .and_then(|store| store.chain_break(admin))
             .map_err(store_error_into_refusal)
     }
 
     /// `store_restore` — restore the store from a named backup. Admitted through
-    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// [`Verbs::admit`] and only then handed to the store, which refuses it when it has
+    /// no restore operation (the configured store never has one: restores happen off-node, row 187).
     pub fn store_restore(
         &self,
         admin: &Grant<AdminVerb>,
@@ -276,14 +260,14 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         now: u64,
         backup_ref: &str,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::StoreRestore, actor, granted, now)?;
+        self.admit(KernelVerb::StoreRestore, actor, granted, now)?;
         self.bound_store()
             .and_then(|store| store.store_restore(admin, backup_ref))
             .map_err(store_error_into_refusal)
     }
 
     /// `reseal_epoch_floor` — reseal the epoch floor after a chain break or restore. Admitted
-    /// through [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// through [`Verbs::admit`] and only then handed to the store.
     pub fn reseal_epoch_floor(
         &self,
         admin: &Grant<AdminVerb>,
@@ -291,7 +275,7 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         granted: VerbScope,
         now: u64,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::ResealEpochFloor, actor, granted, now)?;
+        self.admit(KernelVerb::ResealEpochFloor, actor, granted, now)?;
         self.bound_store()
             .and_then(|store| store.reseal_epoch_floor(admin))
             .map_err(store_error_into_refusal)
