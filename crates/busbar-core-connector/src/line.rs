@@ -297,6 +297,22 @@ impl Line {
         }
     }
 
+    /// Whether the line's dial has landed (see [`Connection::poll_landed`]): `Pending` with `cx`'s
+    /// waker among `stream`'s waiting holders while it connects.
+    pub(crate) fn poll_landed(
+        &self,
+        stream: u64,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), Failure>> {
+        self.fan.wait(stream, cx.waker());
+        let waker = self.fan_waker();
+        let mut s = self.state.lock().expect("line");
+        let Some(conn) = s.conn.as_mut() else {
+            return Poll::Ready(Err(Failure::Closed));
+        };
+        conn.poll_landed(&mut Context::from_waker(&waker))
+    }
+
     /// Offer `bytes` on `stream` (`end` = its message is complete); answers how many were taken.
     ///
     /// # Errors
