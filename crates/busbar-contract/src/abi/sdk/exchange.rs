@@ -454,6 +454,15 @@ impl Exchange {
             Sending::Raw(_) => Vec::new(),
         }
     }
+
+    /// The whole head this exchange frames, sealed values included (`test_support::chip` alone).
+    #[allow(dead_code)]
+    pub(crate) fn head_bytes(&self) -> Vec<u8> {
+        match &self.sending {
+            Sending::Framed { head, .. } => head.to_vec(),
+            Sending::Raw(bytes) => bytes.to_vec(),
+        }
+    }
 }
 
 /// The bytes `span` names in `buf`, or none past its end.
