@@ -318,6 +318,8 @@ test_plane_owned:
         .live
         .refreshed(
             &sections["test_plane"],
+            // A plane that reads no section beside its own is handed its section bare.
+            &sections["test_plane"],
             &serde_json::Map::new(),
             2,
             secrets,
