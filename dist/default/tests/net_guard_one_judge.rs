@@ -18,7 +18,7 @@
 //! ## What it is now
 //!
 //! There is one definition. It lives in [`busbar_kernel_egress::trust::net`]. The kernel's
-//! `net_guard` re-export shim is gone (row 130 E2); the kernel reaches the judge's config arm as
+//! `net_guard` re-export shim is gone; the kernel reaches the judge's config arm as
 //! `busbar_kernel::config_validate::{extract_normalized_host, ssrf_blocked_host}`, re-exports of
 //! the unit's. So the two names below are two paths to ONE function, and every equality in this
 //! file is trivially true — *while that stays true*.

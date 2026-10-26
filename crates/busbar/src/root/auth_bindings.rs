@@ -215,8 +215,7 @@ pub const ADMIN_PRINCIPAL_ID: &str = "admin";
 /// THE ROOT LEGACY TABLE: the operator credential's provider, as configuration spells it (the
 /// `auth.admin_auth:` default, the one `module:` whose definition may carry `token:`, and a reserved
 /// hook name). Frozen operator-visible config text the root hands to the kernel with its linked auth
-/// rows, so the kernel spells it nowhere (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2;
-/// BUSBAR-1.6.0.md:173, "sit in the root legacy table"). The word is the manifest's: the registry key
+/// rows, so the kernel spells it nowhere. The word is the manifest's: the registry key
 /// of the row its `[package.metadata.busbar.operator-auth]` table names, stated in packaging whether
 /// or not this build links that row, so no source here names the module. Its value is v1.5.5's
 /// (v1.5.5:crates/busbar/src/config/mod.rs:795; :1874,1891, the hook-name reservation).

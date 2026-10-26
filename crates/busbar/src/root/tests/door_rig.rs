@@ -190,7 +190,7 @@ pub(crate) fn install_root_auth() {
         crate::LINKED.auths,
         crate::root::auth_bindings::operator_words(),
     );
-    busbar_kernel::preflight::install_auth_axis(crate::root::dispatch::auth_axis);
+    busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
 }
 
 /// The kernel's host services judging every destination by `dest`, installed into a fresh
@@ -267,12 +267,13 @@ impl ProcessRig {
         } = self;
         let entries = || crate::root::connector::entries(crate::LINKED_TRANSPORT_DOORS, &settings);
         if anchors.is_empty() {
-            return busbar_core_connector::process::build(
+            return busbar_core_connector::process::build_with_secrets(
                 entries,
                 dest,
                 &[],
                 wake,
                 crate::root::connector::pool_posture(&settings),
+                busbar_kernel::config::secret::resolve_linked_string_at_config,
             );
         }
         let tls = busbar_core_connector::tls::client::build_client_config(

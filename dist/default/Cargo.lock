@@ -475,6 +475,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "idna_adapter",
+ "libloading",
  "metrics",
  "opentelemetry-proto",
  "prost",
@@ -609,14 +610,10 @@ dependencies = [
  "http-body",
  "http-body-util",
  "httpdate",
- "hyper",
- "hyper-util",
  "indexmap",
  "loom",
  "metrics",
  "metrics-util",
- "rcgen",
- "reqwest",
  "ring",
  "schemars",
  "serde",
@@ -695,7 +692,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=fafb021f9f5ff4f109da47a9ea711353a003d26e#fafb021f9f5ff4f109da47a9ea711353a003d26e"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=757897b71862489343d2e5449b1816619bdcf69e#757897b71862489343d2e5449b1816619bdcf69e"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -737,7 +734,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=35668391be17ebe8df8f81faeb70cb84ee1ed5a8#35668391be17ebe8df8f81faeb70cb84ee1ed5a8"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8#6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -1175,7 +1172,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2513,7 +2510,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -2622,7 +2618,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3058,10 +3054,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

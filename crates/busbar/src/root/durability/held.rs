@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CHECKPOINTS A NODE HOLDS, RE-DERIVED (Q128 kernel-ledger HIGH 1, ARCHITECT ruling A1).
+//! THE CHECKPOINTS A NODE HOLDS, RE-DERIVED.
 //!
 //! The node keeps each seal's head and not its balances ([`CheckpointHead`]); a reader that needs
 //! the sealed figures has them re-derived here from the chain, through the configured store, in
@@ -180,7 +180,7 @@ impl HeldWalk {
                 }
                 if record_checkpoint_seq(record) == Some(head.checkpoint_seq) {
                     // The chain still carries every window the book let go; the book this
-                    // seal was taken from did not (row 159's retirement). They leave the scratch
+                    // seal was taken from did not. They leave the scratch
                     // book here, at the seal that left them out, as they left the book; a posting
                     // on one after that rebuilds it from that posting alone, as it did the book's.
                     let left_behind =

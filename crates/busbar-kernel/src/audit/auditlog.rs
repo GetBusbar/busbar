@@ -372,8 +372,7 @@ pub struct PlaneAuditLog {
     kind_id: u32,
     /// THE READ MODEL. A bounded ring of the most-recent [`MAX_AUDIT_ENTRIES`] records, held newest-
     /// LAST (seq-ascending) so [`list_filtered`](PlaneAuditLog::list_filtered)'s `rev()` reads newest-
-    /// first — the same shape and bound as the legacy [`crate::audit_ring::AuditLog`] ring it will
-    /// replace as the `GET /audit` read source. Guarded by its OWN `Mutex` (independent of the seam's
+    /// first — the `GET /audit` read source. Guarded by its OWN `Mutex` (independent of the seam's
     /// mint serialization point) and inserted BY SEQ, so the newest-first order holds even when a
     /// mint's release-to-push window interleaves with another recorder's.
     ring: Mutex<VecDeque<AuditEntry>>,
@@ -381,7 +380,7 @@ pub struct PlaneAuditLog {
 
 /// THE PROCESS-WIDE admin audit READ MODEL on the seam. Process state, not config-derived state, so it
 /// lives as a global rather than on the swappable `App` snapshot — exactly like
-/// [`crate::audit_ring::AUDIT`] and [`crate::residual_log::RESIDUALS`], and for the same reason: a
+/// [`crate::residual_log::RESIDUALS`], and for the same reason: a
 /// config apply must not fork the chain by opening a SECOND ring at seq 1 under a chain that already
 /// has one.
 pub static AUDIT_LOG: std::sync::LazyLock<PlaneAuditLog> =
@@ -427,9 +426,8 @@ impl PlaneAuditLog {
     }
 
     /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
-    /// skip `offset`, then take `limit`. `None` filters match everything. Copied VERBATIM from
-    /// [`crate::audit_ring::AuditLog::list_filtered`] — THE read surface `GET /audit` serves,
-    /// byte-identical to the legacy ring it replaced.
+    /// skip `offset`, then take `limit`. `None` filters match everything. THE read surface
+    /// `GET /audit` serves.
     pub fn list_filtered(
         &self,
         offset: usize,
@@ -869,10 +867,9 @@ pub(crate) fn register_and_migrate(
     }
 }
 
-/// THE ADMIN-AUDIT CHOKEPOINT EMITTER, hostless. Called once from
+/// THE ADMIN-AUDIT CHOKEPOINT EMITTER, hostless. Reached through [`emit_admin_hostless_now`] from
 /// [`crate::audit_ring::AuditLog::record_by`] — which is the ONE place an admin mutation is recorded
-/// — with the SAME `ts` `record_by` sealed the legacy ring under (never a second clock read, which
-/// would let the seam and the legacy ring diverge by up to a second). `record_by` is a method on the
+/// — with one clock read per event. `record_by` is a method on the
 /// process-global `AUDIT` static and has NO `app`/host to open a dispatch scope with, so it reaches the
 /// chain through the HOSTLESS append ([`stream_registry::append_full`]), which resolves the registered
 /// `audit` stream from the process-global stream registry, mints
@@ -929,13 +926,11 @@ pub(crate) fn emit_admin_hostless(
 }
 
 /// THE NEUTRAL, HOSTLESS AUDIT EMIT for plane call sites. Reads `busbar_kernel::store::now()` ONCE for
-/// this event and delegates to [`emit_admin_hostless`] with that single timestamp — the same one clock
-/// read per event `record_by` performs, so the seam and any legacy read never diverge by a clock tick.
+/// this event and delegates to [`emit_admin_hostless`] with that single timestamp.
 /// This neutral `(action, resource, outcome, principal)` shape IS the future ABI-slot signature: the
 /// plane bodies call it without ever naming `crate::audit_ring`, so the core-audit↔plane seam can be cut.
 /// Fire-and-forget, loudly, exactly like [`emit_admin_hostless`]: a store write failure NEVER fails the
 /// mutation it records.
-#[allow(dead_code)] // called from the plane-gated audit sites; no caller with every plane compiled out
 pub fn emit_admin_hostless_now(action: &str, resource: &str, outcome: &str, principal: &str) {
     let ts = busbar_kernel::store::now();
     emit_admin_hostless(ts, action, resource, outcome, principal);

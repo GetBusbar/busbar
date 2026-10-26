@@ -13,6 +13,9 @@
 //! * `io.rs`, `socket.rs` — its tools: readiness on the worker's reactor, and the OS sockets;
 //! * `udp.rs`, `dtls/` — the DATAGRAM carrier, which is the host's by ruling (THE DESIGN §5,
 //!   Datagram media: "the udp carrier is the host's (in the connector, no carrier plugin)").
+//!
+//! (`tls/engine.rs`, the kernel's legacy outbound engine's TLS, left the list with that engine,
+//! u30: the kernel dials nothing.)
 
 use std::path::{Path, PathBuf};
 

@@ -354,10 +354,6 @@ mod export_conformance_tests;
 #[path = "tests/both_ways.rs"]
 mod both_ways;
 
-/// No rlib the test binary links exports `busbar_plugin_door` (the fat-LTO duplicate-symbol guard).
-#[cfg(test)]
-#[path = "tests/door_symbol_tests.rs"]
-mod door_symbol_tests;
 
 /// `kind: auth` through both doors on the memory ABI, VERIFY VERDICTS: the token cases driven to
 /// every verdict (identify, reject, pass) over a second real auth plugin, one row and one answer

@@ -32,7 +32,9 @@ use serde_json::{json, Value};
 use crate::config::{OauthAsCfg, StaticClientCfg, StaticClientJwk, StaticClientJwks};
 use busbar_kernel::test_support::TestApp;
 
-use crate::flow_tests::{location, path_of, percent_decode, query_param, send, Jar};
+use crate::flow_tests::{
+    encode_component, location, path_of, percent_decode, query_param, send, Jar,
+};
 use crate::testkit::TestAppOauthExt;
 
 /// The client's redirect URI. Never fetched: every flow ends at the redirect that carries the code.
@@ -413,24 +415,11 @@ async fn push(s: &Subject, form: &[(&str, String)], dpop: &Key) -> String {
         .to_string()
 }
 
-/// Every byte outside RFC 3986 unreserved, percent-encoded.
-fn enc(s: &str) -> String {
-    s.bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-                (b as char).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect()
-}
-
 fn authorize_url(s: &Subject, client_id: &str, request_uri: &str) -> String {
     format!(
         "{}/authorize?client_id={client_id}&request_uri={}",
         s.origin,
-        enc(request_uri)
+        encode_component(request_uri)
     )
 }
 
@@ -787,7 +776,7 @@ async fn an_authorization_request_not_pushed_is_refused() {
         "{}/authorize?response_type=code&client_id={CLIENT_ID}&redirect_uri={}&scope={SCOPE}\
          &state=s1&code_challenge={CHALLENGE}&code_challenge_method=S256",
         s.origin,
-        enc(REDIRECT_URI)
+        encode_component(REDIRECT_URI)
     );
     assert_refused_with_a_page(&s, &url, "invalid_request").await;
 }

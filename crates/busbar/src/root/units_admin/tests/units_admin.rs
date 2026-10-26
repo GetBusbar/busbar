@@ -1484,7 +1484,7 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
 /// identity no other cell in this binary uses.
 #[cfg(feature = "root-admin")]
 fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::AuditEntry> {
-    busbar_kernel::audit_ring::AUDIT
+    busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, usize::MAX, None, None)
         .into_iter()
         .filter(|entry| entry.principal == principal)
@@ -1513,8 +1513,12 @@ fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::Audi
 #[test]
 fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
     const WHO: &str = "operator-cifollow-one-entry";
+    // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
+    // test harness registers it, so the rows this test seals reach the seam's read model.
+    let _ = busbar_kernel::test_support::TestApp::new().build();
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
-        let ring = busbar_kernel::audit_ring::AUDIT.list_filtered(0, usize::MAX, None, None);
+        let ring =
+            busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(0, usize::MAX, None, None);
         let at = ring
             .iter()
             .position(|e| e.seq == entry.seq)

@@ -659,7 +659,7 @@ async fn drive_until(c: &Connector, conn: ConnId, ready: impl Fn() -> bool) {
     assert!(ready(), "the condition held within the bound");
 }
 
-/// THE MUX (ARCHITECT ruling Q-L18-MUX): two CONCURRENT requests to one h2c origin share one
+/// THE MUX: two CONCURRENT requests to one h2c origin share one
 /// connection as streams 1 and 3. The far end answers neither until both have arrived, so the
 /// answers prove both were in flight together on the one connection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -773,7 +773,7 @@ async fn resetting_far_end() -> (u16, Arc<FarEnd>, tokio::sync::mpsc::Sender<()>
     (port, far, rst)
 }
 
-/// THE ONE REDIAL (ARCHITECT ruling Q-L18-RETRY): a request lent a pooled h2 line the far end has
+/// THE ONE REDIAL: a request lent a pooled h2 line the far end has
 /// reset, before any byte of the request left, is dialled once on a fresh connection and served
 /// there: the caller sees one answered exchange, no failover. The request the reset cut, whose
 /// bytes had left, is not re-sent.

@@ -14,11 +14,9 @@
 //!
 //! `endpoints::stats` was widened from `pub(crate)` to `pub` for exactly this move; the `/v1/models`
 //! cells read the kernel's names for a caller (`endpoints::catalog_names`), which the claiming plane
-//! renders unit-less (ARCHITECT ruling 2026-10-16, 3b C; the envelopes are the plane's own cells).
+//! renders unit-less.
 //!
-//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
-//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
-//! build.rs): every cell reads lane/pool topology through the fallback plane's runtime view, which
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation: core names zero plane types, its tests included): every cell reads lane/pool topology through the fallback plane's runtime view, which
 //! only a real plane builds, and the composition root is where a plane may be linked.
 
 mod linked;
@@ -504,7 +502,7 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
     }
 }
 
-// ── /healthz WITH MODEL LANES (ARCHITECT 2026-10-07 K5-H1 ruling; PB-43, pending OWNER signature) ──
+// ── /healthz WITH MODEL LANES ──
 
 /// A door plane whose open answers for every generation, folded as the composition root folds one.
 fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {

@@ -798,7 +798,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
     );
 }
 
-/// 1.5.5 PARITY CELL (Q128 u31 (b)): with the hold unsigned, a login after an admin DISABLE mints as
+/// 1.5.5 PARITY CELL: with the hold unsigned, a login after an admin DISABLE mints as
 /// 1.5.5 minted (v1.5.5 crates/busbar/src/governance/state.rs:431 skips only tombstoned rows, :560
 /// mints): the subject's derived row is written back enabled at its id, the login answers a key,
 /// never 403, and a refresh mints too. RED against the hold (K3 #17), which refuses both 403.
@@ -826,7 +826,7 @@ async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
         .expect("1.5.5 minted on a refresh too");
 }
 
-/// 1.5.5 PARITY CELL (Q128 u31 (b)): with the hold unsigned, a second identity provider asserting the
+/// 1.5.5 PARITY CELL: with the hold unsigned, a second identity provider asserting the
 /// same subject is handed the subject's one self-serve key, as 1.5.5 handed it (1.5.5 keyed the
 /// binding by subject alone and recorded no provider), never 403. RED against the hold (K3 #21).
 #[tokio::test]
@@ -847,7 +847,7 @@ async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5
     );
 }
 
-/// 1.5.5 PARITY CELL (Q128 u31): a self-serve key is written with EMPTY labels, as 1.5.5 wrote it
+/// 1.5.5 PARITY CELL: a self-serve key is written with EMPTY labels, as 1.5.5 wrote it
 /// (v1.5.5 crates/busbar/src/governance/state.rs:487), through issue, re-issue under changed pools
 /// and refresh, so `GET /keys` (whose views serve `labels` verbatim) shows `{}` as 1.5.5 did. The
 /// minting provider rides the kernel-only `idp_provider`, which no key view carries. RED before the

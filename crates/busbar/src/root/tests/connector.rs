@@ -59,7 +59,7 @@ fn a_bad_allowlist_entry_refuses_the_guard() {
     );
 }
 
-// ── THE METADATA CARVE-OUTS, AS A DEPLOYMENT WRITES THEM (ARCHITECT ruling on #413, DEST-GUARD) ──
+// ── THE METADATA CARVE-OUTS, AS A DEPLOYMENT WRITES THEM ──
 // A provider's `allow_metadata_hosts` admits a metadata address only in the provider class and only
 // for that provider's own URL host; no other class admits metadata through any carve-out (the 1.5.5
 // `security` keys included), and operator infrastructure refuses it whatever the carve-outs say.
@@ -218,7 +218,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     );
 }
 
-/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14 on Q130/Q131): a deployment
+/// RED: a deployment
 /// whose provider has no `advanced.allow_destinations` entry is refused the private address its
 /// name answers with on a provider dial (its own configured host included); once the allowlist
 /// names it, the same dial is admitted. Operator infrastructure reaches the private address with
@@ -265,8 +265,7 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
 
 /// RED against the pinned mint plugin's revisions b7d15c7137 and 2a776bd, which declared
 /// EGRESS_LOOPBACK_ALLOWED for its two mint needs (lib.rs:137): every outbound need a linked auth
-/// plugin's Statement declares is operator infrastructure (BUSBAR-1.6.0.md l.609, ARCHITECT D1 MINT
-/// CLASS (B)), so a mint endpoint on a private host is reached as 1.5.5 reached it, not refused as
+/// plugin's Statement declares is operator infrastructure, so a mint endpoint on a private host is reached as 1.5.5 reached it, not refused as
 /// non-loopback. Read off every linked auth row's own Statement, never a plugin's name. It rides
 /// EVERY linked auth row (`linked_every_auth`, build.rs), so the mint plugin's needs are among them
 /// and the cell always proves one; a build missing an auth row does not run it.
@@ -298,7 +297,7 @@ fn every_linked_auth_plugins_outbound_needs_are_operator_infrastructure() {
     );
 }
 
-/// RED (ARCHITECT round 4 (e)): a plane's upstream need whose settings name a PROGRAM is dialled by
+/// RED: a plane's upstream need whose settings name a PROGRAM is dialled by
 /// the one connector over a linked transport door that frames a program's pipes LINE BY LINE (the
 /// line row's door, found by what it does, never by name): the connector spawns the program
 /// (operator-infrastructure class; no shell, only its stated environment), its first line is one

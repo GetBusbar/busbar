@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE WEBHOOK-SIGNATURE AUTH PLUGIN IS LINKED**, default-on (ARCHITECT 2026-10-14): its inbound
+//! **THE WEBHOOK-SIGNATURE AUTH PLUGIN IS LINKED**, default-on: its inbound
 //! verify is an auth-chain module, so linking it lists it in `GET /api/v1/admin/info`
 //! `build.auth_modules` after 1.5.5's two (accepted difference `#64-class build.auth_modules lists
 //! the webhook-signature module`). Driven through the real binary's `--validate`.

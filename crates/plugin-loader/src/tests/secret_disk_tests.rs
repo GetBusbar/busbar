@@ -64,10 +64,8 @@ fn spell(r: Result<Secret<Vec<u8>>, SecretRefused>) -> String {
     }
 }
 
-/// A lane that runs each job on a thread of its own, counting the jobs.
-static LANE_JOBS: AtomicUsize = AtomicUsize::new(0);
+/// A lane that runs each job on a thread of its own.
 fn lane(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
-    LANE_JOBS.fetch_add(1, Ordering::SeqCst);
     std::thread::Builder::new()
         .name("test-disk-lane".into())
         .spawn(job)
@@ -84,6 +82,14 @@ fn full_lane(_job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
 fn dropping_lane(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
     drop(job);
     Ok(())
+}
+
+/// [`lane`] for the one test that counts its jobs: no other test's resolve runs on it, so the
+/// count is that test's alone (tests run at once).
+static COUNTED_JOBS: AtomicUsize = AtomicUsize::new(0);
+fn counted_lane(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
+    COUNTED_JOBS.fetch_add(1, Ordering::SeqCst);
+    lane(job)
 }
 
 /// A lane a source that declares no disk need must never reach.
@@ -111,7 +117,7 @@ fn disk_rows(run: Option<super::DiskRun>) -> SecretRows {
 #[test]
 fn a_disk_source_answers_only_at_config_time_and_only_on_the_lane() {
     environment();
-    let rows = disk_rows(Some(lane));
+    let rows = disk_rows(Some(counted_lane));
     let shared = rows
         .shared(NAME)
         .expect("the linked source has a shared instance");
@@ -123,11 +129,11 @@ fn a_disk_source_answers_only_at_config_time_and_only_on_the_lane() {
     );
     assert!(request.contains(RESOLVE_OFF_CONFIG_TIME), "{request}");
 
-    let before = LANE_JOBS.load(Ordering::SeqCst);
+    let before = COUNTED_JOBS.load(Ordering::SeqCst);
     let at_config = spell(shared.resolve_at_config(&hit(), &ConfigScope::config_time()));
     assert_eq!(at_config, format!("ok {MATERIAL}"));
     assert_eq!(
-        LANE_JOBS.load(Ordering::SeqCst),
+        COUNTED_JOBS.load(Ordering::SeqCst),
         before + 1,
         "the config-time resolve ran as one job on the lane"
     );

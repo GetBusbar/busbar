@@ -2,14 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CHECKPOINT SEALER: the node's totals sealed into a checkpoint on a fixed cadence, signed with
-//! the audit chain's own key, and put on the journal (OWNER Q71(3); spec #82; checkpoint cadence
-//! per BUSBAR-1.6.0.md THE DESIGN, §7).
+//! the audit chain's own key, and put on the journal.
 //!
 //! ## One keyset, two seams
 //!
 //! The ledger holds no key and has no cryptographic opinion: it asks a [`CheckpointSecret`] to sign
-//! and a [`CheckpointVerifier`] to check. Q71(3) binds both to the ONE keyset the audit chain signs
-//! its records with (#82), so this file is where the two meet: [`ChainSecret`] signs a checkpoint
+//! and a [`CheckpointVerifier`] to check. Both are bound to the ONE keyset the audit chain signs
+//! its records with, so this file is where the two meet: [`ChainSecret`] signs a checkpoint
 //! body through [`AuditChain::sign_checkpoint_body`] and [`KeySetVerifier`] checks one through
 //! [`AuditKeySet::verify_checkpoint_body`]. A chain given no key signs nothing — [`ChainSecret::of`]
 //! answers `None`, the seal goes down UNSIGNED, and the checkpoints read says so in its own words.
@@ -60,7 +59,7 @@ pub const CHECKPOINT_INTERVAL_SECS: u64 = 60;
 /// `tick_interval`), so an idle node's last change is sealed at most this long after the interval.
 pub const CHECKPOINT_TICK_SECS: u64 = 1;
 
-/// Signs a checkpoint body with the audit chain's own key (Q71(3): one keyset).
+/// Signs a checkpoint body with the audit chain's own key.
 pub struct ChainSecret<'a> {
     chain: &'a AuditChain,
 }
@@ -95,7 +94,7 @@ impl CheckpointSecret for ChainSecret<'_> {
     }
 }
 
-/// Checks a checkpoint signature against the audit keyset (Q71(3): one keyset).
+/// Checks a checkpoint signature against the audit keyset.
 #[derive(Debug, Clone, Default)]
 pub struct KeySetVerifier {
     keys: AuditKeySet,

@@ -900,12 +900,7 @@ async fn test_admin_v1_plugin_install_of_a_linked_copy_is_a_201_no_op() {
     let (canonical, key, version, _) = linked_store();
     let tarball = unsigned_copy(canonical, key, &version);
     let file = "linked-copy.tar.gz";
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-linked-copy-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("linked-copy");
     let (addr, _handle) = serve_with_plugins_dir(dir.clone()).await;
     // The install view's shape is every one of its fields (both optional ones present, each of
     // its type) and nothing else.
@@ -952,12 +947,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
     busbar_kernel::snapshot::init();
     let tarball = admin_test_tarball("acme-store-junk", "junkstore");
     let file = "acme-store-junk.tar.gz";
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-http-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("http");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
@@ -1078,12 +1068,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
 #[tokio::test]
 async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-secret-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("secret");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
@@ -1161,12 +1146,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_schema_url() {
     busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-schemaurl-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("schemaurl");
 
     let schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1244,12 +1224,7 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
 #[tokio::test]
 async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
     busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-file-hasschema-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("file-hasschema");
 
     let schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1380,12 +1355,7 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 #[tokio::test]
 async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-inspect-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("inspect");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
@@ -1494,12 +1464,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     m.settings_schema = Some(schema.to_string());
     let tarball = unsigned_tarball(m, &lib);
     let file = "acme-store-withschema.tar.gz";
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-schema-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("schema");
     // Drop the tarball into the plugins dir BEFORE boot (the same "file-drop-then-boot" mechanism a
     // real operator uses) and scan it into a REAL `PluginRegistry` (the same
     // `scan_and_validate` production boot uses) so `hook_env.registry` — what `GET .../schema`
@@ -1574,12 +1539,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
     let mut bad_m = test_manifest("acme-store-badschema", "badschema", "acme", "1.0.0");
     bad_m.settings_schema = Some("{ not valid json".into());
     let bad_tarball = unsigned_tarball(bad_m, &bad_lib);
-    let bad_dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-badschema-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&bad_dir);
-    std::fs::create_dir_all(&bad_dir).unwrap();
+    let bad_dir = tmp_plugins_dir("badschema");
     std::fs::write(bad_dir.join("acme-store-badschema.tar.gz"), &bad_tarball).unwrap();
     let bad_hook_env = scanned_hook_env(&bad_dir);
     let (bad_addr, bad_handle) =
@@ -1623,12 +1583,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
 #[tokio::test]
 async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
     busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-h2-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("h2");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
 
     // v1.0.0 installs cleanly.
@@ -1667,12 +1622,7 @@ async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
 #[tokio::test]
 async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() {
     busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-m7-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("m7");
     // Plant a corrupt (non-tarball) *.tar.gz that discover() picks up but examine() cannot parse.
     std::fs::write(
         dir.join("busbar-store-corrupt.tar.gz"),
@@ -1704,12 +1654,7 @@ async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() 
 #[tokio::test]
 async fn test_admin_v1_plugin_install_rejections() {
     busbar_kernel::snapshot::init();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-admin-plugins-rej-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tmp_plugins_dir("rej");
     let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
@@ -1736,12 +1681,7 @@ async fn test_admin_v1_plugin_install_rejections() {
 
     // TRUST NO-BYPASS: a STRICT-posture server rejects an unsigned upload as 409 conflict.
     {
-        let strict_dir = std::env::temp_dir().join(format!(
-            "busbar-root-admin-plugins-strict-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&strict_dir);
-        std::fs::create_dir_all(&strict_dir).unwrap();
+        let strict_dir = tmp_plugins_dir("strict");
         let (strict_addr, strict_handle) =
             serve_admission(strict_dir.clone(), strict_posture(), None).await;
         let tarball = admin_test_tarball("acme-store-x", "acmex");

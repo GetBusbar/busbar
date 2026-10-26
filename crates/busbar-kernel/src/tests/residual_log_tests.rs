@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SETTLE STEP'S RESIDUAL ROW (MONEY LAW, owner 2026-10-02; ARCHITECT ruling 2026-10-02): a
+//! THE SETTLE STEP'S RESIDUAL ROW: a
 //! usage count no billing class records gets one `usage.residual` row, written by the kernel, naming
 //! the unit, count, plane, dialect, lane and request id, outcome `unbilled`. Never billed. The row is
 //! money evidence, so it lives on the DURABLE per-principal journal stream, survives a restart and
