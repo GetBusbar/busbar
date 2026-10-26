@@ -24,7 +24,7 @@ use busbar_contract::records::{
     PlaneSelector, RecordStore, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 
-use super::{MemoryStore, NAME};
+use super::{now, MemoryStore, NAME};
 
 busbar_contract::store_door!(MemoryStore, NAME, env!("CARGO_PKG_VERSION"), 1024);
 
@@ -108,7 +108,7 @@ impl MemoryStore {
             Seen::Conflict => Err(OpRefused::Conflict),
             Seen::New => {
                 let answer = apply(self, &mut inner)?;
-                inner.record(self.now(), op, body, answer.clone());
+                inner.record(now(), op, body, answer.clone());
                 Ok(answer)
             }
         }

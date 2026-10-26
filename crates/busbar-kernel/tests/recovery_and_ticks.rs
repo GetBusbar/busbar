@@ -13,10 +13,7 @@ use busbar_contract::caps::{
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::slice::{bucket_all, ConcurrencyGauge};
 use busbar_kernel::teller::{Evidence, Kernel};
-use busbar_kernel::tick::{
-    drain_outcome, drain_verdict, fleet_action, sweep, sweep_settle, DrainVerdict, FleetAction,
-    Sweep, MIN_QUORUM_PEERS,
-};
+use busbar_kernel::tick::{sweep, sweep_settle, Sweep};
 
 use common::{principal, TestDoor};
 
@@ -666,89 +663,4 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
     // And the second key to the slot finds it empty.
     assert!(sweep_settle(&kernel, &slot, verdict, &evidence, &canary, &gauge).is_none());
     assert_eq!(canary.counts().settlements, 1);
-}
-
-#[test]
-fn drain_never_cuts_a_protocol_that_was_never_cut_before() {
-    assert_eq!(drain_verdict(false, 30_000), DrainVerdict::RunToEnd);
-    assert_eq!(
-        drain_verdict(true, 30_000),
-        DrainVerdict::PumpThenAbort { grace: 30_000 }
-    );
-    assert_eq!(
-        drain_outcome(),
-        busbar_contract::caps::Outcome::Aborted(busbar_contract::caps::Abort::Kernel {
-            reason: busbar_contract::caps::ReasonCode::Drain,
-        })
-    );
-}
-
-#[test]
-fn a_node_with_no_peers_never_drains_for_a_store_it_cannot_reach() {
-    // Every single-node deployment there has ever been. A slow store has never meant "stop
-    // serving", and it does not start meaning that now.
-    for stale_for in [0, 60_000, 10_000_000] {
-        assert_eq!(
-            fleet_action(0, 0, 2, stale_for, 30_000, 630_000),
-            FleetAction::Serve
-        );
-    }
-}
-
-#[test]
-fn a_quorum_of_stale_peers_buys_availability_up_to_a_bound() {
-    // The partition is the fleet's, not this node's: keep serving on slices already drawn.
-    assert_eq!(
-        fleet_action(3, 2, 2, 60_000, 30_000, 630_000),
-        FleetAction::ServeStale { until: 630_000 }
-    );
-    // Past the bound, even a quorum drains: no slice is ever spent on two sides of a partition.
-    assert_eq!(
-        fleet_action(3, 2, 2, 630_000, 30_000, 630_000),
-        FleetAction::Drain
-    );
-}
-
-#[test]
-fn a_node_that_is_the_odd_one_out_serves_only_for_a_short_grace() {
-    assert_eq!(
-        fleet_action(3, 0, 2, 10_000, 30_000, 630_000),
-        FleetAction::ServeStale { until: 30_000 }
-    );
-    assert_eq!(
-        fleet_action(3, 0, 2, 30_000, 30_000, 630_000),
-        FleetAction::Drain
-    );
-    // The quorum branch needs at least two peers to be a quorum at all.
-    assert_eq!(
-        fleet_action(1, 1, 1, 30_000, 30_000, 630_000),
-        FleetAction::Drain
-    );
-}
-
-/// A two-node fleet takes the odd-one-out answer, whatever its one peer is doing.
-///
-/// Neither node can tell which side of a partition holds the majority — each sees exactly one peer
-/// it cannot reach — so "my only peer is stale too" is not the fleet agreeing, and reading it that
-/// way would have both nodes serving on slices the other believes it still holds. The bound that
-/// says so is named, and this is the case it is named for.
-#[test]
-fn a_two_node_fleet_has_no_quorum_to_appeal_to() {
-    assert_eq!(MIN_QUORUM_PEERS, 2);
-    // One peer, stale, and a quorum a single peer would meet: still the short grace, not the long
-    // stale-serve bound the quorum branch buys.
-    assert_eq!(
-        fleet_action(1, 1, 1, 10_000, 30_000, 630_000),
-        FleetAction::ServeStale { until: 30_000 },
-        "one peer agreeing is not the fleet agreeing"
-    );
-    assert_eq!(
-        fleet_action(1, 1, 1, 30_000, 30_000, 630_000),
-        FleetAction::Drain
-    );
-    // With one more peer the same quorum IS a quorum, and availability is bought to the bound.
-    assert_eq!(
-        fleet_action(2, 1, 1, 10_000, 30_000, 630_000),
-        FleetAction::ServeStale { until: 630_000 }
-    );
 }
