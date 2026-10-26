@@ -110,23 +110,8 @@ reason = "BUILD ONLY: the protoc the a2a plane's `build.rs` drives, vendored so 
 # else refuses the render. `busbar-release plugin sync` renders each row into the listed repos only: its
 # `git` joins deny.toml's [sources] allow-git, and `name = { git, rev }` joins Cargo.toml's
 # [patch.crates-io]. busbar's `cargo xtask plugin-gates gitsources` validates the rows.
-[git-sources.str0m]
-git = "https://github.com/GetBusbar/str0m"
-rev = "710e48e449424ab0c39b475bf7fc8247d79c2cd9"
-repos = ["busbar-transport-webrtc"]
-reason = "H2 zeroize, zeroize-only: str0m 0.24.1 plus zeroize-on-drop commits (keying material copy, SrtpKey and derived SRTP keys, ICE password, no session key or salt left in the derivation's frames, the ICE password held zeroising in the session description and the agent); THE DESIGN §5 'keys are zeroised'. Plus the same secret-hygiene class (spec #53/#54, Secret redaction): IceCreds' and IcePassword's Debug forms print the password as <redacted>. No other behaviour change: the OS-drawn identifier randomness and the one-byte empty data-channel message were reverted on the branch. Upstream: pending owner approval to post."
-
-[git-sources.dimpl]
-git = "https://github.com/GetBusbar/dimpl"
-rev = "88f01226145c6a904986156e92610b1eb642f143"
-repos = ["busbar-transport-webrtc"]
-reason = "H2 zeroize: dimpl 0.7.4 plus a zeroize-on-drop commit (KeyingMaterial, the DTLS-exported SRTP keying material); THE DESIGN §5 'keys are zeroised'. Upstream: pending owner approval to post."
-
-[git-sources.ring]
-git = "https://github.com/GetBusbar/ring"
-rev = "c0471befa70cf942622f002be1529a16c7d3509a"
-repos = ["busbar-transport-webrtc"]
-reason = "H2 zeroize, zeroize-only: ring 0.17.14 plus a zeroize-on-drop commit (the AES-GCM key's expanded AES schedule and GHASH key, which hold the SRTP session keys the webrtc framer derives); THE DESIGN §5 'keys are zeroised'. Plus build mechanics only: build.rs builds a git checkout from the committed pregenerated/ sources, as it builds the crates.io package, and pregenerated/ is byte-identical to the crates.io 0.17.14 package's (106 files, the same sha256 each). Upstream: pending owner approval to post."
+# No rows today: the str0m, dimpl and ring forks were dropped (the webrtc plugin builds from crates.io,
+# OWNER 2026-10-25). A row is added here only under the rules above.
 
 # ── Extra semver lines (Cargo.lock parity, ARCHITECT 2026-10-05) ──────────────────────────────────
 # Parity is ONE vetted version per semver-compatible line, shared by busbar and its plugins: where busbar's
