@@ -8613,11 +8613,21 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
     let sealed = verified(&one, ROUTE_SCOPE_LOCAL);
     assert!(sealed.is_empty(), "no destination is sealed");
     assert_eq!(one.resolved(&ctx), Some(b"a".to_vec()), "the one entry");
+    assert_eq!(
+        one.scope_entry(),
+        Some(b"a".to_vec()),
+        "its gates bind the one entry"
+    );
     assert_eq!(one.routed(), None, "routed nowhere: no pool, no walk");
     // The same reach routed by scope walks the pool its one entry is a member of.
     let relayed = steps(&["a"]);
     let _ = verified(&relayed, ROUTE_SCOPE);
     assert_eq!(relayed.resolved(&ctx), None);
+    assert_eq!(
+        relayed.scope_entry(),
+        Some(b"a".to_vec()),
+        "a relayed scope unit's gates bind the one entry its scope resolved to"
+    );
     assert_eq!(
         relayed.routed().map(|(label, _)| label),
         Some("both".to_string()),
@@ -8629,6 +8639,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
         let s = steps(reach);
         let _ = verified(&s, ROUTE_SCOPE_LOCAL);
         assert_eq!(s.resolved(&ctx), None, "{reach:?}");
+        assert_eq!(s.scope_entry(), None, "{reach:?}");
         let refused = s
             .admit(
                 &tokens::pass::<Admit>(),
