@@ -1124,7 +1124,7 @@ async fn a_served_unit_writes_exactly_one_metering_row() {
         .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
     assert!(matches!(drive(&units).await, Outcome::Completed));
     money.settle_end(unit.key, 200);
-    gov.flush_metering();
+    gov.deliver_metering();
     let rows = gov
         .metering_for(metering_bucket(at))
         .expect("metering read");

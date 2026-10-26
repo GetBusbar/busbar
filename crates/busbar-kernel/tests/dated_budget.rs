@@ -202,7 +202,7 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
 
     // The durable write-behind row is per model and carries no era: the two eras flush as ONE
     // model's counts, the wire a store has always been sent.
-    gov.flush_budgets();
+    gov.deliver_usage();
     let window = busbar_kernel::governance::budget_window(team.window, now);
     let row = store.get_usage(&team.bucket_id, window).unwrap();
     assert_eq!(row.models.len(), 1, "{row:?}");

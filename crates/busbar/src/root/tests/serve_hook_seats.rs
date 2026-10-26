@@ -728,7 +728,7 @@ impl DoorRig {
                 busbar_kernel::store::now(),
             )
             .expect("usage read");
-        self.gov.flush_budgets();
+        self.gov.deliver_usage();
         let row = self.gov.store().get_usage(bucket, 0).expect("ledger row");
         (
             derived.requests,
@@ -1087,7 +1087,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                 .usage_for(cost.as_ref(), &key_id, busbar_kernel::store::now())
                 .expect("usage read")
                 .expect("the key exists");
-            gov.flush_budgets();
+            gov.deliver_usage();
             // Window 0 is the key's all-time bucket.
             let row = gov.store().get_usage(&key_id, 0).expect("ledger row");
             (
@@ -1468,8 +1468,8 @@ async fn accrued(rig: &DoorRig) -> Accrued {
         .governance
         .clone()
         .expect("the rig keeps a governance book");
-    gov.flush_budgets();
-    gov.flush_metering();
+    gov.deliver_usage();
+    gov.deliver_metering();
     let durable = gov
         .store()
         .get_usage(&rig.key_id, 0)

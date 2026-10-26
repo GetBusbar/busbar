@@ -3233,7 +3233,7 @@ mod tools_door {
         let (status, answer) =
             call(&rig, &rig.token, "metered_read_file", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::OK, "{answer}");
-        rig.gov.flush_metering();
+        rig.gov.deliver_metering();
         let rows = rig
             .gov
             .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
@@ -8656,7 +8656,7 @@ mod pools_door_money {
                 i64::try_from(billable).expect("a count"),
                 "{path}: the fee alone, no token spend"
             );
-            rig.gov.flush_metering();
+            rig.gov.deliver_metering();
             let rows = rig
                 .gov
                 .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
@@ -8772,7 +8772,7 @@ mod pools_door_money {
             18,
             "the stream-end report, once"
         );
-        streamed.gov.flush_metering();
+        streamed.gov.deliver_metering();
         let rows = streamed
             .gov
             .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
@@ -8821,7 +8821,7 @@ mod pools_door_money {
         }
         assert_eq!(ledger.0, 1, "the failed unit keeps its admitted request");
         assert_eq!(failed.tokens_after().await, 0, "and accrues no tokens");
-        failed.gov.flush_metering();
+        failed.gov.deliver_metering();
         let rows = failed
             .gov
             .metering_for(busbar_kernel::governance::metering_bucket(charged_at))

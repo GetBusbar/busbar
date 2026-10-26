@@ -690,18 +690,25 @@ pub struct Recovered {
     pub carves: usize,
     /// Cells in the unsent accumulator and those carves (the replay deadline grows with them).
     pub cells: usize,
+    /// Their encoded bytes.
+    pub bytes: usize,
     /// The `refused` dead letters' cells: RAM `cur` counts them (never `posted_hi`). A
     /// `landed-unknown` letter is never added to `cur`.
     pub refused_cells: Vec<CellCount>,
 }
 
 impl Recovered {
-    /// Boot replay's base deadline: 120 s, plus 2 s per 4,096 backlog cells (each refusal met
-    /// extends it by 30 s more, as the replay runs).
+    /// Boot replay's base deadline: 120 s, plus 4 s per backlog carve (by cells or bytes,
+    /// whichever needs more carves); each refusal met extends it by 30 s more, as it runs.
     #[must_use]
     pub fn deadline(&self) -> Duration {
-        let per = u64::try_from(self.cells.div_ceil(CARVE_MAX_CELLS)).unwrap_or(u64::MAX);
-        REPLAY_DEADLINE + Duration::from_secs(per.saturating_mul(2))
+        let carves = self
+            .cells
+            .div_ceil(CARVE_MAX_CELLS)
+            .max(self.bytes.div_ceil(CARVE_MAX_BYTES))
+            .saturating_add(self.carves);
+        let carves = u64::try_from(carves).unwrap_or(u64::MAX);
+        REPLAY_DEADLINE + Duration::from_secs(carves.saturating_mul(4))
     }
 
     /// Whether anything is to deliver.
@@ -765,6 +772,21 @@ impl Recorder {
                     .entries
                     .iter()
                     .map(|e| e.batch.cells.len())
+                    .sum::<usize>(),
+            bytes: core
+                .acc
+                .values()
+                .map(|c| record::encode(&Rec::Fold {
+                    window_seq: 0,
+                    cells: vec![c.clone()],
+                    metering: Vec::new(),
+                })
+                .len())
+                .sum::<usize>()
+                + core
+                    .acc_meter
+                    .values()
+                    .map(|r| serde_json::to_vec(r).map(|v| v.len()).unwrap_or(0))
                     .sum::<usize>(),
             refused_cells: core
                 .dead
@@ -986,6 +1008,7 @@ impl Recorder {
             } else {
                 core.add_cells(&kept, true);
                 core.add_rows(&metering, true);
+                // RAM high-water, metering included (it replaces the old metering cap).
                 let held = core.acc.len() + core.acc_meter.len();
                 if held > ACC_ALARM_CELLS && !core.alarmed {
                     tracing::error!(cells = held, "money: the unsent spend accumulator has grown past its high-water mark; the store has not taken its work");

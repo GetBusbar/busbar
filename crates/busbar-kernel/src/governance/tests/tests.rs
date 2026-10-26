@@ -304,7 +304,7 @@ async fn test_concurrent_govstate_admission_respects_cap() {
     // The hard cap is enforced by the AUTHORITATIVE in-memory cells; flush them to the durable
     // ledger. Spend is DERIVED (fee x requests), so the durable proof is the request count on
     // BOTH the key's attribution bucket and the group's window bucket.
-    gov.flush_budgets();
+    gov.deliver_usage();
     assert_eq!(
         store.get_usage(&key.id, 0).unwrap().requests,
         5,
@@ -492,7 +492,7 @@ fn test_record_metering_from_ir_usage_and_flat() {
     };
     gov.record_metering("vk_m", "model-z", "acme", Some(&usage), now);
     gov.record_metering("vk_m", "model-z", "acme", None, now); // flat-fee op
-    gov.flush_metering();
+    gov.deliver_metering();
     let rows = gov.metering_for(metering_bucket(now)).unwrap();
     assert_eq!(rows.len(), 1);
     let r = &rows[0];
@@ -971,8 +971,8 @@ fn test_two_node_flush_is_additive_no_lost_update() {
     }
     node_b.record_usage(&cost, &k, "", "gpt-5", &tt(40), 1_700_000_000);
     node_b.record_usage(&cost, &k, "", "haiku", &tt(7), 1_700_000_000);
-    node_a.flush_budgets();
-    node_b.flush_budgets();
+    node_a.deliver_usage();
+    node_b.deliver_usage();
 
     let u = store.get_usage("k_fleet", 0).unwrap();
     assert_eq!(
@@ -991,15 +991,15 @@ fn test_two_node_flush_is_additive_no_lost_update() {
     );
 
     // Re-flushing with nothing new must not double-count (the acked baselines advanced).
-    node_a.flush_budgets();
-    node_b.flush_budgets();
+    node_a.deliver_usage();
+    node_b.deliver_usage();
     let u = store.get_usage("k_fleet", 0).unwrap();
     assert_eq!(u.requests, 5, "an idle re-flush adds nothing");
     assert_eq!(u.tokens_for("gpt-5").unwrap(), 140);
 
     // More accrual on one node keeps accumulating correctly.
     assert!(node_a.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
-    node_a.flush_budgets();
+    node_a.deliver_usage();
     assert_eq!(store.get_usage("k_fleet", 0).unwrap().requests, 6);
 }
 
@@ -1017,13 +1017,13 @@ fn test_additive_flush_carries_refund_deltas() {
     // Charge 2 requests, flush (durable requests=2, billable=2), then refund one and flush again.
     assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
     let second = gov.try_admit(&cost, &k, "", 1_700_000_000).expect("admits");
-    gov.flush_budgets();
+    gov.deliver_usage();
     let u = store.get_usage("k_refund", 0).unwrap();
     assert_eq!(u.requests, 2);
     assert_eq!(u.billable_requests, 2);
 
     gov.refund_charge(second.charge());
-    gov.flush_budgets();
+    gov.deliver_usage();
     let u = store.get_usage("k_refund", 0).unwrap();
     assert_eq!(
         u.requests, 2,
@@ -1165,7 +1165,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
 
     // The FLUSH re-queue path: every write fails, every drained cell is re-queued through the same
     // bound. This is precisely where the map used to grow without bound.
-    let flushed = gov.flush_metering();
+    let flushed = gov.deliver_metering();
     assert_eq!(
         flushed, 0,
         "the store is down, so nothing persisted this tick"
@@ -1252,7 +1252,7 @@ fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
     );
 
     // A single flush drains ALL shards; the store total equals the sum, and the accumulator empties.
-    let flushed = gov.flush_metering();
+    let flushed = gov.deliver_metering();
     assert!(flushed > 0, "the flush wrote the drained cells");
     let rows = gov.metering_for(metering_bucket(now)).unwrap();
     let store_reqs: u64 = rows.iter().map(|r| r.requests).sum();
@@ -1285,7 +1285,7 @@ fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
         let stop = stop.clone();
         std::thread::spawn(move || {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                gov.flush_metering();
+                gov.deliver_metering();
                 std::thread::yield_now();
             }
         })
@@ -1310,7 +1310,7 @@ fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     flusher.join().unwrap();
-    gov.flush_metering(); // final drain of whatever the accruals left behind
+    gov.deliver_metering(); // final drain of whatever the accruals left behind
 
     let total = threads * per_thread;
     let rows = gov.metering_for(metering_bucket(now)).unwrap();
@@ -1426,15 +1426,15 @@ fn test_failed_flush_retries_the_unacked_delta() {
     let cost = flat_cost(10);
 
     assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
-    gov.flush_budgets(); // store down: delta stays unacked, cell re-marked dirty
+    gov.deliver_usage(); // store down: delta stays unacked, cell re-marked dirty
     assert_eq!(store.inner.get_usage("k_flaky", 0).unwrap().requests, 0);
 
     store
         .healthy
         .store(true, std::sync::atomic::Ordering::Relaxed);
-    gov.flush_budgets(); // retried: the full unacked delta lands exactly once
+    gov.deliver_usage(); // retried: the full unacked delta lands exactly once
     assert_eq!(store.inner.get_usage("k_flaky", 0).unwrap().requests, 1);
-    gov.flush_budgets(); // and does not double-count afterwards
+    gov.deliver_usage(); // and does not double-count afterwards
     assert_eq!(store.inner.get_usage("k_flaky", 0).unwrap().requests, 1);
 }
 
@@ -1453,7 +1453,7 @@ fn test_record_usage_derives_spend_and_reprices_on_read() {
     };
     let cost = card_cost("gpt-5", 500.0); // 500 micro-units/token
     gov.record_usage(&cost, &k, "", "gpt-5", &tt(2000), 1_700_000_000);
-    gov.flush_budgets();
+    gov.deliver_usage();
     let ledger = store.get_usage("k1", 0).unwrap();
     assert_eq!(ledger.tokens_for("gpt-5").unwrap(), 2000);
     let u = gov.usage_for(&cost, "k1", 1_700_000_000).unwrap().unwrap();
@@ -1528,9 +1528,9 @@ fn test_ledger_windows_are_isolated_across_days() {
     assert_ne!(w1, w2);
 
     gov.record_usage(&cost, &k, "", "m", &tt(500), day1);
-    gov.flush_budgets(); // persist the day-1 cell before it rolls over
+    gov.deliver_usage(); // persist the day-1 cell before it rolls over
     gov.record_usage(&cost, &k, "", "m", &tt(500), day2);
-    gov.flush_budgets();
+    gov.deliver_usage();
     assert_eq!(
         ledger_tokens(&store, "group:g@day", w1),
         500,
@@ -1565,7 +1565,7 @@ async fn test_record_usage_write_behind_under_runtime() {
         UsageLedger::default(),
         "write-behind: the durable ledger is untouched until a flush"
     );
-    assert_eq!(gov.flush_budgets(), 1, "one dirty cell flushed");
+    assert_eq!(gov.deliver_usage(), 1, "one dirty cell flushed");
     let u = store.get_usage("k1", 0).unwrap();
     assert_eq!(
         u.tokens_for("gpt-5").unwrap(),
@@ -1940,7 +1940,7 @@ async fn test_admission_charge_write_behind_under_runtime() {
         0,
         "write-behind: durable ledger untouched until a flush"
     );
-    assert_eq!(gov.flush_budgets(), 2, "key + group cells flushed");
+    assert_eq!(gov.deliver_usage(), 2, "key + group cells flushed");
     assert_eq!(
         store.get_usage("k1", 0).unwrap().requests,
         1,
@@ -2492,7 +2492,7 @@ fn test_chain_enforcement_rejects_naming_the_blocking_group() {
         } => assert_eq!(group, "bob"),
         other => panic!("expected bob's month budget to block, got {other:?}"),
     }
-    gov.flush_budgets();
+    gov.deliver_usage();
     assert_eq!(
         store.get_usage("vk_bob", 0).unwrap().requests,
         2,
@@ -2669,7 +2669,7 @@ fn test_missing_group_fails_closed() {
     );
     // Accrual (post-admission on another node, or a race) still ledgers to the key bucket.
     gov.record_usage(&cost, &k, "", "m", &tt(7), at);
-    gov.flush_budgets();
+    gov.deliver_usage();
     assert_eq!(ledger_tokens(&store, "vk_g", 0), 7, "tokens are never lost");
 }
 
@@ -2688,7 +2688,7 @@ fn test_hydrate_budgets_restores_group_buckets() {
         let gov = GovState::new(store.clone(), None).unwrap();
         // Seed the group's ledger with the cap's worth of tokens: 2500 x 100 micro = 25 cents.
         gov.record_usage(&card(), &k, "", "m", &tt(2_500), at);
-        gov.flush_budgets();
+        gov.deliver_usage();
     }
 
     // Restart: a fresh GovState hydrates key AND group cells from the durable ledger.
@@ -2841,7 +2841,7 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
         // durable data a restart against a now-read-only replica must still hydrate from.
         let gov = GovState::new(writable, None).unwrap();
         gov.record_usage(&card(), &k, "", "m", &tt(2_500), at);
-        gov.flush_budgets();
+        gov.deliver_usage();
     }
 
     // Re-open the SAME durable rows, this time only through the read-only wrapper.
@@ -3732,7 +3732,7 @@ mod metering_fanout {
         for h in handles {
             h.await.unwrap();
         }
-        let flushed = gov.flush_metering();
+        let flushed = gov.deliver_metering();
         assert_eq!(
             flushed, n,
             "every distinct key's delta was written on the one flush"
@@ -3768,13 +3768,13 @@ mod metering_fanout {
 
         // Flush 1: the scripted failure fires; the store must be empty and the entry must be back
         // in `pending_metering` (assert via a successful flush 2, not via internal state).
-        let n1 = gov.flush_metering();
+        let n1 = gov.deliver_metering();
         assert_eq!(n1, 0, "the failed flush wrote nothing");
         let rows = gov.metering_for(metering_bucket(now)).unwrap();
         assert!(rows.is_empty(), "a failed flush must not partially land");
 
         // Flush 2: the store now holds the FULL amount exactly once.
-        let n2 = gov.flush_metering();
+        let n2 = gov.deliver_metering();
         assert_eq!(n2, 1, "the requeued entry flushes on the next tick");
         let rows = gov.metering_for(metering_bucket(now)).unwrap();
         assert_eq!(rows.len(), 1);
@@ -3785,7 +3785,7 @@ mod metering_fanout {
         );
 
         // Flush 3: nothing left to write.
-        let n3 = gov.flush_metering();
+        let n3 = gov.deliver_metering();
         assert_eq!(
             n3, 0,
             "a third flush writes nothing — the entry is gone, not duplicated"
@@ -3816,7 +3816,7 @@ mod metering_fanout {
         // `accrue` with an all-zero delta inserts a genuinely all-zero cell (key absent, under cap).
         gov.pending_metering.accrue(key, MeterCounts::default());
 
-        let flushed = gov.flush_metering();
+        let flushed = gov.deliver_metering();
         assert_eq!(flushed, 0, "an all-zero entry must not count as flushed");
         let rows = gov.metering_for(metering_bucket(now)).unwrap();
         assert!(
@@ -5148,7 +5148,7 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
 
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let flushed = tracing::subscriber::with_default(subscriber, || gov.flush_metering());
+    let flushed = tracing::subscriber::with_default(subscriber, || gov.deliver_metering());
 
     assert_eq!(flushed, 0, "every key failed to persist");
     assert_eq!(
@@ -5166,7 +5166,7 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
     );
     // The retained deltas are still pending for the next tick (not lost on the store error).
     assert_eq!(
-        gov.flush_metering(),
+        gov.deliver_metering(),
         0,
         "the deltas are retained and retried, still failing while the store is down"
     );
@@ -5733,7 +5733,7 @@ fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools
 
     // DURABLE: the `tp` requests are counted on the plane's fee lane, not in the flat fee base, and a
     // node that hydrates from the store reads the same figure.
-    gov.flush_budgets();
+    gov.deliver_usage();
     let ledger = store.get_usage("k1", 0).unwrap();
     assert_eq!(
         ledger.billable_requests, 2,
@@ -5786,7 +5786,7 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
         13,
         "one `tp` fee back, the pools fees kept"
     );
-    gov.flush_budgets();
+    gov.deliver_usage();
     let ledger = store.get_usage("k1", 0).unwrap();
     assert_eq!(
         ledger.billable_requests, 2,
@@ -5867,7 +5867,7 @@ fn the_metering_row_carries_every_class_the_budget_book_holds() {
         &map(&[("input", 7), ("search_units", 4)]),
         AT,
     );
-    gov.flush_metering();
+    gov.deliver_metering();
     let rows = store.list_metering(metering_bucket(AT)).unwrap();
     let row = |model: &str, provider: &str| {
         rows.iter()

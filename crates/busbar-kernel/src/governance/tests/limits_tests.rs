@@ -842,7 +842,7 @@ fn accrual_and_hydrate_cover_every_chain_bucket() {
         assert_eq!(u.tokens, 500, "bucket {bucket} accrued the tokens");
     }
     // Flush to the store, then a FRESH GovState hydrates every bucket back.
-    assert!(g.flush_budgets() >= 1);
+    assert!(g.deliver_usage() >= 1);
     let g2 = GovState::new(store, None).unwrap();
     g2.hydrate_budgets(&cm, now).unwrap();
     let day = g2
@@ -1769,7 +1769,7 @@ fn a_window_roll_before_the_flush_keeps_the_old_windows_counts() {
     g.record_usage(&cm, &k, "", "m", &toks(1_000, 200), w);
     g.try_admit(&cm, &k, "", w1)
         .expect("W+1 admits and rolls the cell");
-    g.flush_budgets();
+    g.deliver_usage();
 
     assert_eq!(
         minute_row(store.as_ref(), bucket, w),
@@ -1781,7 +1781,7 @@ fn a_window_roll_before_the_flush_keeps_the_old_windows_counts() {
         (1, 1, 0, 0),
         "W+1 holds only its own request"
     );
-    g.flush_budgets();
+    g.deliver_usage();
     assert_eq!(
         minute_row(store.as_ref(), bucket, w),
         (1, 1, 1_000, 200),
@@ -1805,12 +1805,12 @@ fn a_store_outage_across_a_window_roll_retries_the_old_windows_delta() {
     store.set_down(true);
     g.try_admit(&cm, &k, "", w).expect("W admits");
     g.record_usage(&cm, &k, "", "m", &toks(500, 50), w);
-    g.flush_budgets(); // fails: the delta stays owed
+    g.deliver_usage(); // fails: the delta stays owed
     g.try_admit(&cm, &k, "", w1)
         .expect("W+1 admits and rolls the cell");
-    g.flush_budgets(); // fails again: the rolled delta is parked back
+    g.deliver_usage(); // fails again: the rolled delta is parked back
     store.set_down(false);
-    g.flush_budgets();
+    g.deliver_usage();
 
     assert_eq!(minute_row(store.as_ref(), bucket, w), (1, 1, 500, 50));
     assert_eq!(minute_row(store.as_ref(), bucket, w1), (1, 1, 0, 0));
@@ -1854,7 +1854,7 @@ fn a_stale_cell_still_owing_the_store_survives_the_sweep_and_is_written() {
     );
     g.try_admit(&minute_fee_model(), &key("vk_sweep_owed", None), "", now)
         .expect("the key admits");
-    g.flush_budgets();
+    g.deliver_usage();
 
     assert_eq!(
         minute_row(store.as_ref(), owed, w),
@@ -1884,9 +1884,9 @@ fn a_window_roll_during_an_in_flight_flush_writes_the_old_window_once() {
             .try_admit(&cm2, &k2, "", w1)
             .expect("W+1 admits mid-flush");
     }));
-    g.flush_budgets(); // W's write is in flight when W+1 rolls the cell
-    g.flush_budgets();
-    g.flush_budgets();
+    g.deliver_usage(); // W's write is in flight when W+1 rolls the cell
+    g.deliver_usage();
+    g.deliver_usage();
 
     assert_eq!(minute_row(store.as_ref(), bucket, w), (1, 1, 300, 30));
     assert_eq!(minute_row(store.as_ref(), bucket, w1), (1, 1, 0, 0));
@@ -1917,7 +1917,7 @@ fn a_refund_after_a_roll_returns_the_fee_from_the_window_it_was_charged_in() {
 
     let live = (g.derived_bucket_usage(&cm, bucket, "minute", true, w1)).expect("W+1 reads");
     assert_eq!(live.spend_cents, 10, "B's fee stays on W+1");
-    g.flush_budgets();
+    g.deliver_usage();
     assert_eq!(
         minute_row(store.as_ref(), bucket, w),
         (1, 0, 0, 0),

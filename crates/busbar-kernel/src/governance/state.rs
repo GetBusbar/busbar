@@ -2208,7 +2208,27 @@ impl GovState {
             let mut guard = self.budget.write(bucket_id);
             let super::ShardMap { cells, pending, .. } = &mut *guard;
             let Some(cell) = cells.get_mut(bucket_id) else {
-                continue; // swept: nothing in memory holds the charge any more (as on dev)
+                // No cell (the key or group was deleted): RAM is unchanged, but while the charge's
+                // +1 is still pending or unrecorded its -1 goes with it (MONEY-DESIGN §3c), so the
+                // store never ends above what RAM applied. Otherwise nothing, as on dev.
+                let held = pending.0.contains_key(&(bucket_id.clone(), *window))
+                    || self.unrecorded(bucket_id);
+                if held {
+                    if requests_too {
+                        pending.admitted(bucket_id, *window, -1);
+                    }
+                    match lane {
+                        None => pending.billable(bucket_id, *window, charge.seg, -1),
+                        Some((lane, unit)) => pending.units(
+                            bucket_id,
+                            *window,
+                            (lane, charge.seg),
+                            &BTreeMap::from([(unit.to_string(), 1)]),
+                            -1,
+                        ),
+                    }
+                }
+                continue;
             };
             if cell.window_start == *window {
                 if requests_too {

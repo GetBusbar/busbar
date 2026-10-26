@@ -169,10 +169,10 @@ impl GovState {
             }
             return None;
         };
+        // Stale only when the read is FAILING and the last successful read is over 5 s old.
         if self.strict.load(std::sync::atomic::Ordering::Relaxed)
-            && f
-                .failing_since
-                .is_some_and(|since| now_ms.saturating_sub(since) > SNAPSHOT_STALE_MS)
+            && f.failing_since.is_some()
+            && now_ms.saturating_sub(f.read_ms) > SNAPSHOT_STALE_MS
             && strict.is_none()
         {
             *strict = Some(Closed::SnapshotStale);
@@ -323,6 +323,67 @@ impl GovState {
     #[must_use]
     pub fn window_of(period: &str, now: u64) -> u64 {
         budget_window(period, now)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl GovState {
+    /// TEST SUPPORT: the recorder's delivery of the usage deltas, inline and without a spool: the
+    /// same take, the same plain and sibling bodies, posted to the 1.5.5 op set; a failed row's
+    /// delta goes back to pending (as an unresolved op would replay). Answers the rows delivered.
+    pub fn deliver_usage(&self) -> usize {
+        let taken = self.take_pending(&|_| {});
+        let mut delivered = 0;
+        for cell in crate::posting::record::merged(&taken) {
+            let body = crate::posting::record::usage_body(std::slice::from_ref(&cell));
+            let ok = body
+                .iter()
+                .all(|(b, w, d)| self.store.add_usage(b, *w, d).is_ok());
+            if ok {
+                delivered += 1;
+                self.landed(std::slice::from_ref(&cell));
+            } else {
+                let mut shard = self.budget.write(&cell.bucket);
+                shard
+                    .pending
+                    .0
+                    .entry((cell.bucket.clone(), cell.window))
+                    .or_insert_with(|| CellCount::new(&cell.bucket, cell.window))
+                    .merge(&cell);
+            }
+        }
+        delivered
+    }
+
+    /// TEST SUPPORT: the recorder's delivery of the metering rows, inline: a failed row goes back
+    /// to the pending accumulator. Answers the rows delivered.
+    pub fn deliver_metering(&self) -> usize {
+        let mut delivered = 0;
+        for row in self.take_metering() {
+            if self.store.add_metering(&row).is_ok() {
+                delivered += 1;
+            } else {
+                let key: super::MeterKey = (
+                    row.key_id.clone(),
+                    row.bucket,
+                    row.model.clone(),
+                    row.provider.clone(),
+                    row.priced_from_ms,
+                );
+                self.pending_metering.accrue(
+                    key,
+                    super::MeterCounts {
+                        requests: row.requests,
+                        tokens_input: row.tokens_input,
+                        tokens_output: row.tokens_output,
+                        tokens_cache_read: row.tokens_cache_read,
+                        tokens_cache_write: row.tokens_cache_write,
+                        usage_units: row.usage_units,
+                    },
+                );
+            }
+        }
+        delivered
     }
 }
 

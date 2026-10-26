@@ -752,20 +752,11 @@ pub struct GovState {
     /// stores raw tokens and spend derives at read time, so there is no remainder to carry and no
     /// O(n) carry sweep to amortize.
     budget: Sharded<BudgetCell>,
-    /// Write-behind ACCUMULATOR for metering rows, keyed by the stores' own upsert key
-    /// `(key_id, bucket, model, provider)` and SHARDED [`GOV_SHARDS`] ways (see [`PendingMetering`])
-    /// so concurrent request-completion accruals contend only within a shard, not on one process-wide
-    /// lock — the same treatment the `budget` map beside it already had. `record_metering` is a
-    /// hot-path sync fn (no await, called from the response tap) so each shard is a `std::sync::Mutex`,
-    /// not a tokio one — matches `flush_metering`, which runs inside `spawn_blocking` and also never
-    /// awaits. `flush_metering`
-    /// DRAINS this map (not a baseline like `budget`): metering cells are authoritative for
-    /// nothing — nothing enforces against them, the store is the only consumer — so there is no
-    /// running total to protect and a drained-empty entry needs no reaper. It IS growth-capped,
-    /// though: a sustained store-write outage keeps `flush_metering` re-queuing failed cells while new
-    /// ones arrive, so all accrual routes through `accrue_pending`, which bounds the map at
-    /// [`MAX_PENDING_METERING`] (as [`MAX_PENDING_METERING_PER_SHARD`] per shard) and coalesces the
-    /// overflow into a per-bucket sentinel rather than growing without bound or dropping billable usage.
+    /// The PENDING metering rows, keyed by the stores' own upsert key `(key_id, bucket, model,
+    /// provider, priced_from_ms)` and SHARDED [`GOV_SHARDS`] ways (see [`PendingMetering`]) so
+    /// concurrent request-completion accruals contend only within a shard. The recorder takes them
+    /// every flush window into its unsent accumulator (MONEY-DESIGN §3c), whose RAM high-water alarm
+    /// covers them; nothing is coalesced or dropped.
     pending_metering: PendingMetering,
     /// Each bucket's last derived figure, read by the `/metrics` scrape (see [`money_view`]).
     money_view: state::money_view::MoneyView,
@@ -1422,86 +1413,6 @@ impl MeterCounts {
 /// price has one value here forever and the key is arithmetically the previous release's.
 pub type MeterKey = (String, u64, String, String, u64);
 
-/// The cap on how many distinct [`MeterKey`] cells may sit unflushed in `pending_metering` at once.
-///
-/// Normal operation drains every ~100ms flush tick, so live cardinality is arrival-rate x the flush
-/// interval — nowhere near this. The cap only bites under a SUSTAINED governance-store WRITE OUTAGE
-/// with diverse keys/models, where `flush_metering` re-queues every failed cell each tick while
-/// `record_metering` keeps adding new ones: without a cap that grows without bound. The bound is
-/// generous so a real key population never hits it; overflow past it is a degraded-mode signal, not a
-/// steady state.
-pub const MAX_PENDING_METERING: usize = 262_144;
-
-/// The per-SHARD slice of [`MAX_PENDING_METERING`]. The accumulator is sharded [`GOV_SHARDS`] ways
-/// (see [`PendingMetering`]), and each shard bounds itself independently, so the whole-map bound is
-/// this times the shard count — i.e. back to `MAX_PENDING_METERING` (plus at most one overflow
-/// sentinel per shard per bucket). Splitting the cap per shard keeps the aggregate bound unchanged
-/// while letting every shard enforce it under its own lock alone.
-pub const MAX_PENDING_METERING_PER_SHARD: usize = MAX_PENDING_METERING / GOV_SHARDS;
-
-/// The `key_id` an OVERFLOW cell is coalesced under when the accumulator is at [`MAX_PENDING_METERING`].
-/// A sentinel, not a real key: its purpose is to preserve the day's billable TOTALS when per-key
-/// attribution can no longer be held in memory, never to masquerade as a customer key. `pub`
-/// so the flush and the tests can name it.
-pub const METERING_OVERFLOW_KEY_ID: &str = "__busbar_pending_overflow__";
-
-/// The model/provider label an overflow cell carries — deliberately not a real model or provider, so
-/// the sentinel row is unmistakable in a usage read.
-pub const METERING_OVERFLOW_LABEL: &str = "__aggregated__";
-
-/// Accrue `add` into the metering cell for `key`, holding the accumulator BOUNDED at
-/// [`MAX_PENDING_METERING`] distinct cells.
-///
-/// The exactly-once contract: an EXISTING cell (including the overflow sentinel) always accumulates,
-/// so retries and re-arriving keys never grow the map; a NEW cell is inserted only while there is
-/// room. When the map is full a new cell's counts are COALESCED into a per-bucket overflow sentinel —
-/// billable token/request totals are preserved (nothing is dropped), only per-key/model/provider
-/// attribution collapses — and every coalesce is COUNTED (metric + throttled diagnostic) so the
-/// degradation is never silent. This is the single accrual primitive both `record_metering` (the hot
-/// path) and `flush_metering`'s failure re-queue call, so both bound the map identically. `cap` is
-/// the bound for THIS map — the whole map for the single-lock case, or one shard's slice
-/// ([`MAX_PENDING_METERING_PER_SHARD`]) when called under a shard lock.
-pub fn accrue_pending(
-    pending: &mut HashMap<MeterKey, MeterCounts>,
-    key: MeterKey,
-    add: MeterCounts,
-    cap: usize,
-) {
-    if let Some(cell) = pending.get_mut(&key) {
-        cell.merge(add);
-        return;
-    }
-    if pending.len() < cap {
-        pending.insert(key, add);
-        return;
-    }
-    // FULL, and this is a new cell. Coalesce into the per-bucket overflow sentinel rather than drop
-    // billable usage or grow without bound. The sentinel itself, once present, is an existing cell and
-    // takes the early-return above, so the map is bounded at MAX_PENDING_METERING + (distinct buckets).
-    // The sentinel keeps the cell's BUCKET and its PRICE INSTANT and collapses only the attribution
-    // the map can no longer hold. Collapsing the instant too would coalesce two price eras into one
-    // cell and the read would have to pick a card for a sum earned under two — which is the one
-    // thing the fifth key member exists to prevent, and a degraded-mode row is not licence to
-    // misprice.
-    let sentinel: MeterKey = (
-        METERING_OVERFLOW_KEY_ID.to_string(),
-        key.1,
-        METERING_OVERFLOW_LABEL.to_string(),
-        METERING_OVERFLOW_LABEL.to_string(),
-        key.4,
-    );
-    pending.entry(sentinel).or_default().merge(add);
-    metrics::counter!(crate::snapshot::METERING_PENDING_COALESCED_TOTAL).increment(1);
-    // Per-event detail at debug; the metric above is the aggregate, human-cadence signal an operator
-    // alerts on. Kept off `warn!` so a sustained outage does not spam one line per coalesced cell.
-    crate::diagnostics::diag_debug!(
-        crate::diagnostics::METERING_PENDING_OVERFLOW_COALESCED,
-        overflow_bucket = key.1,
-        "metering accumulator at cap ({cap}); coalesced a new cell into the per-bucket overflow \
-         sentinel — totals preserved, per-key attribution collapsed until the store recovers"
-    );
-}
-
 /// THE WRITE-BEHIND METERING ACCUMULATOR, sharded [`GOV_SHARDS`] ways exactly like the `budget` map
 /// beside it and for the same reason: metering accrual runs on the REQUEST-COMPLETION hot path, and a
 /// single process-wide `Mutex` serialized every concurrent response's accrual against every other's.
@@ -1551,7 +1462,9 @@ impl PendingMetering {
             .shard_for(&key.0)
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        accrue_pending(&mut map, key, add, MAX_PENDING_METERING_PER_SHARD);
+        // Unbounded here: the recorder's accumulator alarms on its RAM high-water mark, metering
+        // included (MONEY-DESIGN §3c), and nothing is coalesced or dropped.
+        map.entry(key).or_default().merge(add);
     }
 
     /// DRAIN every shard, returning all pending cells. Each shard is emptied under its own lock; a

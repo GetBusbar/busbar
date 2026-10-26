@@ -212,8 +212,8 @@ impl GovKit for crate::governance::GovState {
     fn store(&self) -> Arc<dyn RecordStore> {
         crate::governance::GovState::store(self)
     }
-    fn flush_metering(&self) -> usize {
-        crate::governance::GovState::flush_metering(self)
+    fn deliver_metering(&self) -> usize {
+        crate::governance::GovState::deliver_metering(self)
     }
     fn metering_for(&self, bucket: u64) -> Result<Vec<MeteringRow>, String> {
         crate::governance::GovState::metering_for(self, bucket).map_err(|e| e.to_string())
@@ -249,8 +249,8 @@ impl GovKit for crate::governance::GovState {
         )
         .map_err(|e| e.to_string())
     }
-    fn flush_budgets(&self) {
-        crate::governance::GovState::flush_budgets(self);
+    fn deliver_usage(&self) -> usize {
+        crate::governance::GovState::deliver_usage(self)
     }
 }
 

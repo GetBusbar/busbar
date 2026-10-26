@@ -445,7 +445,7 @@ fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
 // config model and provider, tokens or none, and its tokens ledger under that model.
 
 fn metering_rows(r: &Rig) -> Vec<busbar_contract::records::MeteringRow> {
-    r.gov.flush_metering();
+    r.gov.deliver_metering();
     r.gov
         .metering_for(crate::governance::metering_bucket(NOW))
         .expect("metering read")
@@ -502,7 +502,7 @@ fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived
     let _ = r.money.checkpoint(&ctx(1), &reported(40));
     r.money.served(&ctx(1), "m", "acme");
     r.money.settle_end(UnitKey::new(1), 200);
-    r.gov.flush_metering();
+    r.gov.deliver_metering();
     let rows_in = |bucket| {
         r.gov
             .metering_for(bucket)

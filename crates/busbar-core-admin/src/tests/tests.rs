@@ -660,7 +660,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     gov.record_metering(&minted.id, "model-1", "vendor-a", Some(&usage), now);
     gov.record_metering(&minted.id, "model-1", "vendor-a", Some(&usage), now);
     gov.record_metering(&minted.id, "model-2", "acme", None, now);
-    gov.flush_metering();
+    gov.deliver_metering();
     let app = crate::new_test_app().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
     let (addr, handle, client) = spin_up(router).await;

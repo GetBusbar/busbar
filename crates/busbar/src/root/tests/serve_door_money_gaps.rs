@@ -76,7 +76,7 @@ async fn send_bytes(rig: &DoorRig, path: &str, body: &str) -> u16 {
 /// The key's metering rows in the bucket `at` falls in, once flushed: `model/provider in= out= cr=
 /// cw= req= billable=`, one line per row, as `plane_node.rs`'s `observe` spelled them.
 fn metering_rows(rig: &DoorRig, at: u64) -> Vec<String> {
-    rig.gov.flush_metering();
+    rig.gov.deliver_metering();
     rig.gov
         .metering_for(busbar_kernel::governance::metering_bucket(at))
         .expect("metering read")

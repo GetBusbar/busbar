@@ -2822,7 +2822,7 @@ mod dated_rate_card_history {
         for _ in 0..3 {
             gov.record_metering(KEY, LANE, PROVIDER, Some(&usage), now);
         }
-        gov.flush_metering();
+        gov.deliver_metering();
 
         let rates = std::collections::BTreeMap::from([(
             LANE.to_string(),
@@ -3755,7 +3755,7 @@ mod plane_fees_on_admin_usage {
             );
             gov.record_metering(KEY, "srv.read", plane, None, now);
         }
-        gov.flush_metering();
+        gov.deliver_metering();
         let book = gov
             .usage_for(&cost, KEY, now)
             .unwrap()
@@ -4001,7 +4001,7 @@ mod plane_fees_on_admin_usage {
                 }
             }
         }
-        gov.flush_metering();
+        gov.deliver_metering();
         let book = gov
             .usage_for(&cost, KEY, now)
             .unwrap()

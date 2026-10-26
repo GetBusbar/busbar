@@ -1323,7 +1323,7 @@ fn accrued_on_the_book(
         .usage_for(&cost, &key.id, OPEN_AT)
         .map(|usage| usage.expect("the key exists").spend_cents)
         .map_err(|refusal| format!("{refusal:?}"));
-    gov.flush_budgets();
+    gov.deliver_usage();
     let lines = gov
         .store()
         .get_usage(

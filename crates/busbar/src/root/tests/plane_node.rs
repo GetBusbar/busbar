@@ -515,7 +515,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     fields.push(("ledger_requests", derived.requests.to_string()));
     fields.push(("ledger_tokens", derived.tokens.to_string()));
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
-    gov.flush_metering();
+    gov.deliver_metering();
     let mut rows: Vec<busbar_contract::records::MeteringRow> = gov
         .metering_for(busbar_kernel::governance::metering_bucket(rig.charged_at))
         .expect("metering read")
@@ -788,7 +788,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         .governance
         .clone()
         .expect("governance is configured");
-    gov.flush_metering();
+    gov.deliver_metering();
     let rows_in = |bucket| {
         gov.metering_for(bucket)
             .expect("metering read")
@@ -4559,7 +4559,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     server.shutdown().await;
 
     // THE GOVERNANCE LEDGER: the key's bucket, flushed to its store and read back.
-    gov.flush_budgets();
+    gov.deliver_usage();
     let ledger = gov
         .store()
         .get_usage(
@@ -5858,7 +5858,7 @@ async fn serve_rerank(
         .usage_for(&app.cost, &key.id, EPOCH)
         .map(|usage| usage.expect("the key exists").spend_cents)
         .map_err(|refusal| format!("{refusal:?}"));
-    gov.flush_budgets();
+    gov.deliver_usage();
     let ledger = gov
         .store()
         .get_usage(

@@ -267,7 +267,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
         ..Default::default()
     };
     gov.record_metering(&minted.id, "m", "vendor", Some(&usage), now);
-    gov.flush_metering();
+    gov.deliver_metering();
     let app = crate::new_test_app().governance(gov).cost(cost).build();
     let router = crate::build_router(app);
     let (addr, handle, client) = spin_up(router).await;

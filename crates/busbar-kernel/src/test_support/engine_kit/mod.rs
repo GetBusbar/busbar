@@ -151,14 +151,14 @@ pub trait GovKit: Any + Send + Sync {
     /// The store this registry is over.
     fn store(&self) -> Arc<dyn RecordStore>;
     /// Flush the pending metering rows to the store; the number flushed.
-    fn flush_metering(&self) -> usize;
+    fn deliver_metering(&self) -> usize;
     /// The metering rows persisted for `bucket`.
     fn metering_for(&self, bucket: u64) -> Result<Vec<MeteringRow>, String>;
     /// Hydrate the in-memory budget cells from the DURABLE ledger at `now`, priced through `cost` —
     /// the very step boot runs, so a test that seeded a durable bucket sees the door enforce it.
     fn hydrate_budgets(&self, cost: &dyn CostKit, now: u64) -> Result<(), String>;
     /// Flush the pending budget deltas to the store, so a test can read the durable ledger row back.
-    fn flush_budgets(&self);
+    fn deliver_usage(&self) -> usize;
     /// The DERIVED usage view for key `id` at `now`, priced through `cost` — the figures the admin
     /// read and the dashboards see. `None` when no such key exists.
     fn usage_for(
