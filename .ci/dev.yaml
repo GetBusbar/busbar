@@ -178,12 +178,11 @@ checks:
     # cargo links with the system C linker: only a backend with a C compiler may run this check; the
     # store-persist cells' live backends run in docker.
     requires: [cc, docker]
-    # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
-    # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
-    # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
-    # holds none: the first move) and runs it only at that pin's sha256 for this architecture, its
-    # .sig verified against busbar-release's release key; no line for this architecture is no judge.
-    # BUSBAR_RELEASE_TOKEN (a secret ModernCI gives this check) reads the private release. The 1.5.5
+    # busbar's own judge: the file ModernCI's daemon fetches OUTSIDE the run from its tool pin
+    # (.ci/oracle-judge.pin) and hands over as $BUSBAR_ORACLE_JUDGE_PATH; bin/oracle runs it only at
+    # the config's BUSBAR_ORACLE_SHA256_LINUX_<arch>, after holding the candidate's pin to the config's.
+    # No judge path is NO JUDGE. This check receives no credential: bin/oracle reads no token in a CI
+    # run (OWNER 2026-10-26). The 1.5.5
     # golden is add-only from dev to this commit wherever dev holds it (none before the first move);
     # then the candidate's release binary is recorded over the corpus and replayed against the
     # committed 1.5.5 golden, strict: green is every cell byte-green or forgiven by an owner-signed
@@ -304,7 +303,7 @@ checks:
     outputs: [target/conformance-record]
   verify-done:
     # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
-    # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
+    # obtains the judge through bin/oracle as the oracle check does ($BUSBAR_ORACLE_JUDGE_PATH, no token).
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       bash scripts/verify-1.6.0-done.sh
