@@ -146,6 +146,15 @@ def cmd_judge(a: dict) -> int:
            "date": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "tool": "testssl.sh 3.2.0", "policy": str(POLICY.name),
            "assertions": res}
     (out / f"assertions-{a['variant']}.json").write_text(json.dumps(doc, indent=2) + "\n")
+    # The one file the site reads (signed by ModernCI as a check output): every variant of this
+    # image, each assertion named `<variant>/<name>`.
+    parts = [json.loads(f.read_text()) for f in sorted(out.glob("assertions-*.json"))]
+    parts = [d for d in parts if d["version"] == a["version"] and d["image_digest"] == a["image-digest"]]
+    (out / "assertions.json").write_text(json.dumps({
+        "version": a["version"], "image_digest": a["image-digest"], "host": a["host"],
+        "date": max(d["date"] for d in parts), "tool": doc["tool"],
+        "assertions": [dict(r, name=f"{d['variant']}/{r['name']}") for d in parts for r in d["assertions"]],
+    }, indent=2) + "\n")
     fails = [r for r in res if r["result"] == "fail"]
     for r in res:
         print(f"{r['result'].upper():12} {r['name']}: {r['detail']}")
