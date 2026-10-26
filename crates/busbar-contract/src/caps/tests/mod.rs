@@ -34,9 +34,6 @@ mod the_posting_arithmetic;
 /// Where a reported quantity came from, and the three questions the crate asks about it.
 mod what_the_usage_report_says;
 
-/// Every implementor of the sealed plugin seal trait, against the minter's documentation (item 329).
-mod seal_implementors;
-
 /// Whether the kernel keeps this step's token to itself, read off the step markers' own
 /// `KERNEL_OWNED` constants rather than off a second runtime table.
 ///

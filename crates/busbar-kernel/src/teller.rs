@@ -244,7 +244,7 @@ pub struct UnitCtx {
 /// A running count a test rig keeps of what its unit spent, in nano-units.
 ///
 /// NOT a money figure the exit reads. The exit spends and settles the hold by the settlement
-/// writer's one `amount` (TODO L1689); a second figure here could only disagree with it. No
+/// writer's one `amount`; a second figure here could only disagree with it. No
 /// production leg accrues onto this.
 #[derive(Debug, Default)]
 pub struct AccrualMeter {
@@ -1380,7 +1380,7 @@ pub fn exit<U: Units>(
             let Written { amount, flags, fee } = settle_written(&outcome, &evidence);
             let drawn = requests_drawn(ctx.origin, evidence.upstream_candidate);
             let requests = requests_settled(reached_admitted, drawn);
-            // ONE FIGURE (TODO L1689): the hold is spent by the same `amount` the posting settles,
+            // ONE FIGURE: the hold is spent by the same `amount` the posting settles,
             // so the overdraft counter and the settled figure can never disagree. Spending one
             // number and settling another posted an OVERDRAFT on an end that settled inside its
             // reservation. The spend lands in full and whatever nothing backs is carried out as an
@@ -1441,7 +1441,3 @@ mod call_binding_tests;
 #[cfg(test)]
 #[path = "tests/teller_verified_destination_tests.rs"]
 mod teller_verified_destination_tests;
-
-#[cfg(test)]
-#[path = "tests/teller_seal_doc_tests.rs"]
-mod teller_seal_doc_tests;

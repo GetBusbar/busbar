@@ -17,10 +17,10 @@ fn node_limiter() -> std::sync::Arc<crate::rate::MutationLimiter> {
     std::sync::Arc::new(crate::rate::MutationLimiter::new())
 }
 
-fn make_verbs<G: Governance>(gov: G) -> Verbs<G, FakeStore> {
+fn make_verbs<G: Governance>(gov: G) -> Verbs<G, RecordingStore> {
     Verbs::new(
         gov,
-        Some(std::sync::Arc::new(FakeStore)),
+        Some(std::sync::Arc::new(RecordingStore::new())),
         CONFIG_CLASS_RULES,
         node_limiter(),
     )
@@ -87,33 +87,6 @@ impl Governance for FakeGovernance {
         }
         self.new_verb_calls.lock().unwrap().push(verb);
         Ok(b"ok".to_vec())
-    }
-}
-
-struct FakeStore;
-impl Store for FakeStore {
-    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
-        Ok(())
-    }
-    fn store_restore(
-        &self,
-        _admin: &Grant<AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), StoreError> {
-        Ok(())
-    }
-    fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), StoreError> {
-        Ok(())
-    }
-    fn replay_new_verb(&self, _key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(None)
-    }
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), StoreError> {
-        Ok(())
     }
 }
 
@@ -374,7 +347,7 @@ fn the_other_governance_errors_keep_their_own_reasons() {
 
 /// One trust decision through `execute`, as the root's route step makes it.
 fn approve_trust(
-    verbs: &Verbs<FakeGovernance, FakeStore>,
+    verbs: &Verbs<FakeGovernance, RecordingStore>,
     admin: &Grant<AdminVerb>,
 ) -> Result<Vec<u8>, crate::refusal::Refusal> {
     verbs.execute(
@@ -397,7 +370,7 @@ fn rate_limit_is_enforced_across_execute_calls() {
     let per_request = || {
         Verbs::new(
             FakeGovernance::new(),
-            Some(std::sync::Arc::new(FakeStore)),
+            Some(std::sync::Arc::new(RecordingStore::new())),
             CONFIG_CLASS_RULES,
             std::sync::Arc::clone(&limiter),
         )

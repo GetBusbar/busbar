@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR-ROOT ROWS (status row 195; `BUSBAR-1.6.0.md` Part 4 A.1, l.3560: every kind's logic
-//! crate has `fn door()` as its only public item; l.3561: a linked row holds the same `door` pointer
-//! and reaches the same `'static` table a dropped-in copy does; coordinator ruling (a), l.272-274:
+//! THE DOOR-ROOT ROWS (every kind's logic crate has `fn door()` as its only public item; a linked
+//! row holds the same `door` pointer and reaches the same `'static` table a dropped-in copy does;
 //! this root is `forbid(unsafe_code)`, and the loader holds the one `unsafe` entry).
 //!
 //! A DOOR-ROOT crate is the one this crate's `[package.metadata.busbar.door-root]` table names
-//! (ARCHITECT ruling, row 195: the root generates the linked table and alone depends on the plugin
-//! crates; the loader names none). The generated table reads its `door` alone and hands it to the
+//! (the root generates the linked table and alone depends on the plugin crates; the loader names
+//! none). The generated table reads its `door` alone and hands it to the
 //! loader's safe entry (`crate::root::loader::dispatch::admit_linked`: `open_linked`, the `dlopen`
 //! path's own checks beside the loader's one reviewed `unsafe`); the tables hold a forwarder of the
 //! admitted door (`src/linked_gen.rs`), and every fact a row's axis needs is read here, off that door's Statement
@@ -30,7 +29,7 @@
 //! A crate not in the table is TRANSITIONAL: it keeps the reads it has today (its `linked` items),
 //! so a fleet that has not converged on door-root still links. The transitional arm exists only for
 //! that convergence; it is no home for a kernel-typed item (Part 2 #2), and a door-root row may name
-//! no axis that reads one (`src/linked_gen.rs` refuses it). Its removal is row 195's last step.
+//! no axis that reads one (`src/linked_gen.rs` refuses it).
 //!
 //! [`LinkedRow::of`]: crate::root::loader::dispatch::LinkedRow::of
 

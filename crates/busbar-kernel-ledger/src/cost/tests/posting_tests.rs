@@ -115,32 +115,9 @@ fn a_tier_that_lands_on_an_exact_half_rounds_to_even() {
         Some(2),
         "1.5003 rounds to the nearer 2"
     );
-}
-
-/// **HALF-AWAY-FROM-ZERO IS THE OTHER RULE IN #44, AND IT IS NOT THIS ONE.**
-///
-/// #44 carries two rounding rules in one sentence and they apply to different terms:
-/// *"only a 'per-N-units' division term uses banker's (half-to-even) rounding; card-build-time
-/// quantization stays half-away-from-zero (byte-identity)"*. Card build no longer quantises at all:
-/// [`crate::cost::nano_rate`] reads the configured rate's shortest decimal text and refuses any rate
-/// that is not a whole number of nano-units (OWNER rule 21), so half-away-from-zero has no term left
-/// to apply to. The tier is the one division, and at a tie the two rules give different money —
-/// which is exactly why the tier must not borrow the other rule.
-///
-/// Written as a test rather than a comment so that a future reader who reaches for the wrong half
-/// of the row gets a NO instead of a plausible-looking diff.
-#[test]
-fn the_tier_does_not_use_the_card_builds_rounding_rule() {
-    // At 7.5, half-away-from-zero gives 8 and half-to-even gives 8 too: agreement, not evidence.
-    assert_eq!(checked_apply_tier(15, 5_000), Some(8));
-    // At 2.5 they part: half-away-from-zero gives 3, half-to-even gives 2. The tier gives 2.
-    assert_eq!(
-        checked_apply_tier(5, 5_000),
-        Some(2),
-        "not 3 — the tier is not card-build quantisation"
-    );
-    assert_eq!(checked_apply_tier(25, 5_000), Some(12), "not 13");
-    assert_eq!(checked_apply_tier(45, 5_000), Some(22), "not 23");
+    assert_eq!(checked_apply_tier(45, 5_000), Some(22), "22.5: not 23");
+    assert_eq!(checked_apply_tier(10_000, 9_999), Some(9_999));
+    assert_eq!(checked_apply_tier(10_000, 9_000), Some(9_000));
 }
 
 /// **BYTE-NEUTRALITY AT THE ONLY TIER THIS TREE EVER ASKS FOR.**

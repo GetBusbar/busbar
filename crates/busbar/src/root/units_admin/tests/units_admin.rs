@@ -1244,7 +1244,7 @@ fn the_audit_doors_seal_the_resolved_class_and_append_to_no_ring() {
 /// identity no other cell in this binary uses.
 #[cfg(feature = "root-admin")]
 fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::AuditEntry> {
-    busbar_kernel::audit_ring::AUDIT
+    busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, usize::MAX, None, None)
         .into_iter()
         .filter(|entry| entry.principal == principal)
@@ -1273,8 +1273,12 @@ fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::Audi
 #[test]
 fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
     const WHO: &str = "operator-cifollow-one-entry";
+    // The admin audit seam's `audit` stream, registered once for the process the way the kernel's
+    // test harness registers it, so the rows this test seals reach the seam's read model.
+    let _ = busbar_kernel::test_support::TestApp::new().build();
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
-        let ring = busbar_kernel::audit_ring::AUDIT.list_filtered(0, usize::MAX, None, None);
+        let ring =
+            busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(0, usize::MAX, None, None);
         let at = ring
             .iter()
             .position(|e| e.seq == entry.seq)
@@ -4005,8 +4009,8 @@ fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
 
 /// THE CONTROLS FOR #32: a correction whose boundaries every row already splits at applies — whole
 /// UTC days, an open end, and the instant a config apply started a new price era (every unit from it
-/// on accrued under that era). A window that opens after the arrival is not a correction at all
-/// (TODO M28): [`a_future_dated_correction_is_refused_and_appends_nothing`].
+/// on accrued under that era). A window that opens after the arrival is not a correction at all:
+/// [`a_future_dated_correction_is_refused_and_appends_nothing`].
 #[test]
 fn a_correction_on_row_boundaries_applies() {
     let arrival = 2 * DAY_MS + 10 * HOUR_MS;
@@ -4038,7 +4042,7 @@ fn a_correction_on_row_boundaries_applies() {
     );
 }
 
-/// **A CORRECTION IS BACK-DATED OR IT IS REFUSED** (TODO M28; #79: a correction is "an entry whose
+/// **A CORRECTION IS BACK-DATED OR IT IS REFUSED** (#79: a correction is "an entry whose
 /// `effective_from` lies in the past"). A signed window that opens after the call arrived prices a
 /// future no booked line has reached: a forward price under an amendment's signature, standing in
 /// for a configuration write. Refused at the shape, and nothing is recorded or appended — including a
@@ -4076,7 +4080,7 @@ fn a_future_dated_correction_is_refused_and_appends_nothing() {
     assert_eq!((history.len(), records), (2, 1));
 }
 
-/// **A SIGNED CORRECTION APPLIES ONCE** (TODO M28). The signature covers the window, the figures and
+/// **A SIGNED CORRECTION APPLIES ONCE**. The signature covers the window, the figures and
 /// the reason, and nothing that tells one submission from the next, so the same signed bytes sent
 /// again after a later correction would put the earlier price back with no new operator act. The
 /// replay is refused `Conflict`, nothing is recorded and nothing appended, and the later correction
@@ -4310,8 +4314,8 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
             &an_attribution(),
         )
         .expect("the first correction applies");
-        // A thousand DIFFERENT corrections: the same signed body twice is a replay and is refused
-        // (TODO M28), so each later one moves the fee.
+        // A thousand DIFFERENT corrections: the same signed body twice is a replay and is refused,
+        // so each later one moves the fee.
         for fee in 8..1_008 {
             amend_rate_history_effect(
                 &history,
