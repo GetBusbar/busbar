@@ -9,11 +9,11 @@
 //! request body must be an OTLP `ExportTraceServiceRequest` by the OpenTelemetry project's own
 //! generated types, re-encoding to the very same bytes.
 //!
-//! The sink's one need is in the `loopback-allowed` egress class, which the host grants to a
-//! FIRST-PARTY plugin only (`BUSBAR-1.6.0.md` §5; ARCHITECT ruling EGRESS-GRANT 2026-10-03). So the
-//! same sink's repo `cdylib`, dropped into `plugins/` by a third party (`acme`, unsigned under
-//! `allow_unsigned`), is refused at the load: `--validate` lists it skipped in the grant's words,
-//! and a configuration that names it does not boot. (This binary embeds the real release key, whose
+//! The sink's one need is in the `loopback-allowed` egress class. The same sink's repo `cdylib`,
+//! dropped into `plugins/` by a third party (`acme`, unsigned) and admitted by the operator's
+//! `plugins.trust` opt-in, loads as 1.5.5 loaded it UNVERIFIED (OWNER 2026-10-24, oracle BOOT-W23:
+//! the operator's opt-in is the grant): `--validate` does not skip it, and a configuration naming
+//! it posts the request path's spans to its collector beside the linked one. (This binary embeds the real release key, whose
 //! private half no test holds, so a FIRST-PARTY dropped collector cannot be packed here; the loader's
 //! `export_conformance_tests` carry the same span through both doors byte for byte, under a release
 //! key of the test's own.)
@@ -47,11 +47,6 @@ const WIRE: &str = "tcp";
 /// The collector paths each door posts to.
 const LINKED_PATH: &str = "/linked/v1/traces";
 const DROPPED_PATH: &str = "/dropped/v1/traces";
-
-/// The grant's refusal, in the loader's words.
-const REFUSED: &str =
-    "plugin 'k9e-dropped' declares a `http` need in the `loopback-allowed` egress \
-                       class, which the host grants to a first-party plugin only";
 
 /// `config.yaml` and `providers.yaml` in `dir`: the linked instance, and the dropped one only when
 /// `name_dropped`.
@@ -127,7 +122,7 @@ fn request(port: u16, body: &str) -> Option<u16> {
 }
 
 #[test]
-fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refused() {
+fn a_closed_span_reaches_an_otlp_collector_through_either_door() {
     // A both-doors proof never skips: the dropped-in door's cdylib is built or the test fails.
     let lib = common::plugins::cdylib(CDYLIB)
         .unwrap_or_else(|| common::plugins::missing(CDYLIB, common::plugins::BUILD_PINNED));
@@ -154,10 +149,9 @@ fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refuse
         c
     };
 
-    // 1. The scan refuses the third party's collector: `--validate` lists it skipped, in the
-    //    grant's words.
+    // 1. The scan admits the operator-trusted third party's collector: `--validate` skips nothing.
     let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
-    write_configs(&dir, data_port, admin_port, collector_port, false);
+    write_configs(&dir, data_port, admin_port, collector_port, true);
     let out = busbar().arg("--validate").output().expect("run --validate");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -166,39 +160,18 @@ fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refuse
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains(&format!("skipped: {DROPPED} (otlp.tar.gz)")) && stdout.contains(REFUSED),
+        !stdout.contains(&format!("skipped: {DROPPED} (otlp.tar.gz)")),
         "{stdout}"
     );
 
-    // 2. A configuration that names it does not boot.
-    write_configs(&dir, data_port, admin_port, collector_port, true);
-    let out = busbar().output().expect("run busbar");
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        !out.status.success(),
-        "a third-party collector booted:\n{text}"
-    );
-    assert!(
-        text.contains(&format!(
-            "export.dropped.module: unknown exporter '{DROPPED}'"
-        )),
-        "{text}"
-    );
-
-    // 3. The linked collector posts the request path's spans, the third party's beside it skipped.
+    // 2. Both collectors post the request path's spans.
     let log_path = dir.join("out.log");
     let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
 
     // Model requests whose upstream refuses: the request path's spans open and close regardless.
     let body =
         r#"{"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"#;
-    // The ports steps 1 and 2 wrote: `free_port` holds each from the moment it chose it, so no
-    // other socket took one while those runs neither bound it.
-    write_configs(&dir, data_port, admin_port, collector_port, false);
+    // The ports step 1 wrote: `free_port` holds each from the moment it chose it.
     let log = std::fs::File::create(&log_path).unwrap();
     let mut child = Reap(
         busbar()
@@ -223,20 +196,16 @@ fn a_closed_span_reaches_an_otlp_collector_and_a_third_party_collector_is_refuse
     // Delivery is off the request path, batched: wait until the spans settle.
     let spans_at = |path| common::otlp::spans(&common::otlp::requests(&seen, Some(path))).len();
     let deadline = Instant::now() + Duration::from_secs(30);
-    while spans_at(LINKED_PATH) < 3 {
+    while spans_at(LINKED_PATH) < 3 || spans_at(DROPPED_PATH) < 3 {
         assert!(
             Instant::now() < deadline,
-            "the linked collector did not receive the spans in 30 s: {}\n{}",
+            "the collectors did not receive the spans in 30 s: linked {}, dropped {}\n{}",
             spans_at(LINKED_PATH),
+            spans_at(DROPPED_PATH),
             read_log()
         );
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert_eq!(
-        spans_at(DROPPED_PATH),
-        0,
-        "nothing reaches the refused collector's path"
-    );
     for span in common::otlp::spans(&common::otlp::requests(&seen, None)) {
         assert_eq!(
             (span.trace_id.len(), span.span_id.len()),

@@ -274,8 +274,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-auth-oidc"
-version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=cc59d737972c1b881a164b437d63c4f29f6a15c1#cc59d737972c1b881a164b437d63c4f29f6a15c1"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab#82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -290,8 +290,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-auth-oidc-plugin"
-version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=cc59d737972c1b881a164b437d63c4f29f6a15c1#cc59d737972c1b881a164b437d63c4f29f6a15c1"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab#82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -330,11 +330,14 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures",
+ "getrandom 0.3.4",
  "hex",
  "http",
  "idna",
  "indexmap",
  "memchr",
+ "num-bigint",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -747,7 +750,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=03cb3eb5d9c98b010c57fac4f75eabf874361d60#03cb3eb5d9c98b010c57fac4f75eabf874361d60"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d#73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d"
 dependencies = [
  "busbar-contract",
  "bytes",
