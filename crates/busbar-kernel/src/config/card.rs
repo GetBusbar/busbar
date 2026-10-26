@@ -464,6 +464,54 @@ pub fn is_edit_refusal(message: &str) -> bool {
     message.contains(EDIT_REFUSED_PREFIX)
 }
 
+/// The per-thread scope of one card check: a candidate card a build prices with, PUT's lenient
+/// disk re-read, and the notes the checks leave for the response being built. Thread-local because
+/// a config transaction's whole apply phase runs on one blocking thread.
+pub(crate) mod scope {
+    use super::CardFields;
+    use std::cell::{Cell, RefCell};
+
+    thread_local! {
+        /// The card a build on this thread prices with in place of the card in force.
+        static OVERRIDE: RefCell<Option<CardFields>> = const { RefCell::new(None) };
+        /// Set while a `PUT /config/settings` re-reads the disk.
+        static LENIENT: Cell<bool> = const { Cell::new(false) };
+        /// The notes card checks left on this thread.
+        static NOTES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(crate) fn with_override<T>(card: &CardFields, f: impl FnOnce() -> T) -> T {
+        let previous = OVERRIDE.with(|o| o.replace(Some(card.clone())));
+        let out = f();
+        OVERRIDE.with(|o| *o.borrow_mut() = previous);
+        out
+    }
+
+    pub(crate) fn override_card() -> Option<CardFields> {
+        OVERRIDE.with(|o| o.borrow().clone())
+    }
+
+    pub(crate) fn lenient<T>(f: impl FnOnce() -> T) -> T {
+        let previous = LENIENT.with(|l| l.replace(true));
+        let out = f();
+        LENIENT.with(|l| l.set(previous));
+        out
+    }
+
+    pub(crate) fn is_lenient() -> bool {
+        LENIENT.with(Cell::get)
+    }
+
+    pub(crate) fn note(text: String) {
+        tracing::warn!("{text}");
+        NOTES.with(|n| n.borrow_mut().push(text));
+    }
+
+    pub(crate) fn take_notes() -> Vec<String> {
+        NOTES.with(|n| std::mem::take(&mut *n.borrow_mut()))
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/card_tests.rs"]
 mod tests;

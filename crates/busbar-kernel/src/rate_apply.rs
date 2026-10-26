@@ -227,26 +227,16 @@ pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::Hist
     dater().and_then(|holder| holder.history())
 }
 
-thread_local! {
-    /// The card a build on this thread prices with in place of the card in force: the candidate a
-    /// `PUT /config/settings` validates before it writes it ([`with_card`]).
-    static CARD_OVERRIDE: std::cell::RefCell<Option<CardFields>> = const { std::cell::RefCell::new(None) };
-}
-
 /// Run `f` with every generation built on this thread pricing with `card` (see [`build_card`]).
 pub fn with_card<T>(card: &CardFields, f: impl FnOnce() -> T) -> T {
-    let previous = CARD_OVERRIDE.with(|o| o.replace(Some(card.clone())));
-    let out = f();
-    CARD_OVERRIDE.with(|o| *o.borrow_mut() = previous);
-    out
+    crate::config::card::scope::with_override(card, f)
 }
 
 /// THE CARD A BUILD PRICES WITH: the candidate [`with_card`] names on this thread, else the card in
 /// force, else `None` (the configuration's own card stands: no history yet).
 #[must_use]
 pub fn build_card() -> Option<CardFields> {
-    CARD_OVERRIDE
-        .with(|o| o.borrow().clone())
+    crate::config::card::scope::override_card()
         .or_else(|| holder().and_then(RateApply::card_in_force))
 }
 
@@ -277,9 +267,9 @@ pub fn judge_disk_card(file: &CardFields, merged: &CardFields) -> Result<(), Str
     match holder().map(|h| h.judge_disk_card(file, merged)) {
         Some(Err(refused)) => {
             refused.audit();
-            if JUDGE_LENIENT.with(std::cell::Cell::get) {
+            if crate::config::card::scope::is_lenient() {
                 // PUT's own re-read never refuses on the file card: its 200 says so.
-                note(refused.to_string());
+                crate::config::card::scope::note(refused.to_string());
                 return Ok(());
             }
             Err(refused.to_string())
@@ -291,7 +281,7 @@ pub fn judge_disk_card(file: &CardFields, merged: &CardFields) -> Result<(), Str
                 crate::audit_ring::OUTCOME_APPLIED,
                 "busbar",
             );
-            note(format!(
+            crate::config::card::scope::note(format!(
                 "the configuration file's rate card was edited back to its first-boot seed and \
                  differs from the card in force in {fields}; the card in force stands \
                  ({})",
@@ -303,31 +293,16 @@ pub fn judge_disk_card(file: &CardFields, merged: &CardFields) -> Result<(), Str
     }
 }
 
-thread_local! {
-    /// Set while a `PUT /config/settings` re-reads the disk: a file-card edit is noted, not refused.
-    static JUDGE_LENIENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The notes card checks left on this thread for the response being built.
-    static NOTES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
-}
-
-fn note(text: String) {
-    tracing::warn!("{text}");
-    NOTES.with(|n| n.borrow_mut().push(text));
-}
-
 /// Run `f` as `PUT /config/settings`'s disk re-read: a file-card edit is audited and NOTED rather
 /// than refused.
 pub fn lenient<T>(f: impl FnOnce() -> T) -> T {
-    let previous = JUDGE_LENIENT.with(|l| l.replace(true));
-    let out = f();
-    JUDGE_LENIENT.with(|l| l.set(previous));
-    out
+    crate::config::card::scope::lenient(f)
 }
 
 /// Take the notes the card checks left on this thread.
 #[must_use]
 pub fn take_notes() -> Vec<String> {
-    NOTES.with(|n| std::mem::take(&mut *n.borrow_mut()))
+    crate::config::card::scope::take_notes()
 }
 
 /// Judge a request body's card ([`RateApply::judge_body_card`]); a refusal is audited.

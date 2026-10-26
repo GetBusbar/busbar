@@ -7,7 +7,7 @@
 //! The composition root hands the kernel its rate holder ([`RateApply`]) and its rate dater
 //! ([`RateEpoch`]) on its one install record (`RootInstall::rate_apply`, `RootInstall::rate_epoch`),
 //! never through a process-wide static of `rate_apply`. What the seam carries is unchanged: every
-//! staged, applied and withdrawn rate reaches the record's holder with its figures verbatim, and
+//! seed card and applied rate reaches the record's holder with its figures verbatim, and
 //! an accrual is dated, and a ledger read priced, by the record's dater.
 //!
 //! A test BINARY of its own: the root's install record is process-wide and the first install
@@ -20,8 +20,7 @@ use busbar_kernel::billing::RawTierRates;
 use busbar_kernel::cost::{History, RateCard};
 use busbar_kernel::preflight::{install_linked_rows, root_rows, RootInstall};
 use busbar_kernel::rate_apply::{
-    dated_history, effective_from_at, rates_applied, rates_staged, rates_withdrawn, RateApply,
-    RateEpoch, RawRates,
+    dated_history, effective_from_at, rates_applied, seed_card, RateApply, RateEpoch, RawRates,
 };
 
 /// The figures one call carried: the lanes with their four tier rates, the open-class rates, the
@@ -36,9 +35,8 @@ type Figures = (
 /// One call the holder heard: which, and the figures it carried.
 #[derive(Debug, Clone, PartialEq)]
 enum Heard {
-    Staged(Figures),
+    Seeded(busbar_kernel::config::card::CardFields),
     Applied(Figures),
-    Withdrawn,
 }
 
 /// The figures `rates` carries, as the holder writes them down.
@@ -58,16 +56,8 @@ struct Root {
 }
 
 impl RateApply for Root {
-    fn rates_staged(&self, rates: &RawRates<'_>) -> Result<(), String> {
-        self.heard
-            .lock()
-            .unwrap()
-            .push(Heard::Staged(figures(rates)));
-        Ok(())
-    }
-
-    fn rates_withdrawn(&self) {
-        self.heard.lock().unwrap().push(Heard::Withdrawn);
+    fn seed_card(&self, card: &busbar_kernel::config::card::CardFields) {
+        self.heard.lock().unwrap().push(Heard::Seeded(card.clone()));
     }
 
     fn rates_applied(&self, rates: &RawRates<'_>) {
@@ -126,14 +116,16 @@ fn the_install_records_holder_and_dater_answer_the_rate_seam() {
         present: true,
         plane_fees: &fees,
     };
-    rates_staged(&rates).expect("the holder makes the rates durable");
-    rates_withdrawn();
+    let seed = busbar_kernel::config::card::CardFields {
+        per_request_fee: 11,
+        ..Default::default()
+    };
+    seed_card(&seed);
     rates_applied(&rates);
     assert_eq!(
         *root.heard.lock().unwrap(),
         vec![
-            Heard::Staged((lanes.to_vec(), units.to_vec(), 11, true)),
-            Heard::Withdrawn,
+            Heard::Seeded(seed),
             Heard::Applied((lanes.to_vec(), units.to_vec(), 11, true)),
         ],
         "the record's holder heard each call once, in order, with every figure as resolved"
