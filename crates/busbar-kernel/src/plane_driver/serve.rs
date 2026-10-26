@@ -42,7 +42,7 @@ use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::ReasonCode;
 use busbar_contract::plane_calls::{Lent, PlaneCalls};
 
-use super::{blob, refusal_status, BufferCaps, HeadFields, NO_FIELD};
+use super::{blob, head_fields, refusal_status, BufferCaps, HeadFields, NO_FIELD};
 use crate::auth::{AuthPrincipal, ConsumedCredentials};
 
 /// One admin route of an instance's snapshot, in snapshot order.
@@ -225,11 +225,7 @@ impl ServeTables {
             Ok(body) => body,
             Err(refused) => return Some(refused.into_response()),
         };
-        let head: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
+        let head = head_fields(&headers);
         let target = match uri.query() {
             Some(q) => format!("{path}?{q}"),
             None => path.to_string(),
@@ -417,11 +413,7 @@ impl ServeTables {
         // operator's `x-admin-token` is busbar's vocabulary, not the contract's never-kept list.
         let mut headers = req.headers.clone();
         ConsumedCredentials::strip_from(req.consumed, &mut headers);
-        let head: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
+        let head = head_fields(&headers);
         let target = match req.query {
             Some(q) => format!("{}?{q}", req.path),
             None => req.path.to_string(),

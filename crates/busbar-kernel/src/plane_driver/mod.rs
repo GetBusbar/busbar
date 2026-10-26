@@ -593,6 +593,19 @@ impl PlaneDriver {
 /// A head's fields, name and value, in order.
 pub type HeadFields = Vec<(Vec<u8>, Vec<u8>)>;
 
+/// A request's headers as the fields that cross to a plane: every one but the contract's
+/// [`NEVER_KEPT`](busbar_contract::abi::host::conn::connector::NEVER_KEPT) list.
+#[must_use]
+pub fn head_fields(headers: &axum::http::HeaderMap) -> HeadFields {
+    headers
+        .iter()
+        .filter(|(n, _)| {
+            !busbar_contract::abi::host::conn::connector::NEVER_KEPT.contains(&n.as_str())
+        })
+        .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+        .collect()
+}
+
 /// What arrived: the claim it matched and the caller's request, as the kernel keeps it.
 #[derive(Debug, Clone)]
 pub struct Arrival {
