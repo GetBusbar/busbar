@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! RS256 (RSASSA-PKCS1-v1_5 over SHA-256) under a PKCS #8 RSA private key the credential holds
-//! (feature `chip-jws`): a JWT-bearer assertion's signature (RFC 7515, 7523).
+//! a JWT-bearer assertion's signature (RFC 7515, 7523).
 
 use base64::Engine as _;
 use zeroize::Zeroizing;
