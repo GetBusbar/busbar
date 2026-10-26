@@ -77,7 +77,6 @@ busbar-kernel = { path = "../../crates/busbar-kernel", default-features = false 
 busbar-contract = { path = "../../crates/busbar-contract" }
 # The seven kernel workflow crates (#36).
 busbar-kernel-identity = { path = "../../crates/busbar-kernel-identity" }
-busbar-kernel-scope = { path = "../../crates/busbar-kernel-scope" }
 busbar-kernel-ledger = { path = "../../crates/busbar-kernel-ledger" }
 busbar-kernel-egress = { path = "../../crates/busbar-kernel-egress" }
 busbar-kernel-breaker = { path = "../../crates/busbar-kernel-breaker" }

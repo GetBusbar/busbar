@@ -49,7 +49,7 @@ use busbar_contract::UnitKey;
 use busbar_core_admin::admin_codec::verbs::ResolvedVerb;
 use busbar_kernel::teller::UnitCtx;
 use busbar_kernel_audit::{expose, AuditChain, AuditKeySet, AuditRecord};
-use busbar_kernel_scope::Scope;
+use busbar_contract::authz::Scope;
 
 use crate::root::durability::CheckpointUnreadable;
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
@@ -3304,7 +3304,7 @@ pub(crate) fn approve(
     let Some(request) = binding.units.request(ctx.key) else {
         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     };
-    let needed = busbar_kernel_scope::admin_required_scope(&request.method, &request.path);
+    let needed = busbar_kernel::admin::scope::admin_required_scope(&request.method, &request.path);
     binding.units.set_granted(ctx.key, granted);
     if !granted.allows(scope_as_verb_scope(needed)) {
         return SeatVerdict::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
