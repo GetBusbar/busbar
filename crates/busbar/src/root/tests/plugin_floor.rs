@@ -97,8 +97,16 @@ fn an_old_first_party_release_is_refused_after_a_restart_on_the_same_store() {
     let refused = hold(store.calls().as_ref(), "node-a", &older, &none)
         .expect_err("an old release does not load in the newer one's place");
     assert!(
-        refused.contains("below 1.2.0") && refused.contains("first_party_floors.busbar-hook-x"),
-        "the refusal names the floor and the pin: {refused}"
+        refused.contains("below 1.2.0")
+            && refused.contains("POST /api/v1/admin/plugins/rollback")
+            && refused.contains(r#"{"file": "busbar-hook-x-1.1.0.tar.gz"}"#),
+        "the refusal names the floor and the audited rollback that admits it: {refused}"
+    );
+    // `first_party_floors` is runtime-only (`#[serde(skip)]`), so an operator who writes it in
+    // config.yaml is refused by `deny_unknown_fields`: the refusal must never send them there.
+    assert!(
+        !refused.contains("first_party_floors"),
+        "the refusal points at a key config.yaml refuses: {refused}"
     );
 
     let pinned: BTreeMap<String, String> =
