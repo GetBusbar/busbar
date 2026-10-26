@@ -43,10 +43,9 @@ use busbar_kernel_scope::Scope;
 use crate::root::durability::CheckpointUnreadable;
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
-use busbar_core_admin::{
-    verb_name, KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
-    NEW_VERBS,
-};
+#[cfg(test)]
+use busbar_core_admin::{verb_name, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES};
+use busbar_core_admin::{KernelVerb, VerbScope, NEW_VERBS};
 use busbar_kernel_ledger::{
     checkpoint::{AnchoredHead, Checkpoint, CheckpointVerifier},
     cost::{Money, MoneyError},
