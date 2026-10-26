@@ -354,7 +354,6 @@ mod export_conformance_tests;
 #[path = "tests/both_ways.rs"]
 mod both_ways;
 
-
 /// `kind: auth` through both doors on the memory ABI, VERIFY VERDICTS: the token cases driven to
 /// every verdict (identify, reject, pass) over a second real auth plugin, one row and one answer
 /// either way.
