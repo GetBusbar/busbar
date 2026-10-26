@@ -1468,18 +1468,8 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
 
 /// Q64/Q67 fixture: group `group` with a group-wide day budget and a day budget scoped to each of
 /// `pool-a` and `pool-b`; key `id` served 1,000,000 input units through EACH pool at 2.5 micro-units
-/// (250 cents a pool, 500 group-wide). `adjust(pool)` corrects the pool-a unit to 800,000.
-fn q64_two_pools(
-    id: &'static str,
-    group: &'static str,
-) -> (
-    GovState,
-    CostModel,
-    VirtualKey,
-    u64,
-    impl Fn(&GovState, &CostModel, Option<&str>),
-) {
-    use busbar_contract::records::UNIT_INPUT;
+/// (250 cents a pool, 500 group-wide). [`q64_adjust`] corrects the pool-a unit to 800,000.
+fn q64_two_pools(id: &'static str, group: &'static str) -> (GovState, CostModel, VirtualKey, u64) {
     let g = gov();
     let limits = vec![
         limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day)),
@@ -1497,21 +1487,24 @@ fn q64_two_pools(
     g.record_usage(&cm, &k, "pool-a", "m", &toks(1_000_000, 0), now);
     g.record_usage(&cm, &k, "pool-b", "m", &toks(1_000_000, 0), now);
     metered(&g, &k.id, "m", 2_000_000, now);
-    let adjust = move |g: &GovState, cm: &CostModel, pool: Option<&str>| {
-        let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -200_000i64)]);
-        let adjustment = super::Adjustment {
-            key_id: id,
-            pool: pool.unwrap_or(""),
-            model: "m",
-            entry_era: era_now(),
-            delta: &delta,
-            now,
-        };
-        g.adjust_usage(cm, &adjustment)
-            .expect("the store reads")
-            .expect("the correction applies");
+    (g, cm, k, now)
+}
+
+/// A root adjust of -200,000 input units on `id`'s unit, through `pool` (none: no pool named).
+fn q64_adjust(g: &GovState, cm: &CostModel, id: &str, now: u64, pool: Option<&str>) {
+    use busbar_contract::records::UNIT_INPUT;
+    let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -200_000i64)]);
+    let adjustment = super::Adjustment {
+        key_id: id,
+        pool: pool.unwrap_or(""),
+        model: "m",
+        entry_era: era_now(),
+        delta: &delta,
+        now,
     };
-    (g, cm, k, now, adjust)
+    g.adjust_usage(cm, &adjustment)
+        .expect("the store reads")
+        .expect("the correction applies");
 }
 
 /// The usage read: the key's usage (what `GET /admin/usage` agrees with) and, per bucket
@@ -1548,7 +1541,7 @@ fn q64_read(
 /// Before the fix the pool-a bucket still read 250 / 1,000,000 after the adjust.
 #[test]
 fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
-    let (g, cm, k, now, adjust) = q64_two_pools("vk_q64_pooled", "q64p");
+    let (g, cm, k, now) = q64_two_pools("vk_q64_pooled", "q64p");
     let read = || q64_read(&g, &cm, &k, "q64p", now);
     let recorded = [
         (500, 2_000_000),
@@ -1557,7 +1550,7 @@ fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
         (250, 1_000_000),
     ];
     assert_eq!(read(), recorded, "as recorded");
-    adjust(&g, &cm, Some("pool-a"));
+    q64_adjust(&g, &cm, "vk_q64_pooled", now, Some("pool-a"));
     assert_eq!(
         read(),
         [
@@ -1574,8 +1567,8 @@ fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
 /// neither pool-scoped bucket.
 #[test]
 fn an_adjust_naming_no_pool_moves_no_pool_bucket() {
-    let (g, cm, k, now, adjust) = q64_two_pools("vk_q64_unscoped", "q64u");
-    adjust(&g, &cm, None);
+    let (g, cm, k, now) = q64_two_pools("vk_q64_unscoped", "q64u");
+    q64_adjust(&g, &cm, "vk_q64_unscoped", now, None);
     assert_eq!(
         q64_read(&g, &cm, &k, "q64u", now),
         [

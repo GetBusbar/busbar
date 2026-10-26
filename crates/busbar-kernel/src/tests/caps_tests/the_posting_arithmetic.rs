@@ -67,7 +67,12 @@ fn a_count_the_node_estimated_is_flagged_estimated() {
     let k = seal();
     let usage = Usage::estimate(&Grant::<Consumption>::mint(&k), one_line(40))
         .expect("one line is within the bound");
-    let posted = Posted::settle(opened(&k, "acct-1"), 40, &usage, &Grant::<WriteMoney>::mint(&k));
+    let posted = Posted::settle(
+        opened(&k, "acct-1"),
+        40,
+        &usage,
+        &Grant::<WriteMoney>::mint(&k),
+    );
     assert!(posted.flags().contains(PostingFlags::ESTIMATED));
 }
 
@@ -79,9 +84,14 @@ fn a_flag_the_ledger_decides_on_is_added_without_clearing_what_the_report_decide
     let k = seal();
     let usage = Usage::estimate(&Grant::<Consumption>::mint(&k), one_line(50))
         .expect("one line is within the bound");
-    let posted = Posted::settle(opened(&k, "acct-1"), 50, &usage, &Grant::<WriteMoney>::mint(&k))
-        .flagged(PostingFlags::METER_DISPUTED)
-        .flagged(PostingFlags::DOWNGRADED);
+    let posted = Posted::settle(
+        opened(&k, "acct-1"),
+        50,
+        &usage,
+        &Grant::<WriteMoney>::mint(&k),
+    )
+    .flagged(PostingFlags::METER_DISPUTED)
+    .flagged(PostingFlags::DOWNGRADED);
     assert!(posted.flags().contains(PostingFlags::ESTIMATED));
     assert!(posted.flags().contains(PostingFlags::METER_DISPUTED));
     assert!(posted.flags().contains(PostingFlags::DOWNGRADED));
@@ -132,9 +142,7 @@ fn a_child_that_missed_its_parent_is_handed_back_rather_than_posted_against_an_e
     let admit: Grant<Admittance> = Grant::<Admittance>::mint(&k);
     let ledger = Grant::<WriteMoney>::mint(&k);
     let cell = HoldCell::new(opened(&k, "acct-1"));
-    let arrival = cell
-        .admit(opened(&k, "acct-1"), &admit)
-        .expect("admitted");
+    let arrival = cell.admit(opened(&k, "acct-1"), &admit).expect("admitted");
 
     let accrual = cell
         .accrue_child(&PrincipalId::new("acct-1"), &admit)

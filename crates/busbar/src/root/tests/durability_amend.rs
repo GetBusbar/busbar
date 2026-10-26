@@ -22,7 +22,12 @@ const LATE_HOOK: &str = "summarizer";
 /// A hook named `hook` was handed one unit's content: one access on the node journal.
 fn access(hook: &str) {
     let app = busbar_kernel::test_support::TestApp::new().build();
-    busbar_kernel::plane_driver::engine_host(&app).hook_read(hook, Some("pseudonym-1"), "chat", false);
+    busbar_kernel::plane_driver::engine_host(&app).hook_read(
+        hook,
+        Some("pseudonym-1"),
+        "chat",
+        false,
+    );
 }
 
 /// The hooks the node journal holds an access of, oldest first.
@@ -130,13 +135,9 @@ const PAD_BODY: usize = 100_000;
 /// book, bind it.
 fn store_boot(slots: &crate::root::store_double::RecordSlots) -> Arc<Mutex<Durability>> {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
-    let mut durability = build_on_store(
-        &DurabilityConfig { data_dir: None },
-        STORE_NODE,
-        lane,
-        None,
-    )
-    .expect("the store reads back");
+    let mut durability =
+        build_on_store(&DurabilityConfig { data_dir: None }, STORE_NODE, lane, None)
+            .expect("the store reads back");
     durability
         .restore_amendments()
         .expect("the chain reads back");

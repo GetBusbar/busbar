@@ -2079,6 +2079,111 @@ fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
     AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
 }
 
+/// A cost model whose one lane `m` prices input at 2.5 micro-units a token, no fee.
+#[cfg(feature = "root-admin")]
+fn one_lane_card() -> busbar_kernel::cost::CostModel {
+    let rates = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        busbar_kernel::config::RateEntryCfg {
+            input_utok: 2.5,
+            ..Default::default()
+        },
+    )]);
+    busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&rates),
+        0,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+/// One ledger request walked through the loop against a node whose ledger views read `gov`'s
+/// live usage counts ([`crate::root::units_admin::CountsLedger`]), as `mount_node` binds them.
+#[cfg(feature = "root-admin")]
+fn answer_over_counts(
+    gov: Arc<busbar_kernel::governance::GovState>,
+    path: &str,
+) -> serde_json::Value {
+    let app = busbar_kernel::test_support::TestApp::new()
+        .governance(gov)
+        .cost(one_lane_card())
+        .build();
+    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+    units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door()).with_ledger_view(
+        Arc::new(crate::root::units_admin::CountsLedger::new(handle)),
+    );
+    let answer =
+        AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_ledger_request(path));
+    assert_eq!(answer.status, 200, "{path} did not answer");
+    serde_json::from_slice(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
+/// **THE KEPT LEDGER PATHS ANSWER FROM THE ONE LEDGER** (MONEY-DESIGN §4, PR-C): money is the
+/// store's usage counts x the rate card. A key spends 1,000 input tokens at 2.5 micro-units:
+/// `GET /api/v1/admin/ledger/totals` serves 2,500 micro-units on that key's row — the counts the
+/// store holds after the flush, priced by the card — `reconciliation` holds, and a restart (a new
+/// governance state over the same store, hydrated as the boot hydrates it) serves the same bytes.
+/// The second book is gone, so there is nothing else for the paths to answer from.
+///
+/// RED on the base: the paths answered from the node's second book, which a spend recorded only
+/// in the usage counts never reached — `totals` served no row for the key.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
+    use busbar_contract::records::RecordStore as _;
+    use busbar_kernel::governance::{GovState, MemoryStore, VirtualKey};
+    let store = Arc::new(MemoryStore::new());
+    let key = VirtualKey {
+        id: "vk_one_ledger".to_string(),
+        generation_hash: "h:vk_one_ledger".to_string(),
+        name: "one-ledger".to_string(),
+        enabled: true,
+        revision: 1,
+        ..Default::default()
+    };
+    store.put_key(&key).expect("the key persists");
+    let gov = Arc::new(GovState::new(store.clone(), None).expect("governance builds"));
+    let now = busbar_kernel::store::now();
+    let input = std::collections::BTreeMap::from([(
+        busbar_contract::records::UNIT_INPUT.to_string(),
+        1_000u64,
+    )]);
+    gov.record_usage(&one_lane_card(), &key, "", "m", &input, now);
+    gov.flush_budgets();
+
+    // The store's own counts, after the spend.
+    let stored = store.get_usage(&key.id, 0).expect("the row reads");
+    assert_eq!(
+        stored.tokens_for("m"),
+        Some(1_000),
+        "the store holds the spend"
+    );
+
+    let totals = answer_over_counts(Arc::clone(&gov), "/api/v1/admin/ledger/totals");
+    let rows = totals["rows"].as_array().expect("rows");
+    let row = rows
+        .iter()
+        .find(|r| r["bucket"] == "vk_one_ledger")
+        .unwrap_or_else(|| panic!("the key's row is served: {totals}"));
+    assert_eq!(row["priced_micros"], "2500", "1,000 tokens x 2.5: {totals}");
+    assert_eq!(row["priced_nanos"], "2500000");
+    assert_eq!(
+        answer_over_counts(Arc::clone(&gov), "/api/v1/admin/ledger/reconciliation")["holds"],
+        true
+    );
+
+    let restarted = Arc::new(GovState::new(store, None).expect("governance builds"));
+    restarted
+        .hydrate_budgets(&one_lane_card(), now)
+        .expect("the boot hydrates");
+    assert_eq!(
+        answer_over_counts(restarted, "/api/v1/admin/ledger/totals"),
+        totals,
+        "a restart serves the same money from the same counts"
+    );
+}
+
 /// Every view answers, through the whole loop, with a JSON document of its own.
 ///
 /// "Of its own" is half the assertion. The dispatch this node is built over answers every verb
@@ -2240,7 +2345,10 @@ fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
         &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation")).body,
     )
     .expect("valid JSON");
-    assert_eq!(served["holds"], false, "a refused row is a row not measured");
+    assert_eq!(
+        served["holds"], false,
+        "a refused row is a row not measured"
+    );
     assert_eq!(served["discrepancies"], serde_json::json!([]));
     let refused = served["refused"].as_array().expect("refused");
     assert_eq!(refused.len(), 1);
@@ -2260,9 +2368,8 @@ fn verify_names_a_refused_row_and_every_other_finding() {
         .expect("unpoisoned")
         .restart_findings
         .push("the journal does not verify: a forged record".to_string());
-    let audit = crate::root::units_admin::NodeAudit::new(std::sync::Arc::clone(
-        &node_book.durability,
-    ));
+    let audit =
+        crate::root::units_admin::NodeAudit::new(std::sync::Arc::clone(&node_book.durability));
     let answer = crate::root::units_admin::bound::verify_effect(&SeededLedger, Some(&audit))
         .expect("a refused row must not take /admin/verify down");
     let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
@@ -4117,8 +4224,8 @@ fn the_admin_listener_binds_its_claim_journal_on_a_data_dir_node_only() {
 fn a_signed_record_verifies_against_the_served_audit_keys() {
     use busbar_contract::caps::{OriginKind, Outcome as UnitOutcome, UnitKey};
     use busbar_kernel_audit::{
-        Audit as _, AuditChain, AuditInputs, AuditVerifyingKey, Controls, FinishClass,
-        OpClassId, OutcomeFacts, Subject, Usage, What,
+        Audit as _, AuditChain, AuditInputs, AuditVerifyingKey, Controls, FinishClass, OpClassId,
+        OutcomeFacts, Subject, Usage, What,
     };
 
     let inputs = || AuditInputs {

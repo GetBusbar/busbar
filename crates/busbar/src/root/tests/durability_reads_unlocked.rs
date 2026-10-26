@@ -58,13 +58,8 @@ fn node_over(
     ready: impl FnOnce(&mut Durability),
 ) -> (Arc<Mutex<Durability>>, Arc<Scans>) {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
-    let mut durability = build_on_store(
-        &DurabilityConfig { data_dir: None },
-        NODE,
-        lane,
-        None,
-    )
-    .expect("the store reads back");
+    let mut durability = build_on_store(&DurabilityConfig { data_dir: None }, NODE, lane, None)
+        .expect("the store reads back");
     ready(&mut durability);
     let book = Arc::new(Mutex::new(durability));
     let scans = Arc::new(Scans::default());

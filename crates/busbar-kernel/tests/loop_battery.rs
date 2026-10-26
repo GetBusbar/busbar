@@ -12,8 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Waker};
 
 use busbar_contract::caps::{
-    Abort, Canary, HoldCellState, OriginKind, Outcome, PrincipalId, ReasonCode,
-    StepName, UnitKey,
+    Abort, Canary, HoldCellState, OriginKind, Outcome, PrincipalId, ReasonCode, StepName, UnitKey,
 };
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::slice::{group_lease, ConcurrencyGauge, LeaseCell, IN_FLIGHT};
@@ -385,8 +384,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
 
     // A parent that has passed the door and is still open.
     let parent = std::sync::Arc::new(cell(&kernel));
-    let admitted =
-        busbar_contract::caps::Hold::open(&kernel.admit_token(), common::principal());
+    let admitted = busbar_contract::caps::Hold::open(&kernel.admit_token(), common::principal());
     // The cell hands the arrival hold back rather than dropping it; the parent's admitted hold has
     // taken its place, and this binding is what the loop's own swap does with it.
     let _arrival = parent
@@ -523,7 +521,11 @@ fn the_hold_is_posted_at_the_reported_figure_not_by_a_second_count() {
     match run(&units, &kernel, &cell, &canary) {
         Ended::Settled { end, .. } => {
             let posted = end.posted().expect("value was delivered, so it posts");
-            assert_eq!(posted.quantity(), 80, "the reported figure, not the meter's 150");
+            assert_eq!(
+                posted.quantity(),
+                80,
+                "the reported figure, not the meter's 150"
+            );
             assert!(posted.flags().is_clean(), "{:?}", posted.flags());
         }
         other => panic!("expected a settled end, got {other:?}"),

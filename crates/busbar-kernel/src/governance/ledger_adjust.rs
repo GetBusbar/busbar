@@ -50,10 +50,9 @@ fn adjustment_slot(key_id: &str, lane: &str, era: u64) -> String {
 #[must_use]
 pub fn metering_lane<'a>(model: &'a str, provider: &str) -> std::borrow::Cow<'a, str> {
     match crate::plane::registry::plane_decl_for(provider) {
-        Some(decl) if !decl.fallback => std::borrow::Cow::Owned(format!(
-            "{}{}{model}",
-            decl.key, PLANE_LANE_SEP
-        )),
+        Some(decl) if !decl.fallback => {
+            std::borrow::Cow::Owned(format!("{}{}{model}", decl.key, PLANE_LANE_SEP))
+        }
         _ => std::borrow::Cow::Borrowed(model),
     }
 }
@@ -414,19 +413,21 @@ impl GovState {
             .collect();
         order.sort_unstable();
         order.dedup();
-        let mut guards: Vec<(usize, std::sync::RwLockWriteGuard<'_, HashMap<String, BudgetCell>>)> =
-            order
-                .iter()
-                .map(|&sh| {
-                    let map = self
-                        .budget
-                        .shard_at(sh)
-                        .map
-                        .write()
-                        .unwrap_or_else(|p| p.into_inner());
-                    (sh, map)
-                })
-                .collect();
+        let mut guards: Vec<(
+            usize,
+            std::sync::RwLockWriteGuard<'_, HashMap<String, BudgetCell>>,
+        )> = order
+            .iter()
+            .map(|&sh| {
+                let map = self
+                    .budget
+                    .shard_at(sh)
+                    .map
+                    .write()
+                    .unwrap_or_else(|p| p.into_inner());
+                (sh, map)
+            })
+            .collect();
         let map_of = |bucket_id: &str| -> usize {
             let sh = self.budget.shard_index(bucket_id);
             guards
@@ -488,8 +489,8 @@ impl GovState {
             let cell = map
                 .entry(bucket_id.clone())
                 .or_insert_with(|| BudgetCell::fresh(*window));
-            let pos = (cell.models.iter())
-                .position(|m| &*m.model == adj.model && m.era == adj.entry_era);
+            let pos =
+                (cell.models.iter()).position(|m| &*m.model == adj.model && m.era == adj.entry_era);
             let segment = match pos {
                 Some(p) => &mut cell.models[p],
                 None => {

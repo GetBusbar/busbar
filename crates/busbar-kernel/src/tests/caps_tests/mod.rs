@@ -22,7 +22,6 @@ mod the_posting_arithmetic;
 /// Where a reported quantity came from, and the reports built on it.
 mod what_the_usage_report_says;
 
-
 /// A sealed unit's bounded draft facts and leg replies (from
 /// `busbar-contract/tests/bounded_limits.rs`).
 mod bounded_limits;

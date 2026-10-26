@@ -3437,7 +3437,13 @@ pub(crate) mod tool_door {
         }
         // THE UNIT'S ONE AUDIT RECORD carries what the plane reported, by class: the node keeps no
         // money line (MONEY-DESIGN §3); the counts are the governance ledger's.
-        let records = rig.book.durability.lock().expect("unpoisoned").audit_records.clone();
+        let records = rig
+            .book
+            .durability
+            .lock()
+            .expect("unpoisoned")
+            .audit_records
+            .clone();
         let counted = |class: &str| -> Vec<u64> {
             records
                 .iter()
@@ -6089,7 +6095,13 @@ mod task_continuation {
         assert_eq!(rig.admitted(), 2, "the creating unit and its continuation");
         // The tool call is reported ONCE: one audit record carries it, under the caller's
         // principal.
-        let records = rig.book.durability.lock().expect("unpoisoned").audit_records.clone();
+        let records = rig
+            .book
+            .durability
+            .lock()
+            .expect("unpoisoned")
+            .audit_records
+            .clone();
         let calls: Vec<_> = records
             .iter()
             .filter(|r| {
@@ -6099,7 +6111,11 @@ mod task_continuation {
                 })
             })
             .collect();
-        assert_eq!(calls.len(), 1, "the tool call is reported once: {records:?}");
+        assert_eq!(
+            calls.len(),
+            1,
+            "the tool call is reported once: {records:?}"
+        );
         assert_eq!(
             calls[0].subject,
             busbar_kernel_audit::Subject::PrincipalId(rig.key.id.clone()),

@@ -317,7 +317,8 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
 }
 
 /// Q128 p29#5: NO UNIT SETTLES WITH ZERO AUDIT RECORDS. Every unit the sweep settles has its one
-/// record on the chain, one each, so the book's lines and the chain's records count the same units.
+/// record on the chain, one each. (No posting rides beside it: the one ledger is the store's usage
+/// counts, MONEY-DESIGN §4.)
 ///
 /// RED before the fix: the swept units posted their lines and sealed nothing.
 // PORT of `crates/busbar/src/root/tests/plane_node.rs::no_swept_unit_settles_with_zero_audit_records`, verbatim: it names no plane.
@@ -341,8 +342,8 @@ fn no_swept_unit_settles_with_zero_audit_records() {
             .iter()
             .filter(|r| r.class == busbar_kernel_wal::RecordClass::Transaction)
             .count(),
-        2 * keys.len(),
-        "each swept unit has its posting on the journal and its one record beside it"
+        keys.len(),
+        "each swept unit has its one record on the journal, and no posting"
     );
     for key in keys {
         assert_eq!(
@@ -358,7 +359,6 @@ fn no_swept_unit_settles_with_zero_audit_records() {
     }
     assert_eq!(durability.audit_records.len(), keys.len());
 }
-
 
 /// The open class a rerank's search units are ledgered under (the rerank dialect codec's
 /// `SEARCH_UNITS_CLASS`, which `record_resp_usage` ledgers verbatim — item 134). Spelled here because
@@ -1072,4 +1072,130 @@ async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
         0,
         "no record is dropped"
     );
+}
+
+/// **NO PROCESS-WIDE LOCK STANDS IN FRONT OF A UNIT'S MONEY** (MONEY-DESIGN §4, PR-C; owner ruling:
+/// no process-wide lock around fsync). Eight units end CONCURRENTLY while another thread holds the
+/// node's book — the one `Mutex<Durability>` every audit seal and every journal read takes — and
+/// every one of them lands its counts on the one ledger before that lock is let go. The money is
+/// the governance counts, behind per-key shard locks; nothing about it waits on the book.
+///
+/// RED on the base: an exit arm's money was also a posting on the node's second book
+/// (`SharedBook::settle_*`, its `sync_data` under this same mutex), so a unit's settlement could not
+/// complete while the book was held, and N settlements took turns behind it.
+#[test]
+fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
+    use busbar_contract::abi::plane::{UnitCount, UNITS_REPORTED};
+    use busbar_kernel::plane_driver::{FeeRefund, MoneySeam, PlaneMoney, UnitMoney};
+    const UNITS: u64 = 8;
+    let book = crate::root::durability::node_book();
+    let (node, post) = door_node(&book);
+    let gov = Arc::new(
+        busbar_kernel::governance::GovState::new(
+            Arc::new(busbar_kernel::governance::MemoryStore::new()),
+            None,
+        )
+        .expect("governance builds"),
+    );
+    let money = Arc::new(PlaneMoney::new(Arc::clone(&gov), Arc::new(post)));
+    let rates = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        busbar_kernel::config::RateEntryCfg {
+            input_utok: 1.0,
+            ..Default::default()
+        },
+    )]);
+    let cost = Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&rates),
+        0,
+        &std::collections::BTreeMap::new(),
+    ));
+    let key = Arc::new(busbar_kernel::governance::VirtualKey {
+        id: "vk_unlocked".to_string(),
+        generation_hash: "h:vk_unlocked".to_string(),
+        name: "unlocked".to_string(),
+        enabled: true,
+        revision: 1,
+        ..Default::default()
+    });
+
+    // The book, held for the whole of the units' run.
+    let held = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let threads: Vec<_> = (1..=UNITS)
+        .map(|n| {
+            let (money, cost, key, done) = (
+                Arc::clone(&money),
+                Arc::clone(&cost),
+                Arc::clone(&key),
+                done_tx.clone(),
+            );
+            std::thread::spawn(move || {
+                let unit = UnitKey::new(n);
+                money.open(
+                    unit,
+                    UnitMoney {
+                        key,
+                        cost,
+                        pool: String::new(),
+                        lane: "m".into(),
+                        classes: Arc::from(vec!["input".to_string()]),
+                        arrived: EPOCH,
+                        mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+                        fee: FeeRefund::CallerStatus,
+                        charge: Default::default(),
+                    },
+                );
+                let ctx = UnitCtx {
+                    call: busbar_contract::caps::CallId::UNBOUND,
+                    key: unit,
+                    origin: OriginKind::Client,
+                    session: None,
+                    generation: busbar_kernel::registry::Generation::FIRST,
+                    admin_listener: false,
+                    kernel_verb_only: false,
+                };
+                let _ = money.checkpoint(
+                    &ctx,
+                    &[UnitCount {
+                        class: 0,
+                        source: UNITS_REPORTED,
+                        amount: 100,
+                    }],
+                );
+                money.settle_end(unit, 200);
+                done.send(n).expect("the test listens");
+            })
+        })
+        .collect();
+    drop(done_tx);
+    let mut ended = 0;
+    while ended < UNITS {
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect(
+            "a unit's end waited on the node's book: a process-wide lock stands in front of money",
+        );
+        ended += 1;
+    }
+    let landed = gov
+        .derived_bucket_usage(
+            &cost,
+            &key.id,
+            busbar_kernel::governance::WINDOW_TOTAL,
+            true,
+            EPOCH,
+        )
+        .expect("usage reads")
+        .tokens;
+    assert_eq!(
+        landed,
+        UNITS * 100,
+        "every unit's counts landed while the book was held"
+    );
+    drop(held);
+    for t in threads {
+        t.join().expect("no unit panicked");
+    }
+    drop(node);
 }

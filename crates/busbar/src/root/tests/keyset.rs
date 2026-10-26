@@ -74,7 +74,11 @@ fn seal(durability: &mut Durability) -> AuditRecord {
         correlation_label: None,
     };
     durability
-        .seal_unit(inputs, busbar_kernel::test_support::tokens::pass(), &token())
+        .seal_unit(
+            inputs,
+            busbar_kernel::test_support::tokens::pass(),
+            &token(),
+        )
         .expect("the node seals");
     durability
         .audit_records

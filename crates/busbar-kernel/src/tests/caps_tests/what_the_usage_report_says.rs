@@ -106,10 +106,7 @@ fn a_cell_counts_the_accruals_it_took_and_starts_at_none() {
     assert_eq!(cell.accruals(), 0, "a fresh cell has taken nothing");
 
     let arrival = cell
-        .admit(
-            Hold::open(&admit, PrincipalId::new("acct-1")),
-            &admit,
-        )
+        .admit(Hold::open(&admit, PrincipalId::new("acct-1")), &admit)
         .expect("admitted");
     assert_eq!(cell.accruals(), 0, "passing the door is not an accrual");
 

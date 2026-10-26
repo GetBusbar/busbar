@@ -784,12 +784,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let mounted = mounted_over(
-        bare,
-        1 << 20,
-        a_door_that_identifies_the_operator(),
-        |_| {},
-    );
+    let mounted = mounted_over(bare, 1 << 20, a_door_that_identifies_the_operator(), |_| {});
     let (unmounted_status, unmounted, _) = over(
         &mounted,
         "POST",
@@ -984,22 +979,17 @@ fn a_q71_node_trusting(
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&kept);
-    let mounted = mounted_over(
-        bare,
-        1 << 20,
-        door,
-        move |units| {
-            units.admin.planes =
-                Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));
-            units.admin.records = Some(Arc::new(
-                move |record: &busbar_contract::records::PlaneRecord| {
-                    sink.lock().expect("the sink").push(record.clone());
-                    Ok(())
-                },
-            ));
-            units.admin.trust = trust;
-        },
-    );
+    let mounted = mounted_over(bare, 1 << 20, door, move |units| {
+        units.admin.planes =
+            Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));
+        units.admin.records = Some(Arc::new(
+            move |record: &busbar_contract::records::PlaneRecord| {
+                sink.lock().expect("the sink").push(record.clone());
+                Ok(())
+            },
+        ));
+        units.admin.trust = trust;
+    });
     (mounted, kept)
 }
 

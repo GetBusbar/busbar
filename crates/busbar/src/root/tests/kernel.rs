@@ -1862,13 +1862,8 @@ fn seal_correction(
 
 /// Every journalled correction `book`'s restart refused, as its restart findings name them.
 #[cfg(feature = "root-admin")]
-fn refused_corrections(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-) -> Vec<String> {
-    book.lock()
-        .expect("the book")
-        .restart_findings
-        .clone()
+fn refused_corrections(book: &Arc<Mutex<crate::root::durability::Durability>>) -> Vec<String> {
+    book.lock().expect("the book").restart_findings.clone()
 }
 
 /// Whether any entry on `holder`'s history is a signed correction.

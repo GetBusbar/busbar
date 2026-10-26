@@ -372,7 +372,9 @@ impl TokenVerifier {
 /// changing this derivation is a new key rather than a silently different one under the same name —
 /// which is also why the bytes it emits are pinned by known-answer vectors in the tests below.
 fn subkey_seed(secret: &[u8; 32], domain: &str) -> [u8; 32] {
-    busbar_contract::abi::sdk::digest::sha256(&[&b"busbar/subkey/v1"[..], secret, domain.as_bytes()].concat())
+    busbar_contract::abi::sdk::digest::sha256(
+        &[&b"busbar/subkey/v1"[..], secret, domain.as_bytes()].concat(),
+    )
 }
 
 #[cfg(test)]

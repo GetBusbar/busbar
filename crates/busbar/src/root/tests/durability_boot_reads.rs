@@ -33,12 +33,7 @@ fn over_store(slots: &RecordSlots) -> Durability {
 /// [`over_store`], answering the build itself: a boot the chain refuses is an `Err` here.
 fn rebuilt_over(slots: &RecordSlots) -> Result<Durability, OpenError> {
     let lane = JournalLane::start(slots.calls(), "test-store").expect("the lane starts");
-    build_on_store(
-        &DurabilityConfig { data_dir: None },
-        NODE,
-        lane,
-        None,
-    )
+    build_on_store(&DurabilityConfig { data_dir: None }, NODE, lane, None)
 }
 
 /// Wait until the store took everything the book's lane holds.
@@ -181,11 +176,7 @@ fn a_stored_chain_that_does_not_verify_refuses_the_boot() {
     let slots = RecordSlots::new();
     two_records(&slots);
     let intact = over_store(&slots);
-    assert_eq!(
-        intact.audit_records.len(),
-        2,
-        "the unedited chain rebuilds"
-    );
+    assert_eq!(intact.audit_records.len(), 2, "the unedited chain rebuilds");
     drop(intact);
 
     slots.corrupt(JOURNAL_SCHEMA, &part_key(NODE, 1, 0));

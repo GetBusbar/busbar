@@ -656,4 +656,3 @@ pub fn record_read(
 pub fn node_recent() -> Vec<Amendment> {
     node().recent().cloned().collect()
 }
-

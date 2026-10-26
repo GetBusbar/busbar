@@ -320,7 +320,6 @@ pub fn row_priced_at_ms(bucket_start_secs: u64, priced_from_ms: u64) -> u64 {
     bucket_start_secs.saturating_mul(1_000).max(priced_from_ms)
 }
 
-
 /// The row's flat tier fields under the reserved class spellings a card entry is written against,
 /// so no name is translated between a quantity and the entry that prices it.
 ///

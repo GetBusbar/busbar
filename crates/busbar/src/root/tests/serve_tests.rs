@@ -437,7 +437,12 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
     assert_eq!(post.open_units(), 0, "its node facts closed at its end");
     // ITS ONE AUDIT RECORD carries the decision the far end reported, by class.
-    let records = book.durability.lock().expect("unpoisoned").audit_records.clone();
+    let records = book
+        .durability
+        .lock()
+        .expect("unpoisoned")
+        .audit_records
+        .clone();
     let decided: Vec<u64> = records
         .iter()
         .flat_map(|r| r.usage.lines.iter())
@@ -1260,7 +1265,13 @@ pub(super) mod session_door {
 
         /// The units on the session door's route whose one audit record carries counts.
         fn lines(&self) -> usize {
-            let records = self.book.durability.lock().expect("unpoisoned").audit_records.clone();
+            let records = self
+                .book
+                .durability
+                .lock()
+                .expect("unpoisoned")
+                .audit_records
+                .clone();
             records
                 .iter()
                 .filter(|r| r.usage.lines.iter().any(|l| l.quantity > 0))

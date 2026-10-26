@@ -24,7 +24,9 @@
 use super::inputs;
 use crate::test_support::tokens::pass;
 use busbar_contract::count::Count;
-use busbar_kernel_audit::amend::{content_access, Adjust, AmendBody, AmendChain, Amendment, Reader};
+use busbar_kernel_audit::amend::{
+    content_access, Adjust, AmendBody, AmendChain, Amendment, Reader,
+};
 use busbar_kernel_audit::record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditRecord, OpClassId, Subject,
 };

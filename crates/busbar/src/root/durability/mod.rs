@@ -56,12 +56,11 @@ use busbar_kernel_wal::{
     RecordClass, Shipper,
 };
 
-
 /// The journal kept in the configured store: its schema and keys, the boot's read-back and the
 /// host's write-behind lane. A private child module; its public items are re-exported here.
 mod store_chain;
-pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
 pub(crate) use store_chain::off_runtime;
+pub use store_chain::{read_chain, JournalLane, RECORD_SLOTS};
 // Its one caller is the admin append's wait on the store (`units_admin`), compiled with `root-admin`.
 #[cfg(feature = "root-admin")]
 pub use store_chain::ACK_DEADLINE;
@@ -229,7 +228,6 @@ fn unreadable_in(store: Option<&str>, e: &std::io::Error) -> String {
     }
 }
 
-
 impl std::fmt::Debug for Durability {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Durability")
@@ -308,11 +306,7 @@ impl Durability {
         &self,
     ) -> Option<(JournalLane, u64, busbar_kernel_audit::AuditKeySet)> {
         let lane = self.lane.as_ref()?;
-        Some((
-            lane.clone(),
-            self.journal.node(),
-            keyset_of(&self.record),
-        ))
+        Some((lane.clone(), self.journal.node(), keyset_of(&self.record)))
     }
 
     /// Whether the store is where this journal's durability is: no disk, and a lane to the store.
@@ -590,7 +584,6 @@ pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, Strin
     from_journal_body(&record.body, &busbar_kernel::Registration::meter_class)
 }
 
-
 /// THE NODE'S ONE JOURNAL, and the disaster-recovery verbs' store that goes with it.
 pub struct NodeBook {
     /// The journal and the audit record chain, behind the one lock the audit seal and the views
@@ -808,11 +801,7 @@ fn build_inner(
             })?;
         // A signed rate correction the dated history's rebuild refused: its base is not on the
         // rebuilt history, so it is reported rather than rebuilt over a card nobody signed (#79).
-        findings.extend(
-            refused
-                .into_iter()
-                .map(|refused| refused.to_string()),
-        );
+        findings.extend(refused.into_iter().map(|refused| refused.to_string()));
     }
     durability.resume_audit(&records);
     findings.extend(

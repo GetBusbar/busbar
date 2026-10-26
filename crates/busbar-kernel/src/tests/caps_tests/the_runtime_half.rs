@@ -506,8 +506,7 @@ fn the_doors_answer_is_one_of_three_shapes() {
     let admit = k.admit_token();
     let token: Pass<Admit> = Pass::mint(&k.seal);
 
-    let decision =
-        SeatVerdict::proceed(&token, Admission::Own(Hold::open(&admit, who("acct-1"))));
+    let decision = SeatVerdict::proceed(&token, Admission::Own(Hold::open(&admit, who("acct-1"))));
     match decision.into_result(&k.seal).expect("proceeds") {
         Admission::Own(hold) => {
             let _ = Posted::settle(hold, 5, &usage_of(&k, 5), &k.ledger_token());

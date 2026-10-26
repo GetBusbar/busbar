@@ -202,7 +202,11 @@ fn a_parent_exit_converts_the_childs_accrual_to_its_own_hold() {
         Ended::Settled { end, requests, fee } => {
             assert_eq!(end.outcome(), Outcome::Completed);
             let posted = end.posted().expect("the child posts like any other unit");
-            assert_eq!(posted.quantity(), 400, "the child's own report, on its own hold");
+            assert_eq!(
+                posted.quantity(),
+                400,
+                "the child's own report, on its own hold"
+            );
             assert!(!posted.flags().contains(PostingFlags::LATE_ACCRUAL));
             assert_eq!(
                 (requests, fee),

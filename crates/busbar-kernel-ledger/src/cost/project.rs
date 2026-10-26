@@ -163,7 +163,11 @@ impl<'r> MeteredRow<'r> {
 
     /// [`MeteredRow::spend_micros_in_view`] with the final projection WITHHELD: the exact figure
     /// ([`price_exact`]), so a reader that sums many rows truncates once, over the sum.
-    pub fn exact_in_view(&self, arrived_ms: u64, view: &HistoryView<'_>) -> Result<i128, MoneyError> {
+    pub fn exact_in_view(
+        &self,
+        arrived_ms: u64,
+        view: &HistoryView<'_>,
+    ) -> Result<i128, MoneyError> {
         price_exact(&self.entries(arrived_ms), view)
     }
 

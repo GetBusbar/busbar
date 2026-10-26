@@ -1036,8 +1036,8 @@ fn amend_rate_history_effect(
     arrival_secs: u64,
     attribution: &AmendAttribution,
 ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
-    use busbar_core_admin::GovernanceError;
     use busbar_contract::abi::sdk::digest::sha256;
+    use busbar_core_admin::GovernanceError;
 
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
@@ -1854,7 +1854,10 @@ fn render_totals(ledger: &PricedLedger) -> Result<String, MoneyError> {
         out.push_str(",\"lane\":\"\",\"provider\":\"\",\"priced_nanos\":\"");
         out.push_str(&row.priced_nanos.to_string());
         out.push_str("\",\"priced_micros\":");
-        json_amount(i128::from(Money::of_nanos(row.priced_nanos)?.micros_i64()?), &mut out);
+        json_amount(
+            i128::from(Money::of_nanos(row.priced_nanos)?.micros_i64()?),
+            &mut out,
+        );
         out.push_str(",\"fee_count\":");
         out.push_str(&row.fee_count.to_string());
         out.push('}');

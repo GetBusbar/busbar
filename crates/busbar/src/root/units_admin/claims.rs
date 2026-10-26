@@ -5,8 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{DurableWrite, Grant, StepName};
 use crate::root::durability::{ClaimBalance, ClaimKey, ClaimStamp, Durability};
+use busbar_contract::caps::{DurableWrite, Grant, StepName};
 
 /// The bucket every admin idempotency claim is journalled on: reserved away from every metering
 /// balance, so a claim can never be mistaken for, or matched against, a real hold.

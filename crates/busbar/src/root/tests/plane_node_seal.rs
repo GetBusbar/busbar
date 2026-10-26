@@ -207,7 +207,10 @@ fn assert_sealed_with_destination_and_controls(book: &crate::root::durability::N
         "the record names the verified destination the unit routed to"
     );
     assert_eq!(record.controls.hold_ref, None, "no hold is journalled");
-    assert_eq!(record.controls.settle_ref, None, "no settlement is journalled");
+    assert_eq!(
+        record.controls.settle_ref, None,
+        "no settlement is journalled"
+    );
 }
 
 /// A HANDED unit that routes to destination D seals a record whose destination is D. RED before

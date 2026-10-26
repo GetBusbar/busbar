@@ -464,8 +464,7 @@ fn a_configured_data_dir_opens_a_journal_on_disk() {
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
-    let durability =
-        build(&cfg, Box::new(NullShipper::new())).expect("the directory is writable");
+    let durability = build(&cfg, Box::new(NullShipper::new())).expect("the directory is writable");
 
     assert!(durability.on_disk());
     assert_eq!(durability.journal.mode(), Mode::OnDisk);
@@ -756,13 +755,8 @@ fn store_book_bounded(
 ) -> Durability {
     let lane =
         JournalLane::with_capacity(slots.calls(), "test-store", capacity).expect("the lane starts");
-    build_on_store(
-        &DurabilityConfig { data_dir: None },
-        node,
-        lane,
-        None,
-    )
-    .expect("the store reads back")
+    build_on_store(&DurabilityConfig { data_dir: None }, node, lane, None)
+        .expect("the store reads back")
 }
 
 /// Wait until the store took everything the book's lane holds.
@@ -1891,4 +1885,3 @@ fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_no_data_di
     );
     assert!(peer.lease.is_none(), "and the peer holds none");
 }
-
