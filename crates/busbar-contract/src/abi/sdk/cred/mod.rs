@@ -269,6 +269,8 @@ impl Seal {
 pub const NOT_SECURE: &str = "a credential the operator's URL requires a secure connection \
      for was not sent: the host connector reports this connection is not secured";
 
+mod json;
 #[cfg(test)]
 #[path = "../tests/cred_tests.rs"]
 mod tests;
+pub use json::{json_reply, JsonFailure, JsonReplyError, NotJsonText, SealedJson};
