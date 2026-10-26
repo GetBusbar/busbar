@@ -439,12 +439,7 @@ pub fn load_config_from_disk_judged(
     let config_locked = resolution.locked;
     let config_read_only = resolution.read_only_backend;
 
-    // A CARD EDITED ON DISK AFTER FIRST BOOT IS REFUSED (owner ruling 2026-10-25): every path that
-    // reads the configuration from disk passes here, so each refuses it alike, audited, before
-    // anything is built. A holder with no history yet (a boot, `--validate`) judges nothing.
-    let file_card = config::card::CardFields::of_deploy(&deploy);
     if safe_mode {
-        crate::rate_apply::judge_disk_card(&file_card, &file_card)?;
         // `--safe-mode`: boot on the operator-owned base config ALONE — the persisted overlay
         // (API-registered hooks) is quarantined, not deleted. The escape hatch for "an applied
         // hook is harming traffic and re-applies itself every boot".
@@ -489,10 +484,6 @@ pub fn load_config_from_disk_judged(
         }
         doc
     });
-    let merged_card = file_card
-        .clone()
-        .with_overlay(overlay_doc.as_ref().and_then(|d| d.root.as_ref()));
-    crate::rate_apply::judge_disk_card(&file_card, &merged_card)?;
     Ok(LoadedConfig {
         deploy,
         defs,
@@ -540,8 +531,9 @@ pub struct InstalledLimits {
     /// (and by the swap that puts the generation live); never published by a build that is refused.
     limits: config::LimitsResolved,
     rates: ResolvedRates,
-    /// The card the configuration itself resolved, before the card in force replaced it: the
-    /// SEED an empty history opens with (MONEY-DESIGN section 3a), raised at [`InstalledLimits::keep`].
+    /// The card this configuration resolved, raised at [`InstalledLimits::keep`]: when it differs
+    /// from the card in force, the holder appends a dated history entry for it (MONEY-DESIGN
+    /// section 3a; the configuration is the source of the card, as in 1.5.5).
     configured_card: config::card::CardFields,
     /// The destinations this configuration states, raised to the destination judge at the commit
     /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
@@ -588,7 +580,7 @@ impl InstalledLimits {
         } = self;
         busbar_kernel::config::limits::publish(&limits);
         rules.destinations_applied(&destinations);
-        crate::rate_apply::seed_card(&configured_card);
+        crate::rate_apply::card_applied(&configured_card);
         crate::rate_apply::rates_applied(&rates.raw());
     }
 }
@@ -659,7 +651,7 @@ impl RootRules for AcceptAll {
 #[inline(never)]
 #[allow(clippy::too_many_arguments)] // the build's whole input, one argument each; #1001 added the root's rules
 pub fn build_app_from_config(
-    mut cfg: config::RootCfg,
+    cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
     overlay_path: Option<std::path::PathBuf>,
     base_hook_names: std::collections::HashSet<String>,
@@ -668,18 +660,8 @@ pub fn build_app_from_config(
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
-    // THE CARD IN FORCE PRICES EVERY GENERATION (MONEY-DESIGN section 3a, owner ruling 2026-10-25): once
-    // the fleet-shared history holds a card, the configuration's own card is never priced. The
-    // configuration's card is kept aside as the SEED an empty history opens with. Replaced before
-    // validation, so completeness is judged against the card that will be in force.
+    // The card this configuration resolves, raised at the commit (`InstalledLimits::keep`).
     let configured_card = config::card::CardFields::of_root(&cfg);
-    let substituted = match crate::rate_apply::build_card() {
-        Some(card) => {
-            card.apply_to(&mut cfg);
-            card != configured_card
-        }
-        None => false,
-    };
     // The root's rules of this configuration, before any part of it is built or installed: a
     // refusal leaves the running generation as it is.
     rules.check(&cfg)?;
@@ -699,14 +681,7 @@ pub fn build_app_from_config(
     // so an apply/reload validates identically and an invalid config changes nothing. It runs
     // BEFORE this configuration's limits are visible to anything (BUSBAR-1.6.0.md §3: "A validation
     // refusal keeps the running generation").
-    // A card the history holds (a PUT's) may price a model the file does not define yet; the
-    // file's own card never may (MONEY-DESIGN section 3a item 27).
-    let validated = if substituted {
-        config_validate::relax_undefined_models(|| config_validate::validate(&cfg))
-    } else {
-        config_validate::validate(&cfg)
-    };
-    if let Err(validation_errors) = validated {
+    if let Err(validation_errors) = config_validate::validate(&cfg) {
         return Err(format!(
             "config validation failed:\n  - {}",
             validation_errors.join("\n  - ")

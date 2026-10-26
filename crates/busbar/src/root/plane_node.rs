@@ -422,15 +422,9 @@ impl Node {
     /// is never dropped, so the unit is refused instead (ARCHITECT 2026-10-07 H3 ruling).
     #[must_use]
     pub fn journal_refusal(&self) -> Option<String> {
-        // A rate-card entry pending confirmation from the store closes admissions on this node
-        // until it is confirmed or abandoned (MONEY-DESIGN section 3a write-before-apply).
-        crate::root::kernel::ROOT_CARD
-            .admission_refusal()
-            .or_else(|| {
-                self.lane
-                    .get()
-                    .and_then(crate::root::durability::JournalLane::refuses_money)
-            })
+        self.lane
+            .get()
+            .and_then(crate::root::durability::JournalLane::refuses_money)
     }
 
     /// Put what the loop posted onto the book, if this node has one.

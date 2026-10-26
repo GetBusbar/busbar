@@ -24,7 +24,7 @@ fn entry(key: EntryKey) -> StoredEntry {
         effective_from: key.t_ms(),
         effective_until: None,
         appended_at: key.t_ms(),
-        author: EntryAuthor::Put,
+        author: EntryAuthor::Change,
         actor: "admin".to_string(),
         base: Some(EntryKey::new(1, [0; 8], 0)),
         writer: 7,

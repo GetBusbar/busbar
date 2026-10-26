@@ -191,12 +191,6 @@ pub enum Cond {
     StillReferenced,
     /// A usage read reached a class the rate card in force does not price (#42).
     Unpriced,
-    /// A rate card edited after first boot outside `PUT /config/settings` (owner ruling
-    /// 2026-10-25): on disk, or in a `POST /config/apply` body. Audited `card.edit_refused`.
-    CardEdit,
-    /// A card change while this node's last one is still pending confirmation from the store, or
-    /// while the history's head is beyond the clock-skew bound (MONEY-DESIGN section 3a).
-    CardHeld,
 }
 
 impl Cond {
@@ -228,14 +222,6 @@ impl Cond {
             Cond::InvalidQueryValue => "invalid query-parameter value",
             Cond::NonNumericPath => "non-numeric path segment",
             Cond::InvalidConfig => "invalid config; nothing changed",
-            Cond::CardEdit => {
-                "the rate card was edited outside `PUT /config/settings`, which is the only way it \
-                 changes after first boot; nothing changed"
-            }
-            Cond::CardHeld => {
-                "a rate-card entry is pending confirmation from the store, or the history holds an \
-                 entry dated beyond the clock-skew bound; nothing changed"
-            }
             Cond::UnknownModule => "unknown module / malformed body",
             Cond::LockoutSelf => "the new chain would lock the caller out",
             Cond::NoDiskBase => {
@@ -490,7 +476,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
         // gone invalid since boot. This used to be undeclared because no fixture could drive it,
         // which left `openapi.json` hiding a response clients hit. `TestApp::disk_paths` gives a
         // snapshot real disk truth, so `drive_plugin_reload_errors` now witnesses it.
-        (Post, "/plugins/reload") => de![Validation / InvalidConfig, Conflict / CardEdit],
+        (Post, "/plugins/reload") => de![Validation / InvalidConfig],
         (Post, "/plugins/rollback") => de![
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
@@ -498,7 +484,6 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / NoDiskBase,
             NotFound / UnknownResource,
             Conflict / NotLoadable,
-            Conflict / CardEdit,
             VersionConflict / StaleIfMatch,
         ],
         (Delete, "/plugins/{file}") => {
@@ -520,14 +505,9 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / InvalidConfig,
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
-            Conflict / CardEdit,
             VersionConflict / StaleIfMatch,
         ],
-        (Post, "/config/reload") => de![
-            Validation / InvalidConfig,
-            Validation / NoDiskBase,
-            Conflict / CardEdit,
-        ],
+        (Post, "/config/reload") => de![Validation / InvalidConfig, Validation / NoDiskBase,],
         (Post, "/config/rollback") => de![
             Validation / InvalidConfig,
             Validation / MalformedBody,
@@ -540,7 +520,6 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             Validation / MalformedBody,
             Validation / MalformedIfMatch,
             Validation / NoDiskBase,
-            Conflict / CardHeld,
             VersionConflict / StaleIfMatch,
         ],
         (Post, "/config/validate") => de![Validation / MalformedBody],
@@ -553,7 +532,6 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             // A named-map section reset that would leave base config.yaml naming a definition it
             // removes. The bulk twin of the per-entry DELETE's dangling guard.
             Conflict / StillReferenced,
-            Conflict / CardEdit,
             VersionConflict / StaleIfMatch,
         ],
         (Get, "/config/diff") => de![
@@ -683,7 +661,6 @@ fn named_map_declared_errors(
             Validation / InvalidConfig,
             Validation / NoDiskBase,
             Conflict / BaseDefined,
-            Conflict / CardEdit,
             Conflict / TrustCeilingRaise,
             VersionConflict / StaleIfMatch,
         ],
@@ -693,7 +670,6 @@ fn named_map_declared_errors(
             Validation / InvalidConfig,
             Validation / NoDiskBase,
             Conflict / BaseDefined,
-            Conflict / CardEdit,
             VersionConflict / StaleIfMatch,
         ],
         (Delete, NamedMapShape::Item) if section.has_trust_ceiling() => de![
@@ -701,7 +677,6 @@ fn named_map_declared_errors(
             Validation / NoDiskBase,
             NotFound / UnknownResource,
             Conflict / BaseDefined,
-            Conflict / CardEdit,
             Conflict / StillReferenced,
             VersionConflict / StaleIfMatch,
         ],
@@ -710,7 +685,6 @@ fn named_map_declared_errors(
             Validation / NoDiskBase,
             NotFound / UnknownResource,
             Conflict / BaseDefined,
-            Conflict / CardEdit,
             VersionConflict / StaleIfMatch,
         ],
         (Patch, NamedMapShape::Settings) => de![
@@ -720,7 +694,6 @@ fn named_map_declared_errors(
             Validation / NoDiskBase,
             NotFound / UnknownResource,
             Conflict / BaseDefined,
-            Conflict / CardEdit,
             VersionConflict / StaleIfMatch,
         ],
         // The single-definition READ 404s on an unknown name; the collection READ takes no input

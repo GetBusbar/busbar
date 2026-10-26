@@ -5,11 +5,10 @@
 //! out of the rest of the configuration so the card can be held, compared and stored on its own
 //! (MONEY-DESIGN section 3a, owner ruling 2026-10-25).
 //!
-//! After first boot the card in force is the fleet-shared history's, never the configuration's: the
-//! history holds a [`CardFields`] per entry, every build of a generation prices with the card in
-//! force ([`CardFields::apply_to`]), and `PUT /config/settings` is the one path that writes a new
-//! one. A configuration file's card is read once, to seed an empty history; after that a file card
-//! that differs from both the seed and the card in force is an EDIT, refused by name.
+//! The configuration is the source of the card, as in 1.5.5 (owner ruling 2026-10-26). The
+//! fleet-shared history holds a [`CardFields`] per entry: whenever the card a build resolves
+//! differs from the card in force, a dated entry is appended, effective from that moment, so usage
+//! is always priced with the card in force when it happened.
 
 use std::collections::BTreeMap;
 
@@ -31,8 +30,7 @@ pub struct CardFields {
     pub plane_fees: PlaneFeesMap,
 }
 
-/// One plane's card and fees as `PUT /config/settings` names them under its request-only `planes`
-/// key, and as the stored form spells them.
+/// One plane's card and fees, as the stored form spells them.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlaneCardFields {
@@ -44,7 +42,7 @@ pub struct PlaneCardFields {
     pub fees: Option<PlaneFeesForm>,
 }
 
-/// A plane's fees, in minor units, as the stored form and the `planes` key spell them.
+/// A plane's fees, in minor units, as the stored form spells them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PlaneFeesForm {
@@ -82,52 +80,6 @@ struct StoredCard {
     per_request_fee: i64,
     #[serde(default)]
     planes: BTreeMap<String, PlaneCardFields>,
-}
-
-/// The fields `PUT /config/settings` SETS, each a whole value (MONEY-DESIGN section 3a): a field left
-/// `None` is kept from the card in force.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct CardSet {
-    /// A new flat card, replacing the flat card whole.
-    pub rate_card: Option<BTreeMap<String, RateEntryCfg>>,
-    /// A new flat per-request fee.
-    pub per_request_fee: Option<i64>,
-    /// Each named plane's card and fees, each replacing that plane's own whole.
-    pub planes: BTreeMap<String, PlaneCardFields>,
-}
-
-impl CardSet {
-    /// Whether the request sets no card field at all.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.rate_card.is_none()
-            && self.per_request_fee.is_none()
-            && self
-                .planes
-                .values()
-                .all(|p| p.rate_card.is_none() && p.fees.is_none())
-    }
-
-    /// The names of the fields it sets, as an operator reads them.
-    #[must_use]
-    pub fn field_names(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        if self.rate_card.is_some() {
-            out.push("rate_card".to_string());
-        }
-        if self.per_request_fee.is_some() {
-            out.push("per_request_fee".to_string());
-        }
-        for (plane, p) in &self.planes {
-            if p.rate_card.is_some() {
-                out.push(format!("planes.{plane}.rate_card"));
-            }
-            if p.fees.is_some() {
-                out.push(format!("planes.{plane}.fees"));
-            }
-        }
-        out
-    }
 }
 
 impl CardFields {
@@ -234,27 +186,6 @@ impl CardFields {
         )
     }
 
-    /// The card with `set`'s fields replaced, each as a whole value.
-    #[must_use]
-    pub fn with_set(&self, set: &CardSet) -> Self {
-        let mut next = self.clone();
-        if let Some(card) = set.rate_card.as_ref() {
-            next.rate_card = Some(card.clone());
-        }
-        if let Some(fee) = set.per_request_fee {
-            next.per_request_fee = fee;
-        }
-        for (plane, p) in &set.planes {
-            if let Some(card) = p.rate_card.as_ref() {
-                next.plane_rate_cards.insert(plane.clone(), card.clone());
-            }
-            if let Some(fees) = p.fees {
-                next.plane_fees.insert(plane.clone(), fees.into());
-            }
-        }
-        next
-    }
-
     /// The fields on which `self` and `other` differ, as an operator reads them.
     #[must_use]
     pub fn differing_fields(&self, other: &CardFields) -> Vec<String> {
@@ -353,19 +284,6 @@ impl CardFields {
             plane_fees: self.plane_fees.clone(),
         }
     }
-
-    /// The flat card and fee, and each plane's, as `GET /config/settings` renders them.
-    #[must_use]
-    pub fn rendered_planes(&self) -> BTreeMap<String, PlaneCardFields> {
-        let mut planes: BTreeMap<String, PlaneCardFields> = BTreeMap::new();
-        for (plane, card) in &self.plane_rate_cards {
-            planes.entry(plane.clone()).or_default().rate_card = Some(card.clone());
-        }
-        for (plane, fees) in &self.plane_fees {
-            planes.entry(plane.clone()).or_default().fees = Some((*fees).into());
-        }
-        planes
-    }
 }
 
 /// SHA-256 of `bytes`: the one digest the card history's records carry.
@@ -406,105 +324,28 @@ impl CardRates {
     }
 }
 
-/// The sentence every refused card edit carries.
-pub const ONLY_PUT: &str = "the rate card changes only through PUT /config/settings";
-
-/// The audit action of a configuration file edited back to its first-boot seed after a PUT.
-pub const FILE_DIFFERS_ACTION: &str = "card.file_differs";
-
-/// The audit action of a refused card edit.
-pub const EDIT_REFUSED_ACTION: &str = "card.edit_refused";
-
-/// The prefix a refused card edit's message opens with, so the admin surface answers it 409.
-pub const EDIT_REFUSED_PREFIX: &str = "card edit refused: ";
-
-/// A REFUSED CARD EDIT: the path that tried it and the fields it would have changed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EditRefused {
-    /// The path, as an operator names it (`config/reload`, `config/apply`, `boot`, ...).
-    pub path: String,
-    /// The fields that differ from the card in force.
-    pub fields: Vec<String>,
-}
-
-impl std::fmt::Display for EditRefused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{EDIT_REFUSED_PREFIX}{} would change {} of the rate card in force; {ONLY_PUT}",
-            self.path,
-            self.fields.join(", ")
-        )
-    }
-}
-
-impl EditRefused {
-    /// Record the refusal on the audit chain, under [`EDIT_REFUSED_ACTION`].
-    pub fn audit(&self) {
-        crate::audit_ring::AUDIT.record_by(
-            EDIT_REFUSED_ACTION,
-            &format!(
-                "rate_card path={} fields={} ({ONLY_PUT})",
-                self.path,
-                self.fields.join(",")
-            ),
-            crate::audit_ring::OUTCOME_REJECTED,
-            "busbar",
-        );
-    }
-}
-
-/// Whether `message` is a refused card edit's ([`EDIT_REFUSED_PREFIX`]).
-#[must_use]
-pub fn is_edit_refusal(message: &str) -> bool {
-    message.contains(EDIT_REFUSED_PREFIX)
-}
-
-/// The per-thread scope of one card check: a candidate card a build prices with, PUT's lenient
-/// disk re-read, and the notes the checks leave for the response being built. Thread-local because
-/// a config transaction's whole apply phase runs on one blocking thread.
-pub(crate) mod scope {
-    use super::CardFields;
-    use std::cell::{Cell, RefCell};
+/// WHO OR WHAT CHANGED THE CARD, for the history entry a change appends: set by the path that
+/// commits a configuration ("config/reload by <actor>", "boot of node N", ...), on the thread the
+/// commit runs on. Thread-local because a config transaction's whole apply phase runs on one
+/// blocking thread.
+pub(crate) mod origin {
+    use std::cell::RefCell;
 
     thread_local! {
-        /// The card a build on this thread prices with in place of the card in force.
-        static OVERRIDE: RefCell<Option<CardFields>> = const { RefCell::new(None) };
-        /// Set while a `PUT /config/settings` re-reads the disk.
-        static LENIENT: Cell<bool> = const { Cell::new(false) };
-        /// The notes card checks left on this thread.
-        static NOTES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        static ORIGIN: RefCell<Option<String>> = const { RefCell::new(None) };
     }
 
-    pub(crate) fn with_override<T>(card: &CardFields, f: impl FnOnce() -> T) -> T {
-        let previous = OVERRIDE.with(|o| o.replace(Some(card.clone())));
+    pub(crate) fn with<T>(origin: &str, f: impl FnOnce() -> T) -> T {
+        let previous = ORIGIN.with(|o| o.replace(Some(origin.to_string())));
         let out = f();
-        OVERRIDE.with(|o| *o.borrow_mut() = previous);
+        ORIGIN.with(|o| *o.borrow_mut() = previous);
         out
     }
 
-    pub(crate) fn override_card() -> Option<CardFields> {
-        OVERRIDE.with(|o| o.borrow().clone())
-    }
-
-    pub(crate) fn lenient<T>(f: impl FnOnce() -> T) -> T {
-        let previous = LENIENT.with(|l| l.replace(true));
-        let out = f();
-        LENIENT.with(|l| l.set(previous));
-        out
-    }
-
-    pub(crate) fn is_lenient() -> bool {
-        LENIENT.with(Cell::get)
-    }
-
-    pub(crate) fn note(text: String) {
-        tracing::warn!("{text}");
-        NOTES.with(|n| n.borrow_mut().push(text));
-    }
-
-    pub(crate) fn take_notes() -> Vec<String> {
-        NOTES.with(|n| std::mem::take(&mut *n.borrow_mut()))
+    pub(crate) fn current() -> String {
+        ORIGIN
+            .with(|o| o.borrow().clone())
+            .unwrap_or_else(|| "a configuration change".to_string())
     }
 }
 

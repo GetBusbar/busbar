@@ -1,27 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FLEET-SHARED RATE-CARD HISTORY, as this node holds it (MONEY-DESIGN section 3a; owner ruling
-//! 2026-10-25: money is ledger counts x rate card, the store keeps only counts and the card with its
-//! history, and after first boot the card changes ONLY through `PUT /config/settings`).
+//! THE FLEET-SHARED RATE-CARD HISTORY, as this node holds it (MONEY-DESIGN section 3a; owner
+//! rulings 2026-10-25 and 2026-10-26: money is ledger counts x rate card, the store keeps only
+//! counts and the card with its history, and the configuration is the source of the card, as in
+//! 1.5.5).
 //!
-//! [`CardStore`] reads the history from the store (`busbar.card.v1`, [`super::card_store`]),
-//! resolves it (the highest-keyed LIVE entry covering an instant prices it), and writes new entries
-//! write-before-apply:
+//! [`CardStore`] reads the history from the store (`busbar.card.v1`, [`super::card_store`]) and
+//! resolves it: the highest-keyed LIVE entry covering an instant prices it.
 //!
-//! - **The opening entry** is written at boot only when the history is empty: the node's merged
-//!   seed card (file plus overlay) from instant zero, recording the merged seed's digest and the
-//!   file-only seed's. Racing nodes each write one; the LOWEST key wins and the others are never in
+//! - **The opening entry** is written at boot only when the history is empty: the node's card from
+//!   instant zero. Racing nodes each write one; the LOWEST key wins and the others are never in
 //!   force.
-//! - **A PUT** writes the head's card with the request's fields replaced, under a key above the
-//!   head. Its bytes go to the local spool first (with a data directory), then every part and the
-//!   commit are put and acked. READY within [`super::card_store::IN_LOCK_BOUND`] answers applied;
-//!   anything doubtful answers "applied, pending confirmation", closes this node's admissions and
-//!   re-puts the same bytes until READY. A first-attempt REFUSED refuses the apply.
-//! - **There is no WITHDRAW.** An entry that landed stays. `card abandon` stops a pending re-put and
-//!   writes a VOID for it; `card void` voids an entry not yet in force.
-//! - **Clock skew** is checked by the writer only: a head more than [`super::card_store::SKEW_MS`]
-//!   ahead of this node's clock refuses a card change and alarms, naming the entry and its writer.
+//! - **Every change of the card a configuration resolves** (boot, reload, apply, settings, plugin
+//!   reload or rollback, overlay and named-map writes) appends a WHOLE-card entry, effective from
+//!   that moment, recording who or what changed it ([`CardStore::apply`]). Nothing is refused.
+//! - **This node prices with its OWN entry** ([`CardStore::own`]): the one it appended or adopted.
+//!   A rescan records other nodes' entries and never moves it, so two nodes running different
+//!   cards each price their own counts with their own card; a time-based read takes the later
+//!   change on any node.
+//! - **Write-before-apply on the config plane:** the entry's bytes go to the local spool first
+//!   (with a data directory), then every part and the commit are put and acked within
+//!   [`super::card_store::IN_LOCK_BOUND`]. Anything else is PENDING: the node prices with the
+//!   pending entry's locally computed id and re-puts the same bytes until READY (strict mode, PR-B2,
+//!   refuses admissions meanwhile: [`CardStore::pending_refusal`]).
+//! - **There is no WITHDRAW.** An entry that landed stays. `card void` voids an entry whose start is
+//!   still in the future.
+//! - **Clock skew** never delays a change: an entry is effective from the writer's own now, whatever
+//!   its key; a head more than [`super::card_store::SKEW_MS`] ahead alarms.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -30,8 +36,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use busbar_contract::store_calls::StoreCalls;
-use busbar_kernel::config::card::{CardFields, CardSet, EditRefused};
-use busbar_kernel::rate_apply::CardPut;
+use busbar_kernel::config::card::CardFields;
 use busbar_kernel_ledger::cost::{Author, CardEntryDraft, EntryKey, History};
 
 use super::card_store::{
@@ -66,27 +71,6 @@ pub fn rate_card_of(card: &CardFields) -> busbar_kernel_ledger::cost::RateCard {
     crate::root::kernel::card_from_raw(&rates.raw())
 }
 
-/// THE SEED a boot raises: the merged card the boot's configuration resolved, and the file's own.
-#[derive(Debug, Clone, Default)]
-pub struct Seed {
-    /// The file plus the overlay, as boot merges them.
-    pub merged: Option<CardFields>,
-    /// The file alone.
-    pub file: Option<CardFields>,
-}
-
-/// What a disk card is, against the history (MONEY-DESIGN section 3a "Disk loads").
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiskVerdict {
-    /// Unedited, or a PUT card copied into the file.
-    Accepted,
-    /// The file was edited BACK to the seed after a PUT changed the card: the load proceeds on the
-    /// card in force, and the audit record `card.file_differs` names it.
-    FileDiffers(Vec<String>),
-    /// An edit.
-    Edited(EditRefused),
-}
-
 /// The node's history in the store.
 pub struct CardStore {
     calls: Arc<dyn StoreCalls>,
@@ -104,11 +88,12 @@ pub struct CardStore {
 struct State {
     entries: BTreeMap<EntryKey, StoredEntry>,
     voids: Vec<VoidRecord>,
-    pending: Option<(EntryKey, super::card_store::Records)>,
+    /// Entries written and not yet confirmed by the store, oldest first.
+    pending: Vec<(EntryKey, super::card_store::Records)>,
     reputting: bool,
     alarmed: BTreeSet<String>,
-    seed: Seed,
-    last_file: Option<CardFields>,
+    /// The entry this node prices with: the one it appended or adopted.
+    own: Option<EntryKey>,
 }
 
 impl std::fmt::Debug for CardStore {
@@ -185,10 +170,19 @@ impl CardStore {
         self.lock().alarmed.iter().cloned().collect()
     }
 
-    /// The key of the entry pending confirmation on this node, if any.
+    /// The key of the oldest entry pending confirmation on this node, if any.
     #[must_use]
     pub fn pending(&self) -> Option<EntryKey> {
-        self.lock().pending.as_ref().map(|(k, _)| *k)
+        self.lock().pending.first().map(|(k, _)| *k)
+    }
+
+    /// **THE ENTRY THIS NODE PRICES WITH**: its key (whose id a count carries) and its card. Set by
+    /// every [`Self::apply`]; a rescan never moves it.
+    #[must_use]
+    pub fn own(&self) -> Option<(EntryKey, CardFields)> {
+        let state = self.lock();
+        let key = state.own?;
+        state.entries.get(&key).map(|e| (key, e.card.clone()))
     }
 
     /// Rebuild the resolved history from what this node holds, and publish it.
@@ -224,7 +218,7 @@ impl CardStore {
                         .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
                         .unwrap_or([0; 32]),
                 },
-                EntryAuthor::Put | EntryAuthor::Migrated { .. } => {
+                EntryAuthor::Change | EntryAuthor::Migrated { .. } => {
                     Author::Config { policy_epoch: 0 }
                 }
             };
@@ -271,34 +265,15 @@ impl CardStore {
         self.lock().entries.get(&key).map(|e| e.card.clone())
     }
 
-    /// The card `GET /config/settings` renders, and which of its fields to show: a field is shown
-    /// when a PUT set it on some entry and the card in force differs there from the merged seed.
+    /// Why STRICT MODE (PR-B2's `advanced.strict_spend_recording`) refuses a new admission now, or
+    /// `None`: a rate-card entry this node prices with is not yet confirmed by the store. The
+    /// default mode serves through it.
     #[must_use]
-    pub fn rendered(&self) -> Option<(CardFields, Vec<String>)> {
-        let in_force = self.in_force()?;
-        let state = self.lock();
-        let seed = Self::opening(&state.entries)?.card.clone();
-        let marked: BTreeSet<&String> = state
-            .entries
-            .values()
-            .filter(|e| matches!(e.author, EntryAuthor::Put))
-            .flat_map(|e| e.set_fields.iter())
-            .collect();
-        let fields: Vec<String> = in_force
-            .differing_fields(&seed)
-            .into_iter()
-            .filter(|f| marked.contains(f))
-            .collect();
-        (!fields.is_empty()).then_some((in_force, fields))
-    }
-
-    /// Why this node refuses a new admission now, or `None`.
-    #[must_use]
-    pub fn admission_refusal(&self) -> Option<String> {
+    pub fn pending_refusal(&self) -> Option<String> {
         self.pending().map(|key| {
             format!(
-                "the rate card entry {key} is pending confirmation from the store; this node \
-                 refuses admissions until the store confirms it or an operator runs `card abandon`"
+                "the rate card entry {key} this node prices with is pending confirmation from the \
+                 store"
             )
         })
     }
@@ -311,9 +286,9 @@ impl CardStore {
         }
     }
 
-    /// The readers' alarms over what this node holds: far-future entries, concurrent edits (two
-    /// PUTs extending one head; the higher key is in force and the other's fields are lost), and
-    /// entries extending a voided one.
+    /// The readers' alarms over what this node holds: far-future entries, nodes running different
+    /// cards (two changes extending one head; time-based reads take the later), and entries
+    /// extending a voided one.
     fn check_alarms(&self, state: &mut State) {
         let now = now_ms();
         let voided: BTreeSet<String> = state.voids.iter().map(|v| v.voided.clone()).collect();
@@ -335,8 +310,7 @@ impl CardStore {
                 if voided.contains(&base.hex()) {
                     messages.push(format!(
                         "rate card entry {} (node {}) extends the voided entry {base}: it still \
-                         carries that entry's fields; re-apply the intended fields through PUT \
-                         /config/settings",
+                         carries that entry's fields; correct the configuration and reload",
                         entry.key, entry.writer
                     ));
                 }
@@ -345,30 +319,26 @@ impl CardStore {
         let puts: Vec<&StoredEntry> = state
             .entries
             .values()
-            .filter(|e| matches!(e.author, EntryAuthor::Put) && !voided.contains(&e.key.hex()))
+            .filter(|e| matches!(e.author, EntryAuthor::Change) && !voided.contains(&e.key.hex()))
             .collect();
         for (i, lower) in puts.iter().enumerate() {
             for higher in &puts[i + 1..] {
                 if lower.base.is_some() && lower.base == higher.base {
-                    let lost: Vec<String> = lower
-                        .card
-                        .differing_fields(&higher.card)
-                        .into_iter()
-                        .filter(|f| lower.set_fields.contains(f))
-                        .collect();
+                    let differ: Vec<String> = lower.card.differing_fields(&higher.card);
                     messages.push(format!(
-                        "concurrent rate card edits: entries {} (node {}) and {} (node {}) both \
-                         extend {}; the higher key {} is in force and the fields [{}] set by {} \
-                         are LOST. Nothing posted is repriced; re-apply them through PUT \
-                         /config/settings",
+                        "nodes run different rate cards: entries {} (node {}, {}) and {} (node \
+                         {}, {}) both extend {}; each node prices its own counts with its own \
+                         card, and a time-based read takes the later ({}), whose card differs in \
+                         [{}]. Make the nodes' configuration agree",
                         lower.key,
                         lower.writer,
+                        lower.actor,
                         higher.key,
                         higher.writer,
+                        higher.actor,
                         lower.base.map(|b| b.hex()).unwrap_or_default(),
                         higher.key,
-                        lost.join(", "),
-                        lower.key
+                        differ.join(", "),
                     ));
                 }
             }
@@ -445,68 +415,60 @@ impl CardStore {
         EntryKey::new(t, self.rand, self.counter.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// **THE BOOT.** Re-put a pending entry the spool holds, read the history, copy the journal's
-    /// card records into it (`migrated`, every chain's), and open it with the seed when it is
-    /// still empty. A non-empty history judges the boot's file card: an edit is not applied, and
-    /// is audited, logged and alarmed, never a failed boot.
+    /// **THE BOOT.** Re-put the entries the spool holds, read the history, copy the journal's
+    /// card records into it (`migrated`, every chain's), open it with this node's card when it is
+    /// still empty, and otherwise apply this node's card ([`Self::apply`]): unchanged, it adopts
+    /// the entry in force; changed, it appends one, effective now.
     ///
     /// # Errors
     ///
     /// The store would not read the history back, or would not take the opening entry or a
     /// migrated one.
-    pub fn boot(self: &Arc<Self>, seed: Seed, migrated: Vec<StoredEntry>) -> Result<(), String> {
+    pub fn boot(
+        self: &Arc<Self>,
+        card: &CardFields,
+        origin: &str,
+        migrated: Vec<StoredEntry>,
+    ) -> Result<(), String> {
         let deadline = || Some(Instant::now() + BOOT_DEADLINE);
-        {
-            self.lock().seed = seed.clone();
-        }
-        // THE SPOOL FIRST, before admissions open: a pending entry is re-put to READY, and an
-        // abandoned one's VOID is offered again (it warns at every boot until READY).
+        // THE SPOOL FIRST: an entry written and not confirmed before the restart is re-put.
         let spool = self.load_spool();
-        if let Some(pending) = spool.pending.as_ref() {
-            let records = pending.records()?;
-            let key = EntryKey::parse_hex(&pending.key)
-                .ok_or_else(|| format!("the rate card spool names `{}`", pending.key))?;
-            match put_all(self.calls.as_ref(), &records, deadline(), false) {
-                PutOutcome::Ready => {
-                    let mut spool = spool.clone();
-                    spool.pending = None;
-                    self.save_spool(&spool)?;
-                }
-                PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => {
-                    tracing::error!(
-                        "the pending rate card entry {key} is not confirmed by the store yet \
-                         ({why}); this node refuses admissions and keeps re-putting it"
-                    );
-                    self.lock().pending = Some((key, records));
-                    self.spawn_reput();
-                }
+        let mut unconfirmed = Vec::new();
+        for write in &spool.pending {
+            let records = write.records()?;
+            let key = EntryKey::parse_hex(&write.key)
+                .ok_or_else(|| format!("the rate card spool names `{}`", write.key))?;
+            if put_all(self.calls.as_ref(), &records, deadline(), false) != PutOutcome::Ready {
+                tracing::error!(
+                    "the rate card entry {key} is not confirmed by the store yet; it is re-put in \
+                     the background"
+                );
+                unconfirmed.push((key, records));
             }
         }
-        for abandoned in &spool.abandoned {
-            tracing::warn!(
-                "rate card entry {} was abandoned on this node and its VOID is not confirmed by \
-                 the store yet; it is re-put in the background",
-                abandoned.key
-            );
+        if unconfirmed.len() != spool.pending.len() {
+            let keep: BTreeSet<String> = unconfirmed.iter().map(|(k, _)| k.hex()).collect();
+            let mut spool = spool.clone();
+            spool.pending.retain(|w| keep.contains(&w.key));
+            self.save_spool(&spool)?;
         }
-        if !spool.abandoned.is_empty() {
-            self.spawn_void_reput();
+        let reput = !unconfirmed.is_empty();
+        self.lock().pending = unconfirmed;
+        if reput {
+            self.spawn_reput();
         }
         // THE READ: the whole schema. A store error fails the boot, unless the node is only
-        // re-putting a pending entry, which serves with admissions closed.
+        // re-putting an entry, which it does in the background.
         match self.rescan(deadline()) {
             Ok(_) => {}
-            Err(why) if self.pending().is_some() => {
-                tracing::error!("{why}; the boot continues with admissions closed");
-            }
+            Err(why) if reput => tracing::error!("{why}; the boot continues and keeps re-putting"),
             Err(why) => return Err(why),
         }
         // THE MIGRATION, before the opening rule: every chain's card records, under time keys, an
         // idempotent union (a key the store holds is not written again).
         let held: BTreeSet<EntryKey> = self.lock().entries.keys().copied().collect();
         for entry in migrated.into_iter().filter(|e| !held.contains(&e.key)) {
-            let records = entry.records()?;
-            match put_all(self.calls.as_ref(), &records, deadline(), true) {
+            match put_all(self.calls.as_ref(), &entry.records()?, deadline(), true) {
                 PutOutcome::Ready => {}
                 PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => {
                     return Err(format!(
@@ -516,14 +478,10 @@ impl CardStore {
                     ))
                 }
             }
-            let mut state = self.lock();
-            state.entries.insert(entry.key, entry);
+            self.lock().entries.insert(entry.key, entry);
         }
-        // THE OPENING RULE: an empty history is opened with the seed, from instant zero, now.
-        let empty = Self::opening(&self.lock().entries).is_none() && self.lock().entries.is_empty();
-        if empty {
-            let merged = seed.merged.clone().unwrap_or_default();
-            let file = seed.file.clone().unwrap_or_else(|| merged.clone());
+        // THE OPENING RULE: an empty history is opened with this node's card, from instant zero.
+        if self.lock().entries.is_empty() {
             let entry = {
                 let state = self.lock();
                 StoredEntry {
@@ -531,15 +489,12 @@ impl CardStore {
                     effective_from: 0,
                     effective_until: None,
                     appended_at: now_ms(),
-                    author: EntryAuthor::Opening {
-                        seed: digest_hex(&merged),
-                        file_seed: digest_hex(&file),
-                    },
-                    actor: "boot".to_string(),
+                    author: EntryAuthor::Opening {},
+                    actor: origin.to_string(),
                     base: None,
                     writer: self.node,
                     set_fields: Vec::new(),
-                    card: merged,
+                    card: card.clone(),
                     correction: None,
                 }
             };
@@ -562,216 +517,147 @@ impl CardStore {
             self.check_alarms(&mut state);
         }
         self.loaded.store(true, Ordering::Release);
-        // A FILE CARD EDITED AFTER FIRST BOOT is not applied: the boot serves the history, and
-        // says so at every boot until the file matches or the change is made through PUT.
-        if !empty {
-            if let Some(file) = seed.file.as_ref() {
-                match self.judge_disk(file) {
-                    DiskVerdict::Edited(refused) => {
-                        refused.audit();
-                        let msg = format!(
-                            "{} (the boot serves the rate card in force from the history)",
-                            EditRefused {
-                                path: "boot".to_string(),
-                                fields: refused.fields.clone(),
-                            }
-                        );
-                        let mut state = self.lock();
-                        self.alarm(&mut state, msg);
-                    }
-                    DiskVerdict::Accepted | DiskVerdict::FileDiffers(_) => {}
-                }
-            }
-        }
+        self.apply(card, origin);
         self.spawn_rescan();
         Ok(())
     }
 
-    /// **JUDGE A DISK CARD** (MONEY-DESIGN section 3a "Disk loads"): the file card against the file-only
-    /// seed and the card in force. Not loaded yet: accepted (the boot judges it once loaded).
-    pub fn judge_disk(&self, file: &CardFields) -> DiskVerdict {
-        let Some(in_force) = self.in_force() else {
-            return DiskVerdict::Accepted;
-        };
-        let mut state = self.lock();
-        let file_seed = match Self::opening(&state.entries).map(|e| &e.author) {
-            Some(EntryAuthor::Opening { file_seed, .. }) => Some(file_seed.clone()),
-            _ => Self::opening(&state.entries).map(|e| digest_hex(&e.card)),
-        };
-        let digest = digest_hex(file);
-        let previous = state.last_file.replace(file.clone());
-        if file_seed.as_deref() == Some(digest.as_str()) {
-            // Unedited since the seed. Edited BACK to it after a PUT changed the card, it is said.
-            let back = in_force != *file && previous.as_ref().is_some_and(|p| p != file);
-            return if back {
-                DiskVerdict::FileDiffers(file.differing_fields(&in_force))
-            } else {
-                DiskVerdict::Accepted
-            };
-        }
-        if *file == in_force {
-            return DiskVerdict::Accepted;
-        }
-        state.last_file = previous;
-        DiskVerdict::Edited(EditRefused {
-            path: "config.yaml".to_string(),
-            fields: file.differing_fields(&in_force),
-        })
-    }
-
-    /// **JUDGE A REQUEST BODY'S CARD** (`POST /config/apply`): equal to the merged seed or to the
-    /// card in force, it passes.
-    ///
-    /// # Errors
-    ///
-    /// Any other card: the edit.
-    pub fn judge_body(&self, path: &str, card: &CardFields) -> Result<(), EditRefused> {
-        let Some(in_force) = self.in_force() else {
-            return Ok(());
-        };
-        let seed = Self::opening(&self.lock().entries).map(|e| e.card.clone());
-        if *card == in_force || seed.as_ref() == Some(card) {
-            return Ok(());
-        }
-        Err(EditRefused {
-            path: path.to_string(),
-            fields: card.differing_fields(&in_force),
-        })
-    }
-
-    /// Refuse a card change while an entry is pending, or while the head is beyond the skew bound.
-    fn writable(&self, state: &mut State) -> Result<(), String> {
-        if let Some((key, _)) = state.pending.as_ref() {
-            return Err(format!(
-                "the rate card entry {key} is pending confirmation from the store; no further \
-                 card change is accepted on this node until it is confirmed or an operator runs \
-                 `card abandon`"
-            ));
+    /// **A CONFIGURATION RESOLVED `card`** (boot, reload, apply, settings, plugin reload or
+    /// rollback, overlay and named-map writes; `origin` names which, and who). Equal to this
+    /// node's own card: nothing. Equal to the card in force: this node adopts that entry.
+    /// Otherwise a WHOLE-card entry is appended, effective now, recording `origin` and the fields
+    /// that changed. Nothing is refused: a write the store does not confirm is pending and re-put.
+    /// Answers the entry this node now prices with.
+    pub fn apply(self: &Arc<Self>, card: &CardFields, origin: &str) -> Option<EntryKey> {
+        if !self.is_loaded() {
+            return None;
         }
         let now = now_ms();
+        let entry = {
+            let mut state = self.lock();
+            let own = state.own.and_then(|k| state.entries.get(&k).cloned());
+            if let Some(own) = own.as_ref().filter(|e| e.card == *card) {
+                return Some(own.key);
+            }
+            if let Some(in_force) = Self::in_force_at(&state, now).filter(|e| e.card == *card) {
+                state.own = Some(in_force.key);
+                return Some(in_force.key);
+            }
+            self.skew_alarm(&mut state, now);
+            let previous = own.or_else(|| Self::in_force_at(&state, now));
+            let key = self.next_key(&state);
+            StoredEntry {
+                key,
+                // Effective from this node's own now, whatever the key: a skewed head never
+                // delays a change.
+                effective_from: now,
+                effective_until: None,
+                appended_at: now,
+                author: EntryAuthor::Change,
+                actor: origin.to_string(),
+                base: previous.as_ref().map(|e| e.key),
+                writer: self.node,
+                set_fields: previous
+                    .as_ref()
+                    .map(|e| e.card.differing_fields(card))
+                    .unwrap_or_default(),
+                card: card.clone(),
+                correction: None,
+            }
+        };
+        tracing::debug!(
+            key = %entry.key,
+            origin,
+            fields = ?entry.set_fields,
+            "the rate card changed: a history entry is appended, effective now"
+        );
+        let key = entry.key;
+        self.write(entry);
+        self.lock().own = Some(key);
+        Some(key)
+    }
+
+    /// A head more than the skew bound ahead of this node's clock is alarmed, naming it and its
+    /// writer. It never delays a change (see [`Self::apply`]).
+    fn skew_alarm(&self, state: &mut State, now: u64) {
         let head = Self::resolve(&state.entries, &state.voids)
             .live_head()
             .map(|e| e.key());
         if let Some(head) = head.filter(|h| h.t_ms() > now.saturating_add(SKEW_MS)) {
             let writer = state.entries.get(&head).map_or(0, |e| e.writer);
             let msg = format!(
-                "the rate card change is refused: entry {head}, written by node {writer}, is \
-                 dated {} ms ahead of this node's clock (more than the {} s skew bound); an \
-                 operator runs `card void {head}` and applies again",
+                "the rate-card history's head {head}, written by node {writer}, is dated {} ms \
+                 ahead of this node's clock (more than the {} s skew bound); this node's changes \
+                 still take effect from its own now. An operator may run `card void {head}` while \
+                 its start is in the future",
                 head.t_ms() - now,
                 SKEW_MS / 1000
             );
-            self.alarm(state, msg.clone());
-            return Err(msg);
+            self.alarm(state, msg);
         }
-        Ok(())
     }
 
-    /// Write `entry` write-before-apply: spooled first, put with the in-lock bound, then in force on
-    /// this node. A doubtful write is pending and re-put in the background.
-    fn write(self: &Arc<Self>, entry: StoredEntry) -> Result<CardPut, String> {
-        let records = entry.records()?;
+    /// Write `entry` write-before-apply: spooled first, put with the in-lock bound. READY, it is
+    /// confirmed; anything else leaves it PENDING, in force on this node and re-put in the
+    /// background until READY. Never refused.
+    fn write(self: &Arc<Self>, entry: StoredEntry) {
         let key = entry.key;
+        let records = match entry.records() {
+            Ok(records) => records,
+            Err(why) => {
+                tracing::error!("rate card entry {key} cannot be written: {why}");
+                Vec::new()
+            }
+        };
         let mut spool = self.load_spool();
-        spool.pending = Some(SpooledWrite::of(&key, &records));
-        self.save_spool(&spool).map_err(|why| {
-            format!("the rate card entry could not be spooled before it was written: {why}")
-        })?;
+        spool.pending.push(SpooledWrite::of(&key, &records));
+        if let Err(why) = self.save_spool(&spool) {
+            tracing::error!(
+                "rate card entry {key} could not be spooled before it was written: {why}; it is \
+                 held in memory and re-put until the store confirms it"
+            );
+        }
         let outcome = put_all(
             self.calls.as_ref(),
             &records,
             Some(Instant::now() + IN_LOCK_BOUND),
             true,
         );
-        match outcome {
-            PutOutcome::Ready => {
-                spool.pending = None;
-                let saved = self.save_spool(&spool);
-                let mut state = self.lock();
-                state.entries.insert(key, entry);
-                self.publish(&state);
-                self.check_alarms(&mut state);
-                if let Err(why) = saved {
-                    tracing::error!(
-                        "rate card entry {key} IS in force fleet-wide, and the local spool could \
-                         not be cleared: {why}"
-                    );
-                }
-                Ok(CardPut::Ready { key: key.hex() })
-            }
-            PutOutcome::Refused(why) => {
-                spool.pending = None;
-                let _ = self.save_spool(&spool);
-                Err(format!(
-                    "the store refused the rate card entry, so the change was not applied: {why}"
-                ))
-            }
-            PutOutcome::Doubtful(why) => {
+        let mut state = self.lock();
+        state.entries.insert(key, entry);
+        if outcome == PutOutcome::Ready {
+            drop(state);
+            spool.pending.retain(|w| w.key != key.hex());
+            if let Err(why) = self.save_spool(&spool) {
                 tracing::error!(
-                    "rate card entry {key} is applied on this node and pending confirmation from \
-                     the store ({why}); admissions are refused until it is confirmed"
+                    "rate card entry {key} IS in force fleet-wide, and the local spool could not \
+                     be cleared: {why}"
                 );
-                {
-                    let mut state = self.lock();
-                    state.entries.insert(key, entry);
-                    state.pending = Some((key, records));
-                    self.publish(&state);
-                }
-                self.spawn_reput();
-                Ok(CardPut::Pending { key: key.hex() })
             }
-        }
-    }
-
-    /// **THE ONE CARD PATH** (`PUT /config/settings`): rescan, build the head's card with `set`'s
-    /// fields replaced, `check` it, write it.
-    ///
-    /// # Errors
-    ///
-    /// A pending entry, a far-future head, a failed rescan, the check's refusal, or a
-    /// first-attempt REFUSED.
-    pub fn put(
-        self: &Arc<Self>,
-        set: &CardSet,
-        actor: &str,
-        check: &mut dyn FnMut(&CardFields) -> Result<(), String>,
-    ) -> Result<CardPut, String> {
-        self.writable(&mut self.lock())?;
-        self.rescan(Some(Instant::now() + IN_LOCK_BOUND))
-            .map_err(|why| format!("the rate card change is refused: {why}"))?;
-        let (base, entry_key) = {
             let mut state = self.lock();
-            self.writable(&mut state)?;
-            let base = Self::in_force_at(&state, now_ms())
-                .ok_or_else(|| "the rate-card history holds no card in force".to_string())?;
-            let key = self.next_key(&state);
-            (base, key)
-        };
-        let card = base.card.with_set(set);
-        if card == base.card {
-            return Ok(CardPut::Unchanged);
+            self.publish(&state);
+            self.check_alarms(&mut state);
+            return;
         }
-        check(&card)?;
-        self.write(StoredEntry {
-            key: entry_key,
-            effective_from: entry_key.t_ms(),
-            effective_until: None,
-            appended_at: now_ms(),
-            author: EntryAuthor::Put,
-            actor: actor.to_string(),
-            base: Some(base.key),
-            writer: self.node,
-            set_fields: set.field_names(),
-            card,
-            correction: None,
-        })
+        let why = match outcome {
+            PutOutcome::Refused(why) | PutOutcome::Doubtful(why) => why,
+            PutOutcome::Ready => String::new(),
+        };
+        tracing::error!(
+            "rate card entry {key} is in force on this node and pending confirmation from the \
+             store ({why}); it is re-put until the store confirms it"
+        );
+        state.pending.push((key, records));
+        self.publish(&state);
+        drop(state);
+        self.spawn_reput();
     }
 
-    /// A BOUNDED AMEND: `card` priced over `[from, until)`, written like a PUT.
+    /// A BOUNDED AMEND: `card` priced over `[from, until)`, written like a change.
     ///
     /// # Errors
     ///
-    /// As [`Self::put`].
+    /// The history is not loaded.
     pub fn amend(
         self: &Arc<Self>,
         from: u64,
@@ -779,10 +665,13 @@ impl CardStore {
         card: CardFields,
         reason_hash: [u8; 32],
         actor: &str,
-    ) -> Result<CardPut, String> {
+    ) -> Result<EntryKey, String> {
+        if !self.is_loaded() {
+            return Err("the rate-card history is not loaded".to_string());
+        }
         let entry = {
             let mut state = self.lock();
-            self.writable(&mut state)?;
+            self.skew_alarm(&mut state, now_ms());
             let base = Self::in_force_at(&state, from).map(|e| e.key);
             StoredEntry {
                 key: self.next_key(&state),
@@ -800,7 +689,9 @@ impl CardStore {
                 correction: None,
             }
         };
-        self.write(entry)
+        let key = entry.key;
+        self.write(entry);
+        Ok(key)
     }
 
     /// The card of the entry covering `t`, as fields, with its key.
@@ -854,40 +745,7 @@ impl CardStore {
         }
     }
 
-    /// **`card abandon`**: stop re-putting the pending entry, void it, and reopen admissions at
-    /// the history's card. The VOID is synced to the local spool first and re-put in the
-    /// background until READY.
-    ///
-    /// # Errors
-    ///
-    /// Nothing is pending, or the spool could not be written.
-    pub fn abandon(self: &Arc<Self>, actor: &str) -> Result<EntryKey, String> {
-        let key = self
-            .pending()
-            .ok_or_else(|| "no rate card entry is pending on this node".to_string())?;
-        let void = VoidRecord {
-            voided: key.hex(),
-            voider: self.node,
-            at_ms: now_ms(),
-            actor: actor.to_string(),
-            why: "abandon".to_string(),
-        };
-        let record = void.record()?;
-        let mut spool = self.load_spool();
-        spool.pending = None;
-        spool.abandoned.push(SpooledWrite::of(&key, &[record]));
-        self.save_spool(&spool)?;
-        {
-            let mut state = self.lock();
-            state.pending = None;
-            state.voids.push(void);
-            self.publish(&state);
-        }
-        self.spawn_void_reput();
-        Ok(key)
-    }
-
-    /// Re-put the pending entry until READY, then reopen admissions.
+    /// Re-put every pending entry, oldest first, until each is READY.
     fn spawn_reput(self: &Arc<Self>) {
         {
             let mut state = self.lock();
@@ -905,7 +763,7 @@ impl CardStore {
                     std::thread::sleep(pause);
                     pause = (pause * 2).min(Duration::from_secs(5));
                     let Some(this) = weak.upgrade() else { return };
-                    let Some((key, records)) = this.lock().pending.clone() else {
+                    let Some((key, records)) = this.lock().pending.first().cloned() else {
                         this.lock().reputting = false;
                         return;
                     };
@@ -917,59 +775,14 @@ impl CardStore {
                     );
                     if outcome == PutOutcome::Ready {
                         let mut spool = this.load_spool();
-                        if spool.pending.as_ref().map(|p| p.key.as_str()) == Some(&key.hex()) {
-                            spool.pending = None;
-                        }
+                        spool.pending.retain(|w| w.key != key.hex());
                         if let Err(why) = this.save_spool(&spool) {
                             tracing::error!("rate card entry {key} is confirmed; the spool: {why}");
                         }
-                        let mut state = this.lock();
-                        if state.pending.as_ref().map(|(k, _)| *k) == Some(key) {
-                            state.pending = None;
-                        }
-                        state.reputting = false;
-                        tracing::warn!(
-                            "rate card entry {key} is confirmed by the store; admissions reopen"
-                        );
-                        return;
+                        this.lock().pending.retain(|(k, _)| *k != key);
+                        tracing::warn!("rate card entry {key} is confirmed by the store");
+                        pause = Duration::from_millis(100);
                     }
-                }
-            });
-    }
-
-    /// Re-put every abandoned entry's VOID until READY, dropping each from the spool when it is.
-    fn spawn_void_reput(self: &Arc<Self>) {
-        let weak: Weak<Self> = Arc::downgrade(self);
-        let _ = std::thread::Builder::new()
-            .name("card-void-reput".into())
-            .spawn(move || {
-                let mut pause = Duration::from_millis(100);
-                loop {
-                    let Some(this) = weak.upgrade() else { return };
-                    let mut spool = this.load_spool();
-                    if spool.abandoned.is_empty() {
-                        return;
-                    }
-                    spool.abandoned.retain(|write| {
-                        let Ok(records) = write.records() else {
-                            return false;
-                        };
-                        put_all(
-                            this.calls.as_ref(),
-                            &records,
-                            Some(Instant::now() + Duration::from_secs(10)),
-                            false,
-                        ) != PutOutcome::Ready
-                    });
-                    if let Err(why) = this.save_spool(&spool) {
-                        tracing::error!("the rate card spool: {why}");
-                    }
-                    if spool.abandoned.is_empty() {
-                        return;
-                    }
-                    drop(this);
-                    std::thread::sleep(pause);
-                    pause = (pause * 2).min(Duration::from_secs(5));
                 }
             });
     }

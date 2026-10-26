@@ -1279,10 +1279,10 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 &self.attribution,
             );
         }
-        // `card void` / `card abandon` (MONEY-DESIGN section 3a): the operator's two writes to the
-        // fleet-shared rate-card history. Audited by the verbs unit like every new verb, and again
+        // `card void` (MONEY-DESIGN section 3a): the operator's write to the fleet-shared rate-card
+        // history. Audited by the verbs unit like every new verb, and again
         // here with what they did.
-        if verb == KernelVerb::CardVoid || verb == KernelVerb::CardAbandon {
+        if verb == KernelVerb::CardVoid {
             return card_verb_effect(
                 &crate::root::kernel::ROOT_CARD,
                 verb,
@@ -1449,8 +1449,8 @@ fn already_applied(
     })
 }
 
-/// The effect half of `card void` and `card abandon` (MONEY-DESIGN section 3a): void a future entry by
-/// key, or abandon this node's pending entry. Each is audited (`card.void`, `card.abandon`).
+/// The effect half of `card void` (MONEY-DESIGN section 3a): void an entry whose start is still in
+/// the future, by key. Audited (`card.void`).
 fn card_verb_effect(
     history: &crate::root::kernel::RootHistory,
     verb: KernelVerb,
@@ -1459,22 +1459,16 @@ fn card_verb_effect(
 ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
     use busbar_core_admin::GovernanceError;
     let store = history.card_store().ok_or(GovernanceError::NotFound)?;
-    let (action, outcome, done) = if verb == KernelVerb::CardVoid {
-        let doc: serde_json::Value =
-            serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
-        let key = doc
-            .get("key")
-            .and_then(serde_json::Value::as_str)
-            .and_then(busbar_kernel_ledger::cost::EntryKey::parse_hex)
-            .ok_or(GovernanceError::Validation)?;
-        (
-            "card.void",
-            "voided",
-            store.void(key, principal).map(|()| key),
-        )
-    } else {
-        ("card.abandon", "abandoned", store.abandon(principal))
-    };
+    let _ = verb;
+    let doc: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| GovernanceError::Validation)?;
+    let key = doc
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .and_then(busbar_kernel_ledger::cost::EntryKey::parse_hex)
+        .ok_or(GovernanceError::Validation)?;
+    let (action, outcome) = ("card.void", "voided");
+    let done = store.void(key, principal).map(|()| key);
     match done {
         Ok(key) => {
             busbar_kernel::audit_ring::AUDIT.record_by(

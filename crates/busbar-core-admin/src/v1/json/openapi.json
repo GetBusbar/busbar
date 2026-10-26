@@ -750,14 +750,14 @@
         "type": "object"
       },
       "CardVerbView": {
-        "description": "`POST /ledger/card/void` and `/ledger/card/abandon`'s answer: the entry acted on.",
+        "description": "`POST /ledger/card/void`'s answer: the entry it voided.",
         "properties": {
           "key": {
             "description": "The entry's key, 40 lowercase hex characters.",
             "type": "string"
           },
           "outcome": {
-            "description": "`voided` or `abandoned`.",
+            "description": "`voided`.",
             "type": "string"
           }
         },
@@ -4858,7 +4858,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -5051,7 +5051,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -5374,7 +5374,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -6206,7 +6206,7 @@
                 }
               }
             },
-            "description": "`conflict`: the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -6399,16 +6399,6 @@
               }
             },
             "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`conflict`: the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed"
           },
           "429": {
             "content": {
@@ -6721,7 +6711,7 @@
                 }
               }
             },
-            "description": "`conflict`: a rate-card entry is pending confirmation from the store, or the history holds an entry dated beyond the clock-skew bound; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -7215,7 +7205,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -7426,7 +7416,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -7562,7 +7552,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -9524,7 +9514,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed, another config section still references this definition by bare name (remove the reference first) | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml), another config section still references this definition by bare name (remove the reference first) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -9735,7 +9725,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed, raising `max_admin_scope` is refused over the admin API; the trust ceiling is operator file policy; lower it here, raise it in config.yaml | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml), raising `max_admin_scope` is refused over the admin API; the trust ceiling is operator file policy; lower it here, raise it in config.yaml | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -9871,7 +9861,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -10999,75 +10989,6 @@
         "x-busbar-since": "1.6.0"
       }
     },
-    "/api/v1/admin/ledger/card/abandon": {
-      "post": {
-        "description": "`card abandon`: stop re-putting the entry the store has not confirmed, void it, and reopen admissions at the history's card. The VOID is kept in the node's spool and re-put until the store confirms it. Audited.",
-        "operationId": "PostLedgerCardAbandon",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CardVerbView"
-                }
-              }
-            },
-            "description": "The entry that was abandoned"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`invalid_request`: no rate-card entry is pending on this node"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "Missing/invalid admin credential (error code `unauthorized`)"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`forbidden`: the credential does not hold `full` (the message names the scope), the verb's per-principal rate class is exhausted, or an idempotent retry is still in flight"
-          },
-          "503": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`unavailable`: the node's spool could not record the abandon. The body is the admin error envelope with code `unavailable`"
-          }
-        },
-        "security": [
-          {
-            "adminToken": []
-          },
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Abandon this node's pending rate-card entry",
-        "x-busbar-required-scope": "full",
-        "x-busbar-since": "1.6.0"
-      }
-    },
     "/api/v1/admin/ledger/card/void": {
       "post": {
         "description": "`card void <key>`: the entry is never in force, and its id stays known, so counts already posted under it keep its card. Refused once its start is past by this node's clock. Audited.",
@@ -11609,7 +11530,7 @@
                 }
               }
             },
-            "description": "`conflict`: another config section still references this definition by bare name (remove the reference first), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: another config section still references this definition by bare name (remove the reference first) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -12167,16 +12088,6 @@
             },
             "description": "Authenticated but under-scoped: requires `full` (error code `forbidden`)"
           },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "`conflict`: the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed"
-          },
           "429": {
             "content": {
               "application/json": {
@@ -12303,7 +12214,7 @@
                 }
               }
             },
-            "description": "`conflict`: the artifact is not loadable: bad archive/manifest, or it fails structure/trust validation, the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: the artifact is not loadable: bad archive/manifest, or it fails structure/trust validation | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -13247,7 +13158,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -13440,7 +13351,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {
@@ -13821,7 +13732,7 @@
                 }
               }
             },
-            "description": "`conflict`: base-defined (edit config.yaml), the rate card was edited outside `PUT /config/settings`, which is the only way it changes after first boot; nothing changed | `version_conflict`: stale `If-Match` (re-read and retry)"
+            "description": "`conflict`: base-defined (edit config.yaml) | `version_conflict`: stale `If-Match` (re-read and retry)"
           },
           "429": {
             "content": {

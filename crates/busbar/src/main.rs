@@ -678,13 +678,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // PUT-replace / DELETE one (edit config.yaml — the overlay can't durably shadow file config).
     let base_hook_names: std::collections::HashSet<String> = cfg.hooks.keys().cloned().collect();
     let base_group_names: std::collections::HashSet<String> = cfg.groups.keys().cloned().collect();
-    // Kept for the boot's second build, should the card history hold another card in force.
-    let card_rebuild = (
-        overlay_doc.clone(),
-        overlay_path.clone(),
-        base_hook_names.clone(),
-        base_group_names.clone(),
-    );
     // Merge the persisted overlay (API-registered hooks + groups) onto the RESOLVED registry.
     if let Some(doc) = overlay_doc {
         config::overlay::merge_into(&mut cfg, doc);
@@ -1039,33 +1032,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         || ROOT_UNITS.iter().any(|u| u.opens_book)
         || !served.planes.is_empty())
     .then(|| root::boot::book(&app, &store_module).unwrap_or_else(|e| die(e)));
-    // THE CARD IN FORCE IS THE HISTORY'S (MONEY-DESIGN section 3a, owner ruling 2026-10-25): the book just
-    // loaded the fleet-shared rate-card history, and when its card in force is not the card this
-    // boot's configuration resolved (a PUT changed it, or another node's), the boot generation is
-    // built again pricing with it, before any router is built or listener bound.
-    let app = if root::kernel::ROOT_CARD.boot_card_stale() {
-        let (overlay_doc, overlay_path, hooks, groups) = card_rebuild;
-        let mut cfg = config::resolve(&deploy, &defs)
-            .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
-        if let Some(doc) = overlay_doc {
-            config::overlay::merge_into(&mut cfg, doc);
-        }
-        let (next, _rotate, limits) = build_app_from_config(
-            cfg,
-            deploy.plugins.clone(),
-            overlay_path,
-            hooks,
-            groups,
-            (Some(config_path.clone()), Some(providers_path.clone())),
-            Some(&app),
-            &(Arc::clone(&root_rules) as Arc<dyn busbar_kernel::appbuild::RootRules>),
-        )
-        .unwrap_or_else(|e| die(format!("the rate card in force from the history: {e}")));
-        limits.keep();
-        Arc::new(next)
-    } else {
-        app
-    };
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
     // Every config apply refreshes each served door plane onto the generation it installed

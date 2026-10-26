@@ -47,30 +47,20 @@ fn a_card_round_trips_through_its_stored_bytes() {
 }
 
 #[test]
-fn a_set_replaces_whole_values_and_keeps_the_rest() {
+fn the_fields_two_cards_differ_on_are_named() {
     let card = card();
-    let set = CardSet {
-        per_request_fee: Some(9),
-        planes: BTreeMap::from([(
-            "mcp".to_string(),
-            PlaneCardFields {
-                rate_card: None,
-                fees: Some(PlaneFeesForm {
-                    per_request: 1,
-                    per_session: 0,
-                }),
-            },
-        )]),
-        ..CardSet::default()
-    };
-    let next = card.with_set(&set);
-    assert_eq!(next.per_request_fee, 9);
-    assert_eq!(next.rate_card, card.rate_card);
-    assert_eq!(next.plane_rate_cards, card.plane_rate_cards);
-    assert_eq!(next.plane_fees["mcp"].per_request, 1);
+    let mut next = card.clone();
+    next.per_request_fee = 9;
+    next.plane_fees.insert(
+        "mcp".to_string(),
+        busbar_kernel_ledger::cost::PlaneFees {
+            per_request: 1,
+            per_session: 0,
+        },
+    );
     assert_eq!(
         next.differing_fields(&card),
         vec!["per_request_fee".to_string(), "planes.mcp.fees".to_string()]
     );
-    assert!(CardSet::default().is_empty());
+    assert!(card.differing_fields(&card).is_empty());
 }

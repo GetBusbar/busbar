@@ -336,6 +336,7 @@ pub(crate) async fn reload_plugins(
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("plugins/reload by {actor}");
     // Serialize against config applies/reloads AND against plugin install/remove — they all touch
     // the same plugins directory and rebuild-and-swap the App snapshot (: one global mutation
     // domain). The whole rebuild is disk I/O, so it is queued onto `spawn_blocking`.
@@ -351,7 +352,7 @@ pub(crate) async fn reload_plugins(
                 return Ok(Outcome::Value((None, Ok(view))));
             }
             let (next, gov_rotate, limits) =
-                rebuild_app_from_disk(&snapshot).map_err(AdminError::from_build)?;
+                rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
             let installed = Arc::new(next);
             // Project the inventory of the snapshot about to go live (the reconciled, loaded set).
             // A projection hiccup is reported but never rolls the swap back, exactly as before.
@@ -368,7 +369,7 @@ pub(crate) async fn reload_plugins(
                     // Past the swap: the process-wide limits this build installed are the LIVE
                     // ones, so keep them. Dropped instead — on any path that never reaches here —
                     // they roll back to the generation still serving.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -455,6 +456,7 @@ pub(crate) async fn rollback_plugin(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("plugins/rollback by {actor}");
     let expected = match if_match_version(&headers) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -497,22 +499,6 @@ pub(crate) async fn rollback_plugin(
             // bad/absent/untrusted target — nothing is persisted or swapped).
             let (manifest, pins) = AdminService::new(snapshot.clone())
                 .resolve_plugin_rollback(&file, &prior_pins)?;
-            // A RATE CARD EDITED ON DISK refuses the rollback BEFORE its pin is saved (owner ruling
-            // 2026-10-25, MONEY-DESIGN section 3a): the rebuild below would refuse it anyway, after the pin
-            // had already moved.
-            if let (Some(config_path), Some(providers_path)) = (
-                snapshot.config_path.as_deref(),
-                snapshot.providers_path.as_deref(),
-            ) {
-                busbar_kernel::load_config_from_disk_judged(
-                    config_path,
-                    Some(providers_path),
-                    false,
-                    busbar_kernel::config::EnvSubst::Strict,
-                    &*snapshot.root_rules,
-                )
-                .map_err(AdminError::from_build)?;
-            }
             // Persist the pin FIRST, so the rebuild (which re-reads the overlay) derives the lowered
             // floor and loads the prior artifact. Durability precedes the swap: if the process died
             // between here and the swap, a restart would come up already rolled back (the safe
@@ -555,7 +541,7 @@ pub(crate) async fn rollback_plugin(
                         );
                         return Err(AdminError::Internal);
                     }
-                    return Err(AdminError::from_build(e));
+                    return Err(AdminError::Validation(e));
                 }
             };
             let installed = Arc::new(next);
@@ -567,7 +553,7 @@ pub(crate) async fn rollback_plugin(
             Ok(Outcome::commit_then(installed.clone(), || Ok(()), move || {
                 // Past the swap: keep the limits this build installed (dropped unkept everywhere
                 // else, including the pin-revert path above).
-                limits.keep();
+                busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                 if let Some(rotate) = gov_rotate {
                     rotate();
                 }
@@ -1429,6 +1415,7 @@ pub(crate) async fn reset_overlay_section(
 ) -> Response {
     use busbar_kernel::config::overlay::OverlaySection;
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("overlay reset by {actor}");
     // Validate the section name BEFORE the If-Match parse so an unknown section is always a plain
     // 400 (never masked by a header error). Unknown → invalid_request (the taxonomy's 400).
     // LAW 7: a plane's named-map section is a section only while its plane is configured, so the
@@ -1529,7 +1516,7 @@ pub(crate) async fn reset_overlay_section(
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
             )
-            .map_err(AdminError::from_build)?;
+            .map_err(AdminError::Validation)?;
             // REFERENTIAL INTEGRITY, the bulk twin of the per-entry DELETE's dangling guard. A
             // named-map reset removes MANY definitions at once, and a config site that still names
             // one of them would otherwise fail deep inside the rebuild with "references X, which is
@@ -1646,7 +1633,7 @@ pub(crate) async fn reset_overlay_section(
                 },
                 move || {
                     // Past persist AND swap: keep the limits this build installed.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2302,6 +2289,7 @@ pub(crate) async fn reload_config(
     axum::Extension(principal): axum::Extension<busbar_kernel::auth::AuthPrincipal>,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("config/reload by {actor}");
     // The whole rebuild is DISK I/O (config.yaml + providers.yaml + the overlay, then resolve +
     // build). It is queued as a store read so it runs on `spawn_blocking`: before, this ran inline
     // on a Tokio worker with the async mutation lock held, so a slow/large config stalled the
@@ -2310,7 +2298,7 @@ pub(crate) async fn reload_config(
         let snapshot = txn.app().clone();
         Ok(txn.read_store(move || {
             let (next, gov_rotate, limits) =
-                rebuild_app_from_disk(&snapshot).map_err(AdminError::from_build)?;
+                rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
             // LIVE-only, exactly as before: a reload IS disk truth, so there is nothing to persist.
             let installed = Arc::new(next);
             // `commit_then` defers the rotation to AFTER `commit_and_swap` returns `Ok` — see
@@ -2321,7 +2309,7 @@ pub(crate) async fn reload_config(
                 || Ok(()),
                 move || {
                     // Past the swap: keep the limits this build installed.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2475,6 +2463,7 @@ pub(crate) async fn apply_config(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("config/apply by {actor}");
     let expected = match if_match_version(&headers) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -2492,10 +2481,6 @@ pub(crate) async fn apply_config(
     if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
         return err_json(&AdminError::Validation(refusal));
     }
-    let req_card_keys = req
-        .config
-        .as_object()
-        .is_some_and(|o| o.contains_key("rate_card") || o.contains_key("per_request_fee"));
     // The boot pre-pass, as `validate_config` runs it: plane sections lifted, the rest frozen.
     let req_deploy: busbar_kernel::config::DeployCfg =
         match busbar_kernel::config::deploy_from_deserializer(req.config) {
@@ -2507,30 +2492,6 @@ pub(crate) async fn apply_config(
             }
         };
     let req_providers = req.providers;
-    // THE BODY'S RATE CARD (owner ruling 2026-10-25, MONEY-DESIGN section 3a): the card changes only
-    // through `PUT /config/settings`. A body card equal to the merged seed or to the card in force
-    // passes; any other is refused 409 and audited (`card.edit_refused`). A body with NO card leaves
-    // the card in force untouched, with 1.5.5's exact answer; the note goes to the log only.
-    let body_has_card = req_card_keys
-        || !req_deploy.plane_rate_cards.is_empty()
-        || !req_deploy.plane_fees.is_empty();
-    if body_has_card {
-        let card = busbar_kernel::config::card::CardFields::of_deploy(&req_deploy);
-        if let Err(refused) = busbar_kernel::rate_apply::judge_body_card("config/apply", &card) {
-            audit::AUDIT.record_by(
-                "config.apply",
-                "config:body",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            return err_json(&AdminError::from_build(refused));
-        }
-    } else if busbar_kernel::rate_apply::card_in_force().is_some() {
-        tracing::info!(
-            "config/apply carries no rate card: the rate card in force is unchanged ({})",
-            busbar_kernel::config::card::ONLY_PUT
-        );
-    }
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
@@ -2605,7 +2566,7 @@ pub(crate) async fn apply_config(
                 || Ok(()),
                 move || {
                     // Past the swap: keep the limits this build installed.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2983,7 +2944,6 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
     // it handed any read-only admin the governance ledger's credential (keys, budgets, the
     // hash-chained audit log) out of band of busbar.
     let mut settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
-    render_card_fields(&mut settings);
     crate::v1::service::redact_settings_bags(&mut settings);
     with_config_etag(
         ok_json(
@@ -3033,6 +2993,7 @@ pub(crate) async fn put_config_settings(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
+    let card_origin = format!("config/settings by {actor}");
     let expected = match if_match_version(&headers) {
         Ok(v) => v,
         Err(resp) => return resp,
@@ -3055,20 +3016,6 @@ pub(crate) async fn put_config_settings(
             )))
         }
     };
-    // THE REQUEST-ONLY `planes` KEY (MONEY-DESIGN section 7 item 25): each plane's `rate_card`/`fees`,
-    // written to the rate-card history and never persisted, so the overlay keeps 1.5.5's shape.
-    let planes: std::collections::BTreeMap<String, busbar_kernel::config::card::PlaneCardFields> =
-        match raw.as_object_mut().and_then(|o| o.remove(PLANES_FIELD)) {
-            None | Some(serde_json::Value::Null) => std::collections::BTreeMap::new(),
-            Some(v) => match serde_json::from_value(v) {
-                Ok(planes) => planes,
-                Err(e) => {
-                    return err_json(&AdminError::Validation(format!(
-                        "malformed config settings '{PLANES_FIELD}': {e}"
-                    )))
-                }
-            },
-        };
     let req: busbar_kernel::config::overlay::RootSettings = match serde_json::from_value(raw) {
         Ok(r) => r,
         Err(e) => {
@@ -3078,36 +3025,19 @@ pub(crate) async fn put_config_settings(
         }
     };
     let reload_to_apply = reload_to_apply_fields(&req);
-    // THE CARD FIELDS THIS REQUEST SETS, each a whole value (`rate_card: null` is a no-op, as in
-    // 1.5.5's merge). They go to the fleet-shared history, the ONE path the card changes by.
-    let card_set = busbar_kernel::config::card::CardSet {
-        rate_card: req.rate_card.clone(),
-        per_request_fee: req.per_request_fee,
-        planes,
-    };
-    // Everything but the card: what the overlay persists.
-    let mut rest = req.clone();
-    rest.rate_card = None;
-    rest.per_request_fee = None;
-    let card_only = !card_set.is_empty() && rest.is_empty();
     let want = req.clone();
-    let put_actor = actor.clone();
     let out = config_transaction(&handle, move |txn| {
         let current = txn.app();
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
         }
         // 1.5.3: a config with no overlay backend is a LOCKED config (the boot invariant guarantees a
-        // MUTABLE config always has a writable overlay). Refuse a settings PUT up front — there is no
+        // MUTABLE config always has a writable overlay). Refuse ANY settings PUT up front — there is no
         // "apply in memory only" outcome anymore, because a live-but-non-durable mutation is exactly
         // the silent-loss failure this release removes. `requested_persist` is now irrelevant: the
         // config is either mutable-and-durable or locked. (Same reasoning as `plugins/rollback`.)
-        // A CARD-ONLY PUT on a locked config is the exception (MONEY-DESIGN section 7 item 26): it writes
-        // only the rate-card history, never the overlay; it is refused below if this build keeps no
-        // history.
         let _ = requested_persist;
-        let locked = current.overlay_path.is_none();
-        if locked && !card_only {
+        if current.overlay_path.is_none() {
             return Err(AdminError::Validation(
                 busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
             ));
@@ -3126,113 +3056,62 @@ pub(crate) async fn put_config_settings(
                         .into(),
                 ));
             };
-            let current_root =
-                current_root_settings(snapshot.overlay_path.as_deref(), "PUT /config/settings");
+            // Merge the partial request onto the CURRENT overlay root (partial-update semantics).
+            let merged = merge_root_settings(
+                current_root_settings(snapshot.overlay_path.as_deref(), "PUT /config/settings"),
+                want,
+            );
+            let merged_for_build = merged.clone();
             // Re-run the disk-load pipeline (base truth), apply the MERGED root onto the DeployCfg
             // BEFORE resolve (so the limits projection + admin-mTLS boot-guard re-derive over it),
             // then merge the CURRENT hooks/groups overlay sections POST-resolve — exactly the reload
             // mechanism, with the root section coming from the just-merged desired state rather than
-            // the on-disk overlay. PUT's own re-read never refuses on the file's card: an edited file
-            // card is audited and named in the answer (MONEY-DESIGN section 3a).
-            let build = |merged_for_build: busbar_kernel::config::overlay::RootSettings| {
-                busbar_kernel::rate_apply::lenient(|| {
-                    busbar_kernel::load_config_from_disk_judged(
-                        &config_path,
-                        Some(&providers_path),
-                        false,
-                        busbar_kernel::config::EnvSubst::Strict,
-                        &*snapshot.root_rules,
-                    )
-                })
-                .and_then(|mut loaded| {
-                    merged_for_build.apply_to_deploy(&mut loaded.deploy);
-                    // Apply the overlay's `plugin_versions` rollback pins onto the DeployCfg BEFORE
-                    // resolve, exactly as boot/reload/reset/`--validate` do
-                    // (`overlay::apply_root_to_deploy`). Without this the rebuild re-validates
-                    // against the BASE floors and re-loads the newer artifact, silently reverting a
-                    // live audited rollback until the next restart re-applies the persisted pin.
-                    if let Some(doc) = loaded.overlay_doc.as_ref() {
-                        busbar_kernel::config::overlay::apply_pre_resolve_sections(
-                            &mut loaded.deploy,
-                            doc,
-                        );
-                    }
-                    let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
-                        .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
-                    let base_hook_names: std::collections::HashSet<String> =
-                        cfg.hooks.keys().cloned().collect();
-                    let base_group_names: std::collections::HashSet<String> =
-                        cfg.groups.keys().cloned().collect();
-                    if let Some(doc) = loaded.overlay_doc {
-                        busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
-                    }
-                    busbar_kernel::build_app_from_config(
-                        cfg,
-                        loaded.deploy.plugins.clone(),
-                        snapshot.overlay_path.clone(),
-                        base_hook_names,
-                        base_group_names,
-                        (Some(config_path.clone()), Some(providers_path.clone())),
-                        Some(&snapshot),
-                        &snapshot.root_rules,
-                    )
-                })
-            };
-            // THE ONE CARD PATH: the head's card with the set fields replaced, validated as the
-            // generation that will price with it, then written to the history write-before-apply.
-            let mut built = None;
-            let mut check_refusal: Option<String> = None;
-            let mut card_put = busbar_kernel::rate_apply::CardPut::NoHistory;
-            if !card_set.is_empty() {
-                let merged_rest = merge_root_settings(current_root.clone(), rest.clone());
-                let put = busbar_kernel::rate_apply::put_card(&card_set, &put_actor, &mut |card| {
-                    let out = busbar_kernel::rate_apply::with_card(card, || {
-                        busbar_kernel::config_validate::relax_undefined_models(|| {
-                            build(merged_rest.clone())
-                        })
-                    });
-                    match out {
-                        Ok(triple) => {
-                            built = Some(triple);
-                            Ok(())
-                        }
-                        Err(why) => {
-                            check_refusal = Some(why.clone());
-                            Err(why)
-                        }
-                    }
-                });
-                card_put = match put {
-                    Ok(put) => put,
-                    Err(why) if check_refusal.as_deref() == Some(why.as_str()) => {
-                        return Err(AdminError::Validation(why))
-                    }
-                    Err(why) => return Err(AdminError::Conflict(why)),
-                };
-            }
-            let in_history = !matches!(card_put, busbar_kernel::rate_apply::CardPut::NoHistory);
-            if locked && !in_history {
-                return Err(AdminError::Validation(
-                    busbar_kernel::config::overlay::NO_WRITABLE_OVERLAY_MSG.to_string(),
-                ));
-            }
-            // A build that keeps no history keeps the card as 1.5.5 did: in the overlay.
-            let merged = if in_history {
-                merge_root_settings(current_root, rest)
-            } else {
-                merge_root_settings(current_root, want)
-            };
-            let next = match built {
-                Some(triple) => Ok(triple),
-                None => build(merged.clone()),
-            }
+            // the on-disk overlay.
+            let next = busbar_kernel::load_config_from_disk_judged(
+                &config_path,
+                Some(&providers_path),
+                false,
+                busbar_kernel::config::EnvSubst::Strict,
+                &*snapshot.root_rules,
+            )
+            .and_then(|mut loaded| {
+                merged_for_build.apply_to_deploy(&mut loaded.deploy);
+                // Apply the overlay's `plugin_versions` rollback pins onto the DeployCfg BEFORE
+                // resolve, exactly as boot/reload/reset/`--validate` do
+                // (`overlay::apply_root_to_deploy`). Without this the rebuild re-validates against
+                // the BASE floors and re-loads the newer artifact, silently reverting a live audited
+                // rollback until the next restart re-applies the persisted pin.
+                if let Some(doc) = loaded.overlay_doc.as_ref() {
+                    busbar_kernel::config::overlay::apply_pre_resolve_sections(
+                        &mut loaded.deploy,
+                        doc,
+                    );
+                }
+                let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
+                    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+                let base_hook_names: std::collections::HashSet<String> =
+                    cfg.hooks.keys().cloned().collect();
+                let base_group_names: std::collections::HashSet<String> =
+                    cfg.groups.keys().cloned().collect();
+                if let Some(doc) = loaded.overlay_doc {
+                    busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
+                }
+                busbar_kernel::build_app_from_config(
+                    cfg,
+                    loaded.deploy.plugins.clone(),
+                    snapshot.overlay_path.clone(),
+                    base_hook_names,
+                    base_group_names,
+                    (Some(config_path), Some(providers_path)),
+                    Some(&snapshot),
+                    &snapshot.root_rules,
+                )
+            })
             .map_err(AdminError::Validation)?;
-            let notes = busbar_kernel::rate_apply::take_notes();
             let (next, gov_rotate, limits) = next;
             let installed = Arc::new(next);
             // PERSIST-then-SWAP, fail-closed. Persist the merged root section (the sibling
-            // hooks/groups sections are preserved verbatim by the read-modify-write). A card-only
-            // PUT on a locked config persists nothing: the history holds it.
+            // hooks/groups sections are preserved verbatim by the read-modify-write).
             let p = installed.clone();
             let to_persist = merged.clone();
             // `commit_then`, not `commit`: the rotation must fire only once `commit_and_swap` has
@@ -3240,36 +3119,18 @@ pub(crate) async fn put_config_settings(
             // failure true for the shared, process-lifetime `GovState` too — see
             // `build_app_from_config`'s doc comment. Same mechanism as every other rotation-possible
             // site.
-            let card_written = matches!(
-                card_put,
-                busbar_kernel::rate_apply::CardPut::Ready { .. }
-                    | busbar_kernel::rate_apply::CardPut::Pending { .. }
-            );
             Ok(Outcome::commit_then(
                 installed.clone(),
                 move || {
-                    if locked {
-                        return Ok(());
-                    }
                     busbar_kernel::config::overlay::persist_root(
                         p.overlay_path.as_deref(),
                         &to_persist,
                     )
                     .map_err(|e| {
-                        if card_written {
-                            // NO WITHDRAW: the card entry is READY (or pending) and in force
-                            // fleet-wide whatever the overlay save does (MONEY-DESIGN section 7 item 19).
-                            format!(
-                                "config settings could not be persisted to the overlay: {e}; the \
-                                 rate card IS in force fleet-wide (it is kept in the rate-card \
-                                 history, not the overlay); nothing else was changed"
-                            )
-                        } else {
-                            format!(
-                                "config settings could not be persisted to the overlay: {e}; \
+                        format!(
+                            "config settings could not be persisted to the overlay: {e}; \
                                  nothing was changed (the running engine is unaffected)"
-                            )
-                        }
+                        )
                     })
                 },
                 move || {
@@ -3277,18 +3138,18 @@ pub(crate) async fn put_config_settings(
                     // /config/settings` is the site where this matters most — the root section it
                     // merges CARRIES `limits:`, so a rejected settings apply is precisely a
                     // rejected set of process-wide caps.
-                    limits.keep();
+                    busbar_kernel::rate_apply::with_origin(&card_origin, || limits.keep());
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
-                    Ok(Outcome::Value((installed, merged, card_put, notes)))
+                    Ok(Outcome::Value((installed, merged)))
                 },
             ))
         }))
     })
     .await;
     match out {
-        Ok((installed, merged, card_put, notes)) => {
+        Ok((installed, merged)) => {
             audit::AUDIT.record_by(
                 "config.settings",
                 "config:settings",
@@ -3299,7 +3160,7 @@ pub(crate) async fn put_config_settings(
             // 1.5.3: past the up-front guard, a mutable config ALWAYS has a writable overlay, so the
             // change was durably persisted (`persist_root` returned `Ok` or the whole transaction
             // would have failed). The old "IN MEMORY ONLY" branch is gone — that state is unreachable.
-            let (reload_to_apply, mut note) = if reload_to_apply.is_empty() {
+            let (reload_to_apply, note) = if reload_to_apply.is_empty() {
                 (reload_to_apply, "applied live".to_string())
             } else {
                 let note = format!(
@@ -3310,22 +3171,12 @@ pub(crate) async fn put_config_settings(
                 );
                 (reload_to_apply, note)
             };
-            if let busbar_kernel::rate_apply::CardPut::Pending { key } = &card_put {
-                note = format!(
-                    "applied, pending confirmation: rate card entry {key} is in force on this node \
-                     and not yet confirmed by the store; this node refuses admissions until it is"
-                );
-            }
-            for extra in &notes {
-                note = format!("{note}; {extra}");
-            }
             // Redacted on the WRITE echo too, by the same helper: `merged` is the whole root, not
             // just what this caller sent, so the echo would otherwise hand back opaque bags (a
             // `store.settings` credential among them) the caller never supplied. One projection for
             // this resource on both verbs — a reader of the schema does not have to learn that the
             // PUT echo is shaped differently from the GET.
             let mut settings = serde_json::to_value(&merged).unwrap_or_else(|_| json!({}));
-            render_card_fields(&mut settings);
             crate::v1::service::redact_settings_bags(&mut settings);
             with_config_etag(
                 ok_json(
@@ -3352,57 +3203,6 @@ pub(crate) async fn put_config_settings(
             );
             err_json(&e)
         }
-    }
-}
-
-/// The request-only `planes` key of `PUT /config/settings`: each plane's `rate_card`/`fees`.
-const PLANES_FIELD: &str = "planes";
-
-/// **THE CARD FIELDS `/config/settings` SHOWS** (MONEY-DESIGN section 3a): the overlay's own card fields
-/// as 1.5.5 showed them, and each field a PUT set whose value in the card in force differs from the
-/// merged seed's, rendered from the history. Plane cards show under `planes`.
-fn render_card_fields(settings: &mut serde_json::Value) {
-    let Some(rendered) = busbar_kernel::rate_apply::rendered_card() else {
-        return;
-    };
-    let Some(obj) = settings.as_object_mut() else {
-        return;
-    };
-    let card = &rendered.card;
-    for field in &rendered.fields {
-        match field.as_str() {
-            "rate_card" => {
-                obj.insert(
-                    "rate_card".to_string(),
-                    serde_json::to_value(&card.rate_card).unwrap_or(serde_json::Value::Null),
-                );
-            }
-            "per_request_fee" => {
-                obj.insert("per_request_fee".to_string(), json!(card.per_request_fee));
-            }
-            _ => {}
-        }
-    }
-    let planes: serde_json::Map<String, serde_json::Value> = card
-        .rendered_planes()
-        .into_iter()
-        .filter_map(|(plane, mut fields)| {
-            let card_shown = rendered
-                .fields
-                .contains(&format!("planes.{plane}.rate_card"));
-            let fees_shown = rendered.fields.contains(&format!("planes.{plane}.fees"));
-            if !card_shown {
-                fields.rate_card = None;
-            }
-            if !fees_shown {
-                fields.fees = None;
-            }
-            (card_shown || fees_shown)
-                .then(|| (plane, serde_json::to_value(fields).unwrap_or_default()))
-        })
-        .collect();
-    if !planes.is_empty() {
-        obj.insert("planes".to_string(), serde_json::Value::Object(planes));
     }
 }
 

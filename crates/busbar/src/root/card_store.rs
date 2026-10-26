@@ -62,16 +62,12 @@ pub const PENDING_FILE: &str = "card-pending.json";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EntryAuthor {
-    /// The opening entry, written only when the history is empty: the seed card, effective from
-    /// instant zero. Records the MERGED seed's digest (the card) and the FILE-ONLY seed's.
-    Opening {
-        /// Hex SHA-256 of the merged seed card.
-        seed: String,
-        /// Hex SHA-256 of the file-only seed card.
-        file_seed: String,
-    },
-    /// A `PUT /config/settings`.
-    Put,
+    /// The opening entry, written only when the history is empty: the booting node's card,
+    /// effective from instant zero.
+    Opening {},
+    /// A change of the card a configuration resolved (boot, reload, apply, settings, plugin reload
+    /// or rollback, overlay or named-map write); the entry's `actor` names which, and who.
+    Change,
     /// A bounded amend (the audited admin verb).
     Amend {
         /// Hex SHA-256 of the stated reason.
@@ -104,13 +100,15 @@ pub struct StoredEntry {
     pub appended_at: u64,
     /// Why it exists.
     pub author: EntryAuthor,
-    /// Who asked for it (the admin actor), or the system.
+    /// Who or what wrote it: "config/reload by <actor>", "boot of node <id>", ... The entry is
+    /// the audited record of a card change.
     pub actor: String,
     /// The key of the head it extended.
     pub base: Option<EntryKey>,
     /// The writer's durable node id.
     pub writer: u64,
-    /// The card fields a PUT set (`rate_card`, `per_request_fee`, `planes.<p>.rate_card`, ...).
+    /// The card fields that changed from the entry it extended (`rate_card`, `per_request_fee`,
+    /// `planes.<p>.rate_card`, ...).
     pub set_fields: Vec<String>,
     /// The whole card.
     pub card: CardFields,
@@ -449,18 +447,14 @@ pub fn put_all(
     PutOutcome::Ready
 }
 
-/// THE LOCAL SPOOL OF CARD WRITES the store has not confirmed: the pending entry's bytes (written
-/// BEFORE its first put, so a restart re-puts them before admissions open), and each abandoned
-/// entry's VOID until the store has it.
+/// THE LOCAL SPOOL OF CARD WRITES the store has not confirmed: each entry's bytes, written BEFORE
+/// its first put, so a restart re-puts them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spool {
-    /// The pending entry, if any: its key and every record, hex.
+    /// Entries not yet confirmed, oldest first: each key and every record, hex.
     #[serde(default)]
-    pub pending: Option<SpooledWrite>,
-    /// Abandoned entries whose VOID is not READY yet.
-    #[serde(default)]
-    pub abandoned: Vec<SpooledWrite>,
+    pub pending: Vec<SpooledWrite>,
 }
 
 /// One spooled write: the entry's key and the records to put, hex.
@@ -553,7 +547,7 @@ impl Spool {
     /// Whether nothing is spooled.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.pending.is_none() && self.abandoned.is_empty()
+        self.pending.is_empty()
     }
 }
 

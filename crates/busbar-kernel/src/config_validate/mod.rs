@@ -1686,7 +1686,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // plane-qualified key is another plane's lane, which that plane names at run time; a lane
         // that plane never serves is never hit, and a hit its card is silent about REFUSES (#42).
         for model in card.keys().filter(|k| !k.contains(PLANE_LANE_SEP)) {
-            if !cfg.models.contains_key(model) && !RELAX_UNDEFINED.with(std::cell::Cell::get) {
+            if !cfg.models.contains_key(model) {
                 errors.push(format!(
                     "rate_card names model '{model}', which is not defined under models: \
                      (a rate entry is keyed by the CONFIG model name); remove it or fix the name"
@@ -2810,19 +2810,3 @@ mod store_required_tests;
 #[cfg(test)]
 #[path = "tests/secret_shorthand_declared_tests.rs"]
 mod secret_shorthand_declared_tests;
-
-thread_local! {
-    /// Set while a build validates a card the rate-card history holds (written by
-    /// `PUT /config/settings`): such a card may price a model the configuration does not define
-    /// yet (MONEY-DESIGN section 3a item 27). A file card never may.
-    static RELAX_UNDEFINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Run `f` with the undefined-model refusal relaxed: the card being validated is the history's,
-/// not the file's (see [`RELAX_UNDEFINED`]).
-pub fn relax_undefined_models<T>(f: impl FnOnce() -> T) -> T {
-    let previous = RELAX_UNDEFINED.with(|r| r.replace(true));
-    let out = f();
-    RELAX_UNDEFINED.with(|r| r.set(previous));
-    out
-}

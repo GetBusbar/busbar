@@ -210,11 +210,12 @@ pub struct RootHistory {
     /// The form of the config card in force, as the journal holds it.
     in_force: Mutex<Option<CardForm>>,
     /// **THE FLEET-SHARED HISTORY IN THE STORE** (MONEY-DESIGN section 3a): set by the production boot
-    /// before its book opens ([`Self::keep_in_store`]). Once it is loaded it is the only source of
-    /// prices, nothing is journalled, and the card changes only through `PUT /config/settings`.
+    /// before its book opens ([`Self::keep_in_store`]). Once it is loaded nothing is journalled,
+    /// and every change of the configured card appends an entry to it.
     store: std::sync::OnceLock<Arc<crate::root::card_history::CardStore>>,
-    /// The boot's seed: the merged card its configuration resolved and the file's own card.
-    seed: Mutex<crate::root::card_history::Seed>,
+    /// The card the boot's configuration resolved: the history's opening entry, or the boot's own
+    /// change, once the history is loaded.
+    boot_card: Mutex<Option<busbar_kernel::config::card::CardFields>>,
 }
 
 /// Where a holder's applied cards go (see [`RootHistory::arm_journal`]).
@@ -352,41 +353,33 @@ impl RootHistory {
         self.store.get().is_some()
     }
 
-    /// Why this node refuses a new admission now, or `None`: a card entry pending confirmation.
+    /// Why STRICT MODE refuses a new admission now, or `None`: a card entry this node prices with
+    /// is pending confirmation from the store (see
+    /// [`crate::root::card_history::CardStore::pending_refusal`]).
     #[must_use]
-    pub fn admission_refusal(&self) -> Option<String> {
-        self.card_store().and_then(|s| s.admission_refusal())
+    pub fn pending_refusal(&self) -> Option<String> {
+        self.card_store().and_then(|s| s.pending_refusal())
     }
 
-    /// Whether the boot generation was built with another card than the one in force: the
-    /// history is loaded and its card in force is not the card the boot's configuration resolved.
-    #[must_use]
-    pub fn boot_card_stale(&self) -> bool {
-        let Some(in_force) = self.card_store().and_then(|s| s.in_force()) else {
-            return false;
-        };
-        let seed = self.seed.lock().unwrap_or_else(|p| p.into_inner());
-        seed.merged.as_ref() != Some(&in_force)
-    }
-
-    /// Raise the boot's merged seed: the card its configuration resolved (first raise wins).
-    pub fn seed_merged(&self, card: &busbar_kernel::config::card::CardFields) {
-        let mut seed = self.seed.lock().unwrap_or_else(|p| p.into_inner());
-        if seed.merged.is_none() {
-            seed.merged = Some(card.clone());
-        }
-    }
-
-    /// Raise the boot's file-only seed (first raise wins).
-    pub fn seed_file(&self, card: &busbar_kernel::config::card::CardFields) {
-        let mut seed = self.seed.lock().unwrap_or_else(|p| p.into_inner());
-        if seed.file.is_none() {
-            seed.file = Some(card.clone());
+    /// THE CARD A CONFIGURATION RESOLVED, with who or what changed it. Before the history is
+    /// loaded, the first one (the boot's) is kept for the boot; after, it is applied to the history
+    /// ([`crate::root::card_history::CardStore::apply`]).
+    pub fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
+        match self.card_store() {
+            Some(store) => {
+                store.apply(card, origin);
+            }
+            None => {
+                let mut boot = self.boot_card.lock().unwrap_or_else(|p| p.into_inner());
+                if boot.is_none() {
+                    *boot = Some(card.clone());
+                }
+            }
         }
     }
 
     /// THE STORE BOOT, run by the book's rebuild: every chain's card records migrated, the history
-    /// read, opened if empty, and the boot's file card judged.
+    /// read, opened if empty, and the boot's card applied.
     fn boot_store(
         &self,
         store: &Arc<crate::root::card_history::CardStore>,
@@ -403,8 +396,13 @@ impl RootHistory {
             ),
         }
         let migrated = crate::root::card_history::migrated(&chains, store.node());
-        let seed = self.seed.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        store.boot(seed, migrated)
+        let card = self
+            .boot_card
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .unwrap_or_default();
+        store.boot(&card, &format!("boot of node {}", store.node()), migrated)
     }
 
     /// **THE ONLY MUTATOR: APPEND.** Put `card` on the history effective from `now_ms`, and return
@@ -850,18 +848,13 @@ impl RootHistory {
                 busbar_kernel_ledger::cost::Author::Amend { reason_hash } => *reason_hash,
                 _ => [0; 32],
             };
-            let put = store
+            let key = store
                 .amend(correction.effective_from, until, card, reason_hash, "admin")
                 .map_err(AmendRefused::Store)?;
-            let key = match put {
-                busbar_kernel::rate_apply::CardPut::Ready { key }
-                | busbar_kernel::rate_apply::CardPut::Pending { key } => key,
-                busbar_kernel::rate_apply::CardPut::Unchanged
-                | busbar_kernel::rate_apply::CardPut::NoHistory => String::new(),
-            };
             let history = store.history().ok_or(AmendRefused::NoHistory)?;
-            return busbar_kernel_ledger::cost::EntryKey::parse_hex(&key)
-                .and_then(|k| history.entry(&k).map(|e| e.seq()))
+            return history
+                .entry(&key)
+                .map(busbar_kernel_ledger::cost::CardEntry::seq)
                 .ok_or(AmendRefused::NoHistory);
         }
         // Every other append runs under the same lock, so the history the draft was resolved
@@ -977,63 +970,8 @@ impl busbar_kernel::rate_apply::RateApply for CardRepricer {
         }
     }
 
-    fn seed_card(&self, card: &busbar_kernel::config::card::CardFields) {
-        ROOT_CARD.seed_merged(card);
-    }
-
-    fn card_in_force(&self) -> Option<busbar_kernel::config::card::CardFields> {
-        ROOT_CARD.card_store().and_then(|s| s.in_force())
-    }
-
-    fn rendered_card(&self) -> Option<busbar_kernel::rate_apply::RenderedCard> {
-        ROOT_CARD
-            .card_store()
-            .and_then(|s| s.rendered())
-            .map(|(card, fields)| busbar_kernel::rate_apply::RenderedCard { card, fields })
-    }
-
-    fn judge_disk_card(
-        &self,
-        file: &busbar_kernel::config::card::CardFields,
-        _merged: &busbar_kernel::config::card::CardFields,
-    ) -> Result<Option<String>, busbar_kernel::config::card::EditRefused> {
-        let Some(store) = ROOT_CARD.card_store() else {
-            // Before the history is loaded (the boot's own read): this is the file-only seed.
-            ROOT_CARD.seed_file(file);
-            return Ok(None);
-        };
-        match store.judge_disk(file) {
-            crate::root::card_history::DiskVerdict::Accepted => Ok(None),
-            crate::root::card_history::DiskVerdict::FileDiffers(fields) => {
-                Ok(Some(fields.join(", ")))
-            }
-            crate::root::card_history::DiskVerdict::Edited(refused) => Err(refused),
-        }
-    }
-
-    fn judge_body_card(
-        &self,
-        path: &str,
-        card: &busbar_kernel::config::card::CardFields,
-    ) -> Result<(), busbar_kernel::config::card::EditRefused> {
-        ROOT_CARD
-            .card_store()
-            .map_or(Ok(()), |s| s.judge_body(path, card))
-    }
-
-    fn put_card(
-        &self,
-        set: &busbar_kernel::config::card::CardSet,
-        actor: &str,
-        check: &mut dyn FnMut(&busbar_kernel::config::card::CardFields) -> Result<(), String>,
-    ) -> Result<busbar_kernel::rate_apply::CardPut, String> {
-        match ROOT_CARD.card_store() {
-            Some(store) => store.put(set, actor, check),
-            None if ROOT_CARD.keeps_store() => {
-                Err("the rate-card history is not loaded yet; try again".to_string())
-            }
-            None => Ok(busbar_kernel::rate_apply::CardPut::NoHistory),
-        }
+    fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
+        ROOT_CARD.card_applied(card, origin);
     }
 }
 

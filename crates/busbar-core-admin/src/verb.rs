@@ -306,9 +306,6 @@ pub enum KernelVerb {
     /// `POST /api/v1/admin/ledger/card/void` — `card void <key>`: void a rate-card history entry
     /// whose start is still in the future (a far-ahead clock's entry). Its id stays known.
     CardVoid,
-    /// `POST /api/v1/admin/ledger/card/abandon` — `card abandon`: stop re-putting this node's
-    /// pending rate-card entry, void it, and reopen admissions at the history's card.
-    CardAbandon,
     /// `GET /api/v1/admin/trust` — every trust key of the kernel's trust book (a counterparty of an
     /// instance, or one item there) and its state.
     GetTrust,
@@ -676,9 +673,9 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 14 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
-/// back-dated rate-card correction the dated-history design adds — the two rate-card history
-/// verbs `card_void` and `card_abandon` (MONEY-DESIGN section 3a), and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
+/// The 13 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
+/// back-dated rate-card correction the dated-history design adds — the rate-card history's
+/// `card_void` (MONEY-DESIGN section 3a), and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
 /// `set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset` and `approve` left 1.6.0
 /// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7), and `set_overdraft_ceiling`,
 /// `set_dispute_max_age`, `resolve_dispute` and `resolve_slice` by #77(9) (owner answer Q71(1)):
@@ -694,7 +691,6 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Adjust,
     KernelVerb::AmendRateHistory,
     KernelVerb::CardVoid,
-    KernelVerb::CardAbandon,
     KernelVerb::GetTrust,
     KernelVerb::TrustApprove,
     KernelVerb::TrustRevoke,
@@ -721,7 +717,7 @@ pub const fn effect_bound(verb: KernelVerb) -> bool {
         // `execute_new_verb`).
         KernelVerb::Adjust | KernelVerb::AmendRateHistory => true,
         // Their effect lands on the fleet-shared rate-card history in the store (MONEY-DESIGN section 3a).
-        KernelVerb::CardVoid | KernelVerb::CardAbandon => true,
+        KernelVerb::CardVoid => true,
         // Owner answer Q71(2): the two reads answer from the node's own book and plane registry,
         // the plane record write lands on the plane-facing store, and the committed release is
         // sealed on the node journal (the composition root's `execute_new_verb`).
@@ -843,7 +839,6 @@ pub const fn verb_name(verb: KernelVerb) -> Option<&'static str> {
         KernelVerb::Adjust => "adjust",
         KernelVerb::AmendRateHistory => "amend_rate_history",
         KernelVerb::CardVoid => "card_void",
-        KernelVerb::CardAbandon => "card_abandon",
         // The three trust verbs.
         KernelVerb::GetTrust => "get_trust",
         KernelVerb::TrustApprove => "trust_approve",

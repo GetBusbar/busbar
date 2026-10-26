@@ -142,17 +142,6 @@ impl AdminError {
         }
     }
 
-    /// A configuration build's refusal, as the operator reads it: a rate card EDITED on disk or in
-    /// a request body after first boot is a TERMINAL conflict (409, owner ruling 2026-10-25: the
-    /// card changes only through `PUT /config/settings`); every other refusal is `invalid_request`.
-    pub fn from_build(message: String) -> Self {
-        if busbar_kernel::config::card::is_edit_refusal(&message) {
-            AdminError::Conflict(message)
-        } else {
-            AdminError::Validation(message)
-        }
-    }
-
     /// The FROZEN stable code. Tooling branches on this string; it never changes for a shipped variant.
     pub fn code(&self) -> &'static str {
         match self {

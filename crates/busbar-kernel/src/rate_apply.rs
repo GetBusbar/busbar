@@ -17,7 +17,7 @@
 //! it cost, and this seam carries a price.
 
 use crate::billing::RawTierRates;
-use crate::config::card::{CardFields, CardSet, EditRefused};
+use crate::config::card::CardFields;
 
 /// The configured rates, as the neutral view a holder rebuilds its card from.
 ///
@@ -61,96 +61,11 @@ pub trait RateApply: Send + Sync {
     /// them for its whole life, and the next request sees these.
     fn rates_applied(&self, rates: &RawRates<'_>);
 
-    /// The SEED: the card the boot's own configuration resolved (the file plus the overlay, as boot
-    /// merges them). It opens an EMPTY history and is never priced after that (MONEY-DESIGN section 3a,
-    /// owner ruling 2026-10-25). Raised once per build, before [`Self::rates_applied`].
-    fn seed_card(&self, _card: &CardFields) {}
-
-    /// The card IN FORCE: what every generation is built to price with once a history holds one.
-    /// `None` — the default, and a holder whose history is not loaded yet — leaves the
-    /// configuration's own card in place.
-    fn card_in_force(&self) -> Option<CardFields> {
-        None
-    }
-
-    /// The card `GET /config/settings` renders: the card in force, but only once a PUT has made it
-    /// differ from the seed. `None` otherwise.
-    fn rendered_card(&self) -> Option<RenderedCard> {
-        None
-    }
-
-    /// JUDGE A DISK CARD (MONEY-DESIGN section 3a "Disk loads"): `file` is the configuration file's
-    /// card, `merged` the file with the overlay's card fields laid over it. The file card is
-    /// compared against the file-only seed and the card in force. `Ok(Some(fields))`: the file
-    /// was edited BACK to the seed after a PUT changed the card (`card.file_differs`).
-    ///
-    /// # Errors
-    ///
-    /// The file card differs from both: an edit, naming the fields.
-    fn judge_disk_card(
-        &self,
-        _file: &CardFields,
-        _merged: &CardFields,
-    ) -> Result<Option<String>, EditRefused> {
-        Ok(None)
-    }
-
-    /// JUDGE A REQUEST BODY'S CARD (`POST /config/apply`): refused when it differs from the card
-    /// in force.
-    ///
-    /// # Errors
-    ///
-    /// The edit, naming the fields.
-    fn judge_body_card(&self, _path: &str, _card: &CardFields) -> Result<(), EditRefused> {
-        Ok(())
-    }
-
-    /// **THE ONE CARD PATH** (`PUT /config/settings`): rescan the history's head, build the head's
-    /// card with `set`'s fields replaced, hand it to `check` (the caller builds and validates the
-    /// generation that prices with it), and only then write it to the history, write-before-apply.
-    ///
-    /// # Errors
-    ///
-    /// The refusal, in the operator's words: no history, a pending entry, a far-future entry, the
-    /// check's own refusal, or a first-attempt REFUSED from the store.
-    fn put_card(
-        &self,
-        _set: &CardSet,
-        _actor: &str,
-        _check: &mut dyn FnMut(&CardFields) -> Result<(), String>,
-    ) -> Result<CardPut, String> {
-        Ok(CardPut::NoHistory)
-    }
-}
-
-/// The card `GET /config/settings` renders and which of its fields to show.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RenderedCard {
-    /// The card in force.
-    pub card: CardFields,
-    /// The fields a PUT set that differ from the merged seed.
-    pub fields: Vec<String>,
-}
-
-/// What [`RateApply::put_card`] did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CardPut {
-    /// This build keeps no rate-card history (no holder, or a holder whose history is not in the
-    /// store): the caller keeps the card as the configuration does.
-    NoHistory,
-    /// The request's fields equal the card in force: nothing was written.
-    Unchanged,
-    /// The new entry is READY in the store and in force fleet-wide.
-    Ready {
-        /// The entry's key, hex.
-        key: String,
-    },
-    /// The store has not confirmed the new entry: it is in force on this node, which refuses
-    /// admissions until the store confirms it.
-    Pending {
-        /// The entry's key, hex.
-        key: String,
-    },
+    /// THE CARD THIS CONFIGURATION RESOLVED, raised at the same commit as
+    /// [`Self::rates_applied`], with who or what changed it (`origin`). When it differs from the
+    /// card in force, the holder appends a dated history entry for it, effective from now
+    /// (MONEY-DESIGN section 3a: the configuration is the source of the card, as in 1.5.5).
+    fn card_applied(&self, _card: &CardFields, _origin: &str) {}
 }
 
 /// **THE READ-SIDE TWIN**: a holder that can DATE a price — for an instant, the `effective_from`
@@ -227,113 +142,18 @@ pub fn dated_history() -> Option<std::sync::Arc<busbar_kernel_ledger::cost::Hist
     dater().and_then(|holder| holder.history())
 }
 
-/// Run `f` with every generation built on this thread pricing with `card` (see [`build_card`]).
-pub fn with_card<T>(card: &CardFields, f: impl FnOnce() -> T) -> T {
-    crate::config::card::scope::with_override(card, f)
+/// Raise the card a configuration resolved ([`RateApply::card_applied`]), naming the change's
+/// origin as [`with_origin`] set it on this thread, or "a configuration change".
+pub fn card_applied(card: &CardFields) {
+    let origin = crate::config::card::origin::current();
+    holder()
+        .into_iter()
+        .for_each(|h| h.card_applied(card, &origin));
 }
 
-/// THE CARD A BUILD PRICES WITH: the candidate [`with_card`] names on this thread, else the card in
-/// force, else `None` (the configuration's own card stands: no history yet).
-#[must_use]
-pub fn build_card() -> Option<CardFields> {
-    crate::config::card::scope::override_card()
-        .or_else(|| holder().and_then(RateApply::card_in_force))
-}
-
-/// The card in force, if the holder's history holds one.
-#[must_use]
-pub fn card_in_force() -> Option<CardFields> {
-    holder().and_then(RateApply::card_in_force)
-}
-
-/// The card `GET /config/settings` renders ([`RateApply::rendered_card`]).
-#[must_use]
-pub fn rendered_card() -> Option<RenderedCard> {
-    holder().and_then(RateApply::rendered_card)
-}
-
-/// Raise the seed ([`RateApply::seed_card`]).
-pub fn seed_card(card: &CardFields) {
-    holder().into_iter().for_each(|h| h.seed_card(card));
-}
-
-/// Judge a disk card ([`RateApply::judge_disk_card`]); a refusal is audited
-/// (`card.edit_refused`) before it is answered.
-///
-/// # Errors
-///
-/// The refusal's sentence, opening with [`crate::config::card::EDIT_REFUSED_PREFIX`].
-pub fn judge_disk_card(file: &CardFields, merged: &CardFields) -> Result<(), String> {
-    match holder().map(|h| h.judge_disk_card(file, merged)) {
-        Some(Err(refused)) => {
-            refused.audit();
-            if crate::config::card::scope::is_lenient() {
-                // PUT's own re-read never refuses on the file card: its 200 says so.
-                crate::config::card::scope::note(refused.to_string());
-                return Ok(());
-            }
-            Err(refused.to_string())
-        }
-        Some(Ok(Some(fields))) => {
-            crate::audit_ring::AUDIT.record_by(
-                crate::config::card::FILE_DIFFERS_ACTION,
-                &format!("rate_card fields={fields}"),
-                crate::audit_ring::OUTCOME_APPLIED,
-                "busbar",
-            );
-            crate::config::card::scope::note(format!(
-                "the configuration file's rate card was edited back to its first-boot seed and \
-                 differs from the card in force in {fields}; the card in force stands \
-                 ({})",
-                crate::config::card::ONLY_PUT
-            ));
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-/// Run `f` as `PUT /config/settings`'s disk re-read: a file-card edit is audited and NOTED rather
-/// than refused.
-pub fn lenient<T>(f: impl FnOnce() -> T) -> T {
-    crate::config::card::scope::lenient(f)
-}
-
-/// Take the notes the card checks left on this thread.
-#[must_use]
-pub fn take_notes() -> Vec<String> {
-    crate::config::card::scope::take_notes()
-}
-
-/// Judge a request body's card ([`RateApply::judge_body_card`]); a refusal is audited.
-///
-/// # Errors
-///
-/// The refusal's sentence, opening with [`crate::config::card::EDIT_REFUSED_PREFIX`].
-pub fn judge_body_card(path: &str, card: &CardFields) -> Result<(), String> {
-    match holder().map(|h| h.judge_body_card(path, card)) {
-        Some(Err(refused)) => {
-            refused.audit();
-            Err(refused.to_string())
-        }
-        _ => Ok(()),
-    }
-}
-
-/// The one card path ([`RateApply::put_card`]).
-///
-/// # Errors
-///
-/// As [`RateApply::put_card`]; a build with no holder keeps no history and refuses.
-pub fn put_card(
-    set: &CardSet,
-    actor: &str,
-    check: &mut dyn FnMut(&CardFields) -> Result<(), String>,
-) -> Result<CardPut, String> {
-    match holder() {
-        Some(h) => h.put_card(set, actor, check),
-        None => Ok(CardPut::NoHistory),
-    }
+/// Run `f` with every card it raises attributed to `origin` ("config/reload by <actor>", ...).
+pub fn with_origin<T>(origin: &str, f: impl FnOnce() -> T) -> T {
+    crate::config::card::origin::with(origin, f)
 }
 
 /// Raise the seam: the configured rates are now `rates`.

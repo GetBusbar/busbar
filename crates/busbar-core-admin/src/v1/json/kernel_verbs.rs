@@ -483,14 +483,14 @@ pub(crate) struct CardVoidReq {
     key: String,
 }
 
-/// `POST /ledger/card/void` and `/ledger/card/abandon`'s answer: the entry acted on.
+/// `POST /ledger/card/void`'s answer: the entry it voided.
 #[cfg(feature = "openapi-schema")]
 #[derive(Serialize, JsonSchema)]
 #[allow(dead_code)]
 pub(crate) struct CardVerbView {
     /// The entry's key, 40 lowercase hex characters.
     key: String,
-    /// `voided` or `abandoned`.
+    /// `voided`.
     outcome: String,
 }
 
@@ -1162,27 +1162,6 @@ fn doc_for(
                 ),
                 gated_403(),
                 unavailable_503("the store did not take the VOID record"),
-            ],
-        },
-        KernelVerb::CardAbandon => VerbDoc {
-            summary: "Abandon this node's pending rate-card entry",
-            description: "`card abandon`: stop re-putting the entry the store has not confirmed, \
-                          void it, and reopen admissions at the history's card. The VOID is kept \
-                          in the node's spool and re-put until the store confirms it. Audited."
-                .to_string(),
-            success: Success::Json(
-                schema_of(gen.subschema_for::<CardVerbView>()),
-                "The entry that was abandoned",
-            ),
-            request: None,
-            query: Vec::new(),
-            errors: vec![
-                (
-                    "400",
-                    "`invalid_request`: no rate-card entry is pending on this node".to_string(),
-                ),
-                gated_403(),
-                unavailable_503("the node's spool could not record the abandon"),
             ],
         },
 
