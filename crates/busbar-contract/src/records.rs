@@ -710,12 +710,6 @@ impl UsageLedger {
         self.total_tier(UNIT_CACHE_READ)
     }
 
-    /// CACHE-WRITE (cache_creation) tokens across every model — the durable counterpart of the
-    /// `tokens_cache_write` cap.
-    pub fn total_cache_write(&self) -> u64 {
-        self.total_tier(UNIT_CACHE_WRITE)
-    }
-
     /// Apply one signed per-model unit delta, flooring every counter at 0 (a refund can never
     /// drive a durable counter negative). Allocates a model entry only on first sight.
     pub fn apply_model_delta(&mut self, delta: &ModelTokensDelta) {
