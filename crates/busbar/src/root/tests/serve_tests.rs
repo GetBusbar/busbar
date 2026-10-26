@@ -1284,7 +1284,8 @@ pub(super) mod session_door {
                 .requests
         }
 
-        /// The units on the session door's route whose one audit record carries counts.
+        /// The units SERVED on the session door's route (`m-cap`), by their one audit record: the
+        /// units whose counts the ledger took.
         fn lines(&self) -> usize {
             let records = self
                 .book
@@ -1295,7 +1296,13 @@ pub(super) mod session_door {
                 .clone();
             records
                 .iter()
-                .filter(|r| r.usage.lines.iter().any(|l| l.quantity > 0))
+                .filter(|r| {
+                    r.outcome.unit_end.is_completed()
+                        && r.what
+                            .destination
+                            .as_deref()
+                            .is_some_and(|lane| lane.ends_with("m-cap"))
+                })
                 .count()
         }
 
