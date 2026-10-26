@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FLEET-SHARED RATE-CARD HISTORY, against a store the test holds (MONEY-DESIGN §3a, PR-B1):
+//! THE FLEET-SHARED RATE-CARD HISTORY, against a store the test holds (MONEY-DESIGN section 3a, PR-B1):
 //! the card in force and every instant's card survive a restart and a new node id (T1-card), a
 //! doubtful write is pending, re-put to READY and closes admissions meanwhile (T8), two nodes
 //! editing at once converge with an alarm naming the lost fields (T13), a joining node's stale

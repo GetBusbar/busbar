@@ -3842,7 +3842,7 @@ fn replayed_amendments(durability: &crate::root::durability::Durability) -> Vec<
 }
 
 /// The second a correction arrives in, in these tests: after the one-day window every correction
-/// body names closes, because an amend must END before it arrives (MONEY-DESIGN §3a "Amends").
+/// body names closes, because an amend must END before it arrives (MONEY-DESIGN section 3a "Amends").
 #[cfg(test)]
 const ARRIVED: u64 = 86_406;
 
@@ -4349,7 +4349,7 @@ fn a_correction_on_row_boundaries_applies() {
     );
 }
 
-/// **AN AMEND IS BOUNDED AND ENDS BEFORE IT ARRIVES** (MONEY-DESIGN §3a "Amends"): an open-ended
+/// **AN AMEND IS BOUNDED AND ENDS BEFORE IT ARRIVES** (MONEY-DESIGN section 3a "Amends"): an open-ended
 /// amend is a card change, which goes through `PUT /config/settings`, and a window still open at the
 /// arrival would price instants nothing has posted yet. Both are refused and append nothing. RED on
 /// the base, which checked only `effective_from` and applied both.

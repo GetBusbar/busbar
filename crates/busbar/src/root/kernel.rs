@@ -209,7 +209,7 @@ pub struct RootHistory {
     applying: Mutex<()>,
     /// The form of the config card in force, as the journal holds it.
     in_force: Mutex<Option<CardForm>>,
-    /// **THE FLEET-SHARED HISTORY IN THE STORE** (MONEY-DESIGN §3a): set by the production boot
+    /// **THE FLEET-SHARED HISTORY IN THE STORE** (MONEY-DESIGN section 3a): set by the production boot
     /// before its book opens ([`Self::keep_in_store`]). Once it is loaded it is the only source of
     /// prices, nothing is journalled, and the card changes only through `PUT /config/settings`.
     store: std::sync::OnceLock<Arc<crate::root::card_history::CardStore>>,
@@ -326,7 +326,7 @@ impl RootHistory {
         }
     }
 
-    /// **KEEP THE HISTORY IN THE STORE** (MONEY-DESIGN §3a): the production boot names the store,
+    /// **KEEP THE HISTORY IN THE STORE** (MONEY-DESIGN section 3a): the production boot names the store,
     /// its durable node id and its data directory before its book opens; the book's rebuild then
     /// loads the fleet-shared history ([`Self::rebuild_from_chain`]) instead of journalling cards.
     pub fn keep_in_store(
@@ -501,7 +501,7 @@ impl RootHistory {
         let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
         register_classes(rates);
         // THE HISTORY IN THE STORE IS THE ONLY SOURCE OF PRICES once it is kept there (MONEY-DESIGN
-        // §3a): no build writes it, so an apply's rates are the card in force already.
+        // section 3a): no build writes it, so an apply's rates are the card in force already.
         if self.store.get().is_some() {
             return Err(CardRefused::InStore);
         }
@@ -533,7 +533,7 @@ impl RootHistory {
     }
 
     /// Journal `applied` BEFORE it is published (the caller publishes on `Ok`). A refusal refuses
-    /// the apply: there is no WITHDRAW (MONEY-DESIGN §3a). The caller holds `applying`.
+    /// the apply: there is no WITHDRAW (MONEY-DESIGN section 3a). The caller holds `applying`.
     fn journal_or_withdraw(&self, applied: CardApplied, _now_ms: u64) -> Result<(), CardRefused> {
         match self.journal_applied(applied.clone()) {
             Ok(()) => {
@@ -832,7 +832,7 @@ impl RootHistory {
             .ok_or(AmendRefused::NoSoleCard)?;
         seal(&draft.card, base).map_err(AmendRefused::Seal)?;
         // KEPT IN THE STORE: the amend is an entry like a PUT's, written write-before-apply, its card
-        // the card covering its start with the named cells set (MONEY-DESIGN §3a "Amends").
+        // the card covering its start with the named cells set (MONEY-DESIGN section 3a "Amends").
         if let Some(store) = self.card_store() {
             let until = correction
                 .effective_until

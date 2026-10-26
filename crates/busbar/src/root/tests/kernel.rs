@@ -1226,7 +1226,7 @@ fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
     assert_eq!(
         holder.len(),
         1,
-        "the refused card is not published, and nothing is WITHDRAWN behind it (MONEY-DESIGN §3a)"
+        "the refused card is not published, and nothing is WITHDRAWN behind it (MONEY-DESIGN section 3a)"
     );
     assert_eq!(
         flat_price_at(holder, EARNED_B),
@@ -1449,7 +1449,7 @@ fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirm
     assert_eq!(
         owed_cards, 1,
         "the log owes the card for its retry, and no WITHDRAW is written behind it (MONEY-DESIGN \
-         §3a)"
+         section 3a)"
     );
     drop(book);
     let _ = std::fs::remove_dir_all(&dir);

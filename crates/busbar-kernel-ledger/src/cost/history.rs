@@ -52,7 +52,7 @@ impl std::fmt::Display for HistorySeq {
 /// `t_ms (u64 BE) ++ node_rand (8 bytes, per boot) ++ counter (u32 BE)`.
 pub const ENTRY_KEY_LEN: usize = 20;
 
-/// **AN ENTRY'S IDENTITY**: its key in the fleet-shared history (MONEY-DESIGN §3a).
+/// **AN ENTRY'S IDENTITY**: its key in the fleet-shared history (MONEY-DESIGN section 3a).
 ///
 /// Keys are unique across nodes (the writer's per-boot random half) and ordered by their bytes,
 /// which is time first. The resolution rule names the KEY, never a list position: among the live
@@ -120,7 +120,7 @@ impl std::fmt::Display for EntryKey {
 pub const ENTRY_ID_LEN: usize = 12;
 
 /// **THE ID A COUNT SEGMENT CARRIES**: the first 12 bytes of SHA-256 of the entry's [`EntryKey`]
-/// (MONEY-DESIGN §3b). Spelled as 24 lowercase hex characters; the pseudo-model prefix of a
+/// (MONEY-DESIGN section 3b). Spelled as 24 lowercase hex characters; the pseudo-model prefix of a
 /// sibling era row is that spelling followed by `U+001F`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct EntryId(pub [u8; ENTRY_ID_LEN]);
@@ -280,7 +280,7 @@ impl CardEntry {
     }
 
     /// Whether a VOID record names this entry: it is never in force, but its id stays KNOWN, so a
-    /// count already posted under it keeps its card (MONEY-DESIGN §3a, owner item 16).
+    /// count already posted under it keeps its card (MONEY-DESIGN section 3a, owner item 16).
     pub fn is_voided(&self) -> bool {
         self.voided
     }

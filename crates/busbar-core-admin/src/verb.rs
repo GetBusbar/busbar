@@ -678,7 +678,7 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
 
 /// The 14 new 1.6.0 verbs: the eight money-governance verbs, plus `amend_rate_history` — the
 /// back-dated rate-card correction the dated-history design adds — the two rate-card history
-/// verbs `card_void` and `card_abandon` (MONEY-DESIGN §3a), and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
+/// verbs `card_void` and `card_abandon` (MONEY-DESIGN section 3a), and the three trust verbs over the kernel's trust book (ARCHITECT 2026-10-06).
 /// `set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset` and `approve` left 1.6.0
 /// by the owner's 2026-09-08 ruling (ARCHITECTURE section 4.7), and `set_overdraft_ceiling`,
 /// `set_dispute_max_age`, `resolve_dispute` and `resolve_slice` by #77(9) (owner answer Q71(1)):
@@ -720,7 +720,7 @@ pub const fn effect_bound(verb: KernelVerb) -> bool {
         // Their effect lands on the node's amendment journal (the composition root's
         // `execute_new_verb`).
         KernelVerb::Adjust | KernelVerb::AmendRateHistory => true,
-        // Their effect lands on the fleet-shared rate-card history in the store (MONEY-DESIGN §3a).
+        // Their effect lands on the fleet-shared rate-card history in the store (MONEY-DESIGN section 3a).
         KernelVerb::CardVoid | KernelVerb::CardAbandon => true,
         // Owner answer Q71(2): the two reads answer from the node's own book and plane registry,
         // the plane record write lands on the plane-facing store, and the committed release is

@@ -2814,7 +2814,7 @@ mod secret_shorthand_declared_tests;
 thread_local! {
     /// Set while a build validates a card the rate-card history holds (written by
     /// `PUT /config/settings`): such a card may price a model the configuration does not define
-    /// yet (MONEY-DESIGN §3a item 27). A file card never may.
+    /// yet (MONEY-DESIGN section 3a item 27). A file card never may.
     static RELAX_UNDEFINED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 

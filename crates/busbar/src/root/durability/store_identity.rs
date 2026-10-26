@@ -898,7 +898,7 @@ pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> S
 
 /// EVERY OTHER NODE'S CHAIN THE STORE KEEPS, decoded: `(node, its records in chain order)` for each
 /// node the registry names but `own`. A chain that will not read or verify is left out, named in a
-/// warning. Read by the rate-card migration (MONEY-DESIGN §3a), which copies every chain's card
+/// warning. Read by the rate-card migration (MONEY-DESIGN section 3a), which copies every chain's card
 /// records into the fleet-shared history.
 ///
 /// # Errors

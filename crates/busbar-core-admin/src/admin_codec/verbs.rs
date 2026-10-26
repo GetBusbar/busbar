@@ -78,7 +78,7 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
         "/api/v1/admin/ledger/amend-rate-history",
         "amend_rate_history",
     ),
-    // The rate-card history's two operator verbs (MONEY-DESIGN §3a), beside the amend under
+    // The rate-card history's two operator verbs (MONEY-DESIGN section 3a), beside the amend under
     // `/ledger/`: both write the history, so both are `full`.
     post_row("/api/v1/admin/ledger/card/void", "card_void"),
     post_row("/api/v1/admin/ledger/card/abandon", "card_abandon"),

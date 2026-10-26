@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE RATE-CARD HISTORY IN THE STORE: the fleet-shared record schema `busbar.card.v1`
-//! (MONEY-DESIGN §3a).
+//! (MONEY-DESIGN section 3a).
 //!
 //! ## Records
 //!
@@ -46,7 +46,7 @@ pub const COMMIT_PART: u16 = 0xFE00;
 /// The tag byte that follows a voided key in a VOID record's key.
 pub const VOID_TAG: u8 = 0xFF;
 
-/// The clock skew a writer tolerates in the history's head (MONEY-DESIGN §3a).
+/// The clock skew a writer tolerates in the history's head (MONEY-DESIGN section 3a).
 pub const SKEW_MS: u64 = 5 * 60 * 1000;
 
 /// How long a card write waits for READY inside the config lock before it goes pending.

@@ -62,7 +62,7 @@ pub trait RateApply: Send + Sync {
     fn rates_applied(&self, rates: &RawRates<'_>);
 
     /// The SEED: the card the boot's own configuration resolved (the file plus the overlay, as boot
-    /// merges them). It opens an EMPTY history and is never priced after that (MONEY-DESIGN §3a,
+    /// merges them). It opens an EMPTY history and is never priced after that (MONEY-DESIGN section 3a,
     /// owner ruling 2026-10-25). Raised once per build, before [`Self::rates_applied`].
     fn seed_card(&self, _card: &CardFields) {}
 
@@ -79,7 +79,7 @@ pub trait RateApply: Send + Sync {
         None
     }
 
-    /// JUDGE A DISK CARD (MONEY-DESIGN §3a "Disk loads"): `file` is the configuration file's
+    /// JUDGE A DISK CARD (MONEY-DESIGN section 3a "Disk loads"): `file` is the configuration file's
     /// card, `merged` the file with the overlay's card fields laid over it. The file card is
     /// compared against the file-only seed and the card in force. `Ok(Some(fields))`: the file
     /// was edited BACK to the seed after a PUT changed the card (`card.file_differs`).

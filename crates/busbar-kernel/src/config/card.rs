@@ -3,7 +3,7 @@
 
 //! THE RATE CARD AS THE CONFIGURATION SPELLS IT: the four fields a deployment prices with, lifted
 //! out of the rest of the configuration so the card can be held, compared and stored on its own
-//! (MONEY-DESIGN §3a, owner ruling 2026-10-25).
+//! (MONEY-DESIGN section 3a, owner ruling 2026-10-25).
 //!
 //! After first boot the card in force is the fleet-shared history's, never the configuration's: the
 //! history holds a [`CardFields`] per entry, every build of a generation prices with the card in
@@ -84,7 +84,7 @@ struct StoredCard {
     planes: BTreeMap<String, PlaneCardFields>,
 }
 
-/// The fields `PUT /config/settings` SETS, each a whole value (MONEY-DESIGN §3a): a field left
+/// The fields `PUT /config/settings` SETS, each a whole value (MONEY-DESIGN section 3a): a field left
 /// `None` is kept from the card in force.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CardSet {

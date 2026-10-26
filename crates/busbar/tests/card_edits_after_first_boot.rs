@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! AFTER FIRST BOOT THE RATE CARD CHANGES ONLY THROUGH `PUT /config/settings` (owner ruling
-//! 2026-10-25, MONEY-DESIGN §3a), against a REAL busbar:
+//! 2026-10-25, MONEY-DESIGN section 3a), against a REAL busbar:
 //!
 //! * a PUT writes the card to the fleet-shared history, and `GET /config/settings` shows the field
 //!   it set;

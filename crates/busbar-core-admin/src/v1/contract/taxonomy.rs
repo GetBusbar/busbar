@@ -195,7 +195,7 @@ pub enum Cond {
     /// 2026-10-25): on disk, or in a `POST /config/apply` body. Audited `card.edit_refused`.
     CardEdit,
     /// A card change while this node's last one is still pending confirmation from the store, or
-    /// while the history's head is beyond the clock-skew bound (MONEY-DESIGN §3a).
+    /// while the history's head is beyond the clock-skew bound (MONEY-DESIGN section 3a).
     CardHeld,
 }
 

@@ -498,7 +498,7 @@ pub(crate) async fn rollback_plugin(
             let (manifest, pins) = AdminService::new(snapshot.clone())
                 .resolve_plugin_rollback(&file, &prior_pins)?;
             // A RATE CARD EDITED ON DISK refuses the rollback BEFORE its pin is saved (owner ruling
-            // 2026-10-25, MONEY-DESIGN §3a): the rebuild below would refuse it anyway, after the pin
+            // 2026-10-25, MONEY-DESIGN section 3a): the rebuild below would refuse it anyway, after the pin
             // had already moved.
             if let (Some(config_path), Some(providers_path)) = (
                 snapshot.config_path.as_deref(),
@@ -2507,7 +2507,7 @@ pub(crate) async fn apply_config(
             }
         };
     let req_providers = req.providers;
-    // THE BODY'S RATE CARD (owner ruling 2026-10-25, MONEY-DESIGN §3a): the card changes only
+    // THE BODY'S RATE CARD (owner ruling 2026-10-25, MONEY-DESIGN section 3a): the card changes only
     // through `PUT /config/settings`. A body card equal to the merged seed or to the card in force
     // passes; any other is refused 409 and audited (`card.edit_refused`). A body with NO card leaves
     // the card in force untouched, with 1.5.5's exact answer; the note goes to the log only.
@@ -3055,7 +3055,7 @@ pub(crate) async fn put_config_settings(
             )))
         }
     };
-    // THE REQUEST-ONLY `planes` KEY (MONEY-DESIGN §7 item 25): each plane's `rate_card`/`fees`,
+    // THE REQUEST-ONLY `planes` KEY (MONEY-DESIGN section 7 item 25): each plane's `rate_card`/`fees`,
     // written to the rate-card history and never persisted, so the overlay keeps 1.5.5's shape.
     let planes: std::collections::BTreeMap<String, busbar_kernel::config::card::PlaneCardFields> =
         match raw.as_object_mut().and_then(|o| o.remove(PLANES_FIELD)) {
@@ -3102,7 +3102,7 @@ pub(crate) async fn put_config_settings(
         // "apply in memory only" outcome anymore, because a live-but-non-durable mutation is exactly
         // the silent-loss failure this release removes. `requested_persist` is now irrelevant: the
         // config is either mutable-and-durable or locked. (Same reasoning as `plugins/rollback`.)
-        // A CARD-ONLY PUT on a locked config is the exception (MONEY-DESIGN §7 item 26): it writes
+        // A CARD-ONLY PUT on a locked config is the exception (MONEY-DESIGN section 7 item 26): it writes
         // only the rate-card history, never the overlay; it is refused below if this build keeps no
         // history.
         let _ = requested_persist;
@@ -3133,7 +3133,7 @@ pub(crate) async fn put_config_settings(
             // then merge the CURRENT hooks/groups overlay sections POST-resolve — exactly the reload
             // mechanism, with the root section coming from the just-merged desired state rather than
             // the on-disk overlay. PUT's own re-read never refuses on the file's card: an edited file
-            // card is audited and named in the answer (MONEY-DESIGN §3a).
+            // card is audited and named in the answer (MONEY-DESIGN section 3a).
             let build = |merged_for_build: busbar_kernel::config::overlay::RootSettings| {
                 busbar_kernel::rate_apply::lenient(|| {
                     busbar_kernel::load_config_from_disk_judged(
@@ -3258,7 +3258,7 @@ pub(crate) async fn put_config_settings(
                     .map_err(|e| {
                         if card_written {
                             // NO WITHDRAW: the card entry is READY (or pending) and in force
-                            // fleet-wide whatever the overlay save does (MONEY-DESIGN §7 item 19).
+                            // fleet-wide whatever the overlay save does (MONEY-DESIGN section 7 item 19).
                             format!(
                                 "config settings could not be persisted to the overlay: {e}; the \
                                  rate card IS in force fleet-wide (it is kept in the rate-card \
@@ -3358,7 +3358,7 @@ pub(crate) async fn put_config_settings(
 /// The request-only `planes` key of `PUT /config/settings`: each plane's `rate_card`/`fees`.
 const PLANES_FIELD: &str = "planes";
 
-/// **THE CARD FIELDS `/config/settings` SHOWS** (MONEY-DESIGN §3a): the overlay's own card fields
+/// **THE CARD FIELDS `/config/settings` SHOWS** (MONEY-DESIGN section 3a): the overlay's own card fields
 /// as 1.5.5 showed them, and each field a PUT set whose value in the card in force differs from the
 /// merged seed's, rendered from the history. Plane cards show under `planes`.
 fn render_card_fields(settings: &mut serde_json::Value) {

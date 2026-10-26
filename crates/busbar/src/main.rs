@@ -1039,7 +1039,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         || ROOT_UNITS.iter().any(|u| u.opens_book)
         || !served.planes.is_empty())
     .then(|| root::boot::book(&app, &store_module).unwrap_or_else(|e| die(e)));
-    // THE CARD IN FORCE IS THE HISTORY'S (MONEY-DESIGN §3a, owner ruling 2026-10-25): the book just
+    // THE CARD IN FORCE IS THE HISTORY'S (MONEY-DESIGN section 3a, owner ruling 2026-10-25): the book just
     // loaded the fleet-shared rate-card history, and when its card in force is not the card this
     // boot's configuration resolved (a PUT changed it, or another node's), the boot generation is
     // built again pricing with it, before any router is built or listener bound.

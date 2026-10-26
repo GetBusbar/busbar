@@ -541,7 +541,7 @@ pub struct InstalledLimits {
     limits: config::LimitsResolved,
     rates: ResolvedRates,
     /// The card the configuration itself resolved, before the card in force replaced it: the
-    /// SEED an empty history opens with (MONEY-DESIGN §3a), raised at [`InstalledLimits::keep`].
+    /// SEED an empty history opens with (MONEY-DESIGN section 3a), raised at [`InstalledLimits::keep`].
     configured_card: config::card::CardFields,
     /// The destinations this configuration states, raised to the destination judge at the commit
     /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
@@ -668,7 +668,7 @@ pub fn build_app_from_config(
     prior: Option<&state::App>,
     rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
-    // THE CARD IN FORCE PRICES EVERY GENERATION (MONEY-DESIGN §3a, owner ruling 2026-10-25): once
+    // THE CARD IN FORCE PRICES EVERY GENERATION (MONEY-DESIGN section 3a, owner ruling 2026-10-25): once
     // the fleet-shared history holds a card, the configuration's own card is never priced. The
     // configuration's card is kept aside as the SEED an empty history opens with. Replaced before
     // validation, so completeness is judged against the card that will be in force.
@@ -700,7 +700,7 @@ pub fn build_app_from_config(
     // BEFORE this configuration's limits are visible to anything (BUSBAR-1.6.0.md §3: "A validation
     // refusal keeps the running generation").
     // A card the history holds (a PUT's) may price a model the file does not define yet; the
-    // file's own card never may (MONEY-DESIGN §3a item 27).
+    // file's own card never may (MONEY-DESIGN section 3a item 27).
     let validated = if substituted {
         config_validate::relax_undefined_models(|| config_validate::validate(&cfg))
     } else {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE FLEET-SHARED RATE-CARD HISTORY, as this node holds it (MONEY-DESIGN §3a; owner ruling
+//! THE FLEET-SHARED RATE-CARD HISTORY, as this node holds it (MONEY-DESIGN section 3a; owner ruling
 //! 2026-10-25: money is ledger counts x rate card, the store keeps only counts and the card with its
 //! history, and after first boot the card changes ONLY through `PUT /config/settings`).
 //!
@@ -76,7 +76,7 @@ pub struct Seed {
     pub file: Option<CardFields>,
 }
 
-/// What a disk card is, against the history (MONEY-DESIGN §3a "Disk loads").
+/// What a disk card is, against the history (MONEY-DESIGN section 3a "Disk loads").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DiskVerdict {
     /// Unedited, or a PUT card copied into the file.
@@ -587,7 +587,7 @@ impl CardStore {
         Ok(())
     }
 
-    /// **JUDGE A DISK CARD** (MONEY-DESIGN §3a "Disk loads"): the file card against the file-only
+    /// **JUDGE A DISK CARD** (MONEY-DESIGN section 3a "Disk loads"): the file card against the file-only
     /// seed and the card in force. Not loaded yet: accepted (the boot judges it once loaded).
     pub fn judge_disk(&self, file: &CardFields) -> DiskVerdict {
         let Some(in_force) = self.in_force() else {
@@ -1000,7 +1000,7 @@ mod tests;
 /// records in chain order)`.
 pub type Chain = (u64, Vec<busbar_kernel_wal::JournalRecord>);
 
-/// **THE MIGRATION** (MONEY-DESIGN §3a, before the opening rule): every chain's `Policy` records —
+/// **THE MIGRATION** (MONEY-DESIGN section 3a, before the opening rule): every chain's `Policy` records —
 /// configured cards and amendments — as `busbar.card.v1` entries under TIME keys
 /// (`appended_at_ms ++ journal node ++ node_seq`). Duplicates by (card, `effective_from`) collapse
 /// to the lowest key, and only the oldest opening entry is kept. A correction is rebuilt over the

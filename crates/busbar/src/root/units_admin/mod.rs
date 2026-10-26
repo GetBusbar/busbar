@@ -1279,7 +1279,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 &self.attribution,
             );
         }
-        // `card void` / `card abandon` (MONEY-DESIGN §3a): the operator's two writes to the
+        // `card void` / `card abandon` (MONEY-DESIGN section 3a): the operator's two writes to the
         // fleet-shared rate-card history. Audited by the verbs unit like every new verb, and again
         // here with what they did.
         if verb == KernelVerb::CardVoid || verb == KernelVerb::CardAbandon {
@@ -1449,7 +1449,7 @@ fn already_applied(
     })
 }
 
-/// The effect half of `card void` and `card abandon` (MONEY-DESIGN §3a): void a future entry by
+/// The effect half of `card void` and `card abandon` (MONEY-DESIGN section 3a): void a future entry by
 /// key, or abandon this node's pending entry. Each is audited (`card.void`, `card.abandon`).
 fn card_verb_effect(
     history: &crate::root::kernel::RootHistory,
@@ -1564,7 +1564,7 @@ fn amend_rate_history_effect(
     if effective_from > arrival_secs.saturating_mul(1000) {
         return Err(GovernanceError::Validation);
     }
-    // AN AMEND IS BOUNDED AND ENDS BEFORE IT ARRIVED (MONEY-DESIGN §3a "Amends"). An open-ended
+    // AN AMEND IS BOUNDED AND ENDS BEFORE IT ARRIVED (MONEY-DESIGN section 3a "Amends"). An open-ended
     // change is a card apply, which goes through `PUT /config/settings` and its rules; a window
     // reaching past the arrival would price instants nothing has posted yet, as a forward price.
     match effective_until {
@@ -1690,7 +1690,7 @@ fn amend_rate_history_effect(
     if history.is_empty() {
         return Err(GovernanceError::NotFound);
     }
-    // THE HISTORY KEPT IN THE STORE takes the amend as an entry of its own (MONEY-DESIGN §3a):
+    // THE HISTORY KEPT IN THE STORE takes the amend as an entry of its own (MONEY-DESIGN section 3a):
     // nothing goes on the journal.
     let in_store = history.keeps_store();
     let journal = if in_store {
