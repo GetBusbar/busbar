@@ -45,6 +45,7 @@ mod sealed {
     }
 }
 
+pub mod chip;
 pub mod fake;
 mod pairs;
 pub mod reply;

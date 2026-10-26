@@ -62,6 +62,10 @@ pub use services::{
 pub mod digest;
 // THE ONE WIPED HMAC-SHA256 an auth plugin keys over secret material.
 pub mod hmac;
+// A PLUGIN'S CREDENTIALS: sealed at settings parse, no getter, no Debug (the chip design, its section on plugin credentials).
+pub mod cred;
+// THE CHIP'S RECIPES: every auth step performed by the credential (the chip design, its section on recipe classes).
+pub mod chip;
 // THE AUTH KIND'S VERIFY DOOR over the safe layer (`auth_verify_door!`). An auth plugin keeps its
 // inbound verdict cache inside itself (THE DESIGN, section 11.11).
 pub mod auth_door;

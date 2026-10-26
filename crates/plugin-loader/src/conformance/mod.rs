@@ -112,7 +112,7 @@ use busbar_contract::conn::DeclaredConns;
 use crate::dispatch::{
     in_head, load_dropped_bytes, load_linked, out_head, rendering_of_library, Bind, Called,
     ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow, LoadError,
-    NoSink, OutFrame, Plugin,
+    OutFrame, Plugin,
 };
 use crate::tcp_conns::TcpConns;
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -125,6 +125,7 @@ mod export;
 pub use auth::{
     outbound_plant, red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte,
 };
+pub mod canary;
 mod hook;
 pub mod host_io;
 mod plane;
@@ -893,7 +894,7 @@ pub fn woken() -> Result<(), String> {
     }
 }
 
-/// The bind the kernel makes: a label, the inflight clamp, no envelope sink, the adopting
+/// The bind the kernel makes: a label, the inflight clamp, the fold's recording sink, the adopting
 /// dispatcher, SERVING with no connection table (a door that declares a need is refused;
 /// [`Subject::bind`] adds the plugin's table).
 #[must_use]
@@ -901,7 +902,7 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
     Bind {
         instance: Arc::from(instance),
         max_inflight_cap: 1024,
-        sink: Arc::new(NoSink),
+        sink: canary::heard(),
         dispatcher: d.adopter(),
         conns: ConnTable::NoNeeds,
     }
@@ -1249,8 +1250,17 @@ fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
         .collect()
 }
 
-/// `validate` over `settings`.
+/// `validate` over `settings` as the kind's host passes them: the auth host takes a provider's
+/// secret references out first (`auth_door::split_secrets`); every other kind's host validates the
+/// block as written (`export_axis::probe`).
 pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
+    let split;
+    let settings = if K::CODE == KindCode::Auth {
+        split = lend_secrets(p.secret_refs(), settings, false).0;
+        &split[..]
+    } else {
+        settings
+    };
     let mut err = [0_u8; 512];
     let mut f: Frame<ValidateIn, OutHead> = Frame::new(input(), output());
     f.input.settings = json(settings);
@@ -1542,6 +1552,41 @@ pub fn both_ways(s: &Subject) {
     }
     if let Err(e) = same(&folds[0], &folds[1]) {
         panic!("{e}");
+    }
+}
+
+/// THE CANARY: no credential the subject's inputs name crosses back through either door, in any
+/// step's answer or any log record the instance raised ([`canary`]).
+///
+/// # Panics
+/// A spelling of a named credential was emitted (the panic names where, never the value).
+pub fn canary(s: &Subject) {
+    s.apply_env();
+    let planted = canary::credentials(&s.inputs);
+    if planted.is_empty() {
+        return;
+    }
+    for leg in [Leg::Linked, Leg::Dropped] {
+        let _ = canary::take_heard();
+        let f = fold(s, leg);
+        let mut emitted: Vec<(String, Vec<u8>)> = f
+            .iter()
+            .map(|st| {
+                (
+                    format!("step '{}'", st.label),
+                    st.answer.clone().into_bytes(),
+                )
+            })
+            .collect();
+        emitted.extend(
+            canary::take_heard()
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| (format!("log record {i}"), t)),
+        );
+        if let Some(at) = canary::find(&planted, &emitted) {
+            panic!("{leg:?}: a configured credential crossed back in {at}");
+        }
     }
 }
 
@@ -2248,6 +2293,12 @@ macro_rules! conformance_suite {
         s.declared_in($dir)
     }};
     (@tests) => {
+        /// THE CANARY: no configured credential crosses back, linked or dropped in.
+        #[test]
+        fn no_configured_credential_crosses_back() {
+            $crate::conformance::canary(&__busbar_conformance_subject());
+        }
+
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.
         #[test]
         fn the_linked_and_the_dropped_in_door_are_one_plugin() {
