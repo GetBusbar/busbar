@@ -6,6 +6,40 @@ use busbar_kernel::diagnostics::{
     PLUGIN_ROLLBACK_REVERT_FAILED,
 };
 
+/// Unwrap a `Result<_, Response>` or return the ready-made response from the handler.
+macro_rules! ok_or_respond {
+    ($e:expr) => {
+        match $e {
+            Ok(v) => v,
+            Err(resp) => return resp,
+        }
+    };
+}
+
+/// Parse a JSON request body; a malformed one is the 400 `malformed {noun} body: {e}`.
+#[allow(clippy::result_large_err)]
+fn parse_body<T: serde::de::DeserializeOwned>(body: &[u8], noun: &str) -> Result<T, Response> {
+    serde_json::from_slice(body).map_err(|e| {
+        err_json(&AdminError::Validation(format!(
+            "malformed {noun} body: {e}"
+        )))
+    })
+}
+
+/// The rejected arm of a config mutation: audit `action` REJECTED, answer the error.
+fn reject(action: &str, resource: &str, actor: &str, e: &AdminError) -> Response {
+    audit::AUDIT.record_by(action, resource, audit::OUTCOME_REJECTED, actor);
+    err_json(e)
+}
+
+/// The base-config guard's `409`: the API cannot shadow operator file config.
+fn base_conflict(noun: &str, name: &str) -> AdminError {
+    AdminError::Conflict(format!(
+        "{noun} `{name}` is defined in the base config file; edit config.yaml (the API \
+         cannot silently shadow operator file config)"
+    ))
+}
+
 /// `GET /api/v1/admin/info` — version, compiled-in plugin proof, uptime, topology.
 pub(crate) async fn info(State(handle): State<Arc<AppHandle>>) -> Response {
     respond(StatusCode::OK, service(&handle).info().await)
@@ -216,10 +250,7 @@ pub(crate) async fn install_plugin(
             audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_APPLIED, &actor);
             ok_json(StatusCode::CREATED, &view)
         }
-        Err(e) => {
-            audit::AUDIT.record_by("plugin.install", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("plugin.install", &resource, &actor, &e),
     }
 }
 
@@ -248,14 +279,7 @@ pub(crate) async fn inspect_plugin(
     body: axum::body::Bytes,
 ) -> Response {
     use base64::Engine as _;
-    let req: InspectPluginReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed plugin body: {e}"
-            )));
-        }
-    };
+    let req: InspectPluginReq = ok_or_respond!(parse_body(&body, "plugin"));
     let tarball = match base64::engine::general_purpose::STANDARD.decode(req.tarball_b64.as_bytes())
     {
         Ok(b) => b,
@@ -309,10 +333,7 @@ pub(crate) async fn remove_plugin(
             audit::AUDIT.record_by("plugin.remove", &resource, audit::OUTCOME_APPLIED, &actor);
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(e) => {
-            audit::AUDIT.record_by("plugin.remove", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("plugin.remove", &resource, &actor, &e),
     }
 }
 
@@ -404,25 +425,9 @@ pub(crate) async fn reload_plugins(
                 );
                 ok_json(StatusCode::OK, &view)
             }
-            Err(e) => {
-                audit::AUDIT.record_by(
-                    "plugin.reload",
-                    "plugin:dir",
-                    audit::OUTCOME_REJECTED,
-                    &actor,
-                );
-                err_json(&e)
-            }
+            Err(e) => reject("plugin.reload", "plugin:dir", &actor, &e),
         },
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "plugin.reload",
-                "plugin:dir",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("plugin.reload", "plugin:dir", &actor, &e),
     }
 }
 
@@ -457,18 +462,8 @@ pub(crate) async fn rollback_plugin(
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let card_origin = format!("plugins/rollback by {actor}");
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PluginRollbackReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed rollback body: {e}"
-            )))
-        }
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: PluginRollbackReq = ok_or_respond!(parse_body(&body, "rollback"));
     let resource = format!("plugin:{}", req.file);
     let file = req.file.clone();
     let audit_resource = resource.clone();
@@ -587,15 +582,7 @@ pub(crate) async fn rollback_plugin(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "plugin.rollback",
-                &resource,
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("plugin.rollback", &resource, &actor, &e),
     }
 }
 
@@ -727,14 +714,8 @@ pub(crate) async fn register_hook(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: RegisterHookReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: RegisterHookReq = ok_or_respond!(parse_body(&body, "hook"));
     let name = req.name.clone();
     let resource = format!("hook:{name}");
     let cfg = req.config;
@@ -750,10 +731,7 @@ pub(crate) async fn register_hook(
         // transport (e.g. point a base `pii-guard` gate at a hostile socket). Edit config.yaml for base
         // hooks.
         if current.base_hook_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_conflict("hook", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -820,10 +798,7 @@ pub(crate) async fn register_hook(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("hook.register", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("hook.register", &resource, &actor, &e),
     }
 }
 
@@ -840,14 +815,8 @@ pub(crate) async fn put_hook(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PutHookReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => return err_json(&AdminError::Validation(format!("malformed hook body: {e}"))),
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: PutHookReq = ok_or_respond!(parse_body(&body, "hook"));
     let resource = format!("hook:{name}");
     let cfg = req.config;
     let txn_name = name.clone();
@@ -860,10 +829,7 @@ pub(crate) async fn put_hook(
             return Err(AdminError::not_found(format!("hook `{txn_name}`")));
         }
         if current.base_hook_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_conflict("hook", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -907,10 +873,7 @@ pub(crate) async fn put_hook(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("hook.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("hook.replace", &resource, &actor, &e),
     }
 }
 
@@ -926,10 +889,7 @@ pub(crate) async fn delete_hook(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     let resource = format!("hook:{name}");
     let txn_name = name.clone();
     let out = config_transaction(&handle, move |txn| {
@@ -945,10 +905,7 @@ pub(crate) async fn delete_hook(
         // prior order returned `version_conflict` for a stale-ETag DELETE on a base hook, trapping an
         // auto-retry-on-conflict client in a re-read/retry loop that never sees the terminal error.
         if current.base_hook_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "hook `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_conflict("hook", &txn_name));
         }
         // Optimistic concurrency: DELETE honors `If-Match` like every other config-plane
         // mutation (it previously had NO guard — the one mutation verb missing it).
@@ -996,10 +953,7 @@ pub(crate) async fn delete_hook(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("hook.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("hook.delete", &resource, &actor, &e),
     }
 }
 
@@ -1027,18 +981,8 @@ pub(crate) async fn register_group(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: RegisterGroupReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed group body: {e}"
-            )))
-        }
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: RegisterGroupReq = ok_or_respond!(parse_body(&body, "group"));
     let name = req.name.clone();
     let resource = format!("group:{name}");
     let cfg = req.config;
@@ -1049,10 +993,7 @@ pub(crate) async fn register_group(
         // narrow token must not silently redirect a base group's limits. Edit config.yaml. (Mirrors
         // hooks.)
         if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_conflict("group", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -1099,10 +1040,7 @@ pub(crate) async fn register_group(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("group.create", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("group.create", &resource, &actor, &e),
     }
 }
 
@@ -1117,18 +1055,8 @@ pub(crate) async fn put_group(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PutGroupReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed group body: {e}"
-            )))
-        }
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: PutGroupReq = ok_or_respond!(parse_body(&body, "group"));
     let resource = format!("group:{name}");
     let cfg = req.config;
     let txn_name = name.clone();
@@ -1138,10 +1066,7 @@ pub(crate) async fn put_group(
             return Err(AdminError::not_found(format!("group `{txn_name}`")));
         }
         if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_conflict("group", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -1179,10 +1104,7 @@ pub(crate) async fn put_group(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("group.replace", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("group.replace", &resource, &actor, &e),
     }
 }
 
@@ -1199,10 +1121,7 @@ pub(crate) async fn patch_group(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     let req: GroupPatchReq = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -1219,10 +1138,7 @@ pub(crate) async fn patch_group(
             return Err(AdminError::not_found(format!("group `{txn_name}`")));
         };
         if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_conflict("group", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -1270,10 +1186,7 @@ pub(crate) async fn patch_group(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("group.patch", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("group.patch", &resource, &actor, &e),
     }
 }
 
@@ -1288,10 +1201,7 @@ pub(crate) async fn delete_group(
     headers: axum::http::HeaderMap,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     let resource = format!("group:{name}");
     let txn_name = name.clone();
     let out = config_transaction(&handle, move |txn| {
@@ -1306,10 +1216,7 @@ pub(crate) async fn delete_group(
         // an auto-retry-on-conflict client in a re-read/retry loop that never sees the terminal
         // error.
         if current.base_group_names.contains(&txn_name) {
-            return Err(AdminError::Conflict(format!(
-                "group `{txn_name}` is defined in the base config file; edit config.yaml (the API \
-                 cannot silently shadow operator file config)"
-            )));
+            return Err(base_conflict("group", &txn_name));
         }
         if let Some(e) = stale_if_match(expected, current.config_version) {
             return Err(e);
@@ -1374,10 +1281,7 @@ pub(crate) async fn delete_group(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by("group.delete", &resource, audit::OUTCOME_REJECTED, &actor);
-            err_json(&e)
-        }
+        Err(e) => reject("group.delete", &resource, &actor, &e),
     }
 }
 
@@ -1441,10 +1345,7 @@ pub(crate) async fn reset_overlay_section(
         )));
     };
     let resource = format!("overlay:{}", section.as_str());
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     // ONE section: the If-Match re-validation, the idempotent-no-op probe, the disk rebuild, the
     // overlay clear and the swap. The disk work (overlay read + `load_config_from_disk` + resolve +
     // build) is a store/disk READ, so it is queued onto `spawn_blocking` — it used to run inline on
@@ -1941,18 +1842,8 @@ pub(crate) async fn rollback_config(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: RollbackReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed rollback body: {e}"
-            )))
-        }
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: RollbackReq = ok_or_respond!(parse_body(&body, "rollback"));
     let resource = format!("config:v{}", req.version);
     let want = req.version;
     let out = config_transaction(&handle, move |txn| {
@@ -2020,15 +1911,7 @@ pub(crate) async fn rollback_config(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "config.rollback",
-                &resource,
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("config.rollback", &resource, &actor, &e),
     }
 }
 
@@ -2051,10 +1934,7 @@ pub(crate) async fn put_auth(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
     let req: PutAuthBody = match serde_json::from_slice(&body) {
         Ok(b) => b,
         Err(e) => return err_json(&AdminError::Validation(format!("invalid body: {e}"))),
@@ -2339,15 +2219,7 @@ pub(crate) async fn reload_config(
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "config.reload",
-                "config:disk",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("config.reload", "config:disk", &actor, &e),
     }
 }
 
@@ -2464,18 +2336,8 @@ pub(crate) async fn apply_config(
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let card_origin = format!("config/apply by {actor}");
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: ApplyConfigReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed config body: {e}"
-            )))
-        }
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: ApplyConfigReq = ok_or_respond!(parse_body(&body, "config"));
     // A first section of a plane this process did not load is refused whole, before the parse and
     // before anything is built, in the running generation's root rules' words (Law 7).
     if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
@@ -2605,15 +2467,7 @@ pub(crate) async fn apply_config(
             }
             with_config_etag(ok_json(StatusCode::OK, &body), installed.config_version)
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "config.apply",
-                "config:body",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("config.apply", "config:body", &actor, &e),
     }
 }
 
@@ -2994,18 +2848,8 @@ pub(crate) async fn put_config_settings(
 ) -> Response {
     let actor = principal.actor_id().to_string();
     let card_origin = format!("config/settings by {actor}");
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let mut raw: serde_json::Value = match serde_json::from_slice(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed config settings body: {e}"
-            )))
-        }
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let mut raw: serde_json::Value = ok_or_respond!(parse_body(&body, "config settings"));
     let requested_persist = match raw.as_object_mut().and_then(|o| o.remove(PERSIST_FIELD)) {
         None => false,
         Some(serde_json::Value::Bool(b)) => b,
@@ -3194,15 +3038,7 @@ pub(crate) async fn put_config_settings(
                 installed.config_version,
             )
         }
-        Err(e) => {
-            audit::AUDIT.record_by(
-                "config.settings",
-                "config:settings",
-                audit::OUTCOME_REJECTED,
-                &actor,
-            );
-            err_json(&e)
-        }
+        Err(e) => reject("config.settings", "config:settings", &actor, &e),
     }
 }
 
@@ -3230,18 +3066,8 @@ pub(crate) async fn patch_hook_settings(
     body: axum::body::Bytes,
 ) -> Response {
     let actor = principal.actor_id().to_string();
-    let expected = match if_match_version(&headers) {
-        Ok(v) => v,
-        Err(resp) => return resp,
-    };
-    let req: PatchSettingsReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed settings body: {e}"
-            )))
-        }
-    };
+    let expected = ok_or_respond!(if_match_version(&headers));
+    let req: PatchSettingsReq = ok_or_respond!(parse_body(&body, "settings"));
     // BOUND the settings map. It is persisted verbatim into the config overlay AND re-sent to the hook
     // as the configure preamble on EVERY (re)connection, so an unbounded map amplifies both the
     // overlay size and per-reconnect wire traffic. Cap the serialized size and the key count as
@@ -5428,14 +5254,7 @@ pub(crate) async fn validate_config(
     State(handle): State<Arc<AppHandle>>,
     body: axum::body::Bytes,
 ) -> Response {
-    let req: ValidateConfigReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return err_json(&AdminError::Validation(format!(
-                "malformed config body: {e}"
-            )))
-        }
-    };
+    let req: ValidateConfigReq = ok_or_respond!(parse_body(&body, "config"));
     // The dry run judges what an apply would: a first section of an unloaded plane is refused.
     if let Some(refusal) = unloaded_plane_refusal(&handle, &req.config) {
         return err_json(&AdminError::Validation(refusal));
