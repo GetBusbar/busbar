@@ -1,9 +1,6 @@
 # Repository settings ModernCI reads from the protected config.
+#
+# merge_drivers: none. The one driver, ledger-count (qa/kind-isolation.toml's count rows, settled by
+# `cargo xtask ledger-merge`), went with the qa/ ledgers and xtask (dd677873c4); no .gitattributes
+# entry names a driver.
 merge_drivers: {}
-# A Cargo.lock conflict is settled by ModernCI, never a person (owner 2026-10-24): the lock file is
-# made again on the merged tree with the toolchain the checks use (.ci/tool.sh, else BUSBAR_TOOL_SH),
-# for a change's own conflict and on the merge train.
-regenerate:
-  - files: [Cargo.lock]
-    run: if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi && cargo update --workspace --quiet
-    when: [conflict]
