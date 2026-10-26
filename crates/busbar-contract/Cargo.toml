@@ -118,6 +118,10 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }
+# The chip's RSA recipe (MySQL `caching_sha2_password` full authentication) and its RS256 recipe.
+num-bigint = { workspace = true }
+getrandom = { workspace = true }
+ring = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 # `base64` renders the one document-fingerprint tag a plane writes, `sha256/<standard base64>`

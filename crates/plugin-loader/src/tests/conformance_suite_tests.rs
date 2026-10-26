@@ -1850,3 +1850,47 @@ fn the_dropped_leg_loads_the_cdylib_through_the_staging_production_uses() {
     );
     drop(plugin);
 }
+
+mod canary_tests {
+    use crate::conformance::canary::{credentials, find, spellings};
+
+    const PW: &[u8] = b"CANARY-pg-7c1e/9+";
+
+    fn emitted(lines: &[&[u8]]) -> Vec<(String, Vec<u8>)> {
+        lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (format!("line {i}"), l.to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn the_credentials_are_what_the_inputs_name() {
+        let inputs = serde_json::json!({"credentials": ["a", "", 3, "b"]});
+        assert_eq!(credentials(&inputs), vec![b"a".to_vec(), b"b".to_vec()]);
+        assert!(credentials(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn every_spelling_of_a_credential_is_found_and_only_where_is_named() {
+        for s in spellings(PW) {
+            let mut line = b"connect failed: ".to_vec();
+            line.extend_from_slice(&s);
+            let at = find(&[PW.to_vec()], &emitted(&[b"ready", &line])).expect("found");
+            assert_eq!(at, "line 1");
+            assert!(!at.contains("CANARY"));
+        }
+        assert!(spellings(PW).contains(&b"CANARY-pg-7c1e%2F9%2B".to_vec()));
+    }
+
+    #[test]
+    fn a_clean_fold_passes() {
+        assert_eq!(
+            find(
+                &[PW.to_vec()],
+                &emitted(&[b"ready", b"Refused: bad password"])
+            ),
+            None
+        );
+    }
+}
