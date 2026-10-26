@@ -184,14 +184,20 @@ checks:
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo fmt --all -- --check
+      cargo metadata --locked --format-version 1 >/dev/null
       # The default distribution (dist/default, its own workspace) from step 5 on.
       if [ -f dist/default/Cargo.toml ]; then cargo fmt --manifest-path dist/default/Cargo.toml --all -- --check; fi
+    baseline: target
   clippy:
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
       if [ -f dist/default/Cargo.toml ]; then cargo clippy --manifest-path dist/default/Cargo.toml --workspace --all-targets --all-features --locked --keep-going --target-dir target -- -D warnings; fi
+      cargo clippy --workspace --all-targets --no-default-features --locked --keep-going -- -D warnings
+      cargo clippy -p busbar-kernel --no-default-features --features plane-a2a --locked -- -D warnings
+      cargo clippy -p busbar-kernel --no-default-features --features plane-mcp --locked -- -D warnings
+      cargo clippy -p busbar-kernel --no-default-features --locked -- -D warnings
     scope: affected
     baseline: target
   test:
@@ -269,10 +275,12 @@ checks:
         cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
         # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
         cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
-        cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
-        cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
-        timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
-        cargo test --workspace --doc --locked --no-fail-fast
+        if [ -z "$MODERNCI_ONLY" ]; then
+          cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
+          cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+          timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+          cargo test --workspace --doc --locked --no-fail-fast
+        fi
       fi
     scope: affected
     baseline: target
