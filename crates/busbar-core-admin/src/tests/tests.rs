@@ -4946,8 +4946,8 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_
     let gov = gov_without_at_rest_key(store.clone(), Some("admintok".to_string()));
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
-    let baseline_seq = audit_ring::AUDIT
-        .list(1)
+    let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, 1, None, None)
         .first()
         .map(|e| e.seq)
         .unwrap_or(0);
@@ -4972,7 +4972,7 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_
     assert!(store.list_keys().unwrap().is_empty(), "a key was written");
     assert!(store.list_credentials_since(0).unwrap().is_empty());
     assert!(
-        audit_ring::AUDIT
+        busbar_kernel::audit::auditlog::AUDIT_LOG
             .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, Some("key:-"))
             .into_iter()
             .any(|e| e.seq > baseline_seq
