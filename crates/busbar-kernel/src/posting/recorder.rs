@@ -256,7 +256,9 @@ impl Closed {
 #[derive(Debug)]
 pub struct Stamps {
     /// The last heartbeat that succeeded (the landed-unknown bound runs only while it does).
-    heartbeat_ok_ms: AtomicU64,
+    heartbeat_up: AtomicBool,
+    /// The flush window, ms: strict mode's threshold is above it, measured send to send.
+    window_ms: u64,
     /// Whether unrecorded work exists (accumulator or unresolved carves; dead letters excluded).
     working: AtomicBool,
     /// The last progress toward READY (a READY, a resolved part, or work appearing).
@@ -269,10 +271,11 @@ pub struct Stamps {
 }
 
 impl Stamps {
-    fn new() -> Self {
+    fn new(window_ms: u64) -> Self {
         let now = now_ms();
         Stamps {
-            heartbeat_ok_ms: AtomicU64::new(now),
+            heartbeat_up: AtomicBool::new(false),
+            window_ms,
             working: AtomicBool::new(false),
             progress_ms: AtomicU64::new(now),
             strict: AtomicBool::new(false),
@@ -284,8 +287,10 @@ impl Stamps {
         self.progress_ms.fetch_max(at_ms, Ordering::Relaxed);
     }
 
-    fn heartbeat_ok(&self, now: u64) -> bool {
-        now.saturating_sub(self.heartbeat_ok_ms.load(Ordering::Relaxed)) <= STRICT_AGE_MS
+    /// Whether the last heartbeat write succeeded (false until one has: the bound never runs on
+    /// a store not yet proven to take writes, boot replay included).
+    fn heartbeat_ok(&self) -> bool {
+        self.heartbeat_up.load(Ordering::Relaxed)
     }
 
     /// Strict mode on or off (the heartbeat writes while idle only when on).
@@ -311,7 +316,8 @@ impl Stamps {
         // ONE age rule (the other is the fleet snapshot's, per bucket): 2 s of no recording
         // progress while there is unrecorded work. Dead letters are not work; a bisect is progress.
         if self.working.load(Ordering::Relaxed)
-            && now_ms.saturating_sub(self.progress_ms.load(Ordering::Relaxed)) > STRICT_AGE_MS
+            && now_ms.saturating_sub(self.progress_ms.load(Ordering::Relaxed))
+                > STRICT_AGE_MS + self.window_ms
         {
             return Err(Closed::Undelivered);
         }
@@ -424,10 +430,6 @@ struct Entry {
     batch: Batch,
     usage: KindState,
     metering: KindState,
-    /// How long it has been applied-unknown while the heartbeat succeeded, ms (this boot).
-    unknown_ms: u64,
-    /// The last answer's time, wall-clock ms (this boot).
-    last_answer_ms: Option<u64>,
 }
 
 impl Entry {
@@ -446,8 +448,6 @@ impl Entry {
             batch,
             usage,
             metering,
-            unknown_ms: 0,
-            last_answer_ms: None,
         }
     }
 
@@ -583,6 +583,8 @@ impl Core {
         })
     }
 
+    /// Buckets with unrecorded deltas: in the accumulator, in an unresolved carve, or held by a
+    /// dead letter (a refund that finds no cell still emits its -1 for them).
     fn unrecorded(&self) -> HashSet<String> {
         self.acc
             .keys()
@@ -591,6 +593,11 @@ impl Core {
                 self.entries
                     .iter()
                     .flat_map(|e| e.batch.cells.iter().map(|c| c.bucket.clone())),
+            )
+            .chain(
+                self.dead
+                    .iter()
+                    .flat_map(|d| d.cells.iter().chain(&d.absorbed).map(|c| c.bucket.clone())),
             )
             .collect()
     }
@@ -799,7 +806,7 @@ impl Recorder {
             .unwrap_or(u64::MAX)
             .max(1);
         let (tx, rx) = mpsc::channel();
-        let stamps = Arc::new(Stamps::new());
+        let stamps = Arc::new(Stamps::new(window_ms));
         *stamps
             .unrecorded
             .write()
@@ -1095,13 +1102,20 @@ impl Recorder {
         let unknown_u = self.apply(&mut entry, Kind::Usage, u).await;
         let unknown_m = self.apply(&mut entry, Kind::Metering, m).await;
         let now = now_ms();
-        let since = entry.last_answer_ms.replace(now).unwrap_or(now);
         if unknown_u || unknown_m {
             // The bound runs only while the heartbeat succeeds: an outage is retried without limit
-            // and never dead-lettered.
-            if self.stamps.heartbeat_ok(now) {
-                entry.unknown_ms = entry.unknown_ms.saturating_add(now.saturating_sub(since));
-                if entry.unknown_ms > MAX_UNKNOWN.as_millis() as u64 {
+            // and never dead-lettered. It is measured from the op's first failure, which every
+            // heartbeat fail-to-succeed transition rewrites (`failing`), so it survives restarts.
+            let first = {
+                let core = self.lock();
+                [entry.op(Kind::Usage), entry.op(Kind::Metering)]
+                    .iter()
+                    .filter_map(|op| core.failing.get(op).copied())
+                    .min()
+            };
+            if self.stamps.heartbeat_ok() {
+                let lapsed = first.is_some_and(|t| now.saturating_sub(t) > MAX_UNKNOWN.as_millis() as u64);
+                if lapsed {
                     self.dead_rest(
                         &mut entry,
                         DeadState::LandedUnknown,
@@ -1377,11 +1391,30 @@ impl Recorder {
             // of that cell is carved after it (the `dead` record replays the same move).
             let mut cells = cells;
             let mut moved = Vec::new();
-            if state == DeadState::Refused {
-                for c in &mut cells {
-                    if let Some(more) = core.acc.remove(&(c.bucket.clone(), c.window)) {
-                        c.merge(&more);
-                        moved.push(more);
+            let mut absorbed = Vec::new();
+            for c in &mut cells {
+                let key = (c.bucket.clone(), c.window);
+                match state {
+                    DeadState::Refused => {
+                        if let Some(more) = core.acc.remove(&key) {
+                            c.merge(&more);
+                            moved.push(more);
+                        }
+                    }
+                    // A landed-unknown letter takes only the entry's NEGATIVE fields: no -1 lands
+                    // where its +1 may not have; the positives still post.
+                    DeadState::LandedUnknown => {
+                        if let Some(entry) = core.acc.get_mut(&key) {
+                            let mut neg = entry.signed_part(false);
+                            neg.bucket.clone_from(&c.bucket);
+                            if !neg.is_zero() {
+                                entry.merge(&neg.negated());
+                                if entry.is_zero() {
+                                    core.acc.remove(&key);
+                                }
+                                absorbed.push(neg);
+                            }
+                        }
                     }
                 }
             }
@@ -1391,7 +1424,7 @@ impl Recorder {
                 state,
                 reason: why.to_string(),
                 cells,
-                absorbed: Vec::new(),
+                absorbed,
                 metering,
                 at_ms: now_ms(),
             };
@@ -1412,6 +1445,7 @@ impl Recorder {
             kind,
             lo,
             hi,
+            state,
         }];
         if let Err(e) = self.sync(recs, vec![DeadRec::Letter(letter)]).await {
             tracing::error!(error = %e, "money: a dead letter could not be synced");
@@ -1522,11 +1556,32 @@ impl Recorder {
         }
     }
 
-    /// One heartbeat write.
+    /// One heartbeat write. On a fail-to-succeed transition every failing op's first-failure time
+    /// restarts now (rewritten in its `failing` record): the landed-unknown bound counts only time
+    /// the store was taking writes.
     pub async fn beat(&self) {
-        if self.store.heartbeat().await.is_ok() {
+        let ok = self.store.heartbeat().await.is_ok();
+        let was_ok = self.stamps.heartbeat_up.swap(ok, Ordering::Relaxed);
+        if ok {
             let now = now_ms();
-            self.stamps.heartbeat_ok_ms.store(now, Ordering::Relaxed);
+            if !was_ok {
+                let recs: Vec<Rec> = {
+                    let mut core = self.lock();
+                    core.failing
+                        .iter_mut()
+                        .map(|(op, t)| {
+                            *t = now;
+                            Rec::Failing {
+                                op: *op,
+                                t_first: now,
+                            }
+                        })
+                        .collect()
+                };
+                if !recs.is_empty() {
+                    self.lazy(recs);
+                }
+            }
         }
     }
 }
@@ -1753,12 +1808,33 @@ fn fold(core: &mut Core, recs: Vec<Rec>) {
                         KindState::Parts(parts.into_iter().map(|p| (p, false)).collect());
                 }
             }
-            Rec::Dead { seq, kind, lo, hi } => {
-                // The same move the live path made: the cells' accumulator entries went with them.
+            Rec::Dead {
+                seq,
+                kind,
+                lo,
+                hi,
+                state,
+            } => {
+                // The same move the live path made: a refused cell's whole accumulator entry, a
+                // landed-unknown cell's negative fields.
                 if kind == Kind::Usage {
                     if let Some(e) = entries.get(&seq) {
                         for c in e.batch.cells.get(lo..hi).unwrap_or_default() {
-                            core.acc.remove(&(c.bucket.clone(), c.window));
+                            let key = (c.bucket.clone(), c.window);
+                            match state {
+                                DeadState::Refused => {
+                                    core.acc.remove(&key);
+                                }
+                                DeadState::LandedUnknown => {
+                                    if let Some(entry) = core.acc.get_mut(&key) {
+                                        let neg = entry.signed_part(false);
+                                        entry.merge(&neg.negated());
+                                        if entry.is_zero() {
+                                            core.acc.remove(&key);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

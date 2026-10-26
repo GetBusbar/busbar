@@ -340,7 +340,15 @@ pub enum Rec {
         lo: usize,
         /// Last index, exclusive.
         hi: usize,
+        /// `refused` moves the cells' whole accumulator entries into the letter; `landed-unknown`
+        /// only their negative fields.
+        #[serde(default = "refused")]
+        state: DeadState,
     },
+}
+
+fn refused() -> DeadState {
+    DeadState::Refused
 }
 
 /// The bucket id of `bucket`'s sibling era row: `"e:" ++ hex32(SHA-256(bucket))`, 34 ASCII bytes.
