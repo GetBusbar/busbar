@@ -163,6 +163,10 @@ env:
     done
 on:
   move: [gates, oracle, conformance, verify-done, q128-audit, test-gated, selftest-1, selftest-2, selftest-3, selftest-4]
+  # The first-party plugin release (SECURITY-FIRST-PLAN C1): run by hand at the release commit, never
+  # on a move. plugin-pack builds and packs unsigned; the owner signs its stored canonical bytes
+  # offline; plugin-publish attaches the signatures to those stored bytes and verifies them.
+  manual: [plugin-pack, plugin-publish]
 checks:
   gates:
     # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
@@ -397,3 +401,39 @@ checks:
       cargo xtask selftest --shard=4/4
     requires: [cc, git-history]
     needs: [gates]
+  plugin-pack:
+    # THE BUILD HALF of a first-party plugin release (scripts/plugin-pack-release.sh). Every plugin
+    # release/plugin-pins.tsv pins (`<repo>\t<commit>`) is built at its release commit for this
+    # backend's triple and packed UNSIGNED. Beside each tarball it writes `<asset>.canonical`, the
+    # manifest's canonical bytes. The owner fetches the stored output (`modernci call measure` on this
+    # check at the release commit, then `artifact`) and signs canonical/*.canonical on the YubiKey
+    # (scripts/plugin-sign-offline.sh, PLUGIN-KEY-CEREMONY.md). No credential reaches this check.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      [ -f release/plugin-pins.tsv ] || { echo "plugin-pack: this commit pins no plugin release (release/plugin-pins.tsv)"; exit 1; }
+      rm -rf dist/plugins
+      scripts/plugin-pack-release.sh release/plugin-pins.tsv dist/plugins
+    requires: [cc]
+    # The exact bytes the owner signs: plugin-publish (`needs:` this check) reads these, never a rebuild.
+    outputs: [dist/plugins/]
+  plugin-publish:
+    # THE PUBLISH HALF (scripts/plugin-publish.sh), at the SAME commit as plugin-pack, on its stored
+    # output. PLUGIN_SIGNATURES is the owner's signatures.tsv (`<asset>\t<canonical sha256>\t<sig>`),
+    # delivered as a ModernCI secret scoped to GetBusbar/busbar: it is public data and the secret is
+    # only the channel, because a commit would change the tree and rebuild plugin-pack. Each signature
+    # is attached and verified against the first-party key list this tree's packer embeds
+    # (.cargo/config.toml), and ANY missing, extra, mismatched or unverifiable signature refuses the
+    # whole release. The signed tarballs and SHA256SUMS are this check's output. The upload is NOT done
+    # here: a release token is a forge credential, which goes to a step only (bank-grade rule 1), and a
+    # per-step forge token is G3 (#2436).
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      [ -n "${PLUGIN_SIGNATURES:-}" ] || { echo "plugin-publish: no PLUGIN_SIGNATURES for this release"; exit 1; }
+      [ -d dist/plugins/unsigned ] || { echo "plugin-publish: plugin-pack's stored output is not here"; exit 1; }
+      cargo build --release --locked -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+      sigs="$(mktemp)"; printf '%s\n' "$PLUGIN_SIGNATURES" > "$sigs"
+      rm -rf dist/plugins/signed
+      PACK="${CARGO_TARGET_DIR:-target}/release/busbar-plugin-pack" scripts/plugin-publish.sh dist/plugins/unsigned "$sigs" dist/plugins/signed
+    requires: [cc]
+    needs: [plugin-pack]
+    outputs: [dist/plugins/signed/]
