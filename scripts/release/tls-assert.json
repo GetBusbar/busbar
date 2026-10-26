@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "The TLS assessment's assertions (docs/design: PUBLISH-PIPELINE section 7). Judged by",
+    "scripts/release/tls_assess.py judge over testssl.sh's flat JSON. Never a letter grade.",
+    "A change to this file is a change to a public claim: it lands through review like code."
+  ],
+  "min_protocol": "TLS1_2",
+  "require_protocols": ["TLS1_3"],
+  "forbid_protocols": ["SSLv2", "SSLv3", "TLS1", "TLS1_1"],
+  "allowed_ciphers": {
+    "x1301": "TLS_AES_128_GCM_SHA256",
+    "x1302": "TLS_AES_256_GCM_SHA384",
+    "x1303": "TLS_CHACHA20_POLY1305_SHA256",
+    "xc02b": "ECDHE-ECDSA-AES128-GCM-SHA256",
+    "xc02c": "ECDHE-ECDSA-AES256-GCM-SHA384",
+    "xc02f": "ECDHE-RSA-AES128-GCM-SHA256",
+    "xc030": "ECDHE-RSA-AES256-GCM-SHA384",
+    "xcca8": "ECDHE-RSA-CHACHA20-POLY1305",
+    "xcca9": "ECDHE-ECDSA-CHACHA20-POLY1305"
+  },
+  "chain": "passed",
+  "min_key": {"EC": 256, "RSA": 2048},
+  "min_expiry_days": 14,
+  "hsts": "absent-and-not-claimed",
+  "forbid_severities": ["HIGH", "CRITICAL"]
+}

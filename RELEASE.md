@@ -10,9 +10,38 @@ BUSBAR"). A branch file is named for the branch being moved and says what the mo
 |---|---|---|---|
 | a `lane-*` branch into **`dev`** | [`.ci/default.yaml`](.ci/default.yaml) | preflight, every registered gate, clippy, compile, test, doctest, deletion matrix, `cargo deny`, the gated suites; no worse than dev (required check `ci`) | none |
 | **`dev`** into **`qa`** | [`.ci/dev.yaml`](.ci/dev.yaml) | the gates, the oracle against the 1.5.5 golden, conformance, `scripts/verify-1.6.0-done.sh`, the Q128 audit, the gated suites; all absolute | the owner's approval (the org ruleset keeps `qa` locked) |
-| **`qa`** into **`main`** | `.ci/qa.yaml` | the same; on landing, the release is signed and published from the build that was judged, never rebuilt | the owner (the org ruleset keeps `main` locked) |
+| **`qa`** into **`main`** | `.ci/qa.yaml` (on ModernCI's `modernci-config` branch) | the five checks, plus `candidate`: every release artifact built once, kept, never rebuilt. It holds no key and publishes nothing | the owner. Then the owner's publish run (below) |
 
-`.ci/qa.yaml` is not written yet: until it lands, nothing is published from `main`. The
+## Publishing (the owner's run, with his hardware keys)
+
+ModernCI builds; the owner signs and publishes. No signing key exists in CI. The design is
+`PUBLISH-PIPELINE-1.6.0` (security docs); how users check the result is [`docs/verify.md`](docs/verify.md).
+
+The owner works in **his own clone at the release commit**, with `busbar-plugin-pack` built there by
+him:
+
+```
+cargo build --release -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+modernci call artifact --check candidate ...            # the judged candidate's outputs -> ./candidate
+G=scripts/release/publish_gate.py; T=~/.config/busbar-release/trust.json; P=target/release/busbar-plugin-pack
+python3 $G verify --candidate candidate --trust $T --pack $P --out out    # every rule; nothing signed
+python3 $G sign   --candidate candidate --trust $T --pack $P --out out --k1-sign-cmd <PIV cmd> --k2-key <sk handle>
+python3 $G upload --candidate candidate --trust $T --pack $P --out out    # draft, Rekor, publish, verify, then latest
+```
+
+`verify` refuses, one named line per rule, on:
+- any missing or undeclared artifact;
+- a digest mismatch;
+- a plugin not signed by a key in the compiled-in list;
+- a key list that differs from the owner's trust file;
+- a binary without the embedded key;
+- an image whose binary is not the built one;
+- a version already published.
+
+`sign` shows the full commit and the key-list diff before any key is touched. `upload` moves `latest`
+only after downloading the release back and verifying it as a user would. A plugin released between
+core releases uses `publish_gate.py plugin-release <repo> <tag>`: its own release workflow only
+drafts unsigned tarballs. The
 busbar-release hop (`promote.yml`, the engine pin) is deleted and no move is decided by it.
 busbar-release remains the tools repo: the home of the oracle (`busbar-oracle`, pinned by
 `testing/shadow-oracle/oracle-rust.pin` and fetched from its `dev-bin` release by `bin/oracle`), the

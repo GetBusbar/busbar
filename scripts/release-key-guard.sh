@@ -40,13 +40,16 @@ set -euo pipefail
 
 MODE="${1:-}"
 
-# ── THE KEY ITSELF ──────────────────────────────────────────────────────────────────────────────
-# 64 hex characters, an ed25519 public key. Asserting the SHAPE and not merely non-emptiness is
+# ── THE KEY LIST ITSELF ─────────────────────────────────────────────────────────────────────────
+# A first-party key LIST (crates/plugin-loader/src/sign.rs, the plugin key ceremony): one or more
+# comma-separated entries, each `<id>:<64 hex>` or a bare `<64 hex>`, ids lowercase [a-z0-9-]+.
+# Each key is 64 hex characters, an ed25519 public key. Asserting the SHAPE and not merely non-emptiness is
 # deliberate: `BUSBAR_RELEASE_PUBKEY: ${{ vars.MISSPELLED }}` expands to the empty string, and a
 # truncated or whitespace-padded value would embed and then fail every verification at runtime,
 # which is the same user-visible outcome as embedding nothing.
 key_is_valid() {
-  printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq '^[0-9a-fA-F]{64}$'
+  printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" \
+    | grep -Eq '^([a-z0-9-]+:)?[0-9a-fA-F]{64}(,([a-z0-9-]+:)?[0-9a-fA-F]{64})*$'
 }
 
 # ── --selftest ──────────────────────────────────────────────────────────────────────────────────
@@ -90,7 +93,12 @@ if [ "${MODE}" = "--selftest" ]; then
   else
     nope "require REJECTED a well-formed key — the guard would stop every release"
   fi
-  for bad_label in "unset:" "empty:" "short:abc123" "long:${GOOD_KEY}ff" "padded: ${GOOD_KEY} " "nonhex:${GOOD_KEY%??}zz"; do
+  if BUSBAR_RELEASE_PUBKEY="busbar-plugins-2026a:${GOOD_KEY},busbar-plugins-2026b:${GOOD_KEY%b}c" "$self" require >/dev/null 2>&1; then
+    ok "require accepts a well-formed key list (id:hex,id:hex)"
+  else
+    nope "require REJECTED a well-formed key list — every list-format release build would stop"
+  fi
+  for bad_label in "unset:" "empty:" "short:abc123" "long:${GOOD_KEY}ff" "padded: ${GOOD_KEY} " "nonhex:${GOOD_KEY%??}zz" "trailing-comma:${GOOD_KEY}," "empty-entry:${GOOD_KEY},,${GOOD_KEY}" "upper-id:KEY:${GOOD_KEY}" "bad-entry:k:${GOOD_KEY},k2:abc"; do
     label="${bad_label%%:*}"; val="${bad_label#*:}"
     if [ "$label" = "unset" ]; then
       if (unset BUSBAR_RELEASE_PUBKEY; "$self" require >/dev/null 2>&1); then
@@ -166,7 +174,8 @@ case "$MODE" in
 [release-key-guard] ##########################################################################
 [release-key-guard] # REFUSING TO BUILD A RELEASE BINARY WITHOUT BUSBAR_RELEASE_PUBKEY.
 [release-key-guard] #
-[release-key-guard] # It must be 64 hex characters (the ed25519 PUBLIC half). Got:
+[release-key-guard] # It must be a key list: comma-separated <id>:<64 hex> (or bare <64 hex>) ed25519
+[release-key-guard] # PUBLIC keys. Got:
 [release-key-guard] #   '${BUSBAR_RELEASE_PUBKEY:-<unset>}'
 [release-key-guard] #
 [release-key-guard] # Without it this artifact would compile, link, pass its tests and ship, and

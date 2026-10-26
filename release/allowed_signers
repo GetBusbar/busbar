@@ -1,0 +1,10 @@
+# The busbar RELEASE key (K2): OpenSSH allowed_signers lines, one per hardware key, each a FIDO2
+# resident `sk-ssh-ed25519@openssh.com` key held by the founder (the backup key lives in a safe).
+# Users verify SHA256SUMS, SHA256SUMS.plugins, IMAGES and release-evidence.json against this file:
+#
+#   ssh-keygen -Y verify -f allowed_signers -I busbar-release -n busbar-release -s FILE.sig < FILE
+#
+# EMPTY UNTIL THE KEY CEREMONY. The publish gate (scripts/release/publish_gate.py, rule G-14) refuses
+# a release while this file differs from the owner's own trust file, so an empty file means nothing
+# can be published. Format of each line:
+#   busbar-release namespaces="busbar-release",valid-after="YYYYMMDD" sk-ssh-ed25519@openssh.com AAAA... busbar-release-2026a

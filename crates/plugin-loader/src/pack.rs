@@ -27,6 +27,9 @@ use busbar_plugin_loader::sign::{sign, Declares, HookNeeds, Manifest, NeedLevel,
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
+#[path = "pack_release.rs"]
+mod release;
+
 const SIGN_KEY_ENV: &str = "BUSBAR_SIGN_KEY";
 
 /// The ONLY `$schema` value `--settings-schema-file` accepts.
@@ -122,6 +125,15 @@ USAGE:
              carried (plugins.yaml `former_names:`): busbar resolves a config naming it to this
              plugin, as it resolves the alias. SIGNED; lowercase [a-z0-9-]+, never the plugin's own
              name or alias.
+    canonical <tarball> [--out <file>]
+             prints (and writes) the exact bytes a signature covers and their sha256: what the
+             owner signs on the hardware key for an UNSIGNED first-party tarball CI packed.
+    attach <tarball> --signature <128 hex | @file> --keys <list> --out <file>
+             inserts that 64-byte Ed25519 signature and repackages; refuses unless the result
+             verifies against a key on <list> (the BUSBAR_RELEASE_PUBKEY format: id:hex,...).
+    verify <tarball> --keys <list> [--name <name>] [--version <semver>]
+             the publish gate's per-plugin check: structure, then strict first-party verification
+             against <list>. Prints VERIFIED (exit 0) or REFUSED with the reason (exit 1).
     keygen   generates a fresh ed25519 keypair and prints both halves as hex. Keep the private half
              secret (it becomes $BUSBAR_SIGN_KEY); publish/allowlist/embed the public half."
 }
@@ -131,6 +143,9 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("keygen") => keygen(),
         Some("pack") => pack(&args[1..]),
+        Some("canonical") => release::canonical(&args[1..]),
+        Some("attach") => release::attach(&args[1..]),
+        Some("verify") => release::verify(&args[1..]),
         Some("--help" | "-h") | None => {
             println!("{}", usage());
             ExitCode::SUCCESS
