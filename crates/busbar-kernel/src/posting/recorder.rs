@@ -38,7 +38,7 @@ use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 use serde::{Deserialize, Serialize};
 
 use super::record::{self, Batch, CellCount, DeadState, Kind, Op, Part, Rec};
-use super::spool::{self, Ledgerette, Spool};
+use super::spool::{self, Spool};
 
 /// Strict mode refuses when an age passes this.
 pub const STRICT_AGE_MS: u64 = 2_000;
@@ -754,14 +754,17 @@ impl Recorder {
         let (spool, dead_file) = match medium {
             Medium::Dir(dir) => {
                 let spool_dir = dir.join("money-spool");
-                let dead = Ledgerette::at(spool_dir.join("DEADLETTERS"));
                 if ephemeral {
                     Spool::discard(&spool_dir).map_err(io_err)?;
-                    dead.discard().map_err(io_err)?;
                 }
-                let (s, recs) = Spool::open(&spool_dir, syncer).map_err(io_err)?;
-                fold(&mut core, recs);
-                for body in dead.read().map_err(io_err)? {
+                let (s, bodies) = Spool::open(&spool_dir, Arc::clone(&syncer)).map_err(io_err)?;
+                fold(
+                    &mut core,
+                    bodies.iter().filter_map(|b| record::decode(b)).collect(),
+                );
+                let (dead, letters) =
+                    Spool::open(&spool_dir.join("dead"), syncer).map_err(io_err)?;
+                for body in letters {
                     match serde_json::from_slice::<DeadRec>(&body) {
                         Ok(DeadRec::Letter(l)) => {
                             core.next_dead = core.next_dead.max(l.id + 1);
@@ -1615,7 +1618,7 @@ struct Writer {
     rec: std::sync::Weak<Recorder>,
     rx: mpsc::Receiver<WriterMsg>,
     spool: Option<Spool>,
-    dead_file: Option<Ledgerette>,
+    dead_file: Option<Spool>,
     window: Duration,
 }
 
@@ -1725,9 +1728,9 @@ impl Writer {
                 if let Some(live) = live.filter(|_| bytes > COMPACT_BYTES) {
                     // Compaction rewrites the folds as one `fold`, and the dead-letter file from the
                     // letters standing.
-                    match s.compact(&[live]) {
+                    match s.compact(&[record::encode(&live)]) {
                         Ok(()) => {
-                            if let Some(f) = &self.dead_file {
+                            if let Some(f) = self.dead_file.as_mut() {
                                 let bodies: Vec<Vec<u8>> = rec
                                     .dead_letters()
                                     .into_iter()
@@ -1735,7 +1738,7 @@ impl Writer {
                                         serde_json::to_vec(&DeadRec::Letter(l)).unwrap_or_default()
                                     })
                                     .collect();
-                                if let Err(e) = f.rewrite(&bodies) {
+                                if let Err(e) = f.compact(&bodies) {
                                     tracing::warn!(error = %e, "money spool: the dead-letter file could not be rewritten");
                                 }
                             }
@@ -1753,7 +1756,7 @@ impl Writer {
     }
 
     fn write(&mut self, rec: &Recorder, recs: &[Rec], dead: &[DeadRec]) -> Result<(), String> {
-        if let Some(f) = &self.dead_file {
+        if let Some(f) = self.dead_file.as_mut() {
             if !dead.is_empty() {
                 let bodies: Vec<Vec<u8>> = dead
                     .iter()
@@ -1771,7 +1774,8 @@ impl Writer {
         if spool.failed() {
             spool.reopen().map_err(io_err)?;
         }
-        spool.append(recs).map_err(io_err)?;
+        let bodies: Vec<Vec<u8>> = recs.iter().map(record::encode).collect();
+        spool.append(&bodies).map_err(io_err)?;
         rec.stats.fsyncs.fetch_add(1, Ordering::Relaxed);
         *rec.stats
             .fsync_thread

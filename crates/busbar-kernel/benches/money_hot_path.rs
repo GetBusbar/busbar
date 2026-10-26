@@ -99,9 +99,9 @@ impl busbar_kernel::posting::recorder::PostStore for Slow {
 struct SlowDisk;
 
 impl busbar_kernel::posting::spool::Syncer for SlowDisk {
-    fn sync(&self, file: &std::fs::File) -> std::io::Result<()> {
+    fn sync(&self, backend: &mut dyn busbar_kernel_wal::SegmentBackend) -> std::io::Result<()> {
         std::thread::sleep(Duration::from_millis(50));
-        file.sync_data()
+        backend.sync()
     }
 }
 // } RECORDER

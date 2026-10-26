@@ -646,12 +646,12 @@ impl PostStore for Guarded {
 struct GuardedSync;
 
 impl busbar_kernel::posting::spool::Syncer for GuardedSync {
-    fn sync(&self, file: &std::fs::File) -> std::io::Result<()> {
+    fn sync(&self, backend: &mut dyn busbar_kernel_wal::SegmentBackend) -> std::io::Result<()> {
         assert!(
             !on_request_thread(),
             "the spool fsynced on a request thread"
         );
-        file.sync_data()
+        backend.sync()
     }
 }
 

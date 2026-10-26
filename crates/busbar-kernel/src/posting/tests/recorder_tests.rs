@@ -351,14 +351,14 @@ async fn t21_a_carve_past_retention_is_dead_lettered_not_replayed() {
         let (mut s, _) = Spool::open(&spool_dir, Arc::new(spool::DataSync)).unwrap();
         let mut c = CellCount::new("k", 0);
         c.requests = 1;
-        s.append(&[Rec::Carve(Batch {
+        s.append(&[crate::posting::record::encode(&Rec::Carve(Batch {
             seq: 0,
             usage_op: Op::mint(),
             metering_op: Op::mint(),
             cells: vec![c],
             metering: Vec::new(),
             t_sent: now_ms() - RETENTION_MS - 1,
-        })])
+        }))])
         .unwrap();
     }
     let (book, store) = (Arc::new(Book::default()), Arc::new(Store::default()));

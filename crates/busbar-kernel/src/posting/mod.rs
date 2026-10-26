@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE POSTER'S DURABLE PIECES (MONEY-DESIGN §3c): the spool's framing, its segments and manifest,
+//! THE POSTER'S DURABLE PIECES (MONEY-DESIGN §3c): the spool (on `busbar-kernel-wal`'s segments)
 //! and the count records with the batch bodies derived from them.
 
 pub mod edge;
-pub mod frame;
 pub mod record;
 pub mod recorder;
 pub mod spool;
