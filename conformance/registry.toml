@@ -168,8 +168,8 @@ public = "true"
 
 [[suite]]
 id = "slsa-verifier"
-standard = "SLSA provenance (v1.0)"
-plan = "each dev commit's busbar binaries, verified by slsa-verifier against SLSA provenance from busbar's own slsa-dev-provenance run"
+standard = "Signed build attestation (in-toto; not SLSA provenance)"
+plan = "each dev build's busbar binaries, verified by cosign verify-blob-attestation against ModernCI's signed check-output attestation (https://modernci.dev/attestation/check-output/v1) and ModernCI's builder key; not-run until ModernCI publishes both"
 tier = "conformant"
 label = "SLSA"
 verdict = "conformance-verdict-slsa-verifier"
