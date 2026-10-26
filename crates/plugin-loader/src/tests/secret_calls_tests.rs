@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE SECRET AXIS OVER THE ONE DISPATCHER** (TODO step 28): [`SecretRows`] holds the kind's
+//! **THE SECRET AXIS OVER THE ONE DISPATCHER**: [`SecretRows`] holds the kind's
 //! REAL plugin (the env source, reached by KIND through `[package.metadata.busbar.both-ways]`, as
 //! `secret_door_conformance_tests` reaches it) LINKED (its door) and DROPPED IN (its `cdylib`, as
 //! the registry discovers it), and the kernel's calls — `answers`, `linked`, `shared`, `open`, and

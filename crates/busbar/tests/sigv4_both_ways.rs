@@ -22,11 +22,11 @@
 //!    admitted (the plugin passes a non-SigV4 credential, the `keys` bearer path admits it);
 //! 5. a body over the size cap under a MALFORMED SigV4 authorization line is refused AT THE CAP
 //!    (413), before any verdict, and nothing reaches the upstream: the body the kernel holds for the
-//!    `HeadBody` verify is bounded by the cap (ARCHITECT ruling D1 2026-10-05, inbound buffering).
+//!    `HeadBody` verify is bounded by the cap.
 //!
 //! And a second node whose `auth.chain` does NOT name `keys` (`chain: []`, admin on its token):
 //! `POST /keys {"issue_aws_credential": true}` still answers 1.5.5's 201 with the AccessKeyId and
-//! the secret access key beside the token (status row 186). 1.5.5 minted the credential whatever
+//! the secret access key beside the token. 1.5.5 minted the credential whatever
 //! the chain (v1.5.5 `crates/busbar/src/admin/mod.rs:919`, `:997-1000`, `:1103-1108`, `:1118`).
 #![cfg(unix)]
 // A bootable data plane with the bedrock path ingress, the admin listener, the admin-token door and
@@ -105,7 +105,7 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
         .as_str()
         .unwrap_or_else(|| node.fail(&format!("the mint carried no AWS secret: {minted}")))
         .to_string();
-    // 1.5.5's POST /keys credential bytes (row 159, K3#4): the AccessKeyId is `AKIA` then 16 of
+    // 1.5.5's POST /keys credential bytes: the AccessKeyId is `AKIA` then 16 of
     // [A-Z0-9], 20 in all, and the secret access key 40 of [A-Za-z0-9+/]. The shape is the linked
     // signed-request row's own Statement marks; the host draws over it and names no format (RED before the
     // row states it: the mint has no shape to draw and fails closed).
@@ -232,7 +232,7 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     assert_outbound_signed(&node, &seen[1], &vk_akid);
 
     // ── 5. over the cap, under a malformed SigV4 line: refused at the cap, before a verdict ──────
-    // (ARCHITECT D1 2026-10-05, INBOUND BUFFERING.) The body a signed ingress buffers for the
+    // The body a signed ingress buffers for the
     // verifier is capped at `limits.request_body_max_bytes` BEFORE the buffer: a body over it is
     // refused with the opaque auth refusal, the same bytes as a bad signature, and never buffered
     // whole, never verified, never forwarded.
@@ -286,7 +286,7 @@ fn sigv4_is_verified_inbound_and_signed_outbound() {
     drop(node);
 }
 
-/// 1.5.5 MINTED THE AWS CREDENTIAL WHATEVER THE CHAIN (status row 186): with an `auth.chain` that
+/// 1.5.5 MINTED THE AWS CREDENTIAL WHATEVER THE CHAIN: with an `auth.chain` that
 /// does not name `keys`, `POST /keys {"issue_aws_credential": true}` answers 201 with the token,
 /// the AccessKeyId and the secret access key in 1.5.5's shapes (v1.5.5
 /// `crates/busbar/src/admin/mod.rs:997-1000` mints `mint_signed_with_aws` on the flag alone, and

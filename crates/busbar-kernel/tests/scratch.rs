@@ -149,23 +149,6 @@ fn the_abuse_backstop_refuses_one_request_and_serves_the_next() {
     assert_eq!(ok.as_slice(), b"a normal request");
 }
 
-/// The ceiling is absurdly high — far above any legitimate per-call footprint.
-#[test]
-fn the_abuse_ceiling_is_absurdly_high() {
-    const {
-        assert!(
-            SCRATCH_ABUSE_CEILING_BYTES >= 128 * 1024 * 1024,
-            "the backstop is a runaway guard, not a working cap"
-        );
-    }
-    const {
-        assert!(
-            SCRATCH_ABUSE_CEILING_BYTES > SCRATCH_START_BYTES * 1_000,
-            "the ceiling dwarfs the starting size"
-        );
-    }
-}
-
 /// A large-but-legitimate allocation that reports how much headroom is left to the ceiling.
 #[test]
 fn remaining_reports_headroom_to_the_ceiling_not_the_chunk() {

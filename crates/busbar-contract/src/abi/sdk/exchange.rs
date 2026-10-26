@@ -43,6 +43,10 @@ pub const REPLY_MAX: usize = 16 * 1024 * 1024;
 /// own way matches on it.
 pub const REPLY_OVER_BOUND: &str = "the reply passed the exchange's bound";
 
+/// A sealed request field: before which of the request's fields it goes (their count: last), its
+/// name, and its sealed value ([`Exchange::request_sealed`]).
+pub type SealedField = (usize, Vec<u8>, crate::abi::sdk::cred::Seal);
+
 /// ONE REQUEST, as [`exchange`] sends it through a framed need.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Request {
@@ -162,6 +166,16 @@ pub struct Exchange {
     /// replays, which do not apply a piece again, so the replayed read fails the exchange again
     /// and its close is issued on the same handle.
     refused_read: Option<(u32, &'static str)>,
+    /// The field lines ([`Exchange::framed_fields`]'s indices) whose values are sealed.
+    sealed_lines: Vec<usize>,
+    /// A sealed value goes out only secured ([`Cred::secure_required`]): the stream is confirmed
+    /// secured before the request is written.
+    ///
+    /// [`Cred::secure_required`]: crate::abi::sdk::cred::Cred::secure_required
+    secure_required: bool,
+    /// The stream was found in the clear: every re-entry answers the refusal (a replayed `FACTS`
+    /// writes nothing, so only this remembers it).
+    insecure: bool,
     /// What closes `stream` should the exchange be dropped before it closed it: set when
     /// [`Op::exchange`] parks it, so a parked exchange its op gives up does not leave its host
     /// connection open.
@@ -211,6 +225,9 @@ impl Exchange {
             stream: None,
             reply_ceiling: REPLY_MAX,
             refused_read: None,
+            sealed_lines: Vec::new(),
+            secure_required: false,
+            insecure: false,
             closer: None,
         }
     }
@@ -297,7 +314,48 @@ impl Exchange {
     /// `request` is the SDK's from here: what it carried is wiped when it goes, framed or refused.
     /// The head is allocated once at its exact length, so no outgrown copy of a field is left.
     pub fn request(request: Request) -> Result<Self, ConnFailure> {
+        Self::request_sealed(request, Vec::new())
+    }
+
+    /// [`Exchange::request`] with SEALED fields (`abi::sdk::chip`: an `authorization` value, an API
+    /// key header): each `(at, name, seal)` goes in before the request's field `at` (its length:
+    /// last), so the field order is the caller's. Their values reach only the head the SDK frames
+    /// and wipes; [`Exchange::framed_fields`] shows them as `<sealed>`.
+    ///
+    /// # Errors
+    /// As [`Exchange::request`].
+    pub fn request_sealed(request: Request, sealed: Vec<SealedField>) -> Result<Self, ConnFailure> {
+        Self::request_with(request, sealed, None)
+    }
+
+    /// [`Exchange::request_sealed`] whose body is `body` (a form with sealed values,
+    /// [`FormBody::encoded`](crate::abi::sdk::cred::FormBody::encoded)) in place of the request's
+    /// own.
+    ///
+    /// # Errors
+    /// As [`Exchange::request`].
+    pub fn request_with(
+        request: Request,
+        sealed: Vec<SealedField>,
+        body: Option<crate::abi::sdk::cred::SealedWrite>,
+    ) -> Result<Self, ConnFailure> {
         let mut request = Zeroizing::new(request);
+        let secure_required = sealed.iter().any(|(_, _, s)| s.secure_required())
+            || body
+                .as_ref()
+                .is_some_and(crate::abi::sdk::cred::SealedWrite::secure_required);
+        if let Some(mut b) = body {
+            request.body.zeroize();
+            request.body = std::mem::take(&mut *b.buf);
+        }
+        for (_, name, _) in &sealed {
+            if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
+                return Err(ConnFailure::Refused(format!(
+                    "the sealed request field `{}` is a pseudo-field or carries a line break",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+        }
         for (name, value) in &request.fields {
             if name.first() == Some(&b':') {
                 return Err(ConnFailure::Refused(format!(
@@ -313,22 +371,40 @@ impl Exchange {
             }
         }
         let (m, t) = (request.method.len(), request.target.len());
+        let line = |name: &[u8], value: &[u8]| {
+            name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len()
+        };
         let block: usize = request
             .fields
             .iter()
-            .map(|(name, value)| {
-                name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len()
-            })
+            .map(|(name, value)| line(name, value))
+            .chain(sealed.iter().map(|(_, name, seal)| line(name, seal.wire())))
             .sum();
         let mut head = Zeroizing::new(Vec::with_capacity(m + t + block));
         head.extend_from_slice(&request.method);
         head.extend_from_slice(&request.target);
         let block_at = head.len();
-        for (name, value) in &request.fields {
+        let mut sealed_lines = Vec::new();
+        let put = |head: &mut Vec<u8>, name: &[u8], value: &[u8]| {
             head.extend_from_slice(name);
             head.extend_from_slice(fields::SEPARATOR);
             head.extend_from_slice(value);
             head.extend_from_slice(fields::LINE_END);
+        };
+        let mut index = 0;
+        for at in 0..=request.fields.len() {
+            for (_, name, seal) in sealed
+                .iter()
+                .filter(|(s_at, ..)| (*s_at).min(request.fields.len()) == at)
+            {
+                put(&mut head, name, seal.wire());
+                sealed_lines.push(index);
+                index += 1;
+            }
+            if let Some((name, value)) = request.fields.get(at) {
+                put(&mut head, name, value);
+                index += 1;
+            }
         }
         let head_piece = Box::new(RequestPiece {
             kind: REQUEST_HEAD,
@@ -338,14 +414,17 @@ impl Exchange {
             timeout_ms: request.timeout_ms,
             ..RequestPiece::ZERO
         });
-        Ok(Self::over(Sending::Framed {
+        let mut ex = Self::over(Sending::Framed {
             head,
             head_piece,
             body: Zeroizing::new(std::mem::take(&mut request.body)),
             body_piece: piece(REQUEST_BODY),
             end_piece: piece(REQUEST_END),
             timeout_ms: request.timeout_ms,
-        }))
+        });
+        ex.sealed_lines = sealed_lines;
+        ex.secure_required = secure_required;
+        Ok(ex)
     }
 
     /// An exchange sending `bytes` as they are, over any transport ([`send_and_ack`]).
@@ -362,8 +441,26 @@ impl Exchange {
         match &self.sending {
             Sending::Framed {
                 head, head_piece, ..
-            } => fields::lines(spanned(&head[..], head_piece.fields)).collect(),
+            } => fields::lines(spanned(&head[..], head_piece.fields))
+                .enumerate()
+                .map(|(i, (name, value))| {
+                    if self.sealed_lines.contains(&i) {
+                        (name, &b"<sealed>"[..])
+                    } else {
+                        (name, value)
+                    }
+                })
+                .collect(),
             Sending::Raw(_) => Vec::new(),
+        }
+    }
+
+    /// The whole head this exchange frames, sealed values included (`test_support::chip` alone).
+    #[allow(dead_code)]
+    pub(crate) fn head_bytes(&self) -> Vec<u8> {
+        match &self.sending {
+            Sending::Framed { head, .. } => head.to_vec(),
+            Sending::Raw(bytes) => bytes.to_vec(),
         }
     }
 }
@@ -461,6 +558,17 @@ fn send_and_read(
     need: u32,
     target: Option<&str>,
 ) -> Answer<()> {
+    // A framed request is made whole when its stream opens, so its security is its target's: a
+    // sealed value that must go out secured is refused before the open when the target names a
+    // scheme that is not secure. A need's own target (`None`) is the operator's, as written.
+    if state.secure_required
+        && (state.insecure || target.is_some_and(|t| !crate::abi::sdk::cred::secure_target(t)))
+    {
+        state.insecure = true;
+        return Poll::Ready(Err(ConnFailure::Refused(
+            crate::abi::sdk::cred::NOT_SECURE.into(),
+        )));
+    }
     let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
     state.stream = Some(stream);
     let ended = match read_to_end(c, state, stream) {
@@ -684,12 +792,22 @@ impl<'a> Op<'a> {
         target: Option<&str>,
         request: impl FnOnce() -> Result<Request, ConnFailure>,
     ) -> Answer<ExchangeResponse> {
+        self.exchange_sealed(need, target, || request().map(|r| (r, Vec::new())))
+    }
+
+    /// [`Op::exchange`] for a request with sealed fields ([`Exchange::request_sealed`]).
+    pub fn exchange_sealed(
+        &self,
+        need: u32,
+        target: Option<&str>,
+        request: impl FnOnce() -> Result<(Request, Vec<SealedField>), ConnFailure>,
+    ) -> Answer<ExchangeResponse> {
         let Some(host) = self.host else {
             return Poll::Ready(Err(ConnFailure::Unarmed));
         };
         let mut state = match self.on.resume() {
             Some(parked) => *parked,
-            None => match request().and_then(Exchange::request) {
+            None => match request().and_then(|(r, sealed)| Exchange::request_sealed(r, sealed)) {
                 Ok(s) => s,
                 Err(e) => return Poll::Ready(Err(e)),
             },

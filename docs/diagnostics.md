@@ -7,59 +7,59 @@ Codes are grouped by class (the thousands digit).
 ## 1xxx — Durability & write-through
 
 <a id="durable-writethrough-below-floor"></a>
-### BUSBAR-1001 — Durable audit write-through skipped (seq at or below the recovered floor)
+### BUSBAR-1001 — Durable audit write-through skipped (seq at or below the recovered floor) — RETIRED *(retired)*
 
 - **Severity:** benign_recurring
 - **Since:** 1.6.0
 - **Slug:** `durable-writethrough-below-floor`
 
-An audit entry's sequence number is at or below the recovered durable floor, so it is already persisted under that seq and the write-through is correctly skipped — the entry is retained in the in-memory ring. A single occurrence at boot is expected after a durable-store restore.
+RETIRED. Nothing emits this code: the durable audit log is the journal-backed audit log, whose write, read-back and chain failures report as BUSBAR-2044, BUSBAR-2047 and BUSBAR-2043.
 
-**What to do:** None — self-healing. If it warns repeatedly for DIFFERENT sequence numbers, suspect a second node writing the same durable store (see BUSBAR-1002).
+**What to do:** Nothing emits this code. See BUSBAR-2044.
 
 <a id="durable-second-writer-detach"></a>
-### BUSBAR-1002 — Durable audit log has another writer — this node detached its durable sink
+### BUSBAR-1002 — Durable audit log has another writer — this node detached its durable sink — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `durable-second-writer-detach`
 
-The durable audit store's tail is ahead of what this node last persisted, which can only mean a second busbar is writing the same store. The durable audit log supports exactly ONE writer; two nodes overwrite each other's entries and break the hash chain, which the next boot reports as tampering. This node has detached its durable sink and now audits only to its ephemeral in-memory ring.
+RETIRED. Nothing emits this code: the durable audit log is the journal-backed audit log, whose write, read-back and chain failures report as BUSBAR-2044, BUSBAR-2047 and BUSBAR-2043.
 
-**What to do:** Ensure exactly one busbar instance is pointed at this durable audit store. Give the other instance its own store, then restart this node to re-attach a durable sink.
+**What to do:** Nothing emits this code. See BUSBAR-2044.
 
 <a id="durable-audit-ring-unreconciled"></a>
-### BUSBAR-1003 — Durable audit write-through held — ring not yet reconciled with the durable tail
+### BUSBAR-1003 — Durable audit write-through held — ring not yet reconciled with the durable tail — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `durable-audit-ring-unreconciled`
 
-This process's in-memory audit ring is not yet reconciled with the durable tail (the boot restore did not read or verify it, and a retry read is still failing), so the write-through is held rather than risk overwriting durable history. The entry is retained in the RAM ring and will backfill once the store answers with a verifiable tail.
+RETIRED. Nothing emits this code: the durable audit log is the journal-backed audit log, whose write, read-back and chain failures report as BUSBAR-2044, BUSBAR-2047 and BUSBAR-2043.
 
-**What to do:** Check the durable audit store is reachable and returns a verifiable tail. This clears itself once a tail read succeeds (logged as recovery at info level).
+**What to do:** Nothing emits this code. See BUSBAR-2044.
 
 <a id="durable-audit-writethrough-failed"></a>
-### BUSBAR-1004 — Durable audit write-through failed (entry retained in the in-memory ring)
+### BUSBAR-1004 — Durable audit write-through failed (entry retained in the in-memory ring) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `durable-audit-writethrough-failed`
 
-Appending an audit entry to the durable store failed — typically a durable-store outage. The entry is retained in the in-memory ring and the state snapshot and will backfill on the next successful write-through, so nothing is lost from the ring.
+RETIRED. Nothing emits this code: the durable audit log is the journal-backed audit log, whose write, read-back and chain failures report as BUSBAR-2044, BUSBAR-2047 and BUSBAR-2043.
 
-**What to do:** Investigate the durable audit store outage. No entries are lost from the in-memory ring; they persist once the store recovers and the next mutation backfills them.
+**What to do:** Nothing emits this code. See BUSBAR-2044.
 
 <a id="durable-audit-backfill-gap"></a>
-### BUSBAR-1005 — Durable audit chain has an unrepairable gap (a seq was pruned before it persisted)
+### BUSBAR-1005 — Durable audit chain has an unrepairable gap (a seq was pruned before it persisted) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `durable-audit-backfill-gap`
 
-A durable-chain sequence number is no longer in the in-memory ring (it was pruned during a store outage longer than the ring bound), so it can never be backfilled in-process. The durable chain therefore has an unrepairable gap at that seq and catch-up stops below the hole. This is real durable-audit data loss for that seq.
+RETIRED. Nothing emits this code: the durable audit log is the journal-backed audit log, whose write, read-back and chain failures report as BUSBAR-2044, BUSBAR-2047 and BUSBAR-2043.
 
-**What to do:** Recent entries remain in the in-memory ring, but the DURABLE log has a permanent gap at the named seq. Resolve the store outage that caused it; restore the durable store from a backup if the durable chain's completeness is required for compliance.
+**What to do:** Nothing emits this code. See BUSBAR-2044.
 
 <a id="admin-store-operation-failed"></a>
 ### BUSBAR-1006 — Admin store operation failed (generic 500; store detail logged server-side)
@@ -108,26 +108,26 @@ The admin /usage read ran on a `spawn_blocking` task that failed to join (cancel
 ## 2xxx — Audit chain
 
 <a id="audit-chain-verify-failed"></a>
-### BUSBAR-2001 — Durable audit chain failed hash-chain verification at boot (tamper evidence)
+### BUSBAR-2001 — Durable audit chain failed hash-chain verification at boot (tamper evidence) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `audit-chain-verify-failed`
 
-The persisted durable audit log was read at boot but does NOT verify against its own hash chain, so busbar started with an empty in-memory ring rather than trust a log whose integrity is broken. This is distinct from a store read hiccup (BUSBAR-9001): the bytes were read and the chain does not add up, which is tamper evidence — the durable log was altered out from under busbar, or its store is corrupt.
+RETIRED. Nothing emits this code: a durable audit log that fails hash-chain verification reports as BUSBAR-2043.
 
-**What to do:** Treat the durable audit store as compromised until explained: capture it for forensic review before it is overwritten. A verification failure means someone or something rewrote persisted audit history; restore the store from a trusted backup once the cause is understood. The running node audits only to its ephemeral ring until a verifiable durable log is restored.
+**What to do:** Nothing emits this code. See BUSBAR-2043.
 
 <a id="plane-task-chain-verify-failed"></a>
-### BUSBAR-2041 — Per-task provenance chain failed hash-chain verification on restore (tamper)
+### BUSBAR-2041 — Per-task provenance chain failed hash-chain verification on restore (tamper) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-task-chain-verify-failed`
 
-A persisted plane task's provenance events were read at boot but do NOT verify against their own hash chain, which is tamper evidence — the persisted events were altered, or the store is corrupt. The chain is resumed from the broken tail rather than refused, so that corrupting one event cannot silently stop all further provenance for the task.
+RETIRED. Nothing emits this code: the engine keeps no plane task store.
 
-**What to do:** Treat the durable governance store as compromised until explained: capture it for forensic review before it is overwritten, then restore from a trusted backup once the cause is understood.
+**What to do:** Nothing emits this code.
 
 <a id="plane-calllog-chain-verify-failed"></a>
 ### BUSBAR-2042 — Plane per-call records failed hash-chain verification on restore (tamper evidence) — RETIRED *(retired)*
@@ -440,15 +440,15 @@ One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY,
 **What to do:** Move the value to the named config.yaml key and unset the variable. Nothing changes until you do.
 
 <a id="config-overlay-rejected"></a>
-### BUSBAR-3023 — Config overlay rejected at read (the reason, naming the key and the file)
+### BUSBAR-3023 — Config overlay rejected at read (the reason, naming the key and the file) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `config-overlay-rejected`
 
-The persisted config overlay was present but could not be read into a document, so every caller of the overlay classifies it unreadable (BUSBAR-3005 at boot, BUSBAR-3017 on the settings read) and proceeds without it. Those report the CONSEQUENCE; this line reports the CAUSE, because the parser's message — the offending key and the sections that are accepted — exists nowhere else. The common causes are a hand-edit that mis-spelled a section name and a truncated write.
+RETIRED. Nothing emits this code: an unreadable overlay reports as BUSBAR-3005 at boot and BUSBAR-3017 on the settings read.
 
-**What to do:** Read this line's message for the exact key and path, then fix or remove the overlay file and restart so the API-applied hooks, gates and groups are restored.
+**What to do:** Nothing emits this code. See BUSBAR-3005 and BUSBAR-3017.
 
 <a id="config-metadata-entry-names-no-host"></a>
 ### BUSBAR-3024 — A metadata host-list entry names no host (it matches nothing and is dropped)
@@ -640,15 +640,15 @@ The background OAuth token refresh failed to mint a new token. busbar keeps serv
 **What to do:** Investigate the OAuth token endpoint — a transient outage self-heals on the next retry; sustained failures mean a credential/endpoint/network problem that will 401 egress once the current token expires.
 
 <a id="trust-sweep-not-attempted"></a>
-### BUSBAR-4017 — Scheduled trust sweep could not be attempted (registration not contacted)
+### BUSBAR-4017 — Scheduled trust sweep could not be attempted (registration not contacted) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `trust-sweep-not-attempted`
 
-A scheduled trust sweep could not even be ATTEMPTED for a registration (a local precondition failed before any contact), so the upstream was not contacted and its trust state is unchanged. The registration is not re-verified this tick.
+RETIRED. Nothing emits this code: the trust book demotes a drifted counterparty and clears it without logging a code.
 
-**What to do:** Investigate the logged reason for the named subject — typically a local resource or config problem preventing the sweep from starting. Trust state is preserved, not demoted; resolve the cause so the registration is re-verified on schedule.
+**What to do:** Nothing emits this code.
 
 <a id="trust-sweep-contact-failed"></a>
 ### BUSBAR-4018 — Scheduled trust sweep could not authenticate the upstream (failed contact recorded) — RETIRED *(retired)*
@@ -657,31 +657,31 @@ A scheduled trust sweep could not even be ATTEMPTED for a registration (a local 
 - **Since:** 1.6.0
 - **Slug:** `trust-sweep-contact-failed`
 
-RETIRED. Nothing emits this code, and no anomaly breaker counts a failed contact toward suspension (there is none). A registration stops serving only on a drift (BUSBAR-4019) or an operator's suspension.
+RETIRED. Nothing emits this code, and no anomaly breaker counts a failed contact toward suspension (there is none). A registration stops serving only on a drift or an operator's suspension.
 
-**What to do:** Nothing emits this code. See BUSBAR-4019.
+**What to do:** Nothing emits this code.
 
 <a id="trust-upstream-drifted"></a>
-### BUSBAR-4019 — Upstream drifted from the approved pin (registration demoted)
+### BUSBAR-4019 — Upstream drifted from the approved pin (registration demoted) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `trust-upstream-drifted`
 
-A scheduled trust sweep found the upstream DRIFTED from its approved pin — something changed underneath a standing approval — so busbar demoted the registration and it stops serving until an operator re-approves. This is the headline trust diagnostic: the operator's first notice that a pinned upstream changed.
+RETIRED. Nothing emits this code: the trust book demotes a drifted counterparty and clears it without logging a code.
 
-**What to do:** Review the logged drift (pin change, added/removed/changed attributes) for the named subject. If the change is expected, re-approve the registration to restore service; if not, treat it as a potential compromise of that upstream.
+**What to do:** Nothing emits this code.
 
 <a id="trust-recovery-held"></a>
-### BUSBAR-4020 — Clean trust observation held (recovery backoff not yet elapsed)
+### BUSBAR-4020 — Clean trust observation held (recovery backoff not yet elapsed) — RETIRED *(retired)*
 
 - **Severity:** benign_recurring
 - **Since:** 1.6.0
 - **Slug:** `trust-recovery-held`
 
-A scheduled trust sweep made a clean observation, but the recovery backoff since the last drift has not yet elapsed, so the observation is not yet believed and the registration stays demoted for now. This is the expected self-healing backoff, so it is emitted at debug.
+RETIRED. Nothing emits this code: the trust book demotes a drifted counterparty and clears it without logging a code.
 
-**What to do:** None — self-heals. The registration recovers automatically once enough consecutive clean observations accumulate past the recovery backoff.
+**What to do:** Nothing emits this code.
 
 <a id="trust-registration-suspended"></a>
 ### BUSBAR-4021 — Anomaly breaker suspended a trust registration — RETIRED *(retired)*
@@ -690,20 +690,20 @@ A scheduled trust sweep made a clean observation, but the recovery backoff since
 - **Since:** 1.6.0
 - **Slug:** `trust-registration-suspended`
 
-RETIRED. Nothing emits this code: no anomaly breaker suspends a trust registration. The one breaker that was to raise it was never armed (no configuration set its thresholds) and is deleted, so a registration stops serving only on a drift (BUSBAR-4019) or an operator's suspension.
+RETIRED. Nothing emits this code: no anomaly breaker suspends a trust registration. The one breaker that was to raise it was never armed (no configuration set its thresholds) and is deleted, so a registration stops serving only on a drift or an operator's suspension.
 
-**What to do:** Nothing emits this code. See BUSBAR-4019.
+**What to do:** Nothing emits this code.
 
 <a id="trust-sweep-panicked"></a>
-### BUSBAR-4022 — Scheduled trust sweep panicked (job continues)
+### BUSBAR-4022 — Scheduled trust sweep panicked (job continues) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `trust-sweep-panicked`
 
-A scheduled trust sweep pass panicked. busbar catches the panic and CONTINUES the sweep job — exiting would turn one bad upstream into a deployment that silently never sweeps again — but that tick's registrations were not all swept. A panicking sweep is a code bug.
+RETIRED. Nothing emits this code: the trust book demotes a drifted counterparty and clears it without logging a code.
 
-**What to do:** Capture the logged plane context and file a bug — a sweep pass should never panic. The job keeps running, but investigate promptly since the panicking tick left some registrations un-swept.
+**What to do:** Nothing emits this code.
 
 <a id="oauth-as-sweep-failed"></a>
 ### BUSBAR-4023 — oauth_as expired-record sweep failed (retrying next tick)
@@ -1636,26 +1636,26 @@ Response-side provider metadata (a vendor guardrail `trace`, a vendor `safetyRat
 **What to do:** None — self-heals. If this metadata is compliance evidence, route the request to a same-protocol lane where the upstream body reaches the client verbatim.
 
 <a id="plane-task-row-unreadable"></a>
-### BUSBAR-7089 — Persisted plane task row could not be read back (not resumable)
+### BUSBAR-7089 — Persisted plane task row could not be read back (not resumable) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-task-row-unreadable`
 
-A persisted plane task row could not be decoded at boot, so that task is NOT resumable and is reported rather than skipped silently. Usually an engine-version mismatch or a corrupt row.
+RETIRED. Nothing emits this code: the engine keeps no plane task store.
 
-**What to do:** Note the task id. If many rows are unreadable, suspect a store format mismatch after an upgrade or downgrade; capture the store for review.
+**What to do:** Nothing emits this code.
 
 <a id="plane-ssrf-callback-at-store"></a>
-### BUSBAR-7090 — SSRF-refused push callback reached the task store (dropped)
+### BUSBAR-7090 — SSRF-refused push callback reached the task store (dropped) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-ssrf-callback-at-store`
 
-A push callback URL that the SSRF guard refuses reached the plane task store and was dropped there. The store is the last line of defence — a callback should have been validated by the caller before it got this far, so reaching the store means a caller path skipped validation.
+RETIRED. Nothing emits this code: the engine keeps no plane task store.
 
-**What to do:** Find the caller that stored this callback without validating it (a code-level defect in a submission path) and add the SSRF check before the store.
+**What to do:** Nothing emits this code.
 
 <a id="approval-ledger-unreachable-refused"></a>
 ### BUSBAR-7091 — Spent-approval ledger unreachable — redemption refused — RETIRED *(retired)*
@@ -1719,7 +1719,7 @@ The durable plane demotion record for an upstream could NOT be cleared even thou
 - **Since:** 1.6.0
 - **Slug:** `plane-demotions-unread`
 
-The durable plane demotion records could NOT be read at boot, so any upstream this deployment had demoted is re-opened until the first sweep looks again. Usually a durable store-read outage.
+The durable plane demotion records or the operator's trust decisions could NOT be read when a plane instance was admitted, so the instance was refused rather than re-open an upstream this deployment demoted or stand over a revoke it cannot see. Usually a durable store-read outage.
 
 **What to do:** Restore the durable governance store's read path and restart so persisted demotions are re-applied before a listener binds.
 
@@ -1730,9 +1730,9 @@ The durable plane demotion records could NOT be read at boot, so any upstream th
 - **Since:** 1.6.0
 - **Slug:** `trust-verify-refused-on-drift`
 
-RETIRED. Nothing emits this code: the verify-on-call gate that refused a drifted call is deleted (Q128 p8#3); a registration whose upstream drifted is demoted by the trust book (BUSBAR-4019).
+RETIRED. Nothing emits this code: the verify-on-call gate that refused a drifted call is deleted (Q128 p8#3); a registration whose upstream drifted is demoted by the trust book.
 
-**What to do:** Nothing emits this code. See BUSBAR-4019.
+**What to do:** Nothing emits this code.
 
 <a id="trust-verify-unreachable"></a>
 ### BUSBAR-7098 — Verify-on-call could not reach an upstream to re-verify, and refused fail-closed — RETIRED *(retired)*
@@ -1746,15 +1746,15 @@ RETIRED. Nothing emits this code: the verify-on-call gate that re-fetched a stal
 **What to do:** Nothing emits this code.
 
 <a id="plane-task-abandon-unrecorded"></a>
-### BUSBAR-7099 — Abandoned plane task could not be transitioned to canceled (durable store write failed)
+### BUSBAR-7099 — Abandoned plane task could not be transitioned to canceled (durable store write failed) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `plane-task-abandon-unrecorded`
 
-The submit-time retention sweep found an ACTIVE task idle past the abandonment ceiling (24h since its last update) and tried to settle it as `canceled` through the normal durable write path, but the row upsert or chained event append failed. The task stays active in the working set (never ahead of the store) and the next sweep retries. Typically a durable-store outage. Warned once on the transition into the failing state; subsequent failures hold at debug to avoid spam.
+RETIRED. Nothing emits this code: the engine keeps no plane task store.
 
-**What to do:** Investigate the durable task-store outage. Abandoned tasks settle (and then age out of the working set) once the store accepts writes again.
+**What to do:** Nothing emits this code.
 
 ## 8xxx — Governance & cost
 
@@ -2042,7 +2042,7 @@ A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as 
 - **Since:** 1.6.0
 - **Slug:** `boot-audit-restore-read-failed`
 
-busbar could not READ the durable audit log from the governance store at boot — a store hiccup, not a chain-verification failure — so it started with an empty in-memory audit ring. This is deliberately distinct from BUSBAR-2001 (chain verification failed): here the bytes could not be read at all, so there is no tamper signal, just a store that did not answer.
+busbar could not READ the durable audit log from the governance store at boot — a store hiccup, not a chain-verification failure — so it started with an empty in-memory audit ring. This is deliberately distinct from BUSBAR-2043 (chain verification failed): here the bytes could not be read at all, so there is no tamper signal, just a store that did not answer.
 
 **What to do:** Investigate the governance store's reachability at boot. If the store recovers, restart so the durable history is restored into the ring; a transient hiccup needs no action beyond confirming the store is healthy.
 

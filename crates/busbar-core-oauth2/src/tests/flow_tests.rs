@@ -940,7 +940,7 @@ async fn mint_access_token(origin: &str, client_id: &str) -> String {
 
 /// RFC 3986 percent-encoding for one query VALUE, so a `client_id` that is itself a URL survives
 /// the trip through the authorization request's query string byte-for-byte.
-fn encode_component(s: &str) -> String {
+pub(crate) fn encode_component(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
