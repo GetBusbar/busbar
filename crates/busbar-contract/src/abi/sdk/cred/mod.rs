@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PLUGIN'S CREDENTIALS (CHIP-DESIGN v4.1 §7). A plugin never holds a credential as text:
+//! A PLUGIN'S CREDENTIALS (the chip design, its section on plugin credentials). A plugin never holds a credential as text:
 //!
 //! * [`Cred`] is a credential the plugin was configured with. It has no getter, no `Debug`, no
 //!   `Display` and no `Serialize`; the plugin asks it to perform an auth step (the chip's recipes,
@@ -48,7 +48,7 @@ mod floor;
 mod form;
 mod form_body;
 mod settings;
-mod write;
+pub(crate) mod write;
 
 use zeroize::{Zeroize, Zeroizing};
 

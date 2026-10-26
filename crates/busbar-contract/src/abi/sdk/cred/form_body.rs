@@ -17,8 +17,7 @@ pub enum FormValue {
     /// A credential, written as its bytes form-encoded.
     Sealed(Cred),
     /// An RS256 JWS (RFC 7515) over `signing_input` (`header.claims`, base64url) under the PKCS #8
-    /// RSA key `key`: `signing_input.signature` (feature `chip-jws`).
-    #[cfg(feature = "chip-jws")]
+    /// RSA key `key`: `signing_input.signature`.
     JwsRs256 {
         /// The private key (PKCS #8 DER).
         key: Cred,
@@ -52,7 +51,6 @@ impl Drop for FormBody {
             if let FormValue::Public(v) = value {
                 v.zeroize();
             }
-            #[cfg(feature = "chip-jws")]
             if let FormValue::JwsRs256 { signing_input, .. } = value {
                 signing_input.zeroize();
             }
@@ -133,7 +131,6 @@ impl FormBody {
                     secure |= c.secure_required();
                     encode(&mut out, c.wire());
                 }
-                #[cfg(feature = "chip-jws")]
                 FormValue::JwsRs256 { key, signing_input } => {
                     let sig = key.jws_rs256(signing_input.as_bytes())?;
                     secure |= sig.secure_required();

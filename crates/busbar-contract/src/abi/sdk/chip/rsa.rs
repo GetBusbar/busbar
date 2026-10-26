@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! RSA-OAEP (SHA-1, MGF1-SHA-1; RFC 8017 7.1.1) to a server's public key: MySQL's
-//! `caching_sha2_password` full authentication on a link with no TLS (feature `chip-rsa`). The
+//! `caching_sha2_password` full authentication on a link with no TLS. The
 //! encoded block is wiped; `num-bigint`'s own limbs for it are not (it offers no wipe), a residual
 //! that ends when chip row 4 runs this in the secret plugin.
 
