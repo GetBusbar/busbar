@@ -12,17 +12,22 @@ by the gate, which refuses by rule name; a mistake is never shipped.
       scripts/release-build.sh for one row of .github/release-targets.json. A published row goes
       to DIR/artifacts; an image-feeding musl row goes to DIR/internal. Then its CycloneDX SBOM goes
       to DIR/sboms (named by the target, or by the image platform the row feeds).
-  candidate.py plugins <target> --kit-commit SHA --out DIR
-      for each first-party plugin in plugins.yaml (except an empty repo): its newest vX.Y.Z tag
-      whose .busbar-ref names the test kit's commit, built for <target> the way
-      .github/workflows/plugin-release.yml builds it, and packed UNSIGNED with this tree's
+  candidate.py pins --kit-commit SHA
+      writes release/plugin-pins.tsv: for each first-party plugin in plugins.yaml (except an empty
+      repo), its newest vX.Y.Z tag whose .busbar-ref names the test kit's commit. Run by a person,
+      reviewed and committed; the checks never resolve tags themselves.
+  candidate.py plugins <target> --out DIR
+      every plugin in release/plugin-pins.tsv, at its pinned commit, built for <target> the way
+      .github/workflows/plugin-release.yml builds it and packed UNSIGNED with this tree's
       busbar-plugin-pack. Writes DIR/plugins/ and DIR/plugins.json.
-  candidate.py image --out DIR
-      the multi-platform image from DIR/internal's two musl binaries, as an OCI layout archive
-      (DIR/oci/busbar.oci.tar). Needs docker buildx and RUST_ALPINE=rust:alpine@sha256:… (pinned).
+  candidate.py image <amd64|arm64> --out DIR
+      that platform's image: its musl binary (DIR/internal/), then a single-platform OCI layout
+      archive (DIR/oci/busbar-<arch>.oci.tar) on the musl runtime pinned in release/rust-alpine.txt.
+      Refuses a BuildKit older than 0.13 (rewrite-timestamp).
   candidate.py assemble --kit-tag TAG --kit-commit SHA --out OUT DIR...
-      merges the slices, copies the OpenAPI document, and writes SHA256SUMS, IMAGES and
-      candidate.json.
+      merges the slices (the owner runs it locally from the `artifact` downloads), joins the
+      per-platform images into one multi-platform index (OUT/oci/busbar.oci.tar), copies the
+      OpenAPI document, and writes SHA256SUMS, IMAGES and candidate.json.
 
 Tools: git, cargo (rust-toolchain.toml), python3; cargo-cyclonedx (CYCLONEDX=<path>, pinned by the
 caller); docker buildx for `image`; a C compiler for C plugins.
@@ -115,7 +120,45 @@ def plugin_tag(repo: str, kit: str) -> tuple:
     sys.exit(f"candidate: {repo} has no vX.Y.Z tag pinned to the test kit {kit}; re-pin and tag it")
 
 
-def cmd_plugins(target: str, kit: str, out: Path) -> None:
+PINS = ROOT / "release" / "plugin-pins.tsv"
+
+
+def read_pins() -> list:
+    rows = []
+    for i, line in enumerate(PINS.read_text().splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 3 or not re.fullmatch(r"v\d+\.\d+\.\d+", parts[1]) or not re.fullmatch(r"[0-9a-f]{40}", parts[2]):
+            sys.exit(f"candidate: {PINS.name}:{i} is not <repo>\\t<vX.Y.Z>\\t<40-hex commit>")
+        rows.append({"repo": parts[0], "tag": parts[1], "commit": parts[2]})
+    if not rows:
+        sys.exit(f"candidate: {PINS.name} pins no plugin; run `candidate.py pins` and commit it")
+    return rows
+
+
+def cmd_pins(kit: str) -> None:
+    lines = [l for l in PINS.read_text().splitlines() if l.startswith("#")] if PINS.is_file() else []
+    for e in pg.registry_entries(ROOT):
+        if e.get("pending_crate", "false") == "true":
+            continue
+        tag, commit, src = plugin_tag(e["repo"], kit)
+        shutil.rmtree(src)
+        lines.append(f"{e['repo']}\t{tag}\t{commit}")
+    PINS.write_text("\n".join(lines) + "\n")
+    print(f"candidate: wrote {PINS} ({len(lines)} lines); review and commit it")
+
+
+def clone_at(repo: str, tag: str, commit: str) -> Path:
+    tmp = Path(tempfile.mkdtemp())
+    sh(["git", "clone", "-q", "--depth", "1", "--branch", tag, f"https://github.com/GetBusbar/{repo}.git", str(tmp)])
+    head = sh(["git", "rev-parse", "HEAD"], cwd=tmp, out=True).strip()
+    if head != commit:
+        sys.exit(f"candidate: {repo} {tag} is {head}, but release/plugin-pins.tsv pins {commit}; a moved tag is refused")
+    return tmp
+
+
+def cmd_plugins(target: str, out: Path) -> None:
     spec = {t: (ext, prefix) for t, ext, prefix in pg.PLUGIN_TARGETS}
     if target not in spec:
         sys.exit(f"candidate: {target} is not a plugin target")
@@ -124,11 +167,13 @@ def cmd_plugins(target: str, kit: str, out: Path) -> None:
     pack = str(ROOT / "target/release" / ("busbar-plugin-pack.exe" if os.name == "nt" else "busbar-plugin-pack"))
     (out / "plugins").mkdir(parents=True, exist_ok=True)
     rows = []
-    for e in pg.registry_entries(ROOT):
-        if e.get("pending_crate", "false") == "true":
-            continue
-        repo = e["repo"]
-        tag, commit, src = plugin_tag(repo, kit)
+    entries = {e["repo"]: e for e in pg.registry_entries(ROOT)}
+    for pin in read_pins():
+        repo, tag, commit = pin["repo"], pin["tag"], pin["commit"]
+        if repo not in entries:
+            sys.exit(f"candidate: release/plugin-pins.tsv pins {repo}, which plugins.yaml does not register")
+        e = entries[repo]
+        src = clone_at(repo, tag, commit)
         ver, crate = tag[1:], e["crate"]
         lib = src / "target" / target / "release" / f"{prefix}{crate.replace('-', '_')}.{ext}"
         if e.get("lang") == "c":
@@ -169,44 +214,100 @@ def cmd_plugins(target: str, kit: str, out: Path) -> None:
     (out / "plugins.json").write_text(json.dumps(rows, indent=2) + "\n")
 
 
-def cmd_image(out: Path) -> None:
-    base = os.environ.get("RUST_ALPINE", "")
-    if not re.fullmatch(r"rust:alpine@sha256:[0-9a-f]{64}", base):
-        sys.exit("candidate: RUST_ALPINE must be rust:alpine@sha256:<64 hex> (pinned)")
+def rust_alpine() -> str:
+    pin = [l.strip() for l in (ROOT / "release" / "rust-alpine.txt").read_text().splitlines()
+           if l.strip() and not l.startswith("#")]
+    if len(pin) != 1 or not re.fullmatch(r"rust:alpine@sha256:[0-9a-f]{64}", pin[0]):
+        sys.exit("candidate: release/rust-alpine.txt must hold exactly one rust:alpine@sha256:<64 hex>")
+    return pin[0]
+
+
+def require_buildkit() -> None:
+    info = sh(["docker", "buildx", "inspect", "--bootstrap"], out=True)
+    m = re.search(r"BuildKit version:\s*v?(\d+)\.(\d+)", info) or re.search(r"Buildkit:\s*v?(\d+)\.(\d+)", info)
+    if not m or (int(m.group(1)), int(m.group(2))) < (0, 13):
+        sys.exit(f"candidate: BuildKit >= 0.13 is required (rewrite-timestamp); found {m.group(0) if m else 'no version'}")
+
+
+def cmd_image(arch: str, out: Path) -> None:
+    rows = [t for t in pg.release_targets(ROOT) if t.get("kind") == "binary" and t.get("packaged_into") == f"image-linux-{arch}"]
+    if len(rows) != 1:
+        sys.exit(f"candidate: no single musl row feeds image-linux-{arch} in .github/release-targets.json")
+    t = rows[0]
+    base = rust_alpine()
+    require_buildkit()
+    cmd_core(t["target"], out)
     ctx = Path(tempfile.mkdtemp())
-    for t in pg.release_targets(ROOT):
-        feeds = t.get("packaged_into", "")
-        if t.get("kind") != "binary" or not feeds.startswith("image-linux-"):
-            continue
-        arch = feeds.rsplit("-", 1)[1]
-        (ctx / "binaries" / arch).mkdir(parents=True)
-        with tarfile.open(out / "internal" / f"busbar-{t['target']}.{t['archive']}") as tf:
-            m = next(x for x in tf.getmembers() if x.isfile() and x.name.rsplit("/", 1)[-1] == "busbar")
-            (ctx / "binaries" / arch / "busbar").write_bytes(tf.extractfile(m).read())
-        os.chmod(ctx / "binaries" / arch / "busbar", 0o755)
-        lib = ctx / "plugins" / arch / "lib"
-        lib.mkdir(parents=True)
-        sh(["docker", "run", "--rm", "--platform", f"linux/{arch}", "-v", f"{lib}:/out", base, "sh", "-ec",
-            "cp /lib/ld-musl-*.so.1 /usr/lib/libgcc_s.so.1 /usr/lib/libstdc++.so.6 /out/"])
+    (ctx / "binaries" / arch).mkdir(parents=True)
+    with tarfile.open(out / "internal" / f"busbar-{t['target']}.{t['archive']}") as tf:
+        m = next(x for x in tf.getmembers() if x.isfile() and x.name.rsplit("/", 1)[-1] == "busbar")
+        (ctx / "binaries" / arch / "busbar").write_bytes(tf.extractfile(m).read())
+    os.chmod(ctx / "binaries" / arch / "busbar", 0o755)
+    lib = ctx / "plugins" / arch / "lib"
+    lib.mkdir(parents=True)
+    sh(["docker", "run", "--rm", "--platform", f"linux/{arch}", "-v", f"{lib}:/out", base, "sh", "-ec",
+        "cp /lib/ld-musl-*.so.1 /usr/lib/libgcc_s.so.1 /usr/lib/libstdc++.so.6 /out/"])
     for f in ("Dockerfile", "providers.yaml"):
         shutil.copy(ROOT / f, ctx / f)
     shutil.copytree(ROOT / "docker", ctx / "docker")
     (out / "oci").mkdir(parents=True, exist_ok=True)
     epoch = sh(["git", "log", "-1", "--format=%ct"], cwd=ROOT, out=True).strip()
-    sh(["docker", "buildx", "build", "--platform", "linux/amd64,linux/arm64", "--provenance=false", "--sbom=false",
+    sh(["docker", "buildx", "build", "--platform", f"linux/{arch}", "--provenance=false", "--sbom=false",
         "--build-arg", f"SOURCE_DATE_EPOCH={epoch}", "--label", f"org.opencontainers.image.version={version()}",
-        "--output", f"type=oci,dest={out / 'oci' / 'busbar.oci.tar'},rewrite-timestamp=true", str(ctx)],
+        "--output", f"type=oci,dest={out / 'oci' / f'busbar-{arch}.oci.tar'},rewrite-timestamp=true", str(ctx)],
        env={"SOURCE_DATE_EPOCH": epoch})
     shutil.rmtree(ctx)
+
+
+def join_images(parts: list, dest: Path) -> str:
+    """One multi-platform OCI layout from single-platform ones; returns the new index digest."""
+    import hashlib
+    import io
+
+    blobs: dict = {}
+    descs = []
+    for part in parts:
+        with tarfile.open(part) as t:
+            for m in t.getmembers():
+                if m.isfile() and m.name.startswith("blobs/sha256/"):
+                    blobs[m.name] = t.extractfile(m).read()
+            idx = json.loads(t.extractfile("index.json").read())
+        for d in idx["manifests"]:
+            doc = json.loads(blobs[f"blobs/sha256/{d['digest'].split(':')[1]}"])
+            if "manifests" in doc:  # an index of one platform: take its manifests
+                descs.extend(doc["manifests"])
+            else:
+                cfg = json.loads(blobs[f"blobs/sha256/{doc['config']['digest'].split(':')[1]}"])
+                descs.append({"mediaType": d.get("mediaType", "application/vnd.oci.image.manifest.v1+json"),
+                              "digest": d["digest"], "size": d["size"],
+                              "platform": {"architecture": cfg["architecture"], "os": cfg["os"]}})
+    descs.sort(key=lambda d: d["platform"]["architecture"])
+    index = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+                        "manifests": descs}, separators=(",", ":"), sort_keys=True).encode()
+    digest = hashlib.sha256(index).hexdigest()
+    blobs[f"blobs/sha256/{digest}"] = index
+    top = json.dumps({"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json",
+                      "digest": f"sha256:{digest}", "size": len(index)}]}).encode()
+    files = {"oci-layout": b'{"imageLayoutVersion":"1.0.0"}', "index.json": top, **blobs}
+    with tarfile.open(dest, "w") as t:
+        for name in sorted(files):
+            ti = tarfile.TarInfo(name)
+            ti.size, ti.mtime = len(files[name]), 0
+            t.addfile(ti, io.BytesIO(files[name]))
+    return f"sha256:{digest}"
 
 
 def cmd_assemble(out: Path, slices: list, kit_tag: str, kit_commit: str) -> None:
     for sub in ("artifacts", "sboms", "internal", "plugins", "oci"):
         (out / sub).mkdir(parents=True, exist_ok=True)
     plugins: dict = {}
+    parts: list = []
     for s in map(Path, slices):
         for sub in ("artifacts", "sboms", "internal", "plugins", "oci"):
             for f in (s / sub).glob("*") if (s / sub).is_dir() else []:
+                if sub == "oci":
+                    parts.append(f)
+                    continue
                 dest = out / sub / f.name
                 if dest.exists() and pg.sha256_file(dest) != pg.sha256_file(f):
                     sys.exit(f"candidate: two slices built different {sub}/{f.name}")
@@ -219,9 +320,10 @@ def cmd_assemble(out: Path, slices: list, kit_tag: str, kit_commit: str) -> None
     shutil.copy(ROOT / "crates/busbar-core-admin/src/v1/json/openapi.json", out / "artifacts" / f"busbar-openapi-v{v}.json")
     files = [f for sub in ("artifacts", "sboms") for f in (out / sub).iterdir()]
     pg.write_sums(out / "SHA256SUMS", files)
-    with tarfile.open(out / "oci" / "busbar.oci.tar") as t:
-        index = json.loads(t.extractfile("index.json").read())
-    (out / "IMAGES").write_text(f"busbar {index['manifests'][0]['digest']}\n")
+    if len(parts) != 2:
+        sys.exit(f"candidate: expected the amd64 and arm64 image slices, found {[p.name for p in parts]}")
+    digest = join_images(sorted(parts), out / "oci" / "busbar.oci.tar")
+    (out / "IMAGES").write_text(f"busbar {digest}\n")
     commit = sh(["git", "rev-parse", "HEAD"], cwd=ROOT, out=True).strip()
     (out / "candidate.json").write_text(json.dumps({
         "version": v, "commit": commit, "repo": pg.REPO,
@@ -240,13 +342,16 @@ def main(argv: list) -> None:
             opts[a[2:]] = next(it, "")
         else:
             pos.append(a)
+    if cmd == "pins" and opts.get("kit-commit"):
+        cmd_pins(opts["kit-commit"])
+        return
     out = Path(opts.get("out") or sys.exit("candidate: --out DIR is required"))
     if cmd == "core" and len(pos) == 1:
         cmd_core(pos[0], out)
-    elif cmd == "plugins" and len(pos) == 1 and opts.get("kit-commit"):
-        cmd_plugins(pos[0], opts["kit-commit"], out)
-    elif cmd == "image":
-        cmd_image(out)
+    elif cmd == "plugins" and len(pos) == 1:
+        cmd_plugins(pos[0], out)
+    elif cmd == "image" and len(pos) == 1 and pos[0] in ("amd64", "arm64"):
+        cmd_image(pos[0], out)
     elif cmd == "assemble" and pos and opts.get("kit-tag") and opts.get("kit-commit"):
         cmd_assemble(out, pos, opts["kit-tag"], opts["kit-commit"])
     else:

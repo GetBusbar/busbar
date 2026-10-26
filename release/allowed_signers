@@ -4,6 +4,10 @@
 #
 #   ssh-keygen -Y verify -f allowed_signers -I busbar-release -n busbar-release -s FILE.sig < FILE
 #
+# Each line is limited to namespaces="busbar-release" and nothing else (publish gate rule G-14). The
+# same key signs ModernCI release STATEMENTS under "busbar-release-statement", which is checked from
+# a separate, statements-only list, so the two signature kinds can never stand in for each other.
+#
 # EMPTY UNTIL THE KEY CEREMONY. The publish gate (scripts/release/publish_gate.py, rule G-14) refuses
 # a release while this file differs from the owner's own trust file, so an empty file means nothing
 # can be published. Format of each line:

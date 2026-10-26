@@ -1,0 +1,24 @@
+# The TLS lab's busbar config (scripts/release/tls-lab.sh): the released image's own default shape
+# (docker/config.yaml) plus native TLS. The lab assesses the TLS listener only; the provider key is
+# a placeholder, and nothing on the lab host holds a credential.
+listen: "0.0.0.0:8443"
+tls:
+  cert: { file: /etc/busbar/tls/fullchain.pem }
+  key:  { file: /etc/busbar/tls/privkey.pem }
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+auth:
+  chain: [admin-tokens]
+  admin_auth: [admin-tokens]
+providers:
+  anthropic:
+    api_key: { env: ANTHROPIC_KEY }
+models:
+  claude:
+    provider: anthropic
+pools:
+  default:
+    members:
+      - model: claude
+store:
+  module: memory

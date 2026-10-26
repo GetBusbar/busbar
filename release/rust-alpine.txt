@@ -1,0 +1,4 @@
+# The musl runtime the image's /lib comes from (Dockerfile header): rust:alpine pinned by its OCI
+# image index digest, resolved from registry-1.docker.io on 2026-10-26. candidate.py image refuses
+# any other form. Bump it in a reviewed change, never through the environment.
+rust:alpine@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87

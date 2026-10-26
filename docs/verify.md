@@ -14,6 +14,14 @@ installer (`install.sh`) runs the binary check below for you.
 | **Release key** `busbar-release-2026a`, plus backup `-2026b` | `SHA256SUMS`, `SHA256SUMS.plugins`, `IMAGES`, `release-evidence.json` (OpenSSH signatures, namespace `busbar-release`) | A FIDO2 hardware key the founder holds; it needs a physical touch. The backup is in a safe | [`release/allowed_signers`](../release/allowed_signers), `https://getbusbar.com/keys/allowed_signers`, and SECURITY.md. All three must match |
 | **Plugin keys** `busbar-plugins-2026a` (signing) and `-2026b` (sealed next key) | Every first-party plugin's manifest (Ed25519) | The founder's hardware key (PIV) | **Compiled into the busbar binary** (`BUSBAR_RELEASE_PUBKEY` in [`.cargo/config.toml`](../.cargo/config.toml), embedded verbatim, so `strings busbar \| grep busbar-plugins-` shows it) |
 
+**One key, two namespaces, never interchangeable.** The release key signs release *files* only
+under the OpenSSH signature namespace `busbar-release`. Every line of `allowed_signers` is limited to
+that namespace (`namespaces="busbar-release"`), and the publish gate refuses any other line. Release
+*statements* arrive with our CI's next phase. The same hardware key signs them under the separate
+namespace `busbar-release-statement`, and they are verified against a list restricted to that
+namespace. A file signature can therefore never be replayed as a statement, nor a statement as a file
+signature.
+
 No key that signs a busbar release or a first-party plugin is held by any CI system, GitHub secret
 or cloud account. A stolen forge token, CI token or registry token cannot produce any of these
 signatures.

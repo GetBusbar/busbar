@@ -71,7 +71,12 @@ PLUGIN_TARGETS = (
     ("aarch64-apple-darwin", "dylib", "lib"),
     ("x86_64-pc-windows-msvc", "dll", ""),
 )
+# K2 signs release FILES under this sshsig namespace only. Release STATEMENTS (ModernCI RP-2) are
+# signed by the same hardware key under STATEMENT_NAMESPACE, so a file signature can never be
+# replayed as a statement, nor a statement as a file signature: sshsig binds the namespace into what
+# is signed, and allowed_signers restricts each key to one namespace (G-14).
 K2_NAMESPACE = "busbar-release"
+STATEMENT_NAMESPACE = "busbar-release-statement"
 K2_IDENTITY = "busbar-release"
 # A K2 key must be a FIDO2 hardware key: the key type proves it.
 K2_HARDWARE_TYPES = ("sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com")
@@ -343,6 +348,23 @@ def g3_g4_sets_and_sums(inp: Inputs, cj: dict, vd: Verdict) -> None:
             vd.refuse("G-3", f"{sub}/{name}", "absent (not declared)", "present",
                       "Only declared artifacts ship; declare it in release-targets.json/plugins.yaml or drop it.")
         vd.ok("G-3", len(want))
+    # The plugin set equals the committed pins (release/plugin-pins.tsv) at the release commit.
+    pins = {}
+    try:
+        for line in (inp.root / "release" / "plugin-pins.tsv").read_text().splitlines():
+            if line.strip() and not line.startswith("#"):
+                repo, tag, commit = line.split("\t")
+                pins[repo] = (tag, commit)
+    except (OSError, ValueError) as e:
+        vd.refuse("G-3", "release/plugin-pins.tsv", "<repo>\\t<tag>\\t<commit> lines", str(e), "Run candidate.py pins and commit it.")
+    for p in cj["plugins"]:
+        want = pins.get(p["repo"])
+        got = (p.get("tag"), p.get("commit"))
+        if want != got or p.get("version") != (want or ("v?",))[0][1:]:
+            vd.refuse("G-3", f"plugin {p['repo']}", f"pinned {want}", f"{got} version {p.get('version')}",
+                      "The candidate must build exactly the committed pins.")
+    for r in sorted(set(pins) - {p["repo"] for p in cj["plugins"]}):
+        vd.refuse("G-3", f"plugin {r}", "built (pinned in release/plugin-pins.tsv)", "absent from candidate.json", "Rebuild the plugins slice.")
     # The plugin set equals the registry.
     reg = set(registry_plugins(inp.root))
     got = {p["repo"] for p in cj["plugins"]}
@@ -580,6 +602,11 @@ def g14_trust(inp: Inputs, vd: Verdict) -> None:
         vd.refuse("G-14", "release/allowed_signers", "exactly your trust file's K2 allowed_signers",
                   "different or missing", "Users verify against the committed file; it must be yours.")
     for line in inp.trust["k2_allowed_signers"]:
+        m = re.search(r'(?:^|\s|,)namespaces="([^"]*)"', line)
+        if not m or m.group(1) != K2_NAMESPACE:
+            vd.refuse("G-14", "K2 allowed_signers", f'namespaces="{K2_NAMESPACE}" and nothing else',
+                      m.group(0).strip() if m else "no namespaces= restriction",
+                      f"Restrict each line to {K2_NAMESPACE}; statements ({STATEMENT_NAMESPACE}) are checked from ModernCI's own list.")
         if inp.require_hardware_k2 and not any(t in line.split() for t in K2_HARDWARE_TYPES):
             vd.refuse("G-14", "K2", f"a hardware key type ({' or '.join(K2_HARDWARE_TYPES)})", line.split()[2] if len(line.split()) > 2 else line,
                       "K2 lives on the YubiKey (ssh-keygen -t ed25519-sk).")
@@ -815,6 +842,9 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
     for repo in IMAGE_REPOS:
         for t in (f"{major}.{minor}", major, "latest"):
             run([tool("skopeo"), "copy", "--all", "--preserve-digests", f"docker://{repo}@{digest}", f"docker://{repo}:{t}"], check=True)
+    # The rows rekor_watch.py compares the public log with: commit them to release/released.tsv.
+    (out / "released.tsv").write_text("".join(f"{v}\t{f.name}\t{sha256_file(f)}\n" for f in signed_files))
+    print(f"Commit {out / 'released.tsv'}'s rows to release/released.tsv (the Rekor watch reads it).")
     print("Rekor entries:")
     for k, line in rekor.items():
         print(f"  {k}: {line}")

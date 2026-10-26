@@ -1,0 +1,3 @@
+# Every release file the K2 key signed: <version>\t<file>\t<sha256>. Appended from
+# publish_gate.py upload's out/released.tsv after each release; scripts/release/rekor_watch.py
+# alarms on any Rekor entry under a K2 key that is not listed here, and on any row with no entry.

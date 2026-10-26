@@ -120,12 +120,13 @@ class World:
         ]}))
         (r / "release").mkdir()
         (r / "release" / "allowed_signers").write_text("# K2\n" + self.signer + "\n")
+        self.plugin_commit = "c" * 40
+        (r / "release" / "plugin-pins.tsv").write_text(f"# pins\n{PLUGIN}\tv{PVER}\t{self.plugin_commit}\n")
         sh("git", "init", "-q", cwd=r)
         sh("git", "-c", "core.hooksPath=/dev/null", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "kit", cwd=r)
         self.kit = sh("git", "rev-parse", "HEAD", cwd=r).decode().strip()
         sh("git", "tag", f"test-kit-v{VERSION}", cwd=r)
         (r / "dist" / "default").mkdir(parents=True)
-        self.plugin_commit = "c" * 40
         (r / "dist" / "default" / "Cargo.lock").write_text(
             f'[[package]]\nname = "x"\nsource = "git+https://github.com/GetBusbar/{PLUGIN}?rev=abc#{self.plugin_commit}"\n')
         sh("git", "add", "-A", cwd=r)
@@ -319,6 +320,22 @@ class Gate(unittest.TestCase):
     def test_g14_key_list_not_in_the_owners_trust_file(self):
         self.w.trust = dict(self.w.trust, k1="busbar-plugins-2026a:" + "ab" * 32)
         self.refused("G-14", "BUSBAR_RELEASE_PUBKEY")
+
+    def test_g14_k2_line_must_be_limited_to_the_file_namespace(self):
+        line = self.w.signer.replace('namespaces="busbar-release" ', "")
+        self.w.trust = dict(self.w.trust, k2_allowed_signers=[line])
+        (self.w.root / "release" / "allowed_signers").write_text(line + "\n")
+        self.refused("G-14", "no namespaces=")
+        line2 = self.w.signer.replace('namespaces="busbar-release"', 'namespaces="busbar-release,busbar-release-statement"')
+        self.w.trust = dict(self.w.trust, k2_allowed_signers=[line2])
+        (self.w.root / "release" / "allowed_signers").write_text(line2 + "\n")
+        self.refused("G-14", "busbar-release-statement")
+
+    def test_g3_candidate_plugin_differs_from_the_committed_pins(self):
+        cj = json.loads((self.w.cand / "candidate.json").read_text())
+        cj["plugins"][0]["commit"] = "d" * 40
+        (self.w.cand / "candidate.json").write_text(json.dumps(cj))
+        self.refused("G-3", "pinned")
 
     def test_g14_software_k2_refused_by_the_real_rule(self):
         vd = pg.Verdict()
