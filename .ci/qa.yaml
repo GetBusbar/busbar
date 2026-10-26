@@ -1,0 +1,371 @@
+# What qa must pass to move into main, judged on qa's head: the same five checks as dev, absolute,
+# plus the release CANDIDATE built once and kept (never rebuilt). OWNER HARD RULE: nothing lands in
+# main, and nothing is published, until the owner says so. This move judges and reports only.
+#
+# PUBLISHING IS NOT HERE. No branch file and no ModernCI tenant secret holds a busbar signing key.
+# The owner fetches the candidate (`modernci call artifact --check candidate-assemble`) and runs
+# scripts/release/publish_gate.py from his own clone with his hardware keys: verify, then sign, then
+# upload (RELEASE.md, docs/verify.md). The gate refuses, rule by rule, anything the candidate got
+# wrong.
+to: main
+on_green: none
+approve: true
+deadline: 8h
+on:
+  move: [fmt, clippy, test, deny, oracle, candidate-core, candidate-plugins, candidate-image, candidate-assemble, gate-selftest]
+  manual: [tls-assess]
+env:
+  RUSTFLAGS: "-D warnings"
+  CARGO_TERM_COLOR: never
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+  BUSBAR_TOOL_SH: |
+    # Sourced by a ModernCI check: `. .ci/tool.sh nextest deny jq vet`
+    # Puts each named tool, at the version pinned below, on PATH. The checks own their toolchain:
+    # a tool already on PATH at exactly the pin is used; otherwise the official release asset is
+    # fetched with curl, verified against the sha256 pinned here, and cached under
+    # ${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/<tool>-<version>/.
+    # `rust` is the exception: if cargo is already on PATH it is left alone, else rustup-init is
+    # fetched, verified and run with RUSTUP_HOME/CARGO_HOME under the same root, and
+    # $CARGO_HOME/bin goes on PATH and `rustup toolchain install` installs what rust-toolchain.toml names.
+    # Assumes only Linux (or darwin), sh, git, curl, tar and CA certificates.
+    # No sudo, no package manager. Unknown tool, unsupported platform or sha mismatch: message, return 1.
+
+    _bbt_nextest_ver=0.9.148
+    _bbt_deny_ver=0.20.2
+    _bbt_jq_ver=1.7.1
+    _bbt_rustup_ver=1.28.2
+    _bbt_vet_ver=0.10.3
+    _bbt_root=${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools
+
+    # _bbt_pin <tool> <os-arch>: prints "<asset-url> <sha256> <path of the binary inside the asset>"
+    _bbt_pin() {
+      case "$1" in
+        nextest)
+          _u=https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$_bbt_nextest_ver/cargo-nextest-$_bbt_nextest_ver
+          case "$2" in
+            linux-x86_64)  echo "$_u-x86_64-unknown-linux-gnu.tar.gz 223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc cargo-nextest" ;;
+            linux-aarch64) echo "$_u-aarch64-unknown-linux-gnu.tar.gz 81469eb963ef883fd590e60189e77d6aba3d91b418591d3391f50fe3e9480d2b cargo-nextest" ;;
+            darwin-arm64)  echo "$_u-universal-apple-darwin.tar.gz 6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b cargo-nextest" ;;
+            *) return 1 ;;
+          esac ;;
+        deny)
+          _u=https://github.com/EmbarkStudios/cargo-deny/releases/download/$_bbt_deny_ver/cargo-deny-$_bbt_deny_ver
+          case "$2" in
+            linux-x86_64)  echo "$_u-x86_64-unknown-linux-musl.tar.gz 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f cargo-deny-$_bbt_deny_ver-x86_64-unknown-linux-musl/cargo-deny" ;;
+            linux-aarch64) echo "$_u-aarch64-unknown-linux-musl.tar.gz 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d cargo-deny-$_bbt_deny_ver-aarch64-unknown-linux-musl/cargo-deny" ;;
+            darwin-arm64)  echo "$_u-aarch64-apple-darwin.tar.gz fe67d82a10d8597a3549364cb733a3f9cc1bfff9031b7ae46384a9f2a72090c3 cargo-deny-$_bbt_deny_ver-aarch64-apple-darwin/cargo-deny" ;;
+            *) return 1 ;;
+          esac ;;
+        jq)
+          _u=https://github.com/jqlang/jq/releases/download/jq-$_bbt_jq_ver
+          case "$2" in
+            linux-x86_64)  echo "$_u/jq-linux-amd64 5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5 -" ;;
+            linux-aarch64) echo "$_u/jq-linux-arm64 4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5 -" ;;
+            darwin-arm64)  echo "$_u/jq-macos-arm64 0bbe619e663e0de2c550be2fe0d240d076799d6f8a652b70fa04aea8a8362e8a -" ;;
+            *) return 1 ;;
+          esac ;;
+        *) return 1 ;;
+      esac
+    }
+
+    _bbt_sha256() {
+      if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+      else shasum -a 256 "$1" | cut -d' ' -f1; fi
+    }
+
+    # _bbt_rust: cargo on PATH is left alone; else bootstrap rustup (no toolchain; rust-toolchain.toml picks it).
+    _bbt_rust() {
+      command -v cargo >/dev/null 2>&1 && return 0
+      RUSTUP_HOME=$_bbt_root/rustup-$_bbt_rustup_ver/rustup; CARGO_HOME=$_bbt_root/rustup-$_bbt_rustup_ver/cargo
+      export RUSTUP_HOME CARGO_HOME
+      if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
+        _os=$(uname -s | tr '[:upper:]' '[:lower:]'); _arch=$(uname -m)
+        case "$_os-$_arch" in
+          linux-x86_64)  _t=x86_64-unknown-linux-gnu;  _sha=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c ;;
+          linux-aarch64) _t=aarch64-unknown-linux-gnu; _sha=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c ;;
+          darwin-arm64)  _t=aarch64-apple-darwin;      _sha=20ef5516c31b1ac2290084199ba77dbbcaa1406c45c1d978ca68558ef5964ef5 ;;
+          *) echo "tool.sh: no pinned rustup $_bbt_rustup_ver for $_os-$_arch (supported: linux-x86_64 linux-aarch64 darwin-arm64)" >&2; return 1 ;;
+        esac
+        _url=https://static.rust-lang.org/rustup/archive/$_bbt_rustup_ver/$_t/rustup-init
+        _tmp=$_bbt_root/rustup-init.tmp.$$
+        mkdir -p "$_tmp" || return 1
+        echo "tool.sh: fetching rustup-init $_bbt_rustup_ver ($_url)" >&2
+        if ! curl -fsSL --retry 3 -o "$_tmp/rustup-init" "$_url"; then
+          echo "tool.sh: download of $_url failed" >&2; rm -rf "$_tmp"; return 1
+        fi
+        _got=$(_bbt_sha256 "$_tmp/rustup-init")
+        if [ "$_got" != "$_sha" ]; then
+          echo "tool.sh: sha256 mismatch for $_url: expected $_sha, got $_got" >&2; rm -rf "$_tmp"; return 1
+        fi
+        chmod +x "$_tmp/rustup-init"
+        "$_tmp/rustup-init" -y --no-modify-path --default-toolchain none || { rm -rf "$_tmp"; return 1; }
+        rm -rf "$_tmp"
+      fi
+      PATH="$CARGO_HOME/bin:$PATH"; export PATH
+      # rustup 1.28.0 dropped the implicit install of the rust-toolchain.toml channel: install what it
+      # names (toolchain and components) from the repo root. A no-op once installed.
+      _root=$(git rev-parse --show-toplevel 2>/dev/null) || _root=.
+      (cd "$_root" && rustup toolchain install) || { echo "tool.sh: rustup toolchain install failed" >&2; return 1; }
+    }
+
+    # _bbt_ensure <tool>
+    _bbt_ensure() {
+      case "$1" in
+        rust) _bbt_rust; return $? ;;
+        vet)
+          # cargo-vet publishes no linux-aarch64 asset to pin a sha256 to: it is built from crates.io
+          # at the pinned version (the index checksum verifies the source, --locked its dependencies)
+          # into the same cache, once per version.
+          _dir=$_bbt_root/vet-$_bbt_vet_ver
+          if [ ! -x "$_dir/bin/cargo-vet" ]; then
+            cargo install --locked --quiet cargo-vet --version "=$_bbt_vet_ver" --root "$_dir" || return 1
+          fi
+          PATH="$_dir/bin:$PATH"; export PATH
+          return 0 ;;
+        nextest) _bin=cargo-nextest; _ver=$_bbt_nextest_ver; _want="cargo-nextest $_ver"; _vargs="nextest --version" ;;
+        deny)    _bin=cargo-deny;    _ver=$_bbt_deny_ver;    _want="cargo-deny $_ver"; _vargs=--version ;;
+        jq)      _bin=jq;            _ver=$_bbt_jq_ver;      _want="jq-$_ver"; _vargs=--version ;;
+        *) echo "tool.sh: unknown tool '$1' (known: rust nextest deny jq vet)" >&2; return 1 ;;
+      esac
+      # Already on PATH at exactly the pinned version.
+      if command -v "$_bin" >/dev/null 2>&1; then
+        _have=$("$_bin" $_vargs 2>/dev/null | sed -n 1p)
+        case "$_have" in
+          "$_want" | "$_want "*) return 0 ;;
+        esac
+      fi
+      _dir=$_bbt_root/$1-$_ver
+      if [ ! -x "$_dir/$_bin" ]; then
+        _os=$(uname -s | tr '[:upper:]' '[:lower:]'); _arch=$(uname -m)
+        _pin=$(_bbt_pin "$1" "$_os-$_arch") || {
+          echo "tool.sh: no pinned $1 $_ver for $_os-$_arch (supported: linux-x86_64 linux-aarch64 darwin-arm64)" >&2
+          return 1
+        }
+        set -- "$1" $_pin
+        _url=$2; _sha=$3; _inner=$4
+        mkdir -p "$_dir.tmp.$$" || return 1
+        echo "tool.sh: fetching $_bin $_ver ($_url)" >&2
+        if ! curl -fsSL --retry 3 -o "$_dir.tmp.$$/asset" "$_url"; then
+          echo "tool.sh: download of $_url failed" >&2; rm -rf "$_dir.tmp.$$"; return 1
+        fi
+        _got=$(_bbt_sha256 "$_dir.tmp.$$/asset")
+        if [ "$_got" != "$_sha" ]; then
+          echo "tool.sh: sha256 mismatch for $_url: expected $_sha, got $_got" >&2
+          rm -rf "$_dir.tmp.$$"; return 1
+        fi
+        if [ "$_inner" = - ]; then
+          mv "$_dir.tmp.$$/asset" "$_dir.tmp.$$/$_bin"
+        else
+          tar -xzf "$_dir.tmp.$$/asset" -C "$_dir.tmp.$$" "$_inner" || { rm -rf "$_dir.tmp.$$"; return 1; }
+          mv "$_dir.tmp.$$/$_inner" "$_dir.tmp.$$/$_bin"
+        fi
+        chmod +x "$_dir.tmp.$$/$_bin"
+        rm -f "$_dir.tmp.$$/asset"
+        rm -rf "$_dir"
+        mv "$_dir.tmp.$$" "$_dir" || { rm -rf "$_dir.tmp.$$"; [ -x "$_dir/$_bin" ] || return 1; }
+      fi
+      PATH="$_dir:$PATH"; export PATH
+    }
+
+    for _bbt_t in "$@"; do
+      _bbt_ensure "$_bbt_t" || return 1
+    done
+on:
+  move: [fmt, clippy, test, deny, oracle]
+checks:
+  fmt:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check.
+    requires: [cc]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      cargo fmt --all -- --check
+      cargo metadata --locked --format-version 1 >/dev/null
+  clippy:
+    # Every target under every feature, then the builds no other check makes: the workspace with no
+    # default features and the kernel/contract feature-deletion matrix (plane-a2a, plane-mcp, none).
+    requires: [cc]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
+      cargo clippy --workspace --all-targets --no-default-features --locked --keep-going -- -D warnings
+      cargo clippy -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked -- -D warnings
+      cargo clippy -p busbar-kernel -p busbar-contract --no-default-features --features plane-mcp --locked -- -D warnings
+      cargo clippy -p busbar-kernel -p busbar-contract --no-default-features --locked -- -D warnings
+    needs: [fmt]
+  test:
+    # The workspace's cdylibs and the dropped-in plugins the tests dlopen, then one build and one
+    # nextest run of the default features; then the feature-gated suites the default run never
+    # builds (row 164: A, the busbar/kernel/core-admin gates at once, filtered to the gated binaries
+    # and modules so the default suites do not run twice; B, the plugin-pack CLI; C, the loom models
+    # in release); then the doctests. The C header's generator is a busbar-contract test
+    # (tests/abi_header), so the committed header is held here too.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust nextest jq; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust nextest jq; fi || exit 1
+      meta=$(cargo metadata --format-version 1 --locked)
+      cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+      # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
+      # door and the other door fixtures, which busbar's and the connector's tests load too) and
+      # busbar's test plane. A run scoped to `busbar` alone builds no other package's examples, and a
+      # test whose fixture is absent fails rather than skips; no variable tells this step the
+      # affected set, so the build does not wait on one.
+      cargo build --locked -p busbar-plugin-loader --examples
+      cargo build --locked -p busbar --examples
+      plugin() {
+        man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
+        if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
+        ws="$(dirname "$man")/Cargo.toml"
+        pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
+        if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
+        if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
+          cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
+        else
+          cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
+        fi
+      }
+      plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
+      plugin busbar-transport-http busbar-transport-http-plugin dropped-in
+      plugin busbar-secret-env busbar-secret-env-plugin optional
+      plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
+      cargo build --workspace --locked
+      # Every test is cut at five minutes.
+      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' > "$cfg"
+      # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
+      cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
+      if [ -z "$MODERNCI_ONLY" ]; then
+        cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
+        cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+        timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+        cargo test --workspace --doc --locked --no-fail-fast
+      fi
+    requires: [cc]
+    needs: [fmt]
+  deny:
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust deny vet; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust deny vet; fi || exit 1
+      cargo deny check
+      cargo vet --locked
+    needs: [fmt]
+    requires: [cc]
+  oracle:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check; the
+    # store-persist cells' live backends run in docker.
+    requires: [cc, docker]
+    # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
+    # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
+    # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
+    # holds none: the first move) and runs it only at that pin's sha256 for this architecture, its
+    # .sig verified against busbar-release's release key; no line for this architecture is no judge.
+    # BUSBAR_RELEASE_TOKEN (a secret ModernCI gives this check) reads the private release. The 1.5.5
+    # golden is add-only from dev to this commit wherever dev holds it (none before the first move);
+    # then the candidate's release binary is recorded over the corpus and replayed against the
+    # committed 1.5.5 golden, strict: green is every cell byte-green or forgiven by an owner-signed
+    # accepted difference.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      ./bin/oracle tool-dir >/dev/null
+      if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
+        ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+      else
+        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
+      fi
+      cargo build --locked --release -p busbar --bin busbar
+      ./bin/oracle fetch-golden
+      # The store-persist cells for postgres, mysql and valkey boot their store against a LIVE
+      # backend, gated on BUSBAR_TEST_POSTGRES_URL / BUSBAR_TEST_MYSQL_URL / VALKEY_URL; with none set
+      # they record nothing (missing.candidate against the golden's PASS rows). Bring the pinned
+      # backends up for this run (testing/shadow-oracle/scripts/oracle-box-store-services.sh), under
+      # run-unique names on free ports, export the three URLs, and remove them when the check ends.
+      sfx="$(printf '%.12s' "${MODERNCI_COMMIT:-local}")-$$"
+      free_port() { local p; while :; do p=$(( 20000 + RANDOM % 20000 )); (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null || { echo "$p"; return; }; done; }
+      export ORACLE_PG_NAME="oracle-store-postgres-$sfx" ORACLE_MY_NAME="oracle-store-mysql-$sfx" ORACLE_VK_NAME="oracle-store-valkey-$sfx"
+      export ORACLE_PG_PORT="$(free_port)"; export ORACLE_MY_PORT="$(free_port)"; export ORACLE_VK_PORT="$(free_port)"
+      trap 'bash testing/shadow-oracle/scripts/oracle-box-store-services.sh down' EXIT
+      . testing/shadow-oracle/scripts/oracle-box-store-services.sh up
+      bash testing/shadow-oracle/scripts/oracle-box-store-services.sh wait || { echo "oracle: the store backends did not come up"; exit 1; }
+      rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
+      ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+    needs: [fmt]
+    # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
+    # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
+    outputs: [target/oracle/reports/]
+  # ── THE RELEASE CANDIDATE ──────────────────────────────────────────────────────────────────────
+  # Layout and rules: docs/verify.md "For builders", scripts/release/publish_gate.py. ModernCI fans
+  # candidate-core and candidate-plugins out per target (`<check>@<target>`, $MODERNCI_TARGET), each on
+  # a backend native to the target: linux x86_64/aarch64 (gnu + musl), darwin x86_64/aarch64, and
+  # windows x86_64. A target no backend offers is a WAIT, never a skip: the gate refuses a candidate
+  # missing a declared target by name (G-3).
+  candidate-core:
+    requires: [cc]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      # cargo-cyclonedx, pinned by version and built --locked into this check's cache.
+      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
+      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
+      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core "$MODERNCI_TARGET" --out target/candidate/core-"$MODERNCI_TARGET"
+    outputs: [target/candidate/]
+  candidate-plugins:
+    # Every first-party plugin at its newest vX.Y.Z tag pinned to the test kit, built for this target and
+    # packed UNSIGNED (the owner signs the canonical bytes on his hardware key). No signing secret exists
+    # to pass: BUSBAR_SIGN_KEY is deleted.
+    requires: [cc, git-history]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      kit="$(git rev-parse "test-kit-v$(sed -n 's/^version = "\(.*\)"/\1/p' crates/busbar/Cargo.toml | head -1)^{commit}")" || { echo "no test-kit tag for this version: tag the kit on dev first"; exit 1; }
+      python3 scripts/release/candidate.py plugins "$MODERNCI_TARGET" --kit-commit "$kit" --out target/candidate/plugins-"$MODERNCI_TARGET"
+    outputs: [target/candidate/]
+  candidate-image:
+    # The two image-feeding musl binaries (candidate-core@x86_64-unknown-linux-musl and
+    # @aarch64-unknown-linux-musl, kept outputs) -> one multi-platform OCI layout archive. RUST_ALPINE is
+    # the pinned musl runtime the Dockerfile's /lib comes from (rust:alpine@sha256:..., set by ModernCI).
+    needs: [candidate-core]
+    requires: [docker]
+    run: |
+      mkdir -p target/candidate/image/internal
+      cp target/candidate/core-*-musl/internal/* target/candidate/image/internal/
+      python3 scripts/release/candidate.py image --out target/candidate/image
+    outputs: [target/candidate/]
+  candidate-assemble:
+    # Every slice -> the one candidate the owner fetches. The slices are the kept outputs of the checks
+    # above, gathered by ModernCI into target/candidate/ (one subdirectory per slice).
+    needs: [candidate-core, candidate-plugins, candidate-image]
+    requires: [git-history]
+    run: |
+      v="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/busbar/Cargo.toml | head -1)"
+      kit="$(git rev-parse "test-kit-v$v^{commit}")" || { echo "no test-kit-v$v tag"; exit 1; }
+      python3 scripts/release/candidate.py assemble --kit-tag "test-kit-v$v" --kit-commit "$kit" --out target/candidate/release target/candidate/core-* target/candidate/plugins-* target/candidate/image
+    outputs: [target/candidate/release/]
+  gate-selftest:
+    # The publish gate proves, offline, that it passes a good release and refuses each broken one by name.
+    requires: [cc]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      cargo build --locked -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
+      PACK=target/debug/busbar-plugin-pack python3 scripts/release/test_publish_gate.py
+      bash scripts/release-key-guard.sh --selftest
+  # ── THE TLS ASSESSMENT (manual; the release's TLS evidence) ─────────────────────────────────────
+  # The RELEASED image by digest, on the public lab host tls-lab.getbusbar.com, terminating TLS itself
+  # with a public-CA certificate (HTTP-01; no DNS secret). Judged by scripts/release/tls-assert.json's
+  # named assertions, never a grade. Becomes ModernCI's `tls_assess` check type (RP-8); until then it
+  # runs on a backend holding the lab-host lease (`tls-lab`).
+  tls-assess:
+    requires: [docker, tls-lab]
+    run: |
+      set -eu
+      T="${XDG_CACHE_HOME:-$HOME/.cache}/busbar-conformance-tools"; mkdir -p "$T"
+      if [ ! -x "$T/testssl/testssl.sh" ]; then
+        curl -fsSL --retry 3 -o "$T/testssl.tgz" https://github.com/testssl/testssl.sh/archive/refs/tags/v3.2.0.tar.gz
+        echo "f3969c152c0fe99a2a90e8c8675ab677d77608ac77c957a95497387c36363c32  $T/testssl.tgz" | sha256sum -c -
+        rm -rf "$T/testssl"; mkdir "$T/testssl"; tar -C "$T/testssl" --strip-components=1 -xzf "$T/testssl.tgz"
+      fi
+      v="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/busbar/Cargo.toml | head -1)"
+      : "${BUSBAR_IMAGE_DIGEST:?the released image index digest (IMAGES) to assess}"
+      for variant in ecdsa rsa; do
+        # The lab host serves ghcr.io/getbusbar/busbar@$BUSBAR_IMAGE_DIGEST with its $variant certificate.
+        # `tls-lab` is the lab-host lease ModernCI provides (RP-8 asks); this check waits until it exists.
+        tls-lab serve --image "ghcr.io/getbusbar/busbar@$BUSBAR_IMAGE_DIGEST" --cert "$variant" --host tls-lab.getbusbar.com
+        TESTSSL="$T/testssl/testssl.sh" python3 scripts/release/tls_assess.py run --host tls-lab.getbusbar.com \
+          --version "$v" --image-digest "$BUSBAR_IMAGE_DIGEST" --variant "$variant" --out target/tls-evidence
+      done
+    outputs: [target/tls-evidence/]
