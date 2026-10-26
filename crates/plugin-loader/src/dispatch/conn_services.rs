@@ -9,7 +9,9 @@
 //! * `ESTABLISH` opens the need (its Statement index) at the target the plugin names, landing only
 //!   on an address of its `within` set when it states one (the addresses its `dest.judge` judged):
 //!   the connector holds the pinned address to the set at the connect, before any byte is
-//!   written, a framed need's included (its connect is at `WRITE_REQUEST`'s end).
+//!   written, a framed need's included (its connect is at `WRITE_REQUEST`'s end). A raw stream
+//!   is answered once its dial has LANDED (PENDING on the caller's ticket while it connects): a
+//!   refused connect is the establish's own answer, so a plugin's endpoint list moves on.
 //! * `READ` answers the next piece's bytes; nothing ready is PENDING on the caller's ticket (the
 //!   table wakes it), and never PENDING without one. A closed stream reads as its end (`len` 0).
 //! * `WRITE` offers bytes; `CLOSE` closes.
@@ -343,7 +345,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
         out,
         service::ESTABLISH,
         ESTABLISH_IN_MEMBERLESS,
-        |id, table, _| {
+        |id, table, head| {
             // SAFETY: the head covered an `EstablishIn` up to its appended `member`; one whose
             // `size` stops there names no registration.
             let i = unsafe { read_establish(input) };
@@ -388,19 +390,95 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                 );
                 return Answer::ready(stream, 0);
             }
-            let desc = OpenDesc {
-                target: &target,
-                within: &within,
-                timeout_ms: u64::from(i.timeout_ms),
-                member: &member,
-                ..OpenDesc::default()
+            // A RAW STREAM IS ANSWERED ONCE ITS DIAL HAS LANDED ("dial the need's endpoints ...
+            // and answer the stream"): a far end that refuses the connect is the establish's own
+            // answer, so a plugin trying an endpoint list in order (a libpq multi-host url: open;
+            // on reject close and try the next) moves on to the next, as 1.5.5's driver did. While
+            // it connects the call is PENDING on the caller's ticket, and its re-call (a new
+            // handle, the same ticket) answers the same dial: nothing is dialled twice.
+            let ticket = head.handle.ticket;
+            let wanted = (NeedId(i.need), target.into_owned(), within, member);
+            let conn = match dialling(id, ticket, &wanted) {
+                Some(conn) => conn,
+                None => {
+                    let desc = OpenDesc {
+                        target: &wanted.1,
+                        within: &wanted.2,
+                        timeout_ms: u64::from(i.timeout_ms),
+                        member: &wanted.3,
+                        ..OpenDesc::default()
+                    };
+                    match table.open(id, wanted.0, &desc) {
+                        Ok(conn) => conn,
+                        Err(e) => return Answer::of(e),
+                    }
+                }
             };
-            match table.open(id, NeedId(i.need), &desc) {
-                Ok(ConnId(stream)) => Answer::ready(stream, 0),
-                Err(e) => Answer::of(e),
+            // A call on no ticket may not pend: its stream is answered with the dial in flight.
+            if ticket.is_none() {
+                return Answer::ready(conn.0, 0);
+            }
+            match table.landed(id, conn, conn_ticket(ticket)) {
+                Ok(()) => Answer::ready(conn.0, 0),
+                Err(ConnError::Pending) => {
+                    dialling_conns().insert((id, ticket), (wanted, conn, Arc::clone(table)));
+                    Answer::of(ConnError::Pending)
+                }
+                Err(e) => {
+                    // The connect failed: its cause is read before the stream goes.
+                    let a = Answer::of_conn(e, id, table, conn);
+                    let _ = table.close(id, conn);
+                    a
+                }
             }
         },
     )
+}
+
+/// What a pending `ESTABLISH` asked for: the need, the target, the `within` set and the
+/// registration.
+type Wanted = (NeedId, String, Vec<IpAddr>, String);
+
+/// THE DIALS IN FLIGHT: an `ESTABLISH` on a ticket that answered PENDING while its dial connects,
+/// by instance and ticket, with the table to close it on when the ticket moves on without it.
+type Dialling = HashMap<(InstanceId, Ticket), (Wanted, ConnId, Arc<dyn DeclaredConns>)>;
+
+fn dialling_conns() -> MutexGuard<'static, Dialling> {
+    static DIALLING: OnceLock<Mutex<Dialling>> = OnceLock::new();
+    DIALLING
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The dial a pending `ESTABLISH` on `ticket` left in flight, taken, when the re-call asks for the
+/// same; one it no longer asks for is closed.
+fn dialling(id: InstanceId, ticket: Ticket, wanted: &Wanted) -> Option<ConnId> {
+    if ticket.is_none() {
+        return None;
+    }
+    let (asked, conn, table) = dialling_conns().remove(&(id, ticket))?;
+    if &asked == wanted {
+        return Some(conn);
+    }
+    let _ = table.close(id, conn);
+    None
+}
+
+/// Close every dial a pending `ESTABLISH` left in flight for `id` (on `ticket`, or on any ticket
+/// `gone` names): the op that asked for it ended without its re-call. The map is let go before
+/// anything is closed.
+fn drop_dialling(gone: impl Fn(&(InstanceId, Ticket)) -> bool) {
+    let left: Vec<(InstanceId, ConnId, Arc<dyn DeclaredConns>)> = {
+        let mut all = dialling_conns();
+        let keys: Vec<(InstanceId, Ticket)> = all.keys().filter(|k| gone(k)).copied().collect();
+        keys.iter()
+            .filter_map(|k| all.remove(k).map(|(_, conn, table)| (k.0, conn, table)))
+            .collect()
+    };
+    for (id, conn, table) in left {
+        let _ = table.close(id, conn);
+    }
 }
 
 /// `EstablishIn::within`'s address set: IP literals joined by [`WITHIN_SEPARATOR`], empty = none;
@@ -755,6 +833,7 @@ fn replay_read(id: InstanceId, h: CompletionHandle, input: *const c_void) {
 /// ticket, and its kept answers are never its neighbour's to drop (dropping them would make it run
 /// a stored establish or write a second time).
 pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
+    drop_dialling(|k| *k == (id, ticket));
     kept_reads().remove(&(id, ticket));
     kept_answers()
         .remove(&(id, ticket))
@@ -767,6 +846,7 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
     let gone = |(id, t): &(InstanceId, Ticket)| {
         ids.contains(id) && super::ticket::decode(t.slot).0 == worker
     };
+    drop_dialling(gone);
     kept_reads().retain(|k, _| !gone(k));
     kept_answers().retain(|k, _| !gone(k));
 }
@@ -778,6 +858,7 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
 /// pending auth call is the auth plugin's, and a close may cross into a transport door (THE DESIGN
 /// §11.13 M1).
 pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
+    drop_dialling(|(i, _)| *i == id);
     held_facts().retain(|(i, _), _| *i != id);
     kept_answers().retain(|(i, _), _| *i != id);
     kept_reads().retain(|(i, _), _| *i != id);
