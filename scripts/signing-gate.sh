@@ -147,7 +147,7 @@ def string():
 def blob():
     u32(); u32(); take(u32())
 strs = lambda: [string() for _ in range(count())]
-if take(8) != b"BBSTMT01":
+if take(8) != b"BBSTMT02":   # RENDERING_MAGIC in busbar-contract: exactly the current version
     sys.exit("manifest statement is not a Statement rendering: the magic")
 u32(); u32(); u32(); u32()                       # mechanism, kind, kind_abi, max_inflight
 string(); string()                               # name, version

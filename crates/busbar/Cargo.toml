@@ -534,10 +534,6 @@ row = "auth-admin-tokens"
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
 # a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
 # the order their boot steps run in: seals, then the configuration step, then the book step.
-# THE SERVED-LEG WITNESSES (the `package.metadata.busbar.served-witness` table: cargo feature -> the plane
-# crate whose `testkit::SERVED` table the root's rider tests drive) have no row left: FLIP-A2A (#787)
-# and FLIP-STREAMING (#503) each struck the last legacy crate's row, so the table leaves and
-# `build.rs` emits an empty witness list, as it reads no linked-swaps table once the last switch went.
 
 # THE DOOR PLANES' OWN ROOT CELLS (ARCHITECT ruling on #464, applied to every door plane's root leg):
 # every linked plane door's crate holds, at its `tests/root/mod.rs`, the cases that drive its door
@@ -621,10 +617,6 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit", features = ["test-suppo
 # THE STORE ADAPTER'S MINTED-TOKEN SEAMS (`tests/store_adapter_verb_seam.rs`, ARCHITECT C4B-1): the
 # loader's fake-call store harness and oracle-cache locator are `test-support` only.
 busbar-plugin-loader = { path = "../plugin-loader", features = ["test-support"] }
-# THE PINNED DOOR ROOT CELLS' CONNECTOR BUILD (`process::build`, the connector's `test-support`
-# bridge to `build_with_secrets`): the door cells compiled into the bin's tests call it until their
-# pin moves (FINAL-REPIN).
-busbar-core-connector = { path = "../busbar-core-connector", features = ["test-support"] }
 # THE EQUIVALENCE PROOF CALLS THE ADMIN READ RATHER THAN REPRODUCING IT.
 # `tests/money_one_function_equivalence.rs` runs every implementation of `money = f(ledger, card)`
 # side by side, and `GET /api/v1/admin/usage` is one of them. Its three derivations are crate-private
@@ -697,6 +689,9 @@ prost = { workspace = true }
 hex = { workspace = true }
 # THE ADDED-LATENCY INSTRUMENT (`benches/hook_path.rs`) — black-box, boots the shipped binary.
 criterion = { workspace = true }
+# The canary harness (`tests/canary/`) dlopens a dropped-in plugin's cdylib itself to wrap its door
+# in the recording shim; already the loader's dependency.
+libloading = { workspace = true }
 # The contract's `test-seal` (`busbar_contract::plugin::TestKernelSeal`, the one blessed fixture
 # implementor of the SEALED `KernelSeal` trait, #65) for the root's tests — dev-only and
 # feature-gated, so it is absent from every release build. Its user was tests/ws_composed_battery.rs,
@@ -727,6 +722,13 @@ harness = false
 name = "admin_cross_plane"
 path = "tests/admin_cross_plane/main.rs"
 required-features = ["auth-admin-tokens"]
+
+# THE CREDENTIAL CANARY HARNESS (measurement only): it plants canaries
+# through the linked auth rows and the request-log exports, so it needs them linked.
+[[test]]
+name = "canary"
+path = "tests/canary/main.rs"
+required-features = ["auth-admin-tokens", "auth-header", "auth-webhook-signature", "export-file", "export-webhook"]
 
 [[test]]
 name = "traces_stream_both_doors"

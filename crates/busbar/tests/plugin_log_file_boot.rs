@@ -15,8 +15,7 @@
 //! loads to `PluginLogConfig::sink` — proven at the loader by
 //! `boot::tests::the_one_load_binds_each_selected_instance_to_its_own_log_sink` — but the compiled-in
 //! scrape sink is still a cold-ABI plugin, so no memory-ABI instance is loaded here and no file
-//! appears. OWNER: that export sibling on `plugin_door!` (`1.6.0-TODO.md` steps
-//! 26/27, the export fan-out); its `#[ignore]` comes off in that change.
+//! appears. Its `#[ignore]` comes off when the scrape sink is a `plugin_door!` memory-ABI plugin.
 //!
 //! Run it: `cargo test -p busbar --test plugin_log_file_boot -- --ignored`
 #![cfg(unix)]
@@ -123,9 +122,8 @@ fn scrape_status(port: u16) -> Option<u16> {
 #[test]
 #[ignore = "RED BY DESIGN: the one load binds every memory-ABI instance to \
             PluginLogConfig::sink (KERNEL<>PLUGINS step 6), but the scrape sink is still a cold-ABI \
-            plugin. Owner: the export fan-out's scrape sibling on plugin_door! (1.6.0-TODO \
-            steps 26/27), which removes this ignore. Run with --ignored; do not weaken this test \
-            to make it green."]
+            plugin; the scrape sibling on plugin_door! removes this ignore. Run with \
+            --ignored; do not weaken this test to make it green."]
 fn a_loaded_plugin_instance_has_its_own_log_file() {
     let dir = fixture_dir();
     let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());

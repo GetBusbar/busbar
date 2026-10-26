@@ -64,33 +64,6 @@ pub fn build_with_secrets(
     ))
 }
 
-// FINAL-REPIN: delete when the pinned door root cells call build_with_secrets
-/// THE PINNED DOOR ROOT CELLS' NAME for [`build_with_secrets`], kept until their pin moves: the
-/// same connector, its program environment references resolved through the linked secret plugins
-/// at config time, as the root's boot resolves them. Never in a shipped build (`test-support`).
-///
-/// # Errors
-///
-/// As [`build_with_secrets`].
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub fn build(
-    entries: impl FnOnce() -> Result<Vec<Entry>, String>,
-    dest: Arc<dyn DestJudge>,
-    own_ports: &[u16],
-    wake: WakeTicket,
-    pool: PoolPosture,
-) -> Result<Arc<Connector>, String> {
-    build_with_secrets(
-        entries,
-        dest,
-        own_ports,
-        wake,
-        pool,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
-    )
-}
-
 /// THE DEPLOYMENT'S ONE DESTINATION JUDGE: its [`Guard`] over the system resolver.
 ///
 /// # Errors

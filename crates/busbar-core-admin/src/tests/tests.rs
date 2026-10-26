@@ -8356,7 +8356,7 @@ async fn test_signing_key_rotate_reports_kid_and_revoke_all() {
     // emits that action against this resource, and a large concurrent audit-writing burst could in
     // principle evict this test's own `signing_key.report` row before the read. Latent; accepted —
     // bracketing by seq would narrow the window but not defeat eviction.
-    let rows = audit_ring::AUDIT.list_filtered(
+    let rows = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
         0,
         audit_ring::MAX_AUDIT_ENTRIES,
         None,
@@ -9506,8 +9506,8 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
     // so a concurrently-running sibling's legitimate APPLIED reset can land between this test's own
     // two REJECTED rows and fail the "never APPLIED" assertion. Same pattern as
     // `test_admin_v1_restart_refuses_when_it_cannot_restart`'s baseline_seq bracketing.
-    let baseline_seq = audit_ring::AUDIT
-        .list(1)
+    let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, 1, None, None)
         .first()
         .map(|e| e.seq)
         .unwrap_or(0);
@@ -9538,7 +9538,7 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         reset.text().await
     );
 
-    let rows: Vec<_> = audit_ring::AUDIT
+    let rows: Vec<_> = busbar_kernel::audit::auditlog::AUDIT_LOG
         .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, Some("overlay:root"))
         .into_iter()
         .filter(|e| e.seq > baseline_seq)
@@ -10146,8 +10146,8 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
     // the binary writes to, unscoped by principal (every admin-token test shares the SAME fixed
     // operator principal id, so scoping by principal would not distinguish this test's rows from a
     // concurrent sibling's). Rows from THIS test's own restart attempts are bracketed by seq.
-    let baseline_seq = audit_ring::AUDIT
-        .list(1)
+    let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, 1, None, None)
         .first()
         .map(|e| e.seq)
         .unwrap_or(0);
@@ -10225,7 +10225,12 @@ async fn test_admin_v1_restart_refuses_when_it_cannot_restart() {
 
     // Every refusal is audited — the operator's only evidence, since a real restart takes the
     // connection that would have carried the response.
-    let entries = audit_ring::AUDIT.list(audit_ring::MAX_AUDIT_ENTRIES);
+    let entries = busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(
+        0,
+        audit_ring::MAX_AUDIT_ENTRIES,
+        None,
+        None,
+    );
     let restarts: Vec<_> = entries
         .iter()
         .filter(|e| e.action == "admin.restart" && e.seq > baseline_seq)

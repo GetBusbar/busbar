@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE RATE CARD IS JOURNALLED BEFORE THE CONFIG CHANGE IS SAVED (MONEY-AUDIT D-6, ARCHITECT ruling
-//! 2026-10-02).
+//! THE RATE CARD IS JOURNALLED BEFORE THE CONFIG CHANGE IS SAVED.
 //!
 //! The seam's holder journals the applied card. Raised only at the commit, after the change was
 //! persisted and swapped, a journal that refused the card left the live configuration on the new
@@ -13,9 +12,7 @@
 //!
 //! A test BINARY of its own, because the rate holder this file hands in is process-wide.
 //!
-//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation, ARCHITECT:
-//! core names zero plane types, its tests included; Q128 audit HIGH on the kernel's test-linked
-//! build.rs): its config names a provider, whose dialect only a real plane declares, and the
+//! MOVED HERE from `crates/busbar-kernel/tests/`, assertions unchanged (kind-isolation: core names zero plane types, its tests included): its config names a provider, whose dialect only a real plane declares, and the
 //! composition root is where a plane may be linked.
 
 mod linked;
