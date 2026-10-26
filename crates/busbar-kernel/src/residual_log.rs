@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DURABLE PER-PRINCIPAL RESIDUAL LOG (MONEY LAW, owner 2026-10-02; ARCHITECT ruling 2026-10-02).
+//! THE DURABLE PER-PRINCIPAL RESIDUAL LOG.
 //!
 //! A usage count no billing class records is WARNed where the reader found it, never billed, and
 //! settled here as ONE `usage.residual` row per non-empty residual map. The row is money evidence,

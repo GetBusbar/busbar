@@ -30,8 +30,3 @@ pub fn sha256_of(parts: &[&[u8]]) -> [u8; 32] {
     out.copy_from_slice(ctx.finish().as_ref());
     out
 }
-
-/// The digest as lowercase hexadecimal, for anything that has to print one.
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    sha256(bytes).iter().map(|b| format!("{b:02x}")).collect()
-}

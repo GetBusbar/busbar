@@ -144,12 +144,6 @@ impl HeadHistory {
         self.tip.as_ref()
     }
 
-    /// How often a head joins the series, in seconds.
-    #[must_use]
-    pub fn sample_seconds(&self) -> u64 {
-        self.sample_seconds
-    }
-
     /// Every anchor this node can offer, in position order: the series, then the tip if the tip is
     /// not already the last sample.
     #[must_use]

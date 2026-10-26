@@ -79,16 +79,6 @@ pub fn build_client_config(trust: &EgressTrust) -> Result<rustls::ClientConfig, 
     }
 }
 
-/// [`build_client_config`] for one declared need, at boot: a bad client identity refuses the boot,
-/// naming the need.
-///
-/// # Errors
-///
-/// The need's client identity does not parse; the text names the need.
-pub fn need_client_config(need: &str, trust: &EgressTrust) -> Result<rustls::ClientConfig, String> {
-    build_client_config(trust).map_err(|e| format!("need `{need}`: {e}; refusing to boot"))
-}
-
 /// The client config for a need whose `trust_from` names an operator CA (`pem`, the PEM the need's
 /// settings hold): the public roots with every certificate of `pem` added on top as an extra trust
 /// anchor (spec section 5, the host connector: "an extra trusted root added on top of the public

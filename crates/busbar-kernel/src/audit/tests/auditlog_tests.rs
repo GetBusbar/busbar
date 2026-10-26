@@ -1458,3 +1458,153 @@ fn a_legacy_migration_refuses_to_splice_onto_a_chain_that_disagrees() {
         .unwrap();
     assert_eq!(rows.len(), 1, "nothing was copied");
 }
+
+/// v1.5.5's own digest, re-stated from `git show v1.5.5:crates/busbar/src/admin/audit.rs`
+/// (`AuditEntry::compute_hash`) and computed on RustCrypto's sha2, independently of this build's
+/// canonicaliser: `sha256(prev_hash|seq|ts|action|resource|outcome|principal)`, lowercase hex.
+fn v1_5_5_hash(prev: &str, seq: u64, ts: u64, act: &str, res: &str, out: &str, pr: &str) -> String {
+    use sha2::Digest as _;
+    let canonical = format!("{prev}|{seq}|{ts}|{act}|{res}|{out}|{pr}");
+    sha2::Sha256::digest(canonical.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// THE S-7 READ-BACK GATE (b): a 1.5.5 deployment's admin audit table — rows in v1.5.5's own serde
+/// shape (`busbar_api::AuditRecord`), hashed by v1.5.5's own formula — reads back through the boot
+/// migration and restore with EVERY record intact (every field, byte for byte), the chain verifies,
+/// and the next admin record this build seals CONTINUES the 1.5.5 chain: seq one past the 1.5.5
+/// tail, `prev_hash` the 1.5.5 tail's hash, and `hash` the 1.5.5 formula over its own fields.
+///
+/// The last part is what pins the admin log's own chain: its link is admin record to admin record
+/// under 1.5.5's digest, which is what `GET /audit` serves. A journal whose only chain links every
+/// record class under one digest cannot produce that `prev_hash` or that `hash`.
+#[test]
+fn a_1_5_5_audit_table_reads_back_whole_and_the_next_record_continues_its_chain() {
+    let rows = [
+        (
+            1_699_000_001u64,
+            "key.create",
+            "key:vk_a",
+            "applied",
+            "admin",
+        ),
+        (
+            1_699_000_050,
+            "hook.register",
+            "hook:compress",
+            "applied",
+            "admin",
+        ),
+        (
+            1_699_000_051,
+            "hook.register",
+            "hook:bad",
+            "rejected",
+            "vk_ops",
+        ),
+        (1_699_000_400, "key.revoke", "key:vk_a", "applied", "admin"),
+        (
+            1_699_000_999,
+            "plugin.install",
+            "plugin:store-sqlite",
+            "applied",
+            "anonymous",
+        ),
+    ];
+    let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
+        std::sync::Arc::new(DualDurableStore::new());
+    let mut prev = String::new();
+    let mut legacy = Vec::new();
+    for (i, (ts, act, res, out, pr)) in rows.iter().enumerate() {
+        let seq = i as u64 + 1;
+        let hash = v1_5_5_hash(&prev, seq, *ts, act, res, out, pr);
+        // Exactly the JSON v1.5.5 serialised a row as: its struct's field order, no extra field.
+        let json = format!(
+            r#"{{"seq":{seq},"ts":{ts},"action":"{act}","resource":"{res}","outcome":"{out}","principal":"{pr}","prev_hash":"{prev}","hash":"{hash}"}}"#
+        );
+        let row: busbar_contract::records::AuditRecord =
+            serde_json::from_str(&json).expect("a 1.5.5 row decodes as this build's record");
+        store
+            .append_audit(&row)
+            .expect("legacy table takes the row");
+        legacy.push(row);
+        prev = hash;
+    }
+
+    assert_eq!(
+        migrate_legacy_table_to_plane_records(store.as_ref()).expect("migrates"),
+        rows.len(),
+        "every 1.5.5 row is carried over"
+    );
+    let h = AuditTestHarness::over(store.clone());
+    let plane = PlaneStoreView::narrow(store.clone());
+    let restored = h.restore_from_store(plane.as_ref()).expect("restores");
+    assert!(
+        restored.chain_breaks.is_empty(),
+        "the 1.5.5 chain verifies after the read-back: {:?}",
+        restored.chain_breaks
+    );
+    assert_eq!(restored.records, rows.len());
+    assert_eq!(restored.unreadable, 0);
+
+    // Every record intact, as `GET /audit` serves it (newest first).
+    let mut served = h
+        .log
+        .list_filtered(0, crate::audit_ring::MAX_AUDIT_ENTRIES, None, None);
+    served.reverse();
+    assert_eq!(served.len(), legacy.len());
+    for (got, want) in served.iter().zip(&legacy) {
+        assert_eq!(
+            (
+                got.seq,
+                got.ts,
+                got.action.as_str(),
+                got.resource.as_str(),
+                got.outcome.as_str(),
+                got.principal.as_str(),
+                got.prev_hash.as_str(),
+                got.hash.as_str(),
+            ),
+            (
+                want.seq,
+                want.ts,
+                want.action.as_str(),
+                want.resource.as_str(),
+                want.outcome.as_str(),
+                want.principal.as_str(),
+                want.prev_hash.as_str(),
+                want.hash.as_str(),
+            ),
+            "1.5.5 record {} reads back exactly",
+            want.seq
+        );
+    }
+
+    // The next admin record continues the 1.5.5 chain under the 1.5.5 digest.
+    let (ts, act, res, out, pr) = (
+        1_700_000_000u64,
+        "hook.delete",
+        "hook:compress",
+        "applied",
+        "admin",
+    );
+    let (suffix, _scheme) = admin_suffix(ts, act, res, out, pr);
+    let (seq, prev_hash, hash) = h.emit_full(ADMIN_LOG, suffix);
+    let tail = legacy.last().expect("a tail");
+    assert_eq!(
+        seq,
+        tail.seq + 1,
+        "the numbering continues past the 1.5.5 tail"
+    );
+    assert_eq!(
+        prev_hash, tail.hash,
+        "the link is the 1.5.5 tail's own hash"
+    );
+    assert_eq!(
+        hash,
+        v1_5_5_hash(&tail.hash, seq, ts, act, res, out, pr),
+        "the new record's hash is 1.5.5's formula, so a 1.5.5 verifier walks it"
+    );
+}
