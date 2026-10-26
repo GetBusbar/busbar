@@ -153,7 +153,7 @@ else why+=("the control server (nginx) could not be started"); fi
 say "=== leg 2: negative control (old OpenSSL s_server: SSLv3/TLS1.0, 3DES/RC4/export, RSA 1024)"
 mkcert "$W/weak" 1024
 port="$(free_port)"
-if [ -s "$W/weak/cert.pem" ] && cid="$(docker run -d --network host --user "$(id -u):$(id -g)" -v "$W/weak:/w:ro" --entrypoint "$OLD_OPENSSL" "$TESTSSL_IMAGE" \
+if [ -s "$W/weak/cert.pem" ] && cid="$(docker run -d --network host --user "$(id -u):$(id -g)" -e OPENSSL_CONF=/dev/null -v "$W/weak:/w:ro" --entrypoint "$OLD_OPENSSL" "$TESTSSL_IMAGE" \
      s_server -accept "$port" -cert /w/cert.pem -key /w/key.pem -www \
      -cipher 'DES-CBC3-SHA:RC4-SHA:RC4-MD5:AES128-SHA:EXP-RC4-MD5:EXP-DES-CBC-SHA:ECDHE-RSA-AES128-SHA')" && cids+=("$cid") && wait_port "$port"; then
   if assess weak "$port" "$W/weak/cert.pem" "sha256:${TESTSSL_IMAGE##*sha256:}"; then why+=("negative control: the deliberately weak server met every assertion")
