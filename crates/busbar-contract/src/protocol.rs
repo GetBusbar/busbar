@@ -329,7 +329,7 @@ pub trait ArrayStreamFramer: Send {
     fn finish_with_server_error(&mut self, message: &str) -> Vec<u8>;
 }
 
-/// **THE 4TH NEUTRAL SEAM (G6 A4b, owner-ruled 2026-08-20).** The per-PROTOCOL computed-codec facade
+/// **THE 4TH NEUTRAL SEAM.** The per-PROTOCOL computed-codec facade
 /// the operation-blind driver reads, so the kernel names ZERO concrete IR and zero `ProtocolReader`/
 /// `ProtocolWriter` at its call sites. Every method here has a NEUTRAL signature (bytes / `Value` /
 /// `bool` / `TokenUsage` / neutral tuples — `IrError` is `upstream::CanonicalSignal`); the concrete
@@ -623,7 +623,7 @@ pub struct ProtocolDecl {
     /// default answer for every other dialect — means the stream reports usage unconditionally.
     pub stream_usage_requires_opt_in: bool,
 
-    // ── PROMOTED WRITER FACTS (G6 step A1) ─────────────────────────────────────────────────────────
+    // ── PROMOTED WRITER FACTS ─────────────────────────────────────────────────────────
     // Constant, no-argument, IR-free facts that used to be answered off the `ProtocolWriter` vtable.
     /// Replaces `ProtocolWriter::requires_max_tokens()`. Whether this dialect hard-rejects a request
     /// with no `max_tokens` (such a dialect 400s; the forward path injects the lane default).
@@ -677,7 +677,7 @@ pub struct ProtocolDecl {
     /// Replaces `ProtocolWriter::has_model_in_url()`. True when this protocol carries the model in the
     /// URL path rather than the body, so a same-protocol passthrough strips body
     /// `model`. The plane that declares it serves those arrivals through its own door claims; the
-    /// kernel registers no URL-model arrival (ARCHITECT 2026-10-16 ruling 3 item 1).
+    /// kernel registers no URL-model arrival.
     pub has_model_in_url: bool,
 
     /// Replaces `ProtocolWriter::auth_failure_status_and_kind()`. The HTTP status and error `kind` a

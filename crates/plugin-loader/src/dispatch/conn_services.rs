@@ -856,7 +856,9 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
 /// Made when the instance can never cross again: the watchdog faulted it, or it is dropped (a
 /// close, a reload). The maps are let go before anything is closed or dropped: a held stream's
 /// pending auth call is the auth plugin's, and a close may cross into a transport door (THE DESIGN
-/// §11.13 M1).
+/// §11.13 M1). Last, the table forgets the instance ([`DeclaredConns::forget`]): its needs, every
+/// connection still open on them, and its member programs, which a replaced instance would
+/// otherwise leave running.
 pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     drop_dialling(|(i, _)| *i == id);
     held_facts().retain(|(i, _), _| *i != id);
@@ -872,6 +874,7 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
             let _ = table.close(id, c);
         }
     }
+    table.forget(id);
 }
 
 // ── FRAMED REQUESTS AND REPLIES ──────────────────────────────────────────────────────────────────
