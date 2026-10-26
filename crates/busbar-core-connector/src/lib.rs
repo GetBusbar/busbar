@@ -2108,6 +2108,11 @@ impl DeclaredConns for Connector {
         for conn in self.slab.forget(owner) {
             let _ = self.close(owner, conn);
         }
+        self.pools.forget(owner);
+        self.listeners
+            .lock()
+            .expect("listeners")
+            .retain(|(o, _), _| *o != owner);
         let needs: Vec<NeedId> = self
             .over
             .lock()

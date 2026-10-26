@@ -2560,8 +2560,14 @@ mod transport_pin {
                 client_identity: None,
                 private_reach: false,
             };
+            // Declared as the loader declares a plugin's need (`DeclaredConns::declare`), which
+            // records the declaration as well as the need.
+            let need = ReadNeed {
+                transport: "sec".to_owned(),
+                ..super::config_targeted_need("")
+            };
             let hold = |owner: InstanceId| {
-                c.declare_over(owner, NeedId(0), "sec").expect("declared");
+                DeclaredConns::declare(&c, owner, NeedId(0), &need, None, None).expect("declared");
                 c.hold_authority(owner);
                 c.anchor(owner, NeedId(0), "", &far, &pinned)
                     .expect("the destination sealed");
