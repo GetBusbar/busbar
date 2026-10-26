@@ -226,7 +226,6 @@ fn redact_echo_replaces_every_occurrence() {
     assert_eq!(c.redact_echo("nothing here"), "nothing here");
 }
 
-#[cfg(feature = "chip-rsa")]
 mod rsa_tests {
     use num_bigint::BigUint;
 

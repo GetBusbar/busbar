@@ -13,7 +13,7 @@ use crate::abi::sdk::conn::{Answer, Connector};
 use crate::abi::sdk::io::{Io, IoAnswer};
 
 #[allow(missing_debug_implementations)]
-enum Part {
+pub(crate) enum Part {
     Public(Vec<u8>),
     Sealed(Seal),
 }
@@ -23,7 +23,7 @@ enum Part {
 #[allow(missing_debug_implementations)]
 #[derive(Default)]
 pub struct Parts {
-    parts: Vec<Part>,
+    pub(crate) parts: Vec<Part>,
     secure: bool,
 }
 
@@ -63,18 +63,6 @@ impl Parts {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-
-    #[cfg(any(test, feature = "test-seal"))]
-    pub(crate) fn assembled(&self) -> Zeroizing<Vec<u8>> {
-        let mut buf = Zeroizing::new(Vec::with_capacity(self.len()));
-        for p in &self.parts {
-            match p {
-                Part::Public(b) => buf.extend_from_slice(b),
-                Part::Sealed(s) => buf.extend_from_slice(s.wire()),
-            }
-        }
-        buf
-    }
 }
 
 /// Bytes on their way to the host, held where the plugin cannot read them. Park it on the op's
@@ -82,7 +70,7 @@ impl Parts {
 #[allow(missing_debug_implementations)]
 pub struct SealedWrite {
     pub(crate) buf: Zeroizing<Vec<u8>>,
-    done: usize,
+    pub(crate) done: usize,
     /// It carries a credential that goes out only secured ([`super::Cred::secure_required`]).
     pub(crate) secure: bool,
     /// The connection was confirmed secured before the first byte.
@@ -212,21 +200,6 @@ impl SealedWrite {
         Poll::Ready(Ok(()))
     }
 
-    #[cfg(any(test, feature = "test-seal"))]
-    pub(crate) fn drive<E>(
-        &mut self,
-        write: &mut impl FnMut(&[u8]) -> Poll<Result<usize, E>>,
-    ) -> Poll<Result<(), E>> {
-        while !self.finished() {
-            match write(&self.buf[self.done..]) {
-                Poll::Pending | Poll::Ready(Ok(0)) => return Poll::Pending,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Ready(Ok(n)) => self.done += n,
-            }
-        }
-        Poll::Ready(Ok(()))
-    }
-
     /// Write what is left as request BODY pieces on a framed `stream` (`piece` names the body):
     /// `Ready(Ok(()))` once every byte is taken.
     pub fn poll_request(
@@ -235,7 +208,7 @@ impl SealedWrite {
         stream: u64,
         piece: &RequestPiece,
     ) -> Answer<()> {
-        std::task::ready!(self.confirm(c, stream))?;
+        // A framed stream is secured by its need: its target decides (`Exchange`).
         while !self.finished() {
             match c.write_request(stream, piece, &self.buf[self.done..]) {
                 Poll::Pending | Poll::Ready(Ok(0)) => return Poll::Pending,
@@ -253,7 +226,6 @@ impl SealedWrite {
         stream: u64,
         piece: &RequestPiece,
     ) -> Answer<usize> {
-        std::task::ready!(self.confirm(c, stream))?;
         c.write_request(stream, piece, &self.buf)
     }
 }
