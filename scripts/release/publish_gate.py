@@ -17,8 +17,9 @@ run by the owner from his own clone at the release commit with his hardware keys
   upload    pushes the images by digest (untagged), cosign-signs and verifies them, creates the
             GitHub Release as a draft, uploads to Rekor, publishes, tags, and verifies everything
             again as a user would. Only then does it move X.Y, X and latest.
-  plugin-release <repo> <tag>
-            the same flow for one plugin released between core releases.
+  plugin-release <repo> <tag> --plugins DIR
+            the same flow for one plugin released between core releases. Its unsigned tarballs come
+            from the candidate-plugins checks, built from the committed pins.
   spot-rebuild
             rebuilds the host target locally and byte-compares it with the candidate. Report only;
             the result is recorded in the evidence.
@@ -853,8 +854,10 @@ def cmd_upload(inp: Inputs, out: Path) -> int:
     return finish(vd)
 
 
-def cmd_plugin_release(inp: Inputs, out: Path, repo: str, tag: str, k1_cmd: str, k2_key: str) -> int:
-    """One plugin between core releases: draft assets -> K1 sign -> attach/verify -> K2 -> publish."""
+def cmd_plugin_release(inp: Inputs, out: Path, repo: str, tag: str, plugins: Path, k1_cmd: str, k2_key: str) -> int:
+    """One plugin between core releases. Its unsigned tarballs come from the candidate-plugins checks
+    (fetched with `modernci call artifact`). Then K1 signs, attach and verify run, K2 signs, and the
+    release is published."""
     vd = Verdict()
     g14_trust(inp, vd)
     if vd.refusals:
@@ -866,13 +869,23 @@ def cmd_plugin_release(inp: Inputs, out: Path, repo: str, tag: str, k1_cmd: str,
         vd.refuse("G-3", repo, "a registered first-party plugin", "not in plugins.yaml", "Register it in a judged change.")
         return finish(vd)
     ver = tag[1:]
-    dl = out / "draft"
-    dl.mkdir(parents=True, exist_ok=True)
-    run([tool("gh"), "release", "download", tag, "-R", f"GetBusbar/{repo}", "-D", str(dl), "--clobber"], check=True)
+    pinned = None
+    for line in (inp.root / "release" / "plugin-pins.tsv").read_text().splitlines():
+        if line.strip() and not line.startswith("#") and line.split("\t")[0] == repo:
+            pinned = line.split("\t")
+    if not pinned or pinned[1] != tag:
+        vd.refuse("G-3", f"{repo} {tag}", "pinned in release/plugin-pins.tsv at this commit", str(pinned),
+                  "Pin the plugin release in a judged change; the candidate-plugins checks build exactly the pins.")
+        return finish(vd)
+    commit = pinned[2]
+    if inp.net.release_published(f"GetBusbar/{repo}", tag):
+        vd.refuse("G-2", f"{repo} {tag}", "not yet published", "published", "A plugin version is published once; tag a new one.")
+        return finish(vd)
+    dl = plugins
     want = {f"{repo}-{ver}-{t}.tar.gz" for t, _, _ in PLUGIN_TARGETS}
-    have = {f.name for f in dl.iterdir() if f.name.endswith(".tar.gz")}
+    have = {f.name for f in dl.iterdir() if f.name.endswith(".tar.gz") and f.name.startswith(f"{repo}-")}
     for n in sorted(want - have):
-        vd.refuse("G-3", n, "present in the draft", "missing", "Every plugin target is owed.")
+        vd.refuse("G-3", n, "present in --plugins", "missing", "Every plugin target is owed; fetch every candidate-plugins slice.")
     for n in sorted(have - want):
         vd.refuse("G-3", n, "absent", "present", "Only declared targets ship.")
     if vd.refusals:
@@ -905,6 +918,9 @@ def cmd_plugin_release(inp: Inputs, out: Path, repo: str, tag: str, k1_cmd: str,
     sums = out / "SHA256SUMS"
     write_sums(sums, sorted(signed.iterdir()))
     k2_sign_and_check(inp, k2_key, [sums])
+    if not inp.net.release_exists(f"GetBusbar/{repo}", tag):
+        run([tool("gh"), "release", "create", tag, "-R", f"GetBusbar/{repo}", "--draft", "--target", commit,
+             "--title", f"{repo} {tag}", "--notes-file", "-"], stdin=b"Signed with the busbar plugin key.", check=True)
     run([tool("gh"), "release", "upload", tag, "-R", f"GetBusbar/{repo}", "--clobber",
          *map(str, sorted(signed.iterdir())), str(sums), str(sums) + ".sig"], check=True)
     run([tool("gh"), "release", "edit", tag, "-R", f"GetBusbar/{repo}", "--draft=false", "--latest"], check=True)
@@ -941,7 +957,7 @@ USAGE = """usage:
   publish_gate.py verify          --candidate DIR --trust FILE --pack BIN --out DIR
   publish_gate.py sign            --candidate DIR --trust FILE --pack BIN --out DIR --k1-sign-cmd CMD --k2-key FILE
   publish_gate.py upload          --candidate DIR --trust FILE --pack BIN --out DIR
-  publish_gate.py plugin-release  REPO TAG --trust FILE --pack BIN --out DIR --k1-sign-cmd CMD --k2-key FILE
+  publish_gate.py plugin-release  REPO TAG --plugins DIR --trust FILE --pack BIN --out DIR --k1-sign-cmd CMD --k2-key FILE
   publish_gate.py spot-rebuild    TARGET --candidate DIR --trust FILE --pack BIN --out DIR
 
 Run from your own clone at the release commit, with busbar-plugin-pack built there by you.
@@ -965,7 +981,7 @@ def main(argv: list) -> int:
         else:
             pos.append(a)
     need = {"verify": ["candidate", "trust", "pack", "out"], "sign": ["candidate", "trust", "pack", "out", "k1-sign-cmd", "k2-key"],
-            "upload": ["candidate", "trust", "pack", "out"], "plugin-release": ["trust", "pack", "out", "k1-sign-cmd", "k2-key"],
+            "upload": ["candidate", "trust", "pack", "out"], "plugin-release": ["plugins", "trust", "pack", "out", "k1-sign-cmd", "k2-key"],
             "spot-rebuild": ["candidate", "trust", "pack", "out"]}
     if cmd not in need or any(not opts.get(k) for k in need[cmd]) or set(opts) - set(need[cmd]):
         print(USAGE)
@@ -985,7 +1001,7 @@ def main(argv: list) -> int:
             if len(pos) != 2:
                 print(USAGE)
                 return EXIT_USAGE
-            return cmd_plugin_release(inp, out, pos[0], pos[1], opts["k1-sign-cmd"], opts["k2-key"])
+            return cmd_plugin_release(inp, out, pos[0], pos[1], Path(opts["plugins"]), opts["k1-sign-cmd"], opts["k2-key"])
         if cmd == "spot-rebuild":
             if len(pos) != 1:
                 print(USAGE)

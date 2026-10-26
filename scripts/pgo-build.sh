@@ -199,6 +199,23 @@ pgo_fail() {
 # its presence at the end is proof of THIS run's success (belt-and-suspenders with pgo_fail).
 rm -f "$MARKER" 2>/dev/null || true
 
+# ── A COMMITTED PROFILE, OR TRAIN ONE (owner decision D4, 2026-10-26) ──────────────────────────
+# A release builds from the profile COMMITTED for its target (release/pgo/<target>.profdata,
+# passed by scripts/release-build.sh as PGO_PROFILE). The optimized build is then a function of
+# the tree alone, and a second builder can reproduce it byte for byte. Training stays nondeterministic
+# (concurrency, timing), so it is done once, on purpose: PGO_TRAIN_ONLY=<path> runs phases 1-2 and
+# the merge, writes the merged profile to <path> and stops. `scripts/release/candidate.py
+# pgo-train` drives that, and a person reviews and commits the result. Both modes are fail-closed.
+if [ -n "${PGO_PROFILE:-}" ] && [ -n "${PGO_TRAIN_ONLY:-}" ]; then
+  pgo_fail "PGO_PROFILE (build from a committed profile) and PGO_TRAIN_ONLY (train one) are exclusive"
+fi
+if [ -n "${PGO_PROFILE:-}" ]; then
+  [ -s "$PGO_PROFILE" ] || pgo_fail "the committed profile is missing or empty at $PGO_PROFILE"
+  MERGED="$(cd "$(dirname "$PGO_PROFILE")" && pwd)/$(basename "$PGO_PROFILE")"
+  MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
+  RAW_COUNT=committed
+  log "phases 1-2 skipped: building from the committed profile $MERGED (${MERGED_SIZE} bytes)"
+else
 # ---- phase 1: instrumented build ------------------------------------------------------------
 log "phase 1/3: instrumented build"
 rm -rf "$PROF_DIR"; mkdir -p "$PROF_DIR"
@@ -573,6 +590,13 @@ MERGED="$PROF_DIR/merged.profdata"
 # build below would silently be a no-op PGO. Assert it is real BEFORE the build feeds it in.
 [ -s "$MERGED" ] || pgo_fail "merged profile is empty/missing at $MERGED (training produced no usable coverage)"
 MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
+if [ -n "${PGO_TRAIN_ONLY:-}" ]; then
+  mkdir -p "$(dirname "$PGO_TRAIN_ONLY")"
+  cp "$MERGED" "$PGO_TRAIN_ONLY" || pgo_fail "could not write the trained profile to $PGO_TRAIN_ONLY"
+  log "trained profile: $PGO_TRAIN_ONLY (${MERGED_SIZE} bytes from ${RAW_COUNT} .profraw); review and commit it"
+  exit 0
+fi
+fi
 
 # BUSBAR_PGO=1 IS DELIBERATELY NOT SET HERE ANY MORE. crates/busbar/build.rs stamps the
 # build-provenance record `pgo=` from EITHER that env var OR the presence of `-Cprofile-use` in
@@ -622,6 +646,7 @@ scripts/build-provenance-gate.sh "$OUT" release true \
   echo "profile=$MERGED"
   echo "profile_bytes=$MERGED_SIZE"
   echo "profraw_count=$RAW_COUNT"
+  echo "profile_sha256=$( (sha256sum "$MERGED" 2>/dev/null || shasum -a 256 "$MERGED") | cut -d' ' -f1)"
   echo "target=${TARGET:-<host>}"
   # Which ISA variant this arm64 binary is: `+lse` (armv8.1 floor, the default arm64 artifact) or
   # `baseline` (armv8.0-compatible, the explicitly-suffixed compat artifact / any non-arm64 target).

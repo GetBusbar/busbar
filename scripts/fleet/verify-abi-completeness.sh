@@ -27,7 +27,8 @@
 # added to a plugin ahead of the pinned engine trips it the same way, so the gate cannot go stale the
 # way a hardcoded pin can.
 #
-# Lives in busbar (scripts/fleet/) and is run by plugin-release.yml for every kind:store plugin, so
+# Lives in busbar (scripts/fleet/) and is run by scripts/release/candidate.py plugins for every
+# kind:store plugin it builds for a release, so
 # the check exists once for the whole fleet.
 #
 # Usage: verify-abi-completeness.sh <path-to-plugin-repo> <path-to-busbar-checkout>

@@ -122,7 +122,13 @@ rm -f "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/busbar.pgo-verified"
 # reason the cross targets could not train a profile is gone; the one target that still declares
 # pgo:false says why, in .github/release-targets.json, next to the flag.
 if [ "$SPEC_PGO" = "true" ]; then
-  PGO_TARGET="$SPEC_TRIPLE" scripts/pgo-build.sh
+  # THE COMMITTED PROFILE (owner decision D4, 2026-10-26): the release builds from the profile
+  # committed for this target, never from a fresh training run, so a second builder gets the same
+  # bytes. A target with no committed profile cannot be released: train it on a native backend
+  # (scripts/release/candidate.py pgo-train <target>), review, and commit release/pgo/<target>.profdata.
+  PROFILE="release/pgo/${TARGET}.profdata"
+  [ -s "$PROFILE" ] || { echo "[release-build] no committed PGO profile at $PROFILE: run scripts/release/candidate.py pgo-train $TARGET on a native backend and commit it" >&2; exit 1; }
+  PGO_PROFILE="$PROFILE" PGO_TARGET="$SPEC_TRIPLE" scripts/pgo-build.sh
   BIN="target/pgo/${SPEC_TRIPLE}/release/${SPEC_EXE}"
   MARKER="target/pgo/${SPEC_TRIPLE}/release/busbar.pgo-verified"
   # pgo-build.sh writes the marker ONLY after a non-empty merged profile fed a successful
@@ -186,12 +192,23 @@ import hashlib, os, sys, tarfile, zipfile
 src, out, member, kind, digest_out = sys.argv[1:6]
 if os.path.exists(out):
     os.remove(out)
+# BYTE-STABLE ARCHIVES: every timestamp is SOURCE_DATE_EPOCH (the commit time), and the gzip
+# header carries mtime 0 and no file name, so the archive is a function of the binary alone and
+# a second builder's archive compares byte for byte (owner decision D4).
+epoch = int(os.environ.get("SOURCE_DATE_EPOCH", "0"))
+import gzip, time
 if kind == "zip":
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(src, arcname=member)
+        zi = zipfile.ZipInfo(member, date_time=time.gmtime(max(epoch, 315532800))[:6])
+        zi.external_attr = 0o755 << 16
+        zi.compress_type = zipfile.ZIP_DEFLATED
+        with open(src, "rb") as fh:
+            zf.writestr(zi, fh.read())
 else:
-    with tarfile.open(out, "w:gz") as tf:
+    with open(out, "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz, \
+            tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as tf:
         info = tf.gettarinfo(src, arcname=member)
+        info.mtime = epoch
         # Normalise ownership and mode so the archive is a function of the bytes, not of whichever
         # runner account happened to build it -- and so the extracted binary is executable for the
         # user who downloads it, which the documented quickstart depends on.

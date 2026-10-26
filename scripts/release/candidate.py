@@ -12,13 +12,19 @@ by the gate, which refuses by rule name; a mistake is never shipped.
       scripts/release-build.sh for one row of .github/release-targets.json. A published row goes
       to DIR/artifacts; an image-feeding musl row goes to DIR/internal. Then its CycloneDX SBOM goes
       to DIR/sboms (named by the target, or by the image platform the row feeds).
+  candidate.py pgo-train <target> --out DIR
+      trains the PGO profile for one row (scripts/pgo-build.sh with PGO_TRAIN_ONLY) on a backend
+      native to it, and writes DIR/<target>.profdata plus DIR/<target>.profdata.meta (toolchain,
+      commit, sha256). A person reviews it and commits it to release/pgo/. Releases build only from
+      committed profiles (owner decision D4), so a second builder reproduces the same bytes.
   candidate.py pins --kit-commit SHA
       writes release/plugin-pins.tsv: for each first-party plugin in plugins.yaml (except an empty
       repo), its newest vX.Y.Z tag whose .busbar-ref names the test kit's commit. Run by a person,
       reviewed and committed; the checks never resolve tags themselves.
   candidate.py plugins <target> --out DIR
-      every plugin in release/plugin-pins.tsv, at its pinned commit, built for <target> the way
-      .github/workflows/plugin-release.yml builds it and packed UNSIGNED with this tree's
+      every plugin in release/plugin-pins.tsv, at its pinned commit: a kind:store plugin must first
+      pass scripts/fleet/verify-abi-completeness.sh against this tree; then it is built for <target>
+      (cargo at the pin, or the C sources from busbar_plugin.h) and packed UNSIGNED with this tree's
       busbar-plugin-pack. Writes DIR/plugins/ and DIR/plugins.json.
   candidate.py image <amd64|arm64> --out DIR
       that platform's image: its musl binary (DIR/internal/), then a single-platform OCI layout
@@ -83,6 +89,24 @@ def sbom(triple: str, name: str, out: Path) -> None:
     (out / "sboms").mkdir(parents=True, exist_ok=True)
     shutil.move(produced, out / "sboms" / name)
     shutil.rmtree(tmp)
+
+
+def cmd_pgo_train(target: str, out: Path) -> None:
+    row = target_row(target)
+    if not row.get("pgo"):
+        sys.exit(f"candidate: {target} does not declare pgo in .github/release-targets.json")
+    out.mkdir(parents=True, exist_ok=True)
+    prof = out / f"{target}.profdata"
+    env = {"BUSBAR_RELEASE_PUBKEY": pg.commit_key_list(ROOT), "PGO_TRAIN_ONLY": str(prof),
+           "PGO_TARGET": row.get("triple", target)}
+    if row.get("baseline"):
+        env["BUSBAR_ARM64_BASELINE"] = "1"
+    sh(["scripts/pgo-build.sh"], cwd=ROOT, env=env)
+    toolchain = re.search(r'channel\s*=\s*"([^"]+)"', (ROOT / "rust-toolchain.toml").read_text()).group(1)
+    commit = sh(["git", "rev-parse", "HEAD"], cwd=ROOT, out=True).strip()
+    (out / f"{target}.profdata.meta").write_text(
+        f"target={target}\ntoolchain={toolchain}\ntrained_at_commit={commit}\nsha256={pg.sha256_file(prof)}\n")
+    print(f"candidate: {prof} trained at {commit} with {toolchain}; review and commit it to release/pgo/")
 
 
 def cmd_core(target: str, out: Path) -> None:
@@ -174,6 +198,10 @@ def cmd_plugins(target: str, out: Path) -> None:
             sys.exit(f"candidate: release/plugin-pins.tsv pins {repo}, which plugins.yaml does not register")
         e = entries[repo]
         src = clone_at(repo, tag, commit)
+        if e["kind"] == "store":
+            # Every RecordStore method the store implements is ROUTED by this tree's store_dispatch:
+            # a method with a default body compiles, ships and silently drops writes otherwise.
+            sh(["bash", str(ROOT / "scripts/fleet/verify-abi-completeness.sh"), str(src), str(ROOT)])
         ver, crate = tag[1:], e["crate"]
         lib = src / "target" / target / "release" / f"{prefix}{crate.replace('-', '_')}.{ext}"
         if e.get("lang") == "c":
@@ -346,7 +374,9 @@ def main(argv: list) -> None:
         cmd_pins(opts["kit-commit"])
         return
     out = Path(opts.get("out") or sys.exit("candidate: --out DIR is required"))
-    if cmd == "core" and len(pos) == 1:
+    if cmd == "pgo-train" and len(pos) == 1:
+        cmd_pgo_train(pos[0], out)
+    elif cmd == "core" and len(pos) == 1:
         cmd_core(pos[0], out)
     elif cmd == "plugins" and len(pos) == 1:
         cmd_plugins(pos[0], out)

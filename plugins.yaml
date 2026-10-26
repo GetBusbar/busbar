@@ -75,8 +75,8 @@
 #   former_names   the signed manifest `name`s this plugin's earlier releases carried, which it still
 #                  answers to [none]: a 1.5.5 config naming `module: busbar-webrequest` resolves to the
 #                  1.6.0 `busbar-hook-webrequest` (ARCHITECT ruling: 1.5.5 configs load unchanged).
-#                  Signed into the manifest (busbar-plugin-pack --former-name, plugin-release.yml's
-#                  `former_names` input, the rendered release.yml); a LINKED row answers them too
+#                  Signed into the manifest (busbar-plugin-pack --former-name, which
+#                  scripts/release/candidate.py plugins passes from this field); a LINKED row answers them too
 #                  through its `former.<alias>` row of the root legacy table. `cargo xtask plugin-gates
 #                  former-names` is RED on an entry whose repo shipped a 1.5.5-era release under a
 #                  manifest name (`legacy:`'s `name_1_5_5.<repo>` rows) that this list does not carry

@@ -40,8 +40,9 @@ python3 $G upload --candidate candidate --trust $T --pack $P --out out    # draf
 
 `sign` shows the full commit and the key-list diff before any key is touched. `upload` moves `latest`
 only after downloading the release back and verifying it as a user would. A plugin released between
-core releases uses `publish_gate.py plugin-release <repo> <tag>`: its own release workflow only
-drafts unsigned tarballs. The
+core releases is pinned in `release/plugin-pins.tsv`. The `candidate-plugins-<target>` checks build
+it unsigned, and the owner runs `publish_gate.py plugin-release <repo> <tag> --plugins <slices>`.
+Nothing runs on GitHub Actions. The
 busbar-release hop (`promote.yml`, the engine pin) is deleted and no move is decided by it.
 busbar-release remains the tools repo: the home of the oracle (`busbar-oracle`, pinned by
 `testing/shadow-oracle/oracle-rust.pin` and fetched from its `dev-bin` release by `bin/oracle`), the
