@@ -15,7 +15,7 @@ Both files support `${VAR}` environment interpolation before YAML is parsed. A m
 
 > Looking for a one-page map of every key? See [Config at a glance](config-at-a-glance.md).
 >
-> All defaults below are sourced from `crates/busbar/src/config/mod.rs`, `crates/busbar/src/breaker.rs`, `crates/busbar/src/health.rs`, and `crates/busbar/src/proto/mod.rs`. Where a serde field default differs from a runtime constant, both are noted.
+> All defaults below are sourced from the config structs in `crates/busbar-kernel/src/config/` and the runtime constants they feed. Where a serde field default differs from a runtime constant, both are noted.
 
 ---
 
@@ -47,6 +47,7 @@ Both files support `${VAR}` environment interpolation before YAML is parsed. A m
   - [`export`](#export)
   - [Virtual keys and enforcement](#virtual-keys-and-enforcement)
   - [`plugins`](#plugins)
+  - [`secrets`](#secrets)
   - [`security`](#security)
   - [`advanced`](#advanced)
 - [Migrating a 1.4.x config](#migrating-a-14x-config)
@@ -58,16 +59,16 @@ Both files support `${VAR}` environment interpolation before YAML is parsed. A m
 
 ## Environment variables
 
-These are the only environment variables read by Busbar (excluding test-only `BUSBAR_T_*` / `BUSBAR_SENTINEL_*` names):
+The environment variables Busbar reads by design (excluding test-only `BUSBAR_T_*` / `BUSBAR_SENTINEL_*` names, and the deprecated operational names listed below the table):
 
 | Variable | Where read | Purpose / default |
 |---|---|---|
-| `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. **The one bootstrap env var**: it locates config.yaml itself. Overridden by the `-c`/`--config` flag. |
-| `RUST_LOG` | `observability.rs` | Log level: `error`, `warn`, `info`, `debug`, or `trace`. Default: `info`. |
-| *(each provider's `api_key: { env: VAR }` reference)* | `main.rs` | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider; unset is a fatal boot error (use `api_key: none` for a keyless upstream). |
-| *(any `${VAR}` in `config.yaml`)* | `config.rs` | Expanded before YAML is parsed. Unset → fatal boot error. |
+| `BUSBAR_CONFIG` | boot (config path) | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. **The one bootstrap env var**: it locates config.yaml itself. Overridden by the `-c`/`--config` flag. |
+| `RUST_LOG` | logging init | Log level: `error`, `warn`, `info`, `debug`, or `trace`. Default: `info`. |
+| *(each provider's `api_key: { env: VAR }` reference)* | secret resolution at boot | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider; unset is a fatal boot error (use `api_key: none` for a keyless upstream). |
+| *(any `${VAR}` in `config.yaml`)* | config load | Expanded before YAML is parsed. Unset → fatal boot error. |
 
-`BUSBAR_ADMIN_TOKEN` is not special-cased in the code. It appears in the shipped `config.yaml` only because the file references `{ env: BUSBAR_ADMIN_TOKEN }` under `auth.admin_auth`. Any variable name works.
+`BUSBAR_ADMIN_TOKEN` is not special-cased in the code. It appears in the shipped `config.yaml` only because the file references `{ env: BUSBAR_ADMIN_TOKEN }` as the `token:` of the `admin-tokens` identity provider (`identity-providers.admin-tokens.token`). Any variable name works.
 
 **CLI flags for the input files (1.6.0).** `-c`/`--config <path>` (also `--config=<path>`) points
 Busbar at config.yaml, taking precedence over `BUSBAR_CONFIG`; `--providers <path>` (also
@@ -317,6 +318,8 @@ auth:
 | `chain` | list of provider NAMES | no | `[]` | The ordered DATA-PLANE authentication chain: the **sole** authority over whether a data-plane request needs a credential (the admin token never gates the data plane; see the axis note below). Each entry is a bare NAME: either a built-in (`keys`) or a key of the top-level `identity-providers:` map. A name that is neither is a **hard startup error** (fail-closed: never a silently-skipped identity provider). `[]` (default) is the open front door: development only, loud startup warning (the admin API stays gated by `admin_auth`). When the chain names `keys`, a **usable admin mint path** must exist (an `admin-tokens` provider with a `token:`, an admin provider granting `full`, or an explicit open `admin_auth: []`). Otherwise no virtual key could ever be minted and the data plane would reject every request, so it is a **hard startup error**. A configured auth plugin that cannot be loaded (missing/untrusted tarball, wrong kind, `plugins.enabled: false`, or an ABI failure) is likewise a **hard startup error**. |
 | `admin_auth` | list of provider NAMES | no | `[admin-tokens]` | The chain gating `/api/v1/admin/*`, same bare-name references as `chain`. The built-in `admin-tokens` provider carries the operator credential as a secret reference (`token:`) on its definition. `[]` = OPEN admin (dev only; loud warning). |
 | `role_bindings` | map | no | `{}` | Role policy, NESTED BY PROVIDER NAME: `role_bindings.<provider>.<role> -> { allowed_pools?, group?, admin_scope?, verbs? }`. Keying by NAME (not by the backing plugin's own name) is what lets two named providers share one module and still hold independent grants. See below. |
+| `key_ttl` | duration string | no | `90d` | The lifetime of a key minted by the self-serve token exchange (`POST /auth/token`): the key expires `key_ttl` after it is minted. Read at every apply/reload. |
+| `policy` | map | no | absent (no caps) | Token-mint policy, a map that rejects unknown keys. `self_mint` (bool; `false` refuses the self-serve path with 403, omitted leaves it available whenever an identity provider is configured); `binding_modes` (list of `time-bound`, `user-bound`, `both`; omitted allows all); `default_ttl` and `max_ttl` (duration strings; `default_ttl` must not exceed `max_ttl`, or boot fails); `mint_ceilings.<role>` with `max_ttl`, `allowed_pools` (omitted = all pools, `[]` = none) and `binding_modes` (must be a subset of the block-level list) as per-role upper bounds on a mint. |
 
 **The `identity-providers:` definition map.** `name -> { module, settings?, max_admin_scope?, token?, browser_login? }`.
 
@@ -468,7 +471,9 @@ same app object, and steps 4 and 5 below live on **different** blades. Follow it
 
    ```yaml
    public_url: "https://busbar.example.com"
+   plugins: { enabled: true }                                           # the oidc tarball is in plugins.dir
    identity-providers:
+     admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }  # mints the keys
      oidc:                                                              # the provider NAME
        module: oidc                                                     # the `kind: auth` plugin
        settings:
@@ -648,7 +653,7 @@ per_request_fee: 0
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `rate_card` | map | absent (billing off) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per unit; an omitted `*_utok` tier prices 0. Each `*_utok` rate must be a whole number of nano-units — at most three decimal places (`2.5`, `0.075`, `3.125`); a finer rate (`0.0015`, `0.5005`) is refused at boot/`--validate` naming the model, tier and value, never rounded. ALL-OR-NOTHING at TWO levels: (1) present = every configured model needs an entry, or boot/`--validate` fail with a paste-ready stub of exactly the missing models; (2) present = every billable class the LLM plane declares — `input`, `output`, `cache_read`, `cache_write`, and the open `search_units` class a rerank counts — must be configured on SOME entry, or boot/`--validate` refuse naming the section and every missing class. The four reserved tiers count as configured by the card's mere presence (an omitted `*_utok` field is a configured `0`); `search_units` is not reserved, so it needs an explicit `units: { search_units: <rate> }` on at least one entry (`0` makes it free). With a card present, a request for an arbitrary passthrough model with no rate is also rejected pre-forward. |
+| `rate_card` | map | absent (billing off) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per unit; an omitted `*_utok` tier prices 0. Each `*_utok` rate must be a whole number of nano-units — at most three decimal places (`2.5`, `0.075`, `3.125`); a finer rate (`0.0015`, `0.5005`) is refused at boot/`--validate` naming the model, tier and value, never rounded. ALL-OR-NOTHING at TWO levels: (1) present = every configured model needs an entry, or boot/`--validate` fail with a paste-ready stub of exactly the missing models; (2) present = every billable class the LLM plane declares — the four reserved token tiers (`input`, `output`, `cache_read`, `cache_write`) and all fifteen open classes listed in the upgrade note below (`search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms` and the nine `guardrail_*` classes) — must be configured on SOME entry, or boot/`--validate` refuse naming the section and every missing class. The four reserved tiers count as configured by the card's mere presence (an omitted `*_utok` field is a configured `0`); the open classes are not reserved, so each needs an explicit `units: { <class>: <rate> }` on at least one entry (`0` makes it free). A `units:` key the plane does not declare is refused too (almost always a typo). With a card present, a request for an arbitrary passthrough model with no rate is also rejected pre-forward. |
 | `units` | map, per entry | `{}` | Rates for OPEN (non-reserved) billable classes, alongside a model's four `*_utok` tiers: `{ <class>: <rate> }`, same MICRO-units-per-unit scale. The wire form is a non-negative integer, or an exact decimal STRING (`"0.5"`); a bare YAML/JSON float is refused — it has already lost precision through a binary double by the time serde sees it. A rate finer than 0.001 micro-units per unit, negative, or past ~1.8e16 is refused at parse ("finer than one nano-unit, the finest rate the card holds; round it to three decimal places"). A reserved class name (`input`, `output`, `cache_read`, `cache_write`) under `units:` is refused — it already has its own `*_utok` field. An unpriced class under a card that IS configured for the model REFUSES at the point it is hit, rather than silently billing `0` (see [Virtual keys and enforcement](#virtual-keys-and-enforcement)). |
 | `per_request_fee` | integer | `0` | Flat charge per request in abstract cents, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
 
@@ -695,9 +700,9 @@ internal`; no figure moves, only the status and code the caller sees change.
 > open class at `0`) to any one entry of the flat/`pools` card, and price the ones you bill. The
 > declared classes per plane are: `pools` (LLM) = `input`, `output`, `cache_read`, `cache_write`,
 > `search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, `guardrail_automated_reasoning_policies`, `guardrail_automated_reasoning_policy_units`, `guardrail_content_policy_image_units`, `guardrail_content_policy_units`, `guardrail_contextual_grounding_policy_units`, `guardrail_sensitive_information_policy_free_units`, `guardrail_sensitive_information_policy_units`, `guardrail_topic_policy_units`, `guardrail_word_policy_units`; `tools`
-> (MCP) = `tool_calls`, `bytes`; `agents` (A2A) = `bytes`; `decisions` = `decision`; `streams`
-> (voice) = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`, `text_tokens_out`,
-> `audio_seconds_in`, `tool_calls`. (`cached_tokens` is reported by both duplex dialects but is
+> (MCP) = `tool_calls`, `bytes`; `agents` (A2A) = `bytes`; `decisions` = `decision`, `input_tokens`,
+> `output_tokens`; `streams` (voice) = `audio_tokens_in`, `audio_tokens_out`, `text_tokens_in`,
+> `text_tokens_out`, `audio_seconds_in`, `tool_calls`, `image_tokens_in`, `video_tokens_in`. (`cached_tokens` is reported by both duplex dialects but is
 > a SUBSET of the input token classes above, not a class beside them — pricing it too would
 > double-bill the same cached input, so it is not a declared billable class; it is carried,
 > unbilled, as attribution only.) A plane with no `rate_card` of its own is unaffected (absent =
@@ -738,7 +743,7 @@ not a synchronous cluster-wide gate.
 **Metering retention (ALL backends, not just Valkey):** `usage_metering` rows are one per (key,
 metering-bucket day, model, provider), accumulated forever. Busbar has no prune path on any store
 backend (sqlite, postgres, valkey, or a third-party plugin), because metering is observability only,
-never consulted for enforcement (`add_metering`'s own doc comment, `crates/api/src/store.rs`). Row
+never consulted for enforcement. Row
 CARDINALITY is bounded by your config (keys × buckets × models × providers), but the TIME dimension
 is not, so the table grows without bound unless you retain it yourself. `list_metering(bucket)` reads
 exactly one day, so deleting rows for buckets older than N days is safe and cannot affect admission,
@@ -903,7 +908,7 @@ pools:
 | `tier` | string | no | none | Operator-declared routing tier label (e.g. `"primary"`, `"overflow"`, `"large"`, `"small"`). Inert for plain weighted pools (no hooks). Exposed to gate hooks as the `tier` field on each candidate. See [Pool `hooks`](#pool-hooks-ordering-and-gates). |
 | `tags` | list<string> | no | `[]` | Free-form string labels (e.g. `["opus", "large-context"]`). The `restrict` gate verb intersects the candidate set against these tags (compliance pinning). Exposed to gate hooks for tag-based candidate selection. Inert for plain weighted pools. |
 
-The member object above is the canonical form and the one `busbar --migrate-config` preserves as written. A pool whose members carry nothing but a weight may instead list them as bare model names with a pool-level `weights: { <model>: <n> }` map; the two spellings are equivalent, may be mixed, and an inline `weight:` wins over the map for that member. With `weights:` absent and bare names only, the pool is an ordered failover list with the first member as primary.
+The member object above is the canonical form and the one `busbar --migrate-config` preserves as written. A pool whose members carry nothing but a weight may instead list them as bare model names with a pool-level `weights: { <model>: <n> }` map; the two spellings are equivalent, may be mixed, and an inline `weight:` wins over the map for that member. A pool-level `tier:` and `attempt_timeout_ms:` likewise apply to every member that does not state its own. With `weights:` absent and bare names only, the pool is an ordered failover list with the first member as primary.
 
 Selection uses Nginx-style smooth weighted round-robin (SWRR) across the healthy subset. A tripped, dead, or capacity-exhausted member is skipped and its share redistributes to the remaining members automatically. Selection state is isolated per-pool (separate SWRR shard), so unrelated pools that share a lane select independently.
 
@@ -1096,7 +1101,18 @@ chosen lane.
 
 Circuit-breaker tuning for one target. On the LLM plane a target is a `(pool, lane)` cell, and the state is independent per pool: a lane open in pool A can be closed in pool B. Lane-global state (hard-down, lifetime budget, concurrency semaphore) is shared across all pools.
 
-**This block is accepted under `pools:` and nowhere else.** An earlier version of this reference said `tools.<server>.breaker:` and `agents.<agent>.breaker:` were also accepted. They are not, they never were, and because `tools:` and `agents:` reject unknown keys, a config written against that sentence fails at boot rather than running with the block ignored. MCP and A2A share the one breaker through failover pools in the same neutral top-level `pools:` map (their kind inferred from their `tools:`/`agents:` members; see [circuit-breaker.md](circuit-breaker.md#failover-on-mcp-and-a2a-the-same-server-deployed-twice)), which take `members:` and `repeatable:` only, so those planes run on the built-in breaker defaults. There is no field reference for `mcp:`, `tools:`, `agents:` or those MCP/A2A pools on this page; the complete grammar for each, with every boot refusal, is in [mcp.md](mcp.md) and [a2a.md](a2a.md). The fourth plane noun, `streams:` (live voice), is a singular section rather than a named-definition registry, so it has no `pools:` membership and no `breaker:` block of its own; its complete grammar is in [voice.md](voice.md). The same is true of `tools.<server>.sampling`, the per-upstream bounds on a server-initiated `sampling/createMessage` ask (`max_messages`, `max_prompt_bytes`, `max_stop_sequences`, `max_stop_sequence_bytes`, `temperature_min_milli`/`temperature_max_milli`) — each defaults to a sensible ceiling and each refusal names the exact `tools.<server>.sampling.<key>` to edit; the full grammar is in [mcp.md](mcp.md).
+**This block is accepted on a pool, and only on a pool.** On the LLM plane that is an entry of the top-level `pools:` map. MCP and A2A failover pools are NOT in the top-level `pools:` map: each plane's pools live under the reserved `pools` sub-key of that plane's own section (`tools.pools.<name>`, `agents.pools.<name>`), and the section a pool is written in is its plane. Such a pool takes `members:` (bare registration names from the same section; a member from another section, or one the section does not define, fails boot), `repeatable:` (the operations that may be performed twice; default none) and the same `breaker:` block with the same keys, validation and defaults as below. A plane pool written in the top-level `pools:` is read as an LLM pool, so its members are refused as unknown models; `busbar --migrate-config` moves such pools under their section. A `breaker:` on a registration itself (`tools.<server>.breaker:`, `agents.<agent>.breaker:`) is not accepted: `tools:` and `agents:` entries reject unknown keys, so it fails at boot rather than running with the block ignored. The complete MCP and A2A grammar, with every boot refusal, is in [mcp.md](mcp.md) and [a2a.md](a2a.md). The fourth plane noun, `streams:` (live voice), is a singular section rather than a named-definition registry, so it has no pools and no `breaker:` block of its own; its complete grammar is in [voice.md](voice.md). The same is true of `tools.<server>.sampling_bounds`, the per-upstream bounds on a server-initiated `sampling/createMessage` ask (`max_messages`, `max_prompt_bytes`, `max_stop_sequences`, `max_stop_sequence_bytes`, `temperature_min_milli`/`temperature_max_milli`, `max_input_response_bytes`): each defaults to a shipped ceiling and an ask past a bound is refused by name, never relayed; the full grammar is in [mcp.md](mcp.md).
+
+```yaml
+tools:
+  search-eu: { url: "https://eu.example/mcp", pin: { mechanism: unpinned } }
+  search-us: { url: "https://us.example/mcp", pin: { mechanism: unpinned } }
+  pools:                                   # the MCP plane's failover pools
+    search:
+      members: [search-eu, search-us]      # first = primary
+      breaker:
+        trip: { mode: consecutive, consecutive_n: 3 }
+```
 
 ```yaml
 pools:
@@ -1259,7 +1275,7 @@ Members without `context_max` set are always eligible for context-length failove
 
 ### `limits`
 
-Optional. Exposes thirteen operational limits (mostly previously hardcoded, plus `max_inbound_concurrent`, `pool_idle_timeout_secs`, and `request_body_read_timeout_secs`) so operators can tune them without rebuilding. All fields default to their historical values, so omitting this block is a no-op.
+Optional. Exposes the operational limits below (plus `reasoning_effort_budgets`, see [Cross-protocol reasoning](#cross-protocol-reasoning-reasoning)) so operators can tune them without rebuilding. All fields default to their historical values, so omitting this block is a no-op.
 
 ```yaml
 limits:
@@ -1268,7 +1284,7 @@ limits:
   upstream_request_timeout_secs: 300
   tls_handshake_timeout_secs: 10
   request_body_read_timeout_secs: 30  # max gap between inbound body frames (slow-loris body defense)
-  pool_max_idle_per_host: 1024
+  pool_max_idle_per_host: 8192   # = max_inbound_concurrent's default, by design
   pool_idle_timeout_secs: 300     # 5 min
   hard_down_cooldown_secs: 1800   # 30 min
   upstream_error_body_max_bytes: 262144  # 256 KiB
@@ -1286,7 +1302,7 @@ limits:
 | `upstream_request_timeout_secs` | integer | `300` | Per-upstream-request wall-clock timeout. Applies to both the connect and the full response. **Restart-to-apply**: the upstream `reqwest::Client` is built once at boot and reused across config applies (warm connection pools are kept deliberately), so a live `PUT` changes the stored value but not the running client. `reload_to_apply` flags `limits.upstream_request_timeout_secs` when set. |
 | `tls_handshake_timeout_secs` | integer | `10` | Wall-clock cap on each inbound TLS handshake; prevents slowloris / handshake-flood. Ignored when `tls:` is absent. |
 | `request_body_read_timeout_secs` | integer | `30` | Maximum time allowed between inbound request-body frames before the connection is dropped. Closes the slow-loris body gap the header-read timeout does not cover. |
-| `pool_max_idle_per_host` | integer | `1024` | HTTP connection pool idle connection limit per upstream host. **Restart-to-apply** (same boot-scoped `UpstreamClients` reuse as above; `reload_to_apply` flags `limits.pool_max_idle_per_host`). |
+| `pool_max_idle_per_host` | integer | `8192` | HTTP connection pool idle connection limit per upstream host. The default equals `max_inbound_concurrent`'s default by design (each in-flight request holds at most one upstream connection); lower it if you front many distinct upstream hosts. **Restart-to-apply** (same boot-scoped `UpstreamClients` reuse as above; `reload_to_apply` flags `limits.pool_max_idle_per_host`). |
 | `pool_idle_timeout_secs` | integer | `300` | How long an idle keep-alive connection stays in the upstream pool before being closed. The 300s default keeps the warm working set alive across inter-burst gaps (TCP keepalive validates idle sockets in the meantime); lower it to shed idle sockets sooner. **Restart-to-apply** (same boot-scoped `UpstreamClients` reuse; `reload_to_apply` flags `limits.pool_idle_timeout_secs`). The connect timeout (10s) and TCP keepalive (60s) baked into the same client builder are not configurable at all. |
 | `hard_down_cooldown_secs` | integer | `1800` | Sticky cooldown for `auth`/`billing` breaker dispositions (hard-down). Recovering these lanes requires a successful health probe. |
 | `upstream_error_body_max_bytes` | integer | `262144` | Maximum bytes buffered from a non-2xx upstream response body for error classification. |
@@ -1410,6 +1426,8 @@ plugins:
     levels: { primary: debug }  # per-instance levels, by instance name
     rotate_mb: 64               # rotate past this size (default: never)
     keep: 5                     # rotated archives kept (default: 5)
+  fetch:                        # tarballs Busbar downloads into `dir` before preflight
+    - { github: "org/repo@v1.2.3", sha256: "<64-hex>" }
 ```
 
 | Field | Type | Required | Default | Notes |
@@ -1419,6 +1437,7 @@ plugins:
 | `trust.publishers` | list | no | empty | Third-party publishers: `{ name, public_key }` pairs (hex ed25519). The name `busbar` is reserved for the embedded release key and cannot be configured. |
 | `trust.allow_unsigned` | bool | no | `false` | EXPLICIT opt-in to load plugins with no valid signature (unsigned/tampered). Without it they are logged and skipped, never `dlopen`ed. |
 | `trust.allow_third_party` | bool | no | `false` | EXPLICIT opt-in to load validly-signed plugins from a publisher NOT in `publishers`. |
+| `fetch` | list | no | empty | Tarballs Busbar downloads into `dir` before the plugin preflight: at boot (a miss is fatal) and on `POST /plugins/reload` (a miss warns, BUSBAR-6001, and keeps the current artifact). Each entry is exactly one of `{ github: "org/repo@tag", sha256? }`, `{ url: "https://…/plugin.tar.gz", sha256? }` or `{ env: VAR }` (the variable holds a URL, optionally `url@sha256`); a URL must end in a tarball filename, and an unknown key fails the parse. `sha256` is an integrity pin and the download-skip cache key (a file in `dir` already hashing to it means no network); signature verification remains the trust gate. `--validate` does no network, so it does not fetch. |
 | `min_versions` | map | no | empty | Anti-downgrade floors: manifest `name` -> minimum `version`. A floored plugin must prove (trusted signature at/above the floor) that it meets it; no opt-in flag can bypass a floor. First-party plugins are automatically floored at the running binary's version. |
 | `logs.dir` | string | no | `logs/plugins` | Where each plugin instance's own log file goes: `<dir>/<instance>.log`, the instance name with every character outside `[A-Za-z0-9._-]` written as `_`. This build accepts and checks the `logs` keys but writes no per-plugin file yet; plugin log lines reach the Busbar log, as in 1.5.5. |
 | `logs.level` | string | no | `info` | The level of an instance `logs.levels` does not name: `off`, `error`, `warn`, `info`, `debug` or `trace`. Any other word is a boot error naming the key. |
@@ -1427,6 +1446,10 @@ plugins:
 | `logs.keep` | integer | no | `5` | How many rotated archives are kept. |
 
 **Fail-closed guarantees:** with plugins enabled, ANY invalid tarball or manifest in `dir` (unparseable, missing/malformed fields, sha256 mismatch, unsupported `abi_version`) aborts boot naming the file and reason; any name/alias conflict between loadable plugins aborts boot naming both. `busbar --validate` runs the exact same pipeline ahead of time (zero side effects, nothing loaded), and `busbar --list-plugins` prints the manifest-only inventory with each plugin's signature verdict and load status.
+
+### `secrets`
+
+Module-level `open()` configuration for `kind: secret` plugins, keyed by module name or alias: `secrets.<module>.settings` is delivered to the plugin's `open()` (any secret-reference value in it, such as `token: { env: VAULT_TOKEN }`, is resolved by the built-in `env` / `file` modules before it crosses the ABI). Absent, every secret plugin opens with `{}`. The built-in `env` and `file` modules take no config and must not appear here. The entry rejects unknown keys. See [plugins.md](plugins.md) for the Vault example.
 
 ### `security`
 
@@ -1476,7 +1499,8 @@ models:
 **Routes available:**
 - `POST /claude/v1/messages`: Anthropic ingress, directly to the `claude` model.
 - `GET /healthz`, readiness check.
-- `GET /metrics`, Prometheus (admitted unconditionally under `chain: []`).
+
+No `/metrics`: Prometheus is opt-in through an `export:` instance (see [`export`](#export)).
 
 `listen` defaults to `0.0.0.0:8080`. No auth gate. No pools.
 
@@ -1484,7 +1508,7 @@ models:
 
 ## Full annotated example
 
-This example requires: `BUSBAR_ADMIN_TOKEN`, `ANTHROPIC_KEY`, `OPENAI_KEY`, `GEMINI_KEY`.
+This example requires: `BUSBAR_ADMIN_TOKEN`, `ANTHROPIC_KEY`, `OPENAI_KEY`, `GEMINI_KEY`, a signing key at `/run/secrets/busbar-signing.key` (`busbar --generate-signing-key`), and the signed `busbar-store-sqlite` tarball in `/etc/busbar/plugins`.
 
 ```yaml
 listen: "0.0.0.0:8080"
@@ -1519,7 +1543,18 @@ groups:
 # Pricing: the ONE cost source (abstract micro-units per token, per model).
 # ---------------------------------------------------------------------------
 rate_card:
-  claude-sonnet: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75 }
+  claude-sonnet: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75,
+                   # a present card configures EVERY class the LLM plane declares, on some entry;
+                   # the open classes ride `units:` (0 = free)
+                   units: { search_units: 0, classifications: 0, web_fetch_requests: 0,
+                            unitemized_tokens: 0, images: 0, audio_ms: 0,
+                            guardrail_automated_reasoning_policies: 0,
+                            guardrail_automated_reasoning_policy_units: 0,
+                            guardrail_content_policy_image_units: 0, guardrail_content_policy_units: 0,
+                            guardrail_contextual_grounding_policy_units: 0,
+                            guardrail_sensitive_information_policy_free_units: 0,
+                            guardrail_sensitive_information_policy_units: 0,
+                            guardrail_topic_policy_units: 0, guardrail_word_policy_units: 0 } }
   gpt-4o:        { input_utok: 2.5, output_utok: 10.0 }
   gpt-4o-mini:   { input_utok: 0.15, output_utok: 0.6 }
   gemini-1.5-pro: { input_utok: 1.25, output_utok: 5.0 }
@@ -1532,6 +1567,12 @@ per_request_fee: 1
 store:
   module: sqlite
   settings: { db_path: /var/lib/busbar/governance.db }
+
+# A non-`memory` store is a signed plugin: the plugin subsystem must be on and
+# the busbar-store-sqlite tarball installed in `plugins.dir`.
+plugins:
+  enabled: true
+  dir: /etc/busbar/plugins
 
 # ---------------------------------------------------------------------------
 # Providers: secret references name where each credential lives.
@@ -1710,15 +1751,16 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `on_exhausted.queue.max_ms` too large | Greater than the resolved failover budget (`failover.timeout_secs × 1000` ms); a queue longer than the whole budget never reaches its ceiling |
 | `affinity.mode` unknown | Any value other than `session` |
 | Pool `hooks:` names more than one ordering strategy | A pool has one base ordering |
-| Pool `hooks:` bare name not a built-in strategy | An out-of-process hook is an inline `{ module: ... }` ref; bare names are only `weighted`/`cheapest`/`fastest`/`least_busy`/`usage` |
-| Unknown hook module | An inline ref's `module` does not resolve to a loaded `kind: hook` plugin (by manifest name/alias) |
-| Hook plugin subsystem disabled | An inline ref names a plugin while `plugins.enabled` is false, or the tarball is not installed in `plugins.dir` |
+| Pool `hooks:` name undefined | A bare name in `pools.hooks:` or a pool's `hooks:` that is neither a built-in strategy (`weighted`/`cheapest`/`fastest`/`least_busy`/`usage`) nor a key of the top-level `hooks:` map |
+| Unknown hook module | A `hooks.<name>.module` does not resolve to a loaded `kind: hook` plugin (by manifest name/alias) |
+| Hook plugin subsystem disabled | A `hooks.<name>.module` names a plugin while `plugins.enabled` is false, or the tarball is not installed in `plugins.dir` |
 | Hook `busbar-hook-webrequest` SSRF-blocked | RFC-1918, CGNAT, link-local, and metadata hosts are blocked in its `settings.url` (loopback allowed; remote must be `https://`) |
 | `prompt: rw` on a `kind: tap` hook | A tap observes; it can never rewrite |
-| Groups tree faults | A `parent` that does not exist (paste-ready stub), a cycle (the path is printed), or a chain deeper than 8 |
+| Groups tree faults | A `parent` that does not exist (paste-ready stub) or a cycle (the path is printed); any acyclic depth is accepted |
 | Malformed group limit | A limit without exactly one metric key, a windowed metric without `per:`, or `concurrent` with a `per:` |
 | Breaker `max_cooldown < base_cooldown` | Cooldown ceiling below the base |
-| Rate card incomplete | `rate_card` present but missing an entry for a configured model (a paste-ready zeroed stub of the missing models is printed) |
+| Rate card incomplete | `rate_card` present but missing an entry for a configured model (a paste-ready zeroed stub of the missing models is printed), or no entry configures one of the billable classes the plane declares (each missing class is named) |
+| Rate card names an unknown model or class | A `rate_card` key that is not a configured model, or a `units:` key the plane does not declare |
 | `auth.chain` names an unknown module | Every chain entry must be the built-in `keys` or a loaded `kind: auth` plugin |
 | `role_bindings` faults | A binding under a module not in any chain, or a bound `group` that does not exist in `groups:` |
 | Admin token blank | The `admin-tokens` `token` secret reference resolves to a blank/whitespace-only value |
