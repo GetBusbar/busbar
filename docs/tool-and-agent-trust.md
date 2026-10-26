@@ -22,13 +22,20 @@ model reads to decide *how* to call — the tool's **name**, its **argument sche
 **description** — is exactly what an attacker would change to redirect it. So Busbar pins all three
 in one fingerprint:
 
-- **MCP** hashes name + description + input schema into one per-tool digest over a canonical
-  rendering, so re-ordering a schema's keys is not drift but changing one character of a description
-  is (`crates/busbar-mcp/src/mcp/client/catalogue.rs`, `tool_digest`).
-- **A2A** pins the signed card: the operator's out-of-band issuer key (or transport-layer SPKI) plus
-  a fingerprint of the card document (`crates/busbar-a2a/src/a2a/verify.rs`).
+- **MCP** hashes name + description + input schema into one per-tool `sha256:` digest over a
+  canonical rendering, so re-ordering a schema's keys is not drift but changing one character of a
+  description is (the MCP plane plugin, `busbar-plane-mcp`: `trust.rs`, `tool_digest`).
+- **A2A** pins the card: a signed card is verified against the operator's out-of-band issuer key,
+  or a transport-pinned mechanism (`cert_spki`, `mtls`) checks the key the serving hop presented, as
+  the connector observed it; either way the card document's fingerprint is what is approved
+  (`busbar-plane-a2a`: `card_trust.rs`). A registration with `pin.mechanism: unpinned` has no
+  authenticity root, so it can never be approved and never serves.
 
-You approve that fingerprint once. Verify-on-call re-compares it on every call.
+The plane only reports what it saw. The verdict is the kernel's: the plane records each sighting on
+the kernel's trust book and asks it whether the call may go; a first sighting is refused until you
+approve it on `/admin/trust`, and a changed fingerprint is quarantined
+(`crates/busbar-kernel/src/trust/book.rs`, `judge`). You approve that fingerprint once.
+Verify-on-call re-compares it on every call.
 
 > A digest over the received bytes would raise false drift on a meaningless re-order and teach you
 > that drift alerts are noise. The canonical rendering is what makes "the description changed" and
@@ -64,23 +71,30 @@ The config keys:
 (The two keys keep their plane-native spellings; the admin API projects both under one view field, so
 the concept is one across the planes.)
 
-### Single-flight coalescing
+### Single-flight coalescing (A2A)
 
-When many calls hit a stale snapshot at the same instant, exactly **one** re-fetch runs and every
-caller uses its result. That is the primary load lever: upstream load is held to at most one fetch per
-`verify_ttl` per server regardless of caller count. Bursts coalesce even at `verify_ttl: 0`.
+On the A2A plane, when many delegations hit a stale card at the same instant, exactly **one** look
+runs per agent and every other caller waits for its verdict rather than fetching again; a look
+abandoned before it lands releases its waiters to look again (`busbar-plane-a2a`: `agent_door.rs`,
+`verify_agent_on_call`). Upstream load is then held to about one card fetch per `reverify_ttl` per
+agent regardless of caller count.
 
-The coalescing is clock-independent — it keys on a per-subject monotonic epoch bumped once per
-completed fetch, not on a timestamp — so a caller that started waiting before the fetch completed is
-answered by it, and does not fetch again
-(`crates/busbar-core/src/trust/verify.rs`, `VerifyGate::ensure_fresh`).
+The MCP plane does **not** coalesce in this release: each `tools/call` that finds its server's last
+fetch older than `verify_ttl` fetches `tools/list` itself, so a burst of calls against a stale server
+can produce one fetch per call. Each fetch is bounded by the server's `timeout:`. Size `verify_ttl`
+with that in mind for high-fan-in tools.
+
+A clock that moved backwards, or a clock read that fails, is treated as stale, never as fresh, so a
+corrected or tampered clock cannot make an observation permanently fresh
+(`crates/busbar-kernel/src/trust/reverify.rs`, `Due::ClockWentBackwards`).
 
 ### `list_changed` may only mark stale, never adopt
 
 An upstream's own `notifications/tools/list_changed` is attacker-controlled in both timing and
 content. Busbar reads its *timing* only: an accepted, rate-limited notification marks the server's
 snapshot stale so the **next** call re-verifies against the authoritative `tools/list`. The
-notification's body is never read.
+notification's body is never read, and the notification can never itself install, approve or
+promote anything (`busbar-plane-mcp`: `client/peer.rs`, `NotificationEffect`).
 
 ---
 
@@ -114,10 +128,14 @@ upstream's runtime behaviour.
 
 ## The knob
 
-`verify_ttl` (MCP) / `reverify_ttl` (A2A) is the only verification knob, deliberately. There is no
-key that slows detection below what it bounds, none that delays a quarantine, and no per-server "skip
-if it failed last time" — every one of those would be a window an upstream could open for itself by
-misbehaving.
+`verify_ttl` (MCP) / `reverify_ttl` (A2A) is the only knob over **detection**, deliberately. There
+is no key that slows detection below what it bounds, none that delays a quarantine, and no per-server
+"skip if it failed last time" — every one of those would be a window an upstream could open for
+itself by misbehaving.
+
+A2A has one more key, `recovery_backoff:`, which works in the other direction: after drift is
+observed, a clean answer is disbelieved for that long before the agent is trusted again. It can only
+keep an agent refused longer, never serve one sooner.
 
 - **`0`** is strict-live: re-verify on every call (bursts still coalesce into one fetch).
 - **The `5s` default** bounds drift-serving to a few seconds while single-flight keeps upstream load
