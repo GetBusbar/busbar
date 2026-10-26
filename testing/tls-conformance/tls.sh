@@ -111,8 +111,9 @@ wait_port() { for _ in $(seq 1 60); do (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/
 mkcert() {
   mkdir -p "$1"; local k='ec -pkeyopt ec_paramgen_curve:prime256v1'; [ "$2" != ec ] && k="rsa:$2"
   # shellcheck disable=SC2086
-  docker run --rm --user "$(id -u):$(id -g)" -v "$1:/w" --entrypoint openssl "$TESTSSL_IMAGE" req -x509 -newkey $k -nodes -days 30 \
-    -subj /CN=localhost -addext subjectAltName=DNS:localhost -keyout /w/key.pem -out /w/cert.pem >/dev/null 2>&1
+  docker run --rm --user "$(id -u):$(id -g)" -v "$1:/w" --entrypoint openssl "$TESTSSL_IMAGE" req -x509 -newkey $k -nodes -days 90 \
+    -subj /CN=localhost -addext subjectAltName=DNS:localhost -addext crlDistributionPoints=URI:http://localhost/ref.crl \
+    -keyout /w/key.pem -out /w/cert.pem >"$1/mkcert.log" 2>&1 && chmod 644 "$1/key.pem"
 }
 # assess <name> <port> <ca> <digest of the artifact served>: run the judge; its stdout in $W/<name>.log;
 # the exit is the judge's.
@@ -152,7 +153,7 @@ else why+=("the control server (nginx) could not be started"); fi
 say "=== leg 2: negative control (old OpenSSL s_server: SSLv3/TLS1.0, 3DES/RC4/export, RSA 1024)"
 mkcert "$W/weak" 1024
 port="$(free_port)"
-if [ -s "$W/weak/cert.pem" ] && cid="$(docker run -d --rm --network host -v "$W/weak:/w:ro" --entrypoint "$OLD_OPENSSL" "$TESTSSL_IMAGE" \
+if [ -s "$W/weak/cert.pem" ] && cid="$(docker run -d --rm --network host --user "$(id -u):$(id -g)" -v "$W/weak:/w:ro" --entrypoint "$OLD_OPENSSL" "$TESTSSL_IMAGE" \
      s_server -accept "$port" -cert /w/cert.pem -key /w/key.pem -www \
      -cipher 'DES-CBC3-SHA:RC4-SHA:RC4-MD5:AES128-SHA:EXP-RC4-MD5:EXP-DES-CBC-SHA:ECDHE-RSA-AES128-SHA')" && cids+=("$cid") && wait_port "$port"; then
   if assess weak "$port" "$W/weak/cert.pem" "sha256:${TESTSSL_IMAGE##*sha256:}"; then why+=("negative control: the deliberately weak server met every assertion")
@@ -161,7 +162,7 @@ if [ -s "$W/weak/cert.pem" ] && cid="$(docker run -d --rm --network host -v "$W/
       grep -q "^FAIL.* $a:" "$W/weak.log" || why+=("negative control: the weak server was refused, but not by $a")
     done
   fi
-else why+=("the weak server could not be started, so the negative control did not run"); fi
+else why+=("the weak server could not be started, so the negative control did not run: $(tail -c 300 "$W/weak/mkcert.log" 2>/dev/null | tr '\n' ' ')$([ -n "${cid:-}" ] && docker logs "$cid" 2>&1 | tail -3 | tr '\n' ' ')"); fi
 
 # ── leg 3: SUBJECT ──────────────────────────────────────────────────────────────────────────────────
 say "=== leg 3: subject (busbar-core-connector's TLS listener)"
