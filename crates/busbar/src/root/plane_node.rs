@@ -2306,14 +2306,13 @@ pub const ROOT_UNIT: crate::root::linked::RootUnit = crate::root::linked::RootUn
     end_post: Some(|| Arc::new(NodeEndPost::new(node()))),
 };
 
-/// [`bind_book`] for a named node and card holder: the holder's journal first, then the node's
-/// exit arm, both on the one book.
+/// [`bind_book`] for a named node: its exit arm on the one book. The card holder keeps its history in
+/// the store and binds no journal.
 fn bind_node_book(
     node: &Node,
-    cards: &crate::root::kernel::RootHistory,
+    _cards: &crate::root::kernel::RootHistory,
     book: Arc<Mutex<crate::root::durability::Durability>>,
 ) {
-    cards.bind_journal(&book);
     node.bind_book(book);
 }
 

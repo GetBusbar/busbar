@@ -158,9 +158,6 @@ pub struct Durability {
     /// Logged at `ERROR` and counted on `busbar_journal_quarantined_total` when the journal is
     /// built; put on the chain as a `ChainBreak` record by [`Durability::journal_quarantines`].
     pub quarantined: Vec<busbar_kernel_wal::Quarantine>,
-    /// THE HOLDER WHOSE DATED HISTORY THIS JOURNAL REBUILT FROM ITS CHAIN at boot (#79), and so the
-    /// one whose later applies it journals ([`crate::root::kernel::RootHistory::bind_journal`]).
-    pub(crate) cards_from: Option<&'static crate::root::kernel::RootHistory>,
     /// THE POSITION OF THE NEWEST AMENDMENT this journal rebuilt the node amendment journal from
     /// ([`Durability::restore_amendments`]), and so the journal whose later amendments are
     /// journalled ([`bind_amendments`]). `None` on every journal that rebuilt nothing.
@@ -649,8 +646,8 @@ pub fn build_for_node(
 }
 
 /// [`build_for_node`], naming the holder whose DATED HISTORY the journal rebuilds from its chain
-/// (#79). The production boot names the process holder; a holder that was not armed
-/// ([`crate::root::kernel::RootHistory::arm_journal`]) is left as it is.
+/// (#79): the production boot names the process holder, which loads the store's history and
+/// migrates the chain's card records into it.
 ///
 /// # Errors
 ///
@@ -743,7 +740,6 @@ fn build_inner(
         restart_findings: Vec::new(),
         voided_claims: Vec::new(),
         quarantined: Vec::new(),
-        cards_from: None,
         amendments_through: None,
         lane,
         resumed,

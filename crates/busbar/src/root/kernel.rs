@@ -183,111 +183,35 @@ impl PinnedHistory {
 /// cannot reprice a request halfway through. The next admission takes the new head.
 #[derive(Default)]
 pub struct RootHistory {
-    /// `None` until the boot resolution raises the rate-apply seam. Absent, a report is not priced
-    /// and nothing is posted — the honest answer for a build that has read no configuration yet,
-    /// rather than a fallback card whose figures no operator wrote.
-    history: arc_swap::ArcSwapOption<busbar_kernel_ledger::cost::History>,
-    /// **THE ROOT'S OWN COUNT OF CONFIG RESOLUTIONS**, and that count is what an entry records as
-    /// its policy epoch.
-    ///
-    /// The rate-apply seam carries the figures and nothing else — no epoch, by design
-    /// (`crates/busbar-substrate/src/rate_apply.rs:14`) — so there is no engine number to copy here
-    /// and inventing one that looked like the engine's would be worse than counting honestly. The
-    /// boot resolution is epoch 0 and each apply after it is the next, which is a true statement
-    /// about which generation of the deployment's configuration produced the entry. The day the seam
-    /// carries the engine's own epoch, this counter is what it replaces.
-    resolutions: std::sync::atomic::AtomicU64,
-    /// **WHERE AN APPLIED CARD IS MADE DURABLE** (#79, OWNER RULING Q14 "date everything"). A
-    /// history that lives only in memory is rebuilt at the next boot as the boot card from instant
-    /// zero, and every posting a restart replays is then priced at a card that was not in force when
-    /// it arrived. So every config-applied card is journalled on the node's one book with its
-    /// `effective_from`, and a boot rebuilds the history from the chain before it rebuilds the book.
-    /// Off — the default, and every holder but the one a production boot arms — journals nothing.
-    journal: Mutex<CardJournal>,
-    /// One append at a time — a config apply or a signed correction — so an entry's number on the
-    /// history and its record's position on the chain are the same order.
-    applying: Mutex<()>,
-    /// The form of the config card in force, as the journal holds it.
-    in_force: Mutex<Option<CardForm>>,
-    /// **THE FLEET-SHARED HISTORY IN THE STORE** (MONEY-DESIGN section 3a): set by the production boot
-    /// before its book opens ([`Self::keep_in_store`]). Once it is loaded nothing is journalled,
-    /// and every change of the configured card appends an entry to it.
+    /// **THE FLEET-SHARED HISTORY IN THE STORE** (MONEY-DESIGN section 3a), the ONE rate-card
+    /// history there is: set by the production boot before its book opens
+    /// ([`Self::keep_in_store`]) and loaded by the book's boot ([`Self::rebuild_from_chain`]).
+    /// Every change of the configured card appends an entry to it ([`Self::card_applied`]).
     store: std::sync::OnceLock<Arc<crate::root::card_history::CardStore>>,
-    /// The card the boot's configuration resolved: the history's opening entry, or the boot's own
-    /// change, once the history is loaded.
+    /// The card the boot's configuration resolved, before the history is loaded: the history's
+    /// opening entry, or the boot's own change.
     boot_card: Mutex<Option<busbar_kernel::config::card::CardFields>>,
+    /// One amend at a time.
+    applying: Mutex<()>,
+    /// A TEST'S HAND-BUILT HISTORY, for a holder no store backs ([`Self::apply`]). No shipped build
+    /// has it: a production node's history is the store's.
+    #[cfg(test)]
+    memory: arc_swap::ArcSwapOption<busbar_kernel_ledger::cost::History>,
 }
 
-/// Where a holder's applied cards go (see [`RootHistory::arm_journal`]).
-#[derive(Default)]
-enum CardJournal {
-    /// Nothing is journalled: a build with no root ledger, a test's holder, or a node with no data
-    /// directory — the previous release's no-persistence shape, whose history is the boot card.
-    #[default]
-    Off,
-    /// Armed at boot, before the book exists: applies are held until the boot's book rebuilds the
-    /// history from its chain ([`RootHistory::restore`]).
-    Armed(Vec<CardApplied>),
-    /// The history was rebuilt from the chain and the boot's cards journalled; the book's shared
-    /// handle is not bound yet ([`RootHistory::bind_journal`]), so an apply has no journal to go on
-    /// and is refused ([`CardRefused::Unbound`]).
-    Restored,
-    /// Every apply goes on this book's journal as it lands.
-    Bound {
-        book: Arc<Mutex<crate::root::durability::Durability>>,
-        token: Grant<busbar_contract::caps::DurableWrite>,
-    },
-}
-
-/// Why the boot's rebuild of the dated history refused the boot.
+/// Why the boot's load of the dated history refused the boot.
 #[derive(Debug)]
 pub enum CardBootError {
-    /// The journal could not make one of the boot's cards durable.
-    Lost(busbar_contract::caps::DurabilityLost),
     /// The store would not read the history back or take the opening entry.
     Store(String),
-}
-
-impl From<busbar_contract::caps::DurabilityLost> for CardBootError {
-    fn from(lost: busbar_contract::caps::DurabilityLost) -> Self {
-        CardBootError::Lost(lost)
-    }
 }
 
 impl std::fmt::Display for CardBootError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CardBootError::Lost(lost) => write!(
-                f,
-                "the journal could not make the boot's rate card durable at step {}",
-                lost.step().as_str()
-            ),
             CardBootError::Store(why) => f.write_str(why),
         }
     }
-}
-
-/// WHY A CONFIG CARD APPLY WAS REFUSED: the card was not made durable, so the card in force is the
-/// one that was (MONEY-AUDIT D-6).
-#[derive(Debug)]
-pub enum CardRefused {
-    /// The journal could not make the applied card durable, and the card is IN DOUBT: the journal
-    /// chained its record before the log was asked to take it, and the log retained the refused
-    /// batch and offers it again, in order, on the next append (`busbar-kernel-wal`
-    /// `Journal::append`, `Wal::append_batch`). So the record may yet land, and the holder put the
-    /// card in force back on the journal behind it at the same instant ([`RootHistory::withdraw`]).
-    Lost(busbar_contract::caps::DurabilityLost),
-    /// The log neither holds nor owes the card, so the record can never land: nothing is published
-    /// and nothing is put back — the node fails closed. Every arm of `Wal::append_batch` retains
-    /// the batch it was handed, a failed roll onto a fresh segment included (kernel-wal finding 4),
-    /// so a log that keeps that rule never answers this; it is the answer should one not.
-    Dropped(busbar_contract::caps::DurabilityLost),
-    /// The boot's book has rebuilt the history but its handle is not bound yet: there is no journal
-    /// the card could go on.
-    Unbound,
-    /// The history is kept in the store, where only `PUT /config/settings` writes it: a build's
-    /// rates are the card in force already.
-    InStore,
 }
 
 impl std::fmt::Debug for RootHistory {
@@ -299,13 +223,12 @@ impl std::fmt::Debug for RootHistory {
 impl RootHistory {
     /// The history as it stands, pinned at its head for the caller's whole life.
     ///
-    /// The returned pair is the reader's to keep: an append after this call is seen by the NEXT
-    /// caller and leaves this one reading the snapshot it was admitted under.
+    /// A UNIT PRICES WITH THIS NODE'S OWN CARD (MONEY-DESIGN section 3a): the history kept in the
+    /// store, resolved so this node's own entry prices from its start whatever another node loaded
+    /// since. Views read the fleet's ([`Self::history`]). The returned pair is the reader's to
+    /// keep: an append after this call is seen by the NEXT caller.
     #[must_use]
     pub fn pin(&self) -> Option<PinnedHistory> {
-        // A UNIT PRICES WITH THIS NODE'S OWN CARD (MONEY-DESIGN section 3a): the history kept in the
-        // store, resolved so this node's own entry prices from its start whatever another node
-        // loaded since. Views read the fleet's ([`Self::history`]).
         let history = match self.card_store() {
             Some(store) => store.node_history()?,
             None => self.history()?,
@@ -314,28 +237,56 @@ impl RootHistory {
         Some(PinnedHistory { history, at })
     }
 
-    /// The history AS A WHOLE, for a reader that snapshots it itself.
-    ///
-    /// [`Self::pin`] answers the request path, which wants the head fixed for one unit's whole
-    /// life. A ledger READ wants the entries and its own choice of snapshot — an invoice cut at
-    /// seq 3 is re-derived by asking for seq 3 again — so it takes the `Arc` and names the
-    /// snapshot, rather than being handed one somebody else chose. Both are the same read-copy:
-    /// an append after this call is seen by the next caller and leaves this one on the history it
-    /// asked under.
-    ///
-    /// `None` until the boot resolution raises the rate-apply seam, which is a node with no entry
-    /// a posting could resolve to — never a node whose postings are free.
+    /// The FLEET history AS A WHOLE, for a reader that snapshots it itself: views, budgets and the
+    /// ledger reads. `None` until the boot has loaded it.
     #[must_use]
     pub fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
-        match self.store.get() {
-            Some(store) if store.is_loaded() => store.history(),
-            _ => self.history.load_full(),
+        if let Some(store) = self.card_store() {
+            return store.history();
+        }
+        #[cfg(test)]
+        {
+            self.memory.load_full()
+        }
+        #[cfg(not(test))]
+        {
+            None
         }
     }
 
+    /// **A TEST'S HAND-BUILT HISTORY**: put `card` on it effective from `now_ms` (the first entry
+    /// from instant ZERO, so one entry covers every instant), and return the entry's number. A
+    /// production holder's history is the store's; this exists so a proof can name the instants
+    /// its entries take effect at instead of racing the wall clock.
+    #[cfg(test)]
+    pub fn apply(
+        &self,
+        card: busbar_kernel_ledger::cost::RateCard,
+        now_ms: u64,
+    ) -> busbar_kernel_ledger::cost::HistorySeq {
+        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
+        let mut appended = busbar_kernel_ledger::cost::HistorySeq::OPENING;
+        self.memory.rcu(|current| {
+            let mut next = match current {
+                Some(history) => busbar_kernel_ledger::cost::History::clone(history),
+                None => busbar_kernel_ledger::cost::History::new(),
+            };
+            let effective_from = if next.is_empty() { 0 } else { now_ms };
+            appended = next.append(busbar_kernel_ledger::cost::CardEntryDraft {
+                effective_from,
+                effective_until: None,
+                card: card.clone(),
+                appended_at: now_ms,
+                author: busbar_kernel_ledger::cost::Author::Config { policy_epoch: 0 },
+            });
+            Some(Arc::new(next))
+        });
+        appended
+    }
+
     /// **KEEP THE HISTORY IN THE STORE** (MONEY-DESIGN section 3a): the production boot names the store,
-    /// its durable node id and its data directory before its book opens; the book's rebuild then
-    /// loads the fleet-shared history ([`Self::rebuild_from_chain`]) instead of journalling cards.
+    /// its durable node id and its data directory before its book opens; the book's boot then
+    /// loads the fleet-shared history ([`Self::rebuild_from_chain`]).
     pub fn keep_in_store(
         &self,
         calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
@@ -347,16 +298,17 @@ impl RootHistory {
         ));
     }
 
+    /// Whether the history is kept in the store (a production boot); a test's hand-built holder is
+    /// not.
+    #[must_use]
+    pub fn keeps_store(&self) -> bool {
+        self.store.get().is_some()
+    }
+
     /// The store-kept history, once it is loaded.
     #[must_use]
     pub fn card_store(&self) -> Option<&Arc<crate::root::card_history::CardStore>> {
         self.store.get().filter(|s| s.is_loaded())
-    }
-
-    /// Whether the history is kept in the store (the journal keeps no card).
-    #[must_use]
-    pub fn keeps_store(&self) -> bool {
-        self.store.get().is_some()
     }
 
     /// Why STRICT MODE refuses a new admission now, or `None`: a card entry this node prices with
@@ -394,27 +346,16 @@ impl RootHistory {
         self.boot_store(store, own)
     }
 
-    /// THE STORE BOOT, run by the book's rebuild: every chain's card records migrated, the history
-    /// read, opened if empty, and the boot's card applied.
+    /// THE STORE BOOT: every chain's card records migrated, the history read, opened if empty, and
+    /// the boot's card applied.
     fn boot_store(
         &self,
         store: &Arc<crate::root::card_history::CardStore>,
         own: Option<&[busbar_kernel_wal::JournalRecord]>,
     ) -> Result<(), String> {
-        let mut chains: Vec<crate::root::card_history::Chain> = Vec::new();
-        if let Some(own) = own {
-            chains.push((store.node(), own.to_vec()));
-        }
-        match crate::root::durability::stored_chains(store.calls().as_ref(), store.node()) {
-            Ok(others) => chains.extend(others),
-            Err(why) => tracing::warn!(
-                "other nodes' journals could not be read for the rate-card migration: {why}"
-            ),
-        }
-        let migrated = crate::root::card_history::migrated(&chains, store.node());
         // The boot's own build raised its card before the book opened. A process with no rate
         // holder raised none (a test binary's book): the history is NOT opened with an empty card
-        // nobody configured, and the holder keeps its in-memory history.
+        // nobody configured.
         let Some(card) = self
             .boot_card
             .lock()
@@ -427,195 +368,38 @@ impl RootHistory {
             );
             return Ok(());
         };
+        let mut chains: Vec<crate::root::card_history::Chain> = Vec::new();
+        if let Some(own) = own {
+            chains.push((store.node(), own.to_vec()));
+        }
+        match crate::root::durability::stored_chains(store.calls().as_ref(), store.node()) {
+            Ok(others) => chains.extend(others),
+            Err(why) => tracing::warn!(
+                "other nodes' journals could not be read for the rate-card migration: {why}"
+            ),
+        }
+        let migrated = crate::root::card_history::migrated(&chains, store.node());
         store.boot(&card, &format!("boot of node {}", store.node()), migrated)
     }
 
-    /// **THE ONLY MUTATOR: APPEND.** Put `card` on the history effective from `now_ms`, and return
-    /// the entry's number.
-    ///
-    /// The FIRST entry is effective from instant ZERO rather than from `now_ms`, and that is not a
-    /// convenience. A first entry starting at boot would leave every instant before boot in a hole,
-    /// and a hole is a refusal — so a posting whose arrival the node dated a millisecond early, or a
-    /// legacy row carrying nothing finer than a UTC day, would price at nothing. Effective from zero
-    /// with no end, one entry covers every instant, and a deployment that never edits a price is a
-    /// single-entry history: arithmetically the previous release, to the byte.
-    ///
-    /// EVERY LATER ENTRY is effective from `now_ms` and closes nothing. The previous entry stays
-    /// open-ended and stays exactly as it was written; the resolution rule takes the highest
-    /// covering seq, so this entry out-ranks it from `now_ms` forward and the entry before it goes
-    /// on answering for every instant before that, forever. Closing the old entry would be a write
-    /// to a record that is already booked.
-    ///
-    /// Read-copy-update rather than load-then-store: two applies landing together would otherwise
-    /// each clone the same history and the second's store would drop the first's entry on the floor,
-    /// which is a price change that silently did not happen.
-    pub fn apply(
-        &self,
-        card: busbar_kernel_ledger::cost::RateCard,
-        now_ms: u64,
-    ) -> busbar_kernel_ledger::cost::HistorySeq {
-        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
-        let policy_epoch = self
-            .resolutions
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.append_config(card, now_ms, policy_epoch)
-    }
-
-    /// The `effective_from` a config card applied at `now_ms` takes: instant zero for the first
-    /// entry, `now_ms` for every later one (see [`Self::apply`]).
-    fn effective_from_for(&self, now_ms: u64) -> u64 {
-        match self.history.load().as_deref() {
-            Some(history) if !history.is_empty() => now_ms,
-            _ => 0,
-        }
-    }
-
-    /// [`Self::apply`] under a policy epoch the caller already took, answering the entry's number.
-    fn append_config(
-        &self,
-        card: busbar_kernel_ledger::cost::RateCard,
-        now_ms: u64,
-        policy_epoch: u64,
-    ) -> busbar_kernel_ledger::cost::HistorySeq {
-        let mut appended = busbar_kernel_ledger::cost::HistorySeq::OPENING;
-        self.history.rcu(|current| {
-            let mut next = match current {
-                Some(history) => busbar_kernel_ledger::cost::History::clone(history),
-                None => busbar_kernel_ledger::cost::History::new(),
-            };
-            let effective_from = if next.is_empty() { 0 } else { now_ms };
-            let seq = next.append(busbar_kernel_ledger::cost::CardEntryDraft {
-                effective_from,
-                effective_until: None,
-                card: card.clone(),
-                appended_at: now_ms,
-                author: busbar_kernel_ledger::cost::Author::Config { policy_epoch },
-            });
-            // The closure may run more than once; the run whose swap lands is the last one.
-            appended = seq;
-            Some(Arc::new(next))
-        });
-        appended
-    }
-
-    /// **THE APPLY THE RATE-APPLY SEAM MAKES**: build the card from the configured figures, put the
-    /// entry on the node's journal, and only then append it to the history (as [`Self::apply`]) —
-    /// so a restart rebuilds the history the node priced under rather than dating the boot card
-    /// from instant zero (#79).
-    ///
-    /// JOURNAL FIRST, PUBLISH SECOND (MONEY-AUDIT D-6). A card published before its record is
-    /// durable prices postings in an era a restart cannot reproduce: the rebuilt history lacks the
-    /// entry and every row earned under it reprices at the card before. So an apply the journal
-    /// will not take is REFUSED: the card in force stays the one that was. A refusal is IN DOUBT,
-    /// not absent — the journal chained the record and the log retained it — so the card in force
-    /// is journalled back behind it at the same instant and both land on the live history, which
-    /// then prices every instant as the rebuilt chain does (REV-293 #1); the refused record's
-    /// policy epoch is spent, so no later entry shares it.
+    /// **THE BOOT'S LOAD OF THE DATED HISTORY, RUN BY THE BOOK** before it prices a replayed
+    /// posting: `records` is the node's own chain, whose card records the first boot migrates into
+    /// the store with every other node's. A holder no store backs loads nothing. Answers nothing to
+    /// report: a journalled correction the migration leaves out never priced an instant.
     ///
     /// # Errors
     ///
-    /// The journal could not make the applied card durable, or the boot's book has rebuilt the
-    /// history but its handle is not bound yet, so there is no journal the card could go on.
-    pub fn apply_rates(
-        &self,
-        rates: &busbar_kernel::rate_apply::RawRates<'_>,
-        now_ms: u64,
-    ) -> Result<busbar_kernel_ledger::cost::HistorySeq, CardRefused> {
-        let _one_at_a_time = self.applying.lock().unwrap_or_else(|p| p.into_inner());
-        register_classes(rates);
-        // THE HISTORY IN THE STORE IS THE ONLY SOURCE OF PRICES once it is kept there (MONEY-DESIGN
-        // section 3a): no build writes it, so an apply's rates are the card in force already.
-        if self.store.get().is_some() {
-            return Err(CardRefused::InStore);
+    /// The store would not read the history back or take its opening entry.
+    pub(crate) fn rebuild_from_chain(
+        &'static self,
+        _durability: &mut crate::root::durability::Durability,
+        records: Option<&[busbar_kernel_wal::JournalRecord]>,
+    ) -> Result<Vec<CorrectionRefused>, CardBootError> {
+        if let Some(store) = self.store.get() {
+            self.boot_store(store, records)
+                .map_err(CardBootError::Store)?;
         }
-        let card = card_from_raw(rates);
-        let form = CardForm::of(rates, &card);
-        // One apply at a time (the lock above), so the epoch and the `effective_from` read here are
-        // the ones the append below lands with.
-        let policy_epoch = self.resolutions.load(std::sync::atomic::Ordering::Relaxed);
-        self.journal_or_withdraw(
-            CardApplied {
-                effective_from: self.effective_from_for(now_ms),
-                appended_at: now_ms,
-                policy_epoch,
-                form: form.clone(),
-            },
-            now_ms,
-        )?;
-        *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = Some(form);
-        Ok(self.append_config(card, now_ms, policy_epoch))
-    }
-
-    /// Spend `policy_epoch`: a record was sealed under it, so no later entry may take it — whether
-    /// or not that record lands.
-    fn spend_epoch(&self, policy_epoch: u64) {
-        self.resolutions.fetch_max(
-            policy_epoch.saturating_add(1),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    }
-
-    /// Journal `applied` BEFORE it is published (the caller publishes on `Ok`). A refusal refuses
-    /// the apply: there is no WITHDRAW (MONEY-DESIGN section 3a). The caller holds `applying`.
-    fn journal_or_withdraw(&self, applied: CardApplied, _now_ms: u64) -> Result<(), CardRefused> {
-        match self.journal_applied(applied.clone()) {
-            Ok(()) => {
-                self.spend_epoch(applied.policy_epoch);
-                Ok(())
-            }
-            Err(CardRefused::Unbound) => Err(CardRefused::Unbound),
-            Err(CardRefused::Dropped(lost)) => {
-                self.spend_epoch(applied.policy_epoch);
-                Err(CardRefused::Dropped(lost))
-            }
-            Err(CardRefused::Lost(lost)) => {
-                self.spend_epoch(applied.policy_epoch);
-                Err(CardRefused::Lost(lost))
-            }
-            Err(CardRefused::InStore) => Err(CardRefused::InStore),
-        }
-    }
-
-    /// ARM THE JOURNAL: from here on every apply is recorded — held until the boot's book has
-    /// rebuilt the history ([`Self::restore`]) and its handle is bound ([`Self::bind_journal`]),
-    /// then written as it lands. The production boot arms the process holder before its first
-    /// resolution; nothing else does, so a test's holder and a build with no root ledger journal
-    /// nothing.
-    pub fn arm_journal(&self) {
-        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(*journal, CardJournal::Off) {
-            *journal = CardJournal::Armed(Vec::new());
-        }
-    }
-
-    /// THE NO-PERSISTENCE SHAPE: a boot with no data directory keeps no chain to rebuild from, so
-    /// the history is the boot card from instant zero exactly as it always was, and nothing is held.
-    pub(crate) fn disarm_journal(&self) {
-        *self.journal.lock().unwrap_or_else(|p| p.into_inner()) = CardJournal::Off;
-    }
-
-    /// Record one apply wherever this holder's journal stands, BEFORE it is published.
-    ///
-    /// Off journals nothing (no chain to rebuild from). Armed holds the boot's opening card for
-    /// the boot's book, which journals it as it rebuilds the history — or refuses the boot. Bound
-    /// writes it. Restored refuses: the history was rebuilt from the chain but the book's handle
-    /// is not bound yet, so there is no journal the card could go on.
-    fn journal_applied(&self, applied: CardApplied) -> Result<(), CardRefused> {
-        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        match &mut *journal {
-            CardJournal::Off => Ok(()),
-            CardJournal::Armed(held) => {
-                held.push(applied);
-                Ok(())
-            }
-            CardJournal::Restored => Err(CardRefused::Unbound),
-            CardJournal::Bound { book, token } => {
-                let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-                journal_card(&mut durability, &applied, token)
-                    .map(|_| ())
-                    .map_err(|lost| refusal_of(&durability, lost))
-            }
-        }
+        Ok(Vec::new())
     }
 
     /// **THE BOOT'S REBUILD OF THE DATED HISTORY FROM THE CHAIN**, run by the book before it prices
@@ -631,6 +415,7 @@ impl RootHistory {
     ///   resolution is appended, dated at the instant it landed, ONLY where it differs from the
     ///   newest journalled config card: a restart that changed no price appends nothing and moves
     ///   nothing; a restart that did prices what happens after the boot and nothing before it.
+    #[cfg(test)]
     pub(crate) fn restore(
         journalled: Vec<JournalledCard>,
         held: Vec<CardApplied>,
@@ -714,127 +499,15 @@ impl RootHistory {
         }
     }
 
-    /// **THE BOOT'S REBUILD, RUN BY THE BOOK** before it prices a replayed posting: `records` is the
-    /// chain it read, or `None` for a node whose chain has no durable source (the previous
-    /// release's no-persistence shape: the history stays the boot card from instant zero and
-    /// nothing is held). A chain kept but not read back or not verified never reaches here: the
-    /// book's build refuses the boot first, so it never disarms the journal (audit root r4 A-5).
-    ///
-    /// A chain written before applied cards were journalled holds none: its history starts at the
-    /// boot card from instant zero, exactly as it did, and that opening entry is journalled now.
-    ///
-    /// JOURNAL FIRST, PUBLISH SECOND (MONEY-AUDIT D-6): the boot's cards go on the chain before
-    /// the rebuilt history is published. A holder that was not armed rebuilds nothing.
-    ///
-    /// Answers every journalled correction the rebuild refused ([`CorrectionRefused`]), which the
-    /// book reports among its restart findings.
+    /// **THE SIGNED, BACK-DATED CORRECTION** — the effect half of the `amend_rate_history` verb:
+    /// a bounded entry over the window the operator named, the card covering its start with the
+    /// named cells set ([`Correction::draft_over`]), written to the store's history like a change.
+    /// A window no single card prices, or a boundary that would cut inside a stored metering row
+    /// (#32), appends nothing. `seal` is handed the corrected card and its base before the write.
     ///
     /// # Errors
     ///
-    /// The journal could not make one of the boot's cards durable: the boot refuses rather than
-    /// price under an era a restart could not reproduce.
-    pub(crate) fn rebuild_from_chain(
-        &'static self,
-        durability: &mut crate::root::durability::Durability,
-        records: Option<&[busbar_kernel_wal::JournalRecord]>,
-    ) -> Result<Vec<CorrectionRefused>, CardBootError> {
-        if let Some(store) = self.store.get() {
-            // THE HISTORY IS KEPT IN THE STORE: nothing is journalled, and the boot loads it.
-            *self.journal.lock().unwrap_or_else(|p| p.into_inner()) = CardJournal::Off;
-            self.boot_store(store, records)
-                .map_err(CardBootError::Store)?;
-            durability.cards_from = Some(self);
-            return Ok(Vec::new());
-        }
-        let Some(records) = records else {
-            self.disarm_journal();
-            return Ok(Vec::new());
-        };
-        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        let CardJournal::Armed(held) = &mut *journal else {
-            return Ok(Vec::new());
-        };
-        let RestoredHistory {
-            history,
-            write,
-            next_epoch,
-            newest,
-            refused,
-        } = Self::restore(journalled_cards(records), std::mem::take(held));
-        let token = new_kernel().durability_token();
-        for applied in &write {
-            journal_card(durability, applied, &token)?;
-        }
-        if !history.is_empty() {
-            self.history.store(Some(Arc::new(history)));
-        }
-        self.resolutions
-            .fetch_max(next_epoch, std::sync::atomic::Ordering::Relaxed);
-        *self.in_force.lock().unwrap_or_else(|p| p.into_inner()) = newest;
-        *journal = CardJournal::Restored;
-        durability.cards_from = Some(self);
-        Ok(refused)
-    }
-
-    /// **BIND THE BOOK THE HISTORY WAS REBUILT FROM**: journal every apply after it before it
-    /// lands. A no-op for any other book and for a holder whose history was not rebuilt from a
-    /// chain — which is every holder but the production boot's. Nothing is held to write here: an
-    /// apply between the rebuild and this bind was refused ([`CardRefused::Unbound`]).
-    pub fn bind_journal(&self, book: &Arc<Mutex<crate::root::durability::Durability>>) {
-        if !matches!(
-            *self.journal.lock().unwrap_or_else(|p| p.into_inner()),
-            CardJournal::Restored
-        ) {
-            return;
-        }
-        let ours = book
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .cards_from
-            .is_some_and(|holder| std::ptr::eq(holder, self));
-        if !ours {
-            return;
-        }
-        let mut journal = self.journal.lock().unwrap_or_else(|p| p.into_inner());
-        if !matches!(*journal, CardJournal::Restored) {
-            return;
-        }
-        *journal = CardJournal::Bound {
-            book: Arc::clone(book),
-            token: new_kernel().durability_token(),
-        };
-    }
-
-    /// **THE SIGNED, BACK-DATED CORRECTION** — the effect half of the `amend_rate_history` verb.
-    /// Append an [`busbar_kernel_ledger::cost::Author::Amend`] entry over the window the operator
-    /// named, and return its number.
-    ///
-    /// THE ENTRY IS THE CARD IN FORCE WITH THE NAMED CELLS CORRECTED ([`Correction::draft_over`]),
-    /// never a card of the named cells alone: a correction of one rate keeps every other lane, class,
-    /// plane card and the fee it did not name exactly as they were priced (#79 "a correction reprices
-    /// exactly its window"). A window no single card prices, or a cell with no present card to land
-    /// on, is [`AmendRefused::NoSoleCard`] and appends nothing; a boundary that would cut inside a
-    /// stored metering row — or make the units after the window price at it — is
-    /// [`AmendRefused::CutsRow`] (#32) and appends nothing.
-    ///
-    /// Unlike [`RootHistory::apply`] this never invents a from-zero opening entry: an amendment
-    /// corrects a history that already has one, so an empty holder is a REFUSAL
-    /// ([`AmendRefused::NoHistory`]) rather than a first write. It closes nothing and rewrites
-    /// nothing: the entry it corrects stays exactly as booked, every snapshot taken before this one
-    /// still returns the old answer, and the resolution rule's highest-covering-seq wins means this
-    /// entry out-ranks the corrected one for `[effective_from, effective_until)` from this seq
-    /// forward.
-    ///
-    /// `seal` is handed the corrected card and the entry it is sealed over ([`CorrectionBase`])
-    /// BEFORE the append, and makes the correction durable with both; its refusal appends nothing
-    /// ([`AmendRefused::Seal`]). Seal and append run under the apply lock, so a restart's rebuild
-    /// reaches each correction over the prefix the live append resolved it against. Where it does
-    /// not (an applied card whose journal write was lost), the record's base does not match and the
-    /// rebuild refuses the correction ([`CorrectionRefused`]) rather than rebuild it over another
-    /// card.
-    ///
-    /// It does NOT bump the config-resolution epoch: an amendment is an operator's correction, not a
-    /// new generation of the deployment's configuration.
+    /// No history, no sole card, a row cut, the seal's refusal, or the store's.
     pub fn amend<E>(
         &self,
         correction: &Correction,
@@ -899,12 +572,19 @@ impl RootHistory {
                 .map(busbar_kernel_ledger::cost::CardEntry::seq)
                 .ok_or(AmendRefused::NoHistory);
         }
-        // Every other append runs under the same lock, so the history the draft was resolved
-        // against is the history it lands on.
-        let mut next = busbar_kernel_ledger::cost::History::clone(&current);
-        let seq = next.append(draft);
-        self.history.store(Some(Arc::new(next)));
-        Ok(seq)
+        // A TEST'S HOLDER, with no store: the history it built by hand takes the entry.
+        #[cfg(test)]
+        {
+            let mut next = busbar_kernel_ledger::cost::History::clone(&current);
+            let seq = next.append(draft);
+            self.memory.store(Some(Arc::new(next)));
+            Ok(seq)
+        }
+        #[cfg(not(test))]
+        {
+            let _ = draft;
+            Err(AmendRefused::NoHistory)
+        }
     }
 
     /// How many entries stand on the history. A read for the tests and for the operator surface that
@@ -1001,15 +681,9 @@ pub struct CardRepricer;
 
 impl busbar_kernel::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
-        match ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms()) {
-            // The history is the store's: a build's rates are the card in force already.
-            Ok(_) | Err(CardRefused::InStore) => {}
-            Err(refused) => tracing::error!(
-                ?refused,
-                "the journal did not take an applied rate card: the apply is refused and the card \
-                 in force is unchanged"
-            ),
-        }
+        // Every class the card prices goes into the process vocabulary; the card itself reaches the
+        // history through `card_applied`, raised at the same commit.
+        register_classes(rates);
     }
 
     fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
@@ -1417,41 +1091,6 @@ impl CardApplied {
     }
 }
 
-/// Put one config-applied card on `durability`'s journal (#79): a `Policy` record carrying the card
-/// and the instant it took effect from, which a boot reads back to rebuild the dated history before
-/// it prices a replayed posting. A price LIST, not a unit's money: the chain's postings still carry
-/// counts and an arrival instant only.
-fn journal_card(
-    durability: &mut crate::root::durability::Durability,
-    applied: &CardApplied,
-    token: &Grant<busbar_contract::caps::DurableWrite>,
-) -> Result<busbar_kernel_wal::JournalAck, busbar_contract::caps::DurabilityLost> {
-    let entry =
-        busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Policy, applied.body())
-            .at(applied.appended_at / 1_000, 0);
-    durability
-        .journal
-        .append(token, busbar_contract::caps::StepName::Route, &[entry])
-}
-
-/// What a `DurabilityLost` from [`journal_card`] leaves the card as. The journal sealed the card
-/// last, so it is the number just below the journal's next; the log either holds it or owes it
-/// (retained, offered again on the next append: IN DOUBT, a failed roll onto a fresh segment
-/// included) — or neither (DROPPED), which a log that retains on every arm never answers.
-fn refusal_of(
-    durability: &crate::root::durability::Durability,
-    lost: busbar_contract::caps::DurabilityLost,
-) -> CardRefused {
-    let journal = &durability.journal;
-    let card = (journal.node(), journal.next_seq().saturating_sub(1));
-    let log = journal.log();
-    if log.holds(card.0, card.1) || log.owed().iter().any(|r| r.identity() == card) {
-        CardRefused::Lost(lost)
-    } else {
-        CardRefused::Dropped(lost)
-    }
-}
-
 /// One entry of the dated history as the chain holds it.
 pub(crate) enum JournalledCard {
     /// A config apply ([`CardApplied`]).
@@ -1794,9 +1433,8 @@ impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
 /// (`RootInstall::rate_apply` and `RootInstall::rate_epoch`, both [`CardRepricer`], set by
 /// `crate::root::linked::register_stores`), never through a static of its own.
 pub fn install_card_repricer() {
-    // Armed BEFORE the boot resolution, so the opening entry is held for the book to journal: the
-    // boot's book rebuilds the dated history from its chain (#79) before it prices a posting.
-    ROOT_CARD.arm_journal();
+    // Nothing to arm: the boot's card is held by the holder until its book loads the store's
+    // history ([`RootHistory::card_applied`]).
 }
 
 /// The admission unit, standing at the in-flight table's arrival door.
@@ -2043,10 +1681,6 @@ impl ProductionUnits {
         // before it touches the history (item 30). Without this binding `amend_rate_history`
         // refuses: the only trail it used to leave was the legacy admin ring, a volatile thousand
         // entries behind a seam that does nothing.
-        //
-        // And every config-applied card goes on the same journal (#79): the process holder binds
-        // the book its boot rebuilt the dated history from, and journals nothing for any other.
-        ROOT_CARD.bind_journal(&durability);
         units.admin.amendments = Some(Arc::new(crate::root::units_admin::AmendmentJournal::new(
             Arc::clone(&durability),
             kernel.durability_token(),
