@@ -40,9 +40,7 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
-use busbar_contract::abi::mechanism::lifecycle::{
-    slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn, LIFECYCLE_SLOTS,
-};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, LIFECYCLE_SLOTS};
 use busbar_contract::abi::store::{
     self as st, slot, AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut, GetPlaneRecordIn,
     HostBlobs, HostBuf, HostBytesOut, HostListOut, HostRecords, IdIn, IdReasonIn,
@@ -60,6 +58,7 @@ use busbar_contract::records::{
 use busbar_contract::store_calls::{OpIdMint, StoreCall, StoreCalls, StoreFailure};
 
 use crate::dispatch::kinds::store::{Store, StoreFacts};
+use crate::dispatch::lifecycle::{self, open_frame, validate_call};
 use crate::dispatch::{
     in_head, now_ns, out_head, Dispatcher, Frame, InFrame, Lent, OutFrame, Plugin,
 };
@@ -114,23 +113,7 @@ impl LoadedStore {
         let settings: Arc<Vec<u8>> = Arc::new(settings.to_vec());
         // `open` is the settings' judge, as it was in 1.5.5: its refusal carries the plugin's own
         // reason (the host's lent reason buffer), which a bare `validate` answer cannot.
-        let o = Frame::new(
-            OpenIn {
-                head: in_head(),
-                host: std::ptr::null(),
-                settings: octets(&settings),
-                secrets: std::ptr::null(),
-                secrets_len: 0,
-                generation: 1,
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            OpenOut {
-                head: out_head(),
-                instance: std::ptr::null_mut(),
-                err_len: 0,
-            },
-        );
+        let o = open_frame(octets(&settings));
         let c = Self::open_on_ticket(&plugin, &dispatcher, o, settings);
         if c.outcome != Outcome::Ready {
             return Err(c.open_failure(plugin.name()));
@@ -197,17 +180,7 @@ impl LoadedStore {
     /// # Errors
     /// The store's refusal of its settings.
     pub fn validate(plugin: &Plugin<Store>, settings: &[u8]) -> Result<(), String> {
-        let mut v = Frame::new(
-            ValidateIn {
-                head: in_head(),
-                settings: octets(settings),
-                // The dispatcher lends the reason buffer at the crossing.
-                err_buf: std::ptr::null_mut(),
-                err_cap: 0,
-            },
-            out_head(),
-        );
-        let c = plugin.call(life::VALIDATE, &mut v);
+        let c = validate_call(plugin, octets(settings));
         match (c.outcome, c.error) {
             (Outcome::Ready, _) => Ok(()),
             // The store's own words reach the operator VERBATIM (1.5.5 printed the plugin's text).
@@ -237,17 +210,7 @@ impl LoadedStore {
     }
 
     fn release(&self, lease: u64) {
-        if lease == 0 {
-            return;
-        }
-        let mut f = Frame::new(
-            ReleaseIn {
-                head: in_head(),
-                lease,
-            },
-            out_head(),
-        );
-        let _ = self.plugin.call(life::RELEASE, &mut f);
+        lifecycle::release(&self.plugin, lease);
     }
 
     // ── the two runners ──────────────────────────────────────────────────────────────────────
@@ -405,8 +368,7 @@ impl Drop for LoadedStore {
     /// The handle is the instance's owner: dropping it (a reload's retired store, a test's) closes
     /// the instance, so what it holds (its kept connections) goes with it.
     fn drop(&mut self) {
-        let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
-        let _ = self.plugin.call(life::CLOSE, &mut f);
+        lifecycle::close(&self.plugin);
     }
 }
 
