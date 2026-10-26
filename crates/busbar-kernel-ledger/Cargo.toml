@@ -15,6 +15,9 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+# SHA-256 for a rate-card history entry's id (`cost::EntryId`: the first 12 bytes of SHA-256 of
+# the entry's key), on ring, the one crypto backend.
+ring = { workspace = true }
 # `serde`, for ONE type: an open meter class's configured rate (`cost::UnitRate`, #83a O1 — the
 # rate-card representation lives with the card). Its exact-decimal `Deserialize` and its two-form
 # `Serialize` are written by hand (no derive, no float): the config text a rate is read from. The

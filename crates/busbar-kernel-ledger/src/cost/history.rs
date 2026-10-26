@@ -48,6 +48,152 @@ impl std::fmt::Display for HistorySeq {
     }
 }
 
+/// The length of an entry's KEY in the store's `busbar.card.v1` schema:
+/// `t_ms (u64 BE) ++ node_rand (8 bytes, per boot) ++ counter (u32 BE)`.
+pub const ENTRY_KEY_LEN: usize = 20;
+
+/// **AN ENTRY'S IDENTITY**: its key in the fleet-shared history (MONEY-DESIGN section 3a).
+///
+/// Keys are unique across nodes (the writer's per-boot random half) and ordered by their bytes,
+/// which is time first. The resolution rule names the KEY, never a list position: among the live
+/// entries covering an instant, the highest key wins.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct EntryKey(pub [u8; ENTRY_KEY_LEN]);
+
+impl EntryKey {
+    /// The key for `t_ms`, written by the boot whose random half is `node_rand`, `counter`th.
+    pub fn new(t_ms: u64, node_rand: [u8; 8], counter: u32) -> Self {
+        let mut key = [0u8; ENTRY_KEY_LEN];
+        key[..8].copy_from_slice(&t_ms.to_be_bytes());
+        key[8..16].copy_from_slice(&node_rand);
+        key[16..].copy_from_slice(&counter.to_be_bytes());
+        EntryKey(key)
+    }
+
+    /// The key from its stored bytes, or `None` when they are not exactly a key.
+    pub fn from_slice(bytes: &[u8]) -> Option<Self> {
+        <[u8; ENTRY_KEY_LEN]>::try_from(bytes).ok().map(EntryKey)
+    }
+
+    /// The commit time the key was minted at, in wall-clock milliseconds.
+    pub fn t_ms(&self) -> u64 {
+        let mut t = [0u8; 8];
+        t.copy_from_slice(&self.0[..8]);
+        u64::from_be_bytes(t)
+    }
+
+    /// The writer boot's random half.
+    pub fn node_rand(&self) -> [u8; 8] {
+        let mut r = [0u8; 8];
+        r.copy_from_slice(&self.0[8..16]);
+        r
+    }
+
+    /// The key's bytes, as the store holds them.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// The short id a count segment carries.
+    pub fn id(&self) -> EntryId {
+        EntryId::of(self)
+    }
+
+    /// The key as lowercase hex (40 characters), the spelling the admin verbs take.
+    pub fn hex(&self) -> String {
+        hex(&self.0)
+    }
+
+    /// The key from its 40-character hex spelling.
+    pub fn parse_hex(text: &str) -> Option<Self> {
+        unhex(text).and_then(|b| Self::from_slice(&b))
+    }
+}
+
+impl std::fmt::Display for EntryKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.hex())
+    }
+}
+
+/// The byte length of an [`EntryId`].
+pub const ENTRY_ID_LEN: usize = 12;
+
+/// **THE ID A COUNT SEGMENT CARRIES**: the first 12 bytes of SHA-256 of the entry's [`EntryKey`]
+/// (MONEY-DESIGN section 3b). Spelled as 24 lowercase hex characters; the pseudo-model prefix of a
+/// sibling era row is that spelling followed by `U+001F`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct EntryId(pub [u8; ENTRY_ID_LEN]);
+
+impl EntryId {
+    /// The separator between an id and the model name in a pseudo-model key.
+    pub const SEPARATOR: char = '\u{1f}';
+
+    /// The id of `key`.
+    pub fn of(key: &EntryKey) -> Self {
+        let digest = ring::digest::digest(&ring::digest::SHA256, key.as_bytes());
+        let mut id = [0u8; ENTRY_ID_LEN];
+        id.copy_from_slice(&digest.as_ref()[..ENTRY_ID_LEN]);
+        EntryId(id)
+    }
+
+    /// The 24-character lowercase hex spelling.
+    pub fn hex(&self) -> String {
+        hex(&self.0)
+    }
+
+    /// The id from its 24-character hex spelling.
+    pub fn parse_hex(text: &str) -> Option<Self> {
+        let bytes = unhex(text)?;
+        <[u8; ENTRY_ID_LEN]>::try_from(bytes.as_slice())
+            .ok()
+            .map(EntryId)
+    }
+
+    /// The pseudo-model prefix `"<24hex>\u{1f}"`: alone it keys the entry's fee count, followed by
+    /// a model name it keys that model's unit counts.
+    pub fn pseudo_prefix(&self) -> String {
+        let mut prefix = self.hex();
+        prefix.push(Self::SEPARATOR);
+        prefix
+    }
+
+    /// Split a pseudo-model key into its entry id and the model name after the separator (empty
+    /// for the fee key), or `None` when the key carries no well-formed id prefix.
+    pub fn split_pseudo(key: &str) -> Option<(EntryId, &str)> {
+        let (id, model) = key.split_once(Self::SEPARATOR)?;
+        (id.len() == 2 * ENTRY_ID_LEN)
+            .then(|| EntryId::parse_hex(id))
+            .flatten()
+            .map(|id| (id, model))
+    }
+}
+
+impl std::fmt::Display for EntryId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.hex())
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
+        .collect()
+}
+
 /// Why an entry exists. The distinction is the whole audit trail: an operator reading the history
 /// can tell an ordinary price change from a correction of the past without comparing timestamps.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -73,6 +219,8 @@ pub enum Author {
 #[derive(Clone, Debug)]
 pub struct CardEntry {
     seq: HistorySeq,
+    key: EntryKey,
+    voided: bool,
     effective_from: u64,
     effective_until: Option<u64>,
     card: RateCard,
@@ -84,6 +232,16 @@ impl CardEntry {
     /// This entry's number. Assigned on append and never changed.
     pub fn seq(&self) -> HistorySeq {
         self.seq
+    }
+
+    /// This entry's identity in the fleet-shared history.
+    pub fn key(&self) -> EntryKey {
+        self.key
+    }
+
+    /// The id a count segment priced with this entry carries.
+    pub fn id(&self) -> EntryId {
+        self.key.id()
     }
 
     /// The first instant this entry prices, inclusive, in wall-clock milliseconds.
@@ -119,6 +277,17 @@ impl CardEntry {
     /// Whether this entry's interval covers `t`: `effective_from <= t < effective_until`.
     pub fn covers(&self, t: u64) -> bool {
         t >= self.effective_from && self.effective_until.is_none_or(|until| t < until)
+    }
+
+    /// Whether a VOID record names this entry: it is never in force, but its id stays KNOWN, so a
+    /// count already posted under it keeps its card (MONEY-DESIGN section 3a, owner item 16).
+    pub fn is_voided(&self) -> bool {
+        self.voided
+    }
+
+    /// Whether this entry prices `t`: live, and covering it.
+    fn prices(&self, t: u64) -> bool {
+        !self.voided && self.covers(t)
     }
 }
 
@@ -242,8 +411,16 @@ impl History {
     /// open-ended entry before it at every instant they share.
     pub fn append(&mut self, draft: CardEntryDraft) -> HistorySeq {
         let seq = HistorySeq(self.entries.len() as u64);
+        // A local append mints the next key above the head, `t = max(appended_at, head + 1)`, so
+        // key order is append order.
+        let t_ms = self.entries.last().map_or(draft.appended_at, |head| {
+            draft.appended_at.max(head.key.t_ms().saturating_add(1))
+        });
+        let key = EntryKey::new(t_ms, [0; 8], seq.0 as u32);
         self.entries.push(CardEntry {
             seq,
+            key,
+            voided: false,
             effective_from: draft.effective_from,
             effective_until: draft.effective_until,
             card: draft.card,
@@ -251,6 +428,86 @@ impl History {
             author: draft.author,
         });
         seq
+    }
+}
+
+impl History {
+    /// **ORDERED INSERT** of an entry read from (or written to) the fleet-shared history under its
+    /// own `key`. Entries are kept in key order, and an entry's number is its position in that
+    /// order, so a history rebuilt from the store numbers its entries alike on every node. A key
+    /// already held is left as it is: an entry is immutable. Answers the entry's number.
+    pub fn insert(&mut self, key: EntryKey, draft: CardEntryDraft) -> HistorySeq {
+        match self.entries.binary_search_by(|e| e.key.cmp(&key)) {
+            Ok(at) => HistorySeq(at as u64),
+            Err(at) => {
+                self.entries.insert(
+                    at,
+                    CardEntry {
+                        seq: HistorySeq(at as u64),
+                        key,
+                        voided: false,
+                        effective_from: draft.effective_from,
+                        effective_until: draft.effective_until,
+                        card: draft.card,
+                        appended_at: draft.appended_at,
+                        author: draft.author,
+                    },
+                );
+                for (i, e) in self.entries.iter_mut().enumerate().skip(at) {
+                    e.seq = HistorySeq(i as u64);
+                }
+                HistorySeq(at as u64)
+            }
+        }
+    }
+
+    /// Mark the entry `key` VOID. Answers whether this history holds it.
+    pub fn void(&mut self, key: &EntryKey) -> bool {
+        match self.entries.iter_mut().find(|e| e.key == *key) {
+            Some(entry) => {
+                entry.voided = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The entry whose key is `key`, voided or not.
+    pub fn entry(&self, key: &EntryKey) -> Option<&CardEntry> {
+        self.entries.iter().find(|e| e.key == *key)
+    }
+
+    /// The highest commit time among the LIVE entries (`head_t_ms`): a voided entry never counts.
+    pub fn head_t_ms(&self) -> Option<u64> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| !e.voided)
+            .map(|e| e.key.t_ms())
+    }
+
+    /// The highest-keyed LIVE entry: the head a new entry extends.
+    pub fn live_head(&self) -> Option<&CardEntry> {
+        self.entries.iter().rev().find(|e| !e.voided)
+    }
+
+    /// **THE ANSWER AT `instant`** (seam for the poster): the id and card of the highest-keyed live
+    /// entry covering it, or `None` for a hole.
+    pub fn entry_at(&self, instant: u64) -> Option<(EntryId, &RateCard)> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| entry.prices(instant))
+            .map(|entry| (entry.id(), &entry.card))
+    }
+
+    /// The card of the entry whose id is `id`, voided or not: a count posted under an entry keeps
+    /// that entry's card forever. `None` means this node does not hold that entry.
+    pub fn card_of(&self, id: &EntryId) -> Option<&RateCard> {
+        self.entries
+            .iter()
+            .find(|entry| entry.id() == *id)
+            .map(|entry| &entry.card)
     }
 }
 
@@ -277,13 +534,13 @@ impl HistoryView<'_> {
         self.entries
             .iter()
             .rev()
-            .find(|e| e.covers(t))
+            .find(|e| e.prices(t))
             .map(|e| (e.seq, &e.card))
     }
 
     /// The entry this view resolved to at `t`, whole.
     pub fn entry_at(&self, t: u64) -> Option<&CardEntry> {
-        self.entries.iter().rev().find(|e| e.covers(t))
+        self.entries.iter().rev().find(|e| e.prices(t))
     }
 
     /// **THE ONE ENTRY THAT PRICES EVERY INSTANT OF `[from, until)`** (`until` `None` is open-ended),
@@ -303,7 +560,8 @@ impl HistoryView<'_> {
         // An entry that out-ranks the base and overlaps the window resolves part of it (it cannot
         // cover `from`, or it would have been the base).
         let outranked = self.entries.iter().any(|e| {
-            e.seq > base.seq
+            !e.voided
+                && e.seq > base.seq
                 && e.effective_until.is_none_or(|ends| from < ends)
                 && until.is_none_or(|until| e.effective_from < until)
         });

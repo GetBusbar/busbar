@@ -80,6 +80,8 @@ pub use store_identity::node_id;
 // Its callers are the admin verify (`units_admin`, `root-admin`) and the tests.
 #[cfg(any(test, feature = "root-admin"))]
 pub use store_identity::walk_stored_chains;
+// Every other node's chain, read by the boot's rate-card migration (`root::card_history`).
+pub use store_identity::stored_chains;
 
 /// The node amendment journal bound to the chain: each sealed amendment journalled, and the node
 /// journal rebuilt from the chain at boot. A private child module, as `replay` is.
@@ -795,12 +797,7 @@ fn build_inner(
         // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).
         let refused = cards
             .rebuild_from_chain(&mut durability, records)
-            .map_err(|lost| {
-                OpenError::Io(std::io::Error::other(format!(
-                    "the journal could not make the boot's rate card durable at step {}",
-                    lost.step().as_str()
-                )))
-            })?;
+            .map_err(|refused| OpenError::Io(std::io::Error::other(refused.to_string())))?;
         // A signed rate correction the dated history's rebuild refused: its base is not on the
         // rebuilt history, so it is reported rather than rebuilt over a card nobody signed (#79).
         findings.extend(refused.into_iter().map(|refused| refused.to_string()));
