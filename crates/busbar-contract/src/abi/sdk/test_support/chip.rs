@@ -68,3 +68,11 @@ pub fn parts_bytes(parts: &crate::abi::sdk::cred::Parts) -> Vec<u8> {
 pub fn form_bytes(body: &crate::abi::sdk::cred::FormBody) -> Vec<u8> {
     body.encoded().expect("the form encodes").buf.to_vec()
 }
+
+/// The whole head an [`Exchange`](crate::abi::sdk::exchange::Exchange) frames (its method, target
+/// and field block, one after another), sealed values included: a test comparing a sealed request
+/// with the unsealed one it replaces (raw bytes, for an exchange that sends them).
+#[must_use]
+pub fn framed_head(exchange: &crate::abi::sdk::exchange::Exchange) -> Vec<u8> {
+    exchange.head_bytes()
+}

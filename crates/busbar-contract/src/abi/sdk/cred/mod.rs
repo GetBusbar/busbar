@@ -12,6 +12,8 @@
 //!   password inside it is a [`Cred`].
 //! * [`settings`] parses a plugin's settings so every `Cred`/`CredUrl` field is sealed as it is read,
 //!   the parse tree is wiped, and no error text quotes a settings value.
+//! * [`record`] is a `Cred`'s one serde path: a field a plane keeps in a host record it writes
+//!   ([`record::to_vec`]) and reads back. Serialized anywhere else it refuses.
 //! * [`Held`] is the zeroizing holder for material that is not a configured credential (SRTP keys,
 //!   a presented assertion): no getter outside this crate either.
 //!
@@ -47,6 +49,7 @@
 mod floor;
 mod form;
 mod form_body;
+pub mod record;
 mod settings;
 pub(crate) mod write;
 
@@ -294,6 +297,8 @@ impl Seal {
 pub const NOT_SECURE: &str = "a credential the operator's URL requires a secure connection \
      for was not sent: the host connector reports this connection is not secured";
 
+mod json;
 #[cfg(test)]
 #[path = "../tests/cred_tests.rs"]
 mod tests;
+pub use json::{json_reply, JsonFailure, JsonReplyError, NotJsonText, SealedJson};

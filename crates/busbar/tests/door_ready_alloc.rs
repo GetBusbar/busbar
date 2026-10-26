@@ -17,7 +17,7 @@
 //!
 //! WHY IT EXISTS BESIDE `hot-path-alloc`: that gate's instrument
 //! (`crates/busbar-kernel/benches/plane_host_vtable_alloc.rs`) counts a plugin's call batch into
-//! the host-services table (`HostSlots`), which replaced the HOT lane row 84 deleted. This is the
+//! the host-services table (`HostSlots`), which replaced the deleted HOT lane. This is the
 //! door lane's witness, the one the request path crosses, and `hot-path-alloc:door-ready-zero`
 //! holds it.
 //!
@@ -150,7 +150,7 @@ disarmed!(refusal, refusal);
 disarmed!(serve, serve);
 disarmed!(project, project);
 
-/// The `catalog` the door answers (the test plane states none, ARCHITECT ruling 2026-10-16, 3b C):
+/// The `catalog` the door answers:
 /// an empty listing, `200`, its body disarmed like every other op's, so the crossing measured is the
 /// host's own.
 extern "C" fn catalog(_: *mut c_void, _: *const c_void, out: *mut c_void) -> RawOutcome {

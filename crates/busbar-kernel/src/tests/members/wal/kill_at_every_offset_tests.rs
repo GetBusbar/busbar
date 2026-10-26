@@ -145,7 +145,6 @@ fn a_cut_at_every_byte_offset_recovers_the_longest_complete_prefix() {
 }
 
 /// **A WRITE THAT STOPPED AT ANY BYTE, WITH ZEROS AFTER IT, IS A TORN TAIL — NEVER CORRUPTION**
-/// (Q128 kernel-wal 5).
 ///
 /// The shape a crash mid-commit really leaves on a segment that claimed its space ahead: the file
 /// keeps its length, the bytes up to where the write stopped are there, and everything after is the
@@ -221,7 +220,7 @@ fn a_cut_mid_record_drops_the_whole_record_not_a_short_one() {
     assert_eq!(recover_from(&bytes), written);
 }
 
-/// **A FLIPPED BYTE ANYWHERE COSTS THAT RECORD AND NO OTHER** (arch-audit u44, MEDIUM). Every byte
+/// **A FLIPPED BYTE ANYWHERE COSTS THAT RECORD AND NO OTHER**. Every byte
 /// of every frame is flipped in turn. The frame is whole, so the damage is acknowledged: the record
 /// it is in is set aside and every record behind it is kept. RED before the fix: the scan stopped at
 /// the damaged record for good, and every record behind it was cut with it.

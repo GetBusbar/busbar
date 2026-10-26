@@ -12,6 +12,7 @@ pub mod aws4;
 pub(crate) mod digests;
 mod jws;
 pub(crate) mod rsa;
+mod scheme;
 
 use base64::Engine as _;
 use zeroize::Zeroizing;
