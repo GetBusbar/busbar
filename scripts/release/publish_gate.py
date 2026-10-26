@@ -223,23 +223,34 @@ def release_targets(root: Path) -> list:
     return json.loads((root / ".github" / "release-targets.json").read_text())["targets"]
 
 
-def registry_plugins(root: Path) -> list:
-    """The repos under `plugins:` in plugins.yaml (no YAML parser: one `- repo:` line each)."""
+def registry_entries(root: Path) -> list:
+    """The entries under `plugins:` in plugins.yaml, as {field: raw value}. There is no YAML parser
+    here: each entry is a `  - repo:` line followed by `    field: value` lines."""
     lines = (root / "plugins.yaml").read_text().splitlines()
     try:
         start = next(i for i, l in enumerate(lines) if re.fullmatch(r"plugins:\s*", l))
     except StopIteration:
         raise ValueError("plugins.yaml has no top-level `plugins:` list") from None
-    repos = []
+    entries: list = []
     for line in lines[start + 1:]:
         if line and not line.startswith((" ", "#", "-")):
             break  # the next top-level key
         m = re.match(r"^  - repo:\s*([A-Za-z0-9._-]+)\s*$", line)
         if m:
-            repos.append(m.group(1))
-    if not repos:
+            entries.append({"repo": m.group(1)})
+            continue
+        m = re.match(r"^    ([a-z_]+):\s*(.*?)\s*$", line)
+        if m and entries:
+            entries[-1][m.group(1)] = m.group(2)
+    if not entries:
         raise ValueError("plugins.yaml lists no plugins")
-    return repos
+    return entries
+
+
+def registry_plugins(root: Path) -> list:
+    """The first-party plugins a release owes: every registered repo except an empty one
+    (`pending_crate: true`, which has no crate to build)."""
+    return [e["repo"] for e in registry_entries(root) if e.get("pending_crate", "false") != "true"]
 
 
 # ── the rules ────────────────────────────────────────────────────────────────────────────────────
