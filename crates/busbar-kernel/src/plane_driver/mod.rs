@@ -722,6 +722,15 @@ pub trait DriverSteps: Units {
         false
     }
 
+    /// THE ONE ENTRY a `ROUTE_SCOPE` or `ROUTE_SCOPE_LOCAL` unit's scope resolved to at Verify (the
+    /// entry the principal's grant reaches among the plane's candidates). A gate-first unit routed
+    /// by scope binds its entry's gates over this entry, never over an entry its projection names
+    /// (ARCHITECT 2026-10-07). `None` = none resolved (zero or several reach, which the door refuses
+    /// `no_destination`); steps that resolve a scope to an entry MUST state it here.
+    fn scope_entry(&self) -> Option<Vec<u8>> {
+        None
+    }
+
     /// THE UNIT'S REQUEST SPAN and the correlation id it carries (status row 173): opened as the
     /// unit's route leg begins, once it is admitted, and its pool known, its decode `decoded` and
     /// operation class `op` (as the previous release opened `forward` around its dispatch only, with

@@ -612,6 +612,9 @@ struct DoorUnit {
     /// A `ROUTE_SCOPE_LOCAL` unit's one entry, its scope resolved at verify: the plane answers it
     /// there, with no route walked.
     resolved: Option<String>,
+    /// A `ROUTE_SCOPE` or `ROUTE_SCOPE_LOCAL` unit's one entry, its scope resolved at verify: the
+    /// entry its gate-first hooks bind over ([`DriverSteps::scope_entry`]).
+    scope_entry: Option<String>,
     /// The counterparty its `arrive` stated among its trust facts: the entry it is addressed to.
     counterparty: Option<Vec<u8>>,
 }
@@ -1048,6 +1051,10 @@ impl DriverSteps for DoorSteps<'_> {
         self.lock().resolved.clone().map(String::into_bytes)
     }
 
+    fn scope_entry(&self) -> Option<Vec<u8>> {
+        self.lock().scope_entry.clone().map(String::into_bytes)
+    }
+
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
         let mut u = self.lock();
         u.once = flags & busbar_contract::abi::plane::ROUTE_ONCE != 0;
@@ -1154,12 +1161,16 @@ impl Units for DoorSteps<'_> {
                 // 2026-10-07): resolved as a scope's, and routed nowhere (no pool, no breaker, no
                 // egress), as predev answered its local verbs at the agent `select` chose before
                 // any pool was read (receive.rs:1257-1279, :1559-1593, before `pool_of` :1839).
-                [one] if class == ROUTE_SCOPE_LOCAL => u.resolved = Some(one.clone()),
+                [one] if class == ROUTE_SCOPE_LOCAL => {
+                    u.resolved = Some(one.clone());
+                    u.scope_entry = Some(one.clone());
+                }
                 // The one entry, routed as an addressed unit naming it is: over the pool of
                 // members each admitted on their own grant that it is a member of, else directly
                 // (predev's unaddressed request reached the same pool walk as an addressed one,
                 // receive.rs:1262-1268 converging at :1839 and :1916).
                 [one] => {
+                    u.scope_entry = Some(one.clone());
                     u.named = Some(match self.pools.member_pool(one) {
                         Some(pool) => (ROUTE_POOL, Some(pool.as_bytes().to_vec())),
                         None => (ROUTE_DIRECT, Some(one.as_bytes().to_vec())),
