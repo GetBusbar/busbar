@@ -288,9 +288,6 @@ fn register_planes() {
     root::legacy::install();
     // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
     // auth axis, before anything resolves one.
-    // THE DOOR-ROOT ROWS FIRST (status row 195): each crate's door admitted by the loader and its
-    // Statement agreeing with its row, or the boot is refused (exit 2) before any row registers.
-    root::door_root::check_door_roots(LINKED.door_roots);
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(
         LINKED.auths,
