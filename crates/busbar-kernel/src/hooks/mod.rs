@@ -1819,6 +1819,28 @@ pub enum ResolvedPolicy {
     },
 }
 
+/// The DEFAULT ceiling, in bytes, on the content a hook is shown in one projection. `0` = UNLIMITED
+/// (the default): the LLM prompt projection is sent UNCAPPED. A non-zero ceiling is an OPT-IN an
+/// operator sets via `limits.hook_content_max_bytes`.
+pub const DEFAULT_HOOK_CONTENT_MAX_BYTES: usize = 0;
+
+/// The effective content ceiling for this config generation, resolved once at config apply
+/// (`limits.hook_content_max_bytes`) and read with a single relaxed load — never recomputed per
+/// request.
+static HOOK_CONTENT_MAX_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_HOOK_CONTENT_MAX_BYTES);
+
+/// Install the generation's content ceiling. Called at boot and on every config apply (by core's
+/// `appbuild`).
+pub fn set_hook_content_max_bytes(bytes: usize) {
+    HOOK_CONTENT_MAX_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Read the generation's content ceiling. `0` = UNLIMITED.
+pub fn hook_content_max_bytes() -> usize {
+    HOOK_CONTENT_MAX_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// THE HOOK CONTENT CEILING, on a built prompt projection: measured on its bytes BEFORE any call,
 /// and over the ceiling the content is OMITTED WHOLE (the hook is shown an empty projection, its
 /// grant still honoured), never truncated mid-value; `busbar_hook_content_truncated_total` counts
@@ -1826,7 +1848,7 @@ pub enum ResolvedPolicy {
 /// prompt applies.
 #[must_use]
 pub fn content_capped(p: PromptProjection<'_>) -> PromptProjection<'_> {
-    let cap = crate::proxy::hook_content_max_bytes();
+    let cap = hook_content_max_bytes();
     if cap == 0 {
         return p;
     }

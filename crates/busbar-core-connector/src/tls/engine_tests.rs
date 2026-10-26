@@ -528,7 +528,7 @@ enum Outcome {
 /// DNS, no pin). `uri` must be dialable as written (an IP-literal host).
 async fn stack_a(uri: &str, body: &str) -> Outcome {
     let client = busbar_kernel::proxy::build_egress_client(
-        &busbar_kernel::proxy::EgressClientSpec::pooled_webpki(4, 300, false, false),
+        &busbar_kernel::egress::engine::EngineSpec::pooled_webpki(4, 300, false, false),
     );
     let req = egress_request(
         uri.parse().expect("fixture uri"),

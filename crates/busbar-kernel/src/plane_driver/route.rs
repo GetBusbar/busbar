@@ -1508,7 +1508,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         if chosen.is_some() {
                             route_policy_fields(
                                 &mut fields,
-                                crate::proxy::route_policy_headers_enabled(),
+                                route_policy_headers_enabled(),
                                 chosen,
                                 &bufs.member,
                             );
@@ -1564,6 +1564,29 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     }
 }
 
+/// The `x-busbar-route-policy` TRANSPARENCY response header: the policy name that chose the lane.
+pub(super) const HDR_ROUTE_POLICY: &str = "x-busbar-route-policy";
+/// The `x-busbar-route-target` TRANSPARENCY response header: the chosen lane's model.
+pub(super) const HDR_ROUTE_TARGET: &str = "x-busbar-route-target";
+
+/// Whether the operator opted in to the `x-busbar-route-policy` / `-target` TRANSPARENCY headers
+/// (`advanced.response_headers.route_policy`; default `false`). Set SYNCHRONOUSLY once at boot by
+/// [`configure_route_policy_headers`]: a settled decision read at every emission site, never rebuilt
+/// by a config apply (restart-to-apply). Unset ⇒ `false`.
+static ROUTE_POLICY_HEADERS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Apply the operator's `advanced.response_headers.route_policy` decision. Called exactly once, at
+/// boot, before the router is built; `OnceLock::set` silently no-ops on any later call.
+pub fn configure_route_policy_headers(enabled: bool) {
+    let _ = ROUTE_POLICY_HEADERS_ENABLED.set(enabled);
+}
+
+/// Did the operator opt in to the `x-busbar-route-*` headers? The header is a fingerprintable
+/// observable, so it defaults OFF.
+fn route_policy_headers_enabled() -> bool {
+    ROUTE_POLICY_HEADERS_ENABLED.get().copied().unwrap_or(false)
+}
+
 /// THE ROUTE-POLICY TRANSPARENCY FIELDS (opt-in, `advanced.response_headers.route_policy`), as
 /// 1.5.5's `maybe_attach_route_policy_gated` gated them: the pair goes after the plane's own fields
 /// only when the operator opted in (`enabled`, the outer gate) AND a non-default policy chose the
@@ -1577,13 +1600,10 @@ fn route_policy_fields(
 ) {
     if let Some(name) = policy.filter(|_| enabled && !member.is_empty()) {
         fields.push((
-            crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(),
+            HDR_ROUTE_POLICY.as_bytes().to_vec(),
             name.as_bytes().to_vec(),
         ));
-        fields.push((
-            crate::proxy::HDR_ROUTE_TARGET.as_bytes().to_vec(),
-            member.to_vec(),
-        ));
+        fields.push((HDR_ROUTE_TARGET.as_bytes().to_vec(), member.to_vec()));
     }
 }
 

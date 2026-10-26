@@ -1416,7 +1416,7 @@ fn unauthorized_response(
         return crate::ingress::native::native_error(
             ingress,
             StatusCode::UNAUTHORIZED,
-            busbar_kernel::proxy::KIND_AUTHENTICATION,
+            busbar_contract::protocol::KIND_AUTHENTICATION,
             AUTH_REFUSED,
         );
     }
@@ -1433,7 +1433,7 @@ fn unauthorized_response(
     core_routes.kernel_refusal(&refusal).unwrap_or_else(|| {
         crate::ingress::native::kernel_refusal(
             StatusCode::UNAUTHORIZED,
-            busbar_kernel::proxy::KIND_AUTHENTICATION,
+            busbar_contract::protocol::KIND_AUTHENTICATION,
             AUTH_REFUSED,
         )
     })
@@ -2069,7 +2069,8 @@ fn unauthorized_with_completion_taps(
         // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
         // `operation: None` capture to exactly this before any IR read), so core names no
         // plane reader here.
-        let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
+        let shape =
+            crate::proxy::proxy_vocab::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = refused.status().as_u16();
         // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
         // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
@@ -2484,8 +2485,11 @@ pub(crate) async fn auth_middleware(
             // reachable from attacker-controlled headers alone, so the cap is enforced here, not
             // assumed of the layer stack.
             let (parts, body) = req.into_parts();
-            let Ok(body_bytes) =
-                axum::body::to_bytes(body, busbar_kernel::proxy::max_translate_body_bytes()).await
+            let Ok(body_bytes) = axum::body::to_bytes(
+                body,
+                busbar_kernel_egress::upstream::max_translate_body_bytes(),
+            )
+            .await
             else {
                 return Err(unauthorized_response(
                     &app,

@@ -204,7 +204,7 @@ pub(crate) async fn reshape_body_limit_413(
             &path,
             &target,
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             OVERSIZED_MESSAGE,
         )
     };
@@ -301,7 +301,7 @@ pub(crate) async fn reshape_oversized_413(
             path,
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
             // CANONICAL kind for an oversized payload across the protocol writers.
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             OVERSIZED_MESSAGE,
         )
     };
@@ -324,7 +324,7 @@ async fn reshape_oversized_413_with(
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok())
-        .is_some_and(|ct| ct.starts_with(crate::proxy::APPLICATION_JSON));
+        .is_some_and(|ct| ct.starts_with(busbar_contract::protocol::APPLICATION_JSON));
     if is_json {
         return resp;
     }
@@ -363,7 +363,7 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     // through `build_split_routers_with_limits` with the operator-configured values.
     build_router_with_limits(
         app,
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     )
@@ -823,7 +823,7 @@ pub(crate) fn apply_common_layers(
         ))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
         // `limits.request_body_max_bytes` (default 32 MiB); COUPLED with the egress translate-body cap
-        // (`busbar_kernel::proxy::max_translate_body_bytes`) — both read the SAME knob so an accepted request is
+        // (`busbar_kernel_egress::upstream::max_translate_body_bytes`) — both read the SAME knob so an accepted request is
         // always buffer-translatable on the cross-protocol path.
         .layer(axum::extract::DefaultBodyLimit::max(request_body_max_bytes))
         // Outermost: reshape the body-limit layer's bare-text 413 into a protocol-native JSON
@@ -1043,7 +1043,7 @@ fn request_panicked(
         uri.path(),
         target_of(uri),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        crate::proxy::KIND_API_ERROR,
+        busbar_contract::protocol::KIND_API_ERROR,
         "internal error",
     )
 }

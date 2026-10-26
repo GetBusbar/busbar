@@ -615,7 +615,7 @@ pub const DISPOSITIONS: [&str; 4] = [
     crate::proxy::DISPOSITION_TRANSIENT,
     crate::proxy::DISPOSITION_ATTEMPT_TIMEOUT,
     crate::proxy::DISPOSITION_HARD_DOWN,
-    crate::proxy::DISPOSITION_CONTEXT_LENGTH,
+    busbar_contract::protocol::DISPOSITION_CONTEXT_LENGTH,
 ];
 /// `reason` values on `busbar_failovers_total`: the dispositions plus the transport error classes
 /// the pre-response failure arm records (`proxy::ERR_NET_CONNECT` / `ERR_NET_TIMEOUT`).
@@ -623,9 +623,9 @@ pub const REASONS: [&str; 6] = [
     crate::proxy::DISPOSITION_TRANSIENT,
     crate::proxy::DISPOSITION_ATTEMPT_TIMEOUT,
     crate::proxy::DISPOSITION_HARD_DOWN,
-    crate::proxy::DISPOSITION_CONTEXT_LENGTH,
-    crate::proxy::ERR_NET_CONNECT,
-    crate::proxy::ERR_NET_TIMEOUT,
+    busbar_contract::protocol::DISPOSITION_CONTEXT_LENGTH,
+    busbar_kernel_egress::upstream::ERR_NET_CONNECT,
+    busbar_kernel_egress::upstream::ERR_NET_TIMEOUT,
 ];
 
 // ── Slot handles ─────────────────────────────────────────────────────────────────────────────────

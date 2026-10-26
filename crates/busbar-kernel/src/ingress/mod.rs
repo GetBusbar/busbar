@@ -32,7 +32,7 @@ pub fn limit_refusal(
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
+            busbar_contract::protocol::KIND_RATE_LIMIT,
             format!(
                 "Too many concurrent requests (group '{group}' is at its in-flight \
                      limit). Please retry shortly."
@@ -50,7 +50,7 @@ pub fn limit_refusal(
             // The quota status is 429 on every dialect (accepted difference C-22); the plane
             // that words the refusal states its own.
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "You have exceeded your current quota (group '{group}' budget per {}{} \
                      exhausted). Please check your plan and billing details.",
@@ -73,7 +73,7 @@ pub fn limit_refusal(
             ..
         } => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_RATE_LIMIT,
+            busbar_contract::protocol::KIND_RATE_LIMIT,
             format!(
                 "Rate limit exceeded (group '{group}': {metric} per {}{}). Please retry \
                      after the indicated time.",
@@ -86,7 +86,7 @@ pub fn limit_refusal(
         // vendor-plausible shape is a permission denial.
         LimitBlocked::Disabled(group) => (
             StatusCode::FORBIDDEN,
-            crate::proxy::KIND_PERMISSION,
+            busbar_contract::protocol::KIND_PERMISSION,
             format!(
                 "Your API key does not currently have access to this resource (group \
                      '{group}' is disabled)."
@@ -97,7 +97,7 @@ pub fn limit_refusal(
         // admitted; the message names the missing bucket so the operator can fix it.
         LimitBlocked::MissingGroup(group) => (
             StatusCode::TOO_MANY_REQUESTS,
-            crate::proxy::KIND_INSUFFICIENT_QUOTA,
+            busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
             format!(
                 "Your quota configuration is incomplete (group '{group}' is not \
                      configured). Please contact your administrator."
@@ -162,25 +162,6 @@ pub mod observe;
 // seam. (The universal resolved-op ingress it used to hold — `operation_resolved`/`operation_ingress`
 // — RELOCATED into the plane that owns it; core reaches it only through the neutral body-arrival seam.)
 pub(crate) use dispatch::protocol_dispatch;
-/// Build the human-readable message for a model/pool-miss 404. `model_not_found_message` is a
-/// dialect's PRE-SHAPED body in its own native vocabulary — built by the arrival that owns the request
-/// (a path-model dialect whose real API uses a different not-found string than the canonical default
-/// copy), and used VERBATIM when present. `None` for every caller that shares the canonical default
-/// copy, so this fn names no dialect: core emits the neutral copy and a dialect that wants otherwise
-/// supplies its own shaped body.
-// `pub` (was module-private): a mounted plane's engine shapes its model-miss 404 body through this
-// neutral helper — the allowed plane→core edge (names only `&str`).
-// RELOCATED (1.6.0 KEYSTONE) to `busbar_kernel::ingress::not_found_message` — a pure `&str`→`String`
-// shaper with no `App`/dialect — so the plane names it there; re-exported here byte-identically so
-// every core `crate::ingress::not_found_message` call site resolves unchanged.
-#[must_use]
-pub fn not_found_message(model: &str, model_not_found_message: Option<&str>) -> String {
-    match model_not_found_message {
-        Some(shaped) => shaped.to_string(),
-        None => format!("The model '{model}' does not exist or you do not have access to it."),
-    }
-}
-
 /// Minimal percent-decoding for a single path segment (no external dependency). Decodes `%XX`
 /// escapes as UTF-8; on any malformed escape it leaves the bytes as-is.
 ///
