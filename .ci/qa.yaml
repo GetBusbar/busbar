@@ -1,19 +1,28 @@
-# What qa must pass to move into main, judged on qa's head: the same five checks as dev, absolute,
-# plus the release CANDIDATE built once and kept (never rebuilt). OWNER HARD RULE: nothing lands in
-# main, and nothing is published, until the owner says so. This move judges and reports only.
+# What qa must pass to move into main, judged on qa's head: the five dev checks, absolute, plus the
+# release CANDIDATE, one named check per target row of .github/release-targets.json, each built once
+# and kept. OWNER HARD RULE: nothing lands in main and nothing is published until the owner says so.
+# This move judges and reports only.
 #
 # PUBLISHING IS NOT HERE. No branch file and no ModernCI tenant secret holds a busbar signing key.
-# The owner fetches the candidate (`modernci call artifact --check candidate-assemble`) and runs
-# scripts/release/publish_gate.py from his own clone with his hardware keys: verify, then sign, then
-# upload (RELEASE.md, docs/verify.md). The gate refuses, rule by rule, anything the candidate got
-# wrong.
+# The owner fetches each slice (`modernci call artifact --check <name>`), assembles locally
+# (`scripts/release/candidate.py assemble`), and runs scripts/release/publish_gate.py from his own
+# clone with his hardware keys: verify, then sign, then upload (RELEASE.md, docs/verify.md). The gate
+# refuses, rule by rule, anything a slice got wrong, including a missing target (G-3).
+#
+# A check no backend can run WAITs and holds the move with that reason. Today: darwin needs a joined
+# Mac (x86_64-apple-darwin's PGO needs an Intel Mac), and no backend builds Windows. Whether 1.6.0
+# builds those elsewhere or ships without them is an OWNER DECISION (PUBLISH-PIPELINE-1.6.0 §10, D6).
+# Kept outputs are capped at 256 MiB per check, and each slice below is one target, well under that.
 to: main
 on_green: none
 approve: true
 deadline: 8h
 on:
-  move: [fmt, clippy, test, deny, oracle, candidate-core, candidate-plugins, candidate-image, candidate-assemble, gate-selftest]
+  move: [fmt, clippy, test, deny, oracle, gate-selftest, candidate-core-x86_64-linux-gnu, candidate-core-aarch64-linux-gnu, candidate-core-aarch64-linux-gnu-armv8, candidate-core-x86_64-apple-darwin, candidate-core-aarch64-apple-darwin, candidate-core-x86_64-windows, candidate-image-amd64, candidate-image-arm64, candidate-plugins-x86_64-linux-gnu, candidate-plugins-aarch64-linux-gnu, candidate-plugins-x86_64-apple-darwin, candidate-plugins-aarch64-apple-darwin, candidate-plugins-x86_64-windows]
   manual: [tls-assess]
+  schedule:
+    cron: "17 */6 * * *"
+    checks: [rekor-watch]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -171,8 +180,6 @@ env:
     for _bbt_t in "$@"; do
       _bbt_ensure "$_bbt_t" || return 1
     done
-on:
-  move: [fmt, clippy, test, deny, oracle]
 checks:
   fmt:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
@@ -290,66 +297,192 @@ checks:
     # The judge's report (diverging.txt and the per-cell diffs), kept with the run green or red and
     # fetched with `modernci call artifact --check oracle`: the full diverging text a FAIL is triaged from.
     outputs: [target/oracle/reports/]
-  # ── THE RELEASE CANDIDATE ──────────────────────────────────────────────────────────────────────
-  # Layout and rules: docs/verify.md "For builders", scripts/release/publish_gate.py. ModernCI fans
-  # candidate-core and candidate-plugins out per target (`<check>@<target>`, $MODERNCI_TARGET), each on
-  # a backend native to the target: linux x86_64/aarch64 (gnu + musl), darwin x86_64/aarch64, and
-  # windows x86_64. A target no backend offers is a WAIT, never a skip: the gate refuses a candidate
-  # missing a declared target by name (G-3).
-  candidate-core:
-    requires: [cc]
+  candidate-core-x86_64-linux-gnu:
+    # busbar-x86_64-unknown-linux-gnu: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
+    requires: [cc, arch-x86_64]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      # cargo-cyclonedx, pinned by version and built --locked into this check's cache.
       C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
       [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
-      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core "$MODERNCI_TARGET" --out target/candidate/core-"$MODERNCI_TARGET"
-    outputs: [target/candidate/]
-  candidate-plugins:
-    # Every first-party plugin at its newest vX.Y.Z tag pinned to the test kit, built for this target and
-    # packed UNSIGNED (the owner signs the canonical bytes on his hardware key). No signing secret exists
-    # to pass: BUSBAR_SIGN_KEY is deleted.
-    requires: [cc, git-history]
+      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core x86_64-unknown-linux-gnu --out target/candidate/core-x86_64-linux-gnu
+    outputs: [target/candidate/core-x86_64-linux-gnu/]
+  candidate-core-aarch64-linux-gnu:
+    # busbar-aarch64-unknown-linux-gnu: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
+    requires: [cc, arch-aarch64]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      kit="$(git rev-parse "test-kit-v$(sed -n 's/^version = "\(.*\)"/\1/p' crates/busbar/Cargo.toml | head -1)^{commit}")" || { echo "no test-kit tag for this version: tag the kit on dev first"; exit 1; }
-      python3 scripts/release/candidate.py plugins "$MODERNCI_TARGET" --kit-commit "$kit" --out target/candidate/plugins-"$MODERNCI_TARGET"
-    outputs: [target/candidate/]
-  candidate-image:
-    # The two image-feeding musl binaries (candidate-core@x86_64-unknown-linux-musl and
-    # @aarch64-unknown-linux-musl, kept outputs) -> one multi-platform OCI layout archive. RUST_ALPINE is
-    # the pinned musl runtime the Dockerfile's /lib comes from (rust:alpine@sha256:..., set by ModernCI).
-    needs: [candidate-core]
-    requires: [docker]
+      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
+      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
+      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core aarch64-unknown-linux-gnu --out target/candidate/core-aarch64-linux-gnu
+    outputs: [target/candidate/core-aarch64-linux-gnu/]
+  candidate-core-aarch64-linux-gnu-armv8:
+    # busbar-aarch64-unknown-linux-gnu-armv8.0: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
+    requires: [cc, arch-aarch64]
     run: |
-      mkdir -p target/candidate/image/internal
-      cp target/candidate/core-*-musl/internal/* target/candidate/image/internal/
-      python3 scripts/release/candidate.py image --out target/candidate/image
-    outputs: [target/candidate/]
-  candidate-assemble:
-    # Every slice -> the one candidate the owner fetches. The slices are the kept outputs of the checks
-    # above, gathered by ModernCI into target/candidate/ (one subdirectory per slice).
-    needs: [candidate-core, candidate-plugins, candidate-image]
-    requires: [git-history]
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
+      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
+      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core aarch64-unknown-linux-gnu-armv8.0 --out target/candidate/core-aarch64-linux-gnu-armv8
+    outputs: [target/candidate/core-aarch64-linux-gnu-armv8/]
+  candidate-core-x86_64-apple-darwin:
+    # busbar-x86_64-apple-darwin: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
+    requires: [cc, rust-target-x86_64-apple-darwin]
     run: |
-      v="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/busbar/Cargo.toml | head -1)"
-      kit="$(git rev-parse "test-kit-v$v^{commit}")" || { echo "no test-kit-v$v tag"; exit 1; }
-      python3 scripts/release/candidate.py assemble --kit-tag "test-kit-v$v" --kit-commit "$kit" --out target/candidate/release target/candidate/core-* target/candidate/plugins-* target/candidate/image
-    outputs: [target/candidate/release/]
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
+      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
+      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core x86_64-apple-darwin --out target/candidate/core-x86_64-apple-darwin
+    outputs: [target/candidate/core-x86_64-apple-darwin/]
+  candidate-core-aarch64-apple-darwin:
+    # busbar-aarch64-apple-darwin: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
+    requires: [cc, rust-target-aarch64-apple-darwin]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
+      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
+      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core aarch64-apple-darwin --out target/candidate/core-aarch64-apple-darwin
+    outputs: [target/candidate/core-aarch64-apple-darwin/]
+  candidate-core-x86_64-windows:
+    # busbar-x86_64-pc-windows-msvc: scripts/release-build.sh plus its CycloneDX SBOM (candidate.py core).
+    requires: [rust-target-x86_64-pc-windows-msvc]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
+      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
+      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py core x86_64-pc-windows-msvc --out target/candidate/core-x86_64-windows
+    outputs: [target/candidate/core-x86_64-windows/]
+  candidate-image-amd64:
+    # linux/amd64: its static musl binary and a single-platform OCI layout on the rust:alpine digest
+    # pinned in release/rust-alpine.txt. candidate.py refuses BuildKit older than 0.13. The owner's
+    # local assemble joins amd64 and arm64 into one index.
+    requires: [cc, docker, arch-x86_64]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
+      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
+      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py image amd64 --out target/candidate/image-amd64
+    outputs: [target/candidate/image-amd64/]
+  candidate-image-arm64:
+    # linux/arm64: its static musl binary and a single-platform OCI layout on the rust:alpine digest
+    # pinned in release/rust-alpine.txt. candidate.py refuses BuildKit older than 0.13. The owner's
+    # local assemble joins amd64 and arm64 into one index.
+    requires: [cc, docker, arch-aarch64]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      C="${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/cargo-cyclonedx-0.5.7"
+      [ -x "$C/bin/cargo-cyclonedx" ] || cargo install --locked --root "$C" cargo-cyclonedx --version 0.5.7
+      CYCLONEDX="$C/bin/cargo-cyclonedx" python3 scripts/release/candidate.py image arm64 --out target/candidate/image-arm64
+    outputs: [target/candidate/image-arm64/]
+  candidate-plugins-x86_64-linux-gnu:
+    # Every plugin in release/plugin-pins.tsv at its pinned commit, built for x86_64-unknown-linux-gnu and packed
+    # UNSIGNED (the owner signs the canonical bytes on his hardware key). No signing secret exists.
+    requires: [cc, arch-x86_64]
+    inputs:
+      - release/plugin-pins.tsv
+      - scripts/release/candidate.py
+      - scripts/release/publish_gate.py
+      - plugins.yaml
+      - Cargo.lock
+      - crates/plugin-loader/**
+      - crates/busbar-contract/**
+      - rust-toolchain.toml
+      - .cargo/**
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py plugins x86_64-unknown-linux-gnu --out target/candidate/plugins-x86_64-linux-gnu
+    outputs: [target/candidate/plugins-x86_64-linux-gnu/]
+  candidate-plugins-aarch64-linux-gnu:
+    # Every plugin in release/plugin-pins.tsv at its pinned commit, built for aarch64-unknown-linux-gnu and packed
+    # UNSIGNED (the owner signs the canonical bytes on his hardware key). No signing secret exists.
+    requires: [cc, arch-aarch64]
+    inputs:
+      - release/plugin-pins.tsv
+      - scripts/release/candidate.py
+      - scripts/release/publish_gate.py
+      - plugins.yaml
+      - Cargo.lock
+      - crates/plugin-loader/**
+      - crates/busbar-contract/**
+      - rust-toolchain.toml
+      - .cargo/**
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py plugins aarch64-unknown-linux-gnu --out target/candidate/plugins-aarch64-linux-gnu
+    outputs: [target/candidate/plugins-aarch64-linux-gnu/]
+  candidate-plugins-x86_64-apple-darwin:
+    # Every plugin in release/plugin-pins.tsv at its pinned commit, built for x86_64-apple-darwin and packed
+    # UNSIGNED (the owner signs the canonical bytes on his hardware key). No signing secret exists.
+    requires: [cc, rust-target-x86_64-apple-darwin]
+    inputs:
+      - release/plugin-pins.tsv
+      - scripts/release/candidate.py
+      - scripts/release/publish_gate.py
+      - plugins.yaml
+      - Cargo.lock
+      - crates/plugin-loader/**
+      - crates/busbar-contract/**
+      - rust-toolchain.toml
+      - .cargo/**
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py plugins x86_64-apple-darwin --out target/candidate/plugins-x86_64-apple-darwin
+    outputs: [target/candidate/plugins-x86_64-apple-darwin/]
+  candidate-plugins-aarch64-apple-darwin:
+    # Every plugin in release/plugin-pins.tsv at its pinned commit, built for aarch64-apple-darwin and packed
+    # UNSIGNED (the owner signs the canonical bytes on his hardware key). No signing secret exists.
+    requires: [cc, rust-target-aarch64-apple-darwin]
+    inputs:
+      - release/plugin-pins.tsv
+      - scripts/release/candidate.py
+      - scripts/release/publish_gate.py
+      - plugins.yaml
+      - Cargo.lock
+      - crates/plugin-loader/**
+      - crates/busbar-contract/**
+      - rust-toolchain.toml
+      - .cargo/**
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py plugins aarch64-apple-darwin --out target/candidate/plugins-aarch64-apple-darwin
+    outputs: [target/candidate/plugins-aarch64-apple-darwin/]
+  candidate-plugins-x86_64-windows:
+    # Every plugin in release/plugin-pins.tsv at its pinned commit, built for x86_64-pc-windows-msvc and packed
+    # UNSIGNED (the owner signs the canonical bytes on his hardware key). No signing secret exists.
+    requires: [rust-target-x86_64-pc-windows-msvc]
+    inputs:
+      - release/plugin-pins.tsv
+      - scripts/release/candidate.py
+      - scripts/release/publish_gate.py
+      - plugins.yaml
+      - Cargo.lock
+      - crates/plugin-loader/**
+      - crates/busbar-contract/**
+      - rust-toolchain.toml
+      - .cargo/**
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py plugins x86_64-pc-windows-msvc --out target/candidate/plugins-x86_64-windows
+    outputs: [target/candidate/plugins-x86_64-windows/]
   gate-selftest:
-    # The publish gate proves, offline, that it passes a good release and refuses each broken one by name.
+    # The publish gate proves, offline, that it passes a good release and refuses each broken one by
+    # name; the key guard proves both its halves.
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo build --locked -p busbar-plugin-loader --features pack --bin busbar-plugin-pack
       PACK=target/debug/busbar-plugin-pack python3 scripts/release/test_publish_gate.py
       bash scripts/release-key-guard.sh --selftest
-  # ── THE TLS ASSESSMENT (manual; the release's TLS evidence) ─────────────────────────────────────
-  # The RELEASED image by digest, on the public lab host tls-lab.getbusbar.com, terminating TLS itself
-  # with a public-CA certificate (HTTP-01; no DNS secret). Judged by scripts/release/tls-assert.json's
-  # named assertions, never a grade. Becomes ModernCI's `tls_assess` check type (RP-8); until then it
-  # runs on a backend holding the lab-host lease (`tls-lab`).
+  rekor-watch:
+    # Every 6 hours: any Rekor entry under a K2 key that release/released.tsv does not list, or any
+    # listed release missing from the log, is an alarm (scripts/release/rekor_watch.py). Exit 3
+    # (Rekor unreadable) is never a pass.
+    run: |
+      python3 scripts/release/rekor_watch.py
   tls-assess:
+    # The RELEASED image, by digest, on the public lab host (a machine joined with provides:
+    # [tls-lab], tls-lab.getbusbar.com, ports 80 and 443 open). The digest is taken from the release's
+    # IMAGES file only after its K2 signature verifies against release/allowed_signers. Judged by
+    # scripts/release/tls-assert.json's named assertions, never a grade.
     requires: [docker, tls-lab]
     run: |
       set -eu
@@ -360,12 +493,9 @@ checks:
         rm -rf "$T/testssl"; mkdir "$T/testssl"; tar -C "$T/testssl" --strip-components=1 -xzf "$T/testssl.tgz"
       fi
       v="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/busbar/Cargo.toml | head -1)"
-      : "${BUSBAR_IMAGE_DIGEST:?the released image index digest (IMAGES) to assess}"
-      for variant in ecdsa rsa; do
-        # The lab host serves ghcr.io/getbusbar/busbar@$BUSBAR_IMAGE_DIGEST with its $variant certificate.
-        # `tls-lab` is the lab-host lease ModernCI provides (RP-8 asks); this check waits until it exists.
-        tls-lab serve --image "ghcr.io/getbusbar/busbar@$BUSBAR_IMAGE_DIGEST" --cert "$variant" --host tls-lab.getbusbar.com
-        TESTSSL="$T/testssl/testssl.sh" python3 scripts/release/tls_assess.py run --host tls-lab.getbusbar.com \
-          --version "$v" --image-digest "$BUSBAR_IMAGE_DIGEST" --variant "$variant" --out target/tls-evidence
-      done
+      base="https://github.com/GetBusbar/busbar/releases/download/v$v"
+      curl -fsSL -o IMAGES "$base/IMAGES" && curl -fsSL -o IMAGES.sig "$base/IMAGES.sig"
+      ssh-keygen -Y verify -f release/allowed_signers -I busbar-release -n busbar-release -s IMAGES.sig < IMAGES
+      d="$(awk '$1 == "busbar" {print $2}' IMAGES)"
+      TESTSSL="$T/testssl/testssl.sh" bash scripts/release/tls-lab.sh "$v" "$d"
     outputs: [target/tls-evidence/]
