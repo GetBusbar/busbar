@@ -3,6 +3,9 @@
 # and kept. OWNER HARD RULE: nothing lands in main and nothing is published until the owner says so.
 # This move judges and reports only.
 #
+# busbar writes and owns this file ("ModernCI runs CI, busbar controls what"). Nothing here runs on
+# GitHub Actions, which is retired.
+#
 # PUBLISHING IS NOT HERE. No branch file and no ModernCI tenant secret holds a busbar signing key.
 # The owner fetches each slice (`modernci call artifact --check <name>`), assembles locally
 # (`scripts/release/candidate.py assemble`), and runs scripts/release/publish_gate.py from his own
@@ -19,7 +22,7 @@ approve: true
 deadline: 8h
 on:
   move: [fmt, clippy, test, deny, oracle, gate-selftest, candidate-core-x86_64-linux-gnu, candidate-core-aarch64-linux-gnu, candidate-core-aarch64-linux-gnu-armv8, candidate-core-x86_64-apple-darwin, candidate-core-aarch64-apple-darwin, candidate-core-x86_64-windows, candidate-image-amd64, candidate-image-arm64, candidate-plugins-x86_64-linux-gnu, candidate-plugins-aarch64-linux-gnu, candidate-plugins-x86_64-apple-darwin, candidate-plugins-aarch64-apple-darwin, candidate-plugins-x86_64-windows]
-  manual: [tls-assess]
+  manual: [tls-assess, pgo-train-x86_64-linux-gnu, pgo-train-aarch64-linux-gnu, pgo-train-aarch64-linux-gnu-armv8, pgo-train-x86_64-linux-musl, pgo-train-aarch64-linux-musl, pgo-train-x86_64-apple-darwin, pgo-train-aarch64-apple-darwin]
   schedule:
     cron: "17 */6 * * *"
     checks: [rekor-watch]
@@ -499,3 +502,66 @@ checks:
       d="$(awk '$1 == "busbar" {print $2}' IMAGES)"
       TESTSSL="$T/testssl/testssl.sh" bash scripts/release/tls-lab.sh "$v" "$d"
     outputs: [target/tls-evidence/]
+  pgo-train-x86_64-linux-gnu:
+    # MANUAL. Trains the PGO profile for x86_64-unknown-linux-gnu on a native backend (candidate.py pgo-train). A person
+    # reviews the .meta, and commits x86_64-unknown-linux-gnu.profdata and its .meta to release/pgo/. Releases build only
+    # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
+    requires: [cc, arch-x86_64]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py pgo-train x86_64-unknown-linux-gnu --out target/pgo-train-x86_64-linux-gnu
+    outputs: [target/pgo-train-x86_64-linux-gnu/]
+  pgo-train-aarch64-linux-gnu:
+    # MANUAL. Trains the PGO profile for aarch64-unknown-linux-gnu on a native backend (candidate.py pgo-train). A person
+    # reviews the .meta, and commits aarch64-unknown-linux-gnu.profdata and its .meta to release/pgo/. Releases build only
+    # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
+    requires: [cc, arch-aarch64]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py pgo-train aarch64-unknown-linux-gnu --out target/pgo-train-aarch64-linux-gnu
+    outputs: [target/pgo-train-aarch64-linux-gnu/]
+  pgo-train-aarch64-linux-gnu-armv8:
+    # MANUAL. Trains the PGO profile for aarch64-unknown-linux-gnu-armv8.0 on a native backend (candidate.py pgo-train). A person
+    # reviews the .meta, and commits aarch64-unknown-linux-gnu-armv8.0.profdata and its .meta to release/pgo/. Releases build only
+    # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
+    requires: [cc, arch-aarch64]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py pgo-train aarch64-unknown-linux-gnu-armv8.0 --out target/pgo-train-aarch64-linux-gnu-armv8
+    outputs: [target/pgo-train-aarch64-linux-gnu-armv8/]
+  pgo-train-x86_64-linux-musl:
+    # MANUAL. Trains the PGO profile for x86_64-unknown-linux-musl on a native backend (candidate.py pgo-train). A person
+    # reviews the .meta, and commits x86_64-unknown-linux-musl.profdata and its .meta to release/pgo/. Releases build only
+    # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
+    requires: [cc, arch-x86_64]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py pgo-train x86_64-unknown-linux-musl --out target/pgo-train-x86_64-linux-musl
+    outputs: [target/pgo-train-x86_64-linux-musl/]
+  pgo-train-aarch64-linux-musl:
+    # MANUAL. Trains the PGO profile for aarch64-unknown-linux-musl on a native backend (candidate.py pgo-train). A person
+    # reviews the .meta, and commits aarch64-unknown-linux-musl.profdata and its .meta to release/pgo/. Releases build only
+    # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
+    requires: [cc, arch-aarch64]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py pgo-train aarch64-unknown-linux-musl --out target/pgo-train-aarch64-linux-musl
+    outputs: [target/pgo-train-aarch64-linux-musl/]
+  pgo-train-x86_64-apple-darwin:
+    # MANUAL. Trains the PGO profile for x86_64-apple-darwin on a native backend (candidate.py pgo-train). A person
+    # reviews the .meta, and commits x86_64-apple-darwin.profdata and its .meta to release/pgo/. Releases build only
+    # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
+    requires: [cc, rust-target-x86_64-apple-darwin]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py pgo-train x86_64-apple-darwin --out target/pgo-train-x86_64-apple-darwin
+    outputs: [target/pgo-train-x86_64-apple-darwin/]
+  pgo-train-aarch64-apple-darwin:
+    # MANUAL. Trains the PGO profile for aarch64-apple-darwin on a native backend (candidate.py pgo-train). A person
+    # reviews the .meta, and commits aarch64-apple-darwin.profdata and its .meta to release/pgo/. Releases build only
+    # from committed profiles (owner decision D4), so a second builder reproduces the same bytes.
+    requires: [cc, rust-target-aarch64-apple-darwin]
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      python3 scripts/release/candidate.py pgo-train aarch64-apple-darwin --out target/pgo-train-aarch64-apple-darwin
+    outputs: [target/pgo-train-aarch64-apple-darwin/]
