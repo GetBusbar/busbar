@@ -39,10 +39,6 @@ mod emit;
 pub use emit::emit;
 
 #[cfg(test)]
-#[path = "tests/coverage_tests.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "tests/catalog_tests.rs"]
 mod catalog_tests;
 

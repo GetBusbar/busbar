@@ -2482,6 +2482,175 @@ mod transport_pin {
         });
     }
 
+    /// Every per-instance record `c` still holds for `owner`, by name.
+    fn records_of(c: &Connector, owner: InstanceId) -> Vec<&'static str> {
+        let mut held = Vec::new();
+        if c.over.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("needs");
+        }
+        if c.declared.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("declarations");
+        }
+        if c.slab.check_need(owner, NeedId(0)).is_ok() {
+            held.push("table needs");
+        }
+        if c.anchored
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("sealed destinations");
+        }
+        if c.member_anchored
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("sealed registrations");
+        }
+        if c.registered
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("registrations at a destination");
+        }
+        if c.reaching
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _)| *o == owner)
+        {
+            held.push("private reaches");
+        }
+        if c.auths
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(o, _, _, _)| *o == owner)
+        {
+            held.push("auth bindings");
+        }
+        if c.authority_held.lock().unwrap().contains(&owner) {
+            held.push("held authority");
+        }
+        if c.listeners.lock().unwrap().keys().any(|(o, _)| *o == owner) {
+            held.push("listeners");
+        }
+        held
+    }
+
+    /// RED (audit row 159, connector HIGH 5: "every per-instance record grows with each reload"):
+    /// a reload replaces an instance with one under a new id and the gone one is forgotten. Over
+    /// every replace cycle nothing a gone instance declared, sealed, bound or held stays on the
+    /// connector. GREEN twins: the instance that replaced it, and a neighbour never replaced, keep
+    /// every record and still exchange; a forgotten id declared again works.
+    #[test]
+    fn a_forgotten_instance_leaves_no_record_however_many_reloads() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let served = pki.leaf("localhost");
+            let far = keeping_tls_far_end(&served).await;
+            let c = pooled_trusting(&pki);
+            let pinned = Anchors {
+                key_pin: Some(served.pin.clone()),
+                client_identity: None,
+                private_reach: false,
+            };
+            // Declared as the loader declares a plugin's need (`DeclaredConns::declare`), which
+            // records the declaration as well as the need.
+            let need = ReadNeed {
+                transport: "sec".to_owned(),
+                ..super::config_targeted_need("")
+            };
+            let hold = |owner: InstanceId| {
+                DeclaredConns::declare(&c, owner, NeedId(0), &need, None, None).expect("declared");
+                c.hold_authority(owner);
+                c.anchor(owner, NeedId(0), "", &far, &pinned)
+                    .expect("the destination sealed");
+                c.anchor(owner, NeedId(0), "planner", &far, &pinned)
+                    .expect("the registration sealed");
+                c.seal_reach(owner, NeedId(0), "planner", &far, true)
+                    .expect("the reach sealed");
+                c.bind_auth(
+                    owner,
+                    NeedId(0),
+                    "planner",
+                    "https://vendor.example",
+                    bound_as(1),
+                );
+            };
+            let every = vec![
+                "needs",
+                "declarations",
+                "table needs",
+                "sealed destinations",
+                "sealed registrations",
+                "registrations at a destination",
+                "private reaches",
+                "auth bindings",
+                "held authority",
+            ];
+            let whole = (b"x".to_vec(), true, None);
+            hold(OWNER);
+            let mut live = InstanceId(10);
+            hold(live);
+            assert_eq!(
+                records_of(&c, live),
+                every,
+                "a live instance holds its records"
+            );
+            assert_eq!(
+                pooled_exchange(&c, (live, 0), &far, b"first", true).await,
+                whole
+            );
+            let mut gone = Vec::new();
+            for cycle in 11..15 {
+                let next = InstanceId(cycle);
+                hold(next);
+                c.forget(live);
+                gone.push(live);
+                live = next;
+                for g in &gone {
+                    assert_eq!(
+                        records_of(&c, *g),
+                        Vec::<&str>::new(),
+                        "a forgotten instance holds no record (reload {cycle})"
+                    );
+                }
+                assert_eq!(
+                    records_of(&c, live),
+                    every,
+                    "the instance that replaced it holds its own"
+                );
+                assert_eq!(
+                    pooled_exchange(&c, (live, 0), &far, b"first", true).await,
+                    whole,
+                    "the instance that replaced it exchanges"
+                );
+            }
+            assert_eq!(
+                records_of(&c, OWNER),
+                every,
+                "a neighbour's records are untouched"
+            );
+            assert_eq!(
+                pooled_exchange(&c, (OWNER, 0), &far, b"first", true).await,
+                whole,
+                "a neighbour still exchanges"
+            );
+            hold(gone[0]);
+            assert_eq!(
+                pooled_exchange(&c, (gone[0], 0), &far, b"first", true).await,
+                whole,
+                "a forgotten id declared again exchanges"
+            );
+        });
+    }
+
     /// RED (`PollConns::anchor`: "an open naming it, to its own target's authority, is held to its
     /// anchors alone (none, where they are empty)"): a registration holding NO anchors, sealed
     /// BEFORE another registration at the same authority that holds a client identity, still
@@ -2564,6 +2733,179 @@ mod transport_pin {
                 open.err(),
                 Some(ConnError::Refused),
                 "two registrations disagree: an open naming neither is refused"
+            );
+        });
+    }
+
+    /// What a splicing proxy saw, one entry per tunnel in the order they were asked: the CONNECT
+    /// head, and every byte it relayed from the dialler to the far end after answering it.
+    type ProxySeen = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+    /// A CONNECT proxy on loopback, as a corporate egress proxy is: it reads the CONNECT head,
+    /// answers `200`, dials the authority it was asked for and splices the two sockets, recording
+    /// the head and every byte the dialler sent through the tunnel.
+    async fn splicing_proxy() -> (u16, ProxySeen) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: ProxySeen = Arc::default();
+        let saw = Arc::clone(&seen);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let saw = Arc::clone(&saw);
+                tokio::spawn(async move {
+                    let mut head = Vec::new();
+                    let mut byte = [0_u8; 1];
+                    while !head.ends_with(b"\r\n\r\n") {
+                        if sock.read(&mut byte).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head).into_owned();
+                    let authority = head
+                        .strip_prefix("CONNECT ")
+                        .and_then(|rest| rest.split(' ').next())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let slot = {
+                        let mut saw = saw.lock().unwrap();
+                        saw.push((head, Vec::new()));
+                        saw.len() - 1
+                    };
+                    let Ok(upstream) = tokio::net::TcpStream::connect(authority).await else {
+                        return;
+                    };
+                    sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let (mut down_r, mut down_w) = sock.into_split();
+                    let (mut up_r, mut up_w) = upstream.into_split();
+                    tokio::spawn(async move {
+                        let _ = tokio::io::copy(&mut up_r, &mut down_w).await;
+                    });
+                    let mut buf = [0_u8; 4096];
+                    loop {
+                        let n = down_r.read(&mut buf).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        // Recorded before it is relayed, so the far end's answer never outruns
+                        // the record of what reached it.
+                        saw.lock().unwrap()[slot].1.extend_from_slice(&buf[..n]);
+                        if up_w.write_all(&buf[..n]).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        (port, seen)
+    }
+
+    /// [`trusting`], dialling every framed connection through the proxy at `port`.
+    fn trusting_through(pki: &Pki, port: u16) -> Connector {
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::identity("plain")),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "sec",
+                    &["sec"],
+                    &[],
+                    crate::support::Knobs {
+                        secure_name: Some("localhost"),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let tls = crate::tls::client::build_client_config(&EgressTrust {
+            extra_anchors: vec![pki.ca_der.clone()],
+            ..EgressTrust::default()
+        })
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            loopback_literals(),
+            Some(Arc::new(tls)),
+            Arc::new(|_, _| {}),
+        )
+        .proxying(Some(crate::proxy::test_config("127.0.0.1", port, None, "")));
+        c.declare_over(OWNER, NeedId(0), "sec").unwrap();
+        c
+    }
+
+    /// THE KERNEL ENGINE'S PROXIED mTLS HOP, THROUGH THE CONNECTOR (u30; status row 130: the
+    /// CONNECT proxy and busbar's client identity are the connector's alone once the kernel engine
+    /// is deleted). A secured dial under a proxy asks the proxy for a tunnel to the far end's own
+    /// authority before anything else, then runs the handshake over the tunnel: the far end's key
+    /// is the one observed, busbar's sealed identity is presented to a far end that asks for one,
+    /// and the proxy relays only ciphertext (the request bytes never cross it in the clear).
+    ///
+    /// RED: with no identity sealed, the same proxied dial reaches the mutual far end and is
+    /// refused by it, so the identity the green arm presents is the sealed one, carried through
+    /// the tunnel.
+    #[test]
+    fn a_proxied_dial_tunnels_first_then_presents_the_sealed_identity_over_tls() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let server = pki.leaf("localhost");
+            let client = pki.leaf("busbar.client");
+            let (far, seen) = tls_far_end(&pki, &server, true).await;
+            let (port, proxied) = splicing_proxy().await;
+            let c = trusting_through(&pki, port);
+
+            let (_, got) = exchange(&c, &far).await;
+            assert!(got.is_err(), "no identity: the mutual far end refuses");
+            assert_eq!(
+                proxied
+                    .lock()
+                    .unwrap()
+                    .first()
+                    .map(|(head, _)| head.clone()),
+                Some(format!("CONNECT {far} HTTP/1.1\r\nHost: {far}\r\n\r\n")),
+                "the unsealed dial went through the proxy too"
+            );
+
+            let anchors = Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![client.der.clone()],
+                    private_key: client.key.clone().into(),
+                }),
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                .expect("sealed");
+            let (id, got) = exchange(&c, &far).await;
+            assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
+            let facts = c.facts(OWNER, id).expect("facts");
+            assert!(facts.client_identity, "the identity was presented");
+            assert_eq!(facts.peer_key_pin.as_deref(), Some(server.pin.as_str()));
+            assert_eq!(
+                seen.lock().unwrap().clone(),
+                Some((b"first".to_vec(), true))
+            );
+            let tunnels = proxied.lock().unwrap().clone();
+            assert_eq!(tunnels.len(), 2, "one tunnel per dial: {tunnels:?}");
+            let (head, relayed) = tunnels[1].clone();
+            assert_eq!(
+                head,
+                format!("CONNECT {far} HTTP/1.1\r\nHost: {far}\r\n\r\n"),
+                "the proxy was asked for the far end's own authority, and nothing came before it"
+            );
+            assert!(
+                relayed.first() == Some(&0x16),
+                "the first byte through the tunnel is a TLS handshake record"
+            );
+            assert!(
+                !relayed.windows(5).any(|w| w == b"first"),
+                "the proxy never saw a decrypted request byte"
             );
         });
     }
@@ -3562,6 +3904,68 @@ fn a_pooled_line_is_never_lent_to_another_need_or_instance() {
             accepted.load(Ordering::SeqCst),
             3,
             "control: the need's own next open rides its kept line"
+        );
+    });
+}
+
+/// RED (audit row 159, connector HIGH 5: "every per-instance record grows with each reload"): a
+/// forgotten instance's lines and listener go with it. The idle line its exchange finished on is
+/// closed at once, never left on the pool for the idle reaper, and its listener leaves the table.
+/// GREEN twin: a neighbour's kept line stays open and is lent to its next open.
+#[test]
+fn a_forgotten_instances_pooled_line_and_listener_go_and_a_neighbours_line_is_kept() {
+    worker().block_on(async {
+        let (far, accepted, ended) = keeping_far_end().await;
+        let c = pooled_messages(std::time::Duration::from_secs(60));
+        for owner in [OWNER, OTHER] {
+            c.declare_over(owner, NeedId(0), "messages")
+                .expect("a served scheme declares");
+        }
+        c.listen(
+            OTHER,
+            NeedId(0),
+            "127.0.0.1:0",
+            None,
+            crate::listen::AcceptLimits::default(),
+        )
+        .expect("listens");
+        let whole = (b"x".to_vec(), true, None);
+        assert_eq!(
+            pooled_exchange(&c, (OWNER, 0), &far, b"ask", true).await,
+            whole
+        );
+        assert_eq!(
+            pooled_exchange(&c, (OTHER, 0), &far, b"ask", true).await,
+            whole
+        );
+        assert_eq!(accepted.load(Ordering::SeqCst), 2, "each kept its own line");
+        c.forget(OTHER);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ended.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            ended.load(Ordering::SeqCst),
+            1,
+            "the forgotten instance's idle line is closed at once"
+        );
+        assert!(
+            !c.listeners.lock().unwrap().keys().any(|(o, _)| *o == OTHER),
+            "the forgotten instance's listener leaves the table"
+        );
+        let again = pooled_exchange(&c, (OWNER, 0), &far, b"ask", false).await;
+        assert_eq!(
+            again.0,
+            b"x".to_vec(),
+            "the neighbour's next open is answered"
+        );
+        assert_eq!(
+            (
+                accepted.load(Ordering::SeqCst),
+                ended.load(Ordering::SeqCst)
+            ),
+            (2, 1),
+            "the neighbour's next open rides its kept line, still open"
         );
     });
 }

@@ -1,7 +1,7 @@
 //! Tests for `ir/lane_caps.rs`. Moved VERBATIM from the kernel's config tests with the glob they
-//! test (architect ruling LANECAPS-MOVE); only the item path changed.
+//! test; only the item path changed.
 
-// ── lane capabilities (architect ruling on OAI-01, ANT-07/09/10) ────────────────────────────────
+// ── lane capabilities ────────────────────────────────
 
 #[test]
 fn lane_caps_glob_matches_star_runs_only() {
@@ -101,7 +101,7 @@ fn item8_shipped_bedrock_catalog_declares_claude_lane_caps() {
     }
 }
 
-// ── F25 rows 485-487: the lane-capability resolution of a provider entry, rehomed from
+// ── the lane-capability resolution of a provider entry, rehomed from
 // the retired engine crate's src/engine/tests/lane_caps_config_tests.rs. With the legacy engine gone the
 // served merge is the kernel's `config::merge_provider_fallback` (no plane declares
 // `resolve_provider`), and `lane_caps_for` below hands its four keys to `resolve_lane_caps` EXACTLY
@@ -157,9 +157,9 @@ mod provider_entry {
         serde_yaml::from_str(&format!("api_key: {{ env: {env_var} }}")).expect("minimal deployment")
     }
 
-    // ── lane capabilities (architect ruling on OAI-01, ANT-07/09/10) ────────────────────────────────
+    // ── lane capabilities ────────────────────────────────
 
-    /// F25 row 485: rehomed from the retired engine crate's src/engine/tests/lane_caps_config_tests.rs::
+    /// rehomed from the retired engine crate's src/engine/tests/lane_caps_config_tests.rs::
     /// lane_caps_default_to_the_pre_capability_forms_and_resolve_provider_then_model_rule.
     #[test]
     fn lane_caps_default_to_the_pre_capability_forms_and_resolve_provider_then_model_rule() {
@@ -197,7 +197,7 @@ mod provider_entry {
         );
     }
 
-    /// F25 row 486: rehomed from the retired engine crate's src/engine/tests/lane_caps_config_tests.rs::
+    /// rehomed from the retired engine crate's src/engine/tests/lane_caps_config_tests.rs::
     /// shipped_catalog_declares_the_lane_capabilities.
     ///
     /// OAI-01 / ANT-07/09/10 at the CATALOG: the shipped providers.yaml resolves the `openai` provider
@@ -246,7 +246,7 @@ mod provider_entry {
         }
     }
 
-    /// F25 row 487: rehomed from the retired engine crate's src/engine/tests/lane_caps_config_tests.rs::
+    /// rehomed from the retired engine crate's src/engine/tests/lane_caps_config_tests.rs::
     /// shipped_catalog_declares_reasoning_none_and_thinking_always_on.
     ///
     /// At the CATALOG: the shipped providers.yaml declares `thinking_always_on` for the

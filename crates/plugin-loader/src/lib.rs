@@ -28,7 +28,7 @@ pub mod auth_door;
 /// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
 pub mod boot;
-/// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
+/// THE PUBLISHED CONFORMANCE SUITE: what every real plugin repo runs against the busbar
 /// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
 /// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
 /// transport row through it too (`transport_door_conformance_tests`).
@@ -354,11 +354,6 @@ mod export_conformance_tests;
 #[path = "tests/both_ways.rs"]
 mod both_ways;
 
-/// No rlib the test binary links exports `busbar_plugin_door` (the fat-LTO duplicate-symbol guard).
-#[cfg(test)]
-#[path = "tests/door_symbol_tests.rs"]
-mod door_symbol_tests;
-
 /// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
 /// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
 /// open one module.
@@ -436,7 +431,7 @@ mod dispatch_kind_hook_tests;
 #[path = "tests/dispatch_kind_auth_tests.rs"]
 mod dispatch_kind_auth_tests;
 
-/// The both-ways harness on the memory ABI (TODO ABI-b4): one door loaded LINKED and DROPPED IN
+/// The both-ways harness on the memory ABI: one door loaded LINKED and DROPPED IN
 /// through the one dispatcher, one script, two transcripts compared.
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings

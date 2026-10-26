@@ -13,30 +13,8 @@
 //! projected beside it through the same predicate the firing path uses.
 
 use crate::v1::service::project_hook_view;
-use busbar_kernel::config::{
-    HookCfg, HookKind, HookStage, PromptAccess, UserAccess, ALL_HOOK_STAGES, CORE_HOOK_PHASES,
-};
-
-/// A minimal hook definition. Stage/scope fields are set per test.
-fn hook() -> HookCfg {
-    HookCfg {
-        kind: HookKind::Tap,
-        plugin: "test-hook".to_string(),
-        timeout_ms: 5,
-        on_error: "weighted".to_string(),
-        prompt: PromptAccess::No,
-        user: UserAccess::No,
-        priority: 0,
-        settings: serde_json::Map::new(),
-        at: None,
-        on_empty: None,
-        global: false,
-        default: false,
-        signals: Vec::new(),
-        groups: Vec::new(),
-        phase: Vec::new(),
-    }
-}
+use crate::v1::service::tests::hook;
+use busbar_kernel::config::{HookCfg, HookKind, HookStage, ALL_HOOK_STAGES, CORE_HOOK_PHASES};
 
 /// A non-empty `phase:` is authoritative, and the read says so: the list is echoed verbatim AND
 /// resolved. This is the shape `--migrate-config` writes and the shape the current grammar produces,
@@ -45,7 +23,7 @@ fn hook() -> HookCfg {
 fn a_phase_scoped_hook_reads_back_its_stages() {
     let cfg = HookCfg {
         phase: vec![HookStage::Response],
-        ..hook()
+        ..hook(HookKind::Tap, false)
     };
     let view = project_hook_view("audit", &cfg, &[]);
 
@@ -63,7 +41,7 @@ fn a_phase_scoped_hook_reads_back_its_stages() {
 /// resolved set beside it rather than instead of it.
 #[test]
 fn an_unscoped_hook_resolves_to_the_four_core_stages() {
-    let view = project_hook_view("unscoped", &hook(), &[]);
+    let view = project_hook_view("unscoped", &hook(HookKind::Tap, false), &[]);
 
     assert!(view.phase.is_empty());
     assert_eq!(
@@ -82,14 +60,14 @@ fn an_unscoped_hook_resolves_to_the_four_core_stages() {
 #[test]
 fn the_resolved_set_agrees_with_the_firing_predicate_for_every_stage() {
     for cfg in [
-        hook(),
+        hook(HookKind::Tap, false),
         HookCfg {
             phase: vec![HookStage::Request, HookStage::Response],
-            ..hook()
+            ..hook(HookKind::Tap, false)
         },
         HookCfg {
             phase: vec![HookStage::Candidate],
-            ..hook()
+            ..hook(HookKind::Tap, false)
         },
     ] {
         let view = project_hook_view("h", &cfg, &[]);
@@ -113,12 +91,12 @@ fn the_resolved_set_agrees_with_the_firing_predicate_for_every_stage() {
 fn a_group_scoped_hook_reads_back_its_caller_scope() {
     let cfg = HookCfg {
         groups: vec!["engineering".to_string()],
-        ..hook()
+        ..hook(HookKind::Tap, false)
     };
     let view = project_hook_view("pii-eng", &cfg, &[]);
     assert_eq!(view.groups, vec!["engineering".to_string()]);
 
-    let unscoped = project_hook_view("pii-all", &hook(), &[]);
+    let unscoped = project_hook_view("pii-all", &hook(HookKind::Tap, false), &[]);
     assert!(
         unscoped.groups.is_empty(),
         "empty means ALL callers, and an operator must be able to see that it is empty"
