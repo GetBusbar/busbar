@@ -29,10 +29,14 @@ THE THREE LEGS, all in one run:
   subject   busbar in the FAPI 2.0 posture, the WHOLE plan.
 
 THE VERDICT: `pass` only when the control passed, the negative control failed exactly where it must,
-and every module of the subject's plan FINISHED with result PASSED, WARNING, REVIEW or SKIPPED
-(REVIEW / SKIPPED / WARNING are the suite's own results and each is listed in `reason` with the
-suite's words). FAILED, INTERRUPTED, UNKNOWN or an unfinished module is `fail`, named. The results
-are read from the suite's own plan export (`--export-dir`), held to the plan's own module list.
+and every module of the subject's plan FINISHED with result PASSED (a SKIPPED module only with the
+suite's own reason, which `reason` carries). REVIEW (a module awaiting a human's sign-off on its
+screenshot) and WARNING are NOT a pass (orchestrator ruling 2026-10-26); FAILED, INTERRUPTED,
+UNKNOWN or an unfinished module is `fail`, named. `reason` opens with
+`<passed>/<total> pass, <n> awaiting review: <modules>`. Every module that did not pass has its
+suite log, its screenshots and its test id kept under `$CONFORMANCE_OUT/review/` for that sign-off.
+The results are read from the suite's own plan export (`--export-dir`), held to the plan's own
+module list.
 
 THE RESOURCE OWNER. busbar's authorization server authenticates the resource owner on its consent
 screen (`{issuer}/consent`, `RouteAuth::Admin`: the operator, through the admin chain). The suite's
@@ -153,8 +157,9 @@ NEGATIVE_MUST_FAIL = [
     "fapi2-security-profile-final-happy-flow",
 ]
 
+# What the CONTROL (the suite judging its own mock) may finish with. The subject is held stricter
+# (`decide`): PASSED only.
 GOOD = ("PASSED", "WARNING", "REVIEW", "SKIPPED")
-NOTED = ("WARNING", "REVIEW", "SKIPPED")
 
 STANDARD = {
     "oidf-oauth2": "OpenID Foundation OAuth2 conformance suite",
@@ -692,6 +697,16 @@ class Suite:
         with open(out, errors="replace") as f:
             return rc, f.read()
 
+    def images(self, test_id):
+        """The images the suite holds for one module (`GET /api/log/<id>/images`: each entry's `img`
+        is the data URI the browser's placeholder fill or an upload recorded)."""
+        rc, out, _ = capture(["docker", "compose", "-p", self.project, "-f", self.file, "exec", "-T", "server",
+                              "curl", "-sk", f"{SUITE_BASE}api/log/{test_id}/images"])
+        try:
+            return json.loads(out) if rc == 0 else []
+        except ValueError:
+            return []
+
     def down(self):
         if self.up:
             self.compose("logs", "--no-color", "server", log=os.path.join(self.work, "suite-server.log"))
@@ -846,7 +861,16 @@ def leg_subject(suite, work, name, issuer, clients, modules=None):
         json.dump(plan_config(issuer, f"busbar {name}", clients), f, indent=2)
     arg = PLAN + (f":{','.join(modules)}" if modules else "")
     rc, log = suite.runner(d, [arg, f"/work/{os.path.relpath(cfg, work)}"])
-    return rc, judge(d, log)
+    rows = judge(d, log)
+    # The images the suite holds for every module that did not pass, fetched while it is up: the
+    # screenshots a REVIEW is signed off from (keep_review files them).
+    shots = {}
+    for info, _ in exported(os.path.join(d, "export")):
+        if info.get("result") != "PASSED" and info.get("testId"):
+            shots[info["testId"]] = suite.images(info["testId"])
+    with open(os.path.join(d, "images.json"), "w") as f:
+        json.dump(shots, f)
+    return rc, rows
 
 
 def run_all(work):
@@ -922,7 +946,13 @@ def run_all(work):
 # ---------------------------------------------------------------------------------------------------
 
 def decide(record):
-    """(status, armed, reason) from one run's record."""
+    """(status, armed, reason) from one run's record.
+
+    `pass` only when EVERY module of the subject's plan FINISHED with result PASSED (orchestrator
+    ruling 2026-10-26): a REVIEW is a module awaiting a human's sign-off on its screenshot, and a
+    WARNING is the suite naming a shortfall, so neither is a pass. A SKIPPED module is a pass only
+    with the suite's own reason, which `reason` carries. The reason opens with the count:
+    `<passed>/<total> pass, <n> awaiting review: <modules>`."""
     if "instrument_error" in record:
         return "not-run", False, "the OIDF suite could not be run: " + record["instrument_error"]
     control = record.get("control") or {}
@@ -931,21 +961,28 @@ def decide(record):
             (control.get("why") or "no result")
     if "subject_error" in record:
         return "fail", True, "the subject could not be built: " + record["subject_error"]
-    notes = []
-    status = "pass"
     sub = record.get("subject")
     if not sub:
         return "fail", True, "the subject did not run: " + record.get("subject_error", "no result")
     rows = sub["modules"]
-    red = [f"{m} {s}/{r}" for m, s, r, _ in rows if s != "FINISHED" or r not in GOOD]
-    noted = [f"{m} {r}" + (f" ({why})" if why else "") for m, s, r, why in rows if s == "FINISHED" and r in NOTED]
-    passed = sum(1 for _, s, r, _ in rows if s == "FINISHED" and r == "PASSED")
+    done = [(m, r, why) for m, s, r, why in rows if s == "FINISHED"]
+    passed = [m for m, r, _ in done if r == "PASSED"]
+    review = [m for m, r, _ in done if r == "REVIEW"]
+    warned = [f"{m} ({why})" if why else m for m, r, why in done if r == "WARNING"]
+    skipped = [f"{m} ({why})" for m, r, why in done if r == "SKIPPED"]
+    red = [f"{m} {s}/{r}" + (f" ({why})" if why else "") for m, s, r, why in rows
+           if s != "FINISHED" or r not in ("PASSED", "REVIEW", "WARNING", "SKIPPED")]
+    head = f"{len(passed) + len(skipped)}/{len(rows)} pass"
+    if review:
+        head += f", {len(review)} awaiting review: " + ", ".join(review)
+    notes = [head]
+    if warned:
+        notes.append(f"{len(warned)} warning: " + "; ".join(warned))
     if red:
-        status = "fail"
-        notes.append(f"{len(red)} of {len(rows)} module(s) not passed: " + "; ".join(red))
-    notes.append(f"{passed} of {len(rows)} module(s) PASSED")
-    if noted:
-        notes.append("suite-noted: " + "; ".join(noted))
+        notes.append(f"{len(red)} failed: " + "; ".join(red))
+    if skipped:
+        notes.append("skipped by the suite: " + "; ".join(skipped))
+    status = "fail" if (review or warned or red or not rows) else "pass"
     neg = record.get("negative")
     if not neg:
         status = "fail"
@@ -961,12 +998,73 @@ def decide(record):
             notes.append("the negative control (fapi2: false) did not fail where it must: " + "; ".join(wrong))
         else:
             notes.append("negative control (fapi2: false) failed " + ", ".join(NEGATIVE_MUST_FAIL))
-    if sub.get("exit") not in (0, None) and not red:
-        # The runner's own exit is advisory here: it also exits 1 on WARNINGs, which the verdict
-        # lists rather than fails. A non-zero exit with nothing red in the export is noted.
-        notes.append(f"run-test-plan.py exited {sub['exit']}")
-    notes.insert(0, "control (suite self-test, " + ", ".join(CONTROL_OP_MODULES) + ") passed")
+    notes.append("control (suite self-test, " + ", ".join(CONTROL_OP_MODULES) + ") passed")
+    if review:
+        notes.append("each REVIEW module's suite log and screenshots are kept under review/ in this suite's output")
     return status, True, ". ".join(notes)
+
+
+def keep_review(work, out):
+    """Every subject module whose result is not PASSED (REVIEW first among them): its suite log (the
+    export's `test-log-<module>-<id>.json` and `.sig`), every image the suite's browser attached
+    (decoded to files), and an index naming the module, its test id and its result, under
+    `<out>/review/`. These are what a human signs a REVIEW off from."""
+    export = os.path.join(work, "subject", "export")
+    dest = os.path.join(out, "review")
+    shutil.rmtree(dest, ignore_errors=True)
+    if not os.path.isdir(export):
+        return
+    index = []
+    try:
+        with open(os.path.join(work, "subject", "images.json")) as f:
+            shots = json.load(f)
+    except (OSError, ValueError):
+        shots = {}
+    for name in sorted(os.listdir(export)):
+        if not name.endswith(".zip"):
+            continue
+        with zipfile.ZipFile(os.path.join(export, name)) as z:
+            for entry in z.namelist():
+                if not (entry.startswith("test-log-") and entry.endswith(".json")):
+                    continue
+                doc = json.loads(z.read(entry))
+                info = doc.get("testInfo", {})
+                if info.get("result") == "PASSED":
+                    continue
+                module, test_id = info.get("testName", "?"), info.get("testId", "?")
+                d = os.path.join(dest, module)
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, os.path.basename(entry)), "wb") as f:
+                    f.write(z.read(entry))
+                sig = entry[:-5] + ".sig"
+                if sig in z.namelist():
+                    with open(os.path.join(d, os.path.basename(sig)), "wb") as f:
+                        f.write(z.read(sig))
+                images = []
+                entries = list(doc.get("results") or []) + list(shots.get(test_id) or [])
+                for n, e in enumerate(entries):
+                    for key, v in e.items():
+                        m = re.match(r"data:image/(\w+);base64,(.*)", v, re.S) if isinstance(v, str) else None
+                        if m:
+                            img = f"screenshot-{n:04d}-{e.get('src', key)}.{m.group(1)}"
+                            with open(os.path.join(d, img), "wb") as f:
+                                f.write(base64.b64decode(m.group(2)))
+                            images.append(img)
+                    # The page the suite's browser captured for a REVIEW (HtmlUnit renders no
+                    # pixels; this source is what the placeholder was filled from).
+                    if e.get("result") == "REVIEW" and isinstance(e.get("page_source"), str):
+                        page = f"review-{n:04d}-{e.get('src', 'page')}.html"
+                        with open(os.path.join(d, page), "w") as f:
+                            f.write(e["page_source"])
+                        images.append(page)
+                index.append({"module": module, "test_id": test_id, "status": info.get("status"),
+                              "result": info.get("result"), "log": os.path.basename(entry),
+                              "evidence": images, "plan_export": name,
+                              "review": [e.get("msg") for e in doc.get("results") or [] if e.get("result") == "REVIEW"]})
+    if index:
+        os.makedirs(dest, exist_ok=True)
+        with open(os.path.join(dest, "index.json"), "w") as f:
+            json.dump(index, f, indent=2)
 
 
 def main():
@@ -995,6 +1093,7 @@ def main():
         with open(rec_path, "w") as f:
             json.dump(record, f, indent=2)
     status, armed, reason = decide(record)
+    keep_review(work, out)
     verdict = {
         "suite": suite_id,
         "status": status,
