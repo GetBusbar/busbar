@@ -394,7 +394,9 @@ fn packed_hook_needs_prompt_rw_is_signed() {
     let tarball = busbar_plugin_loader::tarball::package(&signed, "lib.so", lib).unwrap();
     let up = busbar_plugin_loader::tarball::unpack(&tarball).unwrap();
     let policy = busbar_plugin_loader::sign::TrustPolicy {
-        first_party_key: Some(key.verifying_key()),
+        first_party_keys: vec![busbar_plugin_loader::sign::FirstPartyKey::unnamed(
+            key.verifying_key(),
+        )],
         binary_version: "1.5.0".into(),
         ..Default::default()
     };
@@ -1233,5 +1235,119 @@ fn pack_refuses_a_version_the_statement_does_not_state() {
     assert!(
         super::statement_version_is(b"not a rendering", &r.version).is_err(),
         "an unreadable rendering is refused, never passed"
+    );
+}
+
+// ── OFFLINE FIRST-PARTY SIGNING: canonical -> (hardware key) -> attach -> verify ───────────────
+
+/// An UNSIGNED first-party tarball, as a release's pack step emits it for the offline signer.
+fn unsigned_first_party(lib: &[u8]) -> Vec<u8> {
+    let m = Manifest {
+        name: "busbar-store-x".into(),
+        alias: "x".into(),
+        kind: "store".into(),
+        version: "1.6.0".into(),
+        publisher: busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into(),
+        abi_version: busbar_plugin_loader::supported_abi("store")
+            .iter()
+            .copied()
+            .max()
+            .unwrap(),
+        sha256: busbar_plugin_loader::sign::sha256_hex(lib),
+        ..Default::default()
+    };
+    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
+}
+
+/// What the offline signer does: sign the canonical bytes, hex the 64-byte signature.
+fn offline_signature(key: &SigningKey, unsigned: &[u8]) -> String {
+    use ed25519_dalek::Signer;
+    let up = busbar_plugin_loader::tarball::unpack(unsigned).unwrap();
+    hex::encode(key.sign(&canonical_manifest_bytes(&up.manifest)).to_bytes())
+}
+
+fn keys(list: &[(&str, &SigningKey)]) -> Vec<FirstPartyKey> {
+    list.iter()
+        .map(|(id, k)| FirstPartyKey {
+            id: (*id).into(),
+            key: k.verifying_key(),
+        })
+        .collect()
+}
+
+/// GREEN: a signature made offline over the canonical bytes attaches, verifies, names the key that
+/// made it, and the signed tarball loads as first-party under the engine's own trust evaluation.
+#[test]
+fn an_offline_signature_attaches_and_the_tarball_loads_as_first_party() {
+    let (a, b) = (
+        SigningKey::from_bytes(&[11; 32]),
+        SigningKey::from_bytes(&[12; 32]),
+    );
+    let list = keys(&[("plugins-a", &a), ("plugins-b", &b)]);
+    let unsigned = unsigned_first_party(b"cdylib");
+    let (signed, id) = attach(&unsigned, &offline_signature(&b, &unsigned), &list).unwrap();
+    assert_eq!(id, "plugins-b");
+    assert_eq!(verify_first_party(&signed, &list).unwrap(), "plugins-b");
+    let up = busbar_plugin_loader::tarball::unpack(&signed).unwrap();
+    let policy = busbar_plugin_loader::sign::TrustPolicy {
+        first_party_keys: list,
+        ..Default::default()
+    };
+    assert!(matches!(
+        busbar_plugin_loader::sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
+        busbar_plugin_loader::sign::Verdict::Trusted {
+            first_party: true,
+            ..
+        }
+    ));
+}
+
+/// RED: every shape the publish step must refuse.
+#[test]
+fn attach_refuses_what_would_not_load_as_first_party() {
+    let a = SigningKey::from_bytes(&[11; 32]);
+    let stranger = SigningKey::from_bytes(&[13; 32]);
+    let list = keys(&[("plugins-a", &a)]);
+    let unsigned = unsigned_first_party(b"cdylib");
+
+    let err = attach(&unsigned, &offline_signature(&stranger, &unsigned), &list).unwrap_err();
+    assert!(
+        err.contains("[plugins-a]"),
+        "an unlisted key is refused naming the list: {err}"
+    );
+
+    let other = unsigned_first_party(b"another cdylib");
+    assert!(
+        attach(&unsigned, &offline_signature(&a, &other), &list).is_err(),
+        "a signature over a different manifest is refused"
+    );
+    assert!(
+        attach(
+            &unsigned,
+            &offline_signature(&a, &unsigned).to_uppercase(),
+            &list
+        )
+        .is_err(),
+        "the signature is lowercase hex"
+    );
+    assert!(
+        attach(&unsigned, &offline_signature(&a, &unsigned), &[]).is_err(),
+        "a tool built with no first-party key verifies nothing"
+    );
+
+    let (signed, _) = attach(&unsigned, &offline_signature(&a, &unsigned), &list).unwrap();
+    assert!(
+        attach(&signed, &offline_signature(&a, &unsigned), &list).is_err(),
+        "an already-signed tarball is refused"
+    );
+
+    let mut third = busbar_plugin_loader::tarball::unpack(&unsigned)
+        .unwrap()
+        .manifest;
+    third.publisher = "acme".into();
+    let third = busbar_plugin_loader::tarball::package(&third, "lib.so", b"cdylib").unwrap();
+    assert!(
+        attach(&third, &offline_signature(&a, &third), &list).is_err(),
+        "attach signs first-party manifests only"
     );
 }

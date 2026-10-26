@@ -197,11 +197,11 @@ fi
 # a user downloads actually contain it, which is the half that would have gone red on real 1.5.3.
 if [ -z "$BIN" ]; then
   record "pubkey:${TARGET}" FAIL "cannot inspect ${ASSET}: it was never downloaded" "see asset:${TARGET}."
-elif ! printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+elif ! scripts/release-key-guard.sh require >/dev/null 2>&1; then
   # NOT a skip. Without the key this row asserts nothing, and "we could not check whether the
   # release key shipped" must never read as "the release key shipped".
-  record "pubkey:${TARGET}" FAIL "BUSBAR_RELEASE_PUBKEY is not available to the gate" \
-    "the gate cannot look for a key it does not have, and reporting that as a pass is how #52 survived three releases. Fix: expose the org variable BUSBAR_RELEASE_PUBKEY (the PUBLIC half, 64 hex chars) to this workflow."
+  record "pubkey:${TARGET}" FAIL "BUSBAR_RELEASE_PUBKEY is not available to the gate, or is not a key list" \
+    "the gate cannot look for a key it does not have, and reporting that as a pass is how #52 survived three releases. Fix: expose the org variable BUSBAR_RELEASE_PUBKEY (the first-party key list) to this workflow."
 elif out="$(scripts/release-key-guard.sh assert-embedded "${WORK}/${ASSET}" 2>&1)"; then
   record "pubkey:${TARGET}" PASS "${ASSET} embeds the release public key" "${out}"
 else

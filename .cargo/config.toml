@@ -1,6 +1,13 @@
-# The busbar release ed25519 PUBLIC key (the repository variable BUSBAR_RELEASE_PUBKEY in CI; not a
-# secret). plugin-sign embeds it at build time so a binary trusts first-party plugins with zero
-# configuration. Set here so a local build never silently lacks it: a keyless build refuses every
-# published first-party plugin, which the shadow oracle judges as a failed candidate at setup.
+# The busbar first-party plugin key LIST (the repository variable BUSBAR_RELEASE_PUBKEY in CI; not a
+# secret): `<id>:<64-hex ed25519 public key>` entries, comma-separated. plugin-loader embeds it at
+# build time so a binary trusts first-party plugins with zero configuration. Set here so a local build
+# never silently lacks it: a keyless build refuses every published first-party plugin, which the
+# shadow oracle judges as a failed candidate at setup.
+#
+# 1.6.0 trusts two hardware-held keys (PLUGIN-KEY-CEREMONY.md): `busbar-plugins-2026a` signs, and
+# `busbar-plugins-2026b` is the sealed next key. The retired 1.5 key (b18395a3…), whose seed lived in
+# a GitHub org secret, is NOT on the list. The two entries below are PLACEHOLDERS until the owner's
+# ceremony: they do not parse, so this tree embeds no key and
+# `the_default_release_key_input_is_the_real_release_key_list` stays red until they are replaced.
 [env]
-BUSBAR_RELEASE_PUBKEY = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7"
+BUSBAR_RELEASE_PUBKEY = "busbar-plugins-2026a:CEREMONY-PLACEHOLDER-A,busbar-plugins-2026b:CEREMONY-PLACEHOLDER-B"

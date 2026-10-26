@@ -20,10 +20,18 @@
 //! solely under `plugins.trust.allow_unsigned: true`).
 //!
 //! `busbar-plugin-pack keygen` generates a fresh keypair and prints both halves (hex). The PUBLIC
-//! half goes in `plugins.trust.publishers` (third-party) or is embedded into the busbar binary at
-//! build time via `BUSBAR_RELEASE_PUBKEY` (first-party); the PRIVATE half is the signing secret.
+//! half goes in `plugins.trust.publishers` (third-party); the PRIVATE half is the signing secret.
+//!
+//! FIRST-PARTY SIGNING IS OFFLINE (SECURITY-FIRST-PLAN C1): no first-party seed is in CI. A release
+//! packs UNSIGNED, `canonical` prints the bytes the owner signs on the hardware key, and `attach`
+//! inserts that signature, refusing unless it verifies against a first-party key this tool was
+//! built with (`BUSBAR_RELEASE_PUBKEY`, the same list the engine embeds). `verify` re-checks a
+//! signed tarball against that list.
 
-use busbar_plugin_loader::sign::{sign, Declares, HookNeeds, Manifest, NeedLevel, SigningKey};
+use busbar_plugin_loader::sign::{
+    canonical_manifest_bytes, embedded_release_keys, first_party_signer, sign, Declares,
+    FirstPartyKey, HookNeeds, Manifest, NeedLevel, SigningKey, FIRST_PARTY_PUBLISHER,
+};
 use std::collections::{HashMap, HashSet};
 use std::process::ExitCode;
 
@@ -91,6 +99,9 @@ USAGE:
                             [--declares-file <path.json>] [--former-name <name>]...
                             [--allow-unsigned]
     busbar-plugin-pack keygen
+    busbar-plugin-pack canonical <unsigned.tar.gz>
+    busbar-plugin-pack attach --in <unsigned.tar.gz> --signature <128 hex> --out <signed.tar.gz>
+    busbar-plugin-pack verify <signed.tar.gz>
 
     pack     builds manifest.json over the cdylib (sha256 binding), signs it with the ed25519 seed
              in $BUSBAR_SIGN_KEY (64 hex chars), and writes the {cdylib + manifest.json} .tar.gz.
@@ -123,7 +134,15 @@ USAGE:
              plugin, as it resolves the alias. SIGNED; lowercase [a-z0-9-]+, never the plugin's own
              name or alias.
     keygen   generates a fresh ed25519 keypair and prints both halves as hex. Keep the private half
-             secret (it becomes $BUSBAR_SIGN_KEY); publish/allowlist/embed the public half."
+             secret (it becomes $BUSBAR_SIGN_KEY); publish/allowlist the public half.
+    canonical
+             writes the tarball manifest's canonical signed bytes (every field but `signature`) to
+             stdout: exactly what a first-party signature is made over, for the offline signer.
+    attach   inserts a first-party signature into an unsigned tarball and writes the signed one,
+             refusing unless the manifest is `publisher: busbar`, structurally valid, and the
+             signature verifies against a first-party key this tool was built with
+             ($BUSBAR_RELEASE_PUBKEY). Prints the id of the key that signed.
+    verify   checks a signed first-party tarball against those keys; exit 0 names the key id."
 }
 
 fn main() -> ExitCode {
@@ -131,6 +150,18 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         Some("keygen") => keygen(),
         Some("pack") => pack(&args[1..]),
+        Some("canonical") => report(
+            args.get(1)
+                .ok_or_else(|| usage().to_string())
+                .and_then(|p| canonical(p)),
+        ),
+        Some("attach") => report(attach_cli(&args[1..])),
+        Some("verify") => report(
+            args.get(1)
+                .ok_or_else(|| usage().to_string())
+                .and_then(|p| verify_first_party(&read_file(p)?, &embedded_release_keys()))
+                .map(|id| format!("{}: first-party signature verifies (key {id})", args[1])),
+        ),
         Some("--help" | "-h") | None => {
             println!("{}", usage());
             ExitCode::SUCCESS
@@ -140,6 +171,117 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// Print a subcommand's outcome: its message on stdout and success, or its error on stderr.
+fn report(outcome: Result<String, String>) -> ExitCode {
+    match outcome {
+        Ok(msg) => {
+            if !msg.is_empty() {
+                println!("{msg}");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn read_file(path: &str) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("cannot read '{path}': {e}"))
+}
+
+/// `canonical <tarball>`: the manifest's canonical signed bytes, raw, on stdout.
+fn canonical(path: &str) -> Result<String, String> {
+    use std::io::Write;
+    let up = busbar_plugin_loader::tarball::unpack(&read_file(path)?)?;
+    std::io::stdout()
+        .write_all(&canonical_manifest_bytes(&up.manifest))
+        .map_err(|e| format!("cannot write the canonical bytes: {e}"))?;
+    Ok(String::new())
+}
+
+fn attach_cli(args: &[String]) -> Result<String, String> {
+    let flags = parse_flags(args)?;
+    let get = |k: &str| {
+        flags
+            .map
+            .get(k)
+            .cloned()
+            .ok_or_else(|| format!("attach needs --{k}\n\n{}", usage()))
+    };
+    let (input, signature, out) = (get("in")?, get("signature")?, get("out")?);
+    let (signed, id) = attach(&read_file(&input)?, &signature, &embedded_release_keys())?;
+    std::fs::write(&out, signed).map_err(|e| format!("cannot write '{out}': {e}"))?;
+    Ok(format!(
+        "{input} -> {out}: first-party signature verifies (key {id})"
+    ))
+}
+
+/// ATTACH: insert `signature_hex` into the unsigned first-party tarball `unsigned` and return the
+/// signed tarball with the id of the key in `keys` that made it. Refused unless the manifest is
+/// `publisher: busbar` and unsigned, the signature is 64 bytes of lowercase hex, and the signed
+/// tarball passes [`verify_first_party`]: nothing that would not load as first-party leaves here.
+pub(crate) fn attach(
+    unsigned: &[u8],
+    signature_hex: &str,
+    keys: &[FirstPartyKey],
+) -> Result<(Vec<u8>, String), String> {
+    let up = busbar_plugin_loader::tarball::unpack(unsigned)?;
+    if up.manifest.publisher != FIRST_PARTY_PUBLISHER {
+        return Err(format!(
+            "manifest publisher is '{}', not '{FIRST_PARTY_PUBLISHER}': attach signs first-party \
+             plugins only",
+            up.manifest.publisher
+        ));
+    }
+    if !up.manifest.signature.is_empty() {
+        return Err("the tarball is already signed; attach takes an unsigned one".to_string());
+    }
+    let sig = signature_hex.trim();
+    if sig.len() != 128
+        || !sig
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("the signature is not 128 lowercase hex digits (64 bytes)".to_string());
+    }
+    let manifest = Manifest {
+        signature: sig.to_string(),
+        ..up.manifest
+    };
+    let signed = busbar_plugin_loader::tarball::package(&manifest, &up.lib_name, &up.lib_bytes)?;
+    let id = verify_first_party(&signed, keys)?;
+    Ok((signed, id))
+}
+
+/// VERIFY: the tarball is structurally valid and its first-party signature verifies against one of
+/// `keys`; the id of that key.
+pub(crate) fn verify_first_party(tarball: &[u8], keys: &[FirstPartyKey]) -> Result<String, String> {
+    if keys.is_empty() {
+        return Err(
+            "this tool was built with no first-party key ($BUSBAR_RELEASE_PUBKEY absent or not a \
+             key list), so it cannot verify a first-party signature"
+                .to_string(),
+        );
+    }
+    let up = busbar_plugin_loader::tarball::unpack(tarball)?;
+    if up.manifest.publisher != FIRST_PARTY_PUBLISHER {
+        return Err(format!(
+            "manifest publisher is '{}', not '{FIRST_PARTY_PUBLISHER}'",
+            up.manifest.publisher
+        ));
+    }
+    busbar_plugin_loader::sign::validate_structure(
+        &up.manifest,
+        &up.lib_bytes,
+        &busbar_plugin_loader::supported_abi,
+        busbar_plugin_loader::sign::HOST_IDENTITY,
+    )
+    .map_err(|e| format!("manifest would fail busbar's structural validation: {e}"))?;
+    first_party_signer(&up.manifest, &up.lib_bytes, keys).map(|k| k.id.clone())
 }
 
 /// Generate a fresh ed25519 keypair from the OS RNG and print both halves (hex).
@@ -155,7 +297,7 @@ fn keygen() -> ExitCode {
         hex::encode(seed)
     );
     println!(
-        "public  (publishers allowlist / BUSBAR_RELEASE_PUBKEY): {}",
+        "public  (publishers allowlist): {}",
         hex::encode(key.verifying_key().to_bytes())
     );
     ExitCode::SUCCESS

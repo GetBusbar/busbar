@@ -34,8 +34,9 @@
 #   scripts/release-key-guard.sh --selftest      # prove both halves discriminate, offline
 #
 # Reads BUSBAR_RELEASE_PUBKEY from the environment. In CI that is the org variable
-# BUSBAR_RELEASE_PUBKEY (visibility: all) -- the PUBLIC half; the private half is the
-# BUSBAR_SIGN_KEY secret each plugin repo signs with.
+# BUSBAR_RELEASE_PUBKEY: the first-party key LIST, `<id>:<64 hex>` entries joined by `,` (a bare
+# `<64 hex>` entry is a run key). PUBLIC halves only; the private halves are on hardware
+# (PLUGIN-KEY-CEREMONY.md) and never in CI.
 set -euo pipefail
 
 MODE="${1:-}"
@@ -45,8 +46,11 @@ MODE="${1:-}"
 # deliberate: `BUSBAR_RELEASE_PUBKEY: ${{ vars.MISSPELLED }}` expands to the empty string, and a
 # truncated or whitespace-padded value would embed and then fail every verification at runtime,
 # which is the same user-visible outcome as embedding nothing.
+# The list's shape is the one `parse_release_keys` (crates/plugin-loader/src/sign.rs) reads; it
+# refuses the ceremony placeholders, so a tree whose list was never filled in cannot ship.
+KEY_ENTRY='([a-z0-9]([a-z0-9-]*[a-z0-9])?:)?[0-9a-fA-F]{64}'
 key_is_valid() {
-  printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq '^[0-9a-fA-F]{64}$'
+  printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq "^${KEY_ENTRY}(,${KEY_ENTRY})*\$"
 }
 
 # ── --selftest ──────────────────────────────────────────────────────────────────────────────────
@@ -90,8 +94,16 @@ if [ "${MODE}" = "--selftest" ]; then
   else
     nope "require REJECTED a well-formed key — the guard would stop every release"
   fi
-  for bad_label in "unset:" "empty:" "short:abc123" "long:${GOOD_KEY}ff" "padded: ${GOOD_KEY} " "nonhex:${GOOD_KEY%??}zz"; do
-    label="${bad_label%%:*}"; val="${bad_label#*:}"
+  GOOD_LIST="plugins-2026a:${GOOD_KEY},plugins-2026b:${GOOD_KEY%b}c"
+  if BUSBAR_RELEASE_PUBKEY="$GOOD_LIST" "$self" require >/dev/null 2>&1; then
+    ok "require accepts a well-formed named key list"
+  else
+    nope "require REJECTED a well-formed key list — the guard would stop every release"
+  fi
+  for bad_label in "unset|" "empty|" "short|abc123" "long|${GOOD_KEY}ff" "padded| ${GOOD_KEY} " "nonhex|${GOOD_KEY%??}zz" \
+      "placeholder|plugins-2026a:CEREMONY-PLACEHOLDER-A" "trailing-comma|${GOOD_LIST}," "uppercase-id|Plugins:${GOOD_KEY}" \
+      "one-bad-entry|${GOOD_LIST},plugins-2026c:abc"; do
+    label="${bad_label%%|*}"; val="${bad_label#*|}"
     if [ "$label" = "unset" ]; then
       if (unset BUSBAR_RELEASE_PUBKEY; "$self" require >/dev/null 2>&1); then
         nope "require accepted an UNSET key"
@@ -115,6 +127,18 @@ if [ "${MODE}" = "--selftest" ]; then
   (cd "$st_tmp/with"    && tar -czf "$st_tmp/with.tar.gz" busbar)
   (cd "$st_tmp/without" && tar -czf "$st_tmp/without.tar.gz" busbar)
 
+  printf 'ELF-ish padding %s more padding\n' "$GOOD_LIST" > "$st_tmp/with/busbar-list"
+  (cd "$st_tmp/with" && tar -czf "$st_tmp/with-list.tar.gz" busbar-list)
+  if BUSBAR_RELEASE_PUBKEY="$GOOD_LIST" "$self" assert-embedded "$st_tmp/with-list.tar.gz" >/dev/null 2>&1; then
+    ok "assert-embedded passes an archive that carries the key list"
+  else
+    nope "assert-embedded REJECTED an archive containing the key list"
+  fi
+  if BUSBAR_RELEASE_PUBKEY="$GOOD_LIST" "$self" assert-embedded "$st_tmp/with.tar.gz" >/dev/null 2>&1; then
+    nope "assert-embedded PASSED an archive carrying only part of the key list"
+  else
+    ok "an archive carrying one key of the list does not satisfy the list"
+  fi
   if BUSBAR_RELEASE_PUBKEY="$GOOD_KEY" "$self" assert-embedded "$st_tmp/with.tar.gz" >/dev/null 2>&1; then
     ok "assert-embedded passes an archive that really carries the key"
   else
@@ -166,7 +190,8 @@ case "$MODE" in
 [release-key-guard] ##########################################################################
 [release-key-guard] # REFUSING TO BUILD A RELEASE BINARY WITHOUT BUSBAR_RELEASE_PUBKEY.
 [release-key-guard] #
-[release-key-guard] # It must be 64 hex characters (the ed25519 PUBLIC half). Got:
+[release-key-guard] # It must be the first-party key list: <id>:<64 hex> entries joined by ','
+[release-key-guard] # (ed25519 PUBLIC halves; see PLUGIN-KEY-CEREMONY.md). Got:
 [release-key-guard] #   '${BUSBAR_RELEASE_PUBKEY:-<unset>}'
 [release-key-guard] #
 [release-key-guard] # Without it this artifact would compile, link, pass its tests and ship, and
@@ -174,12 +199,12 @@ case "$MODE" in
 [release-key-guard] # with "this build embeds no busbar release key". That is exactly what
 [release-key-guard] # busbar-aarch64-unknown-linux-gnu did in 1.5.1, 1.5.2 and 1.5.3 (#52).
 [release-key-guard] #
-[release-key-guard] # In CI the value is the org variable BUSBAR_RELEASE_PUBKEY (visibility: all).
+[release-key-guard] # In CI the value is the org variable BUSBAR_RELEASE_PUBKEY.
 [release-key-guard] ##########################################################################
 EOF
       exit 1
     fi
-    echo "[release-key-guard] BUSBAR_RELEASE_PUBKEY present and well-formed (${BUSBAR_RELEASE_PUBKEY:0:12}…)"
+    echo "[release-key-guard] BUSBAR_RELEASE_PUBKEY present and well-formed (${BUSBAR_RELEASE_PUBKEY:0:24}…)"
     ;;
 
   assert-embedded)

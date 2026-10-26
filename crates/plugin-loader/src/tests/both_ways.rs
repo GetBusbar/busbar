@@ -179,7 +179,8 @@ fn dropped_signed(
     let tarball = crate::tarball::package(&signed, "libplugin.so", lib).expect("package");
     std::fs::write(dir.join(format!("{tag}.tar.gz")), tarball).expect("write the tarball");
     let policy = TrustPolicy {
-        first_party_key: Some(release.verifying_key()),
+        first_party_keys: vec![crate::sign::FirstPartyKey::unnamed(release.verifying_key())],
+        revoked: Default::default(),
         binary_version: "1.6.0".into(),
         first_party_floors: Default::default(),
         first_party_high_water: Default::default(),

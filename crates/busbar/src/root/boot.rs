@@ -191,7 +191,7 @@ pub fn trust_policy(
     if let Some(key) =
         harness_first_party_key(std::env::var(HARNESS_FIRST_PARTY_KEY_ENV).ok().as_deref())?
     {
-        policy.first_party_key = Some(key);
+        policy.first_party_keys = vec![super::loader::sign::FirstPartyKey::unnamed(key)];
     }
     Ok(policy)
 }

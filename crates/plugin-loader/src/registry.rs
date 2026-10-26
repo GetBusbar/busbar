@@ -1308,12 +1308,13 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
                     RejectKind::EgressGrant => "third-party (egress grant)",
+                    RejectKind::Revoked => "revoked",
                 }
                 .to_string();
                 let status = match s.kind {
                     // Only a TRUSTED-but-below-floor artifact is a hard REJECTED row; every untrusted
                     // reject (including a floored untrusted one) is a SKIP.
-                    RejectKind::AntiDowngrade | RejectKind::EgressGrant => {
+                    RejectKind::AntiDowngrade | RejectKind::EgressGrant | RejectKind::Revoked => {
                         format!("REJECTED: {}", s.reason)
                     }
                     _ => format!("SKIPPED: {}", s.reason),

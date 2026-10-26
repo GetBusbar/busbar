@@ -9175,7 +9175,9 @@ fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load(
     )
     .expect("the tarball is written");
     let policy = TrustPolicy {
-        first_party_key: Some(key.verifying_key()),
+        first_party_keys: vec![crate::root::loader::sign::FirstPartyKey::unnamed(
+            key.verifying_key(),
+        )],
         ..Default::default()
     };
     let registry = crate::root::loader::scan_and_validate(&dir, &policy).expect("the row scans");

@@ -130,7 +130,9 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
         ..Default::default()
     };
     let mut automatic = trust_policy(&cfg, env!("CARGO_PKG_VERSION")).expect("automatic policy");
-    automatic.first_party_key = Some(release.verifying_key());
+    automatic.first_party_keys = vec![crate::root::loader::sign::FirstPartyKey::unnamed(
+        release.verifying_key(),
+    )];
     // DEFAULT policy: no per-name floor pins this artifact, so its 0.9.0 version line is its own
     // business — a verified first-party plugin loads regardless of the binary's version.
     assert!(
@@ -150,7 +152,9 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
     explicit
         .first_party_floors
         .insert("busbar-store-kv-plugin".to_string(), "0.9.0".to_string());
-    explicit.first_party_key = Some(release.verifying_key());
+    explicit.first_party_keys = vec![crate::root::loader::sign::FirstPartyKey::unnamed(
+        release.verifying_key(),
+    )];
     assert!(
         matches!(
             evaluate(artifact, &old, &explicit).unwrap(),
@@ -502,7 +506,7 @@ fn first_party_signed_by(
 #[test]
 fn a_build_without_test_harness_ignores_the_harness_key_and_refuses_a_test_signed_first_party_plugin(
 ) {
-    use crate::root::loader::sign::{embedded_release_pubkey, evaluate, SigningKey};
+    use crate::root::loader::sign::{embedded_release_keys, evaluate, SigningKey};
     let test_key = SigningKey::from_bytes(&[0x5a; 32]);
     let artifact = b"\x7fELF harness seam red arm";
     let signed = first_party_signed_by(&test_key, artifact);
@@ -518,8 +522,8 @@ fn a_build_without_test_harness_ignores_the_harness_key_and_refuses_a_test_signe
     let policy = policy.expect("the default trust resolves");
 
     assert_eq!(
-        policy.first_party_key,
-        embedded_release_pubkey(),
+        policy.first_party_keys,
+        embedded_release_keys(),
         "a build without test-harness must keep the embedded release key as its only first-party key"
     );
     assert!(
@@ -552,7 +556,11 @@ fn a_test_harness_build_takes_its_first_party_key_from_the_harness_variable() {
 
     let artifact = b"\x7fELF harness seam green arm";
     let policy = crate::root::loader::sign::TrustPolicy {
-        first_party_key: harness_first_party_key(Some(&hex_key)).unwrap(),
+        first_party_keys: harness_first_party_key(Some(&hex_key))
+            .unwrap()
+            .map(crate::root::loader::sign::FirstPartyKey::unnamed)
+            .into_iter()
+            .collect(),
         ..Default::default()
     };
     assert!(matches!(

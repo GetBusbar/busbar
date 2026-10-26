@@ -23,8 +23,11 @@
 //!
 //! ## Trust model
 //!
-//! - **First-party**: a manifest whose `publisher` is `busbar` verifies against the release public
-//!   key EMBEDDED in the binary ([`embedded_release_pubkey`]) - trusted with ZERO configuration.
+//! - **First-party**: a manifest whose `publisher` is `busbar` verifies against one of the release
+//!   public keys EMBEDDED in the binary ([`embedded_release_keys`], a list so a key can be rotated
+//!   to the next one without a new binary) - trusted with ZERO configuration.
+//! - **Revoked**: a library whose sha256 is on the compiled-in revocation list
+//!   ([`REVOKED_DIGESTS`]) is refused whoever signed it, before any opt-in is consulted.
 //!   First-party anti-downgrade is PER-PLUGIN: rollback pins (`first_party_floors`) and
 //!   `plugins.min_versions` floors, both hard rejects. There is no automatic binary-version
 //!   floor — first-party plugins version on independent lines (1.0.x/2.x under a 1.5.0 engine).
@@ -56,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The reserved first-party publisher name. A manifest carrying this publisher verifies against the
-/// EMBEDDED release key ([`TrustPolicy::first_party_key`]), never against `publishers` - an operator
+/// EMBEDDED release keys ([`TrustPolicy::first_party_keys`]), never against `publishers` - an operator
 /// cannot (and need not) allowlist a key named `busbar`.
 pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 
@@ -77,24 +80,106 @@ pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", 
 /// so `host` is what disambiguates them structurally rather than trusting `kind` alone.
 pub const HOST_IDENTITY: &str = "busbar";
 
-/// The busbar release ed25519 PUBLIC key embedded at BUILD time via the `BUSBAR_RELEASE_PUBKEY`
-/// environment variable (64 hex chars). `None` in a build where it was not provided (local dev
-/// builds): first-party verification is then impossible and a `publisher: busbar` plugin is treated
-/// as unsigned (loadable only under `allow_unsigned`).
+/// One first-party key this build trusts: the id every refusal names, and the ed25519 public key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FirstPartyKey {
+    /// The key's name (`busbar-plugins-2026a`), stated beside it in the key list. A bare-hex entry
+    /// (a run key, a test key) is named `ed25519:<first 16 hex digits>` ([`FirstPartyKey::unnamed`]).
+    pub id: String,
+    /// The public key.
+    pub key: VerifyingKey,
+}
+
+impl FirstPartyKey {
+    /// A key the list states no id for, named by its first 16 hex digits.
+    pub fn unnamed(key: VerifyingKey) -> Self {
+        let hex = hex::encode(key.as_bytes());
+        FirstPartyKey {
+            id: format!("ed25519:{}", &hex[..16]),
+            key,
+        }
+    }
+}
+
+/// The build-time variable carrying the first-party key list ([`parse_release_keys`]).
+pub const RELEASE_KEYS_ENV: &str = "BUSBAR_RELEASE_PUBKEY";
+
+/// Parse a first-party key list: entries separated by `,`, each `<id>:<64 hex>` or a bare `<64
+/// hex>` (named by [`FirstPartyKey::unnamed`]). Every entry must be a usable key
+/// ([`public_key_from_hex`]); ids are valid plugin names (`[a-z0-9-]+`) and neither an id nor a key
+/// may repeat. An empty list is refused: a list that names no key is a packaging bug, not a choice.
 ///
-/// THE RELEASE KEY. The public half is the `BUSBAR_RELEASE_PUBKEY` repository variable, committed
-/// for local builds in `.cargo/config.toml` `[env]`; the private half lives only in the
-/// `BUSBAR_SIGN_KEY` CI secret and never in this tree. No key is written in this file. Three guards
-/// hold that: the removed `build-artifact.yml` sets the variable on the release build step,
-/// `scripts/release-key-guard.sh` refuses to build a release binary without a well-formed 64-hex
-/// key, and `scripts/release-gate/platform-checks.sh` fails the `pubkey` row when the published
-/// artifact does not embed it.
+/// # Errors
+///
+/// The first entry that is not a usable, unique key, naming it by position.
+pub fn parse_release_keys(spec: &str) -> Result<Vec<FirstPartyKey>, String> {
+    let mut keys: Vec<FirstPartyKey> = Vec::new();
+    for (i, entry) in spec.split(',').map(str::trim).enumerate() {
+        let n = i + 1;
+        if entry.is_empty() {
+            return Err(format!("{RELEASE_KEYS_ENV} entry {n} is empty"));
+        }
+        let (id, hex_key) = match entry.split_once(':') {
+            Some((id, hex_key)) => (Some(id.trim()), hex_key.trim()),
+            None => (None, entry),
+        };
+        let key = public_key_from_hex(hex_key)
+            .map_err(|e| format!("{RELEASE_KEYS_ENV} entry {n}: {e}"))?;
+        let key = match id {
+            Some(id) if !valid_name(id) => {
+                return Err(format!(
+                    "{RELEASE_KEYS_ENV} entry {n}: key id '{id}' is not lowercase [a-z0-9-]+"
+                ));
+            }
+            Some(id) => FirstPartyKey {
+                id: id.to_string(),
+                key,
+            },
+            None => FirstPartyKey::unnamed(key),
+        };
+        if let Some(dup) = keys.iter().find(|k| k.id == key.id || k.key == key.key) {
+            return Err(format!(
+                "{RELEASE_KEYS_ENV} entry {n} ('{}') repeats the id or key of '{}'",
+                key.id, dup.id
+            ));
+        }
+        keys.push(key);
+    }
+    Ok(keys)
+}
+
+/// The busbar first-party release keys embedded at BUILD time through `BUSBAR_RELEASE_PUBKEY`
+/// ([`parse_release_keys`]). Empty in a build where it was not provided or does not parse: every
+/// `publisher: busbar` plugin is then treated as unsigned (loadable only under `allow_unsigned`).
+///
+/// THE RELEASE KEYS. 1.6.0 trusts a LIST, held on hardware (the plugin key ceremony): the key that
+/// signs today and the sealed next key, so a lost or compromised signing key is retired by
+/// re-signing with the next one, with no new binary. The list is the `BUSBAR_RELEASE_PUBKEY`
+/// repository variable, committed for local builds in `.cargo/config.toml` `[env]`; no private half
+/// is ever in this tree or in CI. `scripts/release-key-guard.sh` refuses to build a release binary
+/// without a well-formed list, and `scripts/release-gate/platform-checks.sh` fails the `pubkey` row
+/// when the published artifact does not embed it.
 /// (Owner ruling 2026-09-30, N3 / Q90: a statement of the contract, not a deferral.)
-pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
-    let hex_key: &str = option_env!("BUSBAR_RELEASE_PUBKEY")?;
-    // A malformed build-time key is a build/packaging bug; fail closed to "no first-party key"
+pub fn embedded_release_keys() -> Vec<FirstPartyKey> {
+    // A malformed build-time list is a build/packaging bug; fail closed to "no first-party key"
     // rather than panic in the engine (the plugin then simply cannot verify as first-party).
-    public_key_from_hex(hex_key).ok()
+    option_env!("BUSBAR_RELEASE_PUBKEY")
+        .and_then(|spec| parse_release_keys(spec).ok())
+        .unwrap_or_default()
+}
+
+/// THE REVOKED ARTIFACTS: `(sha256 of the library bytes, why)`. A library on this list is refused
+/// whoever signed it and whatever the operator opted in to. Compiled in, so a revocation ships with
+/// a binary; it is the answer to a signed plugin that must never load again (a key misuse, a
+/// release pulled for a defect) while its signing key stays trusted for everything else.
+pub const REVOKED_DIGESTS: &[(&str, &str)] = &[];
+
+/// [`REVOKED_DIGESTS`] as the map [`TrustPolicy::revoked`] holds.
+pub fn revoked_digests() -> BTreeMap<String, String> {
+    REVOKED_DIGESTS
+        .iter()
+        .map(|(digest, why)| (digest.to_ascii_lowercase(), (*why).to_string()))
+        .collect()
 }
 
 /// The signed manifest that travels inside every plugin tarball. Every field except `signature` is
@@ -499,9 +584,12 @@ pub enum AllowReason {
 /// non-allowlisted publisher) is REJECTED - logged and skipped, never `dlopen`ed.
 #[derive(Clone, Default)]
 pub struct TrustPolicy {
-    /// The embedded busbar release public key ([`embedded_release_pubkey`]). `None` in a build with
+    /// The embedded busbar release public keys ([`embedded_release_keys`]). Empty in a build with
     /// no embedded key: first-party plugins then cannot verify (they are treated as unsigned).
-    pub first_party_key: Option<VerifyingKey>,
+    pub first_party_keys: Vec<FirstPartyKey>,
+    /// REVOKED library digests (`sha256` -> why; [`REVOKED_DIGESTS`]): refused whoever signed them,
+    /// before any opt-in is consulted.
+    pub revoked: BTreeMap<String, String>,
     /// The running binary's version (`CARGO_PKG_VERSION`). Informational (error text/telemetry)
     /// only: it is NOT a floor. First-party plugins version on their own independent lines
     /// (1.0.x stores/auth/hooks under a 1.5.0 engine), so the pre-release
@@ -590,7 +678,8 @@ impl TrustPolicy {
             publishers.insert(name.to_string(), key);
         }
         Ok(TrustPolicy {
-            first_party_key: embedded_release_pubkey(),
+            first_party_keys: embedded_release_keys(),
+            revoked: revoked_digests(),
             binary_version: i.binary_version.to_string(),
             first_party_floors: i.first_party_floors.clone(),
             first_party_high_water: BTreeMap::new(),
@@ -710,6 +799,9 @@ pub enum RejectKind {
     /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
     /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
     EgressGrant,
+    /// The library's digest is on this build's revocation list ([`REVOKED_DIGESTS`]): refused
+    /// whoever signed it, before any opt-in.
+    Revoked,
 }
 
 /// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a
@@ -847,6 +939,45 @@ pub fn public_key_from_hex(s: &str) -> Result<VerifyingKey, String> {
 /// the manifest's `sha256` (binding), and the signature must verify over the canonical manifest
 /// (authenticity + integrity).
 fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result<(), String> {
+    let sig = bound_signature(manifest, bytes)?;
+    // STRICT verification, not the permissive cofactored `verify`. `verify_strict` refuses a weak
+    // (small-order) public key and a non-canonically-encoded `R`, both of which the permissive
+    // check accepts — and a weak key accepts a forged signature over ANY message, which is a
+    // universal forgery against a trust anchor. Every honestly-generated key and every signature
+    // this crate's `sign` produces verify identically under both, so no published artifact changes
+    // verdict: the strictness only closes the forgery shapes.
+    key.verify_strict(&canonical_manifest_bytes(manifest), &sig)
+        .map_err(|_| "signature does not verify".to_string())
+}
+
+/// WHICH first-party key signed `manifest` over `bytes`: the first of `keys` its signature
+/// verifies against (the same binding and strict check as every signature, [`signature_ok`]).
+///
+/// # Errors
+///
+/// The library does not match the manifest, the signature is malformed, or it verifies against
+/// none of `keys`: the refusal names every key id it tried, so an operator holding a plugin signed
+/// by a retired or unknown key reads which keys this binary trusts.
+pub fn first_party_signer<'k>(
+    manifest: &Manifest,
+    bytes: &[u8],
+    keys: &'k [FirstPartyKey],
+) -> Result<&'k FirstPartyKey, String> {
+    let sig = bound_signature(manifest, bytes)?;
+    let canonical = canonical_manifest_bytes(manifest);
+    keys.iter()
+        .find(|k| k.key.verify_strict(&canonical, &sig).is_ok())
+        .ok_or_else(|| {
+            let ids: Vec<&str> = keys.iter().map(|k| k.id.as_str()).collect();
+            format!(
+                "signature verifies against none of this build's first-party keys [{}]",
+                ids.join(", ")
+            )
+        })
+}
+
+/// The signature `manifest` carries, once its `sha256` is proven to bind `bytes`.
+fn bound_signature(manifest: &Manifest, bytes: &[u8]) -> Result<Signature, String> {
     // Normalize the manifest digest to lowercase before comparing, consistently with
     // `validate_structure` (which compares against `m.sha256.to_ascii_lowercase()`). `sha256_hex`
     // always emits lowercase hex; without this an uppercase-hex manifest digest would pass the
@@ -860,15 +991,7 @@ fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result
         .as_slice()
         .try_into()
         .map_err(|_| "signature must be 64 bytes".to_string())?;
-    let sig = Signature::from_bytes(&sig_arr);
-    // STRICT verification, not the permissive cofactored `verify`. `verify_strict` refuses a weak
-    // (small-order) public key and a non-canonically-encoded `R`, both of which the permissive
-    // check accepts — and a weak key accepts a forged signature over ANY message, which is a
-    // universal forgery against a trust anchor. Every honestly-generated key and every signature
-    // this crate's `sign` produces verify identically under both, so no published artifact changes
-    // verdict: the strictness only closes the forgery shapes.
-    key.verify_strict(&canonical_manifest_bytes(manifest), &sig)
-        .map_err(|_| "signature does not verify".to_string())
+    Ok(Signature::from_bytes(&sig_arr))
 }
 
 /// Parse a dotted version into its leading numeric components (`major.minor.patch`), ignoring any
@@ -1113,6 +1236,21 @@ pub fn evaluate(
     manifest: &Manifest,
     policy: &TrustPolicy,
 ) -> Result<Verdict, Rejected> {
+    // REVOCATION before anything else: a revoked library is refused whoever signed it, and no
+    // opt-in reaches it. Keyed by the library's OWN digest, never the manifest's claim of it.
+    let digest = sha256_hex(bytes);
+    if let Some(why) = policy.revoked.get(&digest) {
+        return Err(Rejected::new(
+            RejectKind::Revoked,
+            format!(
+                "plugin '{}' version {} (library sha256 {digest}) is REVOKED by this build: {why}. \
+                 A revoked artifact never loads, whoever signed it and whatever plugins.trust \
+                 permits; install a release that is not revoked.",
+                manifest.name, manifest.version
+            ),
+        ));
+    }
+
     // Trust determination first: which key (if any) proves this manifest? A manifest with NO
     // signature at all is UNSIGNED regardless of its (unverifiable, self-declared) publisher -
     // only a PRESENT signature from a non-allowlisted publisher counts as third-party.
@@ -1122,21 +1260,22 @@ pub fn evaluate(
             tampered: false,
         })
     } else if manifest.publisher == FIRST_PARTY_PUBLISHER {
-        match &policy.first_party_key {
-            None => Err(Untrusted::Unsigned {
+        if policy.first_party_keys.is_empty() {
+            Err(Untrusted::Unsigned {
                 reason: format!(
                     "manifest claims first-party publisher '{FIRST_PARTY_PUBLISHER}' but this \
                      build embeds no busbar release key, so it cannot be verified"
                 ),
                 tampered: false,
-            }),
-            Some(key) => match signature_ok(manifest, bytes, key) {
-                Ok(()) => Ok(true),
+            })
+        } else {
+            match first_party_signer(manifest, bytes, &policy.first_party_keys) {
+                Ok(_) => Ok(true),
                 Err(reason) => Err(Untrusted::Unsigned {
                     reason: format!("first-party signature failed: {reason}"),
                     tampered: true,
                 }),
-            },
+            }
         }
     } else {
         match policy.publishers.get(&manifest.publisher) {
