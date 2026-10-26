@@ -611,17 +611,25 @@ impl DoorApply {
         let section = applied_section(app, &self.facts.plane, self.served_facts.section, &now);
         // ITS OTHER OWNED SECTIONS as the applied configuration writes them (the raw sections the
         // generation's projection carries), handed as boot hands them.
-        let owned = app
+        let config = app
             .config_projection
             .as_ref()
-            .and_then(|p| p.downcast_ref::<crate::root::door_steps::DoorConfig>())
+            .and_then(|p| p.downcast_ref::<crate::root::door_steps::DoorConfig>());
+        let owned = config
             .map(|c| owned_sections(&self.served_facts, &c.sections))
             .unwrap_or_default();
+        // THE SETTINGS AS BOOT HANDS THEM ([`settings_of`]): keyed beside the sections the plane
+        // reads, from the applied configuration's sections.
+        let handed = match config {
+            Some(c) if !section.is_null() => settings_of(&self.served_facts, &section, &c.sections),
+            _ => section.clone(),
+        };
         // A CONFIG APPLY IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4): the proof is minted here,
         // once, and handed down to every credential this refresh resolves.
         let scope = busbar_contract::config_time::ConfigScope::config_time();
         match self.refreshed(
             &section,
+            &handed,
             &owned,
             now.generation + 1,
             Arc::clone(&app.secret_resolver) as Arc<dyn busbar_contract::secret::SecretResolve>,
@@ -660,6 +668,7 @@ impl DoorApply {
     fn refreshed(
         &self,
         section: &serde_yaml::Value,
+        handed: &serde_yaml::Value,
         owned: &serde_json::Map<String, serde_json::Value>,
         generation: u64,
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
@@ -668,7 +677,7 @@ impl DoorApply {
         let settings = if section.is_null() {
             Vec::new()
         } else {
-            handed_settings(settings_path(&self.served_facts), section)?
+            handed_settings(settings_path(&self.served_facts), handed)?
         };
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
@@ -1434,12 +1443,12 @@ fn handed_settings(path: &[&str], section: &serde_yaml::Value) -> Result<Vec<u8>
 }
 
 /// Where the settings a plane is handed ([`settings_of`]) sit in the configuration, for the
-/// credential binding ([`handed_settings`]): a plane handed the kernel-owned `pools` map keyed
-/// beside the sections it reads sits at the root; any other at its own section's key.
+/// credential binding ([`handed_settings`]): a plane handed its settings keyed beside the sections
+/// it reads sits at the root; any other at its own section's key.
 fn settings_path(
     facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
 ) -> &[&'static str] {
-    if facts.section == busbar_contract::section::RESERVED_POOLS_KEY {
+    if handed_keyed(facts) {
         &[]
     } else {
         std::slice::from_ref(&facts.section)
@@ -2139,21 +2148,38 @@ fn owned_bytes(owned: &serde_json::Map<String, serde_json::Value>) -> Result<Vec
     }
 }
 
+/// Whether a plane is handed its settings KEYED ([`settings_of`]): it declares the kernel-owned
+/// `pools` map, or it reads any section beside its own (`SECTION_CONSUMED`).
+fn handed_keyed(facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts) -> bool {
+    facts.section == busbar_contract::section::RESERVED_POOLS_KEY || !facts.consumed.is_empty()
+}
+
 /// THE SETTINGS A DOOR PLANE OPENS WITH (spec Part 1 §4: one validated JSON object `{section:
-/// value}`): a plane that declares the kernel-owned `pools` map (the previous release's top-level
-/// model-serving layout) is handed it and each section it reads beside it (`SECTION_CONSUMED`)
-/// that this deployment writes, keyed; a plane that declares a section of its own is handed that
-/// section, as its door reads it.
+/// value}`; ARCHITECT ruling R-6, 2026-10-23): a plane that reads sections beside its own
+/// (`SECTION_CONSUMED`) is handed its own section and each consumed section this deployment writes,
+/// keyed by section; the plane that declares the kernel-owned `pools` map (the previous release's
+/// top-level model-serving layout) is one instance of that rule. A plane that reads no section
+/// beside its own is handed that section bare, as its door reads it. A keyed plane's own section is
+/// handed as [`handed_settings`] hands a bare one: its pool members bare names, its `work:` struck.
 fn settings_of(
     facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     section: &serde_yaml::Value,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
 ) -> serde_yaml::Value {
-    if facts.section != busbar_contract::section::RESERVED_POOLS_KEY {
+    if !handed_keyed(facts) {
         return section.clone();
     }
+    let own = if facts.section == busbar_contract::section::RESERVED_POOLS_KEY {
+        section.clone()
+    } else {
+        let mut own = plane_settings(section);
+        if let Some(map) = own.as_mapping_mut() {
+            map.remove(busbar_contract::section::RESERVED_WORK_KEY);
+        }
+        own
+    };
     let mut keyed = serde_yaml::Mapping::new();
-    keyed.insert(facts.section.into(), section.clone());
+    keyed.insert(facts.section.into(), own);
     for name in &facts.consumed {
         if let Some(value) = sections.get(name) {
             keyed.insert((*name).into(), value.clone());
