@@ -291,6 +291,12 @@ pub fn part_key(key: &EntryKey, part: u16) -> Vec<u8> {
 
 use busbar_kernel::config::card::sha256;
 
+/// One entry's data parts by number, and its commit part, as a scan found them.
+type Parts = (BTreeMap<u16, Vec<u8>>, Option<Vec<u8>>);
+
+/// The records one write puts, in order: `(store key, value)`.
+pub type Records = Vec<(Vec<u8>, RecordBytes)>;
+
 /// What a full scan of the schema read.
 #[derive(Debug, Default, Clone)]
 pub struct Scanned {
@@ -308,8 +314,7 @@ impl Scanned {
     /// Read the scan's records.
     #[must_use]
     pub fn of(records: Vec<(Vec<u8>, RecordBytes)>) -> Self {
-        let mut grouped: BTreeMap<EntryKey, (BTreeMap<u16, Vec<u8>>, Option<Vec<u8>>)> =
-            BTreeMap::new();
+        let mut grouped: BTreeMap<EntryKey, Parts> = BTreeMap::new();
         let mut scanned = Scanned::default();
         for (key, value) in records {
             let Some(entry_key) = key.get(..ENTRY_KEY_LEN).and_then(EntryKey::from_slice) else {

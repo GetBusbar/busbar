@@ -29,7 +29,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use busbar_contract::kinds::RecordBytes;
 use busbar_contract::store_calls::StoreCalls;
 use busbar_kernel::config::card::{CardFields, CardSet, EditRefused};
 use busbar_kernel::rate_apply::CardPut;
@@ -105,7 +104,7 @@ pub struct CardStore {
 struct State {
     entries: BTreeMap<EntryKey, StoredEntry>,
     voids: Vec<VoidRecord>,
-    pending: Option<(EntryKey, Vec<(Vec<u8>, RecordBytes)>)>,
+    pending: Option<(EntryKey, super::card_store::Records)>,
     reputting: bool,
     alarmed: BTreeSet<String>,
     seed: Seed,
@@ -384,8 +383,9 @@ impl CardStore {
         let mut state = self.lock();
         let mut changed = false;
         for entry in scanned.entries {
-            if !state.entries.contains_key(&entry.key) {
-                state.entries.insert(entry.key, entry);
+            if let std::collections::btree_map::Entry::Vacant(slot) = state.entries.entry(entry.key)
+            {
+                slot.insert(entry);
                 changed = true;
             }
         }
