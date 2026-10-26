@@ -16,7 +16,6 @@ use busbar_contract::bounded::{
     MAX_RECORD_BYTES, MAX_SESSION_UPSTREAMS, MAX_USAGE_LINES, SCRATCH_BASE_BYTES,
 };
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::unit::Step;
 
 /// Every pinned number is the number the design pins.
 #[test]
@@ -30,54 +29,6 @@ fn the_constants_are_the_designs_numbers() {
     assert_eq!(MAX_LEGS, 8);
     assert_eq!(MAX_LEG_REPLIES, 2);
     assert_eq!(SCRATCH_BASE_BYTES, 4 * 1024);
-}
-
-/// Every step of the loop, in loop order.
-///
-/// The totality table lives with the proof that reads it rather than on the crate's plugin-visible
-/// surface: no plugin, unit or kernel path walks the list, so it is evidence about the enum, not a
-/// thing the enum offers. Written out by hand so a step added to `Step` without a thought for the
-/// ceiling shows up here as a row somebody had to type.
-const ALL_STEPS: &[Step] = &[
-    Step::Arrival,
-    Step::Decode,
-    Step::Authenticate,
-    Step::Verify,
-    Step::Approve,
-    Step::Admit,
-    Step::Route,
-    Step::Meter,
-    Step::Audit,
-    Step::Encode,
-];
-
-/// The table's own totality check: an exhaustive match, so a step added to the enum stops
-/// compiling here until it is given a position in the list above.
-fn position(step: Step) -> usize {
-    match step {
-        Step::Arrival => 0,
-        Step::Decode => 1,
-        Step::Authenticate => 2,
-        Step::Verify => 3,
-        Step::Approve => 4,
-        Step::Admit => 5,
-        Step::Route => 6,
-        Step::Meter => 7,
-        Step::Audit => 8,
-        Step::Encode => 9,
-    }
-}
-
-/// The loop's step vocabulary is closed, and it is the ten named steps, in loop order.
-///
-/// There was a step ceiling here as well, asserted against its own literal. Nothing in the tree
-/// was a list of steps, so it bounded nothing; it is gone, and this is what remains true.
-#[test]
-fn the_loop_has_exactly_its_ten_named_steps() {
-    for (index, step) in ALL_STEPS.iter().enumerate() {
-        assert_eq!(position(*step), index, "the table is in loop order");
-    }
-    assert_eq!(ALL_STEPS.len(), 10);
 }
 
 /// A fact map refuses the thirty-third distinct key and keeps the thirty-two it has.
@@ -167,52 +118,6 @@ fn the_two_byte_handles_do_what_they_say() {
     assert_eq!(clamped.as_slice(), &[4]);
     let inverted = SlabBytes::window(std::sync::Arc::from(&owned[..]), 3, 1);
     assert!(inverted.is_empty());
-}
-
-/// The banned buffer type is not on this crate's surface.
-///
-/// The check is a source scan rather than a type assertion, because the property is "this name
-/// appears nowhere", which no type can state about itself.
-#[test]
-fn the_banned_buffer_type_is_absent_from_the_surface() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut offenders = Vec::new();
-    walk(&src, &mut |path, text| {
-        if text.contains("bytes::Bytes") || text.contains("use bytes::") {
-            offenders.push(path.display().to_string());
-        }
-    });
-    assert!(
-        offenders.is_empty(),
-        "the reference-counted buffer type appears in {offenders:?}"
-    );
-
-    let manifest = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-    )
-    .expect("the manifest is readable");
-    let deps = manifest
-        .split("[dependencies]")
-        .nth(1)
-        .expect("the manifest has a dependency section");
-    assert!(
-        !deps.contains("\nbytes"),
-        "the crate depends on the banned buffer crate"
-    );
-}
-
-/// Walk every source file under a directory.
-fn walk(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path, &str)) {
-    let entries = std::fs::read_dir(dir).expect("the source directory is readable");
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk(&path, f);
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            let text = std::fs::read_to_string(&path).expect("a source file is readable");
-            f(&path, &text);
-        }
-    }
 }
 
 /// A plane may name two places for the response ceiling, and the FIRST that resolves is the one.

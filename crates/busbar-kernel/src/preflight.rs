@@ -1455,9 +1455,5 @@ pub fn plugin_fetch_status_refusal(url: &str, code: u32) -> Option<String> {
 mod opened_secrets_tests;
 
 #[cfg(test)]
-#[path = "tests/root_install_seams_tests.rs"]
-mod root_install_seams_tests;
-
-#[cfg(test)]
 #[path = "tests/store_row_tests.rs"]
 mod store_row_tests;

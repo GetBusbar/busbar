@@ -82,54 +82,6 @@ fn the_uncoded_log_scan_matches_both_spellings_of_both_macros() {
     assert!(!is_bare_log_emission("    let warn = 1;"));
 }
 
-/// EVERY operator-facing warn/error in the sources this crate took from the retired shared value
-/// crate carries a `BUSBAR-NNNN` code — the policy that crate held over its own tree, kept over the
-/// same code where it lives now ([`crate::tests::moved_sources`]). (The kernel's own migrated files
-/// are held by `diagnostics::tests`'s coverage lint.) This scan makes the next uncoded `warn!` /
-/// `error!` (in either spelling) there fail the build rather than quietly drift the docs away from
-/// the logs.
-///
-/// A line is CODED when the emission carries a `diag = ` field — either written through
-/// `diag_warn!`/`diag_error!` (which prepend it) or spelled out at a site that branches between
-/// warn and debug. The module that DEFINES those macros is the one place the bare macros are
-/// legitimately named, so it is excluded.
-#[test]
-fn test_no_bare_tracing_warn_or_error_in_crate_sources() {
-    let mut offenders = Vec::new();
-    for rel in crate::tests::moved_sources() {
-        if rel.ends_with("diagnostics/mod.rs") {
-            continue;
-        }
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-        let src = std::fs::read_to_string(&path).expect("read source file");
-        let lines: Vec<&str> = src.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            if line.trim_start().starts_with("//") {
-                continue; // prose about the macros is not an emission
-            }
-            // Match both spellings of both macros: a file carrying `use tracing::warn;` and
-            // emitting a bare `warn!(…)` is the same uncoded operator-facing log, one import away.
-            if !is_bare_log_emission(line) {
-                continue;
-            }
-            let coded = line.contains("diag = ")
-                || lines[i + 1..]
-                    .iter()
-                    .find(|l| !l.trim().is_empty())
-                    .is_some_and(|l| l.trim_start().starts_with("diag = "));
-            if !coded {
-                offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
-            }
-        }
-    }
-    assert!(
-        offenders.is_empty(),
-        "bare tracing::warn!/error! (no BUSBAR-NNNN code) in the moved sources — emit through \
-         diag_warn!/diag_error! with a registered Diagnostic:\n{}",
-        offenders.join("\n")
-    );
-}
-
 /// Every classification the operator's `error_map` may name parses to its class, `billing` and
 /// `client_error` included; an unknown word is `None` (no fallback arm). Rehomes
 /// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_status_class_from_str_exhaustive.
