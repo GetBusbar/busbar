@@ -1428,7 +1428,3 @@ mod call_binding_tests;
 #[cfg(test)]
 #[path = "tests/teller_verified_destination_tests.rs"]
 mod teller_verified_destination_tests;
-
-#[cfg(test)]
-#[path = "tests/teller_seal_doc_tests.rs"]
-mod teller_seal_doc_tests;

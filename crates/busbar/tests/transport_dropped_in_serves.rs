@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! **A DROPPED-IN TRANSPORT REGISTERS THROUGH THE SAME REGISTRATION AS A LINKED ONE, AND SERVES** —
-//! end to end, over the REAL binary (#2 rule (1): same contract, same loading path; #3
-//! OWNER-LOCKED: a transport is swappable, compiled in OR dropped in), through its door.
+//! end to end, over the REAL binary (same contract, same loading path; a transport
+//! is swappable, compiled in OR dropped in), through its door.
 //!
 //! The in-tree transport `cdylib` is found by its KIND (the one library beside the binary the loader
 //! admits as `kind: transport`) and packed into `plugins.dir` as a tarball. The root names no wire:
@@ -46,7 +46,7 @@ include!(concat!(env!("OUT_DIR"), "/linked_transports.rs"));
 const WORKERS: usize = 2;
 
 /// The line the data door writes, per worker, once the connector's listener has bound that
-/// worker's socket (the one listener source, ARCHITECT ruling 2026-09-30; DEBUG).
+/// worker's socket.
 const THROUGH_THE_CONNECTOR: &str = "data door listening through the connector";
 
 /// The one request both builds answer, and the exchange they answer it with.
@@ -54,8 +54,7 @@ const REQUEST: &str = "GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection:
 const EXCHANGE: &str = include_str!("fixtures/transport_dropped_in_exchange.txt");
 
 /// The in-tree transport `cdylib` and the key it declares, found by KIND beside the binary
-/// (`common::plugins::transport_cdylib_under`). No linked layer composes over another (ARCHITECT
-/// ruling Q128 U7: no transport names another), so no key is needed under them and any transport
+/// (`common::plugins::transport_cdylib_under`). No linked layer composes over another, so no key is needed under them and any transport
 /// door beside the binary is the proof's subject: a linked key's tarball is refused as a second
 /// plugin with that key, an unlinked key's registers through the one fold. A missing artifact is a
 /// hard failure in every run, never a silent skip.
@@ -348,7 +347,7 @@ fn a_dropped_in_transport_registers_through_the_one_fold_and_serves() {
             "stderr:\n{stderr}"
         );
     } else {
-        // NO TRANSPORT NAMES ANOTHER (ARCHITECT ruling Q128 U7): nothing composes over the unlinked
+        // NO TRANSPORT NAMES ANOTHER: nothing composes over the unlinked
         // key, so the build boots and serves without it — the carrier under the data door is the
         // connector's choice, not a registered row.
         let (served, _, _) = serve_once(&dir, data_port, WORKERS);

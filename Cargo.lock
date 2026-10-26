@@ -333,6 +333,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "idna_adapter",
+ "libloading",
  "metrics",
  "opentelemetry-proto",
  "prost",
@@ -678,8 +679,6 @@ dependencies = [
  "http-body",
  "http-body-util",
  "httpdate",
- "hyper",
- "hyper-util",
  "indexmap",
  "libc",
  "loom",
@@ -773,7 +772,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=d4ff39fd365f5aa20caf41cab569f6159f6f6e4c#d4ff39fd365f5aa20caf41cab569f6159f6f6e4c"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=f268bddb20e90c2596da2280881a90027620e2b3#f268bddb20e90c2596da2280881a90027620e2b3"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -816,7 +815,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=f9fcaae60bca26c732d8390eb276fdbb160c5471#f9fcaae60bca26c732d8390eb276fdbb160c5471"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=6b3b1a39ae4af6f0ad467fcab17081b256c5c590#6b3b1a39ae4af6f0ad467fcab17081b256c5c590"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -3011,7 +3010,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "h2",
  "http",
  "http-body",
  "http-body-util",
