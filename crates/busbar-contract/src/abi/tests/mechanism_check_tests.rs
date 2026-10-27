@@ -191,8 +191,8 @@ use crate::abi::host::conn::connector::{Need, DIRECTION_INBOUND, KEEP_NAMED};
 use crate::abi::mechanism::call::Blob;
 use crate::abi::mechanism::door::{
     MarkWord, Rewrite, Section, MARK_BLOCKS, MARK_CATALOG, MARK_EPHEMERAL, MARK_ONE_INSTANCE,
-    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_SUGAR,
-    REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN, SECTION_CONSUMED,
+    MARK_WORD_CARRIER, MARK_WORD_HOOK, REWRITE_ALIAS, REWRITE_KEY, REWRITE_RENAMED_SINCE,
+    REWRITE_SUGAR, REWRITE_SUGAR_NAMES, REWRITE_SUGAR_ROLE, REWRITE_SUGAR_SHOWN, SECTION_CONSUMED,
     SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
 };
 use crate::abi::sdk::door::{abi_str, statement};
@@ -276,7 +276,7 @@ fn a_rewrite_moves_a_key_to_a_path_and_an_alias_or_sugar_names_nothing_else() {
     ];
     assert_eq!(check_rewrites(&ok), Ok(()));
     assert_eq!(
-        check_rewrites(&[rewrite(7, "x", abi_str("y"))]),
+        check_rewrites(&[rewrite(REWRITE_RENAMED_SINCE + 1, "x", abi_str("y"))]),
         Err(fault(Rule::UnknownCode, "rewrite.class"))
     );
     assert_eq!(
@@ -647,4 +647,64 @@ fn the_issued_credential_shape_marks_are_known_distinct_classes() {
         word(MARK_WORD_ISSUED_SECRET_ALPHABET, "abc"),
     ];
     assert_eq!(check_marks(0, &shape), Ok(()));
+}
+
+/// A plugin's settings renames read off its Statement rewrites: each `REWRITE_RENAMED` with its one
+/// `REWRITE_RENAMED_SINCE`, in order; every malformed declaration is refused naming the key.
+#[test]
+fn a_settings_rename_is_one_key_to_another_with_its_release() {
+    use crate::abi::mechanism::door::{renamed_settings, REWRITE_RENAMED};
+    let w = |class: u32, from: &str, to: &str| (class, from.to_string(), to.to_string());
+    let since = REWRITE_RENAMED_SINCE;
+    assert_eq!(
+        renamed_settings(&[
+            w(REWRITE_ALIAS, "old-plugin", ""),
+            w(REWRITE_RENAMED, "signing-secret", "signing_secret"),
+            w(since, "signing-secret", "1.6.0"),
+        ]),
+        Ok(vec![(
+            "signing-secret".to_string(),
+            "signing_secret".to_string(),
+            "1.6.0".to_string()
+        )])
+    );
+    assert_eq!(renamed_settings(&[w(REWRITE_ALIAS, "x", "")]), Ok(vec![]));
+    let refused =
+        |rewrites: &[(u32, String, String)]| renamed_settings(rewrites).expect_err("refused");
+    assert_eq!(
+        refused(&[w(REWRITE_RENAMED, "a", "a"), w(since, "a", "1.0.0")]),
+        "the rename `a` -> `a` is not of one top-level settings key to another"
+    );
+    assert_eq!(
+        refused(&[w(REWRITE_RENAMED, "a.b", "c"), w(since, "a.b", "1.0.0")]),
+        "the rename `a.b` -> `c` is not of one top-level settings key to another"
+    );
+    assert_eq!(
+        refused(&[w(REWRITE_RENAMED, "a", "b"), w(REWRITE_RENAMED, "b", "c")]),
+        "the settings key `b` is renamed twice, or chained"
+    );
+    assert_eq!(
+        refused(&[w(REWRITE_RENAMED, "a", "b")]),
+        "the rename of `a` states no release"
+    );
+    assert_eq!(
+        refused(&[w(since, "z", "1.0.0")]),
+        "a release is stated for the rename of `z`, which no rename declares"
+    );
+    assert_eq!(
+        refused(&[
+            w(REWRITE_RENAMED, "a", "b"),
+            w(since, "a", "1.0.0"),
+            w(since, "a", "1.0.1")
+        ]),
+        "the rename of `a` states its release twice, or empty"
+    );
+    // Both classes are known to the Statement check.
+    assert_eq!(
+        check_rewrites(&[
+            rewrite(REWRITE_RENAMED, "a", abi_str("b")),
+            rewrite(since, "a", abi_str("1.0.0")),
+        ]),
+        Ok(())
+    );
 }
