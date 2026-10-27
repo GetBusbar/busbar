@@ -777,8 +777,10 @@ impl HookOpen for OpenPicky {
     }
 }
 
-/// `validate` over `raw` for `P`'s hook: its outcome and, when it failed, its text.
+/// `validate` over `raw` for `P`'s hook, lent a reason buffer as the host's dispatcher lends every
+/// `validate` one: its outcome and, when it failed, its text.
 fn validated<P: HookOpen>(raw: &[u8]) -> (Outcome, String) {
+    let mut reason = vec![0_u8; 1024];
     let mut input: ValidateIn = zeroed();
     input.settings = Blob {
         ptr: raw.as_ptr(),
@@ -786,6 +788,8 @@ fn validated<P: HookOpen>(raw: &[u8]) -> (Outcome, String) {
         fmt: BLOB_JSON,
         flags: 0,
     };
+    input.err_buf = reason.as_mut_ptr();
+    input.err_cap = reason.len();
     let mut out: OutHead = zeroed();
     let o = call::<life::Validate<HookLife<P>>>(std::ptr::null_mut(), VALIDATE, &input, &mut out);
     let text = if o == Outcome::Ready {
