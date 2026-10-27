@@ -768,7 +768,8 @@ fn the_rate_class_is_the_shipped_table_and_not_the_default() {
     );
     assert_eq!(MutationClass::Forbidden.limit(), 0);
     assert!(
-        busbar_kernel::admin::scope::admin_required_scope("GET", "/api/v1/admin/audit") == Scope::ReadOnly
+        busbar_kernel::admin::scope::admin_required_scope("GET", "/api/v1/admin/audit")
+            == Scope::ReadOnly
     );
 }
 

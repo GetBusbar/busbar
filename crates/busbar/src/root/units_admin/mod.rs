@@ -40,6 +40,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use busbar_contract::authz::Scope;
 use busbar_contract::caps::{
     Admission, Admit, Admittance, Approve, Audit, Authenticate, Consumption, Decode, Encode, Grant,
     Meter, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, SeatVerdict, Usage,
@@ -49,7 +50,6 @@ use busbar_contract::UnitKey;
 use busbar_core_admin::admin_codec::verbs::ResolvedVerb;
 use busbar_kernel::teller::UnitCtx;
 use busbar_kernel_audit::{expose, AuditChain, AuditKeySet, AuditRecord};
-use busbar_contract::authz::Scope;
 
 use crate::root::durability::CheckpointUnreadable;
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
