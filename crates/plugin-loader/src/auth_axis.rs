@@ -461,7 +461,7 @@ static STAND_IN_CONNS: std::sync::Mutex<Option<Arc<dyn DeclaredConns>>> =
     std::sync::Mutex::new(None);
 
 /// TEST STAND-IN: bind every instance the stand-in axis opens from now on to `conns` (a test's
-/// stand-in for the process's connector, e.g. [`crate::https_conns::HttpsConns`]). Never shipped.
+/// stand-in for the process's connector, e.g. busbar-test-kit's `HttpsConns`). Never shipped.
 #[cfg(any(test, feature = "test-support"))]
 pub fn stand_in_conns(conns: Arc<dyn DeclaredConns>) {
     *STAND_IN_CONNS

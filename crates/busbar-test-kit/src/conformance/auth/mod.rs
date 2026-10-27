@@ -1440,6 +1440,6 @@ fn contract(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../../tests/conformance_auth_form_tests.rs"]
 mod form_tests;

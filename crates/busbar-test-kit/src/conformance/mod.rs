@@ -10,7 +10,7 @@
 //! A plugin repo calls it from its own `tests/conformance.rs`, one line:
 //!
 //! ```ignore
-//! busbar_plugin_loader::conformance_suite! {
+//! busbar_test_kit::conformance_suite! {
 //!     door: <logic crate>::door::door,              // the LINKED door (its logic crate's)
 //!     cdylib: "<logic crate>_plugin",               // the crate whose cdylib is the DROPPED door
 //!     inputs: include_str!("conformance.json"),     // what the kind's script drives
@@ -23,15 +23,15 @@
 //! certificate chains to; both go to the HOST, never to the plugin:
 //!
 //! ```ignore
-//! busbar_plugin_loader::conformance_suite! {
+//! busbar_test_kit::conformance_suite! {
 //!     door: …, cdylib: …, inputs: …,
 //!     host: <busbar's host connector, a `conformance::Host`>,
 //!     tls: include_str!("test-ca.pem"),
 //! }
 //! ```
 //!
-//! with `busbar-plugin-loader = { git = …, rev = <the pin>, features = ["conformance"] }` as a
-//! dev-dependency. The macro emits the suite's tests; `plugin-ci.yml` runs them under `--release`.
+//! with `busbar-test-kit = { git = …, rev = <the pin> }` as a dev-dependency. The macro emits the
+//! suite's tests; `plugin-ci.yml` runs them under `--release`.
 //!
 //! A plugin whose declared needs reach a far end (an IdP's JWKS or token endpoint) names those far
 //! ends in its inputs, `"far_ends": [{ "url", "cert_pem", "status", "body" }, ...]`: each instance
@@ -77,10 +77,8 @@
 //! no connection table is refused at bind, naming the plugin. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
 //! step can require that the suite FAILS when a count moves.
 //!
-//! THE SEAM (QUESTIONS, slot CONF-SUITE): the suite lives here, behind the `conformance` feature,
-//! because this is the one crate that both links and dlopens through the one loader, and holds the
-//! kernel's own host adapters (`store_v3::LoadedStore`). Everything a plugin repo names is in this
-//! module; a move to another home moves this directory and the macro's path, nothing else.
+//! THE SEAM: the suite lives in busbar-test-kit, a dev-dependency only, and reaches the one loader
+//! through the dispatcher internals busbar-plugin-loader opens under its `test-support` feature.
 //!
 //! [`load_linked`]: crate::dispatch::load_linked
 //! [`load_dropped_bytes`]: crate::dispatch::load_dropped_bytes
@@ -830,19 +828,19 @@ pub fn dispatcher_serving(
 }
 
 /// A test's restated door, written in plain Rust; [`test_door`] is its [`RawDoorFn`].
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 pub(crate) trait TestDoor {
     fn door() -> *const Door;
 }
 
 /// The C-ABI door of `T`: one shim per restated door, so no test spells the ABI of its own.
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 pub(crate) extern "C" fn test_door<T: TestDoor>() -> *const Door {
     T::door()
 }
 
 /// A test's restated op, written in plain Rust; [`test_op`] is its door-table entry.
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 pub(crate) trait TestOp {
     fn op(
         instance: *mut std::ffi::c_void,
@@ -852,7 +850,7 @@ pub(crate) trait TestOp {
 }
 
 /// The C-ABI op of `T`, as a door table holds it.
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 pub(crate) extern "C" fn test_op<T: TestOp>(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
@@ -2453,10 +2451,10 @@ macro_rules! conformance_suite {
     };
 }
 
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_suite_tests.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_declared_tests.rs"]
 mod declared_tests;

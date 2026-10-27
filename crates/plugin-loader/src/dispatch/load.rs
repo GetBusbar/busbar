@@ -135,7 +135,8 @@ impl LinkedRow {
     }
 
     /// [`LinkedRow::of`] over a door the loader already holds raw (a registry row's).
-    pub(crate) fn of_raw(door: RawDoorFn) -> Result<Self, LoadError> {
+    #[doc(hidden)]
+    pub fn of_raw(door: RawDoorFn) -> Result<Self, LoadError> {
         Ok(Self {
             statement: rendering_of_raw(door)?,
             door,
@@ -150,7 +151,8 @@ impl LinkedRow {
 /// [`MacroDoor`]: busbar_contract::abi::sdk::door::MacroDoor
 #[derive(Debug, Clone, Copy)]
 pub struct LoadedDoor {
-    pub(crate) door: RawDoorFn,
+    #[doc(hidden)]
+    pub door: RawDoorFn,
 }
 
 impl From<busbar_contract::abi::sdk::door::MacroDoor> for LoadedDoor {
@@ -169,7 +171,8 @@ impl From<DoorFn> for LoadedDoor {
 
 /// A sealed door function as the raw one the loader enters ([`enter_door`]): the same `extern "C"`
 /// function, typed as a `dlsym` answer is.
-pub(crate) const fn raw(door: DoorFn) -> RawDoorFn {
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub const fn raw(door: DoorFn) -> RawDoorFn {
     // SAFETY: `&'static Door` and `*const Door` are ABI-compatible (one pointer; the reference is
     // never NULL), so calling the function through either type is the same call; the loader only
     // ever reads the raw answer through its checks.
@@ -319,7 +322,8 @@ pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
 
 /// [`rendering_of`] over a raw door function: a `dlsym` answer, or a door the loader already
 /// holds.
-pub(crate) fn rendering_of_raw(door_fn: RawDoorFn) -> Result<Vec<u8>, LoadError> {
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub fn rendering_of_raw(door_fn: RawDoorFn) -> Result<Vec<u8>, LoadError> {
     let (door, _) = read_door(enter_door(door_fn), None)?;
     let st = statement(&door)?;
     // SAFETY: `statement` ran `check_statement`: every list is its stated count of `'static`
@@ -331,7 +335,8 @@ pub(crate) fn rendering_of_raw(door_fn: RawDoorFn) -> Result<Vec<u8>, LoadError>
 /// both origins. The door function is plugin code like any slot, so it runs where every other
 /// per-load crossing runs; a call already on a worker stays there. A door function that panicked
 /// answers NULL ([`LoadError::NullDoor`]).
-pub(crate) fn enter_door(door_fn: RawDoorFn) -> *const Door {
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
+pub fn enter_door(door_fn: RawDoorFn) -> *const Door {
     let call = || {
         crate::ffi_thread::debug_assert_permanent("the door function");
         door_fn()
@@ -370,8 +375,8 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
 ///
 /// # Errors
 /// `dlopen` failed.
-#[cfg(any(test, feature = "conformance"))]
-pub(crate) fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, LoadError> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, LoadError> {
     let lib = crate::dlopen_on_worker(path.as_os_str()).map_err(LoadError::Open)?;
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` outlives every use of it.
     let door = match unsafe { lib.get::<RawDoorFn>(DOOR_SYMBOL).map(|s| *s) } {
