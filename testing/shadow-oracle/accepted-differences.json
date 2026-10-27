@@ -2178,7 +2178,7 @@
       "id": "RULE21-576 the plain gemini route bills toolUsePromptTokenCount as input (ledger x rate card)",
       "kind": "breaking",
       "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
-      "by": "ruling:§MONEY IS LEDGER × RATE CARD (registered under a standing ruling; no owner signature on this entry); RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
+      "by": "owner (Matthew Jackson), 2026-10-27 billing standing rule; previously ruling:§MONEY IS LEDGER × RATE CARD (registered under a standing ruling; no owner signature on this entry); RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
       "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens@fixture$",
       "expected_cells": 1,
       "classes": [
@@ -2186,7 +2186,7 @@
         "effects.metrics",
         "norm.rules"
       ],
-      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents. PREMISE 2026-10-24: the /effects/usage pointer was read against the JSON body, where it never exists; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's JSON body is what the judge reads, so the premise is that body itemizing toolUsePromptTokenCount 4 beside promptTokenCount 11, the two counts whose sum (15) the entry bills as input; the bare status premise said nothing about the claim.",
+      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents. PREMISE 2026-10-24: the /effects/usage pointer was read against the JSON body, where it never exists; the premise is the cell's status. PREMISE 2026-10-25 (tightened, forgives nothing more): the cell's JSON body is what the judge reads, so the premise is that body itemizing toolUsePromptTokenCount 4 beside promptTokenCount 11, the two counts whose sum (15) the entry bills as input; the bare status premise said nothing about the claim. SIGNATURE 2026-10-27: covered by the owner's billing standing rule (dialects ledger what was done; we bill by that); the behaviour and scope are unchanged.",
       "premise": {
         "all": [
           {
@@ -2206,13 +2206,18 @@
         ]
       },
       "signoff": {
-        "who": "ruling:§MONEY IS LEDGER × RATE CARD",
-        "when": "2026-10-14",
-        "ruling": "RULE 21 (OWNER 2026-10-14, verbatim \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"): where v1.5.5 differs from ledger x rate card, 1.5.5 was wrong; register the oracle cell as an accepted difference citing this ruling. Ledger classes per entry 576 (owner 2026-10-02, LEDGER-SIMPLE 2026-10-03).",
-        "widened_2026_10_24": {
-          "who": "owner (Matthew Jackson)",
-          "when": "2026-10-24",
-          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER BILLING STANDING RULE 2026-10-27 (recorded ~/Developer/tmp/cleanup/NEXT.md, \"never ask again\"): \"dialects control what was done and ledger what was done. we bill by that. if a dialect did something its ledgered. this isn't ever a decision.\" Billing completeness is never a per-entry owner question; this entry is covered by that rule.",
+        "previous": {
+          "who": "ruling:§MONEY IS LEDGER × RATE CARD",
+          "when": "2026-10-14",
+          "ruling": "RULE 21 (OWNER 2026-10-14, verbatim \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"): where v1.5.5 differs from ledger x rate card, 1.5.5 was wrong; register the oracle cell as an accepted difference citing this ruling. Ledger classes per entry 576 (owner 2026-10-02, LEDGER-SIMPLE 2026-10-03).",
+          "widened_2026_10_24": {
+            "who": "owner (Matthew Jackson)",
+            "when": "2026-10-24",
+            "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+          }
         }
       },
       "expires": {
@@ -2466,21 +2471,26 @@
       "id": "R21 an OpenAI transcription answered in its own dialect is metered",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.",
-      "by": "ruling:§MONEY IS LEDGER × RATE CARD (registered under a standing ruling; no owner signature on this entry); queue rule 21 (OWNER 2026-10-14: \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\")",
+      "by": "owner (Matthew Jackson), 2026-10-27 billing standing rule; previously ruling:§MONEY IS LEDGER × RATE CARD (registered under a standing ruling; no owner signature on this entry); queue rule 21 (OWNER 2026-10-14: \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\")",
       "cells": "^llm\\|openai\\|openai\\|request\\|transcription_metered$",
       "expected_cells": 0,
       "classes": [
         "effects.usage"
       ],
-      "rationale": "v1.5.5 crates/busbar/src/handlers/mod.rs:140 gave a same-dialect OpenAI transcription answer no usage reader, so the request billed no tokens and no duration, while the same answer translated to another caller dialect was metered. Owner rule 21 (2026-10-14): money is ledger quantity times rate card, exact integer; where 1.5.5 differs from that, 1.5.5 was wrong, and the cell is registered citing the ruling. 1.6.0's llm plane reads the transcription's reported usage on the same-dialect path too: whisper's `usage.seconds` as `audio_ms` (whole milliseconds, x 1000), a token-metered model's tokens under the token classes; each is priced by the rate card (an absent card prices 0). No oracle cell sends a transcription: the cells are OWED, `cells` names them and expected_cells is 0, the way the client-cancel entry below writes its owed cell. Pinned by the llm plane's conformance case for `audio_ms` (crates/busbar-plane-llm/tests/conformance.json) and the codec's same-dialect transcription metering test. The premise probes the existing same-dialect openai cell.",
+      "rationale": "v1.5.5 crates/busbar/src/handlers/mod.rs:140 gave a same-dialect OpenAI transcription answer no usage reader, so the request billed no tokens and no duration, while the same answer translated to another caller dialect was metered. Owner rule 21 (2026-10-14): money is ledger quantity times rate card, exact integer; where 1.5.5 differs from that, 1.5.5 was wrong, and the cell is registered citing the ruling. 1.6.0's llm plane reads the transcription's reported usage on the same-dialect path too: whisper's `usage.seconds` as `audio_ms` (whole milliseconds, x 1000), a token-metered model's tokens under the token classes; each is priced by the rate card (an absent card prices 0). No oracle cell sends a transcription: the cells are OWED, `cells` names them and expected_cells is 0, the way the client-cancel entry below writes its owed cell. Pinned by the llm plane's conformance case for `audio_ms` (crates/busbar-plane-llm/tests/conformance.json) and the codec's same-dialect transcription metering test. The premise probes the existing same-dialect openai cell. SIGNATURE 2026-10-27: covered by the owner's billing standing rule (dialects ledger what was done; we bill by that); the behaviour and scope are unchanged.",
       "premise": {
         "cell": "llm|openai|openai|request|ok",
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§MONEY IS LEDGER × RATE CARD",
-        "when": "2026-10-14",
-        "ruling": "queue rule 21 (MONEY, OWNER 2026-10-14): never an owner question; fix to ledger x rate card and register the cell citing the ruling"
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER BILLING STANDING RULE 2026-10-27 (recorded ~/Developer/tmp/cleanup/NEXT.md, \"never ask again\"): \"dialects control what was done and ledger what was done. we bill by that. if a dialect did something its ledgered. this isn't ever a decision.\" Billing completeness is never a per-entry owner question; this entry is covered by that rule.",
+        "previous": {
+          "who": "ruling:§MONEY IS LEDGER × RATE CARD",
+          "when": "2026-10-14",
+          "ruling": "queue rule 21 (MONEY, OWNER 2026-10-14): never an owner question; fix to ledger x rate card and register the cell citing the ruling"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -2697,21 +2707,26 @@
       "id": "DF-DROP an untranslatable content block is dropped, not sent as empty text",
       "kind": "improvement",
       "changelog": "A request translated between LLM dialects no longer carries an empty text block in place of a content block the target dialect cannot represent, and an answer translated back no longer delivers one; the block is dropped with a warning and an audit row naming its wire path.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops",
       "cells": "^llm\\.unmodelled-block\\|(anthropic|openai)\\|(bedrock|cohere|gemini|openai|anthropic)$",
       "expected_cells": 0,
       "classes": [
         "body"
       ],
-      "rationale": "On a TRANSLATE attempt the Anthropic and OpenAI readers put an empty text block ({\"type\":\"text\",\"text\":\"\"}) in place of a content block they do not model (a sourceless document, a block kind added after the build), and the far end's writer sent it: a substitution the LLM DIALECT FIDELITY rule forbids (translate what maps, drop what cannot). The block is now left out of the IR, dropped with a WARN and an egress.control_unrepresentable audit row naming its wire path; a same-dialect relay still carries it. Fixtures: crates/busbar-plane-llm/src/codec/tests/proto/golden/req_a2{b,c,g,o}_degenerate.json. No oracle cell sends an unmodelled block across dialects: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing anthropic-door llm cell.",
+      "rationale": "On a TRANSLATE attempt the Anthropic and OpenAI readers put an empty text block ({\"type\":\"text\",\"text\":\"\"}) in place of a content block they do not model (a sourceless document, a block kind added after the build), and the far end's writer sent it: a substitution the LLM DIALECT FIDELITY rule forbids (translate what maps, drop what cannot). The block is now left out of the IR, dropped with a WARN and an egress.control_unrepresentable audit row naming its wire path; a same-dialect relay still carries it. Fixtures: crates/busbar-plane-llm/src/codec/tests/proto/golden/req_a2{b,c,g,o}_degenerate.json. No oracle cell sends an unmodelled block across dialects: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. The premise probes the existing anthropic-door llm cell. SIGNED 2026-10-27 by the owner (\"Sign all 5\"); the behaviour and scope are unchanged.",
       "premise": {
         "cell": "llm|anthropic|openai|request|ok",
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
-        "when": "2026-10-01",
-        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "previous": {
+          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "when": "2026-10-01",
+          "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -2722,22 +2737,27 @@
       "id": "DF-SITES no value is substituted for one the target dialect cannot carry",
       "kind": "breaking",
       "changelog": "A request translated between LLM dialects no longer has a value substituted for one the target dialect cannot carry: an image whose format Bedrock Converse does not accept is dropped instead of relabelled `png`, and a Gemini `thinkingBudget: -1` (\"the model decides\") is dropped on a target with no such setting instead of sent as the `medium` effort; each drop is warned and audited by its wire path. A wrong-typed Gemini `thinkingBudget` or Anthropic image `media_type` is answered with the caller's own 400 error instead of being translated.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-01T23:45Z); design DIALECT-FIDELITY F3 Drops (never a substitution); spec Part 2 #76 (wrong-typed input = native error envelope)",
       "cells": "^llm\\.no-substitution\\|(anthropic|openai|responses|gemini|cohere)\\|(bedrock|openai|responses|anthropic)$",
       "expected_cells": 0,
       "classes": [
         "body",
         "status"
       ],
-      "rationale": "KIND CORRECTED 2026-10-04 (improvement -> breaking; ARCHITECT, promotion blocker): the engine accepts the `status` class only on a kind=breaking entry with a changelog line, and refused this entry at load, so `bin/oracle replay` could not run. The entry already named `status` for #76's wrong-typed-input 400 (OWNER LAW #76: wrong-typed input = the caller's native error envelope); kind is the only field changed: id, cells, expected_cells (0, owed), classes, premise, signoff and expiry are as signed, so it forgives nothing it did not, and its CHANGELOG line moves verbatim to ### Breaking. Two writer sites put a value of their own in place of the caller's on a TRANSLATE attempt, which F3 forbids. (1) The Bedrock writer relabelled an image whose media type is outside Converse's ImageFormat union {png, jpeg, gif, webp} (or not image/<subtype> at all) as format png and sent its bytes. (2) Every writer without a \"model decides\" form (Chat, Responses, and Anthropic / Bedrock lanes without adaptive thinking) projected Gemini's thinkingBudget -1 (and Anthropic adaptive / Cohere budget-less thinking) onto the effort table's medium entry. Both are now dropped on the one drop path with a WARN and an egress.control_unrepresentable audit row naming the caller's wire path; a format or budget that maps is carried (jpg is jpeg; Cohere and adaptive lanes keep \"model decides\"). Separately, a wrong-typed Gemini thinkingBudget (silently left out) and a wrong-typed Anthropic image media_type (read as \"\" and relabelled png on Bedrock) are refused by the caller's own reader in its native 400 envelope. Tests: crates/busbar-plane-llm/src/codec/tests/drop_writer_tests.rs (no substitution section). No oracle cell sends either value across dialects: the cells are OWED, `cells` names them and expected_cells is 0.",
+      "rationale": "KIND CORRECTED 2026-10-04 (improvement -> breaking; ARCHITECT, promotion blocker): the engine accepts the `status` class only on a kind=breaking entry with a changelog line, and refused this entry at load, so `bin/oracle replay` could not run. The entry already named `status` for #76's wrong-typed-input 400 (OWNER LAW #76: wrong-typed input = the caller's native error envelope); kind is the only field changed: id, cells, expected_cells (0, owed), classes, premise, signoff and expiry are as signed, so it forgives nothing it did not, and its CHANGELOG line moves verbatim to ### Breaking. Two writer sites put a value of their own in place of the caller's on a TRANSLATE attempt, which F3 forbids. (1) The Bedrock writer relabelled an image whose media type is outside Converse's ImageFormat union {png, jpeg, gif, webp} (or not image/<subtype> at all) as format png and sent its bytes. (2) Every writer without a \"model decides\" form (Chat, Responses, and Anthropic / Bedrock lanes without adaptive thinking) projected Gemini's thinkingBudget -1 (and Anthropic adaptive / Cohere budget-less thinking) onto the effort table's medium entry. Both are now dropped on the one drop path with a WARN and an egress.control_unrepresentable audit row naming the caller's wire path; a format or budget that maps is carried (jpg is jpeg; Cohere and adaptive lanes keep \"model decides\"). Separately, a wrong-typed Gemini thinkingBudget (silently left out) and a wrong-typed Anthropic image media_type (read as \"\" and relabelled png on Bedrock) are refused by the caller's own reader in its native 400 envelope. Tests: crates/busbar-plane-llm/src/codec/tests/drop_writer_tests.rs (no substitution section). No oracle cell sends either value across dialects: the cells are OWED, `cells` names them and expected_cells is 0. SIGNED 2026-10-27 by the owner (\"Sign all 5\"); the behaviour and scope are unchanged.",
       "premise": {
         "cell": "llm|anthropic|openai|request|ok",
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
-        "when": "2026-10-01",
-        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "previous": {
+          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "when": "2026-10-01",
+          "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-01T23:45Z, escalate.q:114)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -3634,21 +3654,26 @@
       "id": "FID-CHAT translated Chat answers and requests carry the Chat members the IR maps",
       "kind": "improvement",
       "changelog": "A translated OpenAI Chat answer carries a model refusal in `message.refusal` / `delta.refusal` and the serving `service_tier`, an image answer omits `created` when the upstream sent none, and a translated request keeps a `developer` system prompt in the `developer` role.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
       "cells": "^llm\\.fidelity\\|openai\\|(refusal|service-tier|image-created|developer-role)$",
       "expected_cells": 0,
       "classes": [
         "body"
       ],
-      "rationale": "Pre-approved by BUSBAR-1.6.0.md:4769 (\"Every LLM dialect covers 100% of its own protocol ... Across dialects, we translate what maps and drop what doesn't\"), :4771 (TRANSLATE: a pair translates every slot both sides map) and :4774 (\"Byte moves vs 1.5.5 that follow from this rule are pre-approved; each gets a register entry citing it. Billing never moves.\"). Each move is a Chat member the IR maps, written where 1.5.5 substituted or dropped it; none moves a billed count (the ledger reads the egress reader, never these bytes). (1) Refusal: an IR refusal stop's text is written to the Chat `refusal` member, `content: null` (served crates/busbar-plane-llm/src/codec/openai_chat/writer.rs:1137-1147 buffered, :729-733 stream); 1.5.5 wrote the text into `content` (v1.5.5 crates/busbar/src/proto/openai_chat/writer.rs:826-833). (2) `service_tier`: the tier that served the answer (served writer.rs:890-898 stream, :1338-1346 buffered); 1.5.5 wrote none. (3) Image `created`: emitted only when the upstream sent one (served crates/busbar-plane-llm/src/codec/openai_chat/handler.rs:734-738); 1.5.5 wrote `r.created.unwrap_or(0)`, a 1970 timestamp (v1.5.5 crates/busbar/src/handlers/openai.rs:782). (4) `developer` role: a Responses/Chat `developer` system prompt reaches a Chat upstream as `role: developer` (served writer.rs:75-90, IR-14); 1.5.5 wrote `role: system` (v1.5.5 crates/busbar/src/proto/openai_chat/writer.rs:28). No oracle cell sends any of these to a Chat door or upstream: the cells are OWED, `cells` names them and expected_cells is 0. The premise probes the existing Chat-door llm cell.",
+      "rationale": "Pre-approved by BUSBAR-1.6.0.md:4769 (\"Every LLM dialect covers 100% of its own protocol ... Across dialects, we translate what maps and drop what doesn't\"), :4771 (TRANSLATE: a pair translates every slot both sides map) and :4774 (\"Byte moves vs 1.5.5 that follow from this rule are pre-approved; each gets a register entry citing it. Billing never moves.\"). Each move is a Chat member the IR maps, written where 1.5.5 substituted or dropped it; none moves a billed count (the ledger reads the egress reader, never these bytes). (1) Refusal: an IR refusal stop's text is written to the Chat `refusal` member, `content: null` (served crates/busbar-plane-llm/src/codec/openai_chat/writer.rs:1137-1147 buffered, :729-733 stream); 1.5.5 wrote the text into `content` (v1.5.5 crates/busbar/src/proto/openai_chat/writer.rs:826-833). (2) `service_tier`: the tier that served the answer (served writer.rs:890-898 stream, :1338-1346 buffered); 1.5.5 wrote none. (3) Image `created`: emitted only when the upstream sent one (served crates/busbar-plane-llm/src/codec/openai_chat/handler.rs:734-738); 1.5.5 wrote `r.created.unwrap_or(0)`, a 1970 timestamp (v1.5.5 crates/busbar/src/handlers/openai.rs:782). (4) `developer` role: a Responses/Chat `developer` system prompt reaches a Chat upstream as `role: developer` (served writer.rs:75-90, IR-14); 1.5.5 wrote `role: system` (v1.5.5 crates/busbar/src/proto/openai_chat/writer.rs:28). No oracle cell sends any of these to a Chat door or upstream: the cells are OWED, `cells` names them and expected_cells is 0. The premise probes the existing Chat-door llm cell. SIGNED 2026-10-27 by the owner (\"Sign all 5\"); the behaviour and scope are unchanged.",
       "premise": {
         "cell": "llm|openai|anthropic|request|ok",
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
-        "when": "2026-10-02",
-        "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "previous": {
+          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "when": "2026-10-02",
+          "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -3659,21 +3684,26 @@
       "id": "FID-RESPONSES translated Responses requests and answers carry the Responses members the IR maps",
       "kind": "improvement",
       "changelog": "A translated OpenAI Responses request keeps a `developer` system prompt as a `developer` input item and sends a JSON tool result as the `function_call_output` text, and a translated Responses stream ends at `response.failed` and names the serving `service_tier`.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
       "cells": "^llm\\.fidelity\\|responses\\|(developer-item|json-tool-output|failed-terminal|service-tier)$",
       "expected_cells": 0,
       "classes": [
         "body"
       ],
-      "rationale": "Pre-approved by BUSBAR-1.6.0.md:4769 (\"Every LLM dialect covers 100% of its own protocol ... Across dialects, we translate what maps and drop what doesn't\"), :4771 (TRANSLATE: a pair translates every slot both sides map) and :4774 (\"Byte moves vs 1.5.5 that follow from this rule are pre-approved; each gets a register entry citing it. Billing never moves.\"). Each move is the Responses protocol's own shape for a member the IR maps; none moves a billed count. (1) `developer` system prompt: written as a leading `{role: developer}` input item (served crates/busbar-plane-llm/src/codec/openai_responses/writer.rs:101-116, IR-14); 1.5.5 always wrote `instructions` (v1.5.5 crates/busbar/src/proto/openai_responses/writer.rs:22). (2) A JSON tool result (a Bedrock `{json}` block) is serialized into `function_call_output.output` (served writer.rs:1989-1997); 1.5.5 dropped it (v1.5.5 writer.rs:140, :265 wrote text parts only). (3) After `response.failed` the writer writes nothing (served writer.rs:1320-1322): `response.failed` is the Responses terminal event, and 1.5.5 wrote a `response.completed` after it. (4) `service_tier` on the response object (served writer.rs:1425-1429 stream, :1758-1766 buffered); 1.5.5 wrote none. These four stream/request bytes previously passed only through the blanket `body` class of S-6/S-15, whose rationales do not name them. No oracle cell exercises them: the cells are OWED, `cells` names them and expected_cells is 0. The premise probes the existing Responses-door llm cell.",
+      "rationale": "Pre-approved by BUSBAR-1.6.0.md:4769 (\"Every LLM dialect covers 100% of its own protocol ... Across dialects, we translate what maps and drop what doesn't\"), :4771 (TRANSLATE: a pair translates every slot both sides map) and :4774 (\"Byte moves vs 1.5.5 that follow from this rule are pre-approved; each gets a register entry citing it. Billing never moves.\"). Each move is the Responses protocol's own shape for a member the IR maps; none moves a billed count. (1) `developer` system prompt: written as a leading `{role: developer}` input item (served crates/busbar-plane-llm/src/codec/openai_responses/writer.rs:101-116, IR-14); 1.5.5 always wrote `instructions` (v1.5.5 crates/busbar/src/proto/openai_responses/writer.rs:22). (2) A JSON tool result (a Bedrock `{json}` block) is serialized into `function_call_output.output` (served writer.rs:1989-1997); 1.5.5 dropped it (v1.5.5 writer.rs:140, :265 wrote text parts only). (3) After `response.failed` the writer writes nothing (served writer.rs:1320-1322): `response.failed` is the Responses terminal event, and 1.5.5 wrote a `response.completed` after it. (4) `service_tier` on the response object (served writer.rs:1425-1429 stream, :1758-1766 buffered); 1.5.5 wrote none. These four stream/request bytes previously passed only through the blanket `body` class of S-6/S-15, whose rationales do not name them. No oracle cell exercises them: the cells are OWED, `cells` names them and expected_cells is 0. The premise probes the existing Responses-door llm cell. SIGNED 2026-10-27 by the owner (\"Sign all 5\"); the behaviour and scope are unchanged.",
       "premise": {
         "cell": "llm|responses|anthropic|request|ok",
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
-        "when": "2026-10-02",
-        "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "previous": {
+          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "when": "2026-10-02",
+          "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -3684,21 +3714,26 @@
       "id": "FID-GEMINI translated Gemini requests and answers carry the Gemini members the IR maps",
       "kind": "improvement",
       "changelog": "A translated Gemini request or answer carries `functionCall.id` / `functionResponse.id`, a failed tool result as `functionResponse.response.error`, a `fileData.mimeType`, the caller's transcription prompt and temperature, and reads Vertex `createTime`, a `functionResponse.id` as the call id, and the image content-policy stops as safety stops.",
-      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Sign all 5\"; previously ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); 2026-10-02: THE LLM DIALECT FIDELITY RULE (docs/design/BUSBAR-1.6.0.md:4768-4774)",
       "cells": "^llm\\.fidelity\\|gemini\\|(call-ids|response-error|filedata-mime|transcription-prompt|create-time|image-policy-stops)$",
       "expected_cells": 0,
       "classes": [
         "body"
       ],
-      "rationale": "Pre-approved by BUSBAR-1.6.0.md:4769 (\"Every LLM dialect covers 100% of its own protocol ... Across dialects, we translate what maps and drop what doesn't\"), :4771 (TRANSLATE: a pair translates every slot both sides map) and :4774 (\"Byte moves vs 1.5.5 that follow from this rule are pre-approved; each gets a register entry citing it. Billing never moves.\"). Each is a member of Gemini's published GenerateContent shape the IR maps; none moves a billed count. (1) `functionCall.id` and `functionResponse.id` are written (served crates/busbar-plane-llm/src/codec/gemini/writer.rs:219-221, :325-327, GEM-08); 1.5.5 wrote `{name, args}` / `{name, response}` only (v1.5.5 crates/busbar/src/proto/gemini/writer.rs:199). (2) A failed tool result is `functionResponse.response.error` (served writer.rs:305-314, GEM-05); 1.5.5 wrote it as an ordinary response. (3) A URL image is `fileData{fileUri, mimeType}` (served writer.rs:350); 1.5.5 wrote `fileData{fileUri}` (v1.5.5 writer.rs:205). (4) A transcription request carries the caller's `prompt` as its own text part and `temperature` in `generationConfig` (served crates/busbar-plane-llm/src/codec/gemini/handler.rs:196-210); 1.5.5 sent only its fixed instruction (v1.5.5 crates/busbar/src/handlers/gemini.rs:205). (5) Reader: Vertex `createTime` becomes the answer's `created` (served crates/busbar-plane-llm/src/codec/gemini/reader.rs:1552-1577); 1.5.5 set `created: None` (v1.5.5 crates/busbar/src/proto/gemini/reader.rs:1138). (6) Reader: a `functionResponse` pairs to its call's id (served reader.rs:438-443, GEM-01); 1.5.5 used the function name as `tool_use_id` (v1.5.5 reader.rs:362-365). (7) Reader: `IMAGE_PROHIBITED_CONTENT` / `IMAGE_RECITATION` stops and an `IMAGE_SAFETY` prompt block read as safety stops (served crates/busbar-plane-llm/src/codec/gemini/mod.rs:1556-1557, :1581), siblings of the `IMAGE_SAFETY` stop 1.5.5 already read as safety (v1.5.5 crates/busbar/src/proto/gemini/mod.rs:733). Not covered by this entry, and restored to 1.5.5 instead: a refusal is written `OTHER` again, not `SAFETY`, and an Imagen `:predict` answer carries no `usageMetadata`. No oracle cell exercises these: the cells are OWED, `cells` names them and expected_cells is 0. The premise probes the existing Gemini-door llm cell.",
+      "rationale": "Pre-approved by BUSBAR-1.6.0.md:4769 (\"Every LLM dialect covers 100% of its own protocol ... Across dialects, we translate what maps and drop what doesn't\"), :4771 (TRANSLATE: a pair translates every slot both sides map) and :4774 (\"Byte moves vs 1.5.5 that follow from this rule are pre-approved; each gets a register entry citing it. Billing never moves.\"). Each is a member of Gemini's published GenerateContent shape the IR maps; none moves a billed count. (1) `functionCall.id` and `functionResponse.id` are written (served crates/busbar-plane-llm/src/codec/gemini/writer.rs:219-221, :325-327, GEM-08); 1.5.5 wrote `{name, args}` / `{name, response}` only (v1.5.5 crates/busbar/src/proto/gemini/writer.rs:199). (2) A failed tool result is `functionResponse.response.error` (served writer.rs:305-314, GEM-05); 1.5.5 wrote it as an ordinary response. (3) A URL image is `fileData{fileUri, mimeType}` (served writer.rs:350); 1.5.5 wrote `fileData{fileUri}` (v1.5.5 writer.rs:205). (4) A transcription request carries the caller's `prompt` as its own text part and `temperature` in `generationConfig` (served crates/busbar-plane-llm/src/codec/gemini/handler.rs:196-210); 1.5.5 sent only its fixed instruction (v1.5.5 crates/busbar/src/handlers/gemini.rs:205). (5) Reader: Vertex `createTime` becomes the answer's `created` (served crates/busbar-plane-llm/src/codec/gemini/reader.rs:1552-1577); 1.5.5 set `created: None` (v1.5.5 crates/busbar/src/proto/gemini/reader.rs:1138). (6) Reader: a `functionResponse` pairs to its call's id (served reader.rs:438-443, GEM-01); 1.5.5 used the function name as `tool_use_id` (v1.5.5 reader.rs:362-365). (7) Reader: `IMAGE_PROHIBITED_CONTENT` / `IMAGE_RECITATION` stops and an `IMAGE_SAFETY` prompt block read as safety stops (served crates/busbar-plane-llm/src/codec/gemini/mod.rs:1556-1557, :1581), siblings of the `IMAGE_SAFETY` stop 1.5.5 already read as safety (v1.5.5 crates/busbar/src/proto/gemini/mod.rs:733). Not covered by this entry, and restored to 1.5.5 instead: a refusal is written `OTHER` again, not `SAFETY`, and an Imagen `:predict` answer carries no `usageMetadata`. No oracle cell exercises these: the cells are OWED, `cells` names them and expected_cells is 0. The premise probes the existing Gemini-door llm cell. SIGNED 2026-10-27 by the owner (\"Sign all 5\"); the behaviour and scope are unchanged.",
       "premise": {
         "cell": "llm|gemini|anthropic|request|ok",
         "status": 200
       },
       "signoff": {
-        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
-        "when": "2026-10-02",
-        "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27 (in session, recorded ~/Developer/tmp/cleanup/NEXT.md \"2026-10-27 owner answers\"): \"Sign all 5\" (DF-DROP, DF-SITES, FID-CHAT, FID-RESPONSES, FID-GEMINI), the behaviour as this entry states it",
+        "previous": {
+          "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+          "when": "2026-10-02",
+          "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
