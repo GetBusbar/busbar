@@ -53,7 +53,16 @@ fn main() {
     // Re-run when the PGO signal or the rustflags change, so the stamp never goes stale.
     println!("cargo:rerun-if-env-changed=BUSBAR_PGO");
     println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
-    println!("cargo:rerun-if-changed=build.rs");
+    let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    let core = core_dir(&manifest);
+    println!("cargo:rerun-if-changed={}", core.join("build.rs").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        core.join("src/build_stamp.rs").display()
+    );
+    // Core's own directory, for the tests that read core's source; the default distribution compiles
+    // the same source from its own manifest directory.
+    println!("cargo:rustc-env=BUSBAR_CORE_DIR={}", core.display());
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "unknown".into());
     let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".into());
@@ -99,21 +108,14 @@ fn main() {
     // THE LINKED TABLES (see src/linked_gen.rs): which plugins this build links, read as data out of
     // the manifest and filtered by the cargo features cargo enabled for this build.
     println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-changed=src/linked_gen.rs");
-    let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
-    let on = |feature: &str| {
+    println!(
+        "cargo:rerun-if-changed={}",
+        core.join("src/linked_gen.rs").display()
+    );
+    let enabled = |feature: &str| {
         let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
         env::var_os(var).is_some()
     };
-    // A fold's development-only switch SWAPS its plane's legacy row out (`linked-swaps`): the row is
-    // not linked while the switch is on, so the folded door is the plane's one claimant.
-    // A build with no switch left has no table: nothing is swapped.
-    let swaps = if manifest.contains(&format!("[{LINKED_SWAPS}]")) {
-        metadata_map(&manifest, LINKED_SWAPS)
-    } else {
-        Vec::new()
-    };
-    let enabled = |feature: &str| swapped_in(&swaps, &on, feature);
     let (source, cfgs) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
     std::fs::write(out, source).expect("write linked.rs");
@@ -275,14 +277,6 @@ fn main() {
         println!("cargo::rustc-cfg=linked_every_transport");
     }
 
-    // THE SERVED-LEG WITNESS TABLE (test builds only include it): each enabled linked plane's
-    // `testkit::SERVED`, read as data out of `[package.metadata.busbar.served-witness]`, so the root's
-    // rider tests drive every served plane through the real kernel-loop runner without naming one.
-    let out =
-        std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("served_witness.rs");
-    std::fs::write(out, served_witness_source(&manifest, &enabled))
-        .expect("write served_witness.rs");
-
     // THE DOOR PLANES' OWN ROOT CELLS (test builds only include them): each enabled linked plane
     // door's cases, at the path its crate states under its `links` name, so the composition root's
     // sources name no plane while the cases a plane writes in its own words still drive the root's
@@ -318,6 +312,16 @@ fn main() {
 /// `$OUT_DIR/test_operator_auth.rs` from `[package.metadata.busbar.test-linked] operator-auth`:
 /// `extern crate` per listed auth plugin, then a `for_each_operator_auth_row!($f)` macro calling
 /// `($f)(<crate>::door::door)` for each, in list order (the admin tests' operator credential row).
+/// Core's directory (`crates/busbar`): this package's own, or the one a distribution's manifest
+/// names under `[package.metadata.busbar.core] dir` when it compiles core's source.
+fn core_dir(manifest: &str) -> std::path::PathBuf {
+    let here = std::path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    match metadata_value(manifest, "package.metadata.busbar.core", "dir") {
+        Some(dir) => here.join(dir).canonicalize().expect("core dir"),
+        None => here,
+    }
+}
+
 fn test_operator_auth_source(manifest: &str) -> String {
     let idents: Vec<String> = test_linked_list(manifest, "operator-auth")
         .iter()
@@ -430,7 +434,8 @@ fn test_linked_source(manifest: &str) -> String {
 }
 
 /// The `key = [...]` string array under `[package.metadata.busbar.test-linked]`. Deliberately not a
-/// TOML parser: the array may span lines, entries are double-quoted crate names.
+/// TOML parser: the array may span lines, entries are double-quoted crate names. An absent key is no
+/// entries; a key stated with none is a build failure.
 fn test_linked_list(manifest: &str, key: &str) -> Vec<String> {
     let header = "[package.metadata.busbar.test-linked]";
     let (mut in_table, mut collecting, mut body) = (false, false, String::new());
@@ -454,6 +459,10 @@ fn test_linked_list(manifest: &str, key: &str) -> Vec<String> {
             break;
         }
     }
+    if !collecting {
+        // Core alone states no test-linked row: it links nothing.
+        return Vec::new();
+    }
     let list: Vec<String> = body
         .trim()
         .trim_start_matches('[')
@@ -466,7 +475,7 @@ fn test_linked_list(manifest: &str, key: &str) -> Vec<String> {
         .collect();
     assert!(
         !list.is_empty(),
-        "Cargo.toml: `{key}` under `{header}` is missing or empty"
+        "Cargo.toml: `{key}` under `{header}` is empty"
     );
     list
 }
@@ -692,18 +701,16 @@ fn driver_proofs_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Stri
     match rows.as_slice() {
         [] => words.push_str("#[allow(dead_code)]\npub(crate) const DRIVER_WORDS: &str = \"\";\n"),
         [(feature, krate)] => {
-            let dependency = metadata_value(manifest, "dependencies", krate).unwrap_or_else(|| {
-                panic!("driver-proofs row `{feature}`: `{krate}` is no dependency")
-            });
-            let path = dependency
-                .split_once("path")
-                .and_then(|(_, rest)| rest.split('"').nth(1))
-                .unwrap_or_else(|| {
-                    panic!("driver-proofs row `{feature}`: `{krate}` has no `path`")
-                });
-            let at = std::path::Path::new(&env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
-                .join(path)
-                .join("tests/on_driver");
+            // The plane states its proofs' directory under its `links` name, as it states its root
+            // cells: `DEP_BUSBAR_DOOR_CELLS_<CRATE>_DRIVER`, the same for a path and a pinned plane.
+            let var = format!(
+                "DEP_{}_DRIVER",
+                door_cells_links(krate).to_uppercase().replace('-', "_")
+            );
+            println!("cargo:rerun-if-env-changed={var}");
+            let at = std::path::PathBuf::from(env::var(&var).unwrap_or_else(|_| {
+                panic!("driver-proofs row `{feature}`: `{krate}` states no `driver=` under its links name ({var})")
+            }));
             proofs.push_str(&format!(
                 "#[path = {:?}]\npub(crate) mod proofs;\n",
                 at.join("mod.rs").display().to_string()
@@ -721,31 +728,6 @@ fn driver_proofs_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Stri
         }
     }
     (proofs, words)
-}
-
-/// `static SERVED_WITNESSES` over `<crate>::testkit::SERVED` for every
-/// `[package.metadata.busbar.served-witness]` row whose cargo feature is enabled, in manifest order.
-/// A build with the feature off has no row, exactly as it has no served leg for that plane.
-fn served_witness_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
-    let mut out = String::from(
-        "// @generated by build.rs from Cargo.toml `[package.metadata.busbar.served-witness]`.\n\
-         /// One served-leg witness: drive the served path, assert, return the units it served.\n\
-         pub(crate) type ServedWitness =\n    fn() -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = u64>>>;\n\
-         pub(crate) static SERVED_WITNESSES: &[(&str, &[(&str, ServedWitness)])] = &[\n",
-    );
-    // A build with no served-leg witness left has no table: nothing is witnessed.
-    let rows = if manifest.contains("[package.metadata.busbar.served-witness]") {
-        metadata_map(manifest, "package.metadata.busbar.served-witness")
-    } else {
-        Vec::new()
-    };
-    for (feature, krate) in rows {
-        if enabled(&feature) {
-            out.push_str(&format!("    {}::testkit::SERVED,\n", ident(&krate)));
-        }
-    }
-    out.push_str("];\n");
-    out
 }
 
 /// `(set, declared)`: the `linked_axis_<axis>` cfgs of every axis an enabled linked row carries
@@ -997,9 +979,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
     let mut source = source;
     source.push_str(&door_builds);
     {
-        let doors =
-            std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
-                .join("src/root/doors.rs");
+        let doors = core_dir(manifest).join("src/root/doors.rs");
         source.push_str(&format!(
             "/// The root's transport doors, mounted for this file's door rows.\n\
              #[allow(dead_code)]\n\

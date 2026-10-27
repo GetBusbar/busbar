@@ -4,15 +4,12 @@
 //! ONE SUBJECT DECODER: a sealed body's subject is read back by the same round-tripping rule the
 //! amendment journal reads its subjects with.
 
-use busbar_contract::caps::{Audit as AuditStep, KernelSeal, MeterClassId, Pass};
+use crate::test_support::tokens::pass;
+use busbar_contract::caps::{Audit as AuditStep, MeterClassId};
 
 use busbar_kernel_audit::journal::{from_journal_body, journal_body};
 use busbar_kernel_audit::record::AuditChain;
 use busbar_kernel_audit::sign::AuditSigningKey;
-
-fn token() -> Pass<AuditStep> {
-    Pass::mint(&KernelSeal::acquire_for_kernel())
-}
 
 /// The classes the fixture's lines name.
 fn declared(name: &str) -> Option<MeterClassId> {
@@ -37,7 +34,7 @@ fn a_subject_value_that_does_not_re_render_is_refused_in_a_sealed_body() {
     let mut chain = AuditChain::new().signing_with(key);
     let mut inputs = super::sign_tests::rich_inputs(1);
     inputs.subject = busbar_kernel_audit::record::Subject::Node(7);
-    let record = busbar_kernel_audit::record::Audit::seal(&mut chain, inputs, &token());
+    let record = busbar_kernel_audit::record::Audit::seal(&mut chain, inputs, &pass::<AuditStep>());
     let body = journal_body(&record);
     assert_eq!(
         from_journal_body(&body, &declared)

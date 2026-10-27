@@ -13,13 +13,13 @@ use super::*;
 /// its own heap copy of the plaintext, none of them wiped on drop.
 #[test]
 fn a_cloned_caller_credential_shares_one_zeroising_buffer() {
-    let held = CallerCredential::for_test("sk-caller-credential");
+    let held = CallerCredential::verified("sk-caller-credential");
     let clone = held.clone();
     assert_eq!(
-        held.buffer_for_test(),
-        clone.buffer_for_test(),
+        held.0.as_ptr(),
+        clone.0.as_ptr(),
         "a clone shares the one buffer, never a second plaintext copy"
     );
-    assert_eq!(clone.reveal_for_test(), "sk-caller-credential");
+    assert_eq!(clone.text(), "sk-caller-credential");
     assert_eq!(format!("{clone:?}"), "CallerCredential(<present>)");
 }

@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `IrHandle` — the SEALED, NEUTRAL request/response handle the operation-blind engine holds now that
-//! `IrReq`/`IrResp` have dissolved (G6 A4b). A SHAPE (DECISIONS #83): the dialect crates implement it
+//! `IrReq`/`IrResp` have dissolved. A SHAPE (DECISIONS #83): the dialect crates implement it
 //! and the kernel drives it, so both sides must agree on it. Relocated from
 //! `busbar-substrate-values::ir::handle` (#83a SD-2b), which re-exports it under its historical path;
 //! its one byte-carrier method is re-expressed over this crate's own [`crate::bounded::SlabBytes`].
 //!
-//! **SEALED (owner ruling 2026-08-20): a neutral TRAIT, never `Box<dyn Any>` + downcast.** Substrate
+//! **SEALED: a neutral TRAIT, never `Box<dyn Any>` + downcast.** Substrate
 //! defines the trait; the dialect crates implement it; no core code ever downcasts to a concrete IR.
 //! The `#[doc(hidden)]` [`sealed::Sealed`] supertrait makes "who may implement `IrHandle`" a decision
 //! the workspace keeps: an external crate cannot add an implementor without also naming
@@ -31,15 +31,14 @@ pub mod handle_impl {
     use crate::operation::OpVerb;
 
     /// The type-erased request/response an `OperationHandler` yields, now that the `IrReq`/`IrResp`
-    /// hub enums have dissolved (G6 A4b). Every method names a neutral, contract-resident type; the
+    /// hub enums have dissolved. Every method names a neutral, contract-resident type; the
     /// concrete chat IR lives behind the implementor in its dialect crate (chat + the six leaf ops),
     /// or the handle is one of the neutral ones (`ir::invoke`/`ir::subscribe`, via defaults). Soft-sealed via the `#[doc(hidden)]`
     /// [`sealed::Sealed`] supertrait — no `Box<dyn Any>` downcast anywhere.
     ///
     /// A handle instance is EITHER a request or a response; the request-side methods
     /// (`facts`/`prepare_for_egress`/`write_egress_request`/…) and the response-side methods
-    /// (`billing`/`prepare_for_ingress`/`write_ingress_response`/…) both live on the one trait per the
-    /// owner ruling, each side defaulting the other. The cross-protocol WRITE is keyed by the peer
+    /// (`billing`/`prepare_for_ingress`/`write_ingress_response`/…) both live on the one trait, each side defaulting the other. The cross-protocol WRITE is keyed by the peer
     /// PROTOCOL STRING (not the peer `OperationHandler`): the handle writes ITSELF onto the target
     /// dialect, so no downcast is needed.
     pub trait IrHandle: sealed::Sealed + Send {

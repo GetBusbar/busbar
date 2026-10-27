@@ -127,11 +127,6 @@ fn op_shape_as_str_is_stable_and_distinct() {
     );
 }
 
-#[test]
-fn op_shape_all_has_exactly_six_entries() {
-    assert_eq!(OpShape::ALL.len(), 6);
-}
-
 // ── `Operation` ───────────────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -180,17 +175,6 @@ fn operation_all_lists_exactly_the_six_protocol_surface_verbs_in_order() {
             OpVerb::CONTROL,
         ]
     );
-}
-
-/// The invoke-class verbs above are NOT in `Operation::ALL` (they arrive from protocol declarations
-/// instead — see the module doc) — pinning the negative half of that design so a mutant that folded
-/// them back in (or dropped a real entry without anyone noticing the length still matched some other
-/// case) fails.
-#[test]
-fn operation_all_excludes_the_invoke_class_verbs() {
-    assert!(!OpVerb::ALL.contains(&OpVerb::CHAT));
-    assert!(!OpVerb::ALL.contains(&OpVerb::EMBEDDINGS));
-    assert_eq!(OpVerb::ALL.len(), 6);
 }
 
 // ── `hooks.rs`'s redacting `Debug` impls ─────────────────────────────────────────────────────────

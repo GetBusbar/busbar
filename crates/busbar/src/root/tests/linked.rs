@@ -119,7 +119,7 @@ fn a_linked_export_declares_stating_needs_boots() {
 /// scan names it.
 #[test]
 fn the_host_series_catalog_holds_every_series_the_host_defines() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("..");
     let sources = [
         "busbar-kernel/src/snapshot/mod.rs",
         "busbar-kernel/src/telemetry.rs",
@@ -306,7 +306,7 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
     assert_eq!(words, want, "the ranking door claims every strategy word");
 }
 
-/// WIRE-SECRET (THE DESIGN, "Plugins"; TODO step 28) — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
+/// WIRE-SECRET (THE DESIGN, "Plugins") — THE SECRET AXIS IS THE ROOT'S, OVER THE ONE
 /// DISPATCHER. `env` and `file` are the linked secret plugins the root's axis answers for, by the
 /// module alias their Statements declare; a reference resolves through the secret kind table on
 /// `root::dispatch`'s dispatcher, on one shared instance, and the refusal text is the plugin's own

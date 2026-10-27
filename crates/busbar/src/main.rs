@@ -377,6 +377,10 @@ fn main() {
     // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
+    // A linked transport row logs to its own plugin log file under the configured `plugins.logs`,
+    // read just above as `plugins.dir` was scanned (`root::boot::dropped_from_config`) and handed
+    // to the transport doors before any linked row binds.
+    root::doors::install_plugin_logs(root::boot::plugin_logs());
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
@@ -1598,7 +1602,6 @@ fn serve_thread_per_core(
                     // pre-TLS so the balancer can place it on another worker; the TLS handshake
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
-                    // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
                     let via = crate::root::connector::the().address_via();
                     let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {

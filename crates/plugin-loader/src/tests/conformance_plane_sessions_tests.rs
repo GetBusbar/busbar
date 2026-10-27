@@ -228,7 +228,7 @@ fn red_a_piece_called_short_that_is_not_is_refused() {
 }
 
 /// A session naming its own `member`: its ATTEMPT names that member, not `plane.member`, so a
-/// plane serving several far ends is driven against each one's answer (TODO L-R22: every declared
+/// plane serving several far ends is driven against each one's answer (every declared
 /// class is reported by a case, and a class only one far end reports needs a case on that far end).
 /// RED: the same session naming no member is attempted on `plane.member` and fails its want.
 #[test]

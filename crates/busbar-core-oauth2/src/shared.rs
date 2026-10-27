@@ -51,8 +51,10 @@
 //!   device code, a consent id or a family) go through index records naming the client, one per
 //!   credential; the index is written before the bucket, so a record the bucket holds is always
 //!   reachable. The sweep deletes an index row whose credential its client no longer holds, once
-//!   the row is older than any write in flight can be ([`INDEX_GRACE_SECS`]). A subject's index
-//!   (one row per client it consented to) is kept.
+//!   the row is older than any write in flight can be ([`INDEX_GRACE_SECS`]). A subject's index is
+//!   one cell naming every client it consented to, each with when it was indexed: the sweep drops a
+//!   client whose bucket no longer holds a consent of that subject once its entry is past the same
+//!   grace, under the cell's version claim, and retires the cell once it names no client.
 //! * **The token-family barrier** is the one barrier that names no client: it is its own record,
 //!   written before the family's cascade, and a token or refresh write checks it AFTER its own
 //!   write and undoes itself when it finds one. Either the writer sees the barrier, or the
@@ -62,11 +64,14 @@
 //! the claim lapses ([`VERSION_CLAIM_SECS`], two minutes); nothing is lost, and the fence above
 //! keeps a late writer from double-spending.
 //!
-//! Where each record sits: a point-read record (a bucket, a cell, a session, a stake, the key, a
-//! credential's index row) at sequence 0 with no parent, where every store reads `get_plane_record`
-//! back from; a subject's index row as a child of the subject's digest, one sequence position per
-//! client, so a store that files a parented record by `(parent, seq)` keeps one per client and
-//! lists them by parent. The sweep deletes lapsed sessions and staked answers.
+//! Where each record sits: every record (a bucket, a cell, a subject's index, a session, a stake,
+//! the key, a credential's index row) is a point-read record at sequence 0 with no parent, where
+//! every store reads `get_plane_record` back from. A store deletes a record by its identity, which
+//! for a parented record is its parent, so no record here hangs off one: each is reclaimed alone.
+//! The sweep deletes lapsed sessions and staked answers.
+//!
+//! One sweep pass that cannot read or delete one record says so and goes on to the next: a client
+//! whose records will not read keeps its index rows until a later tick reads them.
 //!
 //! The consent screen's sessions and staked answers, the pushed-request notes and the minted
 //! signing key ride the same records ([`Shared`]).
@@ -587,43 +592,32 @@ impl Shared {
             .map_err(|e| decode_failed(ix, e))
     }
 
-    /// Index `subject` to `client_id`: a subject names every client it consented to.
+    /// Index `subject` to `client_id`: a subject's one index cell names every client it consented
+    /// to, each with when it was indexed. Written before the bucket, as every index is; an entry
+    /// indexed within half the grace is left as it is, so a consent's every write is not a swap.
     async fn index_subject(&self, key: &str, client_id: &str) -> Result<(), StorageError> {
-        let ix = "subj";
-        let parent = digest(key);
-        let client = digest(client_id);
-        let id = format!("{parent}:{client}");
-        // A child of the key's parent, one position per client: a store files a parented record by
-        // `(parent, seq)`, so each client the key names needs its own sequence number.
-        let seq = u64::from_str_radix(&client[..15], 16).unwrap_or(0) + 1;
-        self.put_body(
-            &format!("ix.{ix}"),
-            &id,
-            Some(&parent),
-            seq,
-            client_id.as_bytes(),
-        )
+        let now = now_secs();
+        self.cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &digest(key), |ix| {
+            if ix
+                .clients
+                .get(client_id)
+                .is_some_and(|i| now.saturating_sub(i.at) <= INDEX_GRACE_SECS / 2)
+            {
+                return Ok(Swap::Keep(()));
+            }
+            ix.clients
+                .insert(client_id.to_string(), Indexed { at: now });
+            Ok(Swap::Write(()))
+        })
         .await
     }
 
     /// Every client the subject index names for `key`.
     async fn clients_of_subject(&self, key: &str) -> Result<Vec<String>, StorageError> {
-        let ix = "subj";
-        let parent = digest(key);
-        let selector = PlaneSelector::Parent(std::borrow::Cow::Borrowed(parent.as_str()));
-        let k = kind(&format!("ix.{ix}"));
-        let rows = self
-            .calls
-            .list_plane_records(&k, &selector)
-            .await
-            .map_err(|f| failed(ix, f))?;
-        let mut out: Vec<String> = rows
-            .into_iter()
-            .filter_map(|b| String::from_utf8(b).ok())
-            .collect();
-        out.sort();
-        out.dedup();
-        Ok(out)
+        let (_, ix) = self
+            .read_cell::<SubjectIndex>(SUBJECT_INDEX, &digest(key))
+            .await?;
+        Ok(ix.clients.into_keys().collect())
     }
 
     // ── the token-family barrier ──────────────────────────────────────────────────────────
@@ -885,6 +879,22 @@ struct StakeRow {
     /// This answer's own nonce: its spend claim names it, so each answer is spent once.
     #[serde(default)]
     nonce: String,
+}
+
+/// The record kind a subject's index cell is kept under, by the subject's digest.
+const SUBJECT_INDEX: &str = "ix.subj";
+
+/// A SUBJECT'S INDEX: every client the subject consented to, by client id.
+#[derive(Default, Serialize, Deserialize)]
+struct SubjectIndex {
+    #[serde(default)]
+    clients: BTreeMap<String, Indexed>,
+}
+
+/// When a client was indexed under a subject (Unix seconds).
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct Indexed {
+    at: u64,
 }
 
 /// One credential's index row: the client it was minted for, the credential's digest (the row's
@@ -1657,6 +1667,7 @@ impl Storage for SharedStorage {
         let reclaimed = [
             s.sweep_user_codes().await,
             s.sweep_indexes().await,
+            s.sweep_subjects().await,
             s.sweep_rows::<SessionRow>("session", secs_of(now), |r| (r.until, &r.id))
                 .await,
             s.sweep_rows::<StakeRow>("stake", secs_of(now), |r| (r.until, &r.id))
@@ -1787,14 +1798,18 @@ impl Shared {
             if cell.id.is_empty() || cell.b.is_some() {
                 continue;
             }
-            self.cas_cell::<Option<String>, ()>("uc", &cell.id, |held| {
-                Ok(if held.is_none() {
-                    Swap::Retire((), false)
-                } else {
-                    Swap::Keep(())
+            let retired = self
+                .cas_cell::<Option<String>, ()>("uc", &cell.id, |held| {
+                    Ok(if held.is_none() {
+                        Swap::Retire((), false)
+                    } else {
+                        Swap::Keep(())
+                    })
                 })
-            })
-            .await?;
+                .await;
+            if let Err(e) = retired {
+                tracing::warn!(error = %e, "oauth_as: a released user code was not retired this tick");
+            }
         }
         Ok(())
     }
@@ -1802,7 +1817,7 @@ impl Shared {
     /// Delete every credential index row whose client no longer holds the credential, once the row
     /// is older than [`INDEX_GRACE_SECS`] (its bucket write may still be in flight before that).
     async fn sweep_indexes(&self) -> Result<(), StorageError> {
-        let mut buckets: BTreeMap<String, Bucket> = BTreeMap::new();
+        let mut buckets: BTreeMap<String, Option<Bucket>> = BTreeMap::new();
         let now_s = now_secs();
         for ix in ["tok", "rt", "code", "par", "dev", "cons", "fam"] {
             let k = kind(&format!("ix.{ix}"));
@@ -1819,10 +1834,16 @@ impl Shared {
                     continue;
                 }
                 if !buckets.contains_key(&row.client) {
-                    let bucket = self.bucket(&row.client).await?;
-                    buckets.insert(row.client.clone(), bucket);
+                    // A client whose records will not read is said and left: its rows are judged
+                    // on a later tick, and every other client's rows are judged now.
+                    let bucket = self.bucket(&row.client).await.inspect_err(|e| {
+                        tracing::warn!(error = %e, "oauth_as: a client's index rows were not swept this tick");
+                    });
+                    buckets.insert(row.client.clone(), bucket.ok());
                 }
-                let b = &buckets[&row.client];
+                let Some(b) = &buckets[&row.client] else {
+                    continue;
+                };
                 let is = |key: &str| digest(key) == row.key;
                 let held = match ix {
                     "tok" => b.tokens.keys().any(|k| is(k)),
@@ -1839,11 +1860,72 @@ impl Shared {
                     }
                 };
                 if !held {
-                    self.calls
-                        .delete_plane_record(&k, &row.key)
-                        .await
-                        .map_err(|f| failed(ix, f))?;
+                    if let Err(f) = self.calls.delete_plane_record(&k, &row.key).await {
+                        tracing::warn!(error = %failed(ix, f), "oauth_as: an index row was not reclaimed this tick");
+                    }
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop from every subject's index each client that no longer holds a consent of that subject,
+    /// once its entry is older than [`INDEX_GRACE_SECS`] (its consent's bucket write may still be in
+    /// flight before that); a subject whose index names no client is retired. A client whose
+    /// records will not read is kept, and one entry indexed again meanwhile is kept.
+    async fn sweep_subjects(&self) -> Result<(), StorageError> {
+        let k = kind(SUBJECT_INDEX);
+        let rows = self
+            .calls
+            .list_plane_records(&k, &PlaneSelector::All)
+            .await
+            .map_err(|f| failed(SUBJECT_INDEX, f))?;
+        let now_s = now_secs();
+        let mut buckets: BTreeMap<String, Option<Bucket>> = BTreeMap::new();
+        for body in rows {
+            let Ok(cell) = serde_json::from_slice::<Cell<SubjectIndex>>(&body) else {
+                continue;
+            };
+            if cell.id.is_empty() {
+                continue;
+            }
+            let mut gone: BTreeMap<String, Indexed> = BTreeMap::new();
+            for (client, indexed) in &cell.b.clients {
+                if now_s.saturating_sub(indexed.at) <= INDEX_GRACE_SECS {
+                    continue;
+                }
+                if !buckets.contains_key(client) {
+                    let bucket = self.bucket(client).await.inspect_err(|e| {
+                        tracing::warn!(error = %e, "oauth_as: a client's subject index entries were not swept this tick");
+                    });
+                    buckets.insert(client.clone(), bucket.ok());
+                }
+                let held = buckets[client]
+                    .as_ref()
+                    .is_none_or(|b| b.consents.values().any(|c| digest(&c.subject) == cell.id));
+                if !held {
+                    gone.insert(client.clone(), *indexed);
+                }
+            }
+            if gone.is_empty() && !cell.b.clients.is_empty() {
+                continue;
+            }
+            let swept = self
+                .cas_cell::<SubjectIndex, ()>(SUBJECT_INDEX, &cell.id, |ix| {
+                    let before = ix.clients.len();
+                    ix.clients.retain(|c, i| gone.get(c) != Some(&*i));
+                    let changed = ix.clients.len() != before;
+                    Ok(if ix.clients.is_empty() {
+                        Swap::Retire((), changed)
+                    } else if changed {
+                        Swap::Write(())
+                    } else {
+                        Swap::Keep(())
+                    })
+                })
+                .await;
+            if let Err(e) = swept {
+                tracing::warn!(error = %e, "oauth_as: a subject's index was not swept this tick");
             }
         }
         Ok(())
@@ -1869,10 +1951,9 @@ impl Shared {
             };
             let (until, id) = of(&row);
             if until <= now_s && !id.is_empty() {
-                self.calls
-                    .delete_plane_record(&k, id)
-                    .await
-                    .map_err(|f| failed(kind_name, f))?;
+                if let Err(f) = self.calls.delete_plane_record(&k, id).await {
+                    tracing::warn!(error = %failed(kind_name, f), "oauth_as: a lapsed row was not reclaimed this tick");
+                }
             }
         }
         Ok(())
@@ -1893,11 +1974,12 @@ impl Shared {
                 continue;
             };
             if row.until <= now_s {
-                self.calls
-                    .delete_plane_record(&k, &row.id)
-                    .await
-                    .map_err(|f| failed("replay", f))?;
-                removed += 1;
+                match self.calls.delete_plane_record(&k, &row.id).await {
+                    Ok(()) => removed += 1,
+                    Err(f) => {
+                        tracing::warn!(error = %failed("replay", f), "oauth_as: a lapsed replay row was not reclaimed this tick");
+                    }
+                }
             }
         }
         Ok(removed)

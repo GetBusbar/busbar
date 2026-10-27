@@ -668,11 +668,6 @@ impl SessionSlot {
         self.needmore.store(0, Ordering::Release);
     }
 
-    /// How long the current run of asks is.
-    pub fn asks(&self) -> usize {
-        self.needmore.load(Ordering::Acquire)
-    }
-
     /// Note a unit that was not a tick. The idle clock reads this and nothing else, so a priced
     /// accrual tick can run all night without making an idle session look busy.
     pub fn touch_non_tick(&self, now: Millis) {

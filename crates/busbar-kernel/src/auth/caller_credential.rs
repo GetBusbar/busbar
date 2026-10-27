@@ -113,25 +113,6 @@ impl CallerCredential {
     pub fn lend(&self) -> busbar_contract::redacted::Secret<Vec<u8>> {
         busbar_contract::redacted::Secret::new(self.0.to_vec())
     }
-
-    /// A ref over `token`, for a test that stands in for the gate.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn for_test(token: &str) -> Self {
-        Self::verified(token)
-    }
-
-    /// The credential, for the host's test-only verifier seam (`EngineHost::verify_token_test`) —
-    /// compiled only into a test build, never into a served binary.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn reveal_for_test(&self) -> &str {
-        self.text()
-    }
-
-    /// Where the credential's bytes live, for the test that proves a clone shares one buffer.
-    #[cfg(test)]
-    pub(crate) fn buffer_for_test(&self) -> *const u8 {
-        self.0.as_ptr()
-    }
 }
 
 impl std::fmt::Debug for CallerCredential {
