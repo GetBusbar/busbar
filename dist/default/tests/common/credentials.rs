@@ -9,18 +9,14 @@
 
 use std::path::Path;
 
-/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`: an ES256 key, its JWKS and
+/// THE LOCAL ISSUER, one per test process (`test_issuer`: an ES256 key, its JWKS and
 /// genuinely signed tokens), its JWKS served over a certificate-verified loopback TLS endpoint
 /// ([`serve_jwks`]) a module trusts through `ca_cert_pem`. The child `busbar` process's OWN
 /// connector fetches the JWKS over the dropped-in module's declared need.
-pub fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
-        std::sync::OnceLock::new();
+pub fn issuer() -> &'static super::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<super::test_issuer::Issuer> = std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(
-            "https://issuer.e2e.invalid",
-            "e2e-issuer",
-        );
+        let issuer = super::test_issuer::Issuer::start("https://issuer.e2e.invalid", "e2e-issuer");
         let (url, cert_pem) = serve_jwks(issuer.jwks().to_string());
         issuer.served_at(&url, &cert_pem)
     })

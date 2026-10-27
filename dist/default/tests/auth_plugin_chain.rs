@@ -57,18 +57,22 @@ fn unsigned_tarball(m: busbar_plugin_loader::sign::Manifest, lib: &[u8]) -> Vec<
 const ISSUER: &str = "https://issuer.plugin-chain.invalid";
 const AUDIENCE: &str = "api://plugin-chain";
 
-/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`): an ES256 key, its JWKS
+/// THE LOCAL ISSUER, one per test process (`common::test_issuer`): an ES256 key, its JWKS
 /// served only to a need trusting the issuer's certificate (which the module names as its
 /// `ca_cert_pem`), and genuinely signed tokens. Starting it also binds the test build's auth axis to
 /// a connection table serving that JWKS (`https_conns`): the host fetches it for the module over its
 /// declared need, and the module does the whole verification.
-fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
-        std::sync::OnceLock::new();
+fn issuer() -> &'static common::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<common::test_issuer::Issuer> = std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(ISSUER, "plugin-chain");
+        let issuer = common::test_issuer::Issuer::start(ISSUER, "plugin-chain");
         let conns = busbar_plugin_loader::https_conns::HttpsConns::new();
-        conns.serve_issuer(&issuer);
+        conns.serve(
+            issuer.jwks_url(),
+            Some(issuer.cert_pem()),
+            200,
+            issuer.jwks(),
+        );
         busbar_plugin_loader::auth_axis::stand_in_conns(std::sync::Arc::new(conns));
         issuer
     })

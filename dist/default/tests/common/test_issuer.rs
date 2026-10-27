@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A LOCAL TOKEN ISSUER FOR TESTS (`test-support`, never in a shipped build): an ES256 key, its
-//! JWKS, and genuinely signed tokens.
+//! A LOCAL TOKEN ISSUER FOR TESTS: an ES256 key, its JWKS, and genuinely signed tokens.
 //!
 //! A test that loads a token-verifying auth plugin points it here: the plugin names the JWKS URL and
 //! trusts the endpoint's certificate through its own settings (`ca_cert_pem`, the need's
 //! `trust_from`), and the HOST fetches the JWKS for it over a declared need (the plugin holds no
 //! socket and no TLS). Where the JWKS is served is the test's: in process, by the stand-in
-//! connection table [`crate::https_conns::HttpsConns`] (which serves it only to a need trusting
+//! connection table [`busbar_plugin_loader::https_conns::HttpsConns`] (which serves it only to a need trusting
 //! [`Issuer::cert_pem`]), or over real TLS by a test that may hold a TLS library (the composition
 //! root's, which then names its address and certificate with [`Issuer::served_at`]). No TLS library
 //! is named here: TLS stays in the connector.
@@ -39,7 +38,7 @@ impl std::fmt::Debug for Issuer {
 
 impl Issuer {
     /// An issuer named `issuer` (the `iss` its tokens carry), signing under key id `kid`. Its JWKS
-    /// is served in process by [`crate::https_conns::HttpsConns`], at `<issuer>/jwks`, under a
+    /// is served in process by [`busbar_plugin_loader::https_conns::HttpsConns`], at `<issuer>/jwks`, under a
     /// certificate of its own ([`Issuer::cert_pem`], an opaque PEM the table holds a need's trust
     /// against).
     ///

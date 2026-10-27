@@ -647,6 +647,8 @@ futures = { workspace = true }
 # own stdin/stdout the same way the engine does; the binary crate no longer pulls base64 as a
 # runtime dep after the core split, so the integration test needs its own copy.
 base64 = { workspace = true }
+# The tests' local token issuer (`tests/common/test_issuer.rs`) signs its ES256 tokens with ring.
+ring = { workspace = true }
 bytes = { workspace = true }
 # `src/root/tests/admin_plugin_admission.rs` types the admin contract's request and view bodies it
 # drives (derive only; no wire shape is spelled as a string).
@@ -676,7 +678,7 @@ busbar-export-prometheus-plugin = { workspace = true }
 # table in the workspace manifest.
 busbar-auth-oidc-plugin = { workspace = true }
 # Its LOGIC crate at the SAME rev, for the name its door's Statement states. The local issuer those
-# proofs verify against is the loader's `test_issuer` (`test-support`: an ES256 key, its JWKS served
+# proofs verify against is the tests' `common::test_issuer` (an ES256 key, its JWKS served
 # over a certificate-verified loopback endpoint the module trusts through `ca_cert_pem`, genuinely
 # signed tokens); the composition root's connector fetches it for the module.
 busbar-auth-oidc = { workspace = true }

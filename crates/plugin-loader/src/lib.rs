@@ -91,10 +91,6 @@ pub mod tarball;
 /// a plugin repo names this crate only as a dev-dependency, so it reaches no shipped closure.
 #[cfg(any(test, feature = "test-support", feature = "conformance"))]
 pub mod tcp_conns;
-/// TEST ONLY: a local token issuer (an ES256 key, its JWKS, signed tokens) for the tests of a host
-/// that loads a token-verifying auth plugin (`test-support`).
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_issuer;
 /// TEST ONLY: the fake-call store harness the kernel's minting tests share with this crate's own.
 /// Compiled for this crate's tests and under the `test-support` feature, which only
 /// busbar-kernel's `[dev-dependencies]` edge turns on; never in a shipped build.
