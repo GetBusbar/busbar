@@ -1103,6 +1103,12 @@ def keep_review(work, out):
 
 
 def main():
+    # The driver (testing/conformance/run.sh) runs each suite inside its `while read` over
+    # suites.tsv, so this process's stdin IS the rest of the suite list: any child that reads stdin
+    # (git, docker) would eat the next suite's line and it would never run. Nothing here reads stdin.
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(devnull, 0)
+    os.close(devnull)
     suite_id = os.environ.get("CONFORMANCE_SUITE", "fapi2")
     out = os.environ.get("CONFORMANCE_OUT") or os.path.join("target", "conformance", suite_id)
     os.makedirs(out, exist_ok=True)
