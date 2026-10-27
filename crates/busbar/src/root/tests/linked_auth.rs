@@ -29,7 +29,7 @@ fn link() {
     );
     busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
     for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
+        busbar_kernel::ingress::protocols::register_test_protocols(decls);
     }
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     busbar_kernel::test_support::register_neutral_test_plane();
@@ -104,7 +104,7 @@ fn refusal(content_type: &str, content_length: &str, body: &str) -> String {
 
 /// A 1.5.5 golden cell (`testing/shadow-oracle/golden/1.5.5`, recorded from the published binary).
 fn golden_cell(cell: &str) -> serde_json::Value {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let path = std::path::Path::new(env!("BUSBAR_CORE_DIR"))
         .join("../../testing/shadow-oracle/golden/1.5.5/cells")
         .join(cell);
     let text = std::fs::read_to_string(&path).expect("the 1.5.5 golden cell");
