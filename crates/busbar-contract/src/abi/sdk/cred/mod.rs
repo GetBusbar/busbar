@@ -166,14 +166,6 @@ impl Cred {
         self
     }
 
-    /// A credential derived from this one (a signing key from a secret): it carries the requirement.
-    pub(crate) fn derived(&self, bytes: Bytes) -> Self {
-        Self {
-            held: std::sync::Arc::new(Held::new(bytes)),
-            secure: self.secure,
-        }
-    }
-
     /// A seal of `bytes` this credential made: it carries the credential's requirement.
     pub(crate) fn seal(&self, bytes: Bytes) -> Seal {
         Seal {

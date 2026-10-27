@@ -30,12 +30,6 @@ pub use stack::{
     FramerOut, HostTime, Located, Side, TransportRow,
 };
 
-use crate::ids::StreamId;
-// `Frame` is the plane-facing frame, which lives one level up in the contract's own `wire` module
-// (it borrows the arena the contract owns). Every other wire name below arrives via the
-// `pub use wire::{…}` re-export of this module's own transport `wire` submodule.
-use crate::wire::Frame;
-use futures::Stream;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -52,10 +46,6 @@ pub struct AbiVersion(pub u16);
 /// The allocation gate excludes exactly this: an asynchronous trait method has to box its future,
 /// and one box per transport call is the price of having the transport axis be a trait at all.
 pub type Fut<'a, T> = Pin<Box<dyn Future<Output = Result<T, TransportError>> + Send + 'a>>;
-
-/// The frame pump's own type: a stream of framed bytes tagged with the stream they arrived on.
-pub type FrameStream =
-    Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
 /// The transport kind's ABI generation, the fact keys the kernel reserves, and the boot check over
 /// a composed stack.
@@ -76,9 +66,8 @@ pub use registry::{
 /// itself is plane-agnostic and lives with the rest of the transport-facing vocabulary, because it
 /// is read by every mount and by no plugin author who is not writing one.
 pub use surface::{
-    binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
-    Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
-    MAX_CAPTURES,
+    match_target, resolve_target, Answering, Bar, BindingDecl, Capture, Dispatch, Operation,
+    WireSurface, MAX_CAPTURES,
 };
 
 /// Where a dial lands, as the transport family that dials it spells it — named at the transport

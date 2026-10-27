@@ -5,10 +5,8 @@
 //! `exchange()` is FRAMED). [`exchange`] opens a framed need, sends one [`Request`] through the
 //! framer ([`Connector::write_request`]: head, body, end — the framer writes its own wire head, one
 //! library per protocol) and reads the reply to its terminal piece into an [`ExchangeResponse`].
-//! [`send_and_ack`] is its form for any transport: it writes bytes and answers the transport's
-//! [`Ack`] (OWNER ruling: a plugin that sends sees what became of it).
 //!
-//! Both answer PENDING until they complete. The caller parks the [`Exchange`] on its ticket across
+//! It answers PENDING until it completes. The caller parks the [`Exchange`] on its ticket across
 //! PENDING entries (`abi::sdk::safe::Instance::park`) and passes it back each time, making the same
 //! services in the same order (the replay rule, `abi::sdk::conn`): no service runs twice.
 //!
@@ -17,7 +15,7 @@
 //! buffer the SDK holds either in is wiped when it goes: the [`Request`] [`Exchange::request`]
 //! consumes, the head it frames, the body it sends, the read buffer (after each piece is applied as
 //! well), and the reply it gathers (a body that outgrows its allocation wipes the one it leaves).
-//! [`Request`], [`ExchangeResponse`] and [`Ack`] are [`Zeroize`]: a plugin wipes the ones it holds
+//! [`Request`] and [`ExchangeResponse`] are [`Zeroize`]: a plugin wipes the ones it holds
 //! (`zeroize::Zeroizing::new(reply)`). The bytes on the wire are unchanged.
 
 use std::task::Poll;
@@ -97,22 +95,6 @@ impl Zeroize for ExchangeResponse {
     }
 }
 
-/// What became of what a [`send_and_ack`] sent: the transport's code and the peer's text.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Ack {
-    /// The transport's result code.
-    pub code: u32,
-    /// The peer's text, exactly as sent; empty when none.
-    pub reason: Vec<u8>,
-}
-
-impl Zeroize for Ack {
-    fn zeroize(&mut self) {
-        self.code.zeroize();
-        self.reason.zeroize();
-    }
-}
-
 /// What is sent: a framed request's head bytes and descriptors, or raw bytes. The bytes wipe on
 /// drop; the descriptors (`repr(C)`) hold spans and a timeout, never a byte of the request.
 #[derive(Debug)]
@@ -129,7 +111,7 @@ enum Sending {
     Raw(Zeroizing<Vec<u8>>),
 }
 
-/// An [`exchange`]'s (or a [`send_and_ack`]'s) state across its op's PENDING entries: what it sends
+/// An [`exchange`]'s state across its op's PENDING entries: what it sends
 /// (a pending write reads it), the read buffer and the descriptor slot (a pending read writes
 /// them) and the reply so far. Parked on the ticket. Every byte it holds of the request or the
 /// reply wipes on drop.
@@ -427,7 +409,7 @@ impl Exchange {
         Ok(ex)
     }
 
-    /// An exchange sending `bytes` as they are, over any transport ([`send_and_ack`]).
+    /// An exchange sending `bytes` as they are, over any transport.
     #[must_use]
     pub fn send(bytes: Vec<u8>) -> Self {
         Self::over(Sending::Raw(Zeroizing::new(bytes)))
@@ -702,23 +684,6 @@ pub fn exchange(
     let mut reply = std::mem::take(&mut *state.reply);
     reply.status = u16::try_from(state.code).unwrap_or(0);
     Poll::Ready(Ok(reply))
-}
-
-/// SEND and learn what became of it, over any transport (a pure-send one answers a single ack):
-/// establish, write the [`Exchange::send`] bytes, read to the terminal piece, close. READY with the
-/// transport's code and the peer's text, verbatim — a failure the transport acked is an [`Ack`]
-/// too, never a lost request.
-pub fn send_and_ack(
-    c: &mut Connector<'_>,
-    state: &mut Exchange,
-    need: u32,
-    target: Option<&str>,
-) -> Answer<Ack> {
-    ready!(send_and_read(c, state, need, target));
-    Poll::Ready(Ok(Ack {
-        code: state.code,
-        reason: state.reply.reason.take().unwrap_or_default(),
-    }))
 }
 
 /// What an op parks its exchange on: its instance, whatever the instance state's type.

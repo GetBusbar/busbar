@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE HOOK KIND'S SDK: a hook plugin over the hook kind's door (`abi::hook`), written against
-//! typed views ([`Hook`]) or against the 1.5.5 JSON contract ([`HookHandler`], through
-//! [`json_hook`]). [`hook_door!`](crate::hook_door) emits the door; every slot is the SDK's own.
+//! typed views ([`Hook`]). [`hook_door!`](crate::hook_door) emits the door; every slot is the SDK's
+//! own.
 //!
 //! * [`Decoded`] — a `decide`/`transform` `in` read as a view borrowed from the host's `in` for
 //!   the call (text and the prompt body zero-copy), and
@@ -51,8 +51,8 @@ use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT,
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::sdk::exchange::Op;
 use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
-use crate::abi::sdk::{HookHandler, Instance, Lent, LentList, Out, SafeSlot};
-use crate::hook_wire::{HookStageProjection, OP_DECIDE, OP_NOTIFY, OP_TRANSFORM};
+use crate::abi::sdk::{Instance, Lent, LentList, Out, SafeSlot};
+use crate::hook_wire::{HookStageProjection, OP_NOTIFY};
 use crate::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingRequest,
 };
@@ -768,46 +768,6 @@ pub trait Hook: Send + Sync {
     fn describe(&self) -> serde_json::Value {
         serde_json::json!({})
     }
-}
-
-/// A 1.5.5 JSON hook ([`HookHandler`]) as a [`Hook`]: each view rebuilt as the 1.5.5 JSON, each
-/// reply lowered as the 1.5.5 host normalized it.
-pub struct JsonHook(pub Box<dyn HookHandler>);
-
-impl Hook for JsonHook {
-    fn decide(&self, view: &Decoded<'_>, _: &Op<'_>) -> Poll<Verdict> {
-        Poll::Ready(lower_decide_reply(
-            self.0.decide_result(&view.projection_json(OP_DECIDE)),
-        ))
-    }
-    fn transform(&self, view: &Decoded<'_>, _: &Op<'_>) -> Poll<RewriteVerdict> {
-        Poll::Ready(lower_transform_reply(
-            self.0.transform_result(&view.projection_json(OP_TRANSFORM)),
-        ))
-    }
-    fn notify(&self, tap: &DecodedTap<'_>, _: &Op<'_>) -> Poll<()> {
-        self.0.notify(&tap.projection_json());
-        Poll::Ready(())
-    }
-    fn configure(
-        &self,
-        settings: &serde_json::Map<String, serde_json::Value>,
-        version: u64,
-    ) -> bool {
-        self.0.configure(settings, version)
-    }
-    fn status(&self) -> serde_json::Value {
-        self.0.status()
-    }
-    fn describe(&self) -> serde_json::Value {
-        self.0.describe()
-    }
-}
-
-/// A 1.5.5 JSON handler as a boxed [`Hook`].
-#[must_use]
-pub fn json_hook(handler: Box<dyn HookHandler>) -> Box<dyn Hook> {
-    Box::new(JsonHook(handler))
 }
 
 /// How a plugin opens: its settings, the operator's section exactly as the host lent it (empty when
