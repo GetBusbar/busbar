@@ -130,3 +130,106 @@ fn the_ops_the_sink_does_not_serve_are_answered_as_such() {
         .expect("check answers")
         .is_empty());
 }
+
+/// A host I/O that holds nothing and records whose handles the host reaps.
+#[derive(Default)]
+struct Reaps(std::sync::Mutex<Vec<u64>>);
+
+impl busbar_contract::io_host::IoHost for Reaps {
+    fn open(
+        &self,
+        _: u64,
+        _: busbar_contract::abi::mechanism::ticket::Ticket,
+        _: &str,
+    ) -> busbar_contract::io_host::IoResult<u64> {
+        Err(busbar_contract::io_host::IoRefusal::unknown())
+    }
+    fn listen(
+        &self,
+        _: u64,
+        _: busbar_contract::abi::mechanism::ticket::Ticket,
+        _: &str,
+    ) -> busbar_contract::io_host::IoResult<(u64, String)> {
+        Err(busbar_contract::io_host::IoRefusal::unknown())
+    }
+    fn accept(
+        &self,
+        _: u64,
+        _: busbar_contract::abi::mechanism::ticket::Ticket,
+        _: u64,
+        _: &std::task::Waker,
+    ) -> std::task::Poll<busbar_contract::io_host::IoResult<(u64, String)>> {
+        std::task::Poll::Ready(Err(busbar_contract::io_host::IoRefusal::unknown()))
+    }
+    fn read(
+        &self,
+        _: u64,
+        _: u64,
+        _: &mut [u8],
+        _: &std::task::Waker,
+    ) -> std::task::Poll<busbar_contract::io_host::IoResult<usize>> {
+        std::task::Poll::Ready(Err(busbar_contract::io_host::IoRefusal::unknown()))
+    }
+    fn write(
+        &self,
+        _: u64,
+        _: u64,
+        _: &[u8],
+        _: &std::task::Waker,
+    ) -> std::task::Poll<busbar_contract::io_host::IoResult<usize>> {
+        std::task::Poll::Ready(Err(busbar_contract::io_host::IoRefusal::unknown()))
+    }
+    fn ready(
+        &self,
+        _: u64,
+        _: u64,
+        _: u32,
+        _: &std::task::Waker,
+    ) -> std::task::Poll<busbar_contract::io_host::IoResult<()>> {
+        std::task::Poll::Ready(Err(busbar_contract::io_host::IoRefusal::unknown()))
+    }
+    fn shut(&self, _: u64, _: u64, _: u32) -> busbar_contract::io_host::IoResult<()> {
+        Err(busbar_contract::io_host::IoRefusal::unknown())
+    }
+    fn close(&self, _: u64, _: u64) -> busbar_contract::io_host::IoResult<()> {
+        Err(busbar_contract::io_host::IoRefusal::unknown())
+    }
+    fn spawn(
+        &self,
+        _: u64,
+        _: busbar_contract::abi::mechanism::ticket::Ticket,
+        _: &busbar_contract::io_host::Spawn<'_>,
+    ) -> busbar_contract::io_host::IoResult<u64> {
+        Err(busbar_contract::io_host::IoRefusal::unknown())
+    }
+    fn ends(&self, _: u64, _: u64) -> busbar_contract::io_host::IoResult<(u16, String)> {
+        Err(busbar_contract::io_host::IoRefusal::unknown())
+    }
+    fn reap(&self, owner: u64) {
+        self.0.lock().unwrap().push(owner);
+    }
+}
+
+/// RED (transport ABI defect 2): an instance the host lets go has every host I/O handle it still
+/// owns released for it (`IoHost::reap`, under the instance's own handle), so a listener or socket
+/// it never closed does not outlive it. Before, the host released a handle only when the plugin
+/// closed it.
+#[test]
+fn an_instance_let_go_has_its_io_handles_reaped() {
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let io = Arc::new(Reaps::default());
+    assert!(dispatcher.install_io(io.clone()));
+    let row = LinkedRow::of(SCRAPE_DOOR).expect("the door states itself");
+    let bind = Bind {
+        instance: Arc::from("export.metrics"),
+        max_inflight_cap: 64,
+        sink: Arc::new(NoSink),
+        dispatcher: dispatcher.adopter(),
+        conns: crate::dispatch::ConnTable::NoNeeds,
+    };
+    let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
+    let owner = plugin.inner.ctx().handle;
+    assert!(io.0.lock().unwrap().is_empty());
+    drop(plugin);
+    assert_eq!(*io.0.lock().unwrap(), vec![owner]);
+}
