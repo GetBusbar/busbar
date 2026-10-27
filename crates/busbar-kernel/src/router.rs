@@ -10,7 +10,7 @@ use axum::Router;
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, state, store, telemetry, tls,
+    observability, operation, plane, plugin_routes, profile, state, store, telemetry, tls,
     transport, trust,
 };
 

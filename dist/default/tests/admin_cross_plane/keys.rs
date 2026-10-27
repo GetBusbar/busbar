@@ -6,7 +6,7 @@
 //! drivers they share.
 
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
-use busbar_kernel::proto::PROTO_ANTHROPIC;
+use busbar_kernel::ingress::protocols::PROTO_ANTHROPIC;
 use std::sync::Arc;
 
 // ── KEYS ERROR SURFACE — BYTE-PARITY LOCK ────────────────────────────────────────────────────────

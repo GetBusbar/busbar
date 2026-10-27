@@ -521,7 +521,7 @@ impl PlaneDispatch {
             // THE FALLBACK ARM, and the only place a path SHAPE decides anything. It answers
             // `None` for a path that names no dialect — an honest answer the old classifier could
             // not give, because it always spent that case on one hard-coded dialect.
-            None => Ingress::Fallback(crate::proto::residual_dialect_for_path(path)),
+            None => Ingress::Fallback(crate::ingress::protocols::residual_dialect_for_path(path)),
         }
     }
 

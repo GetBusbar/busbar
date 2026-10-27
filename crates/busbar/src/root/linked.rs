@@ -73,7 +73,8 @@ pub struct Linked {
         &'static str,
     )],
     /// Protocol declarations, appended to the installed protocol set in this order.
-    pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
+    pub protocols:
+        &'static [&'static [&'static busbar_kernel::ingress::protocols::ProtocolDecl]],
     /// Body-model arrivals, by protocol name.
     pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
@@ -378,12 +379,12 @@ pub struct BookCtx<'a> {
 /// those arrivals hand their units to: every entry on it is handed the node a root unit drives it
 /// through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
+    let installed: Vec<&'static busbar_kernel::ingress::protocols::ProtocolDecl> = linked
         .protocols
         .iter()
         .flat_map(|decls| decls.iter().copied())
         .collect();
-    busbar_kernel::proto::install_protocols(installed);
+    busbar_kernel::ingress::protocols::install_protocols(installed);
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()

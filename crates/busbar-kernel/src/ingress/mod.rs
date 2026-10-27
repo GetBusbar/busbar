@@ -237,7 +237,7 @@ pub fn limit_refusal(
             // The native quota status is the writer's (every dialect answers 429 today;
             // Bedrock's is ThrottlingException, a Converse-declared error). The writer owns
             // that mapping.
-            crate::proto::decl_for(proto)
+            protocols::decl_for(proto)
                 .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
             busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
@@ -286,7 +286,7 @@ pub fn limit_refusal(
         // FAIL-CLOSED: a key bound to a group this node's config does not know is not
         // admitted; the message names the missing bucket so the operator can fix it.
         LimitBlocked::MissingGroup(group) => (
-            crate::proto::decl_for(proto)
+            protocols::decl_for(proto)
                 .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
             busbar_contract::protocol::KIND_INSUFFICIENT_QUOTA,
@@ -611,9 +611,9 @@ fn finish_inner(
 /// "type"}}` envelope and no protocol headers.
 pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str) -> Response {
     use axum::response::IntoResponse;
-    let dialect = crate::proto::decl_for(proto).and_then(|d| d.dialect());
+    let dialect = protocols::decl_for(proto).and_then(|d| d.dialect());
     let envelope = match &dialect {
-        Some(di) => di.write_error(crate::proto::CODEC_HOST, status.as_u16(), kind, message),
+        Some(di) => di.write_error(protocols::CODEC_HOST, status.as_u16(), kind, message),
         None => agnostic_error_envelope(kind, message),
     };
     let body = crate::json::to_string(&envelope)
@@ -627,7 +627,7 @@ pub fn ingress_error(proto: &str, status: StatusCode, kind: &str, message: &str)
         .body(axum::body::Body::from(body))
         .unwrap_or_else(|_| status.into_response());
     if let Some(di) = &dialect {
-        for (name, value) in di.error_response_fields(crate::proto::CODEC_HOST, kind, &envelope) {
+        for (name, value) in di.error_response_fields(protocols::CODEC_HOST, kind, &envelope) {
             if let (Ok(n), Ok(v)) = (
                 axum::http::HeaderName::from_bytes(name.as_bytes()),
                 axum::http::HeaderValue::from_bytes(&value),
@@ -646,6 +646,7 @@ fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
 // The one JSON-RPC body the kernel writes: a mounted path's refusal made before any envelope was
 // read (`native::native_error`'s mounted arm). The reader is `busbar_contract::jsonrpc`.
 pub mod jsonrpc;
+pub mod protocols;
 
 #[cfg(test)]
 #[path = "tests/terminal_tests.rs"]
@@ -750,7 +751,7 @@ pub(crate) async fn named(
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (the
     // dialect whose `residual_claims` predicate claims that path — Anthropic Messages), so core names
     // no dialect. `""` when no such dialect is registered.
-    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
+    let proto = protocols::residual_dialect_for_path("/v1/messages").unwrap_or("");
     delegate_body_arrival(
         app,
         gov,
@@ -826,7 +827,7 @@ pub async fn adhoc(
     crate::auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
     // The dialect the `/v1/messages` convenience surface speaks, resolved from the registry (see
     // `named`); `""` when no such dialect is registered.
-    let proto = crate::proto::residual_dialect_for_path("/v1/messages").unwrap_or("");
+    let proto = protocols::residual_dialect_for_path("/v1/messages").unwrap_or("");
     // ADHOC PROVIDER MATCH (pre-relocation `adhoc`'s Some(i)-wrong-provider arm): the path names BOTH a
     // provider and a model, and a configured model reached under the WRONG provider is a client error,
     // not a route to that model's real provider. Read the neutral routing view: a model that IS

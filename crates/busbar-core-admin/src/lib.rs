@@ -163,7 +163,7 @@ pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
 #[cfg(test)]
 pub(crate) fn linked_protocol() -> &'static str {
     ensure_seam();
-    busbar_kernel::proto::known_protocols()
+    busbar_kernel::ingress::protocols::known_protocols()
         .first()
         .copied()
         .expect("this test binary registers a codec protocol")

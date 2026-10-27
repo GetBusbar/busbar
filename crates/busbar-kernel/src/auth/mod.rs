@@ -1361,7 +1361,7 @@ fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingres
 /// token vs. wrong token vs. disabled virtual key vs. admin-token mismatch) — surfacing that
 /// distinction on the wire is itself an oracle. Call sites therefore pass no reason string.
 fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    crate::proto::vendor_auth_failure_message(proto)
+    crate::ingress::protocols::vendor_auth_failure_message(proto)
 }
 
 /// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for an
@@ -1383,7 +1383,7 @@ fn vendor_auth_failure_message(proto: &str) -> &'static str {
 ///
 /// Read from the protocol registry's `ProtocolDecl::auth_failure_status_and_kind`.
 pub fn auth_failure_status_and_kind(proto: &str) -> (StatusCode, &'static str) {
-    crate::proto::decl_for(proto)
+    crate::ingress::protocols::decl_for(proto)
         .and_then(|d| {
             let (status, kind) = d.auth_failure_status_and_kind;
             Some((StatusCode::from_u16(status).ok()?, kind))

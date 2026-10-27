@@ -41,7 +41,7 @@ pub fn envelope_dialect(ingress: Ingress) -> &'static str {
     // caller gets the generic envelope — the honest deletion behaviour.
     ingress
         .shaping_wire_format()
-        .or_else(crate::proto::residual_default_dialect)
+        .or_else(crate::ingress::protocols::residual_default_dialect)
         .unwrap_or("")
 }
 

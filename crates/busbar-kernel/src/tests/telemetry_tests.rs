@@ -35,7 +35,7 @@ fn model_plane_key() -> &'static str {
 /// different ingress. Read through `registry()`, which seeds this test binary's built-in set first:
 /// `known_protocols()` seeds nothing, and these tests ask before any request path has seeded it.
 fn shipped_protocols() -> (&'static str, &'static str) {
-    let known = crate::proto::registry::registry().codec_protocols();
+    let known = crate::ingress::protocols::known_protocols();
     assert!(
         known.len() >= 2,
         "the test binary's protocol registry must ship at least two codecs; got {known:?}"

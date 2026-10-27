@@ -796,7 +796,7 @@ impl std::ops::Deref for PlaneDecl {
 plane_behaviour! {
     /// The distinct WIRE FORMATS this plane translates between, named. A FUNCTION rather than a
     /// slice for exactly one reason, and it is the reason the field is worth its indirection: the
-    /// LLM plane's answer is `busbar_kernel::proto::known_protocols` — read off the live protocol
+    /// LLM plane's answer is `busbar_kernel::ingress::protocols::known_protocols` — read off the live protocol
     /// registry, so a seventh dialect does not depend on anybody remembering to bump a literal here.
     /// A plane whose list is constant returns a `&'static` slice and pays nothing.
     ///

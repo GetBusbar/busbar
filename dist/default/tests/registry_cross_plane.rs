@@ -285,7 +285,7 @@ fn the_fallback_decl_reads_the_protocol_registry() {
     linked::install();
     assert_eq!(
         busbar_kernel::plane::wire_format_names(busbar_kernel::plane::fallback_key()),
-        busbar_kernel::proto::known_protocols(),
+        busbar_kernel::ingress::protocols::known_protocols(),
         "the fallback plane's dialects are the registered protocols, not a literal"
     );
     assert!(

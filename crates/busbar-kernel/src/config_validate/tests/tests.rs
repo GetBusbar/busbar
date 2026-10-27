@@ -92,7 +92,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
 /// sweep asks only "is this a compiled-in codec protocol?", never which one, so a fixture needs a
 /// registered name, not a particular dialect — and the neutral kernel's tests name none.
 fn shipped_protocol(nth: usize) -> &'static str {
-    crate::proto::registry::builtin_decls()
+    crate::testkit::neutral_protocols::NEUTRAL_PROTOCOLS
         .iter()
         .filter(|d| d.codec.is_some())
         .nth(nth)
@@ -215,7 +215,7 @@ fn test_validate_rejects_bad_protocol() {
         .iter()
         .find(|e| e.contains("unknown protocol 'nope'"))
         .unwrap_or_else(|| panic!("expected unknown-protocol error; got: {errs:?}"));
-    for proto in crate::proto::known_protocols() {
+    for proto in crate::ingress::protocols::known_protocols() {
         assert!(
             msg.contains(proto),
             "allowed-set list must include '{proto}'; got: {msg}"
@@ -6247,8 +6247,9 @@ fn an_empty_protocol_set_refuses_every_provider_through_the_real_sweep() {
 /// with the last dialect extraction; this is the strongest proof available before it.
 #[test]
 fn the_empty_set_the_validator_refuses_is_the_one_an_empty_registry_produces() {
-    let empty_registry =
-        crate::proto::registry::Registry::new(crate::proto::registry::merged_boot_decls(&[], &[]));
+    let empty_registry = crate::ingress::protocols::Registry::new(
+        crate::ingress::protocols::merged_boot_decls(&[], &[]),
+    );
     let known: &'static [&'static str] = empty_registry.codec_protocols();
     assert!(
         known.is_empty(),
@@ -6664,7 +6665,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
     },
     wire_format_names: || &[],
     // The test binary's codecs, declared as this plane's provider dialects (ruling 2026-10-16 D).
-    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
+    provider_dialects: crate::ingress::protocols::known_protocols,
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
