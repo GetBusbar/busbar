@@ -174,7 +174,7 @@ It never knows which instance is attached, which protocol it speaks or which dia
 **It names no plugin.** It finds plugins only by enumerating the linked rows and the `plugins/`
 directory. It holds no list of instance names and makes no name check. A behaviour one instance
 needs is a fact that instance declares (§2). Aliases, old-name migrations and strategy words are
-declared by the plugin that owns them or sit in the root legacy table; refusal texts and
+declared by the plugin that owns them or sit in the root migration table; refusal texts and
 `--validate` lists that name instances are rendered from the plugins' rows, byte-identical to
 1.5.5. Kernel tests use kind-neutral doubles. `literal` and `none` are core secret grammar. The one
 place a plugin name appears is the composition root's manifest: its `Cargo.toml` dependency, its
@@ -247,8 +247,8 @@ signed manifest. Each fact is declared once; anything derivable is derived.
 | planes only | `route_cost [(meter_class, weight)]`; `dialect_auth [(protocol, default style)]` — the outbound default only; the inbound default rides the claims (THE DESIGN §6, "Auth points and guest lists") |
 
 Retired names (`redis` → valkey, `tokens`/`static-tokens`) and migrations for plugins that are not
-in the build (1.4.x `governance.db_path` → sqlite) live in the root legacy table,
-`[package.metadata.busbar.legacy]`, generated from `plugins.yaml`.
+in the build (1.4.x `governance.db_path` → sqlite) live in the root migration table,
+`[package.metadata.busbar.migration]`, generated from `plugins.yaml`.
 
 **No legacy loading (§11.8).** A published 1.5.5 JSON-contract plugin does not load: boot refuses it
 with a message naming the rebuild against the 1.6.0 SDK. The loader accepts only the current version
