@@ -95,9 +95,8 @@ libc = { workspace = true, optional = true }
 # states.
 axum = { workspace = true }
 tower = { workspace = true }
-# No `net`: the kernel opens no socket and resolves no name (THE DESIGN §5; status row 130,
-# `tests/no_socket.rs`). Its test scaffolding asks for it through `test-support` and the
-# dev-dependency below.
+# No `net`: the kernel opens no socket and resolves no name (THE DESIGN §5). Its test scaffolding
+# asks for it through `test-support` and the dev-dependency below.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "signal", "io-util", "io-std", "process"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
