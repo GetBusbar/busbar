@@ -151,7 +151,7 @@ impl AppSlots {
         // Ingress pool labels: configured pools, model-routed labels, and the pre-routing sentinel.
         let mut ingress_labels: Vec<&str> = pools.iter().map(|(pool, _)| *pool).collect();
         ingress_labels.extend(by_model.iter().map(|(model, _)| *model));
-        ingress_labels.push(crate::proxy::POOL_LABEL_UNRESOLVED);
+        ingress_labels.push(POOL_LABEL_UNRESOLVED);
         ingress_labels.sort_unstable();
         ingress_labels.dedup();
 
@@ -265,7 +265,7 @@ impl AppSlots {
 /// `ingress::finish_inner` and every mounted plane calls it from `ingress::observe`.
 ///
 /// TWO SERIES, split so the model plane stays v1.5.4-identical. The MODEL plane
-/// (`crate::plane::is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
+/// (`crate::plane_driver::dispatch::is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
 /// with exactly the v1.5.4 label set `{ingress_protocol, pool, outcome}` — NO `plane` label — so a
 /// pure-model-plane `/metrics` scrape is byte-identical to v1.5.4. Every OTHER mounted plane emits the
 /// parallel `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families, which
@@ -286,7 +286,7 @@ pub(crate) fn request_finished(
     // model-plane families label-identical to v1.5.4. The bank holds only the model plane's label
     // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
     // relying on that miss, and it targets the correct (plane-labelled) family.
-    if !crate::plane::is_fallback(plane) {
+    if !crate::plane_driver::dispatch::is_fallback(plane) {
         crate::snapshot::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
         crate::snapshot::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;
@@ -319,7 +319,7 @@ pub fn model_request_finished(
     let outcome = outcome_of(status);
     request_finished(
         app,
-        crate::plane::fallback_key(),
+        crate::plane_driver::dispatch::fallback_key(),
         ingress_protocol,
         pool,
         outcome,
@@ -444,7 +444,7 @@ pub fn translation(from: &str, to: &str) {
     static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
     let table = SLOTS.get_or_init(|| {
         let mut v = Vec::new();
-        let dialects = declared_dialects(crate::plane::fallback_key());
+        let dialects = declared_dialects(crate::plane_driver::dispatch::fallback_key());
         for f in dialects {
             for t in dialects {
                 if f != t {
@@ -481,7 +481,7 @@ pub fn translation(from: &str, to: &str) {
 /// (ARCHITECT ruling 2026-10-16 item 4; BUSBAR-1.6.0.md #49: the kernel knows no plane strings). A key
 /// no plane registers declares none.
 fn declared_dialects(plane: &str) -> &'static [&'static str] {
-    crate::plane::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)())
+    crate::plane_driver::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)())
 }
 
 #[cfg(test)]
@@ -519,7 +519,7 @@ pub fn plugin_label_refused() {
 ///
 /// THE EMIT for this family, on EVERY plane — see [`upstream_attempt_on`] for why there is no `&App`
 /// and why both labels are bounded. `disposition` is the model plane's own vocabulary (the
-/// `DISPOSITION_*` values in [`crate::proxy`]) and no plane gets one of its own.
+/// [`DISPOSITIONS`]) and no plane gets one of its own.
 pub fn upstream_failure_on(pool_label: &str, lane_label: &str, disposition: &'static str) {
     metrics::counter!(
         UPSTREAM_FAILURES_TOTAL,
@@ -589,22 +589,33 @@ const KEY_SEP: char = '\u{1f}';
 /// is the ONLY thing that produces one of these — see there for why it is a function.
 pub const OUTCOMES: [&str; 4] = ["ok", "exhausted", "client_error", "error"];
 
-/// `disposition` values on `busbar_upstream_failures_total` (see `proxy::DISPOSITION_*`).
+/// The `pool` label for every failure before a target resolved, so the label space stays finite.
+pub const POOL_LABEL_UNRESOLVED: &str = "unresolved";
+
+/// `disposition` value: a transient upstream failure.
+pub const DISPOSITION_TRANSIENT: &str =
+    busbar_contract::upstream::Disposition::TransientUpstream.label();
+/// `disposition` value: one attempt's budget-clamped transport timeout fired.
+pub const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
+/// `disposition` value: the upstream is hard down.
+pub const DISPOSITION_HARD_DOWN: &str = busbar_contract::upstream::Disposition::HardDown.label();
+
+/// `disposition` values on `busbar_upstream_failures_total`.
 pub const DISPOSITIONS: [&str; 4] = [
-    crate::proxy::DISPOSITION_TRANSIENT,
-    crate::proxy::DISPOSITION_ATTEMPT_TIMEOUT,
-    crate::proxy::DISPOSITION_HARD_DOWN,
-    crate::proxy::DISPOSITION_CONTEXT_LENGTH,
+    DISPOSITION_TRANSIENT,
+    DISPOSITION_ATTEMPT_TIMEOUT,
+    DISPOSITION_HARD_DOWN,
+    busbar_contract::protocol::DISPOSITION_CONTEXT_LENGTH,
 ];
 /// `reason` values on `busbar_failovers_total`: the dispositions plus the transport error classes
-/// the pre-response failure arm records (`proxy::ERR_NET_CONNECT` / `ERR_NET_TIMEOUT`).
+/// the pre-response failure arm records.
 pub const REASONS: [&str; 6] = [
-    crate::proxy::DISPOSITION_TRANSIENT,
-    crate::proxy::DISPOSITION_ATTEMPT_TIMEOUT,
-    crate::proxy::DISPOSITION_HARD_DOWN,
-    crate::proxy::DISPOSITION_CONTEXT_LENGTH,
-    crate::proxy::ERR_NET_CONNECT,
-    crate::proxy::ERR_NET_TIMEOUT,
+    DISPOSITION_TRANSIENT,
+    DISPOSITION_ATTEMPT_TIMEOUT,
+    DISPOSITION_HARD_DOWN,
+    busbar_contract::protocol::DISPOSITION_CONTEXT_LENGTH,
+    busbar_kernel_egress::upstream::ERR_NET_CONNECT,
+    busbar_kernel_egress::upstream::ERR_NET_TIMEOUT,
 ];
 
 // ── Slot handles ─────────────────────────────────────────────────────────────────────────────────

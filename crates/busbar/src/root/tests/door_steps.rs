@@ -4542,7 +4542,7 @@ pub(crate) mod door_boundary {
 
     use busbar_contract::abi::mechanism::route::RouteAuth;
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
-    use busbar_kernel::plane::registry::{BuildCtx, PlaneDecl};
+    use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
     use busbar_kernel::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
 
     use super::tool_door::{
@@ -4567,7 +4567,7 @@ pub(crate) mod door_boundary {
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
     pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::plane::registry::register_test_plane(row);
+        busbar_kernel::plane_driver::registry::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
@@ -4801,7 +4801,7 @@ pub(crate) mod door_boundary {
                 app.lane(
                     LaneSpec::new(
                         "test-model",
-                        busbar_kernel::proto::PROTO_ANTHROPIC,
+                        busbar_kernel::ingress::protocols::PROTO_ANTHROPIC,
                         &base_url,
                     )
                     .api_key("busbar-upstream-key"),
@@ -8842,7 +8842,9 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
 #[test]
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane::registry::{PlaneDecl, PlaneDeclaration, TestRegistryIsolation};
+    use busbar_kernel::plane_driver::registry::{
+        PlaneDecl, PlaneDeclaration, TestRegistryIsolation,
+    };
     use busbar_kernel::test_support::NEUTRAL_FALLBACK;
     static REQUIRES: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {

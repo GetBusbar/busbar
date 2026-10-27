@@ -502,12 +502,12 @@ impl GovState {
     /// second place the signing key lives that a rotation has to remember to invalidate, and
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
-    pub fn card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
-        let decl = crate::plane::registry::plane_decl_for_config_section("agents")?;
+    pub fn card_issuer(&self) -> Option<crate::plane_driver::registry::CardIssuer> {
+        let decl = crate::plane_driver::registry::plane_decl_for_config_section("agents")?;
         let domain = decl.card_signing_domain?;
         let prefix = decl.card_kid_prefix?;
         let m = self.signing_material()?;
-        Some(crate::plane::registry::CardIssuer {
+        Some(crate::plane_driver::registry::CardIssuer {
             kid: format!("{prefix}{}", m.signer.kid()),
             issuer_spki_base64: m.signer.card_subkey_key_info_base64(domain),
         })
@@ -524,8 +524,8 @@ impl GovState {
     // host names no plane feature; the card-signing domain is resolved from the registry.
     #[allow(dead_code)]
     pub fn card_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
-        let domain =
-            crate::plane::registry::plane_decl_for_config_section("agents")?.card_signing_domain?;
+        let domain = crate::plane_driver::registry::plane_decl_for_config_section("agents")?
+            .card_signing_domain?;
         let m = self.signing_material()?;
         Some(m.signer.sign_with_card_subkey(domain, signing_input))
     }

@@ -48,15 +48,6 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::proxy::egress_unit::{
-    attempt::attempt_cap_ms,
-    ports::{
-        disposition, net, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
-        Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
-    },
-    walk::budget_secs,
-    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
-};
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::abi::plane::RefusalCode;
 use busbar_contract::abi::transport::{
@@ -70,6 +61,15 @@ use busbar_contract::conn::{
 use busbar_contract::redacted::Secret;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
+use busbar_kernel_egress::{
+    attempt::attempt_cap_ms,
+    ports::{
+        disposition, net, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
+        Disposition, Journal, Outcome, Permit, StatedLabels, Telemetry, UpstreamStatus,
+    },
+    walk::budget_secs,
+    Member, Pool, Shape, Shed, Step, Taken, Walk, WalkPorts, WeightedFloor,
+};
 
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
@@ -1234,7 +1234,7 @@ impl EgressFarEnd<'_> {
     async fn send_attempt(&self, token: &Pass<Route>, mut request: OutboundRequest) -> bool {
         let e = self.egress;
         // Busbar is invisible to upstreams; the per-connection mechanics are the connection's own.
-        crate::proxy::strip_re_derived(&mut request.fields);
+        busbar_kernel_egress::upstream::strip_re_derived(&mut request.fields);
         // THE PLANE'S PER-CALL SCOPE rides its request as the host's own field
         // (`abi::auth::SCOPE_REQUEST_FIELD`): taken out here, before anything is encoded, and lent
         // to the member's auth call in its extensions blob. No wire carries it.
