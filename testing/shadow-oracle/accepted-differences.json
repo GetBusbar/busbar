@@ -1319,8 +1319,13 @@
       "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (PR #1467 \"Owner sign-off, three items\", approved as proposed)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-21",
-        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): #1467 items 1 and 2 approved as proposed: Unicode/full-width metadata list entries map to their ASCII host, and a host holding % outside a zone id is DEST_NO_HOST"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-21",
+          "ruling": "owner-approved 2026-10-21 (relayed by coordinator): #1467 items 1 and 2 approved as proposed: Unicode/full-width metadata list entries map to their ASCII host, and a host holding % outside a zone id is DEST_NO_HOST"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -1352,7 +1357,7 @@
           }
         ]
       },
-      "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', items 1 and 2, approved as proposed. (1) 1.5.5 compared `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and a provider's `allow_metadata_hosts` as raw strings, so a Unicode or full-width entry matched nothing and its target was dialled; 1.6.0 maps each entry through the same UTS #46 mapping as the target (`list_entry_host`), so `１０.９９.９９.９９` blocks `https://10.99.99.99/`. (2) A host holding a `%` outside an IPv6 zone id (a bare `%6c%6fcalhost`) is refused by the destination guard as DEST_NO_HOST; a `://` URL's host is decoded first and a zone id is judged as its address, as before. Every other ASCII host gets 1.5.5's verdicts and texts. No oracle cell is touched today: no shipped, example or oracle config holds a Unicode list entry, and no cell asks the guard to judge a host holding a `%`. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed guard cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set, the list surfaces this entry changes. Proof: net_tests a_list_entry_is_read_as_a_targets_host_is_read, a_bare_authoritys_host_is_mapped_as_a_urls_is; contract judged_host_refuses_a_percent_outside_an_ipv6_zone_id; guard a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable; dest_judge_refuses_a_bare_host_holding_a_percent_escape; config_validate test_metadata_list_entries_are_mapped."
+      "rationale": "OWNER 2026-10-21 (relayed by the coordinator): PR #1467's 'Owner sign-off, three items', items 1 and 2, approved as proposed. (1) 1.5.5 compared `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` and a provider's `allow_metadata_hosts` as raw strings, so a Unicode or full-width entry matched nothing and its target was dialled; 1.6.0 maps each entry through the same UTS #46 mapping as the target (`list_entry_host`), so `１０.９９.９９.９９` blocks `https://10.99.99.99/`. (2) A host holding a `%` outside an IPv6 zone id (a bare `%6c%6fcalhost`) is refused by the destination guard as DEST_NO_HOST; a `://` URL's host is decoded first and a zone id is judged as its address, as before. Every other ASCII host gets 1.5.5's verdicts and texts. No oracle cell is touched today: no shipped, example or oracle config holds a Unicode list entry, and no cell asks the guard to judge a host holding a `%`. This entry forgives no measured cell today; it registers the contract change, as #1427's entry does, with `cells` naming the owed guard cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's CIDR refusals to 1.5.5's exit 1 and its printed denylist to the built-in set, the list surfaces this entry changes. Proof: net_tests a_list_entry_is_read_as_a_targets_host_is_read, a_bare_authoritys_host_is_mapped_as_a_urls_is; contract judged_host_refuses_a_percent_outside_an_ipv6_zone_id; guard a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable; dest_judge_refuses_a_bare_host_holding_a_percent_escape; config_validate test_metadata_list_entries_are_mapped. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
     },
     {
       "id": "#1467 an unjudgeable metadata host-list entry boots with one BUSBAR-3024 warning line",
@@ -3972,8 +3977,13 @@
       "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (row 194; busbar-auth-sigv4 #23 @ 433c113b27)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-21",
-        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): the busbar-auth-sigv4 door signs the walked request's real method, query and content type, keeps the AWS comma-merge of a repeated header name, and a POST of application/json with an empty query signs as 1.5.5's bytes"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-21",
+          "ruling": "owner-approved 2026-10-21 (relayed by coordinator): the busbar-auth-sigv4 door signs the walked request's real method, query and content type, keeps the AWS comma-merge of a repeated header name, and a POST of application/json with an empty query signs as 1.5.5's bytes"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4007,7 +4017,7 @@
           }
         ]
       },
-      "rationale": "OWNER 2026-10-21 (relayed by the coordinator; replaces the earlier revert-to-1.5.5 ruling). 1.5.5 signed only the request its Bedrock door sent: a POST of a JSON body to the model path, no query (v1.5.5 proxy/egress.rs `sign_and_wire_path_parts`). 1.6.0's busbar-auth-sigv4 door (PR #23, reviewed head 433c113b27) signs the walked request's own method, its query canonicalised per SigV4 (each name and value decoded once, re-encoded over the unreserved set with uppercase hex, sorted by name then value, a repeated name kept) and the content type it is sent with, and comma-merges a repeated header name as the AWS spec does. For POST + application/json + empty query every signed byte is 1.5.5's (plugin test the_signer_signs_every_request_1_5_5_could_send_as_1_5_5_signed_it, against the moved 1.5.5 sign_v4); the other shapes are pinned by independent hmac/hashlib vectors (the_walked_methods_queries_and_content_types_sign_to_independent_vectors). The one measured SigV4 cell, egress.auth|sigv4|session-token, is that 1.5.5 shape (POST /model/m-cap/converse, application/json, no query): it is NOT in `cells` and must stay byte-identical, so this entry forgives no measured cell today. It registers the contract change: `cells` names the owed GET, query and non-JSON cells and expected_cells is 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's measured cell to the 1.5.5 shape the ruling keeps (status 200, POST to the converse path, the 1.5.5 SignedHeaders set). Newer heads of busbar-auth-sigv4 #23 carry the same behaviour and the same two tests: f26347c76f, c1ea9d4225."
+      "rationale": "OWNER 2026-10-21 (relayed by the coordinator; replaces the earlier revert-to-1.5.5 ruling). 1.5.5 signed only the request its Bedrock door sent: a POST of a JSON body to the model path, no query (v1.5.5 proxy/egress.rs `sign_and_wire_path_parts`). 1.6.0's busbar-auth-sigv4 door (PR #23, reviewed head 433c113b27) signs the walked request's own method, its query canonicalised per SigV4 (each name and value decoded once, re-encoded over the unreserved set with uppercase hex, sorted by name then value, a repeated name kept) and the content type it is sent with, and comma-merges a repeated header name as the AWS spec does. For POST + application/json + empty query every signed byte is 1.5.5's (plugin test the_signer_signs_every_request_1_5_5_could_send_as_1_5_5_signed_it, against the moved 1.5.5 sign_v4); the other shapes are pinned by independent hmac/hashlib vectors (the_walked_methods_queries_and_content_types_sign_to_independent_vectors). The one measured SigV4 cell, egress.auth|sigv4|session-token, is that 1.5.5 shape (POST /model/m-cap/converse, application/json, no query): it is NOT in `cells` and must stay byte-identical, so this entry forgives no measured cell today. It registers the contract change: `cells` names the owed GET, query and non-JSON cells and expected_cells is 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's measured cell to the 1.5.5 shape the ruling keeps (status 200, POST to the converse path, the 1.5.5 SignedHeaders set). Newer heads of busbar-auth-sigv4 #23 carry the same behaviour and the same two tests: f26347c76f, c1ea9d4225. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
     },
     {
       "id": "row 194 the oidc door refuses a redirect to a private, loopback or cloud-metadata host",
@@ -4017,12 +4027,17 @@
       "by": "owner (Matthew Jackson), rulings 2026-10-21 and 2026-10-22 relayed by the coordinator (row 194; busbar-auth-oidc #41 @ 506a47037c)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-21",
-        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): busbar-auth-oidc refuses a public-to-private/loopback redirect and a redirect to a cloud-metadata or IPv6 link-local host; 1.5.5 followed up to 10 https redirects with no address check",
-        "widened": {
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "previous": {
           "who": "owner (Matthew Jackson)",
-          "when": "2026-10-22",
-          "ruling": "owner-approved 2026-10-22 (relayed by coordinator): an oidc identity provider reached by a DNS name counts as public, so its redirect to a private IP is refused (1.5.5 followed it)"
+          "when": "2026-10-21",
+          "ruling": "owner-approved 2026-10-21 (relayed by coordinator): busbar-auth-oidc refuses a public-to-private/loopback redirect and a redirect to a cloud-metadata or IPv6 link-local host; 1.5.5 followed up to 10 https redirects with no address check",
+          "widened": {
+            "who": "owner (Matthew Jackson)",
+            "when": "2026-10-22",
+            "ruling": "owner-approved 2026-10-22 (relayed by coordinator): an oidc identity provider reached by a DNS name counts as public, so its redirect to a private IP is refused (1.5.5 followed it)"
+          }
         }
       },
       "expires": {
@@ -4052,7 +4067,7 @@
           }
         ]
       },
-      "rationale": "OWNER 2026-10-21 (relayed by the coordinator; replaces the earlier revert-to-1.5.5 ruling), widened by OWNER 2026-10-22 (the DNS-name rule). 1.5.5's oidc module (busbar-auth-oidc v1.0.6 reqwest_fetcher.rs) followed up to 10 https redirects on its discovery and JWKS fetches with no address check. 1.6.0's busbar-auth-oidc door (PR #41, reviewed head 506a47037c) keeps that policy (at most 10, https only, reqwest 0.12.28's texts after 1.5.5's `request to {url} failed: ` prefix) and refuses two redirects before the next hop is asked. Each refusal names the URL that was ASKED (the configured or discovered discovery/JWKS URL), not the redirect target: `request to {asked URL} failed: a redirect to a cloud metadata address is not allowed` for a redirect to a cloud-metadata or IPv6 link-local host, from any host; `request to {asked URL} failed: a redirect to a private or loopback address is not allowed` for a redirect to a private or loopback host (an IP literal, or the localhost name: `localhost` and `*.localhost`, busbar-contract net.rs host_is_private_or_loopback) unless the hop that sent it is itself on a private or loopback host. THE RULE, exactly: each hop is judged by the host that redirected (fetch.rs `refused_hop(&at, &next, url)`, `at` being the hop that answered the redirect), so a chain that leaves through a public host cannot come back into the private network (asked https://10.0.0.7/... -> https://cdn.idp.example/jwks -> https://10.0.0.8/jwks is refused). The check reads the literal host only, with no DNS lookup. An identity provider reached by any other DNS name (e.g. keycloak.corp) counts as public, so its redirect to a private or loopback host is refused, where 1.5.5 followed it (OWNER 2026-10-22, relayed by the coordinator: approved). An identity provider on a private IP or at localhost may redirect to private or loopback hosts. A redirect to a DNS name that resolves privately is followed, and the dial guard judges it. A public-to-public https redirect is followed; the token POST follows no redirect, as on 1.5.5. Every other oidc error text is 1.5.5's. No oracle cell drives a redirect: egress.auth|login-hop|oidc serves its issuer, JWKS and token endpoint directly from the loopback capture mock, and plugins.load|auth-oidc lists the module. Neither is in `cells`; both must stay byte-identical. So this entry forgives no measured cell today; it registers the contract change, with `cells` naming the owed redirect cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's measured login hop to its 1.5.5 recording (the callback's 401 and the token POST with the injected client_secret), a cell in which no redirect occurs, so the new refusal has nothing to act on and the recording must stay 1.5.5's. Proof at 506a47037c (auth-oidc/src/tests/fetch_tests.rs): a_redirect_to_a_private_or_metadata_address_is_refused (asserts the asked URL in each refusal), a_public_to_public_https_redirect_is_followed, a_redirected_discovery_is_followed_to_its_document, a_redirected_key_set_is_followed_across_pending. Newer heads of busbar-auth-oidc #41 carry the same behaviour and the same tests: cf4d45a394. NOT FORGIVEN by this entry, and outside the owner's 2026-10-21 and 2026-10-22 approvals: the plugin PR discloses one known difference pending a contract accessor. The SDK `exchange()` returns head and body as one result, so a generic failure after the response head (a reset, a stall after headers) prints the send text `error sending request for url (<asked>)` where 1.5.5 printed `reading {url} response body failed: {e}`. No oracle cell measures it, and this entry's `cells` and classes do not reach it."
+      "rationale": "OWNER 2026-10-21 (relayed by the coordinator; replaces the earlier revert-to-1.5.5 ruling), widened by OWNER 2026-10-22 (the DNS-name rule). 1.5.5's oidc module (busbar-auth-oidc v1.0.6 reqwest_fetcher.rs) followed up to 10 https redirects on its discovery and JWKS fetches with no address check. 1.6.0's busbar-auth-oidc door (PR #41, reviewed head 506a47037c) keeps that policy (at most 10, https only, reqwest 0.12.28's texts after 1.5.5's `request to {url} failed: ` prefix) and refuses two redirects before the next hop is asked. Each refusal names the URL that was ASKED (the configured or discovered discovery/JWKS URL), not the redirect target: `request to {asked URL} failed: a redirect to a cloud metadata address is not allowed` for a redirect to a cloud-metadata or IPv6 link-local host, from any host; `request to {asked URL} failed: a redirect to a private or loopback address is not allowed` for a redirect to a private or loopback host (an IP literal, or the localhost name: `localhost` and `*.localhost`, busbar-contract net.rs host_is_private_or_loopback) unless the hop that sent it is itself on a private or loopback host. THE RULE, exactly: each hop is judged by the host that redirected (fetch.rs `refused_hop(&at, &next, url)`, `at` being the hop that answered the redirect), so a chain that leaves through a public host cannot come back into the private network (asked https://10.0.0.7/... -> https://cdn.idp.example/jwks -> https://10.0.0.8/jwks is refused). The check reads the literal host only, with no DNS lookup. An identity provider reached by any other DNS name (e.g. keycloak.corp) counts as public, so its redirect to a private or loopback host is refused, where 1.5.5 followed it (OWNER 2026-10-22, relayed by the coordinator: approved). An identity provider on a private IP or at localhost may redirect to private or loopback hosts. A redirect to a DNS name that resolves privately is followed, and the dial guard judges it. A public-to-public https redirect is followed; the token POST follows no redirect, as on 1.5.5. Every other oidc error text is 1.5.5's. No oracle cell drives a redirect: egress.auth|login-hop|oidc serves its issuer, JWKS and token endpoint directly from the loopback capture mock, and plugins.load|auth-oidc lists the module. Neither is in `cells`; both must stay byte-identical. So this entry forgives no measured cell today; it registers the contract change, with `cells` naming the owed redirect cells and expected_cells 0, the way GEN-LIMITS writes owed cells. The premise holds the candidate's measured login hop to its 1.5.5 recording (the callback's 401 and the token POST with the injected client_secret), a cell in which no redirect occurs, so the new refusal has nothing to act on and the recording must stay 1.5.5's. Proof at 506a47037c (auth-oidc/src/tests/fetch_tests.rs): a_redirect_to_a_private_or_metadata_address_is_refused (asserts the asked URL in each refusal), a_public_to_public_https_redirect_is_followed, a_redirected_discovery_is_followed_to_its_document, a_redirected_key_set_is_followed_across_pending. Newer heads of busbar-auth-oidc #41 carry the same behaviour and the same tests: cf4d45a394. NOT FORGIVEN by this entry, and outside the owner's 2026-10-21 and 2026-10-22 approvals: the plugin PR discloses one known difference pending a contract accessor. The SDK `exchange()` returns head and body as one result, so a generic failure after the response head (a reset, a stall after headers) prints the send text `error sending request for url (<asked>)` where 1.5.5 printed `reading {url} response body failed: {e}`. No oracle cell measures it, and this entry's `cells` and classes do not reach it. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
     },
     {
       "id": "581-alt-sse a same-dialect gemini stream forwards the client's alt=sse query",
@@ -4136,8 +4151,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4152,7 +4172,7 @@
         "cell": "admin.ops|GetHooksNameStatus|ok@hooks-webrequest",
         "status": 200
       },
-      "rationale": "OWNER 2026-10-24 (in session): the 1.6 plugin reports `url`, so the drift check compares like with like."
+      "rationale": "OWNER 2026-10-24 (in session): the 1.6 plugin reports `url`, so the drift check compares like with like. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
     },
     {
       "id": "ABI-VER interface_version reports the kind's memory-ABI contract version",
@@ -4161,8 +4181,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4177,7 +4202,7 @@
         "cell": "admin.plugins|type-store@hooks-webrequest",
         "status": 200
       },
-      "rationale": "OWNER 2026-10-24 (in session): the manifest's abi_version under the memory ABI (BUSBAR-1.6.0.md §11.1). WIDENED 2026-10-24 (OWNER, in session): boot.warning|BOOT-W24|boot, whose JSON body carries the store plugin's #34 name and its contract's interface_version 3; the judge's text transforms do not reach a JSON body."
+      "rationale": "OWNER 2026-10-24 (in session): the manifest's abi_version under the memory ABI (BUSBAR-1.6.0.md §11.1). WIDENED 2026-10-24 (OWNER, in session): boot.warning|BOOT-W24|boot, whose JSON body carries the store plugin's #34 name and its contract's interface_version 3; the judge's text transforms do not reach a JSON body. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged."
     },
     {
       "id": "N34-WEBREQUEST plugin name busbar-webrequest -> busbar-hook-webrequest",
@@ -4186,8 +4211,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4203,7 +4233,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "DECISION: Part 2 #34; OWNER 2026-10-24 (in session) for these cells. The transform rewrites only the plugin's name back to 1.5.5's. SCOPE 8 -> 9 (OWNER 2026-10-25, ORACLE-SIGNOFF G11): boot.warning|BOOT-W23|boot, whose UNVERIFIED line is 1.5.5's again since the operator-trust loopback fix (81e3062956), differs only by this plugin name (and D-1's diag code); recorded on Linux at 351d7ee81f.",
+      "rationale": "DECISION: Part 2 #34; OWNER 2026-10-24 (in session) for these cells. The transform rewrites only the plugin's name back to 1.5.5's. SCOPE 8 -> 9 (OWNER 2026-10-25, ORACLE-SIGNOFF G11): boot.warning|BOOT-W23|boot, whose UNVERIFIED line is 1.5.5's again since the operator-trust loopback fix (81e3062956), differs only by this plugin name (and D-1's diag code); recorded on Linux at 351d7ee81f. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged.",
       "transform": {
         "candidate": [
           [
@@ -4224,8 +4254,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4241,7 +4276,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else.",
+      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged. Signed on condition G2: every plugin is tagged 1.6.x before release.",
       "transform": {
         "candidate": [
           [
@@ -4262,8 +4297,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4279,7 +4319,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else.",
+      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged. Signed on condition G2: every plugin is tagged 1.6.x before release.",
       "transform": {
         "candidate": [
           [
@@ -4300,8 +4340,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4317,7 +4362,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.7, the 1.5.5-era release's, and nothing else.",
+      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.7, the 1.5.5-era release's, and nothing else. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged. Signed on condition G2: every plugin is tagged 1.6.x before release.",
       "transform": {
         "candidate": [
           [
@@ -4338,8 +4383,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4355,7 +4405,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else.",
+      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged. Signed on condition G2: every plugin is tagged 1.6.x before release.",
       "transform": {
         "candidate": [
           [
@@ -4376,8 +4426,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4393,7 +4448,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.5, the 1.5.5-era release's, and nothing else.",
+      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.5, the 1.5.5-era release's, and nothing else. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged. Signed on condition G2: every plugin is tagged 1.6.x before release.",
       "transform": {
         "candidate": [
           [
@@ -4414,8 +4469,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4431,7 +4491,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else.",
+      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged. Signed on condition G2: every plugin is tagged 1.6.x before release.",
       "transform": {
         "candidate": [
           [
@@ -4452,8 +4512,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4469,7 +4534,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.3, the 1.5.5-era release's, and nothing else.",
+      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.3, the 1.5.5-era release's, and nothing else. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged. Signed on condition G2: every plugin is tagged 1.6.x before release.",
       "transform": {
         "candidate": [
           [
@@ -4490,8 +4555,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4507,7 +4577,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.3, the 1.5.5-era release's, and nothing else.",
+      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.3, the 1.5.5-era release's, and nothing else. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged. Signed on condition G2: every plugin is tagged 1.6.x before release.",
       "transform": {
         "candidate": [
           [
@@ -4528,8 +4598,13 @@
       "by": "owner (Matthew Jackson), owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-24",
-        "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        "when": "2026-10-27",
+        "ruling": "owner 2026-10-27, RELAYS-RESIGN.md verdicts (~/Developer/tmp/cleanup/core/RELAYS-RESIGN.md): re-signed by the owner himself, before/after as this entry states it. Signed on condition G2: every plugin is tagged 1.6.x before release.",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
@@ -4545,7 +4620,7 @@
         "cell": "boot.refusal|BOOT-001|validate",
         "status": 1
       },
-      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else.",
+      "rationale": "OWNER 2026-10-24 (in session): every plugin repo is bumped to >= 1.6.0 so no operator floor or rollback pin sees a downgrade; in these cells the plugin's version token (1\\.6\\.\\d+) is rewritten to 1.0.6, the 1.5.5-era release's, and nothing else. RE-SIGNED 2026-10-27 by the owner himself (RELAYS-RESIGN.md verdicts); behaviour and scope unchanged. Signed on condition G2: every plugin is tagged 1.6.x before release.",
       "transform": {
         "candidate": [
           [
