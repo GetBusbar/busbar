@@ -1866,41 +1866,6 @@
       "rationale": "OWNER-RULED 2026-09-29 (#34). The only bytes that move are the published recipe name (`busbar.audit.digest.v2` -> `busbar.audit.digest.v3`) in the three audit reads, the digest (and so the signature) of a record sealed from here on, the `currency` member leaving a new record in the range read, and a `recipe` member on each range record naming the recipe it was sealed under. The three cells are 1.6.0-additive and carry no 1.5.5 golden (accepted-gaps `admin-kernel-verbs-new-in-1.6.0`), so this entry forgives no measured cell today; it registers the published-contract change so the next golden that records these reads meets it signed. A record sealed under v2 is never rewritten and still verifies by docs/audit-chain-digest-v2.md, proven in crates/busbar-kernel-audit (record_tests, published_recipe_tests). The recipe a new record signs under then advanced to busbar.audit.digest.v4 (v3 plus the boot incarnation after unit_key, ARCHITECT ruling on unit-key incarnation 2026-09-29): v3 never shipped in a release, the same three 1.6.0-additive cells carry it, and a v3 record still verifies by docs/audit-chain-digest-v3.md."
     },
     {
-      "id": "row 159 every recipe number in an audit range record is published as decimal text",
-      "kind": "breaking",
-      "changelog": "1.6.0 Changed: every recipe number in a `GET /api/v1/admin/audit/range` record is published as its decimal text in a JSON string.",
-      "status": "owner-approved 2026-10-21",
-      "by": "owner (Matthew Jackson), ruling 2026-10-21 relayed by the coordinator (row 159, PR #1427)",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-10-21",
-        "ruling": "owner-approved 2026-10-21 (relayed by coordinator): every 64-bit recipe number in a GET /api/v1/admin/audit/range record is published as its decimal text in a JSON string, so a double-mapping JSON reader no longer rounds the sealing node and reports an honest chain as tampered"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^admin\\.ops\\|GetAuditRange\\|ok$",
-      "expected_cells": 1,
-      "classes": [
-        "body"
-      ],
-      "premise": {
-        "all": [
-          {
-            "cell": "admin.ops|GetAuditRange|ok",
-            "status": 200
-          },
-          {
-            "cell": "admin.ops|GetAuditRange|ok",
-            "pointer": "/recipe",
-            "equals": "busbar.audit.digest.v4"
-          }
-        ]
-      },
-      "rationale": "The route is absent in v1.5.5 (1.6.0-additive, accepted-gaps `admin-kernel-verbs-new-in-1.6.0`: no 1.5.5 golden records it) and no 1.6 release has published it, so this entry forgives no measured cell today; it registers the published-contract change, as #34 did, so the next golden that records the read meets it signed. The bytes that move: every recipe number in a range record — seq, unit_key, incarnation, parent, wall, mono, node, hook_failed, stale_policy, lines_count, lines[].quantity, lines[].estimated, tier_bp, fee_count, rate_card_version, lease_epoch, policy_epoch, hooks_count, replayed, children_count, children[] — goes out as its canonical decimal text in a JSON string instead of a JSON number. The sealing node is a uniform 64-bit draw, so a reader that maps JSON numbers to doubles rounded it and reported an honest chain as tampered (spec row 82: a third party verifies without the busbar binary). The digest framing, the digest and the signature of every record are unchanged; the envelope members from, to, next_seq and a head's seq/wall stay JSON numbers. docs/audit-chain-digest-v4.md (and the v2/v3 pages) publish the rule; the published audit-verify verifier and crates/busbar-kernel tests (sign_tests, published_recipe_tests, record_tests) pin it."
-    },
-    {
       "id": "#79 warm-up requests keep the card in force when they arrived (minor-unit-rounding)",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a request served before a rate-card edit keeps the price of the card in force when it arrived.",
