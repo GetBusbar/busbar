@@ -295,7 +295,7 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
     );
 }
 
-/// The twin of the kernel's test of the same name, on the REAL door (ARCHITECT Q-SO9): each of
+/// The twin of the kernel's test of the same name, on the REAL door: each of
 /// the four strategy words, opened through the hook axis and called through the hook seam,
 /// answers exactly the decision 1.5.5's in-process native answered on the ranking parity cases.
 /// Every answer is `Ok`: the call never fails, times out or reaches `on_error`. Its deadline is

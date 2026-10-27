@@ -14,6 +14,7 @@
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 
+use super::audit::tests::inputs;
 use super::*;
 use crate::root::store_double::RecordSlots;
 use crate::root::units_admin::{AuditView, LedgerView, NodeAudit, NodeLedger};
@@ -106,51 +107,11 @@ fn sealed_once(durability: &mut Durability) {
 fn seal(durability: &mut Durability, unit: u64) {
     durability
         .seal_unit(
-            audit_inputs(unit),
+            inputs(unit),
             busbar_kernel::test_support::tokens::pass(),
             &token(),
         )
         .expect("sealed");
-}
-
-/// A unit's audit inputs, numbered `unit`.
-fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
-    use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
-    use busbar_kernel_audit::{
-        AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
-    };
-    AuditInputs {
-        subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
-        what: What {
-            unit_key: UnitKey::new(unit),
-            incarnation: 0,
-            op_class: OpClassId::new("chat.completion"),
-            destination: None,
-            parent: None,
-            pre_hook_head: None,
-            post_hook_head: None,
-        },
-        wall: NOW + unit,
-        mono: unit * 1_000,
-        origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
-        outcome: OutcomeFacts {
-            unit_end: Outcome::Completed,
-            step: None,
-            finish: FinishClass::Complete,
-            hook_failed: false,
-            emission_delta: 0,
-            stale_policy: false,
-        },
-        usage: Usage {
-            lines: Vec::new(),
-            tier_bp: 10_000,
-            fee_count: 0,
-            rate_card_version: 1,
-            bucket_chain_ref: String::new(),
-        },
-        controls: Controls::default(),
-        correlation_label: None,
-    }
 }
 
 /// THE CHECKPOINTS READ scans the store without the book's lock, and still serves the held

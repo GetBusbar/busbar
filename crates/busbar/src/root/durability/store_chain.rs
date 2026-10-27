@@ -2,16 +2,14 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE JOURNAL ON THE CONFIGURED STORE: where a node with no data directory keeps its chain, and how
-//! it gets the chain back at boot (ARCHITECT 2026-10-07 H3 ruling (a)-(c); BUSBAR-1.6.0.md THE DESIGN
-//! §7: the journal carries the record body, "the in-memory ring of 1024 is only a cache, and an older
-//! `/audit/range` decodes from the journal").
+//! it gets the chain back at boot (the journal carries the record body: the in-memory ring of 1024 is
+//! only a cache, and an older `/audit/range` decodes from the journal).
 //!
 //! ## The write
 //!
 //! Each journal record goes to the configured store through its store v3 `record_put` slot, under
 //! [`JOURNAL_SCHEMA`], keyed `node ‖ node_seq ‖ part`, each big-endian, so `record_scan` returns the
-//! chain in chain order. No new store slot: an individual idempotent `record_put` is the write (the
-//! store ABI is locked, ARCHITECT H2-U10-OPID). A slot carries at most
+//! chain in chain order. No new store slot: an individual idempotent `record_put` is the write. A slot carries at most
 //! [`busbar_contract::MAX_RECORD_BYTES`] per record and a journal record is a 160-byte header plus its
 //! body, so a record crosses as one or more PARTS, each `part count (u16 BE) ‖ chunk`. A re-put of a
 //! part is an upsert of the same bytes, so a retry is harmless.

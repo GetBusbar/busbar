@@ -248,45 +248,44 @@ pub fn closed_auth_chain(module: &str) -> crate::config::AuthCfg {
     auth
 }
 
-/// Drive a REAL oversized POST to `path` through the REAL layer stack and return the 413 body.
+/// Drive an oversized POST to `path` through the REAL layer stack and return the 413 body.
 /// Asserts only the status and JSON-ness; the SHAPE is each caller's assertion.
+///
+/// The request is handed to the router itself (`tower::ServiceExt::oneshot`), with the head a
+/// client writes (`host`, `content-type`, `content-length`): the body cap is the router's own
+/// layer, so no socket and no HTTP client is needed to reach it, and the kernel's manifest asks for
+/// neither (status row 130 E7, `tests/no_socket.rs`).
 pub async fn oversized_413_body(
     app: std::sync::Arc<crate::state::App>,
     path: &str,
 ) -> serde_json::Value {
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
     // A tiny body cap so an ordinary request trips `DefaultBodyLimit`.
     let (router, _handle) = crate::build_router_with_limits(app, 64, 1024, false);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    // Cooperative shutdown rather than `JoinHandle::abort`: `axum::serve`'s own graceful-shutdown
-    // future is raced INSIDE its accept loop, so telling it to stop is a signal the server notices at
-    // its own next poll, never a forced mid-flight interruption.
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                let _ = stop_rx.await;
-            })
-            .await
-            .unwrap()
-    });
 
-    let oversized = "x".repeat(4096);
-    let r = reqwest::Client::new()
-        .post(format!("http://{addr}{path}"))
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "pad": oversized }).to_string())
-        .send()
-        .await
-        .unwrap();
+    let oversized = serde_json::json!({ "pad": "x".repeat(4096) }).to_string();
+    let request = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri(path)
+        .header(axum::http::header::HOST, "127.0.0.1")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(axum::http::header::CONTENT_LENGTH, oversized.len())
+        .body(axum::body::Body::from(oversized))
+        .expect("an oversized POST request");
+    let r = router.oneshot(request).await.expect("the router answers");
     assert_eq!(
         r.status().as_u16(),
         413,
         "the body cap must reject the oversized POST to {path}"
     );
-    let body = r.text().await.unwrap();
-    let _ = stop_tx.send(());
-    let _ = server.await;
+    let bytes = r
+        .into_body()
+        .collect()
+        .await
+        .expect("the 413 body is read")
+        .to_bytes();
+    let body = String::from_utf8_lossy(&bytes).into_owned();
     serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("the 413 body must be JSON ({e}): {body}"))
 }

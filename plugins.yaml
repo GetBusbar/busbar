@@ -448,6 +448,7 @@ plugins:
     release_gate: optional
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the llm plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    busbar_checkout: true
     declares: "plane-llm/declares.json"
     # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
@@ -661,6 +662,7 @@ plugins:
     release_gate: optional
     gate: suite
     description: "First-party signed kind:auth plugin cdylib: the sigv4 auth, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    busbar_checkout: true
     declares: "auth-sigv4/declares.json"
     # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own
