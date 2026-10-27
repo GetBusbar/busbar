@@ -119,8 +119,7 @@ pub enum Outcome {
 /// FAULT READING ALONE and never reads `code` (row 66: the kernel names no protocol); what a given
 /// code means to the breaker is the transport's own declared table, read on the transport's side of
 /// the frame. `code` crosses for the composition root's model egress, which runs the previous
-/// release's 429 rate-limit ladder and 4xx client-fault count on the number (ARCHITECT ruling on
-/// #787, 2026-10-13: the transport ABI carries the number beside the class, `FrameMeta`'s
+/// release's 429 rate-limit ladder and 4xx client-fault count on the number (the transport ABI carries the number beside the class, `FrameMeta`'s
 /// `status_code`, BUSBAR-1.6.0.md l.4036-4053).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
@@ -354,8 +353,7 @@ pub struct Dispatched {
     pub destination: DestinationId,
     /// The lane the destination was sealed on.
     pub lane: Option<busbar_contract::LaneId>,
-    /// The unit the walk serves: the record is written under that unit's facts (ARCHITECT P3 (c),
-    /// 2026-10-02).
+    /// The unit the walk serves: the record is written under that unit's facts.
     pub unit: busbar_contract::UnitKey,
 }
 
