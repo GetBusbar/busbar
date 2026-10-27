@@ -371,9 +371,7 @@ pub(crate) fn quarantine_crossing() -> bool {
     // instance for the whole span.
     let inst = unsafe { &*p };
     inst.revoke();
-    if let Some((id, table)) = inst.wake.conn.get() {
-        super::conn_services::purge(*id, table);
-    }
+    inst.let_go_held();
     tracing::warn!(
         plugin = %inst.name,
         "a plugin handed the host a context the host did not mint; the instance is quarantined"
@@ -393,6 +391,25 @@ impl Drop for Unbound {
 }
 
 impl Instance {
+    /// WHAT THE INSTANCE HOLDS ON THE HOST GOES, once it can never cross again (quarantined,
+    /// faulted or let go): its connector streams ([`super::conn_services::purge`]) and every host
+    /// I/O handle it still owns ([`IoHost::reap`](busbar_contract::io_host::IoHost::reap)), so a
+    /// listener or socket it never closed is closed for it.
+    pub(crate) fn let_go_held(&self) {
+        if let Some((id, table)) = self.wake.conn.get() {
+            super::conn_services::purge(*id, table);
+        }
+        let io = self
+            .wake
+            .route
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|route| route.io());
+        if let Some(io) = io {
+            io.reap(self.ctx().handle);
+        }
+    }
+
     /// FAULT AND REVOKE (#74): the instance is never called again on any worker, and its handle
     /// names nothing any more. The watchdog's fault and the forged-context quarantine both land
     /// here.
@@ -421,9 +438,7 @@ pub(crate) fn quarantine(wake: &'static InstanceWake, why: &'static str) {
         return;
     };
     inst.revoke();
-    if let Some((id, table)) = inst.wake.conn.get() {
-        super::conn_services::purge(*id, table);
-    }
+    inst.let_go_held();
     tracing::warn!(plugin = %inst.name, "{why}");
 }
 
@@ -529,9 +544,7 @@ impl Drop for Instance {
     fn drop(&mut self) {
         // Let go: its handle names nothing any more (#74).
         self.wake.revoked.store(true, Ordering::Release);
-        if let Some((id, table)) = self.wake.conn.get() {
-            super::conn_services::purge(*id, table);
-        }
+        self.let_go_held();
     }
 }
 

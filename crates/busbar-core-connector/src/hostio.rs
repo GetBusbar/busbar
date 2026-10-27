@@ -359,6 +359,17 @@ impl HostListener {
     }
 }
 
+/// A released handle's end: a program is its handle's own, and ends with it.
+fn ended(e: &Entry) {
+    if let Kind::Program(p) = &e.kind {
+        let _ = p
+            .child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .start_kill();
+    }
+}
+
 fn shutdown(how: u32) -> Shutdown {
     match how {
         DIR_READ => Shutdown::Read,
@@ -561,16 +572,23 @@ impl IoHost for HostIo {
     }
 
     fn close(&self, owner: u64, id: u64) -> IoResult<()> {
-        let e = self.release(owner, id)?;
-        // A program is its handle's own: it ends with it.
-        if let Kind::Program(p) = &e.kind {
-            let _ = p
-                .child
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .start_kill();
-        }
+        ended(&self.release(owner, id)?);
         Ok(())
+    }
+
+    fn reap(&self, owner: u64) {
+        let mut gone = Vec::new();
+        self.handles
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|_, e| {
+                let held = e.owner == owner;
+                if held {
+                    gone.push(Arc::clone(e));
+                }
+                !held
+            });
+        gone.iter().for_each(|e| ended(e));
     }
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {

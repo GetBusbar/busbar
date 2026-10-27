@@ -30,6 +30,11 @@
 //!   program it ADMITTED for the dial that asked.
 //! * [`op::ENDS`] answers a handle's local port (`value`) and writes its far end's address.
 //!
+//! THE HOST CLOSES WHAT AN INSTANCE LEAVES. Once an instance can never cross again (let go after
+//! its `close`, quarantined, or faulted), the host releases every handle it still holds, as
+//! [`op::CLOSE`] releases one. A plugin's `close` need not release its handles first, and a listener
+//! or socket never outlives the instance that made it.
+//!
 //! THE CALL SHAPE is the host services' (`abi/host/service.rs`): `svc(ctx, in, out)`, the C ABI,
 //! every `in` leading with a [`ServiceHead`]. `ServiceOut::value` is the handle a slot made
 //! (`OPEN`, `LISTEN`, `ACCEPT`, `SPAWN`) or the local port (`ENDS`); `ServiceOut::len` the bytes

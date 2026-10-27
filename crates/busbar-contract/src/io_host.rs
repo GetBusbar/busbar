@@ -111,4 +111,11 @@ pub trait IoHost: Send + Sync {
     ///
     /// Not the caller's handle.
     fn ends(&self, owner: u64, handle: u64) -> IoResult<(u16, String)>;
+
+    /// Release every handle `owner` still holds, each as [`IoHost::close`] releases it: the
+    /// instance is gone (closed and let go, or quarantined) and can never close them itself. The
+    /// host calls it; a plugin's own `close` need not release its handles first.
+    fn reap(&self, owner: u64) {
+        let _ = owner;
+    }
 }
