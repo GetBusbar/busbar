@@ -398,6 +398,26 @@ impl Pools {
         self.reap_if_due(now);
     }
 
+    /// `owner` is gone: every line dialled for it leaves the pool, and each nobody holds is
+    /// closed now, never left for the idle reaper. Another instance's lines are untouched.
+    pub(crate) fn forget(&self, owner: InstanceId) {
+        let mut gone = Vec::new();
+        for shard in &*self.shards {
+            shard.lock().expect("pool").retain(|key, entries| {
+                if key.owner != owner {
+                    return true;
+                }
+                gone.extend(entries.drain(..).map(|e| e.line));
+                false
+            });
+        }
+        for line in gone {
+            if line.users() == 0 {
+                line.close();
+            }
+        }
+    }
+
     /// Drop `line` from the pool for `key` on `shard` (it failed its exchange's open); closed when
     /// nobody holds it.
     pub(crate) fn drop_line(&self, shard: usize, key: &PoolKey, line: &Arc<Line>) {

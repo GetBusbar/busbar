@@ -70,7 +70,7 @@ crc32fast = { workspace = true }
 # PROGRAM is the child's pipes, spawned and killed by the connector (its reactor carries them).
 tokio = { workspace = true, features = ["net", "time", "rt", "process"] }
 libc = { workspace = true }
-# THE PROXY ENVIRONMENT (`proxy`, row 130 E5a): a proxy variable read as the kernel engine read it
+# THE PROXY ENVIRONMENT (`proxy`, row 130 E5a): a proxy variable read as 1.5.5's reqwest read it
 # (`url`), and the `Proxy-Authorization: Basic` credential its userinfo becomes (`base64`).
 url = { workspace = true }
 base64 = { workspace = true }
@@ -105,5 +105,5 @@ rcgen = { workspace = true, features = ["pem"] }
 # is not an edge here: its closure reaches a socket stack (hyper-util, socket2, tokio net) that
 # qa/dep-wall.ledger does not pin for it, and a new offender is never pinned in the change that
 # brings it in.
-busbar-transport-tcp-plugin = { workspace = true }
+busbar-stub-transport-plugin = { path = "../plugin-loader/stubs/transport/plugin" }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE `plugins.fetch` DOWNLOAD (status row 130 E6; BUSBAR-1.6.0.md THE DESIGN §3 boot stage 3c,
+//! THE `plugins.fetch` DOWNLOAD (BUSBAR-1.6.0.md THE DESIGN §3 boot stage 3c,
 //! "fetch plugins through the connector", and §5: the kernel dials nothing). Every `plugins.fetch`
 //! artifact is one GET over a need the composition root declares on the process's one connector
 //! under its own identity ([`Table`]), so the one destination guard judges, pins and dials the
@@ -15,7 +15,7 @@
 //! infrastructure (`crate::guard::judged_class`; THE DESIGN §5 egress-class table, Q128 ruling 14):
 //! a loopback or private registry, plaintext included, is reached as 1.5.5's downloader reached it,
 //! cloud metadata and the operator's extra refusals are refused, and the dial is held to the URL's
-//! host. The provider class's refuse-unless-allowlisted default (ARCHITECT ruling CRATES-14) is a
+//! host. The provider class's refuse-unless-allowlisted default is a
 //! provider's and an IdP's, never the download's.
 //!
 //! The download's own rules are the kernel's deleted `preflight::plugin_fetch_downloader`'s,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR PLANES' OWN ROOT CELLS, HELD TO THE ROSTER (ARCHITECT ruling on #464). The cells are each
+//! THE DOOR PLANES' OWN ROOT CELLS, HELD TO THE ROSTER. The cells are each
 //! plane crate's `tests/root/mod.rs`, compiled into this serve module from the path the crate states
 //! under its `links` name (`$OUT_DIR/door_cells.rs`); the composition root names no plane.
 //!
