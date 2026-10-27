@@ -1,0 +1,15 @@
+{
+  "armed": true,
+  "commit": "2390bef2088acb2735e670647e7bdf6ac2e4dbf9",
+  "core_pin": "31d43cf9605fdf83becba3de5f38b51903432c1e",
+  "evidence": "https://eu-central.modernci.dev/move?repo=GetBusbar%2Fbusbar-transport-ws&from=utf8-fail-at-the-bad-byte&head=2390bef2088acb2735e670647e7bdf6ac2e4dbf9",
+  "generated_at": "2026-10-27T16:29:59Z",
+  "plan": "Autobahn|Testsuite fuzzingclient, full default case set",
+  "repo": "GetBusbar/busbar-transport-ws",
+  "run_id": "modernci:GetBusbar/busbar-transport-ws@2390bef2088acb2735e670647e7bdf6ac2e4dbf9:conformance",
+  "schema": "busbar.conformance.verdict/1",
+  "spec_version": "autobahn-testsuite 0.8.2",
+  "standard": "RFC 6455 WebSocket Protocol (Autobahn|Testsuite)",
+  "status": "pass",
+  "suite": "ws"
+}

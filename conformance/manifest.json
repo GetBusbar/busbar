@@ -1,7 +1,7 @@
 {
   "_generated": "by `python3 scripts/conformance/sync.py --write`; DO NOT EDIT",
   "commit": "",
-  "generated_at": "2026-10-26T23:10:01Z",
+  "generated_at": "2026-10-27T16:29:59Z",
   "release": "1.6.0",
   "schema": "busbar.conformance.manifest/1",
   "suites": [
@@ -219,14 +219,19 @@
       "tier": "spec-conformant"
     },
     {
-      "claim": null,
+      "claim": "Conformant — passes Autobahn|Testsuite against busbar-transport-ws",
+      "commit": "2390bef2088acb2735e670647e7bdf6ac2e4dbf9",
+      "core_pin": "31d43cf9605fdf83becba3de5f38b51903432c1e",
+      "evidence": "https://eu-central.modernci.dev/move?repo=GetBusbar%2Fbusbar-transport-ws&from=utf8-fail-at-the-bad-byte&head=2390bef2088acb2735e670647e7bdf6ac2e4dbf9",
       "plan": "Autobahn|Testsuite against busbar-transport-ws",
       "public": true,
-      "reason": "no verdict artifact for this commit",
+      "repo": "GetBusbar/busbar-transport-ws",
+      "spec_version": "autobahn-testsuite 0.8.2",
       "standard": "WebSocket (RFC 6455)",
-      "status": "not-run",
+      "status": "pass",
       "suite": "ws",
-      "tier": "conformant"
+      "tier": "conformant",
+      "verified_at": "2026-10-27T16:29:59Z"
     }
   ]
 }
