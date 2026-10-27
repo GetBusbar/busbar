@@ -707,6 +707,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-plugin-loader",
+ "hex",
  "ring",
  "serde",
  "serde_json",
