@@ -2469,30 +2469,14 @@ impl OutboundAuths {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<Serving>, String> {
-        self.serving_with(style, settings, None)
-    }
-
-    /// [`Self::serving`], with `presented` the Basic value a token endpoint's userinfo spelled
-    /// when the host stripped it before the settings reached a plane (row 74, F25): presented on the
-    /// mint exactly as one [`endpoint_userinfo`] reads off the settings is.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::serving`].
-    pub fn serving_with(
-        &self,
-        style: &str,
-        settings: &serde_json::Value,
-        presented: Option<crate::root::userinfo::UserinfoBasic>,
-    ) -> Result<Option<Serving>, String> {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
         // A token endpoint spelled `user:pass@` (row 74, F25): the plugin is opened over, and its
         // binding handed, the stripped endpoint, and the userinfo rides its mint as 1.5.5 sent it
-        // ([`endpoint_userinfo`]); or the host already stripped it and hands its Basic value here.
+        // ([`endpoint_userinfo`]).
         let endpoint = endpoint_userinfo(settings);
         let (stated, userinfo) = match &endpoint {
-            Some((stripped, userinfo)) => (stripped, userinfo.clone().or(presented)),
-            None => (settings, presented),
+            Some((stripped, userinfo)) => (stripped, userinfo.clone()),
+            None => (settings, None),
         };
         for row in self.stating(style) {
             let Some(decl) = row.styles.iter().find(|s| s.name == style).cloned() else {
