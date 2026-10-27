@@ -1,0 +1,15 @@
+{
+  "armed": true,
+  "commit": "851216a9d69c01a1a22b104b3b64aa9e1e4c1570",
+  "core_pin": "851216a9d69c01a1a22b104b3b64aa9e1e4c1570",
+  "evidence": "https://eu-central.modernci.dev/move?repo=GetBusbar%2Fbusbar&from=conformance-tls-sbom&head=851216a9d69c01a1a22b104b3b64aa9e1e4c1570",
+  "generated_at": "2026-10-26T23:09:55Z",
+  "plan": "testssl.sh against the connector's rustls listener on loopback, named assertions of scripts/release/tls-assert.json",
+  "repo": "GetBusbar/busbar",
+  "run_id": "modernci:GetBusbar/busbar@851216a9d69c01a1a22b104b3b64aa9e1e4c1570:conformance",
+  "schema": "busbar.conformance.verdict/1",
+  "spec_version": "testssl.sh 3.2.4; rustls via busbar-core-connector",
+  "standard": "TLS server posture: protocol floor, cipher allow-list, chain, key size, expiry, no HIGH/CRITICAL findings",
+  "status": "pass",
+  "suite": "tls"
+}

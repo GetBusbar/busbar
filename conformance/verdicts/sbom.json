@@ -1,0 +1,15 @@
+{
+  "armed": true,
+  "commit": "851216a9d69c01a1a22b104b3b64aa9e1e4c1570",
+  "core_pin": "851216a9d69c01a1a22b104b3b64aa9e1e4c1570",
+  "evidence": "https://eu-central.modernci.dev/move?repo=GetBusbar%2Fbusbar&from=conformance-tls-sbom&head=851216a9d69c01a1a22b104b3b64aa9e1e4c1570",
+  "generated_at": "2026-10-26T23:10:01Z",
+  "plan": "cargo-cyclonedx over crates/busbar, cyclonedx-cli validate, cross-checked against cargo metadata's closure",
+  "repo": "GetBusbar/busbar",
+  "run_id": "modernci:GetBusbar/busbar@851216a9d69c01a1a22b104b3b64aa9e1e4c1570:conformance",
+  "schema": "busbar.conformance.verdict/1",
+  "spec_version": "CycloneDX 1.5; cargo-cyclonedx 0.5.9; cyclonedx-cli v0.33.1",
+  "standard": "CycloneDX 1.5 SBOM of the shipped busbar binary",
+  "status": "pass",
+  "suite": "sbom"
+}

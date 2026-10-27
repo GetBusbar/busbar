@@ -20,9 +20,9 @@ import base64, json, subprocess, sys, tarfile, io, os
 mci, tenant, repo, frm, head, out = sys.argv[1:]
 buf, offset, got_head = b"", 0, None
 while True:
+    # The latest kept outputs of the move (a measurement's included: `head` finds check results
+    # only), then held to the head asked for below.
     req = {"repo": repo, "from": frm, "check": "conformance", "offset": offset}
-    if head:
-        req["head"] = head
     r = subprocess.run([mci, "call", "--tenant", tenant, "artifact", json.dumps(req)],
                        capture_output=True, text=True)
     if r.returncode != 0:
