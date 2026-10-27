@@ -12,3 +12,4 @@
 
 mod allocation_tests;
 mod pick_order_tests;
+mod upstream_tests;
