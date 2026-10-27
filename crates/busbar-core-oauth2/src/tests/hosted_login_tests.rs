@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Tests for the `GET /auth/token` hosted browser-login flow (1.5.2), moved with it from
-//! `busbar-kernel` (row 159, K3#2) with every assertion unchanged: 1.5.5's page, redirect, cookie
+//! `busbar-kernel` with every assertion unchanged: 1.5.5's page, redirect, cookie
 //! and refusal bytes are pinned here. `hosted_login_tests` is a submodule of `hosted_login`, so it
 //! can drive the private sub-state handlers (`chooser`/`begin`/
 //! `callback`), the render fns, and the cookie/PKCE helpers directly. Every login plugin here is on
@@ -167,8 +167,6 @@ fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<busbar_ke
     b.build()
 }
 
-// ── chooser ──────────────────────────────────────────────────────────────────────────────────────
-
 #[test]
 fn chooser_renders_0_1_n_buttons() {
     // 0 buttons (no browser_login method).
@@ -277,8 +275,6 @@ async fn gui_off_method_still_works_via_post() {
     handle.abort();
 }
 
-// ── begin: PKCE + cookie ─────────────────────────────────────────────────────────────────────────
-
 #[tokio::test]
 async fn begin_sets_httponly_secure_cookie_and_redirects() {
     let app = test_app_with_methods(vec![("microsoft", true)]);
@@ -331,7 +327,7 @@ async fn refresh_flag_for(
         .refresh
 }
 
-/// A REFRESH LINK ROTATES ONLY FROM BUSBAR'S OWN PAGE (owner-signed 2026-10-24, M29; K3 #20).
+/// A REFRESH LINK ROTATES ONLY FROM BUSBAR'S OWN PAGE.
 /// `GET /auth/token?method=<m>&refresh=1` rotates the key only on a `Sec-Fetch-Site: same-origin`
 /// navigation; a cross-site link, a typed or mailed URL, a sibling subdomain and a header-less client
 /// get a plain issue. RED against 1.5.5, which rotated from any origin (v1.5.5
@@ -352,7 +348,7 @@ async fn a_refresh_link_rotates_only_from_busbars_own_page() {
     );
 }
 
-/// THE RULE AGAINST 1.5.5'S (K3 #20): under `needs_same_origin` (shipped, M29) only a navigation from
+/// THE RULE AGAINST 1.5.5'S: under `needs_same_origin` only a navigation from
 /// busbar's own page (`same-origin`) rotates; a cross-site link, a typed or mailed URL (`none`), a
 /// sibling subdomain (`same-site`) or no header at all is a plain issue. 1.5.5 rotated on every
 /// `refresh=1`; no navigation without `refresh=1` ever rotates.
@@ -411,8 +407,6 @@ async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
         );
     }
 }
-
-// ── callback: state + nonce guards ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn callback_state_mismatch_400() {
@@ -502,8 +496,6 @@ async fn callback_nonce_mismatch_rejected() {
         "the plugin is handed the cookie's nonce"
     );
 }
-
-// ── branded error pages (hosted browser flow) vs JSON (headless API) ─────────────────────────────
 
 /// Markers of the shared branded error card (see `token::error_page`): the Busbar brand lockup, the
 /// alert glyph roundel, the error heading/message, and the "Back to sign in" link to GET /auth/token.
@@ -660,8 +652,6 @@ async fn api_json_path_stays_json_not_html() {
     );
     handle.abort();
 }
-
-// ── credential flow: Prompt form, POST submit, Refresh rotation ──────────────────────────────────
 
 /// A CREDENTIAL-kind login plugin on the door (the LDAP shape): begin returns a `Prompt` form;
 /// complete verifies the submitted username/password ITSELF and `Identify`s (no client_secret).
@@ -862,7 +852,7 @@ async fn credential_submit_wrong_password_401() {
     assert_eq!(resp.status().as_u16(), 401);
 }
 
-/// 1.5.5 PARITY (Q128 p9#4, coordinator ruling 2026-10-19): a CREDENTIAL method's cookie arriving
+/// 1.5.5 PARITY: a CREDENTIAL method's cookie arriving
 /// on the redirect callback (`?code=&state=`) is handled exactly as 1.5.5's callback handled it
 /// (crates/busbar/src/auth/token.rs:466-470 at v1.5.5 admits any method with a button): the plugin
 /// is handed the code, answers Reject (no credentials were submitted), and the caller gets 1.5.5's
@@ -965,8 +955,6 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
         "the new token verifies"
     );
 }
-
-// ── config: client_secret required/absent per login_kind ─────────────────────────────────────────
 
 #[test]
 fn key_page_injects_base_url_verbatim() {
@@ -1093,8 +1081,6 @@ fn pkce_code_challenge_is_s256_of_verifier() {
     // base64url no-pad ⇒ no '+', '/', or '=' in the challenge.
     assert!(!challenge.contains('+') && !challenge.contains('/') && !challenge.contains('='));
 }
-
-// ── routing: bypass + admin-absence ──────────────────────────────────────────────────────────────
 
 /// GET AND POST `/auth/token` are exempt from the auth chain (they run it themselves); `/healthz`
 /// stays exempt; `/metrics` still 401s; and the bypass is EXACT-MATCH (no `/auth` prefix over-match).
@@ -1344,8 +1330,6 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
     handle.abort();
 }
 
-// ── test helpers: serve an app ───────────────────────────────────────────────────────────────────
-
 async fn serve(
     app: std::sync::Arc<busbar_kernel::state::App>,
 ) -> (String, tokio::task::JoinHandle<()>) {
@@ -1365,8 +1349,6 @@ fn body_of(resp: Response) -> String {
     });
     String::from_utf8(bytes.to_vec()).unwrap()
 }
-
-// ── the anonymous-flood class: a slow login plugin must not park Tokio workers ──────────────────
 
 /// A login plugin on the door whose `begin_login` / `complete_login` answer only after `park`, the
 /// way a real one does: an LDAP/AD bind or an OIDC token exchange is a network round-trip. The
@@ -1578,8 +1560,6 @@ async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
     );
 }
 
-// ── THE LOGIN ON THE AUTH KIND'S DOOR ─────────────────────────────────────────────────────────────
-//
 // A login plugin on the door (an IdP module the auth axis opened) makes its own token exchange over
 // its own need with the client secret it was lent at `open`, and binds the IdP's answer to the
 // login's nonce itself (THE DESIGN 6.7). The core still mints PKCE/state/nonce, checks `state`
@@ -1867,8 +1847,6 @@ async fn the_client_secret_rides_nothing_the_flow_makes() {
         "not on the page rendered"
     );
 }
-
-// ── 1.5.5 byte identity (row 159, K3#2) ─────────────────────────────────────────────────────────
 
 /// The 1.5.5 golden cell `name` (`testing/shadow-oracle/golden/1.5.5/cells`).
 fn golden_cell(name: &str) -> serde_json::Value {

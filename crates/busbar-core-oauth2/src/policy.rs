@@ -65,8 +65,8 @@ pub(crate) const REGISTERED_CLIENT_IDLE: std::time::Duration =
     std::time::Duration::from_secs(24 * 60 * 60);
 
 /// The policy for every deployment that configured `oauth_as:`: anyone may register, and
-/// registering buys exactly the operator's `default_grant`. There is no toggle — the 1.6.0 ruling
-/// is that all three registration mechanisms are ON whenever the plane is.
+/// registering buys exactly the operator's `default_grant`. There is no toggle:
+/// all three registration mechanisms are ON whenever the plane is.
 ///
 /// "Anyone may register" is the honest reading of what the operator asked for — the clients this
 /// mechanism exists for (Codex, ChatGPT, Claude.ai) have no prior relationship with the deployment
@@ -111,7 +111,7 @@ pub(super) fn name_impersonates_the_deployment(name: &str) -> bool {
 ///
 /// UNCONDITIONAL. Registration mounts whenever the plane does — `oauth-as` derives its route table
 /// from the metadata document, so the always-advertised `registration_endpoint` here and the
-/// always-mounted `/register` in `routes::mount` are two views of the same ruling and must agree.
+/// always-mounted `/register` in `routes::mount` are two views of the same rule and must agree.
 pub(crate) fn registration_config(
     identity: &AsIdentity,
 ) -> Box<oauth_as::registration::RegistrationConfig> {
