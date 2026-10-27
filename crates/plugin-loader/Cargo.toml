@@ -10,10 +10,8 @@ license = "Apache-2.0"
 [features]
 # Tooling only: `jsonschema` must never reach the engine's graph. Build the CLI with `--features pack`.
 pack = ["dep:jsonschema"]
-# Test double; never in a shipped build.
-test-support = ["dep:ring", "dep:base64"]
-# Plugin repos enable it from dev-dependencies to run the published suite.
-conformance = ["dep:base64"]
+# Test seams for busbar-test-kit and dependents' [dev-dependencies]; never in a shipped build.
+test-support = []
 
 [[bin]]
 name = "busbar-plugin-pack"
@@ -76,9 +74,6 @@ path = "tests/fixtures/neutral_frame_door.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-# `test-support` only.
-ring = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
 busbar-contract = { path = "../busbar-contract" }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
