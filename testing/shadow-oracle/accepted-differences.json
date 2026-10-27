@@ -3804,7 +3804,7 @@
         "headers",
         "effects.audit"
       ],
-      "rationale": "#24 (OWNER-LOCKED, BUSBAR-1.6.0.md l.2202): `amend_rate_history` is a real 1.6.0 money-path admin verb, additive new admin surface with no 1.5.5 golden of its own. #77(9) (OWNER-LOCKED, l.2279): no verb carries dual control, escrow or operator signatures; each verb is a plain scoped verb authorized by the admin token's allow-list. The node used to hide this path behind a sealed operator key (`served_here`), so a keyless node answered the 1.5.5 router's generic 404 here; with the operator key gone there is nothing to hide it behind, and a keyless node does NOT keep the 404 (coordinator ruling 2026-10-19). Both cells post a body in the pre-1.6.0 shape (`rate_card`/`window`, no `rates` and no `per_request_fee`) under the oracle's full-scope admin token, so the verb's own shape check refuses it: `amend_rate_history_effect` returns `GovernanceError::Validation` (a correction that moves no figure, crates/busbar/src/root/units_admin/mod.rs), `into_refusal` maps it to `ReasonCode::Validation`, `verbs_reason` to the kernel's `DecodeFailed`, `class_of` to `Unreadable`, and `answer_for` (units_admin/admin_mount.rs) renders `400` `{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid_request\"}}`. The `X-Busbar-Signature` header of the signed sibling is read by nothing, so the two cells answer the same bytes. SCOPE: exactly these two cell ids; every other ledger cell must stay byte-identical. 2026-10-24 (OWNER, in session): + headers (content-length of the accepted body) and + effects.audit: a refused unit seals one audit record (cd7f82d5e0, U14). The first entry to forgive effects.audit, signed explicitly.",
+      "rationale": "#24 (OWNER-LOCKED, BUSBAR-1.6.0.md l.2202): `amend_rate_history` is a real 1.6.0 money-path admin verb, additive new admin surface with no 1.5.5 golden of its own. #77(9) (OWNER-LOCKED, l.2279): no verb carries dual control, escrow or operator signatures; each verb is a plain scoped verb authorized by the admin token's allow-list. The node used to hide this path behind a sealed operator key (`served_here`), so a keyless node answered the 1.5.5 router's generic 404 here; with the operator key gone there is nothing to hide it behind, and a keyless node does NOT keep the 404 (coordinator ruling 2026-10-19). Both cells post a body in the pre-1.6.0 shape (`rate_card`/`window`, no `rates` and no `per_request_fee`) under the oracle's full-scope admin token, so the verb's own shape check refuses it: `amend_rate_history_effect` returns `GovernanceError::Validation` (a correction that moves no figure, crates/busbar/src/root/units_admin/mod.rs), `into_refusal` maps it to `ReasonCode::Validation`, `verbs_reason` to the kernel's `DecodeFailed`, `class_of` to `Unreadable`, and `answer_for` (units_admin/admin_mount.rs) renders `400` `{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid_request\"}}`. The `X-Busbar-Signature` header of the signed sibling is read by nothing, so the two cells answer the same bytes. SCOPE: exactly these two cell ids; every other ledger cell must stay byte-identical. 2026-10-24 (OWNER, in session): + headers (content-length of the accepted body) and + effects.audit: a refused unit seals one audit record (cd7f82d5e0, U14). The first entry to forgive effects.audit, signed explicitly. NARROWED 2026-10-27 (ORACLE-116 review #92; OWNER: the refusal must explain itself): the 400's message was the code repeated (`invalid_request`). It now names the body the verb takes (`amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape`, admin_mount.rs `explained_answer`), and the premise pins that exact message, the code and the status on both cells, so any other refusal text withholds the entry.",
       "premise": {
         "all": [
           {
@@ -3824,6 +3824,16 @@
             "cell": "ledger|amend|refused-unsigned",
             "pointer": "/error/code",
             "equals": "invalid_request"
+          },
+          {
+            "cell": "ledger|amend|adjusting-entries",
+            "pointer": "/error/message",
+            "equals": "amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape"
+          },
+          {
+            "cell": "ledger|amend|refused-unsigned",
+            "pointer": "/error/message",
+            "equals": "amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape"
           }
         ]
       },
@@ -3835,6 +3845,11 @@
           "who": "owner (Matthew Jackson)",
           "when": "2026-10-24",
           "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        },
+        "explained_2026_10_27": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-27",
+          "ruling": "OWNER 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md \"#92 -> OWNER: refusal message must explain itself\"): the refusal names what the body must carry; the owner signed these bytes by choosing them"
         }
       },
       "expires": {
