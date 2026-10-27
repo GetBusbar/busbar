@@ -23,7 +23,7 @@ fn reg(names: &[&str]) -> serde_json::Value {
 /// is bounded FIFO.
 #[test]
 fn record_list_get_and_bound() {
-    let log = VersionLog::new();
+    let log = VersionLog::default();
     log.record(1, "admin", "hook.register hook:a", reg(&["a"]), &[]);
     log.record(2, "admin", "hook.register hook:b", reg(&["a", "b"]), &[]);
     let listed = log.list(0, 10);

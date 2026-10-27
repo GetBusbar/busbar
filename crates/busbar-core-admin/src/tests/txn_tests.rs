@@ -183,6 +183,35 @@ async fn delete_team(handle: Arc<AppHandle>) -> StatusCode {
 
 // ── no blocking under the async lock (the executor-not-stalled assertion) ───────────────────
 
+/// The liveness probe: tick as fast as the executor allows, recording the worst gap.
+fn spawn_liveness_probe() -> (
+    Arc<AtomicBool>,
+    Arc<AtomicU64>,
+    tokio::task::JoinHandle<u64>,
+) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let worst = Arc::new(AtomicU64::new(0));
+    let probe = {
+        let (stop, worst) = (stop.clone(), worst.clone());
+        tokio::spawn(async move {
+            let mut last = Instant::now();
+            let mut ticks = 0u64;
+            while !stop.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+                let now = Instant::now();
+                worst.fetch_max(
+                    now.duration_since(last).as_millis() as u64,
+                    Ordering::SeqCst,
+                );
+                last = now;
+                ticks += 1;
+            }
+            ticks
+        })
+    };
+    (stop, worst, probe)
+}
+
 /// THE SHARPEST TEST. A store whose `list_keys()` blocks for 400ms is installed, then
 /// `DELETE /groups/team` — which MUST count bound keys through exactly that call — runs while a
 /// liveness probe repeatedly `yield_now().await`s and timestamps each tick.
@@ -209,26 +238,7 @@ async fn slow_store_read_does_not_stall_the_executor() {
     let handle = handle_for(app);
 
     // The liveness probe: tick as fast as the executor allows, recording the worst gap.
-    let stop = Arc::new(AtomicBool::new(false));
-    let worst = Arc::new(AtomicU64::new(0));
-    let probe = {
-        let (stop, worst) = (stop.clone(), worst.clone());
-        tokio::spawn(async move {
-            let mut last = Instant::now();
-            let mut ticks = 0u64;
-            while !stop.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-                let now = Instant::now();
-                worst.fetch_max(
-                    now.duration_since(last).as_millis() as u64,
-                    Ordering::SeqCst,
-                );
-                last = now;
-                ticks += 1;
-            }
-            ticks
-        })
-    };
+    let (stop, worst, probe) = spawn_liveness_probe();
     // Let the probe establish a baseline before the mutation starts.
     tokio::time::sleep(Duration::from_millis(20)).await;
     worst.store(0, Ordering::SeqCst);
@@ -727,26 +737,7 @@ async fn slow_secret_plugin_does_not_stall_the_executor() {
         .build();
     let handle = handle_for(app);
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let worst = Arc::new(AtomicU64::new(0));
-    let probe = {
-        let (stop, worst) = (stop.clone(), worst.clone());
-        tokio::spawn(async move {
-            let mut last = Instant::now();
-            let mut ticks = 0u64;
-            while !stop.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-                let now = Instant::now();
-                worst.fetch_max(
-                    now.duration_since(last).as_millis() as u64,
-                    Ordering::SeqCst,
-                );
-                last = now;
-                ticks += 1;
-            }
-            ticks
-        })
-    };
+    let (stop, worst, probe) = spawn_liveness_probe();
     tokio::time::sleep(Duration::from_millis(20)).await;
     worst.store(0, Ordering::SeqCst);
 

@@ -10,6 +10,8 @@
 //! A CHAIN THAT READS BACK BUT DOES NOT VERIFY is never taken for an empty one either (audit root
 //! r4 B-2, A-5): the boot refuses, naming the break, as it refuses a chain it cannot read.
 
+#[cfg(feature = "root-admin")]
+use super::audit::tests::inputs;
 use super::*;
 use crate::root::store_double::RecordSlots;
 
@@ -51,46 +53,6 @@ fn drained(durability: &Durability) {
             .drain(std::time::Duration::from_secs(120)),
         "the store takes the journal's records"
     );
-}
-
-/// A unit's audit inputs, numbered `unit`.
-fn audit_inputs(unit: u64) -> busbar_kernel_audit::AuditInputs {
-    use busbar_contract::caps::{OriginKind, Outcome, UnitKey};
-    use busbar_kernel_audit::{
-        AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, Usage, What,
-    };
-    AuditInputs {
-        subject: Subject::PrincipalId(format!("pseudonym-{unit}")),
-        what: What {
-            unit_key: UnitKey::new(unit),
-            incarnation: 0,
-            op_class: OpClassId::new("chat.completion"),
-            destination: None,
-            parent: None,
-            pre_hook_head: None,
-            post_hook_head: None,
-        },
-        wall: NOW + unit,
-        mono: unit * 1_000,
-        origin: busbar_kernel::test_support::tokens::origin(OriginKind::Client),
-        outcome: OutcomeFacts {
-            unit_end: Outcome::Completed,
-            step: None,
-            finish: FinishClass::Complete,
-            hook_failed: false,
-            emission_delta: 0,
-            stale_policy: false,
-        },
-        usage: Usage {
-            lines: Vec::new(),
-            tier_bp: 10_000,
-            fee_count: 0,
-            rate_card_version: 1,
-            bucket_chain_ref: String::new(),
-        },
-        controls: Controls::default(),
-        correlation_label: None,
-    }
 }
 
 /// THE AMENDMENT REBUILD REFUSES THE BOOT when the store will not read the chain back. Taking the
@@ -193,7 +155,7 @@ fn an_audit_window_the_store_will_not_read_is_never_answered_empty() {
     for unit in 1..=sealed {
         durability
             .seal_unit(
-                audit_inputs(unit),
+                inputs(unit),
                 busbar_kernel::test_support::tokens::pass(),
                 &token,
             )

@@ -121,15 +121,6 @@ fn fixture_has_49_paths_and_66_operations() {
 }
 
 #[test]
-fn table_has_no_more_and_no_fewer_rows_than_the_fixture() {
-    assert_eq!(
-        LEGACY_VERBS.len(),
-        66,
-        "LEGACY_VERBS must carry exactly the 66 mechanically-derived operations"
-    );
-}
-
-#[test]
 fn every_fixture_operation_is_in_the_table_with_the_same_scope() {
     let fixture: BTreeSet<_> = fixture_ops().into_iter().collect();
     let table: BTreeSet<_> = table_ops().into_iter().collect();

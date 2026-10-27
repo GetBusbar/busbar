@@ -160,13 +160,13 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// URL carrying `user:pass@`. TRANSITIONAL: deleted with the legacy lane plane (row 155 C) (the stripping stays: no plane sees a userinfo URL).
 pub(crate) fn lane_token_endpoint(
     written: Option<&str>,
-) -> (Option<String>, Option<crate::egress::engine::UrlUserinfo>) {
+) -> (Option<String>, Option<crate::bound_credential::UrlUserinfo>) {
     let Some(written) = written else {
         return (None, None);
     };
     (
         Some(busbar_kernel_egress::trust::net::strip_userinfo(written).into_owned()),
-        crate::egress::engine::UrlUserinfo::of(written),
+        crate::bound_credential::UrlUserinfo::of(written),
     )
 }
 
@@ -1017,9 +1017,11 @@ pub fn build_app_from_config(
             provider_cfg.base_url.trim_end_matches('/'),
         )
         .into_owned();
-        // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
-        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
-        let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
+        // ...and the Basic that userinfo spelled, held opaque (see `UrlUserinfo`): the plane never
+        // reads it, and no kernel hop presents it (the kernel's outbound engine is deleted, u30; a
+        // member's userinfo reaches its attempts through its binding, `root::userinfo`).
+        // TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+        let url_userinfo = crate::bound_credential::UrlUserinfo::of(&provider_cfg.base_url);
         let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
         lane_inputs.push(LaneInput {
             model: ld.member.clone(),
@@ -2113,5 +2115,5 @@ struct LaneModelFacts {
 }
 
 #[cfg(test)]
-#[path = "tests/static_seams_drained_tests.rs"]
-mod static_seams_drained_tests;
+#[path = "tests/root_rules_hearing_tests.rs"]
+mod root_rules_hearing_tests;

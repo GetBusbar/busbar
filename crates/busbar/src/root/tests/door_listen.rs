@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SUBSCRIPTION CHANNEL OVER HTTP, END TO END THROUGH THE DATA ROUTES (ARCHITECT round 4
-//! Q-L3B-SURFACES (a), confirmed round 5 Q-L3B-K6-HTTP (a)): the tool door's `subscriptions/listen`
+//! THE SUBSCRIPTION CHANNEL OVER HTTP, END TO END THROUGH THE DATA ROUTES: the tool door's `subscriptions/listen`
 //! arrives on its claim, its `arrive` states `ROUTE_SESSION`, and the kernel drives the unit as a
 //! K6 session whose caller leg is the long-lived HTTP response (the root's ingress caller). What the
 //! caller sees is predev's: `200` as an event stream (`content-type: text/event-stream`,

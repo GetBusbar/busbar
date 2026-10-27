@@ -4,7 +4,7 @@
 //! THE HOST SNAPSHOT SERVICE, KERNEL SIDE — what `snapshot.read` (`abi::host::service`) answers.
 //!
 //! `/metrics` and `/metrics/hooks` are not the kernel's (owner law 2026-09-27: "the kernel owns no
-//! route that exists for one plugin: /metrics and /metrics/hooks leave core"; ARCHITECT Q-U2-4).
+//! route that exists for one plugin: /metrics and /metrics/hooks leave core").
 //! They are LISTENER NEEDS of the scrape sink — the export instance subscribed to `metrics`, granted
 //! first-party (#65) — declared in its own `routes` list and answered by its own `serve`. What
 //! stays the host's is what only the host can hold: the recorder every emit site writes, its

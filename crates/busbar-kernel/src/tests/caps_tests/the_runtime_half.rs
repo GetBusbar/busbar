@@ -400,7 +400,7 @@ fn a_recovered_hold_says_so_all_the_way_onto_the_posting() {
     assert!(posted.flags().contains(PostingFlags::RECOVERED));
 }
 
-/// KERNEL<>PLUGINS step 14: the exit's posting and the late figure close on ONE line. The late amount
+/// The exit's posting and the late figure close on ONE line. The late amount
 /// settles on top of the exit's; what passes the reservation is overdraft; the line is flagged late
 /// and loses the exit's "nothing reported" mark, because the figure on it was reported.
 #[test]
