@@ -237,7 +237,7 @@ impl ChainAt {
 
 #[cfg(test)]
 #[path = "../tests/durability_audit.rs"]
-mod tests;
+pub(super) mod tests;
 
 #[cfg(test)]
 #[path = "../tests/durability_audit_node.rs"]

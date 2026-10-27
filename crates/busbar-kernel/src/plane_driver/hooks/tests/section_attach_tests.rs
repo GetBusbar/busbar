@@ -76,7 +76,7 @@ fn binder(plane_key: &str) -> HostHooks {
         .hook("redact", gate("rw"))
         .build();
     HostHooks {
-        host: crate::plane_host::engine_host(&app),
+        host: crate::plane_driver::engine_host(&app),
         caller: Arc::new(NoCaller),
         dialects: vec!["dialect-a".to_string()],
         plane_key: plane_key.to_string(),

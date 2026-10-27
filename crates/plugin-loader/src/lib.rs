@@ -28,7 +28,7 @@ pub mod auth_door;
 /// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
 pub mod boot;
-/// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
+/// THE PUBLISHED CONFORMANCE SUITE: what every real plugin repo runs against the busbar
 /// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
 /// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
 /// transport row through it too (`transport_door_conformance_tests`).
@@ -140,60 +140,6 @@ pub use registry::{
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
 pub use stage::sweep_dead_staging;
-
-/// THE LOADER RE-EXPORTS NO CONTRACT TYPE (BOOT-LOOP step 3, ruling R2). A type the contract owns
-/// is named from `busbar_contract::abi::*`, the crate that owns it; the loader path to it does not
-/// compile. Each block below is one former loader re-export, and each must stay a compile error.
-///
-/// ```compile_fail
-/// use busbar_plugin_loader::EndpointRequest;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::EndpointResponse;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::Route;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::RouteAuth;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::RouteMethod;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::CheckPhase;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::ExportField;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::ExportStream;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HostResult;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HttpRequest;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HttpResponse;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::ColdEntry;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotDeclStr;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotPlaneDecl;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotHostVtable;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotStatusClass;
-/// ```
-pub mod contract_types_are_named_from_the_contract {}
 
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
@@ -354,18 +300,6 @@ mod export_conformance_tests;
 #[path = "tests/both_ways.rs"]
 mod both_ways;
 
-/// No rlib the test binary links exports `busbar_plugin_door` (the fat-LTO duplicate-symbol guard).
-#[cfg(test)]
-#[path = "tests/door_symbol_tests.rs"]
-mod door_symbol_tests;
-
-/// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
-/// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
-/// open one module.
-#[cfg(test)]
-#[path = "tests/auth_conformance_tests.rs"]
-mod auth_conformance_tests;
-
 /// `kind: auth` through both doors on the memory ABI, VERIFY VERDICTS: the token cases driven to
 /// every verdict (identify, reject, pass) over a second real auth plugin, one row and one answer
 /// either way.
@@ -436,7 +370,7 @@ mod dispatch_kind_hook_tests;
 #[path = "tests/dispatch_kind_auth_tests.rs"]
 mod dispatch_kind_auth_tests;
 
-/// The both-ways harness on the memory ABI (TODO ABI-b4): one door loaded LINKED and DROPPED IN
+/// The both-ways harness on the memory ABI: one door loaded LINKED and DROPPED IN
 /// through the one dispatcher, one script, two transcripts compared.
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings

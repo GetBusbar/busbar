@@ -4,8 +4,7 @@
 //! THE RFC 9728 PROTECTED-RESOURCE DOCUMENT RENDER, and nothing else.
 //!
 //! A door states its protected-resource facts (`PlaneSnapshot::resource_facts`, beside its
-//! audience) and the kernel renders the one document from them (ARCHITECT Q-L3B-RFC9728,
-//! `busbar-contract/src/abi/plane/mod.rs`): no unit, no audit row. The composition root mounts it
+//! audience) and the kernel renders the one document from them (`busbar-contract/src/abi/plane/mod.rs`): no unit, no audit row. The composition root mounts it
 //! at the path the door's snapshot names.
 //!
 //! The kernel speaks no JSON-RPC here. The envelope sequence that used to live in this file (the

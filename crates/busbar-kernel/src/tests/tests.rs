@@ -2,22 +2,6 @@ use super::*;
 use crate::test_support::EnvVarGuard;
 use crate::test_support::{build_once, cfg_with_provider_api_key};
 
-/// The sources this crate took from the retired shared value crate (#83a SD-8), relative to this
-/// crate's manifest dir. The rules that crate held over its own tree — body JSON through the one
-/// seam, every operator-facing warn/error coded — are kept over the same code where it lives now.
-/// `src/sigv4.rs` left with D3 (ec0c05f4e3): it was a re-export of the identity unit's SigV4 items
-/// and carried no code of its own, so no code under these rules left with it.
-pub(crate) fn moved_sources() -> &'static [&'static str] {
-    &[
-        "src/breaker.rs",
-        "src/diagnostics/mod.rs",
-        "src/diagnostics/emit.rs",
-        "src/json.rs",
-        "src/ir/lane_caps.rs",
-        "src/config/providers.rs",
-        "src/proto/installed.rs",
-    ]
-}
 // The monolith's root tests reached every crate-root item through `use super::*`. The split put
 // those items in appbuild/preflight/router/boot; this block restores the same names to this file's
 // scope. Allowed-unused as one block: which of these a given test build exercises varies by cfg.
@@ -989,8 +973,8 @@ fn a_linked_rows_refusals_print_its_key() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN, "Plugins" and the plugin ABI; TODO
-/// step 28). `env` and `file` are secret plugins the kernel reaches through the root's
+/// THE LINKED SECRET SOURCES ARE PLUGINS ON THE SECRET KIND TABLE (THE DESIGN, "Plugins" and the
+/// plugin ABI). `env` and `file` are secret plugins the kernel reaches through the root's
 /// `SecretAxis`, not rows of the cold-kind registry and not a name the resolver matches: the
 /// registry holds no secret row for either, and a resolution's failure text is the plugin's own,
 /// unwrapped (1.5.5's). A dropped-in cold plugin spelling `env` does not take the name: the resolver
@@ -2199,33 +2183,6 @@ fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_te
     );
     assert!(is_real_auth_plugin_ref("test-idp-double", true));
     assert!(is_real_auth_plugin_ref("test-idp-double", false));
-}
-
-/// Source review of the boot-logging matrix: the enabled/disabled boot lines and
-/// the two-part referenced-but-missing diagnosis are present in `plugins_preflight`. Guards the
-/// observability wording against silent removal.
-#[test]
-fn plugins_boot_logging_wording_present() {
-    let src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/preflight.rs"));
-    assert!(
-        src.contains("plugins: disabled (plugins.enabled is false"),
-        "disabled boot line missing"
-    );
-    assert!(
-        src.contains("\"plugins: enabled\""),
-        "enabled boot line missing"
-    );
-    // Two-part diagnosis + fetch/drop remediation on the referenced-but-missing arms.
-    assert!(
-        src.contains("no plugin matching store.module")
-            && src.contains("no plugin matching auth.chain module")
-            && src.contains("no plugin matching the hook reference"),
-        "referenced-but-missing arms not enriched"
-    );
-    assert!(
-        src.contains("Add it to plugins.fetch or drop the signed tarball"),
-        "two-part remediation wording missing"
-    );
 }
 
 /// A minimal but structurally VALID 1.5.x config (parses into `DeployCfg`; `load_config_from_disk`

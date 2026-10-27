@@ -478,7 +478,6 @@ pub(crate) fn error_answer(status: u16, code: &str) -> AdminAnswer {
 /// Two of its ten errors carry a message this file cannot derive from the code alone — the door's,
 /// and the scope refusal's, which names the scope that would have sufficed. They are the same
 /// envelope from the same source; only the second string differs.
-#[cfg(feature = "root-admin")]
 pub(crate) fn error_answer_with_message(status: u16, code: &str, message: &str) -> AdminAnswer {
     AdminAnswer {
         status,

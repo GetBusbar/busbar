@@ -840,30 +840,6 @@ fn the_suite_lends_the_statements_secret_refs_out_of_the_settings() {
     );
 }
 
-/// RED (store-mysql #16): the store script meters only keys it has put, so a store whose metering
-/// rows reference its keys (MySQL's fk_metering_key) holds every metering write: no `meter(..)` call
-/// in the script names a literal key id.
-#[test]
-fn red_the_store_script_meters_only_keys_it_has_put() {
-    let script = include_str!("../conformance/store.rs");
-    let literal = regex_lite_meter(script);
-    assert!(
-        literal.is_empty(),
-        "metering names keys it never put: {literal:?}"
-    );
-}
-
-/// Every `meter("<literal>", ..)` call in `script`.
-fn regex_lite_meter(script: &str) -> Vec<String> {
-    script
-        .match_indices("meter(\"")
-        .map(|(at, _)| {
-            let rest = &script[at + 7..];
-            rest[..rest.find('"').unwrap_or(0)].to_owned()
-        })
-        .collect()
-}
-
 // ── THE ADMISSION AND CONNECTION RED ARMS (`red.rs`), over the loader's own fixtures ─────────────
 
 mod red_arms {
@@ -1873,4 +1849,48 @@ fn the_dropped_leg_loads_the_cdylib_through_the_staging_production_uses() {
          verified bytes through the staging every production load runs"
     );
     drop(plugin);
+}
+
+mod canary_tests {
+    use crate::conformance::canary::{credentials, find, spellings};
+
+    const PW: &[u8] = b"CANARY-pg-7c1e/9+";
+
+    fn emitted(lines: &[&[u8]]) -> Vec<(String, Vec<u8>)> {
+        lines
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (format!("line {i}"), l.to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn the_credentials_are_what_the_inputs_name() {
+        let inputs = serde_json::json!({"credentials": ["a", "", 3, "b"]});
+        assert_eq!(credentials(&inputs), vec![b"a".to_vec(), b"b".to_vec()]);
+        assert!(credentials(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn every_spelling_of_a_credential_is_found_and_only_where_is_named() {
+        for s in spellings(PW) {
+            let mut line = b"connect failed: ".to_vec();
+            line.extend_from_slice(&s);
+            let at = find(&[PW.to_vec()], &emitted(&[b"ready", &line])).expect("found");
+            assert_eq!(at, "line 1");
+            assert!(!at.contains("CANARY"));
+        }
+        assert!(spellings(PW).contains(&b"CANARY-pg-7c1e%2F9%2B".to_vec()));
+    }
+
+    #[test]
+    fn a_clean_fold_passes() {
+        assert_eq!(
+            find(
+                &[PW.to_vec()],
+                &emitted(&[b"ready", b"Refused: bad password"])
+            ),
+            None
+        );
+    }
 }

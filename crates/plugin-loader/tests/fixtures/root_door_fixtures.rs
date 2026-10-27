@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! TEST ONLY: THE COMPOSITION ROOT'S DOOR FIXTURES (status row 195; coordinator ruling (a),
-//! `BUSBAR-1.6.0.md` l.272-274). A door is built by the contract's door macro, whose expansion
+//! TEST ONLY: THE COMPOSITION ROOT'S DOOR FIXTURES (`BUSBAR-1.6.0.md` l.272-274). A door is built by the contract's door macro, whose expansion
 //! writes `unsafe`; the root is `forbid(unsafe_code)` and must hold no such expansion, so the doors
 //! its tests drive are built HERE, in the loader's reviewed allow-list, and the root's tests reach
 //! them by path (the `test-support` feature, which only the root's `[dev-dependencies]` edge turns

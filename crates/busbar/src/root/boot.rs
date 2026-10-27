@@ -877,7 +877,7 @@ pub fn dropped_transports(
             return Vec::new();
         };
         let opened = registry
-            .open_transport_entries(&crate::root::doors::bind(), &transport_uses())
+            .open_transport_entries(&crate::root::doors::bind(), &transport_uses(), plugin_logs())
             .and_then(|entries| {
                 entries
                     .doors
@@ -1079,6 +1079,15 @@ pub fn book(
         None => super::durability::take_node(calls.as_ref(), &host),
     }
     .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
+    // THE FIRST-PARTY ANTI-DOWNGRADE FLOOR, held in the store for this host: the scan ran before
+    // the store opened, so a dropped-in first-party plugin below the mark the store keeps refuses
+    // the boot here, and the marks rise to what loaded.
+    super::durability::hold_plugin_floor(
+        calls.as_ref(),
+        &host,
+        app.hook_env.registry.as_ref(),
+        &app.plugins_cfg.first_party_floors,
+    )?;
     // The lease is held on the lane to the store it is held in, the lane this book keeps: its
     // checkpoint flush tick refreshes it and the clean shutdown releases it.
     if let Some(lease) = taken.lease {

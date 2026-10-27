@@ -122,14 +122,18 @@ pub(crate) fn adjust_effect(
     let amends = text("amends")?;
     let reason = text("reason")?;
     let Ok(pool) = text("pool") else {
-        return Ok(refused(
+        return Ok(super::error_answer_with_message(
+            400,
+            "invalid_request",
             "`pool` is required: name the pool the corrected unit was dispatched through",
         ));
     };
     if !pool_known(pool) {
-        return Ok(refused(&format!(
-            "`pool` names `{pool}`, which is not a configured pool"
-        )));
+        return Ok(super::error_answer_with_message(
+            400,
+            "invalid_request",
+            &format!("`pool` names `{pool}`, which is not a configured pool"),
+        ));
     }
     let mut now = ClassCounts::new();
     for (class, count) in obj
@@ -201,15 +205,4 @@ pub(crate) fn adjust_effect(
     }))
     .map(super::json_answer)
     .map_err(|_| GovernanceError::Store)
-}
-
-/// The `400 invalid_request` a correction naming no configured pool gets, in the admin envelope,
-/// with a message that says what to fix.
-fn refused(message: &str) -> AdminAnswer {
-    AdminAnswer {
-        status: 400,
-        headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: busbar_core_admin::admin_codec::refusal::envelope_of("invalid_request", message)
-            .into_bytes(),
-    }
 }

@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use super::loader::dispatch::{
     kinds::transport::{Transport as TransportKind, TransportFacts},
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, InFrame, LinkedRow, NoSink,
-    OutFrame, Plugin,
+    OutFrame, Plugin, PluginLogConfig,
 };
 use busbar_contract::abi::mechanism::call::{Blob, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use busbar_contract::abi::mechanism::door::DoorFn;
@@ -53,6 +53,30 @@ pub fn dispatcher() -> &'static Dispatcher {
     })
 }
 
+/// Where a linked row's plugin log file is opened: the composition root's `plugins.logs`
+/// ([`install_plugin_logs`]). A value, not a reader: the root's config follows an apply in place
+/// (`root::boot::follow_plugin_logs`), so every sink opened from it takes the applied words.
+static LOGS: OnceLock<&'static PluginLogConfig> = OnceLock::new();
+
+/// Hand the doors the composition root's configured `plugins.logs` (`root::boot`), once it is read
+/// and before any linked row binds; the first install stands. A mount of this file with no
+/// composition root (a test, the conformance subject) logs under the defaults.
+pub fn install_plugin_logs(logs: &'static PluginLogConfig) {
+    let _ = LOGS.set(logs);
+}
+
+/// The `plugins.logs` a linked row's plugin log file is opened under.
+fn plugin_logs() -> &'static PluginLogConfig {
+    static DEFAULTS: OnceLock<PluginLogConfig> = OnceLock::new();
+    match LOGS.get() {
+        Some(logs) => logs,
+        None => DEFAULTS.get_or_init(|| {
+            PluginLogConfig::from_words(None, None, &std::collections::BTreeMap::new(), None, None)
+                .expect("the plugins.logs defaults resolve")
+        }),
+    }
+}
+
 /// What a transport door is bound to. The instance label is the transport lane's own; every door
 /// is relabelled as it opens: a linked row with its row name ([`row_bind`]), a dropped-in door
 /// with its plugin's name (the registry), so the label is unique per instance.
@@ -70,12 +94,25 @@ pub fn bind() -> Bind {
 }
 
 /// What a LINKED row's door is bound to: [`bind`], labelled with the row's name (its registry
-/// key), so two linked rows are two instances to the host services.
-pub fn row_bind(row: &str) -> Bind {
-    Bind {
+/// key), so two linked rows are two instances to the host services, and logging to that row's own
+/// plugin log file under the configured `plugins.logs` (THE DESIGN §11.2, "Plugin logging": every
+/// plugin, compiled in or dropped in; a dropped-in door's is opened by the registry).
+///
+/// # Errors
+///
+/// The row's plugin log file cannot be opened.
+pub fn row_bind(row: &str) -> Result<Bind, String> {
+    let bound = bind();
+    let sink = plugin_logs().sink(
+        row,
+        busbar_contract::abi::mechanism::KindCode::Transport,
+        bound.sink.clone(),
+    )?;
+    Ok(Bind {
         instance: Arc::from(row),
-        ..bind()
-    }
+        sink: Arc::new(sink),
+        ..bound
+    })
 }
 
 /// One transport door, opened, as the connector reaches it.
@@ -149,10 +186,10 @@ impl Live {
 
 /// A CONFIG APPLY, as every opened transport instance takes it (`BUSBAR-1.6.0.md` §11.4, "a plugin
 /// is a plugin": every kind's `refresh` slot is called on an apply, as the planes' and the
-/// credentials' are): each live instance is refreshed with the applied `settings`
-/// ([`Dispatched::refresh`]). An instance that will not refresh keeps the settings it holds and
-/// keeps serving; each refusal is answered, for the caller to log. A listener set change still applies on
-/// restart (THE DESIGN, the generations rule): a refresh binds nothing.
+/// credentials' are): each live instance is refreshed with the applied `settings`. An instance
+/// that will not refresh keeps the settings it holds and keeps serving; each refusal is answered,
+/// for the caller to log. A listener set change still applies on restart (THE DESIGN, the
+/// generations rule): a refresh binds nothing.
 pub fn refresh_live(settings: &busbar_contract::transport::TransportSettings) -> Vec<String> {
     refresh_named(settings, |_| true)
 }
@@ -272,6 +309,7 @@ impl Dispatched {
     /// # Errors
     ///
     /// The instance did not answer READY; it keeps the settings it holds.
+    #[cfg(test)]
     pub fn refresh(
         &self,
         settings: &busbar_contract::transport::TransportSettings,
@@ -407,8 +445,10 @@ pub fn build(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> Arc<HostWire> {
     LinkedRow::of(door)
-        .and_then(|linked| load_linked::<TransportKind>(&linked, row_bind(row)))
         .map_err(|e| e.to_string())
+        .and_then(|linked| {
+            load_linked::<TransportKind>(&linked, row_bind(row)?).map_err(|e| e.to_string())
+        })
         .and_then(|plugin| Dispatched::open(plugin, settings))
         .and_then(|door| HostWire::new(&door))
         .map(Arc::new)

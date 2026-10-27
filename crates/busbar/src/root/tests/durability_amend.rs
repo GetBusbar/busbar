@@ -377,15 +377,8 @@ fn store_phase() {
 /// as never made (the money reverted). See the `store` phase.
 #[test]
 fn a_chain_past_one_memory_segment_keeps_its_corrections_and_marker_over_the_store() {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-amend-store-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch directory");
-    run_phase("store", &dir);
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::root::durability::Scratch::new("amend-store");
+    run_phase("store", &dir.0);
 }
 
 /// Run [`restart_phase`] in a fresh process of this test binary.
@@ -411,15 +404,8 @@ fn run_phase(phase: &str, dir: &std::path::Path) {
 #[cfg(feature = "root-admin")]
 #[test]
 fn verify_reports_an_edit_to_the_held_amendment_run() {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-amend-verify-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch directory");
-    run_phase("tamper", &dir);
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::root::durability::Scratch::new("amend-verify");
+    run_phase("tamper", &dir.0);
 }
 
 /// A CORRECTED COUNT AND A CONTENT ACCESS SURVIVE A RESTART. The first process seals a root
@@ -429,16 +415,9 @@ fn verify_reports_an_edit_to_the_held_amendment_run() {
 /// only, the second process read the count as recorded and found no access.
 #[test]
 fn a_corrected_count_and_a_content_access_survive_a_restart() {
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-root-amend-restart-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch directory");
-    run_phase("seal", &dir);
-    run_phase("read", &dir);
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = crate::root::durability::Scratch::new("amend-restart");
+    run_phase("seal", &dir.0);
+    run_phase("read", &dir.0);
 }
 
 /// A NODE WITH NO DATA DIRECTORY rebuilds nothing, so it binds nothing: the node journal stays
