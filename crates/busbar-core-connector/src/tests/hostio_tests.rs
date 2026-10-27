@@ -182,10 +182,10 @@ async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
     Ok(lines)
 }
 
-/// THE HELD ENVIRONMENT (ARCHITECT ruling 2026-10-13, row 166): the carrier hands the host's
-/// `io.spawn` the program's WRITTEN environment only; the admitted program's references were
-/// resolved at config time and are held, so the value exists in the host's records and the child's
-/// environment and nowhere the carrier reaches. A reference that did not resolve spawns nothing.
+/// THE HELD ENVIRONMENT: the carrier hands the host's `io.spawn` the program's WRITTEN environment
+/// only; the admitted program's references were resolved at config time and are held, so the value
+/// exists in the host's records and the child's environment and nowhere the carrier reaches. A
+/// reference that did not resolve spawns nothing.
 #[test]
 fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
@@ -245,10 +245,10 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     });
 }
 
-/// RED (ARCHITECT ruling 2026-10-13, row 166): A SPAWN RESOLVES NOTHING. A spawn serves a request
-/// (a member's first lease, a respawn, a program need's every open), so the program's references
-/// resolve ONCE, at the load, and every spawn after it loads what is held: two spawns, still one
-/// resolution. RED before: `io.spawn` resolved every reference at every spawn.
+/// A SPAWN RESOLVES NOTHING. A spawn serves a request (a member's first lease, a respawn, a program
+/// need's every open), so the program's references resolve ONCE, at the load, and every spawn after
+/// it loads what is held: two spawns, still one resolution. RED before: `io.spawn` resolved every
+/// reference at every spawn.
 ///
 /// And A ROTATED SECRET REACHES THE FIRST NEW CHILD AFTER THE NEXT REFRESH: the variable changed,
 /// the next spawn still hands the value the load resolved; after the refresher's pass the next

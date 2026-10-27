@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CONNECTOR MOVES NO BYTE ITSELF (TRANSPORT-STACK (2); ARCHITECT p2-transport-carrier exit):
+//! THE CONNECTOR MOVES NO BYTE ITSELF:
 //! every connection rides a CARRIER's slots, and the carrier reaches the OS through the host's I/O
 //! (`src/hostio.rs`, `io.*`). So no source file of this crate but the host's I/O implementation
 //! opens, binds, accepts, registers, spawns or shuts an OS handle. A source scan, comments set
@@ -15,7 +15,7 @@
 //!   Datagram media: "the udp carrier is the host's (in the connector, no carrier plugin)").
 //!
 //! (`tls/engine.rs`, the kernel's legacy outbound engine's TLS, left the list with that engine,
-//! u30: the kernel dials nothing.)
+//! the kernel dials nothing.)
 
 use std::path::{Path, PathBuf};
 

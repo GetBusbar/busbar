@@ -61,10 +61,10 @@ pub struct DoorFacts {
     pub name: String,
     /// Every scheme it answers for; the first is its own.
     pub claims: Vec<&'static str>,
-    /// The tail's ROLE (`ROLE_CARRIER` | `ROLE_FRAMER`, ARCHITECT ruling Q128 U7): a CARRIER is a
-    /// byte stream the host's socket or pipe carries as itself (no opening message, nothing framed,
-    /// a stream it may secure mid-way); a FRAMER frames messages over the carrier the connector
-    /// chose from the target's scheme. The role is stated, never derived from `composes_over`.
+    /// The tail's ROLE (`ROLE_CARRIER` | `ROLE_FRAMER`): a CARRIER is a byte stream the host's
+    /// socket or pipe carries as itself (no opening message, nothing framed, a stream it may secure
+    /// mid-way); a FRAMER frames messages over the carrier the connector chose from the target's
+    /// scheme. The role is stated, never derived from `composes_over`.
     pub role: u32,
     /// The claims it composes over: always empty now (no transport names another); an entry that
     /// states one is refused where it would be served.
@@ -78,10 +78,10 @@ pub struct DoorFacts {
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has; a stream's final status is judged against its claim's ([`crate::framed_stream`]).
     pub status_rows: Vec<(u32, u32, u32)>,
-    /// THE DUPLEX CLAIMS: the ones a stream rides, read off the claim rows of its Statement
-    /// (ARCHITECT ruling Q128 U7): each whose unit 0 opens at an UPGRADE (`UNIT0_UPGRADE`) or that
-    /// carries a session (`session`). A claim that states neither is a request and its answer, which
-    /// the listener it arrived on frames already; a stream on one of these is this entry's to frame.
+    /// THE DUPLEX CLAIMS: the ones a stream rides, read off the claim rows of its Statement: each
+    /// whose unit 0 opens at an UPGRADE (`UNIT0_UPGRADE`) or that carries a session (`session`). A
+    /// claim that states neither is a request and its answer, which the listener it arrived on
+    /// frames already; a stream on one of these is this entry's to frame.
     pub duplex: Vec<&'static str>,
     /// THE DATAGRAM FRAMER (its tail states `FRAMING_DATAGRAM`): every call carries the datagram
     /// lane and it is driven only by [`crate::datagram::DatagramFraming`] over the host's port and
@@ -618,8 +618,8 @@ pub struct Established {
     pub agreed_protocol: Option<Vec<u8>>,
     /// The claim the connection resolved to.
     pub claim: Option<String>,
-    /// The far end's key pin, read off its verified leaf certificate on a secured dial; `None` =
-    /// no certificate (the transport pin, ARCHITECT 2026-10-03).
+    /// The far end's key pin, read off its verified leaf certificate on a secured dial; `None` = no
+    /// certificate (the transport pin).
     pub peer_key_pin: Option<String>,
     /// Whether the handshake presented busbar's client identity.
     pub client_identity: bool,
@@ -845,7 +845,7 @@ pub fn encode_head(
 }
 
 /// How many `YIELD_MORE` answers in a row may write nothing before the framing FAULTs: a framer
-/// that owes more and gives nothing would otherwise hold the host worker forever (Law 0).
+/// that owes more and gives nothing would otherwise hold the host worker forever.
 pub(crate) const MORE_STALLS: usize = 64;
 
 /// The most bytes one op's `YIELD_MORE` re-calls may write before the framing FAULTs: an op's own
@@ -920,7 +920,7 @@ impl Framing {
 
     /// [`Framing::begin`], handing a dialled framing its OPENING head fields (`BeginIn::fields`:
     /// the bound auth's fields and the request's own), for a wire that carries them on the
-    /// connection's opening rather than on a message (ARCHITECT Q-L5B-WS-DIAL).
+    /// connection's opening rather than on a message.
     ///
     /// # Errors
     ///
@@ -1177,11 +1177,11 @@ impl Framing {
     }
 
     /// `finish` on ONE STREAM'S framing ([`busbar_contract::abi::transport::SIDE_ACCEPT_STREAM`]):
-    /// close it with the final status the unit stated (ARCHITECT 4l), judged first against the
-    /// status rows of the claim the stream arrived on (`rows`, `claim`). A status the claim's
-    /// numbering does not have never reaches the framer: the close is refused here and the framing
-    /// stays open, so the host can still end the stream another way. What the framer answers is
-    /// the stream's closing field block, in `wire`.
+    /// close it with the final status the unit stated, judged first against the status rows of the
+    /// claim the stream arrived on (`rows`, `claim`). A status the claim's numbering does not have
+    /// never reaches the framer: the close is refused here and the framing stays open, so the host
+    /// can still end the stream another way. What the framer answers is the stream's closing field
+    /// block, in `wire`.
     ///
     /// # Errors
     ///

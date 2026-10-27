@@ -4,11 +4,10 @@
 //! A LINE: one composed connection as the exchanges riding it hold it.
 //!
 //! A dialled connection carries one exchange at a time, or, where it multiplexes (an `h2`
-//! connection: [`Connection::multiplexes`]), many at once, one stream each (ARCHITECT ruling
-//! Q-L18-MUX: concurrent requests to one origin share an h2 connection, as 1.5.5's pooled client
-//! shared them). Every holder reads ITS stream: the pieces the framer answers are routed by stream,
-//! a piece for another holder parked until that holder reads, and a piece for a stream nobody holds
-//! any more dropped.
+//! connection: [`Connection::multiplexes`]), many at once, one stream each (concurrent requests to
+//! one origin share an h2 connection, as 1.5.5's pooled client shared them). Every holder reads ITS
+//! stream: the pieces the framer answers are routed by stream, a piece for another holder parked
+//! until that holder reads, and a piece for a stream nobody holds any more dropped.
 //!
 //! THE WAKE FANS OUT. A socket registered on the reactor keeps ONE waker per direction, so two
 //! holders polling one socket with their own wakers would each unseat the other's, and the one left

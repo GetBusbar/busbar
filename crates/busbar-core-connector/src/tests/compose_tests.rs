@@ -428,9 +428,8 @@ fn a_far_end_that_never_reads_fills_the_buffer_and_writes_are_refused_room() {
     });
 }
 
-/// RED (ARCHITECT, the stream-end ruling): an EMPTY message, binary or text, is relayed as a
-/// message, its text bit kept; the stream ends only on the framer's `PIECE_END`, never on an empty
-/// piece.
+/// An EMPTY message, binary or text, is relayed as a message, its text bit kept; the stream ends
+/// only on the framer's `PIECE_END`, never on an empty piece.
 #[test]
 fn empty_messages_relay_and_the_stream_ends_only_on_its_flag() {
     worker().block_on(async {
@@ -513,11 +512,10 @@ fn a_message_handed_up_with_the_frames_end_is_still_answered() {
     });
 }
 
-/// WHY A CONNECTION FAILED, named by stage and the underlying error's own words (ARCHITECT
-/// ruling on a plane's guard words): a closed port fails the socket's open with the socket's own error
-/// (the one this host's own connect to it answers); a far end whose certificate no anchor signs
-/// fails connection security with the TLS stack's own error; a handshake that never finishes is a
-/// deadline.
+/// WHY A CONNECTION FAILED, named by stage and the underlying error's own words: a closed port
+/// fails the socket's open with the socket's own error (the one this host's own connect to it
+/// answers); a far end whose certificate no anchor signs fails connection security with the TLS
+/// stack's own error; a handshake that never finishes is a deadline.
 #[test]
 fn a_failed_connection_names_its_stage_and_the_underlying_error() {
     use busbar_contract::abi::host::conn::connector::{
@@ -603,7 +601,7 @@ fn a_failed_connection_names_its_stage_and_the_underlying_error() {
     });
 }
 
-/// RED (audit core-connector#3, STARTTLS response injection), the connection's own layer: a raw
+/// The connection's own layer, STARTTLS response injection: a raw
 /// stream whose far end answered `OK\n` with forged bytes behind it, the piece taken off the socket
 /// into the connection's inbox and not read. The upgrade is refused and the connection fails: the
 /// forged bytes are never read, least of all as a verified far end's.
@@ -647,7 +645,7 @@ fn an_upgrade_over_a_piece_still_in_the_inbox_is_refused_and_the_connection_fail
     });
 }
 
-/// RED (audit core-connector#6): a far end that sends far more than its holder reads (64 MiB, the
+/// A far end that sends far more than its holder reads (64 MiB, the
 /// holder only waiting on readiness) is held back by the receive cap: the line stops reading, so
 /// the far end's own flow control stops it, short of what it meant to send.
 #[test]
@@ -803,9 +801,9 @@ fn one_write_larger_than_the_tls_send_buffer_crosses_whole() {
     });
 }
 
-/// The agreed protocol is judged against the offer the handshake made (`check_agreed`, audit
-/// contract-src #11) before the framer is handed it: none agreed or an offered id passes, an id
-/// never offered fails the connection, and an id the encoding cannot carry is never offered.
+/// The agreed protocol is judged against the offer the handshake made (`check_agreed`) before the
+/// framer is handed it: none agreed or an offered id passes, an id never offered fails the
+/// connection, and an id the encoding cannot carry is never offered.
 #[test]
 fn the_agreed_protocol_is_one_the_handshake_offered() {
     let offer = protocol_name_list(&[b"pa".to_vec(), Vec::new(), b"proto-b/1".to_vec()]);
@@ -824,7 +822,7 @@ fn the_agreed_protocol_is_one_the_handshake_offered() {
     assert!(protocol_name_list(&[vec![b'x'; 256]]).is_empty());
 }
 
-/// RED (Q128 arch u22 MEDIUM 4; `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE":
+/// The contract ( `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE":
 /// "the host emits nothing more on that stream, holding whatever feeds it (not-ready, with a
 /// wake), until the framer hands a `PIECE_WRITABLE` piece"): once the framer answers an emit
 /// `YIELD_STREAM_FULL`, the connection takes nothing more on that stream (`Ok(0)`, the writer's

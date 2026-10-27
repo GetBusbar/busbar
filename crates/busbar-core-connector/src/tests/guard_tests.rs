@@ -119,8 +119,8 @@ fn a_mixed_answer_is_refused_whole() {
     );
 }
 
-/// RED (owner Q8): a host entry never admits a metadata answer; an IP or CIDR entry naming the
-/// metadata address does.
+/// A host entry never admits a metadata answer; an IP or CIDR entry naming the metadata address
+/// does.
 #[test]
 fn a_name_entry_never_admits_a_metadata_answer() {
     let g = guard(true, &["evil.test"]);
@@ -135,8 +135,7 @@ fn a_name_entry_never_admits_a_metadata_answer() {
     );
 }
 
-/// RED (owner Q1, Q8): `block_private_addresses: false` admits private answers and names, never
-/// cloud metadata.
+/// RED: `block_private_addresses: false` admits private answers and names, never cloud metadata.
 #[test]
 fn block_false_admits_private_but_not_metadata() {
     let g = guard(false, &[]);
@@ -357,12 +356,11 @@ fn a_bad_entry_is_refused_naming_the_key() {
 }
 
 /// THE DEFAULT POLICY is one table: the provider class and a destination from request data (the
-/// default class, open-web) are refused private (THE DESIGN §5 destination guard, ARCHITECT ruling
-/// CRATES-14); operator infrastructure is allowed private and loopback (§5 egress-class table,
-/// owner 2026-09-27); loopback-allowed is allowed loopback and refused every other private address
-/// (ARCHITECT parity ruling A2: the destination guard still applying, as 1.5.5's collector guard
-/// refused them); while cloud metadata, a configured name rebinding to it included, stays refused
-/// in every class.
+/// default class, open-web) are refused private (THE DESIGN §5 destination guard); operator
+/// infrastructure is allowed private and loopback (§5 egress-class table); loopback-allowed is
+/// allowed loopback and refused every other private address (the destination guard still applying,
+/// as 1.5.5's collector guard refused them); while cloud metadata, a configured name rebinding to
+/// it included, stays refused in every class.
 #[test]
 fn private_is_refused_for_providers_and_request_data_and_allowed_for_operator_infrastructure() {
     let g = Guard::default();
@@ -392,11 +390,10 @@ fn private_is_refused_for_providers_and_request_data_and_allowed_for_operator_in
     }
 }
 
-/// RED (THE DESIGN §5 destination guard, ARCHITECT ruling CRATES-14 on Q130/Q131: "the 'refused
-/// unless allowlisted' default applies to the provider and IdP egress classes only"): a provider
-/// dial with no allowlist entry for it is refused a private or loopback address, by name, by
-/// literal and by answer; the allowlist admits it; a HOST allowlist entry still never admits a
-/// metadata answer, and no 1.5.5 carve-out admits metadata for a host the provider does not name.
+/// A provider dial with no allowlist entry for it is refused a private or loopback address, by
+/// name, by literal and by answer; the allowlist admits it; a HOST allowlist entry still never
+/// admits a metadata answer, and no 1.5.5 carve-out admits metadata for a host the provider does
+/// not name.
 #[test]
 fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     let strict = Guard::default();
@@ -449,8 +446,8 @@ fn a_provider_dial_is_refused_a_private_address_unless_allowlisted() {
     );
 }
 
-/// THE DESIGN §5 egress-class table (owner-signed 2026-09-27), held beside the provider fix above:
-/// operator infrastructure is allowed private and loopback with no allowlist entry, and refuses cloud metadata even when the
+/// THE DESIGN §5 egress-class table, held beside the provider fix above: operator infrastructure is
+/// allowed private and loopback with no allowlist entry, and refuses cloud metadata even when the
 /// allowlist names the host and every 1.5.5 carve-out names the address.
 #[test]
 fn operator_infrastructure_is_allowed_private_and_refused_metadata_whatever_is_carved() {
@@ -539,7 +536,7 @@ fn a_lookup_past_the_cap_is_refused_at_once_and_starts_no_thread() {
     assert_eq!(rest, [(0, true), (1, true)], "the two in flight answer");
 }
 
-/// A CONFIGURED OPEN-WEB TARGET KEEPS THE OPEN-WEB CLASS (Q128 arch u22/u23 BLOCK; ruling 14: "a
+/// A CONFIGURED OPEN-WEB TARGET KEEPS THE OPEN-WEB CLASS ("a
 /// configured open-web target keeps the open-web class (public https only); only the egress
 /// default class is lifted when configured"; 1.5.5's webhook export refused a private or loopback
 /// URL). A webhook URL taken from settings is judged open-web, so `https://127.0.0.1` and a
@@ -598,7 +595,7 @@ fn judged(r: Result<Option<IpAddr>, Refusal>) -> NameVerdict {
     r.map_err(|r| (r.verdict, r.addr))
 }
 
-/// RED (HIGH, the SSRF guard bypass): every odd spelling is judged exactly as the plain ASCII host
+/// RED, the SSRF guard bypass: every odd spelling is judged exactly as the plain ASCII host
 /// it maps to, in every class and strictness, the same verdict and the same deciding address. On
 /// the guard that compared a host only ASCII-lowercased, each read as an unknown name and passed.
 #[test]
@@ -732,7 +729,7 @@ fn bracketed_zoned_and_ascii_hosts_are_judged_as_before() {
     let g = Guard::default();
     for (host, want) in [
         ("[::1]", Err((DEST_INTERNAL, Some(ip("::1"))))),
-        // An IPv6 link-local address is refused as metadata on every need (ARCHITECT PB-100).
+        // An IPv6 link-local address is refused as metadata on every need.
         (
             "[fe80::1%25eth0]",
             Err((DEST_METADATA, Some(ip("fe80::1")))),
@@ -752,7 +749,7 @@ fn bracketed_zoned_and_ascii_hosts_are_judged_as_before() {
     }
 }
 
-/// RED (HIGH, the percent-escape the guard did not decode): a host holding a `%` outside an IPv6
+/// RED, the percent-escape the guard did not decode: a host holding a `%` outside an IPv6
 /// zone id is unjudgeable (`DEST_NO_HOST`), naming it, in every class, whatever the allowlist says:
 /// `%6c%6fcalhost` is `localhost` to a client that decodes it, and the guard read it as an unknown
 /// name and admitted it unresolved. A zone id's `%` is the literal's, judged as before.
@@ -803,12 +800,11 @@ fn a_percent_escape_outside_a_zone_id_is_refused_as_unjudgeable() {
     }
 }
 
-/// RED (Q128 arch u22 HIGH 2; ARCHITECT PB-100: metadata and link-local are refused on every need,
-/// whatever its egress class): the guard, the one metadata and link-local refusal a judged dial
-/// meets, refuses an IPv6 link-local answer in every class, operator infrastructure included, with
-/// the endpoint check's verdict; only an IP or CIDR entry naming the address admits it (the
-/// allowlist's in any class, a provider carve-out's for a provider dial). A host entry, a private
-/// reach, `allow_all_metadata` and `block_private_addresses: false` admit nothing of it.
+/// The guard, the one metadata and link-local refusal a judged dial meets, refuses an IPv6
+/// link-local answer in every class, operator infrastructure included, with the endpoint check's
+/// verdict; only an IP or CIDR entry naming the address admits it (the allowlist's in any class, a
+/// provider carve-out's for a provider dial). A host entry, a private reach, `allow_all_metadata`
+/// and `block_private_addresses: false` admit nothing of it.
 #[test]
 fn ipv6_link_local_is_refused_in_every_class_unless_an_ip_entry_names_it() {
     let ll = ip("fe80::1");

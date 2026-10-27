@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A PROGRAM'S ENVIRONMENT, RESOLVED AT CONFIG TIME AND HELD FOR ITS SPAWNS (row 166, ARCHITECT
-//! ruling 2026-10-13 on THE DESIGN §11.11 R4 as the OWNER amended it).
+//! A PROGRAM'S ENVIRONMENT, RESOLVED AT CONFIG TIME AND HELD FOR ITS SPAWNS.
 //!
 //! A program's environment entries written as SECRET REFERENCES (`Program::env_refs`) resolve
 //! when the need that names the program is DECLARED — a plane's load, a config apply — with the
@@ -15,7 +14,7 @@
 //!
 //! A ROTATED SECRET REACHES THE FIRST NEW CHILD AFTER THE NEXT REFRESH (at most one
 //! [`SPAWN_ENV_LEASE`] after the rotation, or at the next config apply). Program members are new in
-//! 1.6.0: there is no 1.5.5 timing to keep (ARCHITECT, 2026-10-13).
+//! 1.6.0: there is no 1.5.5 timing to keep.
 //!
 //! The values live here, in the host's records, and in the child's environment: never in the table
 //! that holds the program, never in the destination the carrier is handed.
@@ -196,8 +195,8 @@ impl SpawnEnv {
     }
 }
 
-/// THE HOST'S ENVIRONMENT REFRESHER, as the host's credential refresher keeps a served credential
-/// (#787's `PerHop`): one thread of its own (never a runtime worker) that re-resolves each live held
+/// THE HOST'S ENVIRONMENT REFRESHER, as the host's credential refresher keeps a served credential:
+///  one thread of its own (never a runtime worker) that re-resolves each live held
 /// environment once per [`SPAWN_ENV_LEASE`]. It keeps each WEAKLY, so one its need dropped (a
 /// re-declaration that changed the program, a plane that closed) is forgotten at its next due time.
 mod refresher {
