@@ -63,6 +63,13 @@ enum Sock {
     Tcp(TcpStream),
     Unix(UnixStream),
     Tls(Box<dyn SecuredSock>),
+    /// Not dialled yet ([`TcpConns::dialling_late`]): the table's local prefix, the dial timeout,
+    /// and whether [`DeclaredConns::landed`] was asked.
+    Late {
+        prefix: String,
+        timeout_ms: u64,
+        asked: bool,
+    },
     Gone,
 }
 
@@ -72,6 +79,7 @@ impl Read for Sock {
             Self::Tcp(s) => s.read(buf),
             Self::Unix(s) => s.read(buf),
             Self::Tls(s) => s.read(buf),
+            Self::Late { .. } => Err(ErrorKind::NotConnected.into()),
             Self::Gone => Ok(0),
         }
     }
@@ -83,7 +91,7 @@ impl Write for Sock {
             Self::Tcp(s) => s.write(buf),
             Self::Unix(s) => s.write(buf),
             Self::Tls(s) => s.write(buf),
-            Self::Gone => Err(ErrorKind::NotConnected.into()),
+            Self::Late { .. } | Self::Gone => Err(ErrorKind::NotConnected.into()),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -91,7 +99,7 @@ impl Write for Sock {
             Self::Tcp(s) => s.flush(),
             Self::Unix(s) => s.flush(),
             Self::Tls(s) => s.flush(),
-            Self::Gone => Ok(()),
+            Self::Late { .. } | Self::Gone => Ok(()),
         }
     }
 }
@@ -111,6 +119,8 @@ pub struct TcpConns {
     timeouts: Mutex<Vec<u64>>,
     /// Each declared need's egress class, by owner and need.
     classes: Mutex<std::collections::HashMap<(InstanceId, NeedId), u32>>,
+    /// An open answers with its dial still to make ([`TcpConns::dialling_late`]).
+    late: bool,
 }
 
 impl std::fmt::Debug for TcpConns {
@@ -156,6 +166,19 @@ impl TcpConns {
             tls: None,
             timeouts: Mutex::new(Vec::new()),
             classes: Mutex::new(std::collections::HashMap::new()),
+            late: false,
+        }
+    }
+
+    /// [`TcpConns::new`], an open answering at once with its dial IN FLIGHT, as the host's
+    /// connector answers one: the connect is made when [`DeclaredConns::landed`] is first asked
+    /// again (the first ask answers PENDING, its ticket woken shortly), or by the stream's first
+    /// read or write, where a refused connect fails that read or write.
+    #[must_use]
+    pub fn dialling_late(wake: busbar_contract::conn::ConnWake) -> Self {
+        Self {
+            late: true,
+            ..Self::new(wake)
         }
     }
 
@@ -221,6 +244,24 @@ fn dial(target: &str, local_prefix: &str, timeout_ms: u64) -> Result<Sock, ConnE
     Ok(Sock::Tcp(s))
 }
 
+/// Make a late connection's dial ([`TcpConns::dialling_late`]), once.
+fn land(c: &mut Conn) -> Result<(), ConnError> {
+    if let Sock::Late {
+        prefix, timeout_ms, ..
+    } = &c.sock
+    {
+        let dialled = dial(&c.target, prefix, *timeout_ms);
+        c.sock = match dialled {
+            Ok(sock) => sock,
+            Err(e) => {
+                c.sock = Sock::Gone;
+                return Err(e);
+            }
+        };
+    }
+    Ok(())
+}
+
 impl Conns for TcpConns {
     fn open(
         &self,
@@ -233,7 +274,15 @@ impl Conns for TcpConns {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(desc.timeout_ms);
-        let sock = dial(desc.target, &self.facts.local_prefix, desc.timeout_ms)?;
+        let sock = if self.late {
+            Sock::Late {
+                prefix: self.facts.local_prefix.clone(),
+                timeout_ms: desc.timeout_ms,
+                asked: false,
+            }
+        } else {
+            dial(desc.target, &self.facts.local_prefix, desc.timeout_ms)?
+        };
         self.slab.insert(
             caller,
             need,
@@ -254,6 +303,7 @@ impl Conns for TcpConns {
     ) -> Result<usize, ConnError> {
         let (_, c) = self.slab.get(caller, conn)?;
         let mut c = c.lock().unwrap_or_else(PoisonError::into_inner);
+        land(&mut c).map_err(|_| ConnError::Closed)?;
         let mut done = 0;
         while done < bytes.len() {
             match c.sock.write(&bytes[done..]) {
@@ -282,6 +332,7 @@ impl Conns for TcpConns {
     ) -> Result<Piece, ConnError> {
         let (_, c) = self.slab.get(caller, conn)?;
         let mut c = c.lock().unwrap_or_else(PoisonError::into_inner);
+        land(&mut c).map_err(|_| ConnError::Closed)?;
         match c.sock.read(buf) {
             Ok(0) => Err(ConnError::Closed),
             Ok(n) => Ok(Piece {
@@ -316,9 +367,24 @@ impl Conns for TcpConns {
         Err(ConnError::Refused)
     }
 
+    /// A stream secured by `upgrade_secure` reports a certificate, as the host's `FACTS` reads
+    /// security off one (the TLS double does not name the far end's; a stand-in does); a clear one
+    /// reports none, so a credential that must go out secured (`Cred::secure_required`) is refused
+    /// on it as the host refuses it.
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
-        self.slab.get(caller, conn)?;
-        Ok(ConnFacts::default())
+        let (_, c) = self.slab.get(caller, conn)?;
+        let secured = matches!(
+            c.lock().unwrap_or_else(PoisonError::into_inner).sock,
+            Sock::Tls(_)
+        );
+        Ok(ConnFacts {
+            peer_cert: secured.then(|| busbar_contract::transport::CertFacts {
+                subject: String::new(),
+                issuer: String::new(),
+                fingerprint: "secured-by-the-tls-double".to_string(),
+            }),
+            ..ConnFacts::default()
+        })
     }
 
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError> {
@@ -332,7 +398,7 @@ impl Conns for TcpConns {
                 let _ = s.shutdown(std::net::Shutdown::Both);
             }
             Sock::Tls(mut s) => s.close(),
-            Sock::Gone => {}
+            Sock::Late { .. } | Sock::Gone => {}
         }
         Ok(())
     }
@@ -392,6 +458,7 @@ impl DeclaredConns for TcpConns {
         let secure = self.tls.clone().ok_or(ConnError::Refused)?;
         let mut c = c.lock().unwrap_or_else(PoisonError::into_inner);
         let server = name.map_or_else(|| host_of(&c.target), str::to_owned);
+        land(&mut c)?;
         let Sock::Tcp(tcp) = std::mem::replace(&mut c.sock, Sock::Gone) else {
             return Err(ConnError::Refused);
         };
@@ -406,5 +473,24 @@ impl DeclaredConns for TcpConns {
 
     fn serves_scheme(&self, transport: &str) -> bool {
         !transport.is_empty() && transport == self.facts.transport
+    }
+
+    /// A late connection's dial ([`TcpConns::dialling_late`]): PENDING on its first ask, its
+    /// ticket woken shortly; made on the next. Any other connection landed when it opened.
+    fn landed(&self, caller: InstanceId, conn: ConnId, ticket: u64) -> Result<(), ConnError> {
+        let (_, c) = self.slab.get(caller, conn)?;
+        let mut c = c.lock().unwrap_or_else(PoisonError::into_inner);
+        match &mut c.sock {
+            Sock::Late { asked, .. } if !*asked => {
+                *asked = true;
+                let wake = self.wake.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(POLL);
+                    wake(caller, ticket);
+                });
+                Err(ConnError::Pending)
+            }
+            _ => land(&mut c),
+        }
     }
 }

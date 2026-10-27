@@ -447,9 +447,20 @@ impl Conns for HttpsConns {
         Ok(0)
     }
 
+    /// Every connection the double opens reached a target of its SECURED scheme (it serves no
+    /// other), so it reports one secured: a certificate stands in for the far end's, as the host's
+    /// `FACTS` reads security off a presented certificate. A credential that must go out secured
+    /// (`Cred::secure_required`) is then sent as it is to a real `https` far end.
     fn facts(&self, caller: InstanceId, conn: ConnId) -> Result<ConnFacts, ConnError> {
         self.slab.get(caller, conn)?;
-        Ok(ConnFacts::default())
+        Ok(ConnFacts {
+            peer_cert: Some(busbar_contract::transport::CertFacts {
+                subject: "CN=conformance far end".to_string(),
+                issuer: "CN=conformance far end".to_string(),
+                fingerprint: "conformance-far-end".to_string(),
+            }),
+            ..ConnFacts::default()
+        })
     }
 
     fn close(&self, caller: InstanceId, conn: ConnId) -> Result<(), ConnError> {

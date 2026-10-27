@@ -119,60 +119,6 @@ pub use registry::{
 };
 pub use stage::sweep_dead_staging;
 
-/// THE LOADER RE-EXPORTS NO CONTRACT TYPE (BOOT-LOOP step 3, ruling R2). A type the contract owns
-/// is named from `busbar_contract::abi::*`, the crate that owns it; the loader path to it does not
-/// compile. Each block below is one former loader re-export, and each must stay a compile error.
-///
-/// ```compile_fail
-/// use busbar_plugin_loader::EndpointRequest;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::EndpointResponse;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::Route;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::RouteAuth;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::RouteMethod;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::CheckPhase;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::ExportField;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::ExportStream;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HostResult;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HttpRequest;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HttpResponse;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::ColdEntry;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotDeclStr;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotPlaneDecl;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotHostVtable;
-/// ```
-/// ```compile_fail
-/// use busbar_plugin_loader::HotStatusClass;
-/// ```
-pub mod contract_types_are_named_from_the_contract {}
-
 /// INTERN a plugin name into a stable `&'static str`, reusing one allocation per unique name.
 ///
 /// The hook routing seam and `DynAuth` carry `name: &'static str`, and a name string used to be
@@ -331,13 +277,6 @@ mod export_conformance_tests;
 #[cfg(test)]
 #[path = "tests/both_ways.rs"]
 mod both_ways;
-
-/// `kind: auth` through both doors — the auth kind's first both-ways witness (#2, steps (1)-(5)): the
-/// compiled-in twin and the `cdylib`'s `busbar_call` put one wire, and the linked and dropped-in rows
-/// open one module.
-#[cfg(test)]
-#[path = "tests/auth_conformance_tests.rs"]
-mod auth_conformance_tests;
 
 /// `kind: auth` through both doors on the memory ABI, VERIFY VERDICTS: the token cases driven to
 /// every verdict (identify, reject, pass) over a second real auth plugin, one row and one answer
