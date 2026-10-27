@@ -14,7 +14,7 @@
 #   without it the same tarball is refused for the signing reason. Otherwise the arm proves nothing.
 #   One refusal is the loader's to make under the plant and is asserted instead of the load: a
 #   plugin whose Statement DECLARES a need in an egress class the host grants a first-party plugin
-#   only (provider, loopback-allowed; operator-infrastructure is any trusted plugin's, so a networked
+#   only (provider; operator-infrastructure and loopback-allowed are any trusted plugin's, so a networked
 #   auth plugin LOADS) is refused at that grant, never loaded, when unsigned. For it the arm asserts the signing refusal is gone and that grant refusal,
 #   word for word, is the only one; any other refusal is RED as before.
 #
