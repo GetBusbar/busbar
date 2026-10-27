@@ -1826,19 +1826,24 @@
       "rationale": "MEASURED (re-measured 2026-09-24 by P3A-register2 against a fresh local ./bin/oracle record of ee17adf62 with the landed operator-upgrade-step scripts b126877e1, engine pin 6067df5, default all-planes build): the only difference is effects.script /audit_after/items/0/scheme and /newest_entry/scheme: absent -> 1 (1.5.5 hash kept; scheme 2 only for records with '|'), Q41 ruling 2026-10-20. effects.script is a money-rated class, so only kind=breaking may take it. PREMISE (evaluated): the served audit entries carry scheme 2 and the teller step still seals exactly one key.create record (the step's own contract)."
     },
     {
-      "id": "#34 a new audit record signs under digest v3, which drops currency",
+      "id": "#34 a new audit record signs under digest v4 (v3 without currency, plus incarnation)",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a newly sealed audit record signs under `busbar.audit.digest.v4`, which drops `currency` from the digest and adds `incarnation`.",
       "by": "owner (Matthew Jackson), #34 ruling 2026-09-29 (remove and migrate)",
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
-        "when": "2026-09-29",
-        "ruling": "#34 OWNER 2026-09-29: remove `currency` from the signed audit digest and migrate: new records sign under a versioned recipe v3 without it, every existing record verifies under the recipe it was sealed under",
-        "resigned": {
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md): audit digest v4, i.e. v3 (currency dropped, #34) plus `incarnation`, is the recipe new audit records sign under",
+        "previous": {
           "who": "owner (Matthew Jackson)",
-          "when": "2026-09-30",
-          "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
+          "signed": "§OWNER: all 45 accepted differences re-signed for DEV-GREEN",
+          "when": "2026-09-29",
+          "ruling": "#34 OWNER 2026-09-29: remove `currency` from the signed audit digest and migrate: new records sign under a versioned recipe v3 without it, every existing record verifies under the recipe it was sealed under",
+          "resigned": {
+            "who": "owner (Matthew Jackson)",
+            "when": "2026-09-30",
+            "ruling": "DEV-GREEN re-signoff, group 2 (Money), all 45 re-signed as they stand"
+          }
         }
       },
       "expires": {
@@ -1863,7 +1868,7 @@
           }
         ]
       },
-      "rationale": "OWNER-RULED 2026-09-29 (#34). The only bytes that move are the published recipe name (`busbar.audit.digest.v2` -> `busbar.audit.digest.v3`) in the three audit reads, the digest (and so the signature) of a record sealed from here on, the `currency` member leaving a new record in the range read, and a `recipe` member on each range record naming the recipe it was sealed under. The three cells are 1.6.0-additive and carry no 1.5.5 golden (accepted-gaps `admin-kernel-verbs-new-in-1.6.0`), so this entry forgives no measured cell today; it registers the published-contract change so the next golden that records these reads meets it signed. A record sealed under v2 is never rewritten and still verifies by docs/audit-chain-digest-v2.md, proven in crates/busbar-kernel-audit (record_tests, published_recipe_tests). The recipe a new record signs under then advanced to busbar.audit.digest.v4 (v3 plus the boot incarnation after unit_key, ARCHITECT ruling on unit-key incarnation 2026-09-29): v3 never shipped in a release, the same three 1.6.0-additive cells carry it, and a v3 record still verifies by docs/audit-chain-digest-v3.md."
+      "rationale": "OWNER-RULED 2026-09-29 (#34). The only bytes that move are the published recipe name (`busbar.audit.digest.v2` -> `busbar.audit.digest.v3`) in the three audit reads, the digest (and so the signature) of a record sealed from here on, the `currency` member leaving a new record in the range read, and a `recipe` member on each range record naming the recipe it was sealed under. The three cells are 1.6.0-additive and carry no 1.5.5 golden (accepted-gaps `admin-kernel-verbs-new-in-1.6.0`), so this entry forgives no measured cell today; it registers the published-contract change so the next golden that records these reads meets it signed. A record sealed under v2 is never rewritten and still verifies by docs/audit-chain-digest-v2.md, proven in crates/busbar-kernel-audit (record_tests, published_recipe_tests). The recipe a new record signs under then advanced to busbar.audit.digest.v4 (v3 plus the boot incarnation after unit_key, ARCHITECT ruling on unit-key incarnation 2026-09-29): v3 never shipped in a release, the same three 1.6.0-additive cells carry it, and a v3 record still verifies by docs/audit-chain-digest-v3.md. SIGNED 2026-10-27: the owner signed digest v4 (with incarnation); the entry is renamed from `... digest v3, which drops currency` to name the recipe the product ships. Cells, classes and premise unchanged."
     },
     {
       "id": "#79 warm-up requests keep the card in force when they arrived (minor-unit-rounding)",
@@ -3811,15 +3816,20 @@
       "classes": [
         "body"
       ],
-      "rationale": "v1.5.5 installed a candidate configuration's operational limits process-wide BEFORE validating it (crates/busbar/src/main.rs:2704 `limits::InstallGuard::install(&cfg.limits)` ahead of :2711 `config_validate::validate(&cfg)` at the v1.5.5 tag) and kept them in force for the whole build, rolling back only when the build failed. So while an apply was being validated and built — including one that was then refused — requests served by the running generation read the candidate's body caps, gauge limit, probe timings and hook content ceiling. BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982): a reload 'builds and checks new lists, swaps them in atomically — requests already inside finish on the old ones — and is refused, leaving the running generation serving, if any check fails'. 1.6.0 validates first, reads the candidate's limits through a build-scoped view no other thread sees (busbar_kernel::config::limits::BuildScope), and publishes them only when the generation goes live (AppHandle::swap, InstalledLimits::keep). The steady state is identical: an accepted apply's limits are in force from its swap, a refused one never changes a live limit. Only the transient window during an apply differs. No oracle cell observes a request served DURING an apply, so the cells are OWED: `cells` names them and expected_cells is 0, the way R-22 writes owed cells. The premise probes the existing successful apply cell. Proof: crates/busbar-kernel/src/tests/tests.rs a_built_generations_limits_are_in_force_only_once_it_is_live.",
+      "rationale": "v1.5.5 installed a candidate configuration's operational limits process-wide BEFORE validating it (crates/busbar/src/main.rs:2704 `limits::InstallGuard::install(&cfg.limits)` ahead of :2711 `config_validate::validate(&cfg)` at the v1.5.5 tag) and kept them in force for the whole build, rolling back only when the build failed. So while an apply was being validated and built — including one that was then refused — requests served by the running generation read the candidate's body caps, gauge limit, probe timings and hook content ceiling. BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982): a reload 'builds and checks new lists, swaps them in atomically — requests already inside finish on the old ones — and is refused, leaving the running generation serving, if any check fails'. 1.6.0 validates first, reads the candidate's limits through a build-scoped view no other thread sees (busbar_kernel::config::limits::BuildScope), and publishes them only when the generation goes live (AppHandle::swap, InstalledLimits::keep). The steady state is identical: an accepted apply's limits are in force from its swap, a refused one never changes a live limit. Only the transient window during an apply differs. No oracle cell observes a request served DURING an apply, so the cells are OWED: `cells` names them and expected_cells is 0, the way R-22 writes owed cells. The premise probes the existing successful apply cell. Proof: crates/busbar-kernel/src/tests/tests.rs a_built_generations_limits_are_in_force_only_once_it_is_live. SIGNED 2026-10-27 by the owner; behaviour and scope unchanged.",
       "premise": {
         "cell": "admin.ops|PostConfigApply|ok",
         "status": 200
       },
       "signoff": {
         "who": "owner (Matthew Jackson)",
-        "when": "2026-10-19",
-        "ruling": "BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982), applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4: keep the fix over 1.5.5's install-before-validate, v1.5.5 main.rs:2704/2711); not a fresh owner signature"
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md): an apply's limits are in force only once its generation is live",
+        "previous": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-19",
+          "ruling": "BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982), applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4: keep the fix over 1.5.5's install-before-validate, v1.5.5 main.rs:2704/2711); not a fresh owner signature"
+        }
       },
       "expires": {
         "baseline": "1.5.5",
