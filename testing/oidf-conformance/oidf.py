@@ -31,9 +31,12 @@ THE THREE LEGS, all in one run:
 THE VERDICT: `pass` only when the control passed, the negative control failed exactly where it must,
 and every module of the subject's plan FINISHED with result PASSED (a SKIPPED module only with the
 suite's own reason, which `reason` carries). REVIEW (a module awaiting a human's sign-off on its
-screenshot) and WARNING are NOT a pass (orchestrator ruling 2026-10-26); FAILED, INTERRUPTED,
+screenshot) and WARNING are NOT a pass (orchestrator ruling 2026-10-26), with ONE exception: a
+REVIEW module the owner signed off in the committed `signoff.json` counts as passed, and only while
+the error page this run's browser captured for it hashes to the page the owner signed (a changed
+page is back to awaiting review; the owner ruling of 2026-10-27). FAILED, INTERRUPTED,
 UNKNOWN or an unfinished module is `fail`, named. `reason` opens with
-`<passed>/<total> pass, <n> awaiting review: <modules>`. Every module that did not pass has its
+`<passed>/<total> pass (<n> owner-reviewed: <modules>), <n> awaiting review: <modules>`. Every module that did not pass has its
 suite log, its screenshots and its test id kept under `$CONFORMANCE_OUT/review/` for that sign-off.
 The results are read from the suite's own plan export (`--export-dir`), held to the plan's own
 module list.
@@ -870,7 +873,32 @@ def leg_subject(suite, work, name, issuer, clients, modules=None):
             shots[info["testId"]] = suite.images(info["testId"])
     with open(os.path.join(d, "images.json"), "w") as f:
         json.dump(shots, f)
-    return rc, rows
+    return rc, rows, review_pages(d)
+
+
+def review_pages(leg_dir):
+    """{module: [sha256 of each page the suite's browser captured for a REVIEW condition]}: what an
+    owner sign-off (SIGNOFF) is matched against."""
+    pages = {}
+    for info, results in exported(os.path.join(leg_dir, "export")):
+        if info.get("result") != "REVIEW":
+            continue
+        pages[info.get("testName", "?")] = sorted(
+            hashlib.sha256(e["page_source"].encode()).hexdigest()
+            for e in results if e.get("result") == "REVIEW" and isinstance(e.get("page_source"), str))
+    return pages
+
+
+SIGNOFF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signoff.json")
+
+
+def signed_off():
+    """{module: page_sha256} from the committed owner sign-off file (absent file: none signed)."""
+    try:
+        with open(SIGNOFF) as f:
+            return {e["module"]: e["page_sha256"] for e in json.load(f)["signed"]}
+    except OSError:
+        return {}
 
 
 def run_all(work):
@@ -929,8 +957,8 @@ def run_all(work):
             try:
                 suite.reach(s.issuer)
                 say(f"{name}: running {PLAN}" + (f" modules {modules}" if modules else " (the whole plan)"))
-                rc, rows = leg_subject(suite, work, name, s.issuer, clients, modules)
-                record[name] = {"exit": rc, "modules": rows}
+                rc, rows, pages = leg_subject(suite, work, name, s.issuer, clients, modules)
+                record[name] = {"exit": rc, "modules": rows, "review_pages": pages}
             except (Refused, ValueError) as e:
                 record[f"{name}_error"] = str(e)
             finally:
@@ -945,14 +973,14 @@ def run_all(work):
 # THE VERDICT
 # ---------------------------------------------------------------------------------------------------
 
-def decide(record):
+def decide(record, signoff=None):
     """(status, armed, reason) from one run's record.
 
     `pass` only when EVERY module of the subject's plan FINISHED with result PASSED (orchestrator
     ruling 2026-10-26): a REVIEW is a module awaiting a human's sign-off on its screenshot, and a
     WARNING is the suite naming a shortfall, so neither is a pass. A SKIPPED module is a pass only
     with the suite's own reason, which `reason` carries. The reason opens with the count:
-    `<passed>/<total> pass, <n> awaiting review: <modules>`."""
+    `<passed>/<total> pass (<n> owner-reviewed: <modules>), <n> awaiting review: <modules>`."""
     if "instrument_error" in record:
         return "not-run", False, "the OIDF suite could not be run: " + record["instrument_error"]
     control = record.get("control") or {}
@@ -967,12 +995,19 @@ def decide(record):
     rows = sub["modules"]
     done = [(m, r, why) for m, s, r, why in rows if s == "FINISHED"]
     passed = [m for m, r, _ in done if r == "PASSED"]
-    review = [m for m, r, _ in done if r == "REVIEW"]
+    # A REVIEW is owner-reviewed only when the committed sign-off names the module AND the one page
+    # this run captured for it hashes to the signed page. Anything else is awaiting review.
+    signoff = signed_off() if signoff is None else signoff
+    pages = sub.get("review_pages") or {}
+    owner_ok = [m for m, r, _ in done if r == "REVIEW" and m in signoff and pages.get(m) == [signoff[m]]]
+    review = [m for m, r, _ in done if r == "REVIEW" and m not in owner_ok]
     warned = [f"{m} ({why})" if why else m for m, r, why in done if r == "WARNING"]
     skipped = [f"{m} ({why})" for m, r, why in done if r == "SKIPPED"]
     red = [f"{m} {s}/{r}" + (f" ({why})" if why else "") for m, s, r, why in rows
            if s != "FINISHED" or r not in ("PASSED", "REVIEW", "WARNING", "SKIPPED")]
-    head = f"{len(passed) + len(skipped)}/{len(rows)} pass"
+    head = f"{len(passed) + len(skipped) + len(owner_ok)}/{len(rows)} pass"
+    if owner_ok:
+        head += f" ({len(owner_ok)} owner-reviewed: " + ", ".join(owner_ok) + ")"
     if review:
         head += f", {len(review)} awaiting review: " + ", ".join(review)
     notes = [head]
