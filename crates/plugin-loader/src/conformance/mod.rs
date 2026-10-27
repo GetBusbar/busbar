@@ -258,9 +258,7 @@ impl Subject {
         s
     }
 
-    /// [`Subject::new`] over the `MACRO_DOOR` `plugin_door!` expands beside `door`. #1469 makes
-    /// `new` take the `MacroDoor` alone and keeps this name beside it, so
-    /// `Subject::of_macro(plugin::MACRO_DOOR, ..)` compiles before and after.
+    /// [`Subject::new`] over the `MACRO_DOOR` `plugin_door!` expands beside `door`.
     ///
     /// # Panics
     /// As [`Subject::new`].
@@ -275,7 +273,7 @@ impl Subject {
 
     /// [`Subject::new`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor): a `MacroDoor`'s, or a
     /// door a crate that exports its `door` function alone restates (`unsafe {
-    /// LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
+    /// LoadedDoor::from_raw(plugin::door) }`).
     ///
     /// # Panics
     /// As [`Subject::new`].
@@ -2172,8 +2170,7 @@ pub fn profile(debug: bool) {
 }
 
 /// THE DOOR A SUITE NAMES, as either form a plugin states it: its `door` function, or the
-/// `MACRO_DOOR` `plugin_door!` expands beside it. #1469 makes the suite take the `MacroDoor` alone;
-/// a plugin moves to `door: plugin::MACRO_DOOR` first, and the same line compiles before and after.
+/// `MACRO_DOOR` `plugin_door!` expands beside it.
 ///
 /// The two forms are told apart by method resolution: a `MacroDoor` answers its door function by
 /// value (`MacroDoorArg`); any other value (a door function) answers itself through a reference
@@ -2247,7 +2244,7 @@ macro_rules! conformance_suite {
         $crate::conformance_suite!(@tests);
     };
     // A door named by a `LoadedDoor` (a crate that exports its `door` function alone restates it:
-    // `loaded: unsafe { LoadedDoor::from_raw(plugin::door) }`), the name #1469 keeps.
+    // `loaded: unsafe { LoadedDoor::from_raw(plugin::door) }`).
     (
         loaded: $loaded:expr,
         cdylib: $cdylib:expr,

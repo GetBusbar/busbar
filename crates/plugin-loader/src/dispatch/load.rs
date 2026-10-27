@@ -115,9 +115,7 @@ impl LinkedRow {
         })
     }
 
-    /// [`LinkedRow::of`] over the `MACRO_DOOR` `plugin_door!` expands beside `door`. #1469 makes
-    /// `of` take the `MacroDoor` alone and keeps this name beside it, so
-    /// `LinkedRow::of_macro(plugin::MACRO_DOOR)` compiles before and after.
+    /// [`LinkedRow::of`] over the `MACRO_DOOR` `plugin_door!` expands beside `door`.
     ///
     /// # Errors
     ///
@@ -127,7 +125,7 @@ impl LinkedRow {
     }
 
     /// [`LinkedRow::of`] over a [`LoadedDoor`]: a `MacroDoor`, or a test's or the published suite's
-    /// restated door. #1469's name and signature, here first.
+    /// restated door.
     ///
     /// # Errors
     ///
@@ -146,10 +144,8 @@ impl LinkedRow {
 }
 
 /// A DOOR THE LOADER MAY ENTER: a [`MacroDoor`] the contract's macro built, or a door a test or
-/// harness restates by hand through the `unsafe` [`LoadedDoor::from_raw`]. #1469 makes
-/// [`LinkedRow::of`] take the `MacroDoor` alone and keeps this type for the rest; a hand-built door
-/// reaches a row through `LinkedRow::of_loaded(unsafe { LoadedDoor::from_raw(door) })` before and
-/// after.
+/// harness restates by hand through the `unsafe` [`LoadedDoor::from_raw`].
+/// A hand-built door reaches a row through `LinkedRow::of_loaded(unsafe { LoadedDoor::from_raw(door) })`.
 ///
 /// [`MacroDoor`]: busbar_contract::abi::sdk::door::MacroDoor
 #[derive(Debug, Clone, Copy)]
@@ -287,8 +283,7 @@ pub fn rendering_of_loaded(door: LoadedDoor) -> Result<Vec<u8>, LoadError> {
     rendering_of_raw(door.door)
 }
 
-/// [`rendering_of`] over a `MACRO_DOOR`, as [`LinkedRow::of_macro`]: the name #1469 keeps beside
-/// its `rendering_of(MacroDoor)`.
+/// [`rendering_of`] over a `MACRO_DOOR`, as [`LinkedRow::of_macro`].
 ///
 /// # Errors
 ///

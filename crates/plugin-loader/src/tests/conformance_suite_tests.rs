@@ -1684,8 +1684,7 @@ mod hook_orders {
 #[test]
 fn a_suite_names_its_door_by_function_or_by_macro_door_alike() {
     // `conformance_suite! { door: plugin::door, .. }` and `{ door: plugin::MACRO_DOOR, .. }` run
-    // over the one door function (the second spelling is the one that compiles once #1469 lands,
-    // and it compiles here first).
+    // over the one door function.
     let by_fn = crate::__conformance_door!(crate::plane_door_plugin::door);
     let by_macro = crate::__conformance_door!(crate::plane_door_plugin::MACRO_DOOR);
     let named = crate::plane_door_plugin::MACRO_DOOR.door_fn();

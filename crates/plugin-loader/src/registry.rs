@@ -222,16 +222,14 @@ impl LinkedPlugin {
         }
     }
 
-    /// [`LinkedPlugin::door`] over the `MACRO_DOOR` `plugin_door!` expands beside `door`. #1469
-    /// makes `door` take the `MacroDoor` alone and keeps this name beside it, so
-    /// `LinkedPlugin::of_macro(manifest, plugin::MACRO_DOOR)` compiles before and after.
+    /// [`LinkedPlugin::door`] over the `MACRO_DOOR` `plugin_door!` expands beside `door`.
     pub fn of_macro(manifest: Manifest, door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
         Self::door(manifest, door.door_fn())
     }
 
     /// [`LinkedPlugin::door`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor): a `MacroDoor`'s,
     /// or the door a crate that exports its `door` function alone restates (`unsafe {
-    /// LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
+    /// LoadedDoor::from_raw(plugin::door) }`).
     pub fn of_loaded(manifest: Manifest, door: crate::dispatch::LoadedDoor) -> Self {
         LinkedPlugin {
             manifest,
