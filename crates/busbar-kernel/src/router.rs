@@ -10,8 +10,8 @@ use axum::Router;
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, state, store, telemetry,
-    tls, transport, trust,
+    observability, operation, plane, plugin_routes, profile, proto, state, store, telemetry, tls,
+    transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -193,7 +193,7 @@ pub(crate) async fn reshape_body_limit_413(
             &path,
             &target,
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             OVERSIZED_MESSAGE,
         )
     };
@@ -237,12 +237,8 @@ pub(crate) async fn request_activity_tick(
 }
 
 /// Outermost middleware: stamps a standard `Server-Timing: busbar;dur=<ms>` response header
-/// reporting the latency Busbar itself added — total request wall-clock MINUS the upstream
-/// round-trip — so operators (and browser DevTools / APM tools) can see the gateway's own cost
-/// in-band on every response, without scraping `/metrics` or wiring traces. The upstream RTT is
-/// recorded by the forward path into the [`proxy::UPSTREAM_RTT_US`] task-local for the duration
-/// of this scope; a request that never dispatched upstream (admin / health / early error) reports
-/// its full processing time. W3C `Server-Timing` `dur` is milliseconds; emitted at µs precision.
+/// reporting the request's processing time. W3C `Server-Timing` `dur` is milliseconds; emitted at
+/// µs precision.
 ///
 /// Gated by `advanced.response_headers.server_timing` (default `false`) — but NOT with an internal
 /// `if` check like the pre-task-#139 version. `apply_common_layers` installs this middleware LAYER
@@ -255,14 +251,10 @@ pub(crate) async fn server_timing(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    use std::sync::atomic::Ordering;
-    let slot = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT));
     let start = std::time::Instant::now();
-    let mut resp = proxy::UPSTREAM_RTT_US
-        .scope(slot.clone(), next.run(req))
-        .await;
+    let mut resp = next.run(req).await;
     let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
-    let dur_ms = server_timing_dur_ms(total_us, slot.load(Ordering::Relaxed));
+    let dur_ms = server_timing_dur_ms(total_us, NO_UPSTREAM_RTT);
     if let Ok(v) = axum::http::HeaderValue::from_str(&format!("busbar;dur={dur_ms:.3}")) {
         resp.headers_mut()
             .insert(axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v);
@@ -290,7 +282,7 @@ pub(crate) async fn reshape_oversized_413(
             path,
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
             // CANONICAL kind for an oversized payload across the protocol writers.
-            crate::proxy::KIND_REQUEST_TOO_LARGE,
+            busbar_contract::protocol::KIND_REQUEST_TOO_LARGE,
             OVERSIZED_MESSAGE,
         )
     };
@@ -313,7 +305,7 @@ async fn reshape_oversized_413_with(
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok())
-        .is_some_and(|ct| ct.starts_with(crate::proxy::APPLICATION_JSON));
+        .is_some_and(|ct| ct.starts_with(busbar_contract::protocol::APPLICATION_JSON));
     if is_json {
         return resp;
     }
@@ -352,7 +344,7 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     // through `build_split_routers_with_limits` with the operator-configured values.
     build_router_with_limits(
         app,
-        busbar_kernel::proxy::max_translate_body_bytes(),
+        busbar_kernel_egress::upstream::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     )
@@ -1062,7 +1054,7 @@ fn request_panicked(
         uri.path(),
         target_of(uri),
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        crate::proxy::KIND_API_ERROR,
+        busbar_contract::protocol::KIND_API_ERROR,
         "internal error",
     )
 }

@@ -84,11 +84,10 @@ pub const DEFAULT_MAX_INBOUND_CONCURRENT: usize = 8192;
 pub const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 /// Default ceiling on a honored upstream `Retry-After` (seconds). Mirrors `store.rs` (24h).
 pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
-/// Default cap on a buffered upstream ERROR / verbatim-relay body (bytes). The literal lives ONCE, in
-/// the neutral `proxy` module (which owns the process-global this seeds), so the serde default here
-/// and the accessor a plane reads can never drift apart.
+/// Default cap on a buffered upstream ERROR / verbatim-relay body (bytes): the egress unit's
+/// default, so the serde default here and the accessor a plane reads can never drift apart.
 pub const DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES: usize =
-    crate::proxy::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
+    busbar_kernel_egress::upstream::UPSTREAM_ERROR_BODY_MAX_BYTES_DEFAULT;
 /// Default cap on a single `plugins.fetch:` download (bytes). Mirrors the same defense the
 /// upstream reads already apply (`proxy::wire::read_capped`): a mistyped or compromised `plugins.fetch` URL serving a multi-GB
 /// body must NOT be buffered whole into memory via an unbounded `resp.bytes()` read — that OOMs
@@ -177,7 +176,7 @@ pub fn default_max_auto_provisioned_groups() -> usize {
     0
 }
 pub fn default_hook_content_max_bytes() -> usize {
-    crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES
+    crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES
 }
 pub fn default_hard_down_cooldown_secs() -> u64 {
     DEFAULT_HARD_DOWN_COOLDOWN_SECS
@@ -697,17 +696,17 @@ fn mirror_derived_caps(slot: Option<&LimitsResolved>) {
     let cap = slot
         .map(|l| l.upstream_error_body_max_bytes)
         .unwrap_or(DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES);
-    crate::proxy::set_max_upstream_buffered_bytes(cap);
+    busbar_kernel_egress::upstream::set_max_upstream_buffered_bytes(cap);
     // The egress translate-body cap is `request_body_max_bytes` (one knob feeds both ingress and this
     // egress cap); mirror it with the SAME uninstalled-fallback the accessor uses.
     let translate_cap = slot
         .map(|l| l.request_body_max_bytes)
         .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES);
-    crate::proxy::set_max_translate_body_bytes(translate_cap);
-    // The hook CONTENT ceiling, with the uninstalled fallback the proxy global starts at, so a
+    busbar_kernel_egress::upstream::set_max_translate_body_bytes(translate_cap);
+    // The hook CONTENT ceiling, with the uninstalled fallback the hooks global starts at, so a
     // rejected apply's ceiling goes back with the rest of its limits (audit kernel-K1 #5).
     let hook_content = slot
         .map(|l| l.hook_content_max_bytes)
-        .unwrap_or(crate::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES);
-    crate::proxy::set_hook_content_max_bytes(hook_content);
+        .unwrap_or(crate::hooks::DEFAULT_HOOK_CONTENT_MAX_BYTES);
+    crate::hooks::set_hook_content_max_bytes(hook_content);
 }

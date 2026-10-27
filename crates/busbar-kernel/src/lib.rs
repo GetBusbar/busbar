@@ -279,7 +279,6 @@ pub mod plugin_routes;
 // kept as a re-export: one type, one home.
 pub mod profile;
 pub mod proto;
-pub mod proxy;
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
