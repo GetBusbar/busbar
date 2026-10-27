@@ -5923,9 +5923,14 @@ mod task_continuation {
         )
     }
 
-    /// Poll `tasks/get` until the task is `status` (or the test gives up).
+    /// How long a wait below may take before the test calls it a hang. It bounds a hang only: each
+    /// wait ends on the progress it waits for, so a slow run under load is never a failure.
+    const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// Poll `tasks/get` until the task is `status` (or [`HANG_GUARD`] passes).
     async fn until(rig: &Rig, task_id: &str, status: &str) -> serde_json::Value {
-        for _ in 0..250 {
+        let deadline = tokio::time::Instant::now() + HANG_GUARD;
+        while tokio::time::Instant::now() < deadline {
             let (_, body) = ask(rig, &rig.token, "tasks/get", task_id).await;
             if body["result"]["status"] == status {
                 return body;
@@ -6008,7 +6013,7 @@ mod task_continuation {
                 }
             }
         };
-        tokio::time::timeout(std::time::Duration::from_secs(10), wait)
+        tokio::time::timeout(HANG_GUARD, wait)
             .await
             .expect("the upstream call ran")
     }
