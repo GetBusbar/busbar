@@ -347,7 +347,7 @@ fn op_enter<'a, B: StoreSlots>(
     instance: &Instance<'_, Held<Served<B>>>,
     s: &'a Held<Served<B>>,
 ) -> Option<Op<'a>> {
-    let parked = instance.resume::<Parked>().map(|b| *b);
+    let parked = instance.resume_value::<Parked>();
     if instance.resuming() && parked.is_none() {
         return None;
     }
@@ -702,7 +702,7 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
             let Some(held) = instance.get() else {
                 return Outcome::Fault;
             };
-            let Some(parked) = instance.resume::<Parked>().map(|b| *b) else {
+            let Some(parked) = instance.resume_value::<Parked>() else {
                 return Outcome::Fault;
             };
             let mut cx = Op::enter(ticket, host.as_ref(), Some(parked), None);
@@ -1096,31 +1096,65 @@ slot!(
 /// [`Op::checkout`](super::Op::checkout).
 #[macro_export]
 macro_rules! store_door {
+    // Every argument after the max-inflight is optional and keeps this order: the needs it states,
+    // its Statement's extensions (its `declares` document under `EXT_DECLARES`, ARCHITECT ruling
+    // 2026-10-21; BUSBAR-1.6.0.md l.246; a `Blob` built by `statement_extensions!`), and the
+    // settings paths it declares secret (`secret_refs`, `.`-separated, `*` = any key or index;
+    // `busbar_contract::secret_fields`).
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(,)?) => {
-        $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            ::core::ptr::null::<$crate::abi::host::conn::connector::Need>(), 0,
-            $crate::abi::mechanism::call::Blob::ABSENT);
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, &[]);
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(,)?) => {
-        const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
-        $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            __BUSBAR_STORE_NEEDS.as_ptr(), __BUSBAR_STORE_NEEDS.len(),
-            $crate::abi::mechanism::call::Blob::ABSENT);
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, &[]);
     };
-    // THE STATEMENT'S EXTENSIONS (its `declares` document under `EXT_DECLARES`, ARCHITECT ruling
-    // 2026-10-21; BUSBAR-1.6.0.md l.246): a `Blob` built by `statement_extensions!`.
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr $(,)?) => {
-        $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            ::core::ptr::null::<$crate::abi::host::conn::connector::Need>(), 0, $ext);
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, &[]);
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
         extensions: $ext:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, &[]);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, secret_refs: $refs:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, $refs);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
+        secret_refs: $refs:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, $refs);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr,
+        secret_refs: $refs:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, $refs);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
+        extensions: $ext:expr, secret_refs: $refs:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, $refs);
+    };
+    (@all $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, ABSENT,
+        $refs:expr) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs,
+            $crate::abi::mechanism::call::Blob::ABSENT, $refs);
+    };
+    (@all $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $ext:expr,
+        $refs:expr) => {
         const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
+        const __BUSBAR_STORE_SECRET_REFS: &[$crate::abi::mechanism::call::AbiStr] = $refs;
         $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            __BUSBAR_STORE_NEEDS.as_ptr(), __BUSBAR_STORE_NEEDS.len(), $ext);
+            if __BUSBAR_STORE_NEEDS.is_empty() {
+                ::core::ptr::null::<$crate::abi::host::conn::connector::Need>()
+            } else {
+                __BUSBAR_STORE_NEEDS.as_ptr()
+            },
+            __BUSBAR_STORE_NEEDS.len(),
+            $ext,
+            if __BUSBAR_STORE_SECRET_REFS.is_empty() {
+                ::core::ptr::null::<$crate::abi::mechanism::call::AbiStr>()
+            } else {
+                __BUSBAR_STORE_SECRET_REFS.as_ptr()
+            },
+            __BUSBAR_STORE_SECRET_REFS.len());
     };
     (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr,
-        $ext:expr) => {
+        $ext:expr, $refs:expr, $refs_len:expr) => {
         const __BUSBAR_STORE_TAIL: $crate::abi::store::StoreTail =
             $crate::abi::sdk::store::door::tail::<$store>();
         const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 1] =
@@ -1136,6 +1170,8 @@ macro_rules! store_door {
                 needs: $needs,
                 needs_len: $needs_len,
                 extensions: $ext,
+                secret_refs: $refs,
+                secret_refs_len: $refs_len,
                 ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
             },
             lifecycle: {

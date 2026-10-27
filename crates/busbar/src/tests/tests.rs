@@ -1088,7 +1088,7 @@ fn one_seal_after_two_reloads() {
 
     // (c) BOOK IS BOOT-ONLY: every call of `root::boot::book` in the crate's code (comments and the
     // test modules skipped) is the boot's one, in `main.rs`.
-    let calls = book_call_sites(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    let calls = book_call_sites(&std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("src"));
     assert_eq!(
         calls,
         vec!["main.rs".to_string()],
