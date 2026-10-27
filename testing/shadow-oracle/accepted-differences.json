@@ -2640,13 +2640,12 @@
       "kind": "improvement",
       "changelog": "A same-dialect request reaches the upstream as the caller's own bytes.",
       "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs) ; route.529|failover|primary named owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\" ; route.cheapest|card-swap named by the ARCHITECT 2026-10-05 under the same premise",
-      "cells": "^(llm\\.fidelity\\|(anthropic|openai|responses|cohere|gemini|bedrock)\\|request-bytes|route\\.529\\|failover\\|primary|route\\.cheapest\\|card-swap|webrequest\\|gate\\|abstain|webrequest\\|gate\\|order|webrequest\\|gate\\|prompt-ro|webrequest\\|gate\\|sidecar-500-nothing|webrequest\\|gate\\|sidecar-500-reject|webrequest\\|tap\\|notify|webrequest\\|transform\\|rewrite)$",
+      "cells": "^(route\\.529\\|failover\\|primary|route\\.cheapest\\|card-swap|webrequest\\|gate\\|abstain|webrequest\\|gate\\|order|webrequest\\|gate\\|prompt-ro|webrequest\\|gate\\|sidecar-500-nothing|webrequest\\|gate\\|sidecar-500-reject|webrequest\\|tap\\|notify|webrequest\\|transform\\|rewrite)$",
       "expected_cells": 9,
       "classes": [
-        "body",
-        "headers"
+        "body"
       ],
-      "rationale": "DIALECT-FIDELITY-DESIGN F2/F6 (lane DF-WIRE). Within one dialect the request body is relayed as the caller's bytes; the members busbar governs are edited in place by byte-level member splices (codec/json_splice.rs): the mapped `model` (replaced where it stands, or inserted after the opening brace), the metering `stream_options.include_usage` (set where it stands, or the object inserted after the brace, as 1.5.5's splice already did for a body without `stream_options`), busbar's own router keys, the Gemini/Bedrock `model`/`stream` the arrival carries for routing (removed again, both ride the URL), a `path_base` reshape, and a committed `prompt: rw` rewrite (only the members and elements it changed). 1.5.5 re-serialized every such body with its object keys sorted, numbers and escapes normalized, and so did 1.6.0 before this change; an unchanged body already went out verbatim. Bytes move only for a body that is not already compact and key-sorted. The oracle's client sends compact key-sorted JSON (build-request.py, sort_keys=True), so no recorded cell moves: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. Pinned by lazy_body_tests::a_same_dialect_hop_is_the_callers_bytes_with_governed_splices (six dialects, RED arm: a re-serialize sorts `z` after `a` and prints 1.50 as 1.5), exchange_attempt::a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it, json_splice_tests, inject_include_usage_tests::an_existing_stream_options_is_edited_in_place. A move toward the caller's real protocol bytes: pre-approved by the LLM DIALECT FIDELITY standing rule and R4, no per-item sign-off. The premise probes the same-dialect gemini and openai stream cells, whose upstream body is the caller's. NAMED 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"): route.529|failover|primary sends its chat body in the caller's own member order (`{\"model\":\"cap-fo\",\"messages\":[...]}`), not key-sorted, so the same-dialect primary's upstream body is the caller's bytes with the mapped model spliced in place, where 1.5.5 re-serialized it key-sorted; the translated fallback's body is identical to 1.5.5. Premise: that cell's upstream body IS the caller's bytes (the pointer probe). route.cheapest|card-swap NAMED 2026-10-05 by the ARCHITECT, who extends the owner's scoped entries under their existing premise (ruling on P6 ORACLE-STRICT 9e95f01ae1): both of its upstream request bodies are the caller's bytes (`{\"model\":\"cap-cheapest\",\"messages\":[...]}` in the caller's member order, model mapped in place to m-cheap / m-dear), where 1.5.5 re-serialized them key-sorted; its header order is S-16b's. Premise: each upstream body IS the caller's bytes. WIDENED 2026-10-24 (OWNER, in session): the seven webrequest capture cells whose chat is served on the same openai door, a same-dialect route: the upstream request body is the caller's bytes, as on route.cheapest|card-swap.",
+      "rationale": "DIALECT-FIDELITY-DESIGN F2/F6 (lane DF-WIRE). Within one dialect the request body is relayed as the caller's bytes; the members busbar governs are edited in place by byte-level member splices (codec/json_splice.rs): the mapped `model` (replaced where it stands, or inserted after the opening brace), the metering `stream_options.include_usage` (set where it stands, or the object inserted after the brace, as 1.5.5's splice already did for a body without `stream_options`), busbar's own router keys, the Gemini/Bedrock `model`/`stream` the arrival carries for routing (removed again, both ride the URL), a `path_base` reshape, and a committed `prompt: rw` rewrite (only the members and elements it changed). 1.5.5 re-serialized every such body with its object keys sorted, numbers and escapes normalized, and so did 1.6.0 before this change; an unchanged body already went out verbatim. Bytes move only for a body that is not already compact and key-sorted. The oracle's client sends compact key-sorted JSON (build-request.py, sort_keys=True), so no recorded cell moves: the cells are OWED, `cells` names them and expected_cells is 0, the way AUTH-ROW's owed cells are written. Pinned by lazy_body_tests::a_same_dialect_hop_is_the_callers_bytes_with_governed_splices (six dialects, RED arm: a re-serialize sorts `z` after `a` and prints 1.50 as 1.5), exchange_attempt::a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it, json_splice_tests, inject_include_usage_tests::an_existing_stream_options_is_edited_in_place. A move toward the caller's real protocol bytes: pre-approved by the LLM DIALECT FIDELITY standing rule and R4, no per-item sign-off. The premise probes the same-dialect gemini and openai stream cells, whose upstream body is the caller's. NAMED 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"): route.529|failover|primary sends its chat body in the caller's own member order (`{\"model\":\"cap-fo\",\"messages\":[...]}`), not key-sorted, so the same-dialect primary's upstream body is the caller's bytes with the mapped model spliced in place, where 1.5.5 re-serialized it key-sorted; the translated fallback's body is identical to 1.5.5. Premise: that cell's upstream body IS the caller's bytes (the pointer probe). route.cheapest|card-swap NAMED 2026-10-05 by the ARCHITECT, who extends the owner's scoped entries under their existing premise (ruling on P6 ORACLE-STRICT 9e95f01ae1): both of its upstream request bodies are the caller's bytes (`{\"model\":\"cap-cheapest\",\"messages\":[...]}` in the caller's member order, model mapped in place to m-cheap / m-dear), where 1.5.5 re-serialized them key-sorted; its header order is S-16b's. Premise: each upstream body IS the caller's bytes. WIDENED 2026-10-24 (OWNER, in session): the seven webrequest capture cells whose chat is served on the same openai door, a same-dialect route: the upstream request body is the caller's bytes, as on route.cheapest|card-swap. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): on these capture cells `body` is the whole recording (the client's answer, the hook sidecar's exchange, every upstream request), so the class blanket forgave far more than the member order it was registered for. It is now a transform: only an upstream LLM body that is exactly the caller's `{\"model\":...,\"messages\":[...]}` bytes is rewritten to 1.5.5's key-sorted bytes (`/upstream/N/body` and the same bytes at the end of `/upstream/N/raw`). Everything else, the hook gate's decision, what the sidecar is sent, the client's answer, stays judged. The user-agent/accept pass-through on these cells is its own exact header spec (the sibling entry `DF-WIRE-UA`), taken out of this blanket. The never-recorded llm.fidelity request-bytes ids leave the regex: a transform cannot speak for an egress record nobody has seen.",
       "premise": {
         "all": [
           {
@@ -2691,7 +2690,88 @@
       "expires": {
         "baseline": "1.5.5",
         "by": "2026-12-31"
+      },
+      "transform": {
+        "candidate": [
+          [
+            "^\\{\"model\":\"(m-[a-z]+)\",\"messages\":\\[\\{\"role\":\"user\",\"content\":\"ping\"\\}\\]\\}$",
+            "{\"messages\":[{\"content\":\"ping\",\"role\":\"user\"}],\"model\":\"\\1\"}"
+          ],
+          [
+            "^\\{\"model\":\"m-cap\",\"messages\":\\[\\{\"content\":\"rewritten by the oracle sidecar\",\"role\":\"user\"\\}\\]\\}$",
+            "{\"messages\":[{\"content\":\"rewritten by the oracle sidecar\",\"role\":\"user\"}],\"model\":\"m-cap\"}"
+          ]
+        ]
       }
+    },
+    {
+      "id": "DF-WIRE-UA same-dialect capture hops carry the caller's user-agent and accept (narrowed out of DF-WIRE)",
+      "kind": "improvement",
+      "changelog": "A same-dialect request reaches the upstream as the caller's own bytes.",
+      "by": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE (registered under a standing ruling; no owner signature on this entry); STANDING RULE LLM DIALECT FIDELITY (2026-10-02) + R4 (invisible to upstreams except what busbar governs) ; route.529|failover|primary named owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\" ; route.cheapest|card-swap named by the ARCHITECT 2026-10-05 under the same premise",
+      "cells": "^(route\\.529\\|failover\\|primary|route\\.cheapest\\|card-swap|webrequest\\|gate\\|abstain|webrequest\\|gate\\|order|webrequest\\|gate\\|prompt-ro|webrequest\\|gate\\|sidecar-500-nothing|webrequest\\|gate\\|sidecar-500-reject|webrequest\\|tap\\|notify|webrequest\\|transform\\|rewrite)$",
+      "expected_cells": 9,
+      "classes": [
+        "body"
+      ],
+      "headers": [
+        {
+          "name": "user-agent",
+          "golden": "OpenAI/Python 1.54.0",
+          "candidate": "curl/8.5.0"
+        },
+        {
+          "name": "accept",
+          "golden": "application/json",
+          "candidate": "*/*"
+        }
+      ],
+      "premise": {
+        "all": [
+          {
+            "all": [
+              {
+                "cell": "llm|gemini|gemini|request|ok",
+                "status": 200
+              },
+              {
+                "cell": "llm|openai|openai|request|ok_stream",
+                "status": 200
+              }
+            ]
+          },
+          {
+            "cell": "route.529|failover|primary",
+            "pointer": "/upstream/0/body",
+            "equals": "{\"model\":\"m-first\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          },
+          {
+            "cell": "route.cheapest|card-swap",
+            "pointer": "/upstream/0/body",
+            "equals": "{\"model\":\"m-cheap\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          },
+          {
+            "cell": "route.cheapest|card-swap",
+            "pointer": "/upstream/1/body",
+            "equals": "{\"model\":\"m-dear\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "ruling:§OWNER 2026-10-02: THE LLM DIALECT FIDELITY RULE",
+        "when": "2026-10-02",
+        "ruling": "LLM DIALECT FIDELITY (OWNER STANDING RULE 2026-10-02) + R4 (HARD RULE invisible to upstreams, 2026-10-02); DIALECT-FIDELITY-DESIGN FINAL F2/F6; route.529|failover|primary named 2026-10-05 (owner instruction 2026-10-05 relayed by the ARCHITECT (P6 ORACLE-STRICT): \"these are already covered by signed rulings; apply them, no new signature needed\"); route.cheapest|card-swap named 2026-10-05 by the ARCHITECT under the existing premise",
+        "widened_2026_10_24": {
+          "who": "owner (Matthew Jackson)",
+          "when": "2026-10-24",
+          "ruling": "owner answers in session 2026-10-24 ~14:45Z (step 4 oracle sign-offs, ~/Developer/tmp/cleanup/OWNER-ASKS-step4.md)"
+        }
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "SPLIT 2026-10-27 out of DF-WIRE, whose `body` blanket forgave these two headers on these nine capture cells along with everything else in the recording. Same cells, same signature, strictly less forgiven: only the upstream request's `user-agent` from 1.5.5's SDK value to the caller's `curl/8.5.0`, and `accept` from `application/json` to the caller's `*/*`, exactly the pass-through 581 (R4, decision 76) names on the same-dialect llm cells. Any other header or value stays a divergence."
     },
     {
       "id": "DF-DROP an untranslatable content block is dropped, not sent as empty text",
@@ -2789,7 +2869,15 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "rationale": "#85 (OWNER 2026-09-28 PLUGIN LOGGING: one log file per plugin instance, not the host log) moves the llm plane's log lines, as every plugin's, to its own plugin log file. MEASURED 2026-10-03 (lane-dg-llm, door build): the three cells read busbar.log after a request whose image_url.detail the target dialect cannot carry. 1.5.5 wrote the plane's warning `dropping image_url.detail: ... detail=\"high\"` into busbar.log; with the llm plane served through its door the host writes it to the plane's own plugin log file (recorded: work/capture/logs/plugins/llm.log holds `WARN llm plane busbar_plane_llm::codec::chat_handle: dropping image_url.detail: no cross-protocol carrier exists for this cost/latency hint (not even on a same-protocol OpenAI round-trip) detail=\"high\"`), so busbar.log lacks that one line. The upstream request, the status and every money class are unchanged; only the read_file step's body differs."
+      "rationale": "#85 (OWNER 2026-09-28 PLUGIN LOGGING: one log file per plugin instance, not the host log) moves the llm plane's log lines, as every plugin's, to its own plugin log file. MEASURED 2026-10-03 (lane-dg-llm, door build): the three cells read busbar.log after a request whose image_url.detail the target dialect cannot carry. 1.5.5 wrote the plane's warning `dropping image_url.detail: ... detail=\"high\"` into busbar.log; with the llm plane served through its door the host writes it to the plane's own plugin log file (recorded: work/capture/logs/plugins/llm.log holds `WARN llm plane busbar_plane_llm::codec::chat_handle: dropping image_url.detail: no cross-protocol carrier exists for this cost/latency hint (not even on a same-protocol OpenAI round-trip) detail=\"high\"`), so busbar.log lacks that one line. The upstream request, the status and every money class are unchanged; only the read_file step's body differs. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): the body blanket forgave the whole capture, the upstream request the image-detail cells exist to test included. It is now a transform on the busbar.log read only: a busbar.log that ends at the store warning reads as ending with 1.5.5's `dropping image_url.detail` line. The upstream request, the status and every other line stay judged.",
+      "transform": {
+        "candidate": [
+          [
+            "(configure a durable store plugin for persistence)\\z",
+            "\\1\\n<TS>  WARN dropping image_url.detail: no cross-protocol carrier exists for this cost/latency hint (not even on a same-protocol OpenAI round-trip) detail=\"high\""
+          ]
+        ]
+      }
     },
     {
       "id": "Q-STORE migrate names the store",
@@ -4057,7 +4145,15 @@
         "cell": "export|request-log-webhook|loopback-refused",
         "body_contains": "busbar: 1 models"
       },
-      "rationale": "OWNER 2026-10-24 (in session): plugins log to their own files, busbar to its own (BUSBAR-1.6.0.md §11.2). The refused sink still delivers nothing; only where its line is written moved."
+      "rationale": "OWNER 2026-10-24 (in session): plugins log to their own files, busbar to its own (BUSBAR-1.6.0.md §11.2). The refused sink still delivers nothing; only where its line is written moved. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): the body blanket forgave the whole capture, including the upstream list that proves nothing was delivered to the loopback sink. It is now a transform on the busbar.log read only: a busbar.log that ends at the store warning reads as ending with 1.5.5's refusal line. The upstream list (no delivery to the sink), the status and every other line stay judged.",
+      "transform": {
+        "candidate": [
+          [
+            "(configure a durable store plugin for persistence)\\z",
+            "\\1\\n<TS> ERROR observability.request_log_webhook_url must be an https:// URL (got 'http://127.0.0.1:<PORT>/sidecar'); disabling this webhook exporter"
+          ]
+        ]
+      }
     },
     {
       "id": "PG-TEXT the postgres store names the server's error",
@@ -4082,7 +4178,19 @@
         "cell": "store.boot|postgres|key-value",
         "body_contains": "plugin load failed"
       },
-      "rationale": "OWNER 2026-10-24 (in session): signed as an improvement (busbar-store-postgres render_pg_error). SCOPE 5 -> 7 (OWNER 2026-10-25, ORACLE-SIGNOFF G10): localhost (dialled since a074d076c5) and multi-host (dialled again since #1676) now reach the capture mock and print the same `28000: ...` server text as their five siblings; recorded on Linux at 351d7ee81f."
+      "rationale": "OWNER 2026-10-24 (in session): signed as an improvement (busbar-store-postgres render_pg_error). SCOPE 5 -> 7 (OWNER 2026-10-25, ORACLE-SIGNOFF G10): localhost (dialled since a074d076c5) and multi-host (dialled again since #1676) now reach the capture mock and print the same `28000: ...` server text as their five siblings; recorded on Linux at 351d7ee81f. NARROWED 2026-10-27 (ORACLE-116 review, ~/Developer/tmp/cleanup/core/ORACLE-116-REVIEW.md): the body blanket forgave the exit code and the recorded pg StartupMessage/SSLRequest exchange the sslmode cells exist to test, and shadowed N34-STORE-BOOT-POSTGRES's rename. It is now a transform on the error clause only: the server's `28000: oracle capture: no database here` (the capture mock's ErrorResponse) reads as 1.5.5's `db error`, and the TLS reason after `error performing TLS handshake` is dropped. The plugin name is N34-STORE-BOOT-POSTGRES's again; the exit code and the pg exchange stay judged.",
+      "transform": {
+        "candidate": [
+          [
+            "(plugin 'busbar-store-postgres(?:-plugin)?' open failed: )28000: oracle capture: no database here$",
+            "\\1db error"
+          ],
+          [
+            "(plugin 'busbar-store-postgres(?:-plugin)?' open failed: error performing TLS handshake): [^\\n]+$",
+            "\\1"
+          ]
+        ]
+      }
     },
     {
       "id": "DRIFT the webrequest hook status reports no false drift",
