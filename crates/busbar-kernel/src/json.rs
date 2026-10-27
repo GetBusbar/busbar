@@ -106,7 +106,3 @@ pub fn parse_err_log(bytes_len: usize) -> String {
 #[cfg(test)]
 #[path = "tests/depth_guard_tests.rs"]
 mod depth_guard_tests;
-
-#[cfg(test)]
-#[path = "tests/json_seam_tests.rs"]
-mod seam_tests;

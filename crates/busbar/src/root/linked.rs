@@ -202,7 +202,9 @@ pub type LayersOf = fn() -> &'static [&'static str];
 /// Statement's name held equal to its own claim, the tail's `composes_over`, the claim rows'
 /// `session`), and its build, claims, upgrade lines, first-line claims and offered points are read
 /// off the same door. The generated linked table expands one per `transport` row, so every
-/// transport, whatever its crate exports beside `door`, is linked through this one path.
+/// transport, whatever its crate exports beside `door`, is linked through this one path. Core alone
+/// links no transport, so it expands nowhere there.
+#[allow(unused_macros)]
 macro_rules! linked_transport {
     ($door:path) => {{
         fn facts() -> &'static $crate::root::doors::RowFacts {
@@ -322,7 +324,7 @@ pub fn linked_exports(
         .map(|d| {
             manifest(d.name, d.alias, d.declares)
                 .map(|m| crate::root::loader::LinkedPlugin::door(m, d.door))
-                .map(busbar_kernel::preflight::answering_former_names)
+                .map(crate::root::boot::answering_former_names)
         })
         .collect::<Result<Vec<_>, String>>()?;
     // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
@@ -419,7 +421,7 @@ pub fn register_stores(linked: &Linked) {
     match link_secrets(linked.secrets, &declared) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
-            registry_build: Some(crate::root::boot::registry),
+            registry_build: Some(crate::root::boot::registry_rows),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
             hook_names: crate::LINKED_HOOK_NAMES,
@@ -432,7 +434,12 @@ pub fn register_stores(linked: &Linked) {
             rate_apply: Some(&crate::root::kernel::CardRepricer),
             rate_epoch: Some(&crate::root::kernel::CardRepricer),
             export_axis: Some(&crate::root::exports::EXPORTS),
-            trust_policy: Some(crate::root::boot::trust_policy),
+            admission: Some(&crate::root::admission::ADMISSION),
+            durable: Some(&crate::root::admission::DURABLE),
+            plugin_logs: Some(crate::root::admission::plugin_logs),
+            hook_answers: Some(crate::root::admission::hook_answers),
+            auth_chain_module: Some(crate::root::admission::auth_chain_module),
+            dispatch_latched: Some(crate::root::admission::dispatch_latched),
             auth_axis: Some(crate::root::dispatch::auth_axis),
             config_projection: Some(crate::root::door_steps::door_config),
         }),
@@ -991,18 +998,6 @@ fn catalogue_entries(
         }
     }
     Ok(declared)
-}
-
-/// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
-/// (the manifest's `plane-sections` axis, emitted by the build script as a `linked_*` cfg): the
-/// parse-time section list a cross-plane hook refusal reads. The `egress` axis binds nothing here:
-/// a plane dials through the one connector. The egress-trust host is installed by `run` once the
-/// configuration loads, over the destination guard.
-pub fn register_seams() {
-    #[cfg(linked_plane_sections)]
-    busbar_kernel::config::plane_sections::install_plane_sections(
-        busbar_kernel::config::plane_sections::config_sections,
-    );
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a

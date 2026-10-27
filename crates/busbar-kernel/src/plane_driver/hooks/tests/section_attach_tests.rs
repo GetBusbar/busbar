@@ -66,16 +66,16 @@ fn binder(plane_key: &str) -> HostHooks {
     let app = app
         .hook_env(crate::test_support::test_hook_env(
             &["test-hook"],
-            busbar_plugin_loader::sign::HookNeeds {
-                prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-                user: busbar_plugin_loader::sign::NeedLevel::Ro,
+            crate::test_support::HookNeeds {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
         ))
         .hook("closed", gate("ro"))
         .hook("redact", gate("rw"))
         .build();
     HostHooks {
-        host: crate::plane_host::engine_host(&app),
+        host: crate::plane_driver::engine_host(&app),
         caller: Arc::new(NoCaller),
         dialects: vec!["dialect-a".to_string()],
         plane_key: plane_key.to_string(),

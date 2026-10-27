@@ -241,7 +241,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                         return Err(Stopped::Unreadable);
                     }
                     if let Some(body) = &next.rewritten {
-                        self.lock().body = Some(Arc::from(body.as_slice()));
+                        self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
                     }
                     view = next;
                 }
@@ -306,7 +306,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     status,
                     "a unit refused by a hook gate"
                 );
-                return Err(veto_by(status, message, hook));
+                return Err(veto_by(status, message, &hook));
             }
         }
         Ok(())

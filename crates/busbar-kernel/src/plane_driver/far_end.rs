@@ -74,7 +74,7 @@ use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
 use super::hooks::{CandidateFacts, Candidates, Constraint};
 use super::route::{FarEnd, FarPiece, OutboundRequest, Pick};
 
-/// The bytes one read of the far end takes.
+/// The bytes one read of the far end takes: the size of a unit's one read buffer ([`Scratch`]).
 const READ_BYTES: usize = 16 * 1024;
 
 /// The longest pause between two offers of a held far end's frame its connection's buffer had no
@@ -346,6 +346,7 @@ impl Egress {
             described: None,
             signals: None,
             constraint: Mutex::new(None),
+            scratch: Mutex::new(Vec::new()),
         }
     }
 
@@ -384,6 +385,7 @@ impl Egress {
             described: None,
             signals: None,
             constraint: Mutex::new(None),
+            scratch: Mutex::new(Vec::new()),
         })
     }
 }
@@ -513,6 +515,9 @@ pub struct EgressFarEnd<'e> {
     signals: Option<Arc<dyn MemberSignals>>,
     /// The hooks' constraint on the walk, once the request stage set one.
     constraint: Mutex<Option<Constraint>>,
+    /// The unit's one read buffer, lent to each read of the far end in turn ([`Scratch`]); empty
+    /// until the first read.
+    scratch: Mutex<Vec<u8>>,
 }
 
 /// ONE MEMBER'S LIVE STANDING, as the ranking hooks read it (1.5.5 fed every candidate these from
@@ -718,6 +723,39 @@ impl Head {
 impl Drop for Head {
     fn drop(&mut self) {
         self.wipe();
+    }
+}
+
+/// THE UNIT'S READ BUFFER, LENT TO ONE READ: a unit's reads of its far end share one
+/// [`READ_BYTES`] buffer, allocated at its first read, instead of each read zeroing a fresh one;
+/// a piece leaves it as a copy of the piece's own length. The buffer goes back to the far end when
+/// the read is done, or when the read's future is dropped mid-await. A read that finds it already
+/// lent (no unit reads twice at once) is lent a fresh one.
+struct Scratch<'a> {
+    buf: Vec<u8>,
+    home: &'a Mutex<Vec<u8>>,
+}
+
+impl<'a> Scratch<'a> {
+    fn lend(home: &'a Mutex<Vec<u8>>) -> Self {
+        let mut buf = std::mem::take(
+            &mut *home
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if buf.len() != READ_BYTES {
+            buf = vec![0u8; READ_BYTES];
+        }
+        Scratch { buf, home }
+    }
+}
+
+impl Drop for Scratch<'_> {
+    fn drop(&mut self) {
+        *self
+            .home
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = std::mem::take(&mut self.buf);
     }
 }
 
@@ -1485,10 +1523,10 @@ impl EgressFarEnd<'_> {
             };
             (conn, live.answered, wait)
         };
-        let mut buf = vec![0u8; READ_BYTES];
+        let mut scratch = Scratch::lend(&self.scratch);
         let read = tokio::time::timeout(
             Duration::from_millis(wait_ms),
-            std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut buf)),
+            std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut scratch.buf)),
         )
         .await;
         let piece = match read {
@@ -1503,6 +1541,7 @@ impl EgressFarEnd<'_> {
             Err(_) | Ok(Err(_)) => return Some(self.cut(token)),
             Ok(Ok(piece)) => piece,
         };
+        let buf = &scratch.buf;
         let out = match piece.kind {
             PieceKind::Completion => self.end(true),
             // THE FAR END'S HEAD (HEAD-FIELDS: a framer yields the response head as the FIRST
@@ -1519,6 +1558,8 @@ impl EgressFarEnd<'_> {
             }),
             PieceKind::Body => self.first(token, &piece, buf[..piece.len].to_vec()),
         };
+        // The buffer goes back before a failed-over answer is read through on it.
+        drop(scratch);
         // A failure the walk fails over is read through before it is recorded and left.
         let failing = self
             .lock()
@@ -1842,7 +1883,7 @@ impl EgressFarEnd<'_> {
     async fn failed_over(&self, token: &Pass<Route>) -> FarPiece {
         let e = self.egress;
         let mut left = e.error_body_max;
-        let mut buf = vec![0u8; READ_BYTES];
+        let mut scratch = Scratch::lend(&self.scratch);
         while left > 0 {
             let (conn, wait_ms) = {
                 let w = self.lock();
@@ -1865,7 +1906,7 @@ impl EgressFarEnd<'_> {
             };
             let read = tokio::time::timeout(
                 Duration::from_millis(wait_ms),
-                std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut buf)),
+                std::future::poll_fn(|cx| e.conns.poll_read(e.caller, conn, cx, &mut scratch.buf)),
             )
             .await;
             match read {

@@ -622,7 +622,7 @@ pub use busbar_kernel_identity::{
 /// `digest` (the plaintext never crosses the seam), answering for every provider the effective
 /// `providers` back with its module ([`Operator::backed`]).
 pub fn open_operator(
-    registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+    registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     digest: Option<String>,
     providers: &crate::config::IdentityProviders,
 ) -> Result<Operator, String> {
@@ -642,9 +642,9 @@ pub fn open_operator(
 }
 
 /// Why no door on the auth axis answers `module`, in the registry's own words: the kind-neutral
-/// refusal every axis gives ([`busbar_plugin_loader::PluginRegistry::kind_refusal`]).
+/// refusal every axis gives ([`busbar_contract::plugin_rows::PluginRows::kind_refusal`]).
 pub(crate) fn auth_refusal(
-    registry: &busbar_plugin_loader::PluginRegistry,
+    registry: &dyn busbar_contract::plugin_rows::PluginRows,
     module: &str,
 ) -> String {
     registry.kind_refusal(
@@ -684,7 +684,7 @@ impl AdminAuthChain {
     /// silently-dropped module. Runs at boot AND reload (inside `build_app_from_config`).
     pub fn build(
         cfg: &AuthCfg,
-        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
         let mut modules: std::collections::HashMap<String, AdminModule> =
@@ -729,7 +729,7 @@ impl AdminAuthChain {
                     // A module no door answers is refused in the registry's own words (a name only
                     // a door's Statement alias answers is the axis's).
                     if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry, other)));
+                        return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
                     // The host label is unique per opened instance: the admin chain's provider,
                     // apart from a data-plane provider of the same name.
@@ -780,7 +780,7 @@ impl AuthMiddleware {
     /// off; the instance is opened under it as its host label.
     pub fn new(
         cfg: &AuthCfg,
-        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
@@ -850,7 +850,7 @@ impl AuthMiddleware {
                     // A module no door answers is refused in the registry's own words (a name only
                     // a door's Statement alias answers is the axis's).
                     if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry, other)));
+                        return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
                     let calls = axis
                         .open(other, &entry.name, &serde_json::Value::Object(resolved))
@@ -949,7 +949,7 @@ impl AuthMiddleware {
     pub fn new_builtin(cfg: &AuthCfg) -> Self {
         let mut mw = Self::new(
             cfg,
-            &std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+            &crate::test_support::rows::empty(),
             &crate::config::secret::SecretResolver::builtins_only(),
         )
         .expect("builtin-only auth chain never fails to construct");
@@ -2706,12 +2706,12 @@ pub fn resolve_data_plane_identity(
 }
 
 /// Whether an identified principal that earned NO governance key is refused whatever its roles and
-/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None` such a principal
-/// meets no pool ACL and no budget, and its spend is booked to the `anonymous` actor. `false` is
-/// 1.5.5's behaviour, which this build keeps until the owner signs the change (Q128 u27): the
-/// three-part guard of v1.5.5 crates/busbar/src/auth/mod.rs:1543. The owner's signature flips this
-/// one line.
-pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = false;
+/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None`, such a principal
+/// met no pool ACL and no budget and its spend was booked to the `anonymous` actor (1.5.5's
+/// three-part guard, v1.5.5 crates/busbar/src/auth/mod.rs:1543). OWNER-SIGNED 2026-10-24 (M30): an
+/// identified principal with no grant is refused (`NoGrant`, 401), so every admitted request is
+/// governed and its spend attributed.
+pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = true;
 
 /// Whether `principal`, identified by `module` and earning no governance key, is admitted ungoverned
 /// under [`REFUSE_EVERY_UNGOVERNED_PRINCIPAL`].

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR PLANES' COMPOSITION (TODO U6-U7, ARCHITECT Q-SW4 2026-10-02), over the test plane
+//! THE DOOR PLANES' COMPOSITION, over the test plane
 //! dropped in (its `plane_driver_test_plane` example `cdylib`, admitted against the Statement its
 //! own library states; the binary forbids unsafe code, so the fixture's source is never compiled
 //! into it): a bound plane whose section the deployment writes is opened, driven and its admin
@@ -317,6 +317,8 @@ test_plane_owned:
     served.planes[0]
         .live
         .refreshed(
+            &sections["test_plane"],
+            // A plane that reads no section beside its own is handed its section bare.
             &sections["test_plane"],
             &serde_json::Map::new(),
             2,

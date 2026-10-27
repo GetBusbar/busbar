@@ -129,7 +129,8 @@ where
     let Ok(permit) = tap_inflight().clone().try_acquire_owned() else {
         // Saturated: BOTH counters `AdmissionGate::try_enter` emits on a dropped tap.
         metrics::counter!(TAP_NOTIFICATIONS_DROPPED_TOTAL).increment(1);
-        metrics::counter!(ADMISSION_DENIED_TOTAL, "gate" => TAP_GATE_NAME).increment(1);
+        metrics::counter!(crate::snapshot::ADMISSION_DENIED_TOTAL, "gate" => TAP_GATE_NAME)
+            .increment(1);
         return;
     };
     crate::detached::spawn_detached(async move {
@@ -141,7 +142,6 @@ where
 /// The `gate` metric-label value for the tap-admission gate, matching `AdmissionGate::new(_,
 /// "tap")` name so `busbar_admission_denied_total{gate="tap"}` is one series across the move.
 const TAP_GATE_NAME: &str = "tap";
-/// Metric names — byte-identical to the kernel's `TAP_NOTIFICATIONS_DROPPED_TOTAL` /
-/// `ADMISSION_DENIED_TOTAL` series (the strings are pinned equal here).
+/// Metric name — byte-identical to the kernel's `TAP_NOTIFICATIONS_DROPPED_TOTAL` series (the
+/// string is pinned equal here).
 const TAP_NOTIFICATIONS_DROPPED_TOTAL: &str = "busbar_tap_notifications_dropped_total";
-const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total";

@@ -740,13 +740,17 @@ impl PluginRegistry {
     /// lane is deleted (row 84), and no other lane reads it. Each selected image is staged and
     /// opened once. The first that will not load fails the whole set, naming it.
     ///
+    /// Each opened door logs to its instance's own file under `logs` (THE DESIGN §11.2, "Plugin
+    /// logging"); its metrics go on to `bind`'s sink.
+    ///
     /// # Errors
     ///
-    /// The plugin that would not load, and why.
+    /// The plugin that would not load, or whose log file cannot be opened, and why.
     pub fn open_transport_entries(
         &self,
         bind: &crate::dispatch::Bind,
         uses: &crate::boot::Uses,
+        logs: &crate::dispatch::PluginLogConfig,
     ) -> Result<TransportEntries, String> {
         use crate::dispatch::load::{load_staged, Staging};
         let mut entries = TransportEntries::default();
@@ -777,12 +781,20 @@ impl PluginRegistry {
                 continue;
             }
             let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
+            let sink = logs
+                .sink(
+                    name,
+                    busbar_contract::abi::mechanism::KindCode::Transport,
+                    bind.sink.clone(),
+                )
+                .map_err(|e| format!("transport plugin '{name}': {e}"))?;
             match load_staged::<crate::dispatch::kinds::transport::Transport>(
                 lib,
                 staged,
                 Some(stated.as_slice()),
                 crate::dispatch::Bind {
                     instance: std::sync::Arc::from(name.as_str()),
+                    sink: std::sync::Arc::new(sink),
                     ..bind.clone()
                 },
             )

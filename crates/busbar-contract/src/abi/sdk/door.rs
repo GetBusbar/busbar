@@ -644,6 +644,7 @@ pub const unsafe fn door<T: KindOps>(
 ///         statement: core::ptr::null(),
 ///         ops: core::ptr::null(),
 ///         ready: None,
+///         layout: 0,
 ///     };
 /// }
 /// ```
@@ -662,6 +663,7 @@ pub const unsafe fn door<T: KindOps>(
 ///         statement: core::ptr::null(),
 ///         ops: core::ptr::null(),
 ///         ready: None,
+///         layout: 0,
 ///     });
 /// }
 /// ```
@@ -679,6 +681,7 @@ pub const unsafe fn door<T: KindOps>(
 ///             statement: core::ptr::null(),
 ///             ops: core::ptr::null(),
 ///             ready: None,
+///             layout: 0,
 ///         })
 ///     };
 /// }

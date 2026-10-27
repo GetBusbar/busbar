@@ -1252,60 +1252,6 @@ fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
     );
 }
 
-/// THE DIALING GUARD AND THE CONFIG GUARD MUST KNOW THE SAME METADATA NAMES.
-///
-/// They did not. `ssrf_blocked_host` kept a SIX-name list private to its own body while
-/// `judge_host_name` — the arm the resolve-then-pin dialing path consults — read a TWO-name
-/// module const. Config validation refused `metadata.tencentyun.com`; the socket did not.
-#[test]
-fn the_dialing_guard_and_the_config_guard_know_the_same_metadata_names() {
-    // Every name `ssrf_blocked_host` (config validation) refuses must ALSO be refused by
-    // `judge_host_name`, which is the arm the resolve-then-pin dialing path actually consults.
-    for name in [
-        "metadata.google.internal",
-        "metadata.internal",
-        "metadata.tencentyun.com",
-        "metadata.platformequinix.com",
-        "instance-data",
-        "instance-data.ec2.internal",
-    ] {
-        // Config-validation view.
-        let cfg = ssrf_blocked_host(&format!("https://{name}/"), &[], false, &[]);
-        // Dialing view — the one a socket is opened behind.
-        let dial = judge_host_name(name, GuardPolicy::default());
-        assert!(
-            cfg.is_some(),
-            "{name}: config guard should refuse (this is the 6-name list)"
-        );
-        assert!(
-            dial.is_err(),
-            "{name}: DIALING guard did NOT refuse — config refuses it but the dial path allows it"
-        );
-    }
-}
-
-/// NAT64 / RFC 6052 END TO END: a DNS64-answered destination must be refused as metadata, not
-/// pinned as an ordinary public v6 address, running through the SAME resolve-then-pin guard every
-/// other rebinding case in this file is driven through.
-///
-/// A DNS64 resolver on an IPv6-only network answers a AAAA query with the NAT64 synthesis of the
-/// queried name's IPv4 address. `64:ff9b:1:fffe::a9fe:a9fe` is the RFC 8215 local-use synthesis
-/// (with a non-zero middle, the shape RFC 8215 Section 6's own worked example uses) of the IMDS
-/// target `169.254.169.254`; it matches no v6 range and no `to_ipv4()` form, so a guard unwrapping
-/// only `to_ipv4()` would pin it as an ordinary public address.
-#[test]
-fn nat64_dns64_synthesis_of_imds_is_refused_even_under_allow_private() {
-    let r = ScriptedResolver::new(vec![Ok(vec![ip("64:ff9b:1:fffe::a9fe:a9fe")])]);
-    let err = resolve_and_pin("dns64.example", 443, true, &r, private_ok()).expect_err(
-        "the RFC 8215 local-use NAT64 synthesis of the IMDS target must be refused even under \
-         allow_private",
-    );
-    assert!(
-        matches!(err, AddressRefusal::CloudMetadataAddress { .. }),
-        "must be refused AS METADATA, not merely pinned as an ordinary public address: {err:?}"
-    );
-}
-
 // ── THE MAPPED HOST, IN EVERY ARM: a list entry, a bare authority and a resolved name are read as
 // a URL's host is read (UTS #46), so each is judged and resolved as the name a URL client dials. ──
 

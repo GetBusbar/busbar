@@ -9,12 +9,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::hooks::{
     BudgetBucketState, Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision,
     RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 
+use super::tests::{caller, verdict_now as now};
 use super::*;
 use crate::config::PolicyOnError;
 use crate::hooks::ResolvedPolicy;
@@ -23,14 +23,6 @@ use crate::plane_driver::{
     Bind, BoundHooks, CallerFacts, CallerKey, GatedHooks, HookBinder, HookOrder, RoutedScope,
     SessionStage, UnitHooks, CONTENT_ROLE,
 };
-
-fn caller(instance: &str) -> Caller {
-    Caller {
-        instance: Arc::from(instance),
-        plugin: Arc::from("the-plugin"),
-        kind: KindCode::Plane,
-    }
-}
 
 fn services(clock: &Arc<AtomicU64>) -> KernelServices {
     let c = Arc::clone(clock);
@@ -49,13 +41,6 @@ fn answered() -> (Later, tokio::sync::oneshot::Receiver<Stored>) {
         }),
         rx,
     )
-}
-
-fn now(r: Ran) -> Stored {
-    match r {
-        Ran::Now(s) => s,
-        Ran::Later => panic!("the answer pended"),
-    }
 }
 
 // ── verify ───────────────────────────────────────────────────────────────────────────────────

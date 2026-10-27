@@ -6,7 +6,7 @@
 use super::*;
 use busbar_kernel::config::{migrated_store_module, HookCfg, HookKind, PromptAccess, UserAccess};
 
-fn hook(kind: HookKind, global: bool) -> HookCfg {
+pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
         kind,
         plugin: "test-hook".to_string(),
@@ -196,9 +196,17 @@ fn build_with_hook_enforces_grant_immutability() {
     );
 }
 
-// ── plugin admin surface (tarball world) ────────────────────────────────────────────────────
+// ── plugin admin surface (the admin crate's own mechanics) ──────────────────────────────────
+//
+// What a REAL tarball is judged — its structure, its signature, the trust posture, the floors, the
+// conflict with the installed set and the one-version rule — is the composition root's admission,
+// proven under the root's real admission in `crates/busbar/src/root/tests/admin_plugin_admission.rs`
+// (this crate names no loader). What stays here is the admin surface's OWN behaviour over whatever
+// admission the snapshot carries: the filename gate, the size cap, the schema bounds, the catalog
+// projection and its cache, gate and fallback, and the rollback's read and pin merge. They run over
+// [`DirAdmission`], a test-local admission whose "tarball" is a stated manifest and verdict in JSON.
 
-use busbar_kernel::plugin_admission::sign::{sign, Manifest, SigningKey};
+use busbar_kernel::admission::{Admitted, Inventoried, Judged, PluginAdmission, Refusal, Stated};
 
 /// A unique temp plugins directory for one test (isolated so parallel tests never collide).
 fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
@@ -226,46 +234,226 @@ fn tmp_plugins_dir(tag: &str) -> std::path::PathBuf {
     d
 }
 
-/// A well-formed manifest for tests (sha256/signature completed by `sign`).
-fn test_manifest(name: &str, alias: &str, publisher: &str, version: &str) -> Manifest {
-    Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "store".into(),
-        version: version.into(),
-        publisher: publisher.into(),
-        abi_version: *busbar_kernel::plugin_admission::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-        declares: Default::default(),
-        statement: None,
-        former_names: Vec::new(),
+/// The head every [`DirAdmission`] "tarball" carries ahead of its JSON.
+const FAKE_HEAD: &[u8] = b"busbar-admin-test-plugin\n";
+
+/// THE ADMIN TESTS' ADMISSION: a "tarball" is [`FAKE_HEAD`] then a JSON object stating the manifest
+/// (`name`, `alias`, `kind`, `version`, `publisher`, `abi_version`, `settings_schema`) and the
+/// verdict the policy reaches on it (`trust`: `trusted` / `allowed` / `rejected`). It judges nothing
+/// of its own and loads nothing; the directory inventory reads every tarball file in name order,
+/// and a directory that cannot be read is one `INVALID:` row, as the root's inventory answers it.
+pub(crate) struct DirAdmission;
+
+/// The process's one [`DirAdmission`].
+pub(crate) static DIR_ADMISSION: DirAdmission = DirAdmission;
+
+/// The cap [`DirAdmission`] holds a tarball to.
+const FAKE_MAX_TARBALL_BYTES: u64 = 64 * 1024;
+
+/// A [`DirAdmission`] tarball stating `name` (aliased `alias`, a `store` at `version` from `acme`)
+/// under the verdict `trust`.
+fn fake_tarball(name: &str, alias: &str, version: &str, trust: &str) -> Vec<u8> {
+    fake_tarball_with(name, alias, version, trust, None)
+}
+
+/// [`fake_tarball`] stating `settings_schema`.
+fn fake_tarball_with(
+    name: &str,
+    alias: &str,
+    version: &str,
+    trust: &str,
+    settings_schema: Option<String>,
+) -> Vec<u8> {
+    let mut out = FAKE_HEAD.to_vec();
+    out.extend_from_slice(
+        serde_json::json!({
+            "name": name,
+            "alias": alias,
+            "kind": "store",
+            "version": version,
+            "publisher": "acme",
+            "abi_version": 3,
+            "settings_schema": settings_schema,
+            "trust": trust,
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    out
+}
+
+impl DirAdmission {
+    /// What `bytes` state and the verdict on them.
+    fn read(bytes: &[u8]) -> Result<(Stated, Judged), String> {
+        let json = bytes
+            .strip_prefix(FAKE_HEAD)
+            .ok_or_else(|| "not a test plugin tarball".to_string())?;
+        let v: serde_json::Value =
+            serde_json::from_slice(json).map_err(|e| format!("manifest: {e}"))?;
+        let word = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        let stated = Stated {
+            name: word("name"),
+            alias: word("alias"),
+            kind: word("kind"),
+            version: word("version"),
+            publisher: word("publisher"),
+            abi_version: v["abi_version"].as_u64().unwrap_or_default() as u32,
+            settings_schema: v["settings_schema"].as_str().map(str::to_string),
+        };
+        let judged = match v["trust"].as_str() {
+            Some("trusted") => Judged::Trusted {
+                publisher: stated.publisher.clone(),
+            },
+            Some("allowed") => Judged::Allowed,
+            _ => Judged::Rejected {
+                reason: "unsigned plugin (set plugins.trust.allow_unsigned)".to_string(),
+            },
+        };
+        Ok((stated, judged))
     }
 }
 
-/// Package a signed plugin tarball in memory.
-fn signed_tarball(key: &SigningKey, m: Manifest, lib: &[u8]) -> Vec<u8> {
-    let m = sign(key, m, lib);
-    busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
+impl PluginAdmission for DirAdmission {
+    fn is_tarball(&self, file: &str) -> bool {
+        file.ends_with(".tar.gz") || file.ends_with(".tgz")
+    }
+
+    fn max_tarball_bytes(&self) -> u64 {
+        FAKE_MAX_TARBALL_BYTES
+    }
+
+    /// Every kind but `hook` restarts on a settings change (the double's table).
+    fn restart_default(&self, kind: &str) -> bool {
+        kind != "hook"
+    }
+
+    fn policy_resolves(&self, _cfg: &busbar_kernel::config::PluginsCfg) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn inventory(
+        &self,
+        dir: &std::path::Path,
+        _cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Result<Vec<Inventoried>, String> {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Ok(vec![Inventoried {
+                    file: dir.display().to_string(),
+                    stated: None,
+                    signature: "-".to_string(),
+                    status: format!("INVALID: cannot read plugins dir: {e}"),
+                }])
+            }
+        };
+        let mut files: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|f| self.is_tarball(f))
+            .collect();
+        files.sort();
+        Ok(files
+            .into_iter()
+            .map(|file| {
+                let read = std::fs::read(dir.join(&file))
+                    .map_err(|e| e.to_string())
+                    .and_then(|bytes| Self::read(&bytes));
+                match read {
+                    Ok((stated, Judged::Trusted { publisher })) => Inventoried {
+                        file,
+                        stated: Some(stated),
+                        signature: format!("publisher:{publisher}"),
+                        status: "ready".to_string(),
+                    },
+                    Ok((stated, Judged::Allowed)) => Inventoried {
+                        file,
+                        stated: Some(stated),
+                        signature: "unsigned (allowed)".to_string(),
+                        status: "ready".to_string(),
+                    },
+                    Ok((stated, Judged::Rejected { reason })) => Inventoried {
+                        file,
+                        stated: Some(stated),
+                        signature: "unsigned".to_string(),
+                        status: format!("SKIPPED: {reason}"),
+                    },
+                    Err(e) => Inventoried {
+                        file,
+                        stated: None,
+                        signature: "-".to_string(),
+                        status: format!("INVALID: {e}"),
+                    },
+                }
+            })
+            .collect())
+    }
+
+    fn admit_upload(
+        &self,
+        _dir: &std::path::Path,
+        _file: &str,
+        tarball: &[u8],
+        _cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Result<Admitted, Refusal> {
+        let (stated, judged) = Self::read(tarball)
+            .map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))?;
+        if let Judged::Rejected { reason } = judged {
+            return Err(Refusal::Conflict(format!(
+                "plugin rejected by the trust policy: {reason}"
+            )));
+        }
+        Ok(Admitted {
+            stated,
+            judged,
+            linked_serves: false,
+        })
+    }
+
+    fn inspect(
+        &self,
+        tarball: &[u8],
+        _cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Result<(Stated, Judged), Refusal> {
+        Self::read(tarball).map_err(|e| Refusal::Validation(format!("invalid plugin tarball: {e}")))
+    }
+
+    fn rollback_target(
+        &self,
+        file: &str,
+        bytes: &[u8],
+        _cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Result<Stated, Refusal> {
+        match Self::read(bytes) {
+            Ok((stated, Judged::Trusted { .. } | Judged::Allowed)) => Ok(stated),
+            Ok((stated, Judged::Rejected { reason })) => Err(Refusal::Conflict(format!(
+                "rollback target `{file}` is not loadable under the trust policy even with the \
+                 floor lowered to its own version {}: {reason}",
+                stated.version
+            ))),
+            Err(e) => Err(Refusal::Validation(format!(
+                "invalid plugin tarball `{file}`: {e}"
+            ))),
+        }
+    }
+}
+
+/// A test app over `dir` under `cfg`, judged by [`DIR_ADMISSION`].
+fn app_with(
+    dir: std::path::PathBuf,
+    cfg: busbar_kernel::config::PluginsCfg,
+) -> std::sync::Arc<busbar_kernel::state::App> {
+    crate::new_test_app()
+        .plugins_dir(dir)
+        .plugins_cfg(cfg)
+        .plugin_admission(&DIR_ADMISSION)
+        .build()
 }
 
 /// Build a service over an App whose plugins dir + `plugins.*` posture are the given ones.
 fn svc_with(dir: std::path::PathBuf, cfg: busbar_kernel::config::PluginsCfg) -> AdminService {
-    let app = crate::new_test_app()
-        .plugins_dir(dir)
-        .plugins_cfg(cfg)
-        .build();
-    AdminService::new(app)
+    AdminService::new(app_with(dir, cfg))
 }
 
 /// The STRICT default posture: no publishers, no opt-ins.
@@ -280,105 +468,15 @@ fn unsigned_ok_posture() -> busbar_kernel::config::PluginsCfg {
     cfg
 }
 
-/// A posture that allowlists one third-party publisher key.
-fn publisher_posture(name: &str, key: &SigningKey) -> busbar_kernel::config::PluginsCfg {
-    let mut cfg = busbar_kernel::config::PluginsCfg::default();
-    cfg.trust.publishers = vec![busbar_kernel::config::PluginPublisher {
-        name: name.into(),
-        public_key: hex::encode(key.verifying_key().to_bytes()),
-    }];
-    cfg
-}
-
 // ── POST /plugins/inspect ──────────────────────────────────────────────────────────────────
 
-/// A trusted, unsigned-under-`allow_unsigned` candidate previews cleanly: the SAME response
-/// shape `GET /plugins/{name}/schema` carries, PLUS `name`/`version`/`kind` — and NOTHING is
-/// written to disk (an inspect is stateless: no install, no conflict check).
-#[test]
-fn inspect_previews_a_trusted_candidate_without_installing() {
-    let dir = tmp_plugins_dir("inspect-ok");
-    let mut m = test_manifest("acme-store-preview", "preview", "acme", "1.0.0");
-    m.kind = "secret".into();
-    m.abi_version = *busbar_kernel::plugin_admission::supported_abi("secret")
-        .iter()
-        .max()
-        .expect("secret abi");
-    m.settings_schema = Some(
-        serde_json::json!({
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "type": "object",
-            "properties": {"key": {"type": "string", "x-busbar-secret": true}},
-        })
-        .to_string(),
-    );
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(b"lib bytes");
-    let tarball =
-        busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-
-    let v = svc.inspect_plugin(&tarball).expect("inspect succeeds");
-    assert_eq!(v["name"], "acme-store-preview");
-    assert_eq!(v["version"], "1.0.0");
-    assert_eq!(v["kind"], "secret");
-    assert_eq!(v["trust"], "unverified");
-    assert_eq!(v["source"], "manifest");
-    assert_eq!(v["schema_error"], serde_json::Value::Null);
-    assert!(
-        v["schema"].is_object(),
-        "schema round-trips as real JSON: {v}"
-    );
-    // `secret` kind defaults to restart-required.
-    assert_eq!(v["restart_required_default"], true);
-
-    // NOTHING was written — inspect never installs, never touches `plugins.dir`.
-    assert_eq!(
-        std::fs::read_dir(&dir).unwrap().count(),
-        0,
-        "inspect must not write anything to disk"
-    );
-}
-
-/// An UNTRUSTED (unsigned, strict posture) candidate is REPORTED as `trust: "rejected"`, not
-/// refused with an error — the whole point of inspect is previewing what a not-yet-trusted
-/// plugin would need without ever installing or executing it.
-#[test]
-fn inspect_reports_rejected_trust_rather_than_erroring() {
-    let dir = tmp_plugins_dir("inspect-rejected");
-    let mut m = test_manifest("acme-store-untrusted", "untrusted", "acme", "1.0.0");
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(b"lib bytes");
-    let tarball =
-        busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
-    // STRICT posture: no publishers allowlisted, no allow_unsigned opt-in.
-    let svc = svc_with(dir, strict_posture());
-
-    let v = svc
-        .inspect_plugin(&tarball)
-        .expect("inspect still succeeds");
-    assert_eq!(v["trust"], "rejected");
-    assert_eq!(v["name"], "acme-store-untrusted");
-}
-
-/// Structurally invalid bytes (not a tarball at all) are a `Validation` error, same as install's
-/// structural gate — inspect shares the exact same in-memory unpack path.
-#[test]
-fn inspect_rejects_invalid_tarball() {
-    let dir = tmp_plugins_dir("inspect-garbage");
-    let svc = svc_with(dir, unsigned_ok_posture());
-    assert!(matches!(
-        svc.inspect_plugin(b"not a tarball at all"),
-        Err(AdminError::Validation(_))
-    ));
-}
-
-/// A decoded tarball over `MAX_TARBALL_FILE_BYTES` is refused BEFORE `unpack` ever runs — a
+/// A decoded tarball over the admission's cap is refused BEFORE the admission ever unpacks it — a
 /// hard cap on the raw upload, checked before touching the decoder.
 #[test]
 fn inspect_rejects_oversized_tarball_before_unpacking() {
     let dir = tmp_plugins_dir("inspect-oversized");
     let svc = svc_with(dir, unsigned_ok_posture());
-    let huge =
-        vec![0u8; (busbar_kernel::plugin_admission::tarball::MAX_TARBALL_FILE_BYTES + 1) as usize];
+    let huge = vec![0u8; (DIR_ADMISSION.max_tarball_bytes() + 1) as usize];
     let err = svc.inspect_plugin(&huge).unwrap_err();
     assert!(
         matches!(&err, AdminError::Validation(msg) if msg.contains("byte cap")),
@@ -393,13 +491,15 @@ fn inspect_rejects_oversized_tarball_before_unpacking() {
 #[test]
 fn inspect_bounds_pathological_schema_nesting_depth() {
     let dir = tmp_plugins_dir("inspect-depth-bomb");
-    let mut m = test_manifest("acme-store-depthbomb", "depthbomb", "acme", "1.0.0");
     // A tiny document that nests far past the depth cap: `[[[[...]]]]`.
     let bomb = format!("{}{}", "[".repeat(500), "]".repeat(500));
-    m.settings_schema = Some(bomb);
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(b"lib bytes");
-    let tarball =
-        busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", b"lib bytes").unwrap();
+    let tarball = fake_tarball_with(
+        "acme-store-depthbomb",
+        "depthbomb",
+        "1.0.0",
+        "allowed",
+        Some(bomb),
+    );
     let svc = svc_with(dir, unsigned_ok_posture());
 
     let v = svc
@@ -408,6 +508,33 @@ fn inspect_bounds_pathological_schema_nesting_depth() {
     assert_eq!(v["schema"], serde_json::Value::Null);
     let err = v["schema_error"].as_str().expect("schema_error is set");
     assert!(err.contains("nests deeper"), "got {err:?}");
+}
+
+/// THE ADMISSION'S VERDICT IN THE CATALOG'S VOCABULARY: inspect reports `trusted` / `unverified` /
+/// `rejected` as the admission judged the candidate, never refusing an untrusted one, and the
+/// kind's restart default is the admission's.
+#[test]
+fn inspect_reports_the_admissions_verdict_in_the_catalog_vocabulary() {
+    let dir = tmp_plugins_dir("inspect-vocabulary");
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
+    for (trust, word) in [
+        ("trusted", "trusted"),
+        ("allowed", "unverified"),
+        ("rejected", "rejected"),
+    ] {
+        let v = svc
+            .inspect_plugin(&fake_tarball("acme-store-v", "v", "1.0.0", trust))
+            .expect("inspect answers every verdict");
+        assert_eq!(v["trust"], word, "{trust}");
+        assert_eq!(v["name"], "acme-store-v");
+        assert_eq!(v["kind"], "store");
+        assert_eq!(v["restart_required_default"], true);
+    }
+    assert!(matches!(
+        svc.inspect_plugin(b"not a tarball at all"),
+        Err(AdminError::Validation(_))
+    ));
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
 /// Install rejects a filename that isn't a bare `.tar.gz` name (path traversal / wrong
@@ -435,182 +562,20 @@ fn install_rejects_bad_filenames() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
-/// Install rejects an upload that is not a valid plugin tarball, and leaves NOTHING behind.
+/// THE ADMISSION'S REFUSALS IN THE ADMIN SURFACE'S CLASSES: a malformed upload is a `Validation`
+/// and an untrusted one a `Conflict`, both in the admission's words, and nothing is written.
 #[test]
-fn install_rejects_invalid_tarball() {
-    let dir = tmp_plugins_dir("nontarball");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    assert!(
-        matches!(
-            svc.install_store_plugin("x.tar.gz", b"garbage, not a tarball"),
-            Err(AdminError::Validation(_))
-        ),
-        "non-tarball bytes must fail structural validation"
-    );
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-/// A VALIDLY-SIGNED but structurally malformed manifest (bad `kind`) is a 400 — structural
-/// validation is independent of trust.
-#[test]
-fn install_rejects_signed_but_malformed_manifest() {
-    let dir = tmp_plugins_dir("malformed");
-    let key = SigningKey::from_bytes(&[5u8; 32]);
-    let mut m = test_manifest("acme-store-x", "x", "acme", "1.0.0");
-    m.kind = "widget".into();
-    let tarball = signed_tarball(&key, m, b"lib bytes");
-    let svc = svc_with(dir.clone(), publisher_posture("acme", &key));
-    let err = svc.install_store_plugin("x.tar.gz", &tarball).unwrap_err();
-    assert!(
-        matches!(&err, AdminError::Validation(msg) if msg.contains("kind")),
-        "got {err:?}"
-    );
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-/// Under the STRICT default posture, an UNSIGNED upload is rejected as a conflict naming the
-/// opt-in flag, and nothing is written. The endpoint is MANIFEST-ONLY: the (junk) library
-/// bytes are never executed, so pushing over the API cannot bypass the trust model.
-#[test]
-fn install_strict_posture_rejects_unsigned() {
-    let dir = tmp_plugins_dir("strict");
-    let lib = b"\x7fELF junk that would crash if ever dlopened";
-    let mut m = test_manifest("acme-store-x", "x", "acme", "1.0.0");
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
-    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
+fn install_answers_the_admissions_refusals_in_their_classes() {
+    let dir = tmp_plugins_dir("refusal-classes");
     let svc = svc_with(dir.clone(), strict_posture());
-    let err = svc.install_store_plugin("x.tar.gz", &tarball).unwrap_err();
-    assert!(
-        matches!(&err, AdminError::Conflict(msg) if msg.contains("allow_third_party")
-                || msg.contains("allow_unsigned")),
-        "the rejection names the opt-in flag: {err:?}"
-    );
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-/// The build's linked store, as `(canonical name, key, the version it states, its Statement)`: what
-/// a copy of it dropped in must carry to be the same plugin at the same version.
-pub(crate) fn linked_store() -> (&'static str, &'static str, String, Vec<u8>) {
-    let &(key, _, _, canonical) = busbar_kernel::preflight::root_rows()
-        .stores
-        .first()
-        .expect("the build links a store");
-    let reg = busbar_kernel::preflight::linked().expect("the linked rows register");
-    let row = reg
-        .resolve(canonical)
-        .expect("the linked store answers its canonical name");
-    let version = row.plugin_version().expect("the store states its version");
-    (
-        canonical,
-        key,
-        version,
-        row.statement().expect("the store states itself"),
-    )
-}
-
-/// `rendering` with its Statement's version restated as `version` (the rendering's head is the
-/// magic, four `u32`s, then the name and the version, each a `u32` length and its bytes).
-fn restated(rendering: &[u8], version: &str) -> Vec<u8> {
-    let head = busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC.len() + 16;
-    let len = |at: usize| u32::from_le_bytes(rendering[at..at + 4].try_into().unwrap()) as usize;
-    let at = head + 4 + len(head);
-    let mut out = rendering[..at].to_vec();
-    out.extend_from_slice(&(version.len() as u32).to_le_bytes());
-    out.extend_from_slice(version.as_bytes());
-    out.extend_from_slice(&rendering[at + 4 + len(at)..]);
-    out
-}
-
-/// A copy of the linked store, `name` aliased `alias`, unsigned over junk library bytes, stating
-/// the store's Statement restated at `version`.
-pub(crate) fn unsigned_copy(name: &str, alias: &str, version: &str) -> Vec<u8> {
-    let (_, _, _, statement) = linked_store();
-    let lib = b"junk lib bytes of a linked plugin";
-    let mut m = test_manifest(name, alias, "acme", "1.0.0");
-    m.statement = Some(hex::encode(restated(&statement, version)));
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
-    busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap()
-}
-
-/// THE ONE-VERSION RULE AT THE ADMIN INSTALL (ARCHITECT C'), SAME VERSION: uploading a copy of a
-/// plugin this build LINKS, at the version the linked plugin states, is an accepted no-op — the
-/// linked build already serves it, and nothing is written. RED before: it was published, and the
-/// next boot met the same plugin by both doors.
-#[test]
-fn install_of_a_linked_plugin_at_its_version_is_an_accepted_no_op() {
-    let dir = tmp_plugins_dir("linked-same");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let (canonical, key, version, _) = linked_store();
-    let view = svc
-        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, &version))
-        .expect("the same plugin at the same version is accepted");
-    assert_eq!(view.name, canonical);
-    assert!(view.note.contains("nothing was written"), "{}", view.note);
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-/// THE ONE-VERSION RULE AT THE ADMIN INSTALL, ANOTHER VERSION: refused before anything is written,
-/// in the words boot refuses the pair with. RED before: published, bricking the next boot.
-#[test]
-fn install_of_a_linked_plugin_at_another_version_is_refused() {
-    let dir = tmp_plugins_dir("linked-other");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let (canonical, key, version, _) = linked_store();
-    let err = svc
-        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, "99.0.0"))
-        .unwrap_err();
-    let want = format!(
-        "plugin '{canonical}' arrives by both doors at two versions: linked v{version}, dropped \
-         in v99.0.0 (copy.tar.gz) - one version per plugin: remove one"
-    );
-    assert!(
-        matches!(&err, AdminError::Conflict(msg) if *msg == want),
-        "got {err:?}"
-    );
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-/// THE ONE-VERSION RULE COMPARES STATEMENT VERSIONS ONLY at the admin install: a copy of a linked
-/// plugin stating no Statement is refused, naming it, whatever its manifest `version` says; nothing
-/// is written.
-#[test]
-fn install_of_a_linked_plugin_stating_no_version_is_refused() {
-    let dir = tmp_plugins_dir("linked-unstated");
-    let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let (canonical, key, version, _) = linked_store();
-    let lib = b"junk lib bytes of a linked plugin";
-    let mut m = test_manifest(canonical, key, "acme", &version);
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
-    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
-    let err = svc
-        .install_store_plugin("copy.tar.gz", &tarball)
-        .unwrap_err();
-    let want = format!(
-        "plugin '{canonical}' states no version in its Statement: the one-version rule cannot \
-         compare it"
-    );
-    assert!(
-        matches!(&err, AdminError::Conflict(msg) if *msg == want),
-        "got {err:?}"
-    );
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-/// TRUST BEFORE IDENTITY at the admin install: under the strict posture an UNSIGNED copy of a
-/// linked plugin at another version is refused by the trust policy, never compared.
-#[test]
-fn install_judges_trust_before_the_one_version_rule() {
-    let dir = tmp_plugins_dir("linked-untrusted");
-    let svc = svc_with(dir.clone(), strict_posture());
-    let (canonical, key, _, _) = linked_store();
-    let err = svc
-        .install_store_plugin("copy.tar.gz", &unsigned_copy(canonical, key, "99.0.0"))
-        .unwrap_err();
-    assert!(
-        matches!(&err, AdminError::Conflict(msg) if msg.starts_with("plugin rejected by the trust policy")
-            && !msg.contains("one version per plugin")),
-        "got {err:?}"
-    );
+    assert!(matches!(
+        svc.install_store_plugin("x.tar.gz", b"garbage, not a tarball"),
+        Err(AdminError::Validation(msg)) if msg.starts_with("invalid plugin tarball")
+    ));
+    assert!(matches!(
+        svc.install_store_plugin("x.tar.gz", &fake_tarball("acme-store-x", "x", "1.0.0", "rejected")),
+        Err(AdminError::Conflict(msg)) if msg.starts_with("plugin rejected by the trust policy")
+    ));
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
@@ -621,10 +586,7 @@ fn install_judges_trust_before_the_one_version_rule() {
 fn install_catalog_remove_roundtrip() {
     let dir = tmp_plugins_dir("roundtrip");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let lib = b"junk lib bytes";
-    let mut m = test_manifest("acme-store-junk", "junkstore", "acme", "1.0.0");
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
-    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
+    let tarball = fake_tarball("acme-store-junk", "junkstore", "1.0.0", "allowed");
 
     let view = svc
         .install_store_plugin("junk.tar.gz", &tarball)
@@ -659,6 +621,44 @@ fn install_catalog_remove_roundtrip() {
     ));
 }
 
+/// THE CATALOG'S PROJECTION OF THE INVENTORY: a ready signed row reads `trusted` with its
+/// publisher, a ready unsigned one `unverified`, a skipped one `rejected` and not loadable with the
+/// skip reason surfaced, and a row whose manifest could not be read carries no trust word at all.
+#[test]
+fn catalog_projects_each_inventory_row_into_the_catalog_vocabulary() {
+    let dir = tmp_plugins_dir("catalog-projection");
+    for (file, name, trust) in [
+        ("a.tar.gz", "acme-store-a", "trusted"),
+        ("b.tar.gz", "acme-store-b", "allowed"),
+        ("c.tar.gz", "acme-store-c", "rejected"),
+    ] {
+        std::fs::write(dir.join(file), fake_tarball(name, name, "2.1.0", trust)).unwrap();
+    }
+    std::fs::write(dir.join("d.tar.gz"), b"not a tarball").unwrap();
+    let cat = svc_with(dir, strict_posture()).store_plugin_catalog();
+    let row = |file: &str| {
+        cat.iter()
+            .find(|p| p.target.as_deref() == Some(file))
+            .unwrap_or_else(|| panic!("{file} is listed: {cat:?}"))
+    };
+    assert_eq!(row("a.tar.gz").trust, Some("trusted"));
+    assert_eq!(row("a.tar.gz").publisher.as_deref(), Some("acme"));
+    assert_eq!(row("a.tar.gz").version.as_deref(), Some("2.1.0"));
+    assert_eq!(row("b.tar.gz").trust, Some("unverified"));
+    assert_eq!(row("c.tar.gz").trust, Some("rejected"));
+    assert_eq!(row("c.tar.gz").valid, Some(false));
+    assert!(row("c.tar.gz")
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("SKIPPED")));
+    assert_eq!(row("d.tar.gz").trust, None);
+    assert_eq!(
+        row("d.tar.gz").name,
+        "d.tar.gz",
+        "no manifest: named by its file"
+    );
+}
+
 /// The amplification this test guards against: `store_plugin_catalog` (behind `GET
 /// /plugins?type=store`) used to fully re-read and re-unpack EVERY tarball in the plugins
 /// directory on EVERY call, and that GET is deliberately unmetered by the admin rate limiter
@@ -670,10 +670,7 @@ fn install_catalog_remove_roundtrip() {
 fn catalog_repeat_gets_reuse_the_cached_scan() {
     let dir = tmp_plugins_dir("cache-reuse");
     let svc = svc_with(dir.clone(), unsigned_ok_posture());
-    let lib = b"junk lib bytes";
-    let mut m = test_manifest("acme-store-cache", "cachestore", "acme", "1.0.0");
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
-    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
+    let tarball = fake_tarball("acme-store-cache", "cachestore", "1.0.0", "allowed");
     svc.install_store_plugin("cache.tar.gz", &tarball)
         .expect("install");
 
@@ -690,10 +687,7 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
 
     // A real change (a second install) is picked up on the very next call, no explicit
     // invalidation call required.
-    let lib2 = b"junk lib bytes two";
-    let mut m2 = test_manifest("acme-store-cache-2", "cachestore2", "acme", "1.0.0");
-    m2.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib2);
-    let tarball2 = busbar_kernel::plugin_admission::tarball::package(&m2, "lib.so", lib2).unwrap();
+    let tarball2 = fake_tarball("acme-store-cache-2", "cachestore2", "1.0.0", "allowed");
     svc.install_store_plugin("cache2.tar.gz", &tarball2)
         .expect("install");
 
@@ -720,28 +714,21 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
 /// threshold even with the bug present (`spawn_blocking` removed), silently defeating the
 /// proof. `catalog_scan_test_hooks::set_delay` injects a fixed, hardware-independent minimum
 /// scan duration well above the threshold, so the distinction is observable regardless of how
-/// fast the machine is; the 2000 real tarballs stay (smaller count would do for timing alone)
+/// fast the machine is; the 2000 tarballs stay (smaller count would do for timing alone)
 /// purely to keep the `page.items.len() > 2000` correctness assertion meaningful.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn list_plugins_store_scan_does_not_park_the_reactor() {
     let dir = tmp_plugins_dir("no-park");
-    let key = SigningKey::from_bytes(&[2u8; 32]);
     for i in 0..2000 {
-        let lib = format!("lib bytes {i}").into_bytes();
-        let m = test_manifest(
+        let tarball = fake_tarball(
             &format!("acme-store-{i}"),
             &format!("s{i}"),
-            "acme",
             "1.0.0",
+            "trusted",
         );
-        let tarball = signed_tarball(&key, m, &lib);
         std::fs::write(dir.join(format!("p{i}.tar.gz")), &tarball).unwrap();
     }
-    let app = crate::new_test_app()
-        .plugins_dir(dir.clone())
-        .plugins_cfg(publisher_posture("acme", &key))
-        .build();
-    let svc = AdminService::new(app);
+    let svc = svc_with(dir.clone(), strict_posture());
 
     // Deterministic floor, independent of hardware speed: if the scan ran inline on the
     // reactor, the concurrently-spawned sleep below could not be polled until AT LEAST this
@@ -779,11 +766,7 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
 #[tokio::test]
 async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     let dir = tmp_plugins_dir("panic-fallback");
-    let app = crate::new_test_app()
-        .plugins_dir(dir.clone())
-        .plugins_cfg(unsigned_ok_posture())
-        .build();
-    let svc = AdminService::new(app);
+    let svc = svc_with(dir.clone(), unsigned_ok_posture());
 
     // Scoped to `dir` (see `catalog_scan_test_hooks`) so no other concurrently-running test's
     // scan of a different directory is affected by this panic.
@@ -812,11 +795,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
 #[tokio::test(start_paused = true)]
 async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     let dir = tmp_plugins_dir("gate-timeout");
-    let app = crate::new_test_app()
-        .plugins_dir(dir)
-        .plugins_cfg(unsigned_ok_posture())
-        .build();
-    let svc = AdminService::new(app);
+    let svc = svc_with(dir, unsigned_ok_posture());
 
     // Hold the gate ourselves for the life of this test — standing in for a scan that started
     // and never came back (the wedged-mount scenario), which is exactly what a caller queued
@@ -836,22 +815,16 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
 /// The single-flight bound: N concurrent
 /// `list_plugins("store")` callers that ALL miss the cache at the same instant (the very first
 /// reads against a freshly-built `App`, before any entry exists — e.g. right after boot or a
-/// config reload) must cost exactly ONE real `inventory_tarballs` scan, not one per caller. Every
+/// config reload) must cost exactly ONE real inventory scan, not one per caller. Every
 /// caller still gets a correct, complete catalog — single-flighting must never mean 9 of the 10
 /// see a truncated or stale result.
 #[tokio::test]
 async fn list_plugins_store_single_flights_concurrent_misses() {
     let dir = tmp_plugins_dir("single-flight");
-    let lib = b"junk lib bytes";
-    let mut m = test_manifest("acme-store-sf", "sfstore", "acme", "1.0.0");
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
-    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
+    let tarball = fake_tarball("acme-store-sf", "sfstore", "1.0.0", "allowed");
     std::fs::write(dir.join("sf.tar.gz"), &tarball).unwrap();
 
-    let app = crate::new_test_app()
-        .plugins_dir(dir.clone())
-        .plugins_cfg(unsigned_ok_posture())
-        .build();
+    let app = app_with(dir.clone(), unsigned_ok_posture());
 
     let mut tasks = Vec::new();
     for _ in 0..10 {
@@ -1020,46 +993,35 @@ fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     assert_eq!(row_again.error, row.error);
 }
 
-/// ROLLBACK RESOLUTION (1.5.0), the EXPLICIT-downgrade core: a TRUSTED third-party artifact whose
-/// version is BELOW its configured base floor — which the AUTOMATIC path (`install`) rejects as an
-/// anti-downgrade — is ACCEPTED by `resolve_plugin_rollback`, because the rollback lowers the floor
-/// to the target's own version. It returns the target manifest + the merged pin map (prior pins
-/// preserved, this plugin pinned to the target version).
+/// THE ROLLBACK'S OWN HALF (1.5.0): the admin surface reads the target off the plugins directory
+/// (an ABSENT one is a 404), hands it to the admission (which lowers the floor to the target's own
+/// version — proven under the root's real admission,
+/// `rollback_resolves_a_trusted_below_floor_target_and_merges_pins`), answers its refusal in its
+/// class, and merges the pin map: this plugin pinned to the target version, every prior pin for
+/// another plugin preserved. Nothing is pinned on a refusal.
 #[test]
-fn rollback_resolves_a_trusted_below_floor_target_and_merges_pins() {
-    let dir = tmp_plugins_dir("rollback-ok");
-    let acme = SigningKey::from_bytes(&[11u8; 32]);
-    // Base posture: allowlist acme AND floor this plugin at 2.0.0.
-    let mut cfg = publisher_posture("acme", &acme);
-    cfg.min_versions
-        .insert("acme-store-x".to_string(), "2.0.0".to_string());
-    let svc = svc_with(dir.clone(), cfg);
+fn rollback_reads_the_target_and_merges_pins() {
+    let dir = tmp_plugins_dir("rollback-merge");
+    let svc = svc_with(dir.clone(), strict_posture());
+    let empty = std::collections::BTreeMap::new();
+
+    // Absent file → NotFound.
+    assert!(matches!(
+        svc.resolve_plugin_rollback("nope.tar.gz", &empty),
+        Err(AdminError::NotFound { .. })
+    ));
 
     // The PRIOR artifact at 1.4.0 (the rollback target) sits in the plugins dir.
-    let lib = b"prior artifact bytes";
-    let tarball = signed_tarball(
-        &acme,
-        test_manifest("acme-store-x", "x", "acme", "1.4.0"),
-        lib,
-    );
-    std::fs::write(dir.join("old.tar.gz"), &tarball).unwrap();
-
-    // The automatic install path REJECTS the below-floor artifact (anti-downgrade).
-    let install_err = svc
-        .install_store_plugin("old.tar.gz", &tarball)
-        .unwrap_err();
-    assert!(
-        matches!(install_err, AdminError::Conflict(_)),
-        "automatic install of a below-floor artifact is a conflict, got {install_err:?}"
-    );
-
-    // The EXPLICIT rollback resolves it, lowering the floor to 1.4.0, and merges the pin onto a
-    // pre-existing pin for a DIFFERENT plugin (which must be preserved).
+    std::fs::write(
+        dir.join("old.tar.gz"),
+        fake_tarball("acme-store-x", "x", "1.4.0", "trusted"),
+    )
+    .unwrap();
     let prior =
         std::collections::BTreeMap::from([("other-plugin".to_string(), "3.0.0".to_string())]);
     let (manifest, pins) = svc
         .resolve_plugin_rollback("old.tar.gz", &prior)
-        .expect("rollback resolves the trusted below-floor target");
+        .expect("rollback resolves the trusted target");
     assert_eq!(manifest.name, "acme-store-x");
     assert_eq!(manifest.version, "1.4.0");
     assert_eq!(
@@ -1072,30 +1034,13 @@ fn rollback_resolves_a_trusted_below_floor_target_and_merges_pins() {
         Some("3.0.0"),
         "a prior pin for another plugin is preserved"
     );
-}
 
-/// ROLLBACK is FAIL-CLOSED: an ABSENT target is a 404, and an UNTRUSTED target (unsigned under a
-/// strict posture) is refused even with the floor lowered — a rollback authenticates the OPERATOR,
-/// never the ARTIFACT. Nothing is pinned in either case.
-#[test]
-fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
-    let dir = tmp_plugins_dir("rollback-closed");
-    let svc = svc_with(dir.clone(), strict_posture());
-    let empty = std::collections::BTreeMap::new();
-
-    // Absent file → NotFound.
-    assert!(matches!(
-        svc.resolve_plugin_rollback("nope.tar.gz", &empty),
-        Err(AdminError::NotFound { .. })
-    ));
-
-    // An UNSIGNED artifact present in the dir, under the STRICT posture: trust refuses it even for
-    // a rollback (the floor was lowered, but the signature/opt-in gate still fails).
-    let lib = b"unsigned prior artifact";
-    let mut m = test_manifest("acme-store-x", "x", "acme", "1.4.0");
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
-    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
-    std::fs::write(dir.join("unsigned.tar.gz"), &tarball).unwrap();
+    // An untrusted target is refused as a conflict (a rollback never launders trust).
+    std::fs::write(
+        dir.join("unsigned.tar.gz"),
+        fake_tarball("acme-store-x", "x", "1.4.0", "rejected"),
+    )
+    .unwrap();
     let err = svc
         .resolve_plugin_rollback("unsigned.tar.gz", &empty)
         .unwrap_err();
@@ -1103,171 +1048,6 @@ fn rollback_is_fail_closed_on_absent_or_untrusted_target() {
         matches!(err, AdminError::Conflict(_)),
         "an untrusted rollback target is refused (a rollback never launders trust), got {err:?}"
     );
-}
-
-/// SECURITY: under the DEFAULT (strict) posture, an unsigned tarball present in the plugins dir
-/// is reported present + `rejected` by the catalog WITHOUT ever being `dlopen`ed — the catalog
-/// path is manifest-only (pure data), so the junk library bytes here can never execute.
-#[test]
-fn catalog_does_not_dlopen_an_untrusted_plugin() {
-    let dir = tmp_plugins_dir("untrusted-catalog");
-    let svc = svc_with(dir.clone(), strict_posture());
-    let lib = b"\x7fELF definitely not a loadable library";
-    let mut m = test_manifest("acme-store-evil", "evil", "acme", "1.0.0");
-    m.sha256 = busbar_kernel::plugin_admission::sign::sha256_hex(lib);
-    let tarball = busbar_kernel::plugin_admission::tarball::package(&m, "lib.so", lib).unwrap();
-    std::fs::write(dir.join("evil.tar.gz"), &tarball).unwrap();
-
-    let cat = svc.store_plugin_catalog();
-    let row = cat
-        .iter()
-        .find(|p| p.target.as_deref() == Some("evil.tar.gz"))
-        .expect("the untrusted plugin is listed in the catalog");
-    assert_eq!(
-        row.trust,
-        Some("rejected"),
-        "an unsigned plugin under the strict default posture is reported rejected"
-    );
-    assert_eq!(row.valid, Some(false), "and it is not loadable");
-    assert!(
-        row.error.as_deref().is_some_and(|e| e.contains("SKIPPED")),
-        "the exact skip reason is surfaced: {:?}",
-        row.error
-    );
-}
-
-/// A SIGNED upload from an allowlisted third-party publisher installs as `trusted`, and the
-/// catalog reports the signed metadata + trusted verdict.
-#[test]
-fn install_signed_is_trusted() {
-    let key = SigningKey::from_bytes(&[7u8; 32]);
-    let lib = b"signed lib bytes";
-    let tarball = signed_tarball(
-        &key,
-        test_manifest("acme-store-disk", "acmedisk", "acme", "2.1.0"),
-        lib,
-    );
-    let dir = tmp_plugins_dir("signed");
-    let svc = svc_with(dir.clone(), publisher_posture("acme", &key));
-
-    let view = svc
-        .install_store_plugin("acme.tar.gz", &tarball)
-        .expect("a signed, allowlisted upload installs under the strict posture");
-    assert_eq!(view.trust, "trusted");
-    assert_eq!(view.publisher.as_deref(), Some("acme"));
-    assert_eq!(view.version.as_deref(), Some("2.1.0"));
-    assert_eq!(view.name, "acme-store-disk");
-
-    let cat = svc.store_plugin_catalog();
-    let row = cat
-        .iter()
-        .find(|p| p.loader == "dynamic-library")
-        .expect("dynamic plugin");
-    assert_eq!(row.trust, Some("trusted"));
-    assert_eq!(row.publisher.as_deref(), Some("acme"));
-    assert_eq!(row.version.as_deref(), Some("2.1.0"));
-    assert_eq!(row.name, "acme-store-disk");
-}
-
-/// ANTI-DOWNGRADE at the ADMIN INSTALL boundary: a `plugins.min_versions` floor rejects a
-/// VALIDLY-SIGNED but older release of the same plugin (keyed on the manifest NAME) — a
-/// rollback/replay is a `409`, nothing is written. The release at/above the floor installs.
-#[test]
-fn install_downgraded_version_is_rejected_by_floor() {
-    let key = SigningKey::from_bytes(&[7u8; 32]);
-    let lib = b"lib bytes";
-    let mut cfg = publisher_posture("acme", &key);
-    cfg.min_versions
-        .insert("acme-store-disk".to_string(), "2.0.0".to_string());
-    let dir = tmp_plugins_dir("downgrade");
-    let svc = svc_with(dir.clone(), cfg);
-
-    // A validly-signed 1.9.0 is below the 2.0.0 floor -> rejected, nothing published.
-    let old = signed_tarball(
-        &key,
-        test_manifest("acme-store-disk", "acmedisk", "acme", "1.9.0"),
-        lib,
-    );
-    let err = svc.install_store_plugin("old.tar.gz", &old).unwrap_err();
-    assert!(
-        matches!(&err, AdminError::Conflict(msg) if msg.contains("anti-downgrade")),
-        "got {err:?}"
-    );
-    assert!(!dir.join("old.tar.gz").exists());
-
-    // The current 2.1.0 clears the floor and installs as trusted.
-    let cur = signed_tarball(
-        &key,
-        test_manifest("acme-store-disk", "acmedisk", "acme", "2.1.0"),
-        lib,
-    );
-    let view = svc
-        .install_store_plugin("cur.tar.gz", &cur)
-        .expect("a signed release at/above the floor installs");
-    assert_eq!(view.trust, "trusted");
-    assert_eq!(view.version.as_deref(), Some("2.1.0"));
-}
-
-/// A signed upload whose publisher is NOT allowlisted is untrusted; under the strict default it
-/// is a conflict (rejected), and nothing is written.
-#[test]
-fn install_unknown_publisher_rejected() {
-    let key = SigningKey::from_bytes(&[3u8; 32]);
-    let tarball = signed_tarball(
-        &key,
-        test_manifest("stranger-store-x", "strangerx", "stranger", "1.0.0"),
-        b"lib",
-    );
-    let dir = tmp_plugins_dir("unknownpub");
-    let svc = svc_with(dir.clone(), strict_posture());
-    assert!(matches!(
-        svc.install_store_plugin("x.tar.gz", &tarball),
-        Err(AdminError::Conflict(_))
-    ));
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-}
-
-/// CONFLICT at the ADMIN INSTALL boundary: an upload whose alias collides with a DIFFERENT
-/// already-installed loadable plugin is a `409` naming both ("can't use valkey and a
-/// third-party valkey"); overwriting the SAME plugin (same name, same file) is a legal upgrade.
-#[test]
-fn install_alias_conflict_is_rejected() {
-    let key = SigningKey::from_bytes(&[9u8; 32]);
-    let dir = tmp_plugins_dir("conflict");
-    let svc = svc_with(dir.clone(), publisher_posture("acme", &key));
-
-    let first = signed_tarball(
-        &key,
-        test_manifest("acme-store-kv", "kv", "acme", "1.0.0"),
-        b"lib a",
-    );
-    svc.install_store_plugin("first.tar.gz", &first)
-        .expect("first install");
-
-    // A DIFFERENT plugin claiming the same alias -> conflict naming both.
-    let clash = signed_tarball(
-        &key,
-        test_manifest("other-store-kv", "kv", "acme", "1.0.0"),
-        b"lib b",
-    );
-    let err = svc
-        .install_store_plugin("clash.tar.gz", &clash)
-        .unwrap_err();
-    assert!(
-        matches!(&err, AdminError::Conflict(msg)
-                if msg.contains("acme-store-kv") && msg.contains("other-store-kv")),
-        "names both plugins: {err:?}"
-    );
-    assert!(!dir.join("clash.tar.gz").exists());
-
-    // Upgrading the SAME plugin in place (same name, same file) is allowed.
-    let upgrade = signed_tarball(
-        &key,
-        test_manifest("acme-store-kv", "kv", "acme", "1.1.0"),
-        b"lib a v2",
-    );
-    svc.install_store_plugin("first.tar.gz", &upgrade)
-        .expect("same-name overwrite is a legal upgrade");
 }
 
 // ---- groups read surface ----
@@ -2069,20 +1849,21 @@ fn plugins_dir_fingerprint_treats_a_missing_dir_as_ok_empty() {
 /// discriminating power is platform-dependent, which is fine: CI runs on Linux.)
 #[test]
 fn validate_plugin_filename_rejects_each_escape_form_independently() {
+    let app = app_with(tmp_plugins_dir("filename-escape"), strict_posture());
     assert!(
-        validate_plugin_filename("../evil.tar.gz").is_err(),
+        validate_plugin_filename(&app, "../evil.tar.gz").is_err(),
         "..  alone must reject"
     );
     assert!(
-        validate_plugin_filename("sub/evil.tar.gz").is_err(),
+        validate_plugin_filename(&app, "sub/evil.tar.gz").is_err(),
         "/ alone must reject"
     );
     assert!(
-        validate_plugin_filename("sub\\evil.tar.gz").is_err(),
+        validate_plugin_filename(&app, "sub\\evil.tar.gz").is_err(),
         "\\ alone must reject"
     );
     assert!(
-        validate_plugin_filename("plain.tar.gz").is_ok(),
+        validate_plugin_filename(&app, "plain.tar.gz").is_ok(),
         "a bare filename with none of the three must be accepted"
     );
 }
@@ -2092,16 +1873,17 @@ fn validate_plugin_filename_rejects_each_escape_form_independently() {
 /// the boundary length itself.
 #[test]
 fn validate_plugin_filename_length_boundary_is_exact() {
+    let app = app_with(tmp_plugins_dir("filename-length"), strict_posture());
     let suffix = ".tar.gz";
     let at_cap = "a".repeat(MAX_PLUGIN_FILENAME_LEN - suffix.len()) + suffix;
     assert_eq!(at_cap.len(), MAX_PLUGIN_FILENAME_LEN);
     assert!(
-        validate_plugin_filename(&at_cap).is_ok(),
+        validate_plugin_filename(&app, &at_cap).is_ok(),
         "exactly MAX_PLUGIN_FILENAME_LEN chars must be accepted"
     );
     let over_cap = format!("a{at_cap}");
     assert!(
-        validate_plugin_filename(&over_cap).is_err(),
+        validate_plugin_filename(&app, &over_cap).is_err(),
         "MAX_PLUGIN_FILENAME_LEN + 1 chars must be rejected"
     );
 }
@@ -2995,29 +2777,6 @@ mod dated_rate_card_history {
 
     // ── PROOF 5: no pricing path reads `PostingStamp.rate_card_version` ──────────────────────
 
-    /// The resolution key is an instant, and the version field is reporting provenance (#44) that
-    /// must never become a pricing input. This scans the service's own CODE — comments excluded,
-    /// since the rule is what the file *does*, not what it says about the rule — so that reading
-    /// one back is a red test and not a review note.
-    #[test]
-    fn the_usage_service_names_no_rate_card_version_in_code() {
-        let src = include_str!("../service.rs");
-        let offenders: Vec<(usize, &str)> = src
-            .lines()
-            .enumerate()
-            .filter(|(_, l)| {
-                let t = l.trim_start();
-                !(t.starts_with("//") || t.starts_with("*") || t.is_empty())
-            })
-            .filter(|(_, l)| l.contains("rate_card_version"))
-            .map(|(i, l)| (i + 1, l.trim()))
-            .collect();
-        assert!(
-            offenders.is_empty(),
-            "a pricing path reads the posting's stamped rate-card version: {offenders:?}"
-        );
-    }
-
     // ── THE BYTE-SAFETY PIN: no source installed ⇒ the previous release's arithmetic ─────────
 
     /// The oracle cell `billing|rate-card|history-mid-window`'s exact shape (three responses of
@@ -3153,130 +2912,6 @@ mod dated_rate_card_history {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE MONEY-READ REGISTER
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// **EVERY PRODUCTION SITE IN THIS CRATE THAT TURNS A LEDGER FIGURE INTO MONEY**, named, with the
-/// book it reads and whether it resolves through the dated rate-card history (#79).
-///
-/// One endpoint wired and the rest left flat is how two admin reads come to answer different money
-/// for the same consumption, and a reviewer cannot see that by reading one file. So the set is
-/// asserted instead: a conversion this crate performs anywhere outside this list is a RED test,
-/// which is what makes "every money read follows one rule" a property of the crate rather than of
-/// whoever reviewed the last diff.
-///
-/// `resolves` records the state of the world, not an aspiration. The two `false` rows read the
-/// ENFORCEMENT ledger (`UsageLedger`/`ModelTokens`), whose rows carry no price instant at all, so
-/// under the one rule they take the documented fallback and still derive from the current card.
-/// That residual is a real, parked divergence from the metering read beside them — it is not this
-/// test's job to hide it, it is this test's job to make it impossible to forget.
-const MONEY_READS: &[(&str, &str, &str, bool)] = &[
-    (
-        "v1/service_operations.rs",
-        "get_usage",
-        "metering rows (MeteringRow, one UTC-day bucket)",
-        true,
-    ),
-    (
-        "v1/service_operations.rs",
-        "get_group_usage",
-        "enforcement ledger (UsageLedger, per limit window)",
-        false,
-    ),
-    (
-        "v1/service.rs",
-        "derive_spend_micros_row / derive_spend_micros_row_at_card",
-        "the two row pricers themselves — the definitions the reads above call, \
-         the second of which is the dated-history one",
-        true,
-    ),
-    (
-        "keys.rs",
-        "GET /keys/{id}/usage",
-        "enforcement ledger (UsageLedger, WINDOW_TOTAL)",
-        false,
-    ),
-];
-
-/// The call shapes that CONVERT a ledger figure into money. `derived_bucket_usage` is on the list
-/// because it is a conversion by delegation: it takes the `CostModel` and answers `spend_cents`, so
-/// a caller of it is a money read whether or not the multiply is written at the call site.
-const MONEY_CONVERSIONS: &[&str] = &[
-    "derive_spend_cents",
-    "derive_spend_micros",
-    "derived_bucket_usage",
-];
-
-#[test]
-fn every_money_read_in_this_crate_is_registered() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut found: Vec<String> = Vec::new();
-    let mut stack = vec![root.clone()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("the crate's src tree is readable") {
-            let path = entry.expect("a readable dir entry").path();
-            if path.is_dir() {
-                // Test trees are excluded: a fixture may price anything it likes, and this register
-                // is about what the SHIPPED read paths do.
-                if path.file_name().is_some_and(|n| n == "tests") {
-                    continue;
-                }
-                stack.push(path);
-                continue;
-            }
-            if path.extension().is_none_or(|e| e != "rs") {
-                continue;
-            }
-            let rel = path
-                .strip_prefix(&root)
-                .expect("every walked path is under src")
-                .to_string_lossy()
-                .to_string();
-            let text = std::fs::read_to_string(&path).expect("a readable source file");
-            for (n, line) in text.lines().enumerate() {
-                let t = line.trim_start();
-                // Prose is not a call. A doc comment naming a conversion is documentation of the
-                // rule, which is the opposite of a violation of it.
-                if t.starts_with("//") || t.starts_with('*') {
-                    continue;
-                }
-                if MONEY_CONVERSIONS.iter().any(|c| line.contains(c)) {
-                    found.push(format!("{rel}:{}", n + 1));
-                }
-            }
-        }
-    }
-    assert!(
-        !found.is_empty(),
-        "the walk found no money conversion at all — the scan is broken, not the crate"
-    );
-
-    // The registered files, and the count of conversion sites each is allowed to carry. A read that
-    // grew a second conversion, or a new file that converts at all, lands here as a diff.
-    let registered: std::collections::BTreeSet<&str> =
-        MONEY_READS.iter().map(|(file, ..)| *file).collect();
-    // Matched by FILE rather than by an exact count, because no registered file carries a fixed
-    // number of conversion lines: `v1/service.rs` holds the two row pricers' DEFINITIONS and
-    // `v1/service_operations.rs` the two operations that CALL them — one subject, two files, since
-    // the impl block was carved out under the oversized cap. An unregistered FILE is the signal.
-    let strays: Vec<&String> = found
-        .iter()
-        .filter(|site| {
-            let file = site.split(':').next().unwrap_or_default();
-            !registered.contains(file)
-        })
-        .collect();
-    assert!(
-        strays.is_empty(),
-        "an unregistered site in this crate turns a ledger figure into money. Either route it \
-         through the dated rate-card history like `get_usage`, or add it to MONEY_READS with the \
-         book it reads and whether it resolves. Strays: {strays:?}"
-    );
-
-    // And the register itself must stay honest about which of them resolve.
-    assert!(
-        MONEY_READS.iter().any(|(.., resolves)| *resolves),
-        "no registered money read resolves through the dated history — #79 is unwired"
-    );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // `?as_of` — THE RATE-CARD HISTORY SNAPSHOT SELECTOR
@@ -3775,55 +3410,6 @@ mod one_recorded_usage_every_surface {
             "the dated book says {one_micros}; the enforcement surfaces say {served}"
         );
     }
-}
-
-/// Item 375: a doc comment in this directory that names a backticked file under the workspace's
-/// scripts directory as the thing enforcing a rule must name a file that EXISTS. `service.rs` cited
-/// the settings-leak shell lint as the guard on admin settings redaction after that script was
-/// deleted (the rule lives on as `cargo xtask gate settings-leak`), so a reader looking for the
-/// guard found nothing. A citation of another repository's script is not this tree's and is
-/// skipped by the busbar-ui qualifier on the same line.
-#[test]
-fn every_scripts_path_cited_in_v1_exists() {
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("v1/ is readable") {
-            let path = entry.expect("a directory entry").path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace = manifest.join("../..");
-    let mut files = Vec::new();
-    walk(&manifest.join("src/v1"), &mut files);
-    assert!(
-        files.len() > 5,
-        "the walk found the v1 sources ({})",
-        files.len()
-    );
-    let mut stale = Vec::new();
-    for file in &files {
-        let text = std::fs::read_to_string(file).expect("a v1 source reads");
-        for (n, line) in text.lines().enumerate() {
-            if line.contains("busbar-ui") {
-                continue;
-            }
-            for cited in line.split("`scripts/").skip(1) {
-                let Some(end) = cited.find('`') else { continue };
-                let path = cited[..end].split("::").next().unwrap_or_default();
-                if !workspace.join("scripts").join(path).exists() {
-                    stale.push(format!("{}:{}: scripts/{path}", file.display(), n + 1));
-                }
-            }
-        }
-    }
-    assert!(
-        stale.is_empty(),
-        "v1/ cites scripts that do not exist: {stale:#?}"
-    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -4495,18 +4081,18 @@ fn the_store_catalog_heads_with_the_linked_store_rows() {
 }
 
 /// EVERY ADMIN MOMENT THE TRUST POLICY RESOLVES WARNS AS BOOT DOES: the catalog, install, inspect
-/// and rollback all resolve through the one `trust_policy` (none resolves it any other way), which
-/// builds nothing itself (the root's builder is installed), and it warns about a malformed
-/// anti-downgrade floor before resolving.
+/// and rollback all reach the policy through the one `admission` (none reaches it any other way),
+/// which builds nothing itself (the root's admission is installed), and it warns about a malformed
+/// anti-downgrade floor before answering.
 #[test]
 fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     use busbar_kernel::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
     use tracing_subscriber::layer::SubscriberExt as _;
     let src = include_str!("../service_operations.rs");
     assert_eq!(
-        src.matches("trust_policy(&self.app, ").count(),
+        src.matches("admission(&self.app)").count(),
         4,
-        "catalog, install, inspect and rollback resolve through trust_policy"
+        "catalog, install, inspect and rollback resolve through admission"
     );
     assert_eq!(
         src.matches("TrustPolicy::from_config(").count(),
@@ -4519,7 +4105,7 @@ fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     tracing::subscriber::with_default(subscriber, || {
-        super::operations::trust_policy(&app, "1.6.0").expect("the policy resolves");
+        super::operations::admission(&app).expect("an admission is installed");
     });
     assert!(
         cap.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
@@ -4528,27 +4114,108 @@ fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     );
 }
 
-/// THE ADMIN SURFACE JUDGES UNDER THE SNAPSHOT'S BUILDER AND NO OTHER: an App handed a root builder
-/// that refuses is refused by every admin trust moment with that builder's words, and an App with no
-/// builder resolves nothing (the catalog lists the linked rows alone).
-#[test]
-fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
-    fn refusing_root(
-        _: &busbar_kernel::config::PluginsCfg,
-        _: &str,
-    ) -> Result<busbar_kernel::plugin_admission::sign::TrustPolicy, String> {
+/// An admission whose trust policy never resolves, in the root's words.
+struct RefusingAdmission;
+
+impl busbar_kernel::admission::PluginAdmission for RefusingAdmission {
+    fn is_tarball(&self, file: &str) -> bool {
+        file.ends_with(".tar.gz")
+    }
+    fn max_tarball_bytes(&self) -> u64 {
+        1024
+    }
+    fn restart_default(&self, _kind: &str) -> bool {
+        true
+    }
+    fn policy_resolves(&self, _cfg: &busbar_kernel::config::PluginsCfg) -> Result<(), String> {
         Err("the root's refusal".into())
     }
-    let app = crate::new_test_app().plugin_trust(refusing_root).build();
+    fn inventory(
+        &self,
+        _dir: &std::path::Path,
+        _cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Result<Vec<busbar_kernel::admission::Inventoried>, String> {
+        Err("the root's refusal".into())
+    }
+    fn admit_upload(
+        &self,
+        _dir: &std::path::Path,
+        _file: &str,
+        _tarball: &[u8],
+        _cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Result<busbar_kernel::admission::Admitted, busbar_kernel::admission::Refusal> {
+        Err(busbar_kernel::admission::Refusal::Validation(
+            "the root's refusal".into(),
+        ))
+    }
+    fn inspect(
+        &self,
+        _tarball: &[u8],
+        _cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Result<
+        (
+            busbar_kernel::admission::Stated,
+            busbar_kernel::admission::Judged,
+        ),
+        busbar_kernel::admission::Refusal,
+    > {
+        Err(busbar_kernel::admission::Refusal::Validation(
+            "the root's refusal".into(),
+        ))
+    }
+    fn rollback_target(
+        &self,
+        _file: &str,
+        _bytes: &[u8],
+        _cfg: &busbar_kernel::config::PluginsCfg,
+    ) -> Result<busbar_kernel::admission::Stated, busbar_kernel::admission::Refusal> {
+        Err(busbar_kernel::admission::Refusal::Validation(
+            "the root's refusal".into(),
+        ))
+    }
+}
+
+/// THE ADMIN SURFACE JUDGES UNDER THE SNAPSHOT'S ADMISSION AND NO OTHER: an App handed a root
+/// admission whose policy refuses is refused by every admin trust moment with that admission's
+/// words (the catalog lists the linked rows alone), and an App with no admission resolves nothing.
+#[test]
+fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
+    static REFUSING: RefusingAdmission = RefusingAdmission;
+    let dir = tmp_plugins_dir("refusing-admission");
+    std::fs::write(dir.join("p.tar.gz"), b"bytes").unwrap();
+    let app = crate::new_test_app()
+        .plugins_dir(dir)
+        .plugin_admission(&REFUSING)
+        .build();
+    let admission = super::operations::admission(&app).expect("the snapshot's admission");
     assert_eq!(
-        super::operations::trust_policy(&app, "1.6.0")
-            .err()
-            .as_deref(),
+        admission.policy_resolves(&app.plugins_cfg).err().as_deref(),
         Some("the root's refusal")
     );
+    let svc = AdminService::new(app.clone());
+    assert!(matches!(
+        svc.inspect_plugin(b"bytes"),
+        Err(AdminError::Validation(msg)) if msg == "the root's refusal"
+    ));
+    assert!(matches!(
+        svc.install_store_plugin("p2.tar.gz", b"bytes"),
+        Err(AdminError::Validation(msg)) if msg == "the root's refusal"
+    ));
+    assert!(matches!(
+        svc.resolve_plugin_rollback("p.tar.gz", &std::collections::BTreeMap::new()),
+        Err(AdminError::Validation(msg)) if msg == "the root's refusal"
+    ));
+    assert!(
+        svc.store_plugin_catalog()
+            .iter()
+            .all(|p| p.loader == "compiled-in"),
+        "an unresolvable policy lists the linked rows alone"
+    );
     let mut none = (*app).clone();
-    none.plugin_trust = None;
-    assert!(super::operations::trust_policy(&none, "1.6.0").is_err());
+    none.plugin_admission = None;
+    assert!(super::operations::admission(&none).is_err());
+    // With no admission no filename is a plugin tarball (fail-closed).
+    assert!(validate_plugin_filename(&none, "plain.tar.gz").is_err());
 }
 
 /// An overlay file that is a NAMED PIPE, and the read of it as a race between the runtime and a

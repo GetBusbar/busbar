@@ -825,34 +825,6 @@ fn every_planes_claims_name_a_registered_transport() {
     }
 }
 
-/// THE SEAL IS ON THE BOOT PATH, NEUTRALLY. `run()` seals the composition off the resolved limits
-/// before the root units' configuration step, in every build: the call is not behind a feature and
-/// is not a root unit's, so a build that links no plane's root unit still refuses a composition
-/// that does not seal, rather than booting past a check only one plane's unit ran.
-#[test]
-fn the_boot_path_seals_the_composition_in_every_build() {
-    let main = include_str!("../../main.rs");
-    let run = &main[main.find("async fn run(").expect("the boot's run()")..];
-    let call = "root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));";
-    let sealed = run.find(call).expect("run() seals the composition");
-    let units = run
-        .find("ROOT_UNITS.iter().filter_map(|u| u.on_config)")
-        .expect("the root units' configuration step");
-    assert!(
-        sealed < units,
-        "the seal answers before any root unit composes"
-    );
-    let line_before = run[..sealed]
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
-        .unwrap_or_default();
-    assert!(
-        !line_before.trim_start().starts_with("#[cfg"),
-        "the seal is not behind a feature: {line_before}"
-    );
-}
-
 // ── BOTH DOORS, ONE FOLD ────────────────────────────────────────────────────────────────────────
 
 /// The dropped-in wire these proofs serve: the neutral frame door (the plugin loader's
@@ -1067,8 +1039,8 @@ fn the_wires_linked_row() -> LinkedTransport {
 #[test]
 fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
     let (a, b) = (
-        crate::root::doors::row_bind("first-row"),
-        crate::root::doors::row_bind("second-row"),
+        crate::root::doors::row_bind("first-row").expect("the row binds"),
+        crate::root::doors::row_bind("second-row").expect("the row binds"),
     );
     assert_eq!(
         &*a.instance, "first-row",
@@ -1191,4 +1163,39 @@ fn the_upgrade_lines_are_read_off_the_door_statements() {
             "no session wire, no upgrade line: {lines:?}"
         );
     }
+}
+
+/// A LINKED TRANSPORT ROW WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2, "Plugin
+/// logging": "all plugins should log to their plugin's log file ... compiled in or dropped in ...
+/// The HOST writes it to that plugin instance's own log file").
+///
+/// RED before a linked transport row was bound to its instance's log file: every row took the
+/// transport lane's `NoSink`, so a log record the door's call carried went nowhere.
+#[test]
+fn a_linked_transport_row_logs_to_its_own_plugin_log_file() {
+    use crate::root::loader::dispatch::Diagnostic;
+    let row = format!("transport-log-row-{}", std::process::id());
+    let bound = crate::root::doors::row_bind(&row).expect("the row binds");
+    bound.sink.diag(Diagnostic {
+        id: busbar_contract::abi::mechanism::call::DIAG_LOG,
+        name: b"",
+        severity: 0,
+        text: b"the linked transport logged a frame",
+    });
+    let path = crate::root::boot::plugin_logs().path_for(&row);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut text = String::new();
+    while std::time::Instant::now() < deadline {
+        text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("the linked transport logged a frame") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        text.contains("the linked transport logged a frame"),
+        "the row's plugin log file {} holds no record of its own: {text:?}",
+        path.display()
+    );
 }

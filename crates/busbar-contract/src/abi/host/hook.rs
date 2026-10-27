@@ -592,6 +592,19 @@ impl DecideFrame {
         crate::abi::sdk::hook::Decoded::of(lent).projection_json(op)
     }
 
+    /// THIS FRAME'S VIEW AS THE SDK DECODES IT for a hook's `decide`/`transform`
+    /// ([`crate::abi::sdk::hook::Decoded::of`]), lent to `read` for the call: an in-process hook
+    /// reads exactly the candidates a plugin behind its door reads, every key as the `in` carries it
+    /// (an infinity included, which the 1.5.5 JSON of [`Self::projection_json`] cannot carry).
+    #[must_use]
+    pub fn decoded<R>(&self, read: impl FnOnce(&crate::abi::sdk::hook::Decoded<'_>) -> R) -> R {
+        let input = self.input();
+        // SAFETY: every pointer in `input` names storage this frame owns (its view's store and its
+        // host buffers), live while `self` is borrowed (as `projection_json`).
+        let lent = unsafe { crate::abi::sdk::Lent::new(&input) };
+        read(&crate::abi::sdk::hook::Decoded::of(lent))
+    }
+
     /// ANSWER `decide` IN PROCESS: `v` lowered into this frame's own host buffers exactly as the
     /// SDK's door lowers it ([`crate::abi::sdk::hook::write_verdict`], the one short FAILED
     /// included), and the `out` it answers (its head blank: nothing crossed). For an in-process

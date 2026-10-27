@@ -96,10 +96,10 @@ async fn browser(handle: Arc<AppHandle>, req: Request<Body>) -> Response {
 /// Whether a `?refresh=1` rotation is honoured only on a navigation from busbar's OWN page
 /// (`Sec-Fetch-Site: same-origin`, the key-issued page's "Refresh key" link). A rotate revokes the
 /// user's key, and any site can navigate a signed-in user to `?refresh=1` while the IdP approves
-/// silently (K3 #20). `false` is 1.5.5's behaviour, which this build keeps until the owner signs the
-/// change: `?refresh=1` rotates whatever the navigation's origin (v1.5.5
-/// crates/busbar/src/auth/token.rs:324). The owner's signature flips this one line.
-pub(crate) const REFRESH_NEEDS_SAME_ORIGIN: bool = false;
+/// silently (K3 #20). 1.5.5 rotated whatever the navigation's origin (v1.5.5
+/// crates/busbar/src/auth/token.rs:324). OWNER-SIGNED 2026-10-24 (M29): only a same-origin navigation
+/// rotates; any other `?refresh=1` is a plain issue that re-shows the key.
+pub(crate) const REFRESH_NEEDS_SAME_ORIGIN: bool = true;
 
 /// Whether a `begin` asked to rotate (`refresh_param`) rotates the key, given the navigation's
 /// `Sec-Fetch-Site`, under [`REFRESH_NEEDS_SAME_ORIGIN`].
@@ -496,12 +496,6 @@ fn clear_cookie() -> String {
     format!("{LOGIN_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/auth/token; Max-Age=0")
 }
 
-/// Read the login cookie's raw value from the request `Cookie` header. Exposed so the POST handler
-/// (`exchange`) can detect a credential-form submission (login cookie present) and route it here.
-fn read_login_cookie(req: &Request<Body>) -> Option<String> {
-    read_cookie(req)
-}
-
 /// Read the login cookie's raw value from the request `Cookie` header.
 fn read_cookie(req: &Request<Body>) -> Option<String> {
     let raw = req.headers().get(header::COOKIE)?.to_str().ok()?;
@@ -550,12 +544,6 @@ fn parse_query(q: &str) -> Vec<(String, String)> {
             (pct_decode(k), pct_decode(v))
         })
         .collect()
-}
-
-/// Parse an `application/x-www-form-urlencoded` BODY (same grammar as a query string) into ordered
-/// key/value pairs. Used by the POST handler to read the credential form.
-fn parse_form_urlencoded(body: &str) -> Vec<(String, String)> {
-    parse_query(body)
 }
 
 /// Percent-decode a query component (`%XX` and `+` → space).
@@ -921,14 +909,14 @@ fn seam_browser(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<Response> 
 /// CI/BYOK IdP-bearer exchange has none).
 fn seam_credential_form(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<FormAnswer> {
     Box::pin(async move {
-        let Some(cookie) = read_login_cookie(&req) else {
+        let Some(cookie) = read_cookie(&req) else {
             return Err(Box::new(req));
         };
         // Small, bounded read of the form body (credential fields + the CSRF `__state`).
         let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
             .await
             .unwrap_or_default();
-        let form = parse_form_urlencoded(&String::from_utf8_lossy(&bytes));
+        let form = parse_query(&String::from_utf8_lossy(&bytes));
         let app = handle.load();
         Ok(credential_submit(&app, &handle, cookie, form).await)
     })

@@ -160,13 +160,13 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// URL carrying `user:pass@`. TRANSITIONAL: deleted with the legacy lane plane (row 155 C) (the stripping stays: no plane sees a userinfo URL).
 pub(crate) fn lane_token_endpoint(
     written: Option<&str>,
-) -> (Option<String>, Option<crate::egress::engine::UrlUserinfo>) {
+) -> (Option<String>, Option<crate::bound_credential::UrlUserinfo>) {
     let Some(written) = written else {
         return (None, None);
     };
     (
         Some(busbar_kernel_egress::trust::net::strip_userinfo(written).into_owned()),
-        crate::egress::engine::UrlUserinfo::of(written),
+        crate::bound_credential::UrlUserinfo::of(written),
     )
 }
 
@@ -538,6 +538,9 @@ pub struct InstalledLimits {
     /// for the same reason the rates are: its metadata lists are re-read at every commit, and a
     /// rejected apply must not leave them in force.
     destinations: config::Destinations,
+    /// The root's rules this build was judged by, which hear the commit
+    /// ([`RootRules::destinations_applied`]).
+    rules: std::sync::Arc<dyn RootRules>,
 }
 
 /// The rates one build staged ([`crate::rate_apply::rates_staged`]). Dropped while still armed —
@@ -586,9 +589,10 @@ impl InstalledLimits {
             rates,
             mut staged,
             destinations,
+            rules,
         } = self;
         busbar_kernel::config::limits::publish(&limits);
-        crate::egress::trust::destinations_applied(&destinations);
+        rules.destinations_applied(&destinations);
         staged.armed = false;
         crate::rate_apply::rates_applied(&rates.raw());
     }
@@ -626,6 +630,13 @@ pub trait RootRules: Send + Sync {
     fn planes_awaiting_restart(&self, _cfg: &config::RootCfg) -> Vec<&'static str> {
         Vec::new()
     }
+
+    /// A CONFIGURATION COMMITTED: the deployment's destinations are now `destinations`, raised to
+    /// the deployment's one destination guard
+    /// ([`crate::host_services::DestJudge::destinations_applied`]), which re-reads its metadata lists
+    /// at every commit as 1.5.5 did. Called once per kept build ([`InstalledLimits::keep`]), never
+    /// for a build that is dropped unkept. Default: no guard hears it.
+    fn destinations_applied(&self, _destinations: &config::Destinations) {}
 
     /// THE REFUSAL OF A DOCUMENT THAT FIRST WRITES AN UNLOADED PLANE'S SECTION, judged on its root
     /// `keys` before it is parsed: a plane this process did not load at start (Law 7,
@@ -752,14 +763,14 @@ pub fn build_app_from_config(
     // PLUGIN PRE-FLIGHT (the ONE shared pipeline; see the fn doc). Run UP FRONT so the secret
     // resolver - and the store open below - both draw on the same validated registry. A non-memory
     // store, an unresolvable secret plugin, or any invalid tarball fails boot here.
-    let plugin_registry = Arc::new(plugins_preflight(
+    let plugin_registry = plugins_preflight(
         cfg.store.as_ref(),
         cfg.auth.as_ref(),
         &cfg.identity_providers,
         &cfg.hooks,
         &plugins_cfg,
         &cfg.export,
-    )?);
+    )?;
     // STAGE 3 (BUSBAR-1.6.0.md §3, 3a/3e): this build's dropped-in secret plugins join the root's
     // secret axis here, never in the registry build `--validate` and every dry run share.
     if let Some(admit) = crate::preflight::root_rows().secret_admit {
@@ -771,7 +782,7 @@ pub fn build_app_from_config(
     // (it runs before the registry exists). A typo'd module fails boot HERE; the documented vault
     // `api_key: { module: acme-vault }` passes once the plugin is loaded + trusted. This is the boot
     // twin of the `--validate` check, sharing `validate_secret_refs`/`config_validate::secret_refs`.
-    validate_secret_refs(&plugin_registry, &cfg)?;
+    validate_secret_refs(plugin_registry.as_ref(), &cfg)?;
 
     // The SECRET RESOLVER: built-in env/file resolve inline; any other module delegates to a
     // loaded `kind: secret` plugin via the registry (fail-closed if the plugin subsystem is off or
@@ -1006,9 +1017,11 @@ pub fn build_app_from_config(
             provider_cfg.base_url.trim_end_matches('/'),
         )
         .into_owned();
-        // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
-        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
-        let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
+        // ...and the Basic that userinfo spelled, held opaque (see `UrlUserinfo`): the plane never
+        // reads it, and no kernel hop presents it (the kernel's outbound engine is deleted, u30; a
+        // member's userinfo reaches its attempts through its binding, `root::userinfo`).
+        // TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+        let url_userinfo = crate::bound_credential::UrlUserinfo::of(&provider_cfg.base_url);
         let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
         lane_inputs.push(LaneInput {
             model: ld.member.clone(),
@@ -1355,7 +1368,7 @@ pub fn build_app_from_config(
         // in by (DECISIONS #2 rule (1)). A row that states itself ephemeral keeps nothing across a
         // restart, which the operator is told before it opens.
         let row = plugin_registry.resolve(&g.module);
-        let ephemeral = row.is_some_and(|p| p.ephemeral);
+        let ephemeral = row.as_ref().is_some_and(|p| p.ephemeral);
         if ephemeral {
             diag_warn!(
                 GOVERNANCE_STORE_EPHEMERAL,
@@ -1375,7 +1388,7 @@ pub fn build_app_from_config(
         // the settings cross the ABI (ADR-0010). FAIL-CLOSED: an unresolvable ref refuses the store
         // load rather than handing the plugin a dangling reference. A row opened IN PROCESS is
         // handed no settings, so it has none to resolve (the built-in store never read its own).
-        let resolved = match row.is_some_and(|p| p.in_process()) {
+        let resolved = match row.as_ref().is_some_and(|p| p.in_process) {
             true => Default::default(),
             false => config::secret::resolve_settings(
                 &g.settings,
@@ -2007,7 +2020,7 @@ pub fn build_app_from_config(
         cost,
         plugins_dir: std::path::PathBuf::from(&plugins_cfg.dir),
         plugins_cfg,
-        plugin_trust: crate::preflight::root_rows().trust_policy,
+        plugin_admission: crate::preflight::root_rows().admission,
         // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
         // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
         self_key_ttl_secs: cfg
@@ -2083,6 +2096,7 @@ pub fn build_app_from_config(
             rates: resolved_rates,
             staged,
             destinations,
+            rules: std::sync::Arc::clone(rules),
         },
     ))
 }
@@ -2099,3 +2113,7 @@ struct LaneModelFacts {
     /// The entry's prompt-caching capability flag.
     prompt_caching: bool,
 }
+
+#[cfg(test)]
+#[path = "tests/root_rules_hearing_tests.rs"]
+mod root_rules_hearing_tests;
