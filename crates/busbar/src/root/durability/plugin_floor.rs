@@ -13,7 +13,7 @@
 //! the store keeps for its name on this host, and the marks rise to what loaded.
 //!
 //! Keyed per HOST, so one upgraded node never refuses its siblings' boots during a rolling rollback.
-//! An explicit rollback pin (`plugins.trust.first_party_floors`) replaces a name's mark, as it does
+//! An explicit rollback pin (`POST /plugins/rollback`, kept in the overlay's `plugin_versions`) replaces a name's mark, as it does
 //! in the scan. A compiled-in row is the binary's own and is never floored.
 
 use std::collections::BTreeMap;
@@ -71,8 +71,9 @@ pub fn hold(
                 return Err(format!(
                     "the first-party plugin `{}` {} is below {floor}, the highest version of it this \
                      host has loaded: an old signed release does not load in its place. To roll it \
-                     back on purpose, pin `plugins.trust.first_party_floors.{}`",
-                    row.name, row.version, row.name
+                     back on purpose, call the audited `POST /api/v1/admin/plugins/rollback` with \
+                     `{{\"file\": \"{}\"}}`; it pins `{}` in the overlay's `plugin_versions`",
+                    row.name, row.version, row.file, row.name
                 ));
             }
             if version_at_least(floor, &row.version) {
