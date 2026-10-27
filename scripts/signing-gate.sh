@@ -120,7 +120,7 @@ pack "$OTHER_PRIV" "$WORK/wrongkey.tar.gz"
 # against it, not the other way round. A statement that is not one whole rendering fails the gate.
 GRANT_NEED=$(python3 - "$WORK/unsigned.tar.gz" <<'EOF'
 import json, struct, sys, tarfile
-FIRST_PARTY = {1: "provider", 4: "loopback-allowed"}
+FIRST_PARTY = {1: "provider"}   # loopback-allowed is the operator's to grant (81e3062956, OWNER 2026-10-24)
 with tarfile.open(sys.argv[1]) as t:
     m = json.load(t.extractfile("manifest.json"))
 st = m.get("statement")
