@@ -109,7 +109,16 @@ check() {
     local framers name src want block
     framers="$(lock_sources "$root/Cargo.lock" | grep -F " git+${FRAMER_SRC}" || true)"
     if [ -n "$framers" ]; then
-      block="${PIN_CHECK_BUSBAR_LOCK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/dist/default/Cargo.lock}"
+      local busbar_root
+      busbar_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+      block="${PIN_CHECK_BUSBAR_LOCK:-$busbar_root/dist/default/Cargo.lock}"
+      # A sparse checkout of scripts/fleet has the commit's objects but not dist/default on disk:
+      # read the lock from the checked-out commit itself.
+      if [ -z "${PIN_CHECK_BUSBAR_LOCK:-}" ] && [ ! -f "$block" ] \
+        && git -C "$busbar_root" cat-file -e HEAD:dist/default/Cargo.lock 2>/dev/null; then
+        block="$(mktemp)"
+        git -C "$busbar_root" show HEAD:dist/default/Cargo.lock > "$block"
+      fi
       if [ ! -f "$block" ]; then
         err "Cargo.lock resolves a transport framer, and busbar's Cargo.lock at the pin is not at $block to hold it to"
       else
