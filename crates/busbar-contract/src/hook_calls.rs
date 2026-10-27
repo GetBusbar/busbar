@@ -10,8 +10,7 @@
 //!
 //! Every call runs on the dispatcher's workers, off the caller's own, and is bounded by the
 //! call's `budget` — the hook's `timeout_ms` — which is the op's DEADLINE on the dispatcher: the
-//! op is cancelled at `timeout_ms`, exactly as 1.5.5's per-hook timeout behaved (ARCHITECT
-//! Q-SO6). QUARANTINE is the dispatcher watchdog's alone: a crossing that outlives its watch
+//! op is cancelled at `timeout_ms`, exactly as 1.5.5's per-hook timeout behaved. QUARANTINE is the dispatcher watchdog's alone: a crossing that outlives its watch
 //! budget — the longer of the Call class budget and the call's `budget` (the design's hook kind
 //! as ruled: "The watchdog's budget is the hook's `timeout_ms`"; HOOKCAP-Q1) — faults the
 //! instance, and the implementation brings a FRESH instance back after a backoff through one
@@ -110,7 +109,7 @@ pub struct HookFacts {
 /// will not load here) and its own validation of the instance's settings, verbatim.
 pub type Probed = (Option<HookFacts>, Vec<String>);
 
-/// THE HOOK AXIS, as the kernel asks it (ARCHITECT ruling 2026-09-29, the opener seam; the
+/// THE HOOK AXIS, as the kernel asks it (the opener seam; the
 /// template is the export kind's `ExportAxis`): every `kind: hook` row the composition root
 /// admitted (compiled in or dropped in, one registration), resolved by `module:` name or alias.
 /// The root implements it over its plugin registry and the process's one dispatcher and installs
@@ -142,7 +141,7 @@ pub trait HookAxis: Send + Sync {
     fn linked(&self, module: &str) -> bool;
 
     /// The dispatcher's Call class budget: the deadline of a call no operator `timeout_ms` bounds
-    /// (a pool's ranking strategy, ARCHITECT Q-SO9). Such a hook is pure compute and answers READY
+    /// (a pool's ranking strategy). Such a hook is pure compute and answers READY
     /// on its first poll, so this deadline is never the one that ends it.
     fn call_budget(&self) -> Duration;
 

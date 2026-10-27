@@ -106,7 +106,7 @@ impl KernelSeal {
         KernelSeal(())
     }
 
-    /// Hand a seal to the kernel, and to nothing else (#65; ARCHITECT ruling 2026-10-14).
+    /// Hand a seal to the kernel, and to nothing else.
     ///
     /// The seal goes to `__busbar_kernel_root`, a symbol only `busbar-kernel` defines. The kernel
     /// wraps it in a type private to the kernel and hands it back boxed as `dyn Any`: the kernel

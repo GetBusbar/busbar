@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-stub-transport"
+version = "1.6.0"
+publish = false            # a first-party plugin crate; shipped linked into busbar or as a signed tarball
+edition = "2021"
+rust-version = "1.97"
+description = "The tcp transport: an identity framer over the host's byte stream."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_stub_transport"
+test = false
+doctest = false
+# rlib: the LINKED door (`linked::door`), which a busbar build names as a compiled-in row. The
+# dropped-in door is the sibling `busbar-transport-tcp-plugin` cdylib, which exports this same door
+# as its one symbol; this crate exports none.
+crate-type = ["rlib"]
+
+# DEPENDENCY POLICY. A transport is a plugin, so its closure is `busbar-contract` and nothing else it
+# does not need. This one needs nothing else: the socket, its readiness and its clock are the host's.
+[dependencies]
+# The ONE busbar crate a plugin names. Pinned by git rev to the busbar commit in `.busbar-ref`; a
+# busbar build that links this crate `[patch]`es the busbar git source to its own tree, so ONE copy
+# of the contract links.
+busbar-contract = { workspace = true }

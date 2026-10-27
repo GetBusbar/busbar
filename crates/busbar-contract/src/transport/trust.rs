@@ -161,7 +161,7 @@ pub fn canonical_key_pin(written: &str) -> Result<String, BadKeyPin> {
     Ok(crate::abi::sdk::digest::tagged(&digest))
 }
 
-/// THE TRUST ANCHORS OF ONE DESTINATION a need reaches (the transport pin, ARCHITECT 2026-10-03): the
+/// THE TRUST ANCHORS OF ONE DESTINATION a need reaches: the
 /// connector enforces them itself, on every connection to it.
 ///
 /// * `key_pin` — the far end's key, in the [`key_pin`] spelling: a secured connection whose leaf

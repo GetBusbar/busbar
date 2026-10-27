@@ -88,7 +88,7 @@ fn tally<'a, 'c>(
 /// request count and its ledgered classes. The reader names its own columns and does nothing else.
 /// Which lane a count prices on, whether the requests are the flat card's fee or a plane's
 /// own fee units, and where a plane's session count goes is decided HERE, in the cost unit, next
-/// to the price (ARCHITECT ruling 2026-09-30, one-pricing-site): a reader that projected the row
+/// to the price: a reader that projected the row
 /// itself and handed the slice in would be choosing the price's inputs beside the one function.
 ///
 /// The two reads below price the same projection two ways: in the dated history at the row's own
