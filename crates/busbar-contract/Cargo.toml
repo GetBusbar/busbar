@@ -10,8 +10,7 @@ license = "Apache-2.0"
 # The door macro's test plugin (`abi::sdk::door`), loaded by the dropped-in leg
 # `tests/sdk_door_cdylib.rs`. It is an example, not a crate: `cargo test` builds it and it never
 # ships. It lives under `tests/` because it is a test double (its lifecycle-only table is a shape no
-# kind ships). It sits above the dependency section, which `tests/feature_invariance.rs` reads
-# line by line.
+# kind ships).
 [[example]]
 name = "sdk_door_plugin"
 path = "tests/fixtures/sdk_door_plugin.rs"
@@ -119,6 +118,10 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }
+# The chip's RSA recipe (MySQL `caching_sha2_password` full authentication) and its RS256 recipe.
+num-bigint = { workspace = true }
+getrandom = { workspace = true }
+ring = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 # `base64` renders the one document-fingerprint tag a plane writes, `sha256/<standard base64>`

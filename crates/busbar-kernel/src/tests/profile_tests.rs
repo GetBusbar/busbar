@@ -65,9 +65,9 @@ fn reservoir_stays_representative_of_the_range() {
 #[test]
 fn a_stage_the_store_has_never_seen_takes_a_bucket_instead_of_indexing_past_the_end() {
     let mut store = Vec::new();
-    bucket_for(&mut store, Stage::PostSend).record(7);
+    bucket_for(&mut store, Stage::Finish).record(7);
     bucket_for(&mut store, Stage::MwAuth).record(9);
-    bucket_for(&mut store, Stage::PostSend).record(11);
+    bucket_for(&mut store, Stage::Finish).record(11);
     assert_eq!(
         store.len(),
         2,
@@ -75,7 +75,7 @@ fn a_stage_the_store_has_never_seen_takes_a_bucket_instead_of_indexing_past_the_
     );
     let (_, post) = store
         .iter()
-        .find(|(stage, _)| *stage == Stage::PostSend)
+        .find(|(stage, _)| *stage == Stage::Finish)
         .expect("the stage that recorded has a bucket");
     assert_eq!(
         post.samples,

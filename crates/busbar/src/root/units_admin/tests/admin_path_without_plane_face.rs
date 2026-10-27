@@ -176,11 +176,17 @@ impl ANodeWhoseChainThisCellReads {
     }
 }
 
-/// Compose the real mount over the real loop, exactly as `main.rs` composes it for `admin_listen`.
+/// The root's mount over `inner`, as `main.rs` composes it for `admin_listen`: a memory-buffered
+/// book whose ledger writes onto `rows`, `door` in front, the directory that minted the operator's
+/// credential behind it, and `tweak` applied to the units last.
 #[cfg(feature = "root-admin")]
-fn a_node() -> ANodeWhoseChainThisCellReads {
-    let surface = Arc::new(SurfaceLog::default());
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+fn mounted_over(
+    inner: axum::Router,
+    request_body_max_bytes: usize,
+    door: busbar_kernel_identity::AuthChain,
+    rows: busbar_kernel_ledger::legacy::RecordingRows,
+    tweak: impl FnOnce(&mut crate::root::kernel::ProductionUnits),
+) -> axum::Router {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_kernel_wal::NullShipper::new()),
@@ -188,25 +194,41 @@ fn a_node() -> ANodeWhoseChainThisCellReads {
     )
     .expect("a memory-buffered journal cannot fail to open");
     let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows.clone());
-    // The SAME ingress cap `main.rs` hands the wrap, so the body read below is the one a deployment
-    // configured rather than one this cell invented.
-    let router = mount(
-        a_recording_surface(Arc::clone(&surface)),
+    let read = Arc::new(rows);
+    mount(
+        inner,
         crate::root::kernel::new_kernel(),
-        64 * 1024,
+        request_body_max_bytes,
         move |dispatch| {
-            crate::root::kernel::ProductionUnits::admin_only_sharing(
+            let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
-                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
+                crate::root::units_admin::door_of_chain(door),
                 held,
                 read,
                 None,
             )
-            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
-                Arc::new(ADirectoryThatMintedIt),
-            ))
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                ADirectoryThatMintedIt,
+            )));
+            tweak(&mut units);
+            units
         },
+    )
+}
+
+/// Compose the real mount over the real loop, exactly as `main.rs` composes it for `admin_listen`.
+#[cfg(feature = "root-admin")]
+fn a_node() -> ANodeWhoseChainThisCellReads {
+    let surface = Arc::new(SurfaceLog::default());
+    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
+    // The SAME ingress cap `main.rs` hands the wrap, so the body read below is the one a deployment
+    // configured rather than one this cell invented.
+    let router = mounted_over(
+        a_recording_surface(Arc::clone(&surface)),
+        64 * 1024,
+        a_door_that_identifies_the_operator(),
+        rows.clone(),
+        |_| {},
     );
     ANodeWhoseChainThisCellReads {
         router,
@@ -244,31 +266,12 @@ fn the_real_surface_bare_and_mounted() -> (axum::Router, axum::Router) {
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
-    let mounted = mount(
+    let mounted = mounted_over(
         bare.clone(),
-        crate::root::kernel::new_kernel(),
         1 << 20,
-        move |dispatch| {
-            crate::root::kernel::ProductionUnits::admin_only_sharing(
-                dispatch,
-                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
-                held,
-                read,
-                None,
-            )
-            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
-                Arc::new(ADirectoryThatMintedIt),
-            ))
-        },
+        a_door_that_identifies_the_operator(),
+        busbar_kernel_ledger::legacy::RecordingRows::new(),
+        |_| {},
     );
     (bare, mounted)
 }
@@ -292,15 +295,41 @@ async fn over(
     path: &str,
     body: Vec<u8>,
 ) -> (u16, Vec<u8>, Vec<(String, String)>) {
+    send(
+        router,
+        method,
+        path,
+        body,
+        Some(THE_OPERATORS_CREDENTIAL),
+        None,
+    )
+    .await
+}
+
+/// THE ONE REQUEST these cells send: `credential` as the bearer (or none), `idempotency_key` as the
+/// `Idempotency-Key` (or none), a JSON body; the answer's status, bytes and headers.
+#[cfg(feature = "root-admin")]
+async fn send(
+    router: &axum::Router,
+    method: &str,
+    path: &str,
+    body: Vec<u8>,
+    credential: Option<&str>,
+    idempotency_key: Option<&str>,
+) -> (u16, Vec<u8>, Vec<(String, String)>) {
     use tower::ServiceExt;
 
-    let request = axum::http::Request::builder()
-        .method(method)
-        .uri(path)
-        .header(
+    let mut request = axum::http::Request::builder().method(method).uri(path);
+    if let Some(credential) = credential {
+        request = request.header(
             axum::http::header::AUTHORIZATION,
-            format!("Bearer {THE_OPERATORS_CREDENTIAL}"),
-        )
+            format!("Bearer {credential}"),
+        );
+    }
+    if let Some(key) = idempotency_key {
+        request = request.header("idempotency-key", key);
+    }
+    let request = request
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .body(axum::body::Body::from(body))
         .expect("the request builds");
@@ -563,33 +592,12 @@ async fn every_root_only_mutating_verb_seals_one_durable_row_and_a_read_seals_no
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
-    let mounted = mount(
+    let mounted = mounted_over(
         bare,
-        crate::root::kernel::new_kernel(),
         1 << 20,
-        move |dispatch| {
-            let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
-                dispatch,
-                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
-                held,
-                read,
-                None,
-            )
-            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                ADirectoryThatMintedIt,
-            )));
-            units.store = Some(Arc::new(AnApplyingStore));
-            units
-        },
+        a_door_that_identifies_the_operator(),
+        busbar_kernel_ledger::legacy::RecordingRows::new(),
+        |units| units.store = Some(Arc::new(AnApplyingStore)),
     );
 
     let applied = [
@@ -732,13 +740,6 @@ async fn a_booted_nodes_recovery_verbs_reach_its_configured_store_through_the_bo
     }
 }
 
-/// The 1.6.0 verbs this build binds NO EFFECT to, as `(method, path)`. Empty since owner answer
-/// Q71(2) bound the last four (`verify`, `plane_facts`, `plane_record_write`, `commit_upgrade` —
-/// `the_four_q71_verbs_are_served_and_refuse_by_name`); a verb added to `NEW_VERBS` without an
-/// `effect_bound` arm lands here, measured by the one generic check below.
-#[cfg(feature = "root-admin")]
-const THE_UNBOUND_VERBS: [(&str, &str); 0] = [];
-
 /// The nine verbs the owner removed from 1.6.0 — on 2026-09-08 (`set_operator_key`, `set_escrow`,
 /// `set_dual_control`, `export_keyset`, `approve`) and by #77(9), owner answer Q71(1)
 /// (`set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`) — as
@@ -777,31 +778,12 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
-    let mounted = mount(
+    let mounted = mounted_over(
         bare,
-        crate::root::kernel::new_kernel(),
         1 << 20,
-        move |dispatch| {
-            crate::root::kernel::ProductionUnits::admin_only_sharing(
-                dispatch,
-                crate::root::units_admin::door_of_chain(a_door_that_identifies_the_operator()),
-                held,
-                read,
-                None,
-            )
-            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(
-                Arc::new(ADirectoryThatMintedIt),
-            ))
-        },
+        a_door_that_identifies_the_operator(),
+        busbar_kernel_ledger::legacy::RecordingRows::new(),
+        |_| {},
     );
     let (unmounted_status, unmounted, _) = over(
         &mounted,
@@ -816,7 +798,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         br#"{"error":{"code":"not_found","message":"resource not found"}}"#.to_vec(),
         "the control is the router's generic miss"
     );
-    for (method, path) in THE_UNBOUND_VERBS.into_iter().chain(THE_REMOVED_VERBS) {
+    for (method, path) in THE_REMOVED_VERBS {
         let body = if method == "GET" {
             Vec::new()
         } else {
@@ -826,7 +808,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
         assert_eq!(
             (status, answer.as_slice()),
             (unmounted_status, unmounted.as_slice()),
-            "{method} {path}: an unbound or removed verb answers exactly what an unmounted path answers"
+            "{method} {path}: a removed verb answers exactly what an unmounted path answers"
         );
         assert_eq!(
             the_operators_rows_for(&mounted, path).await,
@@ -834,7 +816,10 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
             "{method} {path}: an unserved verb seals no audit row"
         );
     }
-    let unbound: std::collections::BTreeSet<(&str, &str)> = busbar_core_admin::NEW_VERBS
+    // Every 1.6.0 verb is bound (owner answer Q71(2) bound the last four: `verify`, `plane_facts`,
+    // `plane_record_write`, `commit_upgrade`); a verb added to `NEW_VERBS` without an
+    // `effect_bound` arm shows up here.
+    let unbound: Vec<(&str, &str)> = busbar_core_admin::NEW_VERBS
         .iter()
         .filter(|verb| !busbar_core_admin::verb::effect_bound(**verb))
         .filter_map(|verb| {
@@ -845,10 +830,9 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
                 .map(|row| (row.method, row.template))
         })
         .collect();
-    assert_eq!(
-        unbound,
-        THE_UNBOUND_VERBS.into_iter().collect(),
-        "the measured set is exactly what the one generic check leaves unbound"
+    assert!(
+        unbound.is_empty(),
+        "the one generic check leaves no 1.6.0 verb unbound: {unbound:?}"
     );
     let table = busbar_core_admin::admin_codec::verbs::table();
     for (method, path) in THE_REMOVED_VERBS {
@@ -1005,32 +989,14 @@ fn a_q71_node_trusting(
         .build();
     let (_data, bare, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    let rows = busbar_kernel_ledger::legacy::RecordingRows::new();
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(rows.clone()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    let held = Arc::new(std::sync::Mutex::new(durability));
-    let read = Arc::new(rows);
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = Arc::clone(&kept);
-    let mounted = mount(
+    let mounted = mounted_over(
         bare,
-        crate::root::kernel::new_kernel(),
         1 << 20,
-        move |dispatch| {
-            let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
-                dispatch,
-                crate::root::units_admin::door_of_chain(door),
-                held,
-                read,
-                None,
-            )
-            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                ADirectoryThatMintedIt,
-            )));
+        door,
+        busbar_kernel_ledger::legacy::RecordingRows::new(),
+        move |units| {
             units.admin.planes =
                 Arc::new(|key: &str| (key == A_SERVED_PLANE.key).then_some(A_SERVED_PLANE));
             units.admin.records = Some(Arc::new(
@@ -1040,7 +1006,6 @@ fn a_q71_node_trusting(
                 },
             ));
             units.admin.trust = trust;
-            units
         },
     );
     (mounted, kept)
@@ -1288,31 +1253,10 @@ async fn over_as(
     body: &str,
     credential: Option<&str>,
 ) -> (u16, String) {
-    use tower::ServiceExt;
-
-    let mut request = axum::http::Request::builder().method(method).uri(path);
-    if let Some(credential) = credential {
-        request = request.header(
-            axum::http::header::AUTHORIZATION,
-            format!("Bearer {credential}"),
-        );
-    }
-    let request = request
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from(body.to_string()))
-        .expect("the request builds");
-    let response = router
-        .clone()
-        .oneshot(request)
-        .await
-        .expect("the mounted router answers");
-    let status = response.status().as_u16();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("the answer's body is readable");
+    let (status, bytes, _) = send(router, method, path, body.into(), credential, None).await;
     (
         status,
-        String::from_utf8(bytes.to_vec()).expect("the answer is text"),
+        String::from_utf8(bytes).expect("the answer is text"),
     )
 }
 
@@ -1580,31 +1524,18 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
 /// One request as the operator, carrying `Idempotency-Key: <key>`.
 #[cfg(feature = "root-admin")]
 async fn over_with_key(router: &axum::Router, path: &str, body: &str, key: &str) -> (u16, String) {
-    use tower::ServiceExt;
-
-    let request = axum::http::Request::builder()
-        .method("POST")
-        .uri(path)
-        .header(
-            axum::http::header::AUTHORIZATION,
-            format!("Bearer {THE_OPERATORS_CREDENTIAL}"),
-        )
-        .header("idempotency-key", key)
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from(body.to_string()))
-        .expect("the request builds");
-    let response = router
-        .clone()
-        .oneshot(request)
-        .await
-        .expect("the mounted router answers");
-    let status = response.status().as_u16();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("the answer's body is readable");
+    let (status, bytes, _) = send(
+        router,
+        "POST",
+        path,
+        body.into(),
+        Some(THE_OPERATORS_CREDENTIAL),
+        Some(key),
+    )
+    .await;
     (
         status,
-        String::from_utf8(bytes.to_vec()).expect("the answer is text"),
+        String::from_utf8(bytes).expect("the answer is text"),
     )
 }
 

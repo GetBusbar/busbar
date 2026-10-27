@@ -333,6 +333,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "idna_adapter",
+ "libloading",
  "metrics",
  "opentelemetry-proto",
  "prost",
@@ -402,8 +403,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-auth-oidc"
-version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=cc59d737972c1b881a164b437d63c4f29f6a15c1#cc59d737972c1b881a164b437d63c4f29f6a15c1"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab#82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -418,8 +419,8 @@ dependencies = [
 
 [[package]]
 name = "busbar-auth-oidc-plugin"
-version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=cc59d737972c1b881a164b437d63c4f29f6a15c1#cc59d737972c1b881a164b437d63c4f29f6a15c1"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab#82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -458,6 +459,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures",
+ "getrandom 0.3.4",
  "hex",
  "http",
  "hyper",
@@ -466,8 +468,10 @@ dependencies = [
  "jsonschema",
  "libc",
  "memchr",
+ "num-bigint",
  "proc-macro2",
  "quote",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -678,8 +682,6 @@ dependencies = [
  "http-body",
  "http-body-util",
  "httpdate",
- "hyper",
- "hyper-util",
  "indexmap",
  "libc",
  "loom",
@@ -773,7 +775,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=fafb021f9f5ff4f109da47a9ea711353a003d26e#fafb021f9f5ff4f109da47a9ea711353a003d26e"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=757897b71862489343d2e5449b1816619bdcf69e#757897b71862489343d2e5449b1816619bdcf69e"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -792,7 +794,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=b3e74232c96e1403b6c4c42ac1dfd5a19c12b344#b3e74232c96e1403b6c4c42ac1dfd5a19c12b344"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=b1eca3619e9fd09ed92c109c46f46ea1be45ae66#b1eca3619e9fd09ed92c109c46f46ea1be45ae66"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -816,7 +818,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=1cdd3ea22875bb434784a00906bc10d906a1919d#1cdd3ea22875bb434784a00906bc10d906a1919d"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8#6fa0b048a792ce9078ff9540f0a1ae74b4fe55e8"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -829,7 +831,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=03cb3eb5d9c98b010c57fac4f75eabf874361d60#03cb3eb5d9c98b010c57fac4f75eabf874361d60"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d#73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -841,7 +843,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=03cb3eb5d9c98b010c57fac4f75eabf874361d60#03cb3eb5d9c98b010c57fac4f75eabf874361d60"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d#73cd5ff7ec2cc3b3c8ad243359ff13aa899df72d"
 dependencies = [
  "busbar-contract",
  "busbar-plane-streaming",
@@ -2751,9 +2753,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.16"
+version = "0.11.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f4bfc015262b9df63c8845072ce59068853ff5872180c2ce2f13038b970e560"
+checksum = "0e750cca55fe4f0439a15d0bb529da9651e79993e8e72c61a899a36d462befbe"
 dependencies = [
  "bytes",
  "getrandom 0.4.3",
@@ -3011,7 +3013,6 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-util",
- "h2",
  "http",
  "http-body",
  "http-body-util",
