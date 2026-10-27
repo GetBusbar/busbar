@@ -333,16 +333,17 @@ pub(crate) const SEAMS: &[(&str, &str)] = &[
 ];
 
 /// The `key = "value"` rows of the `[table]` header of a Cargo manifest, in file order. Deliberately
-/// not a TOML parser: one row per line, both sides optionally double-quoted. An absent or empty
-/// table is a build failure, never an empty list — an empty list would silently register nothing.
+/// not a TOML parser: one row per line, both sides optionally double-quoted. An absent table is no
+/// rows (core alone links nothing); a table stated with no row is a build failure.
 pub(crate) fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)> {
     let header = format!("[{table}]");
-    let mut in_table = false;
+    let (mut in_table, mut present) = (false, false);
     let mut rows = Vec::new();
     for line in manifest.lines() {
         let code = line.split('#').next().unwrap_or("").trim();
         if code.starts_with('[') {
             in_table = code == header;
+            present |= in_table;
             continue;
         }
         if !in_table {
@@ -355,9 +356,10 @@ pub(crate) fn metadata_map(manifest: &str, table: &str) -> Vec<(String, String)>
             ));
         }
     }
+    // Core alone states no table: it links nothing. A table stated with no row is a mistake.
     assert!(
-        !rows.is_empty(),
-        "Cargo.toml: `{header}` is missing or empty"
+        !present || !rows.is_empty(),
+        "Cargo.toml: `{header}` is empty"
     );
     rows
 }
