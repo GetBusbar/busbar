@@ -34,10 +34,6 @@ mod the_posting_arithmetic;
 /// Where a reported quantity came from, and the three questions the crate asks about it.
 mod what_the_usage_report_says;
 
-/// The take-site count the documentation states, against the kernel's own source (items 315, 320,
-/// 326).
-mod take_site_census;
-
 /// Whether the kernel keeps this step's token to itself, read off the step markers' own
 /// `KERNEL_OWNED` constants rather than off a second runtime table.
 ///

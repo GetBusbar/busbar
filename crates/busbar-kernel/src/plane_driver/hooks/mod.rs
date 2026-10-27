@@ -1602,7 +1602,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                         // Applied; or a rewrite naming no messages, which 1.5.5 read as no rewrite.
                         Ok(next) if next.rewritten.is_some() || rw.messages.is_empty() => {
                             if let Some(body) = &next.rewritten {
-                                self.lock().body = Some(Arc::from(body.as_slice()));
+                                self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
                             }
                             view = next;
                         }

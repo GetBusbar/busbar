@@ -47,8 +47,9 @@ plugin opens its own database and upgrades it with its own `migrate()`. See
   with an optional `weight:` and per-member capabilities is the canonical form (a bare-name list
   plus a pool-level `weights:` map is accepted as an equivalent shorthand; see
   [Pools](pools.md#config-reference)). `busbar --migrate-config` on a 1.5.5 config prints the
-  same output the 1.5.5 migrator printed, plus the `store:` block when the config has none; it does not rewrite members, add
-  `TODO` comments, or touch anything a 1.5.5 config can contain.
+  same output the 1.5.5 migrator printed, plus the `store:` block when the config has none, and
+  with hook `plugin:` / `at:` keys rewritten to `module:` / `phase:` (see [§5](#5-retired-15x-spellings-rewritten-for-you));
+  it does not rewrite members or add `TODO` comments.
 - **Keys carry over.** `auth.signing_key` is read as before, so every outstanding minted key
   keeps verifying; nothing is re-minted.
 - **Stores carry over.** A `sqlite`, `postgres`, `mysql` or `valkey` store opens on its 1.5.5
@@ -64,7 +65,8 @@ plugin opens its own database and upgrades it with its own `migrate()`. See
 - **The reserved name `admin`** is still refused for a model, pool or provider, with the 1.5.5
   message.
 
-Two exceptions, and `--validate` already tells you whether either applies to you:
+Three exceptions. `--validate` tells you whether either of the first two applies to you; it does not
+catch the third:
 
 - a provider whose `api_key` reference does not resolve no longer starts with an empty credential.
   If you were relying on that — most often to run a keyless local ollama or vLLM — you need one
@@ -74,14 +76,21 @@ Two exceptions, and `--validate` already tells you whether either applies to you
   `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms`, the Bedrock `guardrail_*`
   units). If you have a `rate_card:`, you need one edit. See
   [§7](#a-card-must-configure-every-billable-unit-its-plane-counts).
+- `advanced.block_private_addresses` now defaults to `true`. A provider whose `base_url` or
+  `token_url` is on a private or loopback address (a local ollama or vLLM, an in-cluster gateway)
+  is refused when dialled unless `advanced.allow_destinations` names it. Add the host, IP or CIDR
+  to `advanced.allow_destinations`, or set `advanced.block_private_addresses: false` to restore
+  1.5.5's behaviour. Cloud metadata addresses are refused either way.
 
 ## 2. Deprecated env vars keep working, with a warning
 
 `BUSBAR_PROVIDERS`, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY`
 and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` were deprecated in 1.5.3 in favour of config.yaml keys.
 1.6.0 reads each of them at the same point of the boot sequence as 1.5.5 and honours it exactly as
-before; the only difference is that the 1.5.5 deprecation warning now carries a diagnostic code,
-BUSBAR-3021, whose entry in [the diagnostics reference](diagnostics.md) names the replacement key:
+before. The only difference is that the deprecation warning for `BUSBAR_CONFIG_OVERLAY`,
+`BUSBAR_UPSTREAM_HTTP1_ONLY` and `BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE` now carries a diagnostic code,
+BUSBAR-3021, whose entry in [the diagnostics reference](diagnostics.md) names the replacement key.
+The `BUSBAR_PROVIDERS` and `BUSBAR_WORKER_THREADS` warnings are still printed without a code:
 
 | Deprecated env var (still honoured) | config.yaml key |
 |---|---|
@@ -100,9 +109,9 @@ variable into config.yaml when convenient; the warning is the only consequence o
 
 None of these need action; they are listed so what you see is expected.
 
-- **Diagnostic codes on every error and warning line.** `[error]`, `[warn]` and `warning:`
-  lines are prefixed `BUSBAR-NNNN:` and every boot log line carries `diag=BUSBAR-NNNN`; the text
-  after the code is unchanged. If a log pipeline matches on the leading text of those lines,
+- **Diagnostic codes on error and warning lines.** `[error]`, `[warn]` and `warning:` lines are
+  prefixed `BUSBAR-NNNN:` and boot log lines carry `diag=BUSBAR-NNNN`; the text after the code is
+  unchanged. A few `[warn]` lines are still uncoded (two deprecated env vars, jemalloc, memfd). If a log pipeline matches on the leading text of those lines,
   allow for the code. See [the diagnostics reference](diagnostics.md).
 - **The jemalloc background-purge line is `[info]` on macOS**, not `[warn]`.
 - **One new `/metrics` series** on an unchanged config, `busbar_metering_pending_coalesced_total`.
@@ -119,7 +128,7 @@ None of these need action; they are listed so what you see is expected.
   plane-qualified target or pool key such as `tool:<server>`, `lane` the member position), which
   appear once a request has been sent to them.
 - **Admin views gained fields.** Hook objects carry `fires_at`, `groups` and `phase`; the
-  overlay-section 404 lists the sections that now exist; `openapi.json` describes the new planes.
+  unknown-overlay-section 400 lists the sections that now exist; `openapi.json` describes the new planes.
   Every 1.5.5 field, including the lane `limit` alias on `/stats`, is still there.
 - **`--help` is longer and `--version` prints two lines** (the second is a `build:` provenance
   stamp). `-c`/`--config` and `--providers` are new, additive flags.
@@ -143,8 +152,8 @@ None of these need action; they are listed so what you see is expected.
   [1.6.0 advisories](advisories/1.6.0/mysql-store-split-flush-request-count-loss.md).
 
 See [the full 1.6.0 advisories index](advisories/1.6.0/README.md) for these and two further
-disclosures (an upstream-429-as-503 status-code clarification, and an open key-level-billing-window
-question) that require no operator action but are recorded for completeness.
+disclosures (an upstream-429-as-503 status-code clarification, and a fee defect on a refund that
+crosses a billing window) that require no operator action but are recorded for completeness.
 
 ## 4. New optional sections for the planes
 
@@ -158,6 +167,7 @@ gains no endpoint and no route, and the migrator adds none of them.
 | `agents:` | Registered A2A agents, served over JSON-RPC, HTTP+JSON and gRPC | [A2A](a2a.md) |
 | `streams:` | The live-voice plane: full-duplex realtime sessions over one IR | [Voice](voice.md) |
 | `oauth_as:` | The embedded OAuth 2.1 authorization server the MCP door can use | [MCP](mcp.md) |
+| `decisions:` | The decisions plane: `jev` and `nanojev` served as passthrough | [Changelog](../CHANGELOG.md#additive-planes) |
 
 Two things about them are worth knowing before you write one. An `mcp:` block with an empty
 `auth.chain` refuses to start, because an anonymous MCP request is never narrowed by a key and
@@ -166,31 +176,31 @@ written in the top-level `pools:` map with `tools:` / `agents:` entries as bare-
 the same breaker and failover you already run for models applies to them; see
 [Circuit breaker](circuit-breaker.md).
 
-Validation messages know the new keys: an `expected one of` list now includes `mcp`, `oauth_as`,
-`tools`, `agents` and `streams`, and the group-limit `metric` list includes the four token
-sub-metrics `tokens_input`, `tokens_output`, `tokens_cache_read` and `tokens_cache_write` (see
-[Configuration → `groups`](configuration.md#groups)).
+Validation messages are frozen at 1.5.5's wording: an `expected one of` list still names only the
+keys 1.5.5 knew. The new sections, and the group-limit token sub-metrics `tokens_input`,
+`tokens_output`, `tokens_cache_read` and `tokens_cache_write`, parse and validate but are not named
+in those lists (see [Configuration → `groups`](configuration.md#groups)).
 
 ## 5. Retired 1.5.x spellings, rewritten for you
 
 Four spellings that 1.5.x accepted as read-only back-compat, and that were never the documented
-form, are gone in 1.6.0. Each has a migration path, so no config and no persisted state is bricked.
+form, are still accepted in 1.6.0, so no config, client or persisted state breaks. Prefer the
+documented form in anything new.
 
-- **Hook `plugin:` → `module:`.** The `plugin:` key on a hook definition was a read-only alias of
-  `module:` (the documented spelling since 1.5.3). `busbar --migrate-config` rewrites it, and a
-  persisted config overlay that still spells it `plugin:` is auto-migrated at boot. Admin API
-  `POST`/`PUT /api/v1/admin/hooks` bodies must name `module:`.
-- **Hook `at: <stage>` → `phase: [<stage>]`.** The single-stage tap key is replaced by the
-  `phase:` list documented since 1.5.3. `busbar --migrate-config` rewrites it (behaviour-preserving)
-  and a persisted overlay is auto-migrated at boot. An omitted `phase:` still means the four core
-  stages.
-- **`persist:` on `PUT /api/v1/admin/config/settings`** was accepted and ignored since 1.5.3
-  (config mutation is durable by default). A client that still sends it receives `400
-  invalid_request` naming `persist` as an unknown field. Drop the field; it never changed the
-  outcome.
-- **The `at` field on `GET /api/v1/admin/hooks[/{name}]`**, which was `null` for essentially every
-  hook, is replaced by `fires_at` (the resolved stage set, in pipeline order) and `phase` (the
-  literal config echo).
+- **Hook `plugin:` → `module:`.** The `plugin:` key on a hook definition is a read-only alias of
+  `module:` (the documented spelling since 1.5.3). It is still accepted in config and in admin API
+  `POST`/`PUT /api/v1/admin/hooks` bodies. `busbar --migrate-config` rewrites it, and a persisted
+  config overlay that still spells it `plugin:` is rewritten at boot.
+- **Hook `at: <stage>` → `phase: [<stage>]`.** The single-stage tap key is still accepted, in config
+  and in admin bodies, and behaves as it did in 1.5.5. The documented form is the `phase:` list.
+  `busbar --migrate-config` rewrites it (behaviour-preserving) and a persisted overlay is rewritten
+  at boot. An omitted `phase:` still means the four core stages.
+- **`persist:` on `PUT /api/v1/admin/config/settings`** is accepted and ignored, as it was since
+  1.5.3 (config mutation is durable by default). It must still be a boolean; any other value gets a
+  400. Drop the field when convenient; it never changed the outcome.
+- **The `at` field on `GET /api/v1/admin/hooks[/{name}]`** is still served. Beside it are
+  `fires_at` (the resolved stage set, in pipeline order) and `phase` (the literal config echo),
+  which are what to read in new tooling.
 
 ---
 
@@ -242,16 +252,13 @@ wrong would silently disarm a provider that does need one.
 **What shipped.** A rate card is no longer a single mutable price. Cards are an append-only DATED
 HISTORY: each entry carries an `effective_from`, publishing one never touches the window before that
 date, and a back-dated correction reprices exactly the window it names —
-`[effective_from, effective_until)` — as an attributed, signed append rather than an edit to a booked
-row. The engine is real and reachable: the history append is `crates/busbar/src/root/kernel.rs:262`
-(`effective_from`), the window recompute is `:291`, and the signed back-dated correction is
-`crates/busbar/src/root/units_admin/mod.rs:679`, wired at
-`POST /api/v1/admin/ledger/amend-rate-history`.
+`[effective_from, effective_until)` — as an attributed append rather than an edit to a booked row.
+The back-dated correction is served at `POST /api/v1/admin/ledger/amend-rate-history`.
 
 **`GET /admin/usage` prices each row at the card in force when it was earned.** The endpoint still
 stores raw token quantities and derives spend at read time, but it no longer derives it off the
 newest card. Each row resolves through the dated history at the instant it was earned, so publishing
-a card leaves every figure before its `effective_from` where it was, and a signed back-dated
+a card leaves every figure before its `effective_from` where it was, and a back-dated
 correction moves exactly the window it names. A card edit in the middle of a day splits that day
 at the edit rather than repricing all of it. If you relied on 1.5.5's behaviour — a
 `PUT /api/v1/admin/config/settings` rate-card edit repricing every past row on the next read — that
@@ -324,7 +331,7 @@ silent about a unit it serves refuses that traffic rather than pricing it at zer
 instead of `0` to start billing reranks (`units:` rates are micro-units per unit). The other planes
 are new in 1.6.0, so their cards are new config; the same rule holds for each (`tools.rate_card`:
 `tool_calls`, `bytes`; `agents.rate_card`: `bytes`; `streams.rate_card`: the seven voice units;
-`decisions.rate_card`: `decision`), and `--validate` names whatever your build counts.
+`decisions.rate_card`: `decision`, `input_tokens`, `output_tokens`), and `--validate` names whatever your build counts.
 
 Likewise, a nonzero `<section>.fees` key for a unit the plane does not count (for example
 `streams.fees.per_request`: a voice session pays `per_session`) refuses boot, naming the key and the
@@ -346,14 +353,15 @@ exactly these:
 
 - `GET /api/v1/admin/ledger/totals`, `/checkpoints`, `/reconciliation`, `/migration` and
   `/openapi.json` — the five additive reads.
-- `POST /api/v1/admin/ledger/amend-rate-history` — the operator-signed write.
+- `POST /api/v1/admin/ledger/amend-rate-history` — the correction write.
 
-**Back-dating is available, and it is attributable.** The signed `amend-rate-history` verb appends a
-dated entry and emits one journaled, operator-signed repricing record per affected `(window,
-bucket)` carrying the old and new card, the quantities, both amounts and the delta. The original
-line and the correction are both visible forever, and no booked line is rewritten.
+**Back-dating is available, and it is attributable.** The `amend-rate-history` verb appends a dated
+entry and journals one record per correction, naming the window, the corrected cells, the card it
+corrects, the principal that posted it and the SHA-256 of its reason. The body carries no signer and
+no signature. The original line and the correction are both visible forever, and no booked line is
+rewritten.
 
-**What to do if a rate was wrong.** Post a signed correction through
+**What to do if a rate was wrong.** Post a correction through
 `POST /api/v1/admin/ledger/amend-rate-history` naming the window it repairs, rather than editing the
 live card. The correction is an append and it leaves an attributed record. Editing the live card
 prices only what happens after the edit; it cannot repair a window that is already past.
@@ -371,15 +379,18 @@ prices only what happens after the edit; it cannot repair a window that is alrea
 - [ ] If `--validate` names a provider `api_key` that does not resolve: fix the reference, or — for
       an upstream that takes no credential (local ollama / vLLM) — declare `api_key: none`. It is
       a boot refusal now, not a warning ([§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot)).
+- [ ] If a provider `base_url` / `token_url` is on a private or loopback address: name it in
+      `advanced.allow_destinations` (or set `advanced.block_private_addresses: false`). `--validate`
+      does not catch this; the dial is refused at run time ([§1](#1-no-other-config-changes-required)).
 - [ ] If a log pipeline matches on the leading text of `[error]` / `[warn]` lines, allow for the
       `BUSBAR-NNNN:` prefix.
 - [ ] If any key's traffic routinely fails over to an OpenAI Chat Completions lane while streaming,
       expect its spend to rise to what it actually used.
-- [ ] Deprecated env vars: none need moving today; each warns with BUSBAR-3021 until you do.
+- [ ] Deprecated env vars: none need moving today; each warns (three with BUSBAR-3021) until you do.
 - [ ] Hooks spelled `plugin:` or `at:` in config.yaml: run `busbar --migrate-config` once
       (overlays migrate themselves at boot).
 - [ ] If a dashboard or reconciliation relied on `GET /admin/usage` totals recalculating after a
-      rate-card edit: they no longer do (a card prices only what follows it). Post a signed
+      rate-card edit: they no longer do (a card prices only what follows it). Post an
       `amend-rate-history` correction for booked usage, and pass `?as_of=<history_seq>` to read money
-      as of a past history point ([§7](#7-money-is-priced-as-of-a-dated-rate-card-history)).
+      as of a past history point ([§7](#7-rate-cards-became-a-dated-history-and-get-adminusage-prices-by-it)).
 - [ ] Want MCP, A2A or voice? Add the section; see the guide in the table above.
