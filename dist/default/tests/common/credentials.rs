@@ -13,11 +13,11 @@ use std::path::Path;
 /// genuinely signed tokens), its JWKS served over a certificate-verified loopback TLS endpoint
 /// ([`serve_jwks`]) a module trusts through `ca_cert_pem`. The child `busbar` process's OWN
 /// connector fetches the JWKS over the dropped-in module's declared need.
-pub fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
+pub fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
+    static ONE: std::sync::OnceLock<busbar_test_kit::test_issuer::Issuer> =
         std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(
+        let issuer = busbar_test_kit::test_issuer::Issuer::start(
             "https://issuer.e2e.invalid",
             "e2e-issuer",
         );

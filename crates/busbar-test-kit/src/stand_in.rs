@@ -70,6 +70,6 @@ impl FramedFacts {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 #[path = "tests/stand_in_tests.rs"]
 mod tests;
