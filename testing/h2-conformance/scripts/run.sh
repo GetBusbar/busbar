@@ -157,6 +157,7 @@ leg_subject() {
     tail -30 "$d/build.log" >&2; LEG_REASON="busbar did not build from the checkout (see subject/build.log)"; SUBJECT_ARMED=1; return 1
   fi
   local bin="$TARGET/release/busbar"
+  say "subject: checkout $(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null), build said: $(grep -E 'Compiling busbar |Finished|Fresh busbar ' "$d/build.log" | tr '\n' ' ' | head -c 300)"
   [ -x "$bin" ] || { LEG_REASON="the build left no $bin"; SUBJECT_ARMED=1; return 1; }
   SUBJECT_ARMED=1
   make_cert "$d" || { LEG_REASON="could not make a cert (openssl)"; return 1; }
