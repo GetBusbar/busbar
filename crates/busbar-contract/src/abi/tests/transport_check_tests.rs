@@ -810,21 +810,6 @@ fn a_null_string_element_in_composes_over_upgrades_to_or_claim_facts_is_fault() 
     );
 }
 
-fn route(methods: u32, path_form: u32, path: &'static str) -> route::RouteMatch {
-    route::RouteMatch {
-        methods,
-        path_form,
-        path: AbiStr {
-            ptr: path.as_ptr(),
-            len: path.len(),
-        },
-        fields: null(),
-        fields_len: 0,
-        rung: 0,
-        _reserved: 0,
-    }
-}
-
 /// RED: a route's content — a rooted path for the exact, pattern and prefix forms, a pattern that
 /// keeps the syntax, lower-case field-name tokens, and a value exactly where the op wants one.
 #[test]
