@@ -2672,8 +2672,79 @@ fn outbound_credential_refusals(
     let Some(axis) = crate::preflight::linked_auth_axis() else {
         return Vec::new();
     };
-    axis.check_outbound(style, credential.as_bytes(), params)
-        .unwrap_or_default()
+    credential_refusals_from(axis.as_ref(), style, credential, params)
+}
+
+/// [`outbound_credential_refusals`] asked of `axis`, each refusal with the credential redacted
+/// ([`redact_credential`]): the text is a plugin's, and `--validate` prints it (H9).
+fn credential_refusals_from(
+    axis: &dyn busbar_contract::auth_calls::AuthAxis,
+    style: &str,
+    credential: &str,
+    params: &serde_json::Value,
+) -> Vec<String> {
+    let refusals = axis
+        .check_outbound(style, credential.as_bytes(), params)
+        .unwrap_or_default();
+    let needles = credential_needles(credential);
+    refusals
+        .into_iter()
+        .map(|text| redact_credential(text, &needles))
+        .collect()
+}
+
+/// What stands in a printed refusal where the credential was.
+const REDACTED_CREDENTIAL: &str = "[redacted]";
+
+/// A needle shorter than this is not searched for: a 1-3 byte credential (or half of one) would
+/// match ordinary words, and no real credential is that short.
+const MIN_NEEDLE: usize = 4;
+
+/// The spellings of `credential` a plugin's refusal could carry, longest first: the credential as
+/// resolved and trimmed, the secret half of a `client_id:client_secret` pair, a service account's
+/// `private_key`, and the base64 (standard and URL-safe, padded or not) of the credential, which is
+/// how a Basic header carries a `user:pass` pair.
+fn credential_needles(credential: &str) -> Vec<String> {
+    use base64::Engine as _;
+    let mut needles = vec![credential.to_string(), credential.trim().to_string()];
+    if let Some((_, secret)) = credential.trim().split_once(':') {
+        needles.push(secret.to_string());
+    }
+    if let Ok(serde_json::Value::Object(account)) = serde_json::from_str(credential) {
+        if let Some(serde_json::Value::String(key)) = account.get("private_key") {
+            // As parsed, and as JSON spells it (`\n` escaped), which is how a plugin quoting the
+            // account back would.
+            needles.push(key.clone());
+            if let Ok(quoted) = serde_json::to_string(key) {
+                needles.push(quoted.trim_matches('"').to_string());
+            }
+        }
+    }
+    for raw in [credential, credential.trim()] {
+        for engine in [
+            &base64::engine::general_purpose::STANDARD,
+            &base64::engine::general_purpose::STANDARD_NO_PAD,
+            &base64::engine::general_purpose::URL_SAFE,
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        ] {
+            needles.push(engine.encode(raw.as_bytes()));
+        }
+    }
+    needles.retain(|n| n.len() >= MIN_NEEDLE);
+    needles.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    needles.dedup();
+    needles
+}
+
+/// `text` with every occurrence of each needle replaced by [`REDACTED_CREDENTIAL`]. Text that
+/// carries none comes back as it was, byte for byte.
+fn redact_credential(mut text: String, needles: &[String]) -> String {
+    for needle in needles {
+        if text.contains(needle.as_str()) {
+            text = text.replace(needle.as_str(), REDACTED_CREDENTIAL);
+        }
+    }
+    text
 }
 
 /// THE SERVICE ACCOUNT A `jwt-bearer` CREDENTIAL CARRIES, as bytes of its JSON (Q128 audit
@@ -2815,3 +2886,7 @@ mod store_required_tests;
 #[cfg(test)]
 #[path = "tests/secret_shorthand_declared_tests.rs"]
 mod secret_shorthand_declared_tests;
+
+#[cfg(test)]
+#[path = "tests/credential_echo_tests.rs"]
+mod credential_echo_tests;
