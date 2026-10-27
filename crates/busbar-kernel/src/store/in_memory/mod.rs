@@ -459,6 +459,29 @@ pub struct LaneData {
     pub(crate) client_fault: u64,
 }
 
+#[cfg(test)]
+impl LaneData {
+    /// A minimal live lane (alive, unlimited budget, zero counters) with the given
+    /// member/route/permit count, for the store's race tests.
+    pub fn for_test(member: &str, route: &str, max: usize) -> Self {
+        LaneData {
+            member: member.into(),
+            route: route.into(),
+            max,
+            sem: Arc::new(Semaphore::new(max)),
+            limited: false,
+            budget: -1,
+            cooldown_until: 0,
+            streak: 0,
+            dead: false,
+            dead_reason: String::new(),
+            ok: 0,
+            err: 0,
+            client_fault: 0,
+        }
+    }
+}
+
 /// Helper for weighted selection tests - creates a lane with specific weight.
 #[cfg(test)]
 #[allow(dead_code)]
