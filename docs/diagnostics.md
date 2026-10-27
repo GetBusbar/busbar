@@ -451,15 +451,15 @@ RETIRED. Nothing emits this code: an unreadable overlay reports as BUSBAR-3005 a
 **What to do:** Nothing emits this code. See BUSBAR-3005 and BUSBAR-3017.
 
 <a id="config-metadata-entry-names-no-host"></a>
-### BUSBAR-3024 — A metadata host-list entry names no host (it matches nothing and is dropped)
+### BUSBAR-3024 — A metadata host-list entry names no host (it matches nothing and is dropped) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `config-metadata-entry-names-no-host`
 
-An entry in `security.blocked_metadata_hosts`, `security.allow_metadata_hosts` or a provider's `allow_metadata_hosts` names no host a URL client would dial: UTS #46 refuses it, it holds a `%` escape outside an IPv6 zone id, or its last label reads as a number but it is no IPv4 address (`1.2.3.4.5`, `999.1.1.1`). It could never match a destination, so it is dropped from matching and the configuration boots, as it did on 1.5.5. The built-in cloud-metadata denylist still blocks every real target. Emitted once per entry at config load, naming the key and the entry.
+RETIRED. Nothing emits this code: a metadata host-list entry that names no host is refused at startup by config validation, naming the key and the entry.
 
-**What to do:** Fix the named entry as the line says (write the host in ASCII or punycode, decoded, or as a dotted-quad address), or remove it. Nothing else changes until you do.
+**What to do:** Nothing emits this code. Fix the entry config validation names.
 
 ## 4xxx — Auth & identity
 
