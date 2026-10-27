@@ -694,7 +694,7 @@ fn a_refusal_never_repeats_the_credential_in_the_authority() {
     assert!(path_at.to_string().contains("mail@archive"));
 }
 
-/// ROW 74 (F25): a provider base URL's userinfo is STRIPPED, as 1.5.5's `host_from_base` stripped
+/// A provider base URL's userinfo is STRIPPED, as 1.5.5's `host_from_base` stripped
 /// it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`): the host and port survive, the
 /// credential is gone, the LAST `@` of the authority is the boundary (a password may carry one),
 /// and an `@` past the authority is left alone. The result reads to [`split_url`] as the same host
@@ -873,8 +873,6 @@ fn the_pin_carries_the_first_admissible_address_and_the_scheme_it_was_judged_und
     );
 }
 
-// ── the percent-decode arm of the host normalization ────────────────────────────────────────────
-//
 // `extract_normalized_host` percent-decodes before it answers, and nothing in this crate said so.
 // Reducing the decode to an identity left the whole suite green while
 // `https://169%2E254%2E169%2E254/` reached the range checks as a host that parses as no `IpAddr`,
@@ -1103,13 +1101,12 @@ fn split_url_ends_the_authority_where_the_dialler_does() {
     ));
 }
 
-/// F25 row 75: rehomed from the retired engine crate's src/engine/tests/auth_style_tests.rs::
-/// test_host_from_base_backslash_authority_matches_wire_host (its dialled-host half; the signed
-/// host is pinned equal to it by the plane driver's far-end tests). A WHATWG reader ends the
-/// authority at the first `\` exactly as at `/`, so the host the stack dials is the one BEFORE the
-/// backslash, never the post-`@` host a backslash-blind split would read; the port survives and the
-/// backslash path is read as a path. The legacy fourth case (`user:pass@host\p`) is the row-74
-/// userinfo ruling: a userinfo is refused here, wherever a `\` moves the boundary.
+/// This pins the dialled host; the signed host is pinned equal to it by the plane driver's far-end
+/// tests. A WHATWG reader ends the authority at the first `\` exactly as at `/`, so the host the
+/// stack dials is the one BEFORE the backslash, never the post-`@` host a backslash-blind split
+/// would read; the port survives and the backslash path is read as a path. The legacy fourth case
+/// (`user:pass@host\p`) is the userinfo rule: a userinfo is refused here, wherever a `\` moves the
+/// boundary.
 #[test]
 fn test_host_from_base_backslash_authority_matches_wire_host() {
     for (url, host, port, path) in [
@@ -1141,9 +1138,6 @@ fn test_host_from_base_backslash_authority_matches_wire_host() {
         Err(AddressRefusal::NoHost(_))
     ));
 }
-
-// ── Moved from busbar-kernel's deleted `net_guard` shim suites (row 130 E2): the rows those suites
-// held that this one did not. ───────────────────────────────────────────────────────────────────
 
 /// The NAME arm is the ONLY defence for a metadata host that answers on a PUBLIC address.
 ///
@@ -1252,8 +1246,8 @@ fn nat64_embedded_ipv4_is_judged_by_the_host_string_guards() {
     );
 }
 
-// ── THE MAPPED HOST, IN EVERY ARM: a list entry, a bare authority and a resolved name are read as
-// a URL's host is read (UTS #46), so each is judged and resolved as the name a URL client dials. ──
+// THE MAPPED HOST, IN EVERY ARM: a list entry, a bare authority and a resolved name are read as
+// a URL's host is read (UTS #46), so each is judged and resolved as the name a URL client dials.
 
 /// 1.5.5 PARITY: an entry that names no host the guard judges (UTS #46 refuses it, a `%` outside an
 /// IPv6 zone id, a last label that reads as a number but is no IPv4 address) matched nothing on

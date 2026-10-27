@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! What the egress unit does to an upstream exchange's bytes and headers (#83a O1): the capped
+//! What the egress unit does to an upstream exchange's bytes and headers: the capped
 //! upstream-body read ([`read_capped`], and [`ReadEnd`], WHY it stopped), the two operator body caps
 //! it reads under, the network-failure labels a transient failure is recorded with, and the
 //! client-header forwarding that carries caller-sent headers onto the egress request. Moved
@@ -154,8 +154,7 @@ pub const ERR_NET_CONNECT: &str = "connect";
 /// `err_type` recorded when the upstream did not answer within the attempt's deadline.
 pub const ERR_NET_TIMEOUT: &str = "timeout";
 
-// ── CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM (OWNER HARD RULE 2026-10-02, "BUSBAR IS
-//    INVISIBLE TO UPSTREAMS") ──────────────────────────────────────────────────────────────────────
+// CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM.
 //
 // What a client sends goes out. On a same-dialect route a plane forwards EVERY client header; a
 // translated route forwards none (the plane translates what maps and drops the rest, and no header
