@@ -307,6 +307,8 @@ async fn a_door_plane_admin_route_sees_no_consumed_credential_and_its_row_names_
 /// the row was skipped, so a mutation the plane applied left no audit row.
 #[tokio::test]
 async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
+    // The admin audit rows land in the durable log's read model (the in-process ring is gone, C5).
+    crate::audit::auditlog::ensure_global_audit_stream_registered();
     let echo = std::sync::Arc::new(Echo::default());
     echo.status.store(1_000, Ordering::SeqCst);
     publish(
@@ -336,7 +338,8 @@ async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
     .await;
     withdraw("unrendered-red");
     assert_eq!(resp.status(), 502, "no response can carry status 1000");
-    let rows = crate::audit_ring::AUDIT.list_filtered(0, 16, Some("unrendered.ping"), None);
+    let rows =
+        crate::audit::auditlog::AUDIT_LOG.list_filtered(0, 16, Some("unrendered.ping"), None);
     assert_eq!(rows.len(), 1, "the applied mutation is audited: {rows:?}");
     assert_eq!(rows[0].resource, "unrendered:a");
     assert_eq!(rows[0].outcome, busbar_contract::vocab::OUTCOME_APPLIED);
