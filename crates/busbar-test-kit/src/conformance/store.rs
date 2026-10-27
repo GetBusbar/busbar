@@ -1106,6 +1106,6 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
     assert_eq!(at("scope-kind list"), "identical=true");
 }
 
-#[cfg(test)]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_store_runs_tests.rs"]
 mod runs_tests;

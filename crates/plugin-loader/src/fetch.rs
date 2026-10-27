@@ -37,6 +37,46 @@ fn filename_is_single_component(filename: &str) -> bool {
     matches!(comps.next(), Some(Component::Normal(_))) && comps.next().is_none()
 }
 
+/// The fetch URL as a log line may repeat it: `scheme://host[:port]/path`, with the authority's
+/// userinfo (`user:pass@`) removed and a non-empty query or fragment replaced by `<redacted>`. An
+/// operator may spell a fetch URL with either, and both are credentials; the host and path stay,
+/// because they are the diagnosis. A URL with neither comes back borrowed, byte for byte.
+///
+/// The authority ends at the first `/`, `?` or `#`, and the userinfo is everything before its LAST
+/// `@` (a password may carry an `@`). A `\` does not end the authority here, so a `\` before an `@`
+/// removes more, never less: this is a printer, not the reader that dials.
+fn printable_url(url: &str) -> std::borrow::Cow<'_, str> {
+    let (scheme, rest) = match url.find("://") {
+        Some(i) => url.split_at(i + 3),
+        None => ("", url),
+    };
+    let authority_end = if scheme.is_empty() {
+        0
+    } else {
+        rest.find(['/', '?', '#']).unwrap_or(rest.len())
+    };
+    let host_from = rest[..authority_end].rfind('@').map_or(0, |at| at + 1);
+    let tail = &rest[host_from..];
+    let tail_cut = tail
+        .find(['?', '#'])
+        .filter(|&i| i + 1 < tail.len())
+        .map(|i| (i, &tail[i..=i]));
+    if host_from == 0 && tail_cut.is_none() {
+        return std::borrow::Cow::Borrowed(url);
+    }
+    let mut shown = String::with_capacity(url.len());
+    shown.push_str(scheme);
+    match tail_cut {
+        Some((i, delim)) => {
+            shown.push_str(&tail[..i]);
+            shown.push_str(delim);
+            shown.push_str("<redacted>");
+        }
+        None => shown.push_str(tail),
+    }
+    std::borrow::Cow::Owned(shown)
+}
+
 /// A fully-resolved fetch: the URL to GET, an optional lowercase-hex sha256 pin (cache key +
 /// verify-before-write gate), and the target filename inside `plugins.dir`. Produced by the engine's
 /// `PluginsCfg::fetch_specs()` (github/url/env → this).
@@ -88,7 +128,10 @@ pub fn fetch_plugins(
             if fatal_on_miss {
                 errors.push(msg);
             } else {
-                tracing::warn!(url = %spec.url, error = %msg, "plugin fetch problem (reload); keeping the current artifact");
+                // The URL as a log may repeat it (H10): no userinfo, no query, in either field.
+                let shown = printable_url(&spec.url);
+                let error = msg.replace(spec.url.as_str(), &shown);
+                tracing::warn!(url = %shown, %error, "plugin fetch problem (reload); keeping the current artifact");
                 outcomes.push(FetchOutcome::Warned {
                     url: spec.url.clone(),
                     error: msg,
@@ -168,3 +211,7 @@ pub fn fetch_plugins(
 #[cfg(test)]
 #[path = "tests/fetch_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/fetch_url_scrub_tests.rs"]
+mod url_scrub_tests;
