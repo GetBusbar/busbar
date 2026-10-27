@@ -180,3 +180,60 @@ fn the_default_distributions_help_is_byte_identical() {
         )
     );
 }
+
+/// A DROPPED-IN PLANE'S `busbar --help` ROWS, ITS LINE-SERVE FLAG AMONG THEM, ARE THE SAME PLANE'S
+/// COMPILED IN (audit busbar-src r4 S-2; BUSBAR-1.6.0.md l.2179, Part 2 #2: compiled in or dropped
+/// in, one loading path). RED before the fix: the command line read only the linked planes' rows,
+/// so with the plane dropped into `plugins.dir` its flag was refused as an unknown argument, and
+/// after `-c <path>` the boot bound the network listeners and logged to stdout. A linked plane
+/// door's Statement rendering (what its pack signs into the manifest) stands here as a dropped-in
+/// candidate whose library is not a library: its rows are read off the rendering with no dlopen,
+/// equal the linked door's, and its flag is a plane flag. A linked candidate adds no row of its
+/// own: [`help_rows`] already reads it off the door.
+#[cfg(linked_every_plane_door)]
+#[test]
+fn a_dropped_in_planes_help_rows_are_read_off_its_signed_rendering() {
+    use crate::root::loader::boot::{Candidate, Origin};
+    use crate::root::loader::dispatch::kinds::plane::linked_cli_help;
+    use busbar_contract::abi::plane::cli_help;
+    let (door, help) = crate::LINKED
+        .plane_doors
+        .iter()
+        .find_map(|door| {
+            let help = linked_cli_help(*door).ok()??;
+            cli_help::rows(help)
+                .any(|(slot, _)| slot == cli_help::FLAG)
+                .then_some((*door, help))
+        })
+        .expect("the default build links a plane door stating a `Flags:` row");
+    let stated = crate::root::loader::dispatch::rendering_of(door).expect("the door states itself");
+    let dropped = Candidate::from_rendering(
+        stated,
+        None,
+        Origin::Dropped {
+            file: "dropped-plane.tar.gz".into(),
+            bytes: std::sync::Arc::new(b"not a library: a help read never opens it".to_vec()),
+        },
+    )
+    .expect("the rendering states a candidate");
+    let texts = super::dropped_help(&[dropped]);
+    assert_eq!(
+        texts,
+        vec![help.to_string()],
+        "the linked door's rows, read off its rendering"
+    );
+    let text: &'static str = Box::leak(texts[0].clone().into_boxed_str());
+    let rows: Vec<CliHelpRow> = cli_help::rows(text).collect();
+    let flag = rows
+        .iter()
+        .find(|(slot, _)| *slot == cli_help::FLAG)
+        .and_then(|(_, lines)| lines.split_whitespace().next())
+        .expect("a flag row names its flag");
+    assert!(is_plane_flag(&[&rows], flag), "{flag} is a plane flag");
+    let linked = Candidate::linked(door).expect("the linked door is a candidate");
+    assert_eq!(
+        super::dropped_help(&[linked]),
+        Vec::<String>::new(),
+        "a linked door's rows are read once, off the door"
+    );
+}

@@ -8,18 +8,16 @@
 //!
 //! The hash chain here is [`crate::audit`]'s: one append, one digest, one verifier, shared with other
 //! chains elsewhere in the codebase that log their own request-rate activity. This file used to own a
-//! third copy of that machinery. What it owns now is the RECORD, via `impl ChainedRecord for AuditEntry`, plus a bounded
-//! IN-PROCESS ring of the recent tail — a hot cache, never the system of record.
+//! third copy of that machinery. What it owns now is the RECORD, via `impl ChainedRecord for AuditEntry`,
+//! and the recording handle [`AUDIT`].
 //!
 //! ## Where durability lives — the ONE durable path
 //!
 //! Durability is the neutral journal seam's ([`crate::audit::auditlog`]): [`AuditLog::record_by`] is
 //! the ONE place an admin mutation is recorded, and it feeds that mutation onto the store-backed
 //! durable seam, which persists the hash-chained record into `plane_records`, seeds the read-model ring
-//! `GET /audit` serves, and is restored + verified at boot. This ring keeps NO durable state: it is a
-//! bounded in-process VecDeque, ephemeral by construction (started fresh on every boot), retained for
-//! the in-process tamper-evidence checks the audit unit tests assert on. There is ONE durable audit
-//! path: the store-backed journal seam, which is the sole write, read, boot-restore and verify path.
+//! `GET /audit` serves, and is restored + verified at boot. There is ONE audit path: the store-backed
+//! journal seam, which is the sole write, read, boot-restore and verify path.
 //! (A separate durable audit table with its own sink, write-through, restore and rebase no longer
 //! exists — the seam is authoritative.)
 //!
@@ -39,11 +37,10 @@ use serde::Serialize;
 use crate::audit::{ChainLabels, ChainedRecord, Digest, Framing};
 
 /// One admin audit record. `outcome` is a stable token tooling can branch on. The record is
-/// HASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |
-/// outcome | principal)` FRAMED UNDER THIS RECORD'S OWN `scheme` (see [`AuditEntry::scheme`]), and
-/// `prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any
-/// altered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite
-/// the whole chain; prevention is shipping the log off-box to a SIEM).
+/// HASH-CHAINED for tamper-EVIDENCE: `hash` is the SHA-256 of bytes fixed by this record's own
+/// `scheme` (the recipe is on `hash`), and `prev_hash` is the preceding entry's `hash`. Recomputing
+/// the chain detects any altered/reordered/deleted entry (detection, not prevention; a compromised
+/// host can still rewrite the whole chain; prevention is shipping the log off-box to a SIEM).
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AuditEntry {
@@ -65,21 +62,30 @@ pub struct AuditEntry {
     /// The preceding entry's `hash` (empty for the first entry of the process, or the oldest retained
     /// entry whose predecessor was pruned).
     pub prev_hash: String,
-    /// `sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.
-    pub hash: String,
-    /// WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or
-    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.
+    /// The tamper-evidence digest: lowercase hex SHA-256 over the bytes this record's `scheme` names.
+    /// Integers are written in decimal ASCII and strings as their UTF-8 bytes unless stated.
     ///
-    /// `#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed
-    /// simply lacks the key, and an absent tag means exactly scheme 1, because that is what every
-    /// such row actually is — no migration of stored data is required. `link` always writes
-    /// [`AUDIT_SCHEME_LENGTH_PREFIXED`] on a FRESH entry; nothing mints scheme 1 going forward. A
-    /// verifier reads this straight off the record (`ChainedRecord::framing`), so a chain mixing
-    /// both eras checks each entry under the rules it actually used.
+    /// Scheme 1: `prev_hash|seq|ts|action|resource|outcome|principal`, the fields joined by `|`
+    /// (1.5.5's formula).
+    ///
+    /// Scheme 2: `prev_hash|seq` as in scheme 1, then one zero byte (0x00), then `ts`, `action`,
+    /// `resource`, `outcome` and `principal`, each as its byte length (8 bytes, big-endian) followed
+    /// by its bytes; `ts` is its 8-byte big-endian value, so its length is 8.
+    pub hash: String,
+    /// WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join) or 2 (length-prefixed fields);
+    /// both are stated on `hash`. A record is sealed under 1 when its `action`, `resource` and
+    /// `outcome` carry no `|`, and under 2 otherwise, so its fields always read back exactly. A
+    /// record without this field is scheme 1. A verifier checks each record under its own scheme.
+    //
+    // `#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed
+    // lacks the key, and every such row was sealed under scheme 1, so no stored data migrates. The
+    // durable seam picks the scheme per record (`audit::auditlog::admin_suffix`); `link` seals
+    // under [`AUDIT_SCHEME_LENGTH_PREFIXED`]. `ChainedRecord::framing` and
+    // `digest_fields` read the tag off the record (Q128 arch u26 #2; #82 (c): the recipe is
+    // published contract a verifier reproduces without the binary).
     #[serde(default = "audit_scheme_default")]
     pub scheme: u8,
-    /// TRUE only for entries THIS process appended live (via `record_by` on this ring, or the seam's
-    /// live emit). Seeded entries — restored from the durable store — are FALSE. `#[serde(skip)]` gives
+    /// TRUE only for entries THIS process appended live (the seam's live emit). Seeded entries — restored from the durable store — are FALSE. `#[serde(skip)]` gives
     /// the right default (false) on the encoded/store-seeding paths; the live-append sites set it true
     /// explicitly. It carries no ring logic now that the durable rebase is retired; the boot-verify
     /// golden still asserts restored entries come back seeded (`false`).
@@ -93,7 +99,7 @@ pub struct AuditEntry {
 }
 
 /// The fields a caller supplies for one admin audit entry. `seq`, `prev_hash` and `hash` are NOT
-/// here: they are the chain's own business, allocated under the ring lock and sealed by
+/// here: they are the chain's own business, allocated by the chain and sealed by
 /// [`crate::audit::seal`], so no call site can supply a sequence number or a link of its own
 /// choosing.
 pub struct AuditInput {
@@ -111,10 +117,10 @@ pub struct AuditInput {
 /// such chain.
 const ADMIN_LOG: &str = "admin";
 
-/// Scheme 1: pipe-separated — every entry already on disk, whether its stored tag is explicitly `1`
-/// or simply absent (see [`AuditEntry::scheme`]'s `#[serde(default)]`). Nothing seals a FRESH entry
-/// under this any longer; it exists so an old entry keeps verifying under the exact rules it was
-/// always sealed with.
+/// Scheme 1: pipe-separated, 1.5.5's formula. Every entry already on disk whose stored tag is `1` or
+/// absent (see [`AuditEntry::scheme`]'s `#[serde(default)]`), and every record the durable seam
+/// seals today whose `action`, `resource` and `outcome` carry no `|`
+/// ([`crate::audit::auditlog::admin_suffix`]).
 pub const AUDIT_SCHEME_PIPE: u8 = 1;
 
 /// Scheme 2: length-prefixed content — the framing that makes the split between the caller-supplied
@@ -193,11 +199,11 @@ impl ChainedRecord for AuditEntry {
             principal: input.principal,
             prev_hash,
             hash: String::new(),
-            // Reached only from `record_by`: THIS process is appending it live right now.
+            // Reached only from `crate::audit::seal`: THIS process is appending it live right now.
             recorded_here: true,
-            // EVERY entry built fresh seals under the current scheme -- never caller-chosen
-            // (`AuditInput` carries no scheme field), exactly like `seq`/`prev_hash`/`hash` are
-            // never caller-chosen. Nothing mints scheme 1 going forward.
+            // A sealed entry is scheme 2 -- never caller-chosen (`AuditInput` carries no scheme
+            // field), exactly like `seq`/`prev_hash`/`hash` are never caller-chosen. The durable
+            // seam, which `GET /audit` serves, picks per record (`audit::auditlog::admin_suffix`).
             scheme: AUDIT_SCHEME_LENGTH_PREFIXED,
         }
     }
@@ -246,157 +252,29 @@ impl ChainedRecord for AuditEntry {
 /// re-export keeps the existing import path for the hundred-odd call sites that name them.
 pub use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
 
-/// How many entries the in-memory ring retains. Bounds RAM, not history — the durable seam keeps the
-/// full log. Relocated to the neutral substrate (`crate::audit::MAX_AUDIT_ENTRIES`) so the
-/// admin ring and the plane audit-log ring name ONE cap; re-exported here so
+/// How many entries the read model retains. Bounds RAM, not history — the durable seam keeps the
+/// full log. Relocated to the neutral substrate (`crate::audit::MAX_AUDIT_ENTRIES`); re-exported here so
 /// `crate::audit_ring::MAX_AUDIT_ENTRIES` (and the test asking for "every matching row that can
 /// exist") still resolves.
 pub use crate::audit::MAX_AUDIT_ENTRIES;
 
-/// The in-memory admin audit ring. `record_by` is append-only + bounded (FIFO prune of the oldest — a
-/// hot cache of the recent tail); `list` returns most-recent-first. It holds NO durable state: the
-/// durable path is the neutral journal seam ([`crate::audit::auditlog`]), which `record_by` feeds and
-/// which serves the durable write, the `GET /audit` read, and the boot restore + verify. This ring is
-/// ephemeral by construction, started fresh on every boot. Interior-mutable so it can be a shared
-/// global.
+/// The admin audit's recording handle. `record_by` is the ONE place an admin mutation is recorded:
+/// it seals the mutation onto the durable journal seam ([`crate::audit::auditlog`]), which persists
+/// the hash-chained record into `plane_records`, seeds the read-model ring `GET /audit` serves
+/// ([`crate::audit::auditlog::AUDIT_LOG`]), and is restored + verified at boot. It holds no state of
+/// its own.
 pub struct AuditLog {
-    entries: std::sync::Mutex<std::collections::VecDeque<AuditEntry>>,
-    seq: std::sync::atomic::AtomicU64,
+    _private: (),
 }
 
 impl AuditLog {
-    const fn new() -> Self {
-        Self {
-            entries: std::sync::Mutex::new(std::collections::VecDeque::new()),
-            seq: std::sync::atomic::AtomicU64::new(1),
-        }
-    }
-
-    /// Record one mutation attempt. Never fails (a poisoned lock is recovered — losing the audit log
-    /// to a panic would be worse than proceeding). Bounded RAM ring: prunes the oldest past the cap.
-    /// WITH principal attribution: every mutation, success AND failure, is attributed to WHO attempted
-    /// it. Feeds the SAME mutation onto the durable journal seam — the ONE durable path.
+    /// Record one mutation attempt, WITH principal attribution: every mutation, success AND failure,
+    /// is attributed to WHO attempted it. Never fails: the log is evidence, not admission (see
+    /// `audit::auditlog::emit_admin_hostless`).
     pub fn record_by(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {
-        // Allocate `seq` INSIDE the entries lock so it matches insertion order: fetching it before
-        // the lock let two concurrent recorders interleave (thread B takes the lock with the higher
-        // seq and pushes first, thread A pushes its lower seq behind it), producing out-of-order
-        // seq numbers in the ring. Under the lock, Relaxed is sufficient (the mutex is the ordering
-        // point).
-        // ONE clock read for this mutation, shared by the in-process ring seal below AND the journal-
-        // seam emitter after the ring block. Reading the clock twice (once here, once seam-side) would
-        // let the two records carry timestamps up to a second apart — a divergence a single read
-        // eliminates.
-        let ts = busbar_kernel::store::now();
-        {
-            let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-            let seq = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            // Chain to the most recent entry (the back), before any prune.
-            let prev_hash = q.back().map(|e| e.hash.clone()).unwrap_or_default();
-            // The ring allocates the POSITION (it must, under this lock, to match insertion order);
-            // `crate::audit::seal` builds and digests the record. The caller's payload and the
-            // chain's position arrive through different arguments, so no call site can supply a seq
-            // or a link of its own choosing.
-            let entry: AuditEntry = crate::audit::seal(
-                ADMIN_LOG,
-                seq,
-                prev_hash,
-                AuditInput {
-                    ts,
-                    action: action.to_string(),
-                    resource: resource.to_string(),
-                    outcome: outcome.to_string(),
-                    principal: principal.to_string(),
-                },
-            );
-            while q.len() >= MAX_AUDIT_ENTRIES {
-                q.pop_front();
-            }
-            q.push_back(entry);
-        }
-        // THE CHOKEPOINT FEED onto the durable journal seam. `record_by` is the ONE place an admin
-        // mutation is recorded, so this ONE call — with the SAME `ts` sealed above — is the durable
-        // write. Fire-and-forget: it NEVER fails the mutation it records (see
-        // `audit::auditlog::emit_admin_hostless`), and the seam's own seq/prev_hash/hash are minted
-        // independently of this in-process ring's (both continue the same persisted chain).
-        crate::audit::auditlog::emit_admin_hostless(ts, action, resource, outcome, principal);
-    }
-
-    /// Export the retained ring, oldest first. TEST-ONLY: the durable seam is production's restore
-    /// source; this backs the in-process restart-simulation tests (a fresh `AuditLog` re-seeded from
-    /// this process's ring) alongside `load`, and the proxy/egress audit-trail assertions.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn export(&self) -> Vec<AuditEntry> {
-        let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        q.iter().cloned().collect()
-    }
-
-    /// Seed the ring from an in-process snapshot. TEST-ONLY: the durable seam is production's restore
-    /// source (`audit::auditlog::PlaneAuditLog::restore_from_store`); this remains as the in-process
-    /// restart-simulation seam the ring tests drive. Replaces the current contents and resumes the
-    /// sequence AFTER the highest restored seq, so post-restart entries chain on without seq reuse.
-    #[cfg(test)]
-    pub fn load(&self, mut entries: Vec<AuditEntry>) {
-        // `load` IS the seeding path by definition: whatever it is handed came from OUTSIDE this
-        // process's live append stream, even when the `Vec` was produced by this process's OWN
-        // `export()`. `#[serde(skip)]` only clears provenance on an encoded round-trip; this path
-        // never encodes, so it clears it explicitly.
-        for e in &mut entries {
-            e.recorded_here = false;
-        }
-        let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let max_seq = entries.iter().map(|e| e.seq).max().unwrap_or(0);
-        q.clear();
-        q.extend(entries);
-        self.seq
-            .fetch_max(max_seq + 1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Verify the tamper-evidence chain over the RETAINED entries, through the ONE verifier in
-    /// [`crate::audit`]. A WINDOW, not a whole chain: the ring is bounded, so the oldest retained
-    /// entry's `prev_hash` may point at a digest that has been pruned and only its self-digest can
-    /// be checked. Returns `true` if intact.
-    #[cfg(test)]
-    pub fn verify(&self) -> bool {
-        let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        let window: Vec<AuditEntry> = q.iter().cloned().collect();
-        crate::audit::verify_window(&window).is_ok()
-    }
-
-    /// A page of entries newest-first, optionally filtered by exact `action` and/or `resource`:
-    /// skip `offset`, then take `limit`. `None` filters match everything.
-    ///
-    /// NO PRODUCTION CALLER after the 1.6.0 seam read cutover: `GET /audit` reads the durable journal
-    /// seam's [`crate::audit::auditlog::AUDIT_LOG`]. This in-process ring's `list_filtered`/`list`
-    /// remain the direct-ring read the audit unit tests still assert on.
-    #[allow(dead_code)]
-    pub fn list_filtered(
-        &self,
-        offset: usize,
-        limit: usize,
-        action: Option<&str>,
-        resource: Option<&str>,
-    ) -> Vec<AuditEntry> {
-        let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        q.iter()
-            .rev()
-            .filter(|e| action.is_none_or(|a| e.action == a))
-            .filter(|e| resource.is_none_or(|r| e.resource == r))
-            .skip(offset)
-            .take(limit)
-            .cloned()
-            .collect()
-    }
-
-    /// The most-recent `limit` entries, newest first (unfiltered).
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn list(&self, limit: usize) -> Vec<AuditEntry> {
-        self.list_filtered(0, limit, None, None)
+        crate::audit::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
     }
 }
 
 /// The process-wide admin audit log. Const-constructed, so no lazy init needed.
-pub static AUDIT: AuditLog = AuditLog::new();
-
-#[cfg(test)]
-#[path = "tests/audit_ring_tests.rs"]
-mod tests;
+pub static AUDIT: AuditLog = AuditLog { _private: () };

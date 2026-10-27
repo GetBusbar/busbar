@@ -145,6 +145,35 @@ impl Need {
     };
 }
 
+/// HOW THE NEED ROW IS MADE (status row 194): from [`Need::EMPTY`], its plain fields set directly
+/// and each list by its setter, to items that live for the program.
+impl Need {
+    /// Nothing stated: every string absent, every list empty, every number zero.
+    pub const EMPTY: Need = Need {
+        direction: 0,
+        egress_class: 0,
+        transport: AbiStr::ABSENT,
+        auth: AbiStr::ABSENT,
+        target_from: AbiStr::ABSENT,
+        trust_from: AbiStr::ABSENT,
+        details: Blob::ABSENT,
+        keep_response_headers: std::ptr::null(),
+        keep_response_headers_len: 0,
+        timeout_ms: 0,
+        keep_mode: 0,
+        _reserved: 0,
+        deny_response_headers: std::ptr::null(),
+        deny_response_headers_len: 0,
+    };
+
+    abi_lists! {
+        keep_response_headers, keep_response_headers_len: AbiStr
+            => keep_response_headers_ptr, with_keep_response_headers, with_raw_keep_response_headers;
+        deny_response_headers, deny_response_headers_len: AbiStr
+            => deny_response_headers_ptr, with_deny_response_headers, with_raw_deny_response_headers;
+    }
+}
+
 /// [`Need::keep_mode`]: only the fields [`Need::keep_response_headers`] names cross.
 pub const KEEP_NAMED: u32 = 0;
 

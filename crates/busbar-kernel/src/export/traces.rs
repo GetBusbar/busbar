@@ -77,8 +77,32 @@ impl tracing::field::Visit for Fields {
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.fact(field, Value::from(value));
+    }
+
+    // A FIELD KEEPS THE TYPE THE PREVIOUS RELEASE'S EXPORTER GAVE IT (status row 173;
+    // tracing-opentelemetry 0.33, v1.5.5 `crates/busbar/Cargo.toml:149`): an `i64`, a `bool` and an
+    // `f64` are typed values; a `u64` is its text, as 0.33's attribute visitor wrote it (it has no
+    // `record_u64`, so `tracing`'s default sends a `u64` through `record_debug`: `lane = i`, a
+    // `usize`, went out as a string).
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        self.fact(field, Value::from(value));
+    }
+
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        self.fact(field, Value::from(value));
+    }
+
+    fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
+        self.fact(field, Value::from(value));
+    }
+}
+
+impl Fields {
+    /// The value of `field`, where it is one of the stream's own fields.
+    fn fact(&mut self, field: &tracing::field::Field, value: Value) {
         let traced = F::from_token(field.name()).filter(|f| Traces.default_fields().contains(f));
-        self.0.extend(traced.map(|f| (f, Value::from(value))));
+        self.0.extend(traced.map(|f| (f, value)));
     }
 }
 
@@ -94,6 +118,26 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Producer {
         let own = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         span.extensions_mut()
             .insert(Opened(Instant::now(), epoch, fields, own));
+    }
+
+    /// A value the span records after it opened (status row 173: `forward`'s `pool`, `ingress`
+    /// and `op` are known once the plane has read the request): it joins the span's facts, a
+    /// field recorded again keeping its last value.
+    fn on_record(&self, id: &Id, values: &tracing::span::Record<'_>, ctx: Context<'_, S>) {
+        let Some(span) = ctx.span(id) else { return };
+        let mut recorded = Fields(Vec::new());
+        values.record(&mut recorded);
+        if recorded.0.is_empty() {
+            return;
+        }
+        let mut extensions = span.extensions_mut();
+        let Some(Opened(_, _, Fields(facts), _)) = extensions.get_mut::<Opened>() else {
+            return;
+        };
+        for (field, value) in recorded.0 {
+            facts.retain(|(f, _)| *f != field);
+            facts.push((field, value));
+        }
     }
 
     /// The span's record: its facts, its parent's id, its ROOT's id as the trace id (a root is its

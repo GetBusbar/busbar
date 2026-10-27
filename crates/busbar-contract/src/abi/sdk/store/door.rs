@@ -30,10 +30,9 @@
 //! fixed buffer; a store's failure text is moved into the ring, never copied; and the ring is
 //! sized once, at `open`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde::de::DeserializeOwned;
@@ -48,12 +47,10 @@ use crate::abi::mechanism::call::{
     AbiStr, Blob, Diag, InHead, OutHead, Outcome, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, MAX_TEXT,
     SEVERITY_WARN,
 };
-use crate::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
-    ValidateIn,
-};
+use crate::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use crate::abi::sdk::conn::Host;
 use crate::abi::sdk::door::abi_str;
+use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::{open_failed, HostBuf, Instance, Lent, LentList, Out, SafeSlot};
 use crate::abi::store::{
     AddUsageBatchIn, AddUsageIn, AppendBatchIn, AppendPlaneRecordIn, BlobIn, CountOut,
@@ -145,7 +142,7 @@ impl Drop for Leased {
     fn drop(&mut self) {
         if self.secret {
             for b in &mut self.bytes {
-                b.iter_mut().for_each(|x| *x = 0);
+                zeroize::Zeroize::zeroize(&mut **b);
             }
         }
     }
@@ -215,14 +212,13 @@ impl Text {
     }
 }
 
-/// One store instance as the door serves it: the backend, the leases it has handed out and the
-/// error texts it keeps for the host.
+/// One store instance as the door serves it: the backend and the error texts it keeps for the
+/// host. It is the store's [`Life`]: the SDK's one instance state, [`Held`], holds it beside the
+/// answers' leases and the host tables `open` was handed, and the generic lifecycle slots
+/// (`abi::sdk::life`) serve every lifecycle op but `open`, whose connect step may pend (THE
+/// DESIGN, the one kind-neutral SDK lifecycle: "a kind's local copy is deleted when it is ported").
 pub struct Served<B> {
     store: B,
-    /// The host tables `open` was handed: each op's connector.
-    host: Option<Host>,
-    leases: Mutex<HashMap<u64, Leased>>,
-    next_lease: AtomicU64,
     texts: Mutex<VecDeque<Text>>,
     /// The read buffers this instance's wire ops reuse.
     reads: super::wire::ReadBufs,
@@ -235,12 +231,9 @@ impl<B> std::fmt::Debug for Served<B> {
 }
 
 impl<B: StoreSlots> Served<B> {
-    fn new(store: B, host: Option<Host>) -> Self {
+    fn new(store: B) -> Self {
         Self {
             store,
-            host,
-            leases: Mutex::new(HashMap::new()),
-            next_lease: AtomicU64::new(0),
             // Sized here, once: keeping a text never grows the ring.
             texts: Mutex::new(VecDeque::with_capacity(TEXT_RING)),
             reads: super::wire::ReadBufs::default(),
@@ -250,11 +243,6 @@ impl<B: StoreSlots> Served<B> {
     /// The backend.
     pub fn store(&self) -> &B {
         &self.store
-    }
-
-    /// How many leases are held (for tests: a released lease is gone).
-    pub fn leases_held(&self) -> usize {
-        self.leases.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
     /// Keep `text` alive in the ring (a fixed text needs no keeping), cut to [`MAX_TEXT`] on a
@@ -285,14 +273,55 @@ impl<B: StoreSlots> Served<B> {
             len: kept.len(),
         }
     }
+}
 
+/// THE STORE'S LIFECYCLE is the SDK's one ([`Life`]): `validate` is the store's own parse, a
+/// `refresh` applies nothing (a store holds its settings for its lifetime; a reload opens a new
+/// instance), it asks for no tick and drives nothing, and a cancelled op's disposition is not
+/// known here (the kernel re-issues it under the same `op_id` and dedupe settles it).
+impl<B: StoreSlots> Life for Served<B> {
+    const CANCEL: u32 = CANCEL_UNKNOWN;
+
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        B::validate(settings).map_err(Refusal::failed)
+    }
+
+    /// Never reached through the door: the store's `open` is [`Open`], which runs the store's
+    /// connect step on `open`'s ticket and may pend on it. A generic open has neither, so it
+    /// refuses rather than count a store opened that never connected.
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        Err(Refusal::failed(
+            "a store opens through its door's own open, which runs its connect step",
+        ))
+    }
+
+    fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+        Ok(Refreshed::default())
+    }
+}
+
+/// What a store slot reads its instance through: the backend, the store's error-text ring and the
+/// SDK's one lease table, all held by the instance's [`Held`].
+struct Door<'a, B> {
+    store: &'a B,
+    held: &'a Held<Served<B>>,
+}
+
+impl<'a, B: StoreSlots> Door<'a, B> {
+    fn of(held: &'a Held<Served<B>>) -> Self {
+        Self {
+            store: &held.life().store,
+            held,
+        }
+    }
+
+    fn text(&self, text: Text) -> AbiStr {
+        self.held.life().text(text)
+    }
+
+    /// Hold an off-path answer under a new lease of the instance's one lease table; its number.
     fn lease(&self, held: Leased) -> u64 {
-        let id = self.next_lease.fetch_add(1, Ordering::Relaxed) + 1;
-        self.leases
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id, held);
-        id
+        self.held.leases().keep_new(held)
     }
 }
 
@@ -317,9 +346,7 @@ heads!(
     ReserveOut,
     SliceReleaseOut,
     HeadsOut,
-    OpenOut,
-    TickOut,
-    CancelOut
+    OpenOut
 );
 impl Head for OutHead {
     fn head(&mut self) -> &mut OutHead {
@@ -343,25 +370,25 @@ macro_rules! step {
 /// The op's context for this entry: fresh, or resuming what it parked. `None` for a RESUME with
 /// nothing parked (FAULT: the op is never run afresh).
 fn op_enter<'a, B: StoreSlots>(
-    instance: &Instance<'_, Served<B>>,
-    s: &'a Served<B>,
+    instance: &Instance<'_, Held<Served<B>>>,
+    s: &'a Held<Served<B>>,
 ) -> Option<Op<'a>> {
-    let parked = instance.resume::<Parked>().map(|b| *b);
+    let parked = instance.resume_value::<Parked>();
     if instance.resuming() && parked.is_none() {
         return None;
     }
     Some(Op::enter(
         instance.ticket(),
-        s.host.as_ref(),
+        s.host(),
         parked,
-        Some(&s.reads),
+        Some(&s.life().reads),
     ))
 }
 
 /// The op's answer, settled: PENDING parks its context (FAULT when it pends on no ticket, or on the
 /// connector with no service in flight); any other answer closes its connection.
 fn op_finish<B: StoreSlots>(
-    instance: &Instance<'_, Served<B>>,
+    instance: &Instance<'_, Held<Served<B>>>,
     cx: Op<'_>,
     answer: Outcome,
     head: &mut OutHead,
@@ -380,12 +407,12 @@ fn op_finish<B: StoreSlots>(
 }
 
 /// FAILED with the store's own text, moved into the ring.
-fn failed<B: StoreSlots>(s: &Served<B>, out: &mut impl Head, text: String) -> Outcome {
+fn failed<B: StoreSlots>(s: &Door<'_, B>, out: &mut impl Head, text: String) -> Outcome {
     out.head().error = s.text(Text::Owned(text));
     Outcome::Failed
 }
 
-fn refused<B: StoreSlots>(s: &Served<B>, out: &mut impl Head, text: Text) -> Outcome {
+fn refused<B: StoreSlots>(s: &Door<'_, B>, out: &mut impl Head, text: Text) -> Outcome {
     out.head().error = s.text(text);
     Outcome::Refused
 }
@@ -399,7 +426,7 @@ fn conflict(out: &mut impl Head) -> Outcome {
 }
 
 fn op_answer<B: StoreSlots>(
-    s: &Served<B>,
+    s: &Door<'_, B>,
     out: &mut impl Head,
     r: Result<(), OpRefused>,
 ) -> Outcome {
@@ -411,7 +438,7 @@ fn op_answer<B: StoreSlots>(
 }
 
 fn done<B: StoreSlots>(
-    s: &Served<B>,
+    s: &Door<'_, B>,
     out: &mut impl Head,
     r: Result<(), crate::records::RecordStoreError>,
 ) -> Outcome {
@@ -455,7 +482,7 @@ fn blob_over(bytes: &[u8], fmt: u32, secret: bool) -> Blob {
 
 /// Answer one record (or none) under a lease.
 fn lease_one<B: StoreSlots>(
-    s: &Served<B>,
+    s: &Door<'_, B>,
     out: &mut LeasedBlobOut,
     record: Option<Box<[u8]>>,
     secret: bool,
@@ -482,7 +509,7 @@ fn lease_one<B: StoreSlots>(
 
 /// Answer a list of records under a lease (an empty list holds no lease).
 fn lease_list<B: StoreSlots>(
-    s: &Served<B>,
+    s: &Door<'_, B>,
     out: &mut LeasedListOut,
     records: Vec<Box<[u8]>>,
     secret: bool,
@@ -508,7 +535,11 @@ fn lease_list<B: StoreSlots>(
     Outcome::Ready
 }
 
-fn lease_strs<B: StoreSlots>(s: &Served<B>, out: &mut LeasedStrListOut, v: Vec<String>) -> Outcome {
+fn lease_strs<B: StoreSlots>(
+    s: &Door<'_, B>,
+    out: &mut LeasedStrListOut,
+    v: Vec<String>,
+) -> Outcome {
     if v.is_empty() {
         out.items = std::ptr::null();
         out.items_len = 0;
@@ -535,7 +566,7 @@ fn lease_strs<B: StoreSlots>(s: &Served<B>, out: &mut LeasedStrListOut, v: Vec<S
 }
 
 fn listed<T: Serialize, B: StoreSlots>(
-    s: &Served<B>,
+    s: &Door<'_, B>,
     out: &mut LeasedListOut,
     r: crate::records::RecordStoreResult<Vec<T>>,
     secret: bool,
@@ -734,7 +765,7 @@ impl Extend<u64> for ReleasedInto<'_> {
 
 // ── the lifecycle ────────────────────────────────────────────────────────────────────────────
 
-/// Declare one lifecycle or kind slot over `Served<B>`.
+/// Declare one store op slot over the instance's [`Held`] store state.
 macro_rules! slot {
     ($(#[$m:meta])* $name:ident($in:ty, $out:ty) |$s:ident, $i:ident, $o:ident, $cx:ident| $body:block) => {
         $(#[$m])*
@@ -743,20 +774,21 @@ macro_rules! slot {
         impl<B: StoreSlots> SafeSlot for $name<B> {
             type In = $in;
             type Out = $out;
-            type State = Served<B>;
+            type State = Held<Served<B>>;
             #[allow(unused_variables, clippy::redundant_closure_call)]
             fn call(
-                instance: Instance<'_, Served<B>>,
+                instance: Instance<'_, Held<Served<B>>>,
                 $i: Lent<'_, $in>,
                 mut out: Out<'_, $out>,
             ) -> Outcome {
-                let Some($s) = instance.get() else {
+                let Some(held) = instance.get() else {
                     return Outcome::Fault;
                 };
                 // A RESUME with nothing parked is FAULT: an op never runs afresh.
-                let Some(mut cx) = op_enter(&instance, $s) else {
+                let Some(mut cx) = op_enter(&instance, held) else {
                     return Outcome::Fault;
                 };
+                let $s = &Door::of(held);
                 let answer = {
                     let $o: &mut $out = out.raw();
                     let $cx: &mut Op<'_> = &mut cx;
@@ -766,25 +798,6 @@ macro_rules! slot {
             }
         }
     };
-}
-
-/// `validate`: the store PARSES its settings (never opens); a refusal carries its own text.
-#[derive(Debug)]
-pub struct Validate<B>(PhantomData<B>);
-impl<B: StoreSlots> SafeSlot for Validate<B> {
-    type In = ValidateIn;
-    type Out = OutHead;
-    type State = Served<B>;
-    fn call(
-        _: Instance<'_, Served<B>>,
-        input: Lent<'_, ValidateIn>,
-        mut out: Out<'_, OutHead>,
-    ) -> Outcome {
-        match B::validate(input.field(|i| &i.settings).bytes()) {
-            Ok(()) => Outcome::Ready,
-            Err(t) => out.fail(crate::abi::sdk::life::Refusal::failed(t)),
-        }
-    }
 }
 
 /// `open`: the store opens on its settings, then runs its connect step
@@ -799,9 +812,9 @@ pub struct Open<B>(PhantomData<B>);
 impl<B: StoreSlots> SafeSlot for Open<B> {
     type In = OpenIn;
     type Out = OpenOut;
-    type State = Served<B>;
+    type State = Held<Served<B>>;
     fn call(
-        instance: Instance<'_, Served<B>>,
+        instance: Instance<'_, Held<Served<B>>>,
         input: Lent<'_, OpenIn>,
         mut out: Out<'_, OpenOut>,
     ) -> Outcome {
@@ -811,14 +824,14 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
         // what its connect step parked is read back on this ticket. A RESUME with no instance or
         // nothing parked is FAULT — an open never runs afresh on its RESUME.
         if instance.resuming() {
-            let Some(served) = instance.get() else {
+            let Some(held) = instance.get() else {
                 return Outcome::Fault;
             };
-            let Some(parked) = instance.resume::<Parked>().map(|b| *b) else {
+            let Some(parked) = instance.resume_value::<Parked>() else {
                 return Outcome::Fault;
             };
             let mut cx = Op::enter(ticket, host.as_ref(), Some(parked), None);
-            return match served.store().connect(&mut cx) {
+            return match held.life().store().connect(&mut cx) {
                 Step::Ready(Ok(())) => {
                     drop(cx.into_parked());
                     Outcome::Ready
@@ -851,7 +864,7 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
             Step::Ready(Ok(())) => {
                 // The step's connection closes with its op (`Parked`'s drop).
                 drop(cx.into_parked());
-                instance.open(Served::new(store, host));
+                instance.open(Held::new(Served::new(store), host));
                 Outcome::Ready
             }
             Step::Ready(Err(e)) => {
@@ -868,61 +881,12 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
                 // Install the instance NOW, carrying the opened store, and park the step's context
                 // on this ticket: the trampoline retains the box across the PENDING, and the
                 // RESUME finds both on a non-NULL instance.
-                instance.open_parking(Served::new(store, host), cx.into_parked());
+                instance.open_parking(Held::new(Served::new(store), host), cx.into_parked());
                 Outcome::Pending
             }
         }
     }
 }
-
-slot!(
-    /// `refresh`: a store holds its settings for its lifetime; a reload opens a new instance.
-    Refresh(RefreshIn, OutHead) |s, i, o, cx| { Outcome::Ready }
-);
-slot!(
-    /// `retire`.
-    Retire(GenIn, OutHead) |s, i, o, cx| { Outcome::Ready }
-);
-slot!(
-    /// `tick`: a store asks for no tick.
-    Tick(TickIn, TickOut) |s, i, o, cx| {
-        o.next_tick_ns = 0;
-        Outcome::Ready
-    }
-);
-slot!(
-    /// `drive`: a store that never pends has nothing to drive.
-    Drive(DriveIn, OutHead) |s, i, o, cx| { Outcome::Ready }
-);
-slot!(
-    /// `cancel`: whether the cancelled op applied is not known here; the kernel re-issues it
-    /// under the same `op_id` and dedupe settles it (`CANCEL_UNKNOWN`).
-    Cancel(CancelIn, CancelOut) |s, i, o, cx| {
-        o.disposition = CANCEL_UNKNOWN;
-        Outcome::Ready
-    }
-);
-slot!(
-    /// `release`: the host is done with a lease. READY when the door held it; REFUSED when it did
-    /// not (never handed out, or already released): a host bug, named rather than accepted (THE
-    /// DESIGN, the one kind-neutral SDK lifecycle: "releasing an unknown lease is REFUSED").
-    Release(ReleaseIn, OutHead) |s, i, o, cx| {
-        let held = s
-            .leases
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&i.lease);
-        if held.is_some() {
-            Outcome::Ready
-        } else {
-            Outcome::Refused
-        }
-    }
-);
-slot!(
-    /// `close`: the SDK drops the instance when this answers READY.
-    Close(InHead, OutHead) |s, i, o, cx| { Outcome::Ready }
-);
 
 // ── the 1.5.5 op set ─────────────────────────────────────────────────────────────────────────
 
@@ -1521,16 +1485,65 @@ slot!(
 /// [`Op::checkout`](super::Op::checkout).
 #[macro_export]
 macro_rules! store_door {
+    // Every argument after the max-inflight is optional and keeps this order: the needs it states,
+    // its Statement's extensions (its `declares` document under `EXT_DECLARES`, ARCHITECT ruling
+    // 2026-10-21; BUSBAR-1.6.0.md l.246; a `Blob` built by `statement_extensions!`), and the
+    // settings paths it declares secret (`secret_refs`, `.`-separated, `*` = any key or index;
+    // `busbar_contract::secret_fields`).
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr $(,)?) => {
-        $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            ::core::ptr::null::<$crate::abi::host::conn::connector::Need>(), 0);
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, &[]);
     };
     ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr $(,)?) => {
-        const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
-        $crate::store_door!(@door $store, $name, $version, $max_inflight,
-            __BUSBAR_STORE_NEEDS.as_ptr(), __BUSBAR_STORE_NEEDS.len());
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, &[]);
     };
-    (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr) => {
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, &[]);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
+        extensions: $ext:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, &[]);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, secret_refs: $refs:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], ABSENT, $refs);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
+        secret_refs: $refs:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, ABSENT, $refs);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, extensions: $ext:expr,
+        secret_refs: $refs:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, &[], $ext, $refs);
+    };
+    ($store:ty, $name:expr, $version:expr, $max_inflight:expr, needs: $needs:expr,
+        extensions: $ext:expr, secret_refs: $refs:expr $(,)?) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs, $ext, $refs);
+    };
+    (@all $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, ABSENT,
+        $refs:expr) => {
+        $crate::store_door!(@all $store, $name, $version, $max_inflight, $needs,
+            $crate::abi::mechanism::call::Blob::ABSENT, $refs);
+    };
+    (@all $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $ext:expr,
+        $refs:expr) => {
+        const __BUSBAR_STORE_NEEDS: &[$crate::abi::host::conn::connector::Need] = $needs;
+        const __BUSBAR_STORE_SECRET_REFS: &[$crate::abi::mechanism::call::AbiStr] = $refs;
+        $crate::store_door!(@door $store, $name, $version, $max_inflight,
+            if __BUSBAR_STORE_NEEDS.is_empty() {
+                ::core::ptr::null::<$crate::abi::host::conn::connector::Need>()
+            } else {
+                __BUSBAR_STORE_NEEDS.as_ptr()
+            },
+            __BUSBAR_STORE_NEEDS.len(),
+            $ext,
+            if __BUSBAR_STORE_SECRET_REFS.is_empty() {
+                ::core::ptr::null::<$crate::abi::mechanism::call::AbiStr>()
+            } else {
+                __BUSBAR_STORE_SECRET_REFS.as_ptr()
+            },
+            __BUSBAR_STORE_SECRET_REFS.len());
+    };
+    (@door $store:ty, $name:expr, $version:expr, $max_inflight:expr, $needs:expr, $needs_len:expr,
+        $ext:expr, $refs:expr, $refs_len:expr) => {
         const __BUSBAR_STORE_TAIL: $crate::abi::store::StoreTail =
             $crate::abi::sdk::store::door::tail::<$store>();
         const __BUSBAR_STORE_DIAGS: [$crate::abi::mechanism::call::AbiStr; 2] =
@@ -1545,18 +1558,21 @@ macro_rules! store_door {
                 marks: $crate::abi::sdk::store::door::marks::<$store>(),
                 needs: $needs,
                 needs_len: $needs_len,
+                extensions: $ext,
+                secret_refs: $refs,
+                secret_refs_len: $refs_len,
                 ..$crate::abi::sdk::door::statement($name, $version, $max_inflight)
             },
             lifecycle: {
-                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Validate<$store>>,
+                validate: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Validate<$crate::abi::sdk::store::door::Served<$store>>>,
                 open: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Open<$store>>,
-                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Refresh<$store>>,
-                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Retire<$store>>,
-                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Tick<$store>>,
-                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Drive<$store>>,
-                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Cancel<$store>>,
-                release: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Release<$store>>,
-                close: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::Close<$store>>,
+                refresh: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Refresh<$crate::abi::sdk::store::door::Served<$store>>>,
+                retire: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Retire<$crate::abi::sdk::store::door::Served<$store>>>,
+                tick: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Tick<$crate::abi::sdk::store::door::Served<$store>>>,
+                drive: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Drive<$crate::abi::sdk::store::door::Served<$store>>>,
+                cancel: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Cancel<$crate::abi::sdk::store::door::Served<$store>>>,
+                release: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Release<$crate::abi::sdk::store::door::Served<$store>>>,
+                close: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Close<$crate::abi::sdk::store::door::Served<$store>>>,
             },
             kind_ops: {
                 put_key: $crate::abi::sdk::Safe<$crate::abi::sdk::store::door::PutKey<$store>>,

@@ -316,6 +316,34 @@ impl AuthTail {
     };
 }
 
+/// HOW THE AUTH KIND TAIL IS MADE (status row 194): from [`AuthTail::EMPTY`], its plain fields set
+/// directly and each list by its setter, to items that live for the program.
+impl AuthTail {
+    /// Nothing stated: every string absent, every list empty, every number zero; the head
+    /// sized to the whole tail.
+    pub const EMPTY: AuthTail = AuthTail {
+        head: KindTailHead {
+            size: core::mem::size_of::<AuthTail>() as u32,
+            _reserved: 0,
+        },
+        caps: 0,
+        facts: 0,
+        login_kind: 0,
+        inbound_points: 0,
+        styles: std::ptr::null(),
+        styles_len: 0,
+        operator_principal: AbiStr::ABSENT,
+        credential_kinds: std::ptr::null(),
+        credential_kinds_len: 0,
+    };
+
+    abi_lists! {
+        styles, styles_len: StyleDecl => styles_ptr, with_styles, with_raw_styles;
+        credential_kinds, credential_kinds_len: AbiStr
+            => credential_kinds_ptr, with_credential_kinds, with_raw_credential_kinds;
+    }
+}
+
 /// The size [`AuthTail`] froze at before [`AuthTail::operator_principal`] was appended: the
 /// smallest auth tail a host reads (THE KIND TAIL GROWTH RULE, `mechanism::door::tail_read_len`).
 pub const AUTH_TAIL_FROZEN: usize = 40;

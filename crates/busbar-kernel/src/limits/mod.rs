@@ -70,13 +70,9 @@ pub fn request_body_read_timeout_secs() -> u64 {
         .unwrap_or(crate::config::DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS)
 }
 
-/// Cap on a buffered upstream ERROR / verbatim-relay body (bytes).
-pub(crate) fn upstream_error_body_max_bytes() -> usize {
-    get()
-        .map(|l| l.upstream_error_body_max_bytes)
-        // No standalone const re-export needed: the resolved value always carries the default.
-        .unwrap_or(crate::config::DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES)
-}
+// The upstream ERROR-body cap has no accessor here: its one reader, proxy_vocab.rs's
+// `max_upstream_buffered_bytes`, left with that file, and the cap is read through the process
+// global `config::limits::mirror_derived_caps` sets (`busbar_kernel_egress::upstream`).
 
 // There is deliberately NO process-global delivery accessor here for an export sink, for
 // concurrency or for the deadline: an export sink is a plugin, and each NAMED instance states its

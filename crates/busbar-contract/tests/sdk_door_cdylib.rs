@@ -189,12 +189,12 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
     let door_fn: extern "C" fn() -> *const Door = unsafe { std::mem::transmute(sym) };
     // SAFETY: the door is `'static` in the loaded image, which is never unloaded here.
     let door = unsafe { &*door_fn() };
-    assert_eq!(door.magic, DOOR_MAGIC);
-    assert_eq!(door.mechanism_version, MECHANISM_VERSION);
-    assert_eq!(door.kind, KindCode::Secret as u32);
-    assert_eq!(door.kind_abi, KindCode::Secret.abi_version());
+    assert_eq!(door.magic(), DOOR_MAGIC);
+    assert_eq!(door.mechanism_version(), MECHANISM_VERSION);
+    assert_eq!(door.kind(), KindCode::Secret as u32);
+    assert_eq!(door.kind_abi(), KindCode::Secret.abi_version());
     // SAFETY: the fixture's table is a `OneKindOp`.
-    let table = unsafe { &*door.ops.cast::<OneKindOp>() };
+    let table = unsafe { &*door.ops().cast::<OneKindOp>() };
     assert_eq!(table.head.size as usize, size_of::<OneKindOp>());
     assert_eq!(table.head.slots, LIFECYCLE_SLOTS + 1);
 

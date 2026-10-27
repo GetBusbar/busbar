@@ -82,7 +82,7 @@ fn migrate_inserts_the_memory_store_into_a_config_without_one() {
     let deploy: config::DeployCfg = serde_yaml::from_str(&out.yaml).expect("the output parses");
     assert_eq!(
         deploy.store.map(|s| s.module),
-        Some(config::MIGRATED_STORE_MODULE.to_string())
+        Some(config::migrated_store_module().to_string())
     );
 }
 
@@ -104,4 +104,29 @@ fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one(
     let want: serde_yaml::Value = serde_yaml::from_str("module: acme-durable").expect("yaml");
     assert_eq!(doc.get("store"), Some(&want));
     assert!(!out.changes.iter().any(|c| c.starts_with("store")));
+}
+
+/// THE KERNEL NAMES NO STORE INSTANCE (Q128 arch u29; BUSBAR-1.6.0.md l.4205-4211): the store a
+/// 1.5.x config with no `store:` block ran on is the root legacy table's `store_1_5_default` row,
+/// and the refusals and the migration read it from there. RED before: the kernel held the literal
+/// as a constant. The kernel's test store double answers to that same row.
+#[test]
+fn the_store_double_answers_to_the_migrated_store_module() {
+    assert_eq!(
+        crate::config::migrated_store_module(),
+        crate::config::legacy::text("store_1_5_default")
+    );
+    assert!(!crate::config::migrated_store_module().is_empty());
+    assert_eq!(
+        crate::test_support::store_double::KEY,
+        crate::config::migrated_store_module()
+    );
+    let refusal = crate::config::store_required();
+    assert!(
+        refusal.contains(&format!(
+            "store: {{module: {}}}",
+            crate::config::migrated_store_module()
+        )),
+        "{refusal}"
+    );
 }

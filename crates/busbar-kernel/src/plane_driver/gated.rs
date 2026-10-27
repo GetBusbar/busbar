@@ -28,9 +28,10 @@ use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_mes
 use busbar_contract::hooks::TransformOutcome;
 
 use super::super::{DriverSteps, FarEnd, PlaneUnits};
-use super::{veto_by, HookBinder, Projection, RewriteChain, Stopped};
+use super::{rewrite_applied, veto_by, HookBinder, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::ResolvedPolicy;
+use busbar_kernel_audit::record::HookApplied;
 
 /// The order a plane's request-stage hooks run in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -127,9 +128,22 @@ impl HookBinder for HostGatedHooks {
 
 impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// THE GATE-FIRST REQUEST STAGE (module doc): the entry's gates over the projection, then its
-    /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more.
+    /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more. The hooks it ran
+    /// are reported to the driver's hook journal however it ended.
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
-        let mut view: Projection = self.project(None)?;
+        let mut ran = Vec::new();
+        let stage = self.run_gated_stage(binder, &mut ran).await;
+        self.report_hooks(ran);
+        stage
+    }
+
+    /// [`Self::gated_stage`], each hook that ran pushed onto `ran` as it answered.
+    async fn run_gated_stage(
+        &self,
+        binder: &dyn HookBinder,
+        ran: &mut Vec<HookApplied>,
+    ) -> Result<(), Stopped> {
+        let first = self.project(None, false);
         let (principal, recorded, route) = {
             let st = self.lock();
             (
@@ -138,6 +152,41 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 st.decoded.as_ref().map_or(0, |d| d.route),
             )
         };
+        let mut view: Projection = match first {
+            Ok(view) => view,
+            // The plane answered FAULT to the unit's first `project`: where the entry the kernel
+            // recorded has a rewrite hook configured, v1.5.5 materialized the document before any
+            // hook ran (`proxy/engine/mod.rs:728`, `:749`) and answered the shared 500, no hook
+            // invoked. Anywhere else 1.5.5's gates judged a Null body and the request proceeded
+            // (`:957-961`): the entry's gates judge a view with no body, and the unit goes on.
+            Err(Stopped::Unparseable { marked }) => {
+                // The entry the kernel recorded at decode; a unit that recorded none, or one that
+                // is not UTF-8, binds the empty entry, as `bound_entry` reads an unnamed one.
+                let entry = std::str::from_utf8(recorded.as_deref().unwrap_or_default())
+                    .unwrap_or_default()
+                    .to_string();
+                let hooks = binder.bind_gated(&entry, principal.as_deref());
+                // A configured rewrite: the shared 500 for every FAULT, marked or not (v1.5.5
+                // `:728`, `:749`), no hook invoked.
+                if hooks.as_ref().is_some_and(|h| !h.rewrites.is_empty()) {
+                    return Err(super::fault_veto());
+                }
+                // An unmarked FAULT is a broken plane, never 1.5.5's Null body: unreadable.
+                if !marked {
+                    return Err(Stopped::Unreadable);
+                }
+                let Some(hooks) = hooks else {
+                    return Ok(());
+                };
+                let null = Projection {
+                    pool: entry,
+                    dialect: binder.dialect(self.lock().decoded.as_ref().map_or(0, |d| d.dialect)),
+                    ..Projection::default()
+                };
+                return self.screen_gates(&hooks, &null, ran).await;
+            }
+            Err(other) => return Err(other),
+        };
         // THE ENTRY THE KERNEL RECORDED at decode, never the plane's later word: a projection naming
         // another entry is refused before any entry's gates are bound.
         let holds = |pool: &[u8], member: &str| self.steps.pool_holds(pool, member);
@@ -145,13 +194,83 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return Ok(());
         };
         let entry = entry.to_string();
-        let Some(hooks) = binder.bind_gated(&entry, principal.as_deref()) else {
+        let Some(mut hooks) = binder.bind_gated(&entry, principal.as_deref()) else {
             return Ok(());
         };
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
-        span.record("request_id", hooks.request_id);
+        // The unit's own correlation id, where its host minted one (status row 173).
+        if let Some(id) = self.lock().request_id {
+            hooks.request_id = id;
+        }
+        super::record_request_id(hooks.request_id);
 
         // 1. THE DECISION GATES, over the projected invocation, keyed on the view's session.
+        self.screen_gates(&hooks, &view, ran).await?;
+
+        // 2. THE ENTRY'S REWRITE CHAIN, each rewrite applied by the plane and projected again.
+        for (timeout, hook) in &hooks.rewrites {
+            let req = view.request(hooks.request_id, &view.pool, true, None);
+            if req.prompt.is_some() {
+                crate::audit::amend::hook_read(
+                    hook.name(),
+                    principal.as_deref(),
+                    &view.dialect,
+                    false,
+                );
+            }
+            let outcome = hook.transform(&req, *timeout).await;
+            drop(req);
+            ran.push(rewrite_applied(hook.name(), &outcome));
+            match outcome {
+                TransformOutcome::Rewrite(rw) => {
+                    let bytes = super::rewrite_bytes(&rw);
+                    let next = match self.project(Some(&bytes), true) {
+                        Ok(next) => next,
+                        // A FAULT project: the shared 500, never the hook's `on_error`.
+                        Err(fault @ Stopped::Veto(_)) => return Err(fault),
+                        Err(_) => {
+                            // The plane refused the rewrite: the hook's failure, by its
+                            // `on_error`.
+                            if let Some((status, message)) = refused_rewrite(&**hook, &view.pool) {
+                                return Err(veto_by(status, message, hook.name()));
+                            }
+                            continue;
+                        }
+                    };
+                    // The re-projection is held to the same bound entry.
+                    if next.pool != entry {
+                        return Err(Stopped::Unreadable);
+                    }
+                    if let Some(body) = &next.rewritten {
+                        self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
+                    }
+                    view = next;
+                }
+                TransformOutcome::Reject { status, message } => {
+                    let (status, message) = rewrite_refusal(status, &message);
+                    return Err(veto_by(status, message, hook.name()));
+                }
+                TransformOutcome::Abstain => {}
+                TransformOutcome::Failed { message } => {
+                    tracing::warn!(
+                        hook = hook.name(),
+                        entry = %view.pool,
+                        error = %message,
+                        "rewrite hook could not answer; proceeding with the original body"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// THE ENTRY'S DECISION GATES over `view`, the projected invocation, keyed on the view's
+    /// session: the first rejecting gate refuses the unit.
+    async fn screen_gates(
+        &self,
+        hooks: &GatedHooks,
+        view: &Projection,
+        ran: &mut Vec<HookApplied>,
+    ) -> Result<(), Stopped> {
         if !hooks.gates.is_empty() {
             let now_ms = crate::store::now_ms();
             let door = DoorSubject {
@@ -179,7 +298,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 status,
                 message,
                 hook,
-            } = decide_door(&hooks.gates, &door).await
+            } = decide_door(&hooks.gates, &door, ran).await
             {
                 tracing::info!(
                     entry = %view.pool,
@@ -187,49 +306,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     status,
                     "a unit refused by a hook gate"
                 );
-                return Err(veto_by(status, message, hook));
-            }
-        }
-
-        // 2. THE ENTRY'S REWRITE CHAIN, each rewrite applied by the plane and projected again.
-        for (timeout, hook) in &hooks.rewrites {
-            let req = view.request(hooks.request_id, &view.pool, true, None);
-            if req.prompt.is_some() {
-                crate::audit::amend::hook_read(
-                    hook.name(),
-                    principal.as_deref(),
-                    &view.dialect,
-                    false,
-                );
-            }
-            let outcome = hook.transform(&req, *timeout).await;
-            drop(req);
-            match outcome {
-                TransformOutcome::Rewrite(rw) => {
-                    let bytes = super::rewrite_bytes(&rw);
-                    let next = self.project(Some(&bytes))?;
-                    // The re-projection is held to the same bound entry.
-                    if next.pool != entry {
-                        return Err(Stopped::Unreadable);
-                    }
-                    if let Some(body) = &next.rewritten {
-                        self.lock().body = Some(Arc::from(body.as_slice()));
-                    }
-                    view = next;
-                }
-                TransformOutcome::Reject { status, message } => {
-                    let (status, message) = rewrite_refusal(status, &message);
-                    return Err(veto_by(status, message, hook.name()));
-                }
-                TransformOutcome::Abstain => {}
-                TransformOutcome::Failed { message } => {
-                    tracing::warn!(
-                        hook = hook.name(),
-                        entry = %view.pool,
-                        error = %message,
-                        "rewrite hook could not answer; proceeding with the original body"
-                    );
-                }
+                return Err(veto_by(status, message, &hook));
             }
         }
         Ok(())
@@ -274,6 +351,40 @@ fn bound_entry<'v>(
     std::str::from_utf8(recorded)
         .map(Some)
         .map_err(|_| Stopped::Unreadable)
+}
+
+/// A REWRITE THE PLANE REFUSED TO APPLY (one naming a model other than the routed one, say): the
+/// rewriting hook's failure, never the unit's, answered by that hook's own `on_error` (coordinator
+/// ruling, row 159). A load-bearing hook (`on_error: reject`) refuses the unit with the refusal a
+/// failed call of the same hook answers, [`REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its shared words
+/// (`Some`); any other disposition proceeds with the body and view the unit had before that rewrite
+/// (`None`), as 1.5.5 left a request it could not rewrite unmodified. Never a silent switch to what
+/// the rewrite named.
+///
+/// [`REQUIRED_HOOK_UNAVAILABLE_STATUS`]: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
+pub(super) fn refused_rewrite(
+    hook: &dyn busbar_contract::hooks::RoutingPolicy,
+    entry: &str,
+) -> Option<(u16, String)> {
+    use crate::hooks::{REQUIRED_HOOK_UNAVAILABLE_MESSAGE, REQUIRED_HOOK_UNAVAILABLE_STATUS};
+    if hook.refuses_failed_rewrite() {
+        tracing::warn!(
+            hook = hook.name(),
+            entry = %entry,
+            "the plane refused a rewrite hook's rewrite and the hook is declared load-bearing \
+             (on_error: reject); refusing the request"
+        );
+        return Some(rewrite_refusal(
+            REQUIRED_HOOK_UNAVAILABLE_STATUS,
+            REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+        ));
+    }
+    tracing::warn!(
+        hook = hook.name(),
+        entry = %entry,
+        "the plane refused a rewrite hook's rewrite; proceeding with the request unmodified"
+    );
+    None
 }
 
 /// A REWRITE'S REFUSAL, as the caller is answered (SEAM-L(q), predev parity): a status the hook

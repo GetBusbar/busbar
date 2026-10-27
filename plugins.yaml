@@ -82,7 +82,7 @@
 #                  manifest name (`legacy:`'s `name_1_5_5.<repo>` rows) that this list does not carry
 #   retired        the `module:` spellings this plugin answered to in an earlier release and no longer
 #                  does [none]. Each is a `retired.<kind>.<word>` row of the root legacy table
-#                  (`[package.metadata.busbar.legacy]` in crates/busbar/Cargo.toml), beside the plugin's
+#                  (`[package.metadata.busbar.legacy]` in dist/default/Cargo.toml), beside the plugin's
 #                  `manifest.<alias>` / `asset.<alias>` rows; boot refuses a retired spelling and
 #                  `busbar --migrate-config` rewrites it to the alias (BUSBAR-1.6.0.md §2)
 #   pending_crate  the repo is registered (it exists, it is rendered and seeded by `busbar-release plugin sync`) but its
@@ -105,7 +105,7 @@
 #               qa are locked by the org ruleset "release branches: main + qa (owner say-so only)"; any
 #               other branch is stale.
 fleet:
-  busbar_ref: "a3748f7932a3292aed3c9ef1e75e9f999a732140 1.6.0"
+  busbar_ref: "71b70e487bebe5ae2feb1fabf32d8906edf4ccad 1.6.0"
   name_pattern: "^busbar-(store|secret|auth|hook|export|plane|transport)-[a-z0-9]+(-[a-z0-9]+)*$"
   branches: [dev, qa, main]
 
@@ -119,7 +119,7 @@ excluded_repos:
 # THE ROOT LEGACY TABLE'S FROZEN TEXT (BUSBAR-1.6.0.md §2): operator-visible
 # 1.5.5 text naming plugins that are not in the build, which `busbar --migrate-config` and the boot
 # refusals print. These rows, then every entry's `retired:` rows, are the root legacy table,
-# `[package.metadata.busbar.legacy]` (crates/busbar/Cargo.toml), which the composition root hands to the
+# `[package.metadata.busbar.legacy]` (dist/default/Cargo.toml), which the composition root hands to the
 # kernel; crates/busbar/src/root/tests/legacy.rs renders it from here and is red on drift (printing the
 # table to paste). Every row cites the v1.5.5 tag line it is verbatim from; a value never changes.
 legacy:
@@ -141,6 +141,10 @@ legacy:
   gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
   # v1.5.5:crates/busbar/src/config_validate/mod.rs:1656 (the empty `store.module` refusal)
   module_examples: "sqlite | postgres | valkey"
+  # The store a config with no `store:` block ran on, which the empty-`store.module` refusal names and
+  # `--migrate-config` writes in. v1.5.5:crates/busbar/src/config/mod.rs:3026 (GOVERNANCE_STORE_MEMORY);
+  # v1.5.5:crates/busbar/src/config_validate/mod.rs:1655
+  store_1_5_default: memory
   # The browser-login button brands, in 1.5.5's match order: `<match tokens> : <label> : <icon ref>`, the
   # tokens matched (any) against the lower-cased method name and OIDC issuer host; a method none matches
   # is its title-cased name under the generic icon. v1.5.5:crates/busbar/src/auth/token.rs:1073-1112
@@ -339,7 +343,7 @@ plugins:
     busbar_checkout: true
     # macOS runners have no OpenLDAP: the published suite's two arms that log in against the live
     # directory (through the suite's StartTLS front) run on the linux leg, against the service.
-    macos_test: "cargo test --workspace --locked --lib --test conformance -- --skip the_linked_and_the_dropped_in_door_are_one_plugin --skip red_a_moved_crossing_count_is_refused"
+    macos_test: "env -u CI cargo test --workspace --locked --lib --test conformance -- --skip the_linked_and_the_dropped_in_door_are_one_plugin --skip red_a_moved_crossing_count_is_refused"
     declares: "auth-ldap/declares.json"
     former_names: [busbar-auth-ldap-plugin]
   - repo: busbar-auth-admin-tokens
@@ -444,11 +448,11 @@ plugins:
     release_gate: optional
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the llm plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    busbar_checkout: true
     declares: "plane-llm/declares.json"
     # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
     # its crates land in it from busbar. Its first release is cut with the core version that pins it.
     released: false
-    pending_crate: true
   - repo: busbar-plane-mcp
     kind: plane
     alias: mcp
@@ -657,6 +661,7 @@ plugins:
     release_gate: optional
     gate: suite
     description: "First-party signed kind:auth plugin cdylib: the sigv4 auth, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
+    busbar_checkout: true
     declares: "auth-sigv4/declares.json"
     # OWNER QUESTIONS Q99 (2026-10-01): "KEEP THE SPLIT: busbar-auth-header, busbar-auth-sigv4,
     # busbar-auth-oauth, busbar-auth-webhook-signature" (BUSBAR-1.6.0.md §9: every plugin in its own

@@ -21,7 +21,8 @@
 
 // The record-side harness (`token`, `inputs`) is the parent module's; the amendment surface is
 // reached through the crate's public paths.
-use super::{inputs, token};
+use super::inputs;
+use crate::test_support::tokens::pass;
 use busbar_contract::count::Count;
 use busbar_kernel_audit::amend::{content_access, correction, AmendChain, Amendment, Reader};
 use busbar_kernel_audit::record::{
@@ -33,7 +34,7 @@ use busbar_kernel_audit::record::{
 /// Three amendments, sealed in order, and the chain that sealed them.
 fn three_amendments() -> (AmendChain, Vec<Amendment>) {
     let mut chain = AmendChain::new();
-    let t = token();
+    let t = pass::<busbar_contract::caps::Audit>();
     let a = chain.append(
         content_access(
             Reader::Hook,
@@ -187,7 +188,7 @@ fn an_empty_amendment_run_against_a_chain_that_has_sealed_amendments_is_refused(
 /// Three sealed audit records and the chain that sealed them.
 fn three_records() -> (AuditChain, Vec<AuditRecord>) {
     let mut chain = AuditChain::new();
-    let t = token();
+    let t = pass::<busbar_contract::caps::Audit>();
     let records = (1..=3).map(|i| chain.seal(inputs(i), &t)).collect();
     (chain, records)
 }

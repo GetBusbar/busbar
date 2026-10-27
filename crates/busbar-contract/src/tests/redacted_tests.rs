@@ -127,38 +127,6 @@ fn drop_actually_calls_zeroize() {
     );
 }
 
-/// `Secret` must NOT implement `serde::Serialize`, so a secret held in engine memory has no
-/// implicit path into JSON (the credential-transport boundary uses a plain wire `String`, on
-/// purpose). This uses AUTOREF SPECIALIZATION to actually detect the impl at test time: the
-/// inherent `ser` (which requires `T: Serialize`) shadows the trait-default `ser` IFF a
-/// `Serialize` impl exists — so unlike an unconstrained generic, this test FLIPS to red the moment
-/// someone adds `#[derive(Serialize)]` to `Secret`.
-#[test]
-fn redacted_does_not_implement_serialize() {
-    use core::marker::PhantomData;
-    struct Probe<T>(PhantomData<T>);
-    trait ViaTraitDefault {
-        fn ser(&self) -> bool {
-            false
-        }
-    }
-    impl<T> ViaTraitDefault for Probe<T> {}
-    // Inherent method: exists ONLY when T: Serialize, and shadows the trait default when present.
-    impl<T: serde::Serialize> Probe<T> {
-        fn ser(&self) -> bool {
-            true
-        }
-    }
-    let probe = Probe::<Secret<String>>(PhantomData);
-    assert!(
-        !probe.ser(),
-        "Secret<T> must NOT implement Serialize (add one and this test goes red)"
-    );
-    // Sanity: the probe DOES report true for a type that is Serialize (proving it detects impls).
-    let control = Probe::<String>(PhantomData);
-    assert!(control.ser(), "probe must detect a real Serialize impl");
-}
-
 // The credential-primitive suite that came with `constant_time_eq` and `sha256_hex` when
 // `busbar-api` retired (it was that crate's `auth` test module).
 

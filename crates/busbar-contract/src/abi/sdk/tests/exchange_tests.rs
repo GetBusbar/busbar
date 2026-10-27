@@ -32,6 +32,9 @@ fn piece(
     (kind, code, reason, fields, body)
 }
 
+/// A scripted read the host answers FAILED (the far end went away mid-reply), in place of a piece.
+const READ_FAILS: u32 = u32::MAX - 1;
+
 /// What the framer was handed, as the host saw it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Framed {
@@ -59,11 +62,15 @@ struct Script {
     held: i64,
     /// A CLOSE ran.
     closed: bool,
+    /// Every service the host ran (a replay runs none), in order.
+    ops: Vec<u32>,
 }
 
 static SCRIPT: Mutex<Option<Script>> = Mutex::new(None);
 /// One test at a time: the script is process-wide.
 static SERIAL: Mutex<()> = Mutex::new(());
+/// A scripted read the host FAILS (the stream reset under it), in place of a reply piece.
+const RESET: u32 = u32::MAX;
 /// The host's refusal text for a request on a stream that is not framed.
 const NOT_FRAMED: &str = "the stream is not framed: write its bytes";
 
@@ -140,6 +147,11 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
         return answer(out, o, v, l);
     }
     *s.runs.entry(seq).or_default() += 1;
+    s.ops.push(op);
+    if op == service::READ_REPLY && s.reply.get(s.reads).map(|p| p.0) == Some(READ_FAILS) {
+        s.stored.insert(seq, (Outcome::Failed, 0, 0));
+        return answer(out, Outcome::Pending, 0, 0);
+    }
     let (value, len) = match op {
         service::ESTABLISH => {
             // SAFETY: an `EstablishIn` (the SDK states its whole size).
@@ -170,6 +182,10 @@ fn serve(op: u32, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
             let io = unsafe { *input.cast::<ReplyIn>() };
             let piece = s.reply[s.reads.min(s.reply.len() - 1)];
             s.reads += 1;
+            if piece.0 == RESET {
+                s.stored.insert(seq, (Outcome::Failed, 0, 0));
+                return answer(out, Outcome::Pending, 0, 0);
+            }
             (0, play(io, piece))
         }
         service::CLOSE => {
@@ -305,6 +321,8 @@ struct Run<T> {
     reads: usize,
     /// A CLOSE ran.
     closed: bool,
+    /// Every service the host ran, in order.
+    ops: Vec<u32>,
 }
 
 /// Run the op to completion under `reply`: a fresh connector each entry, the same parked state.
@@ -345,6 +363,7 @@ fn run<T>(
         held: s.held,
         reads: s.reads,
         closed: s.closed,
+        ops: s.ops,
     }
 }
 
@@ -690,6 +709,132 @@ fn a_reply_at_the_exchanges_limit_passes() {
     assert_eq!(r.answered.expect("at the limit").body.len(), 100);
 }
 
+/// How many times the host ran `op` in `r`.
+fn ran<T>(r: &Run<T>, op: u32) -> usize {
+    r.ops.iter().filter(|&&o| o == op).count()
+}
+
+/// RED (status row 159, a failed exchange leaks its connection): a reply the host fails mid-read
+/// closes the stream the exchange established, once, and the exchange holds no stream after it.
+#[test]
+fn a_failed_reply_read_closes_its_stream() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reply = vec![
+        piece(REPLY_HEAD, 200, b"", b"", b""),
+        piece(READ_FAILS, 0, b"", b"", b""),
+    ];
+    let r = run(
+        reply,
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(
+        matches!(r.answered, Err(ConnFailure::Failed(_))),
+        "{:?}",
+        r.answered
+    );
+    assert_eq!(ran(&r, service::CLOSE), 1, "{:?}", r.ops);
+    assert_eq!(r.ops.last(), Some(&service::CLOSE));
+    assert_eq!(r.state.stream(), None);
+    assert!(r.runs.values().all(|&n| n == 1), "{:?}", r.runs);
+}
+
+/// RED (status row 159): a reply past the exchange's limit is refused with its own failure, and
+/// the stream is closed once right after the read that passed it: no read follows the refusal.
+#[test]
+fn a_reply_over_the_limit_closes_its_stream() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        body_reply(60, 41),
+        false,
+        Exchange::request(post())
+            .expect("a request")
+            .reply_limit(100),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(
+        r.answered.as_ref().expect_err("the reply passes the limit"),
+        &ConnFailure::Failed(REPLY_OVER_BOUND.to_string())
+    );
+    assert_eq!(
+        r.ops,
+        vec![
+            service::ESTABLISH,
+            service::WRITE_REQUEST,
+            service::WRITE_REQUEST,
+            service::WRITE_REQUEST,
+            service::READ_REPLY,
+            service::READ_REPLY,
+            service::READ_REPLY,
+            service::CLOSE,
+        ]
+    );
+    assert_eq!(r.state.stream(), None);
+}
+
+/// RED (status row 159): a request the stream refuses (a send that fails) closes the stream it
+/// was established on, and the refusal is still what the exchange answers.
+#[test]
+fn a_refused_send_closes_its_stream() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        true,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(
+        r.answered,
+        Err(ConnFailure::Refused(NOT_FRAMED.to_string()))
+    );
+    assert_eq!(ran(&r, service::CLOSE), 1, "{:?}", r.ops);
+    assert_eq!(r.ops.last(), Some(&service::CLOSE));
+    assert_eq!(r.state.stream(), None);
+}
+
+/// GREEN twin: an exchange that completes still closes its stream exactly once, last, and holds
+/// none after it; a send that is acked does the same.
+#[test]
+fn a_completed_exchange_closes_its_stream_once() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(
+        r.answered.as_ref().expect("the exchange completes").status,
+        200
+    );
+    assert_eq!(ran(&r, service::CLOSE), 1, "{:?}", r.ops);
+    assert_eq!(r.ops.last(), Some(&service::CLOSE));
+    assert_eq!(r.state.stream(), None);
+    let acked = run(
+        vec![piece(REPLY_ACK, 250, b"ok", b"", b"")],
+        false,
+        Exchange::send(b"ping".to_vec()),
+        None,
+        |c, st| send_and_ack(c, st, 0, None),
+    );
+    assert_eq!(acked.answered.as_ref().expect("acked").code, 250);
+    assert_eq!(ran(&acked, service::CLOSE), 1, "{:?}", acked.ops);
+    assert_eq!(acked.ops.last(), Some(&service::CLOSE));
+}
+
 /// RED: a limit above `REPLY_MAX` clamps to it, and an exchange that sets none holds `REPLY_MAX`.
 #[test]
 fn a_limit_above_reply_max_clamps() {
@@ -804,4 +949,306 @@ fn a_head_only_exchange_is_judged_on_the_head_and_never_reads_the_body() {
         "{:?}",
         observed.runs
     );
+}
+
+/// A buffer whose TYPE wipes it on drop: the bound is the proof, checked at compile time.
+fn wipes_on_drop<T: zeroize::ZeroizeOnDrop + ?Sized>(_: &T) {}
+
+/// A type a plugin can wipe (`zeroize::Zeroizing::new(value)`).
+fn wipeable<T: Zeroize>() {}
+
+/// Every buffer an exchange holds of the request or the reply wipes on drop: the head it frames,
+/// the body it sends, the raw bytes a send carries, the read buffer and the reply it gathers. The
+/// request, reply and ack a plugin hands in or is handed back are wipeable.
+#[test]
+fn every_buffer_an_exchange_holds_wipes_on_drop() {
+    wipeable::<Request>();
+    wipeable::<ExchangeResponse>();
+    wipeable::<Ack>();
+    let framed = Exchange::request(post()).expect("a request");
+    let Sending::Framed { head, body, .. } = &framed.sending else {
+        panic!("a request is framed");
+    };
+    wipes_on_drop(head);
+    wipes_on_drop(body);
+    wipes_on_drop(&framed.buf);
+    wipes_on_drop(&framed.reply);
+    let raw = Exchange::send(b"ping".to_vec());
+    let Sending::Raw(bytes) = &raw.sending else {
+        panic!("a send is raw");
+    };
+    wipes_on_drop(bytes);
+}
+
+/// RED: the read buffer is reused for every piece of the reply (and every replay of one); once the
+/// exchange completes it holds no byte of the reply, while the reply itself arrived whole.
+#[test]
+fn the_reused_read_buffer_keeps_no_reply_bytes() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/hook")),
+    );
+    let reply = r.answered.expect("the exchange completes");
+    assert_eq!(reply.body, b"hello world");
+    assert_eq!(reply.reason.as_deref(), Some(&b"Totally Fine"[..]));
+    assert!(
+        r.state.buf.iter().all(|&b| b == 0),
+        "the read buffer still holds reply bytes"
+    );
+}
+
+/// The head is allocated once at its exact length: no outgrown allocation holds a copy of a field.
+#[test]
+fn the_head_is_framed_into_one_exact_allocation() {
+    let ex = Exchange::request(post()).expect("a request");
+    let Sending::Framed { head, .. } = &ex.sending else {
+        panic!("a request is framed");
+    };
+    assert_eq!(head.capacity(), head.len());
+    assert_eq!(
+        &head[..],
+        &b"POST/hook?x=1content-type: application/json\r\nx-busbar: 1\r\n"[..]
+    );
+}
+
+/// The reply body grows as `Vec` grows it (the same capacities, so the same allocations), and
+/// holds the same bytes.
+#[test]
+fn the_reply_body_grows_as_a_vec_grows() {
+    let mut wiped = Vec::new();
+    let mut plain = Vec::new();
+    for n in [1usize, 3, 5, 16, 1, 100, 7, 300, 0, 4096] {
+        let chunk = vec![u8::try_from(n % 251).unwrap(); n];
+        extend_wiping(&mut wiped, &chunk);
+        plain.extend_from_slice(&chunk);
+        assert_eq!(wiped.capacity(), plain.capacity(), "after {n}");
+    }
+    assert_eq!(wiped, plain);
+}
+
+/// What the request, reply and ack carried is gone once a plugin wipes them.
+#[test]
+fn a_request_a_reply_and_an_ack_wipe_to_empty() {
+    let mut request = post();
+    request.timeout_ms = 9;
+    request.zeroize();
+    assert_eq!(request, Request::default());
+    let mut reply = ExchangeResponse {
+        status: 200,
+        reason: Some(b"OK".to_vec()),
+        fields: vec![(b"set-cookie".to_vec(), b"s=1".to_vec())],
+        body: b"token".to_vec(),
+    };
+    reply.zeroize();
+    assert_eq!(reply, ExchangeResponse::default());
+    let mut ack = Ack {
+        code: 250,
+        reason: b"queued".to_vec(),
+    };
+    ack.zeroize();
+    assert_eq!(ack, Ack::default());
+}
+
+/// RED: a reply whose stream resets after its head fails, and the exchange says the head was
+/// received and what status it carried: a failure reading the body, not a failed send.
+#[test]
+fn a_reset_after_the_head_reports_the_head_and_its_status() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reply = vec![
+        piece(
+            REPLY_HEAD,
+            200,
+            b"OK",
+            b"content-type: application/json\r\n",
+            b"",
+        ),
+        piece(REPLY_BODY, 0, b"", b"", b"{\"keys\":"),
+        piece(RESET, 0, b"", b"", b""),
+    ];
+    let r = run(
+        reply,
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, Some("https://far/jwks")),
+    );
+    assert!(
+        matches!(r.answered, Err(ConnFailure::Failed(_))),
+        "{:?}",
+        r.answered
+    );
+    assert!(r.state.head_seen());
+    assert_eq!(r.state.head_status(), Some(200));
+}
+
+/// RED: an exchange whose send fails received no head and reports no status.
+#[test]
+fn a_send_failure_reports_no_head() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        true,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert!(r.answered.is_err());
+    assert!(!r.state.head_seen());
+    assert_eq!(r.state.head_status(), None);
+    let fresh = Exchange::request(post()).expect("a request");
+    assert!(!fresh.head_seen(), "no head before any read");
+    assert_eq!(fresh.head_status(), None);
+}
+
+/// RED: a reply whose body passes the exchange's bound is refused, and its head's status is still
+/// answered, so a driver judges the status before the body.
+#[test]
+fn a_reply_over_the_bound_still_reports_its_status() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut reply = body_reply(60, 41);
+    reply[0] = piece(REPLY_HEAD, 503, b"Service Unavailable", b"", b"");
+    let r = run(
+        reply,
+        false,
+        Exchange::request(post())
+            .expect("a request")
+            .reply_limit(100),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    assert_eq!(
+        r.answered.expect_err("the reply passes the limit"),
+        ConnFailure::Failed(REPLY_OVER_BOUND.to_string())
+    );
+    assert!(r.state.head_seen());
+    assert_eq!(r.state.head_status(), Some(503));
+}
+
+/// A completed exchange reports its head's status as its reply does.
+#[test]
+fn a_completed_exchange_reports_its_heads_status() {
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let r = run(
+        http_reply(),
+        false,
+        Exchange::request(post()).expect("a request"),
+        None,
+        |c, st| exchange(c, st, 0, None),
+    );
+    let status = r.answered.expect("the exchange completes").status;
+    assert_eq!(r.state.head_status(), Some(status));
+}
+
+#[test]
+fn sealed_fields_go_in_at_their_place_and_never_read_back() {
+    use crate::abi::sdk::cred::Cred;
+    let key = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()));
+    let r = Request {
+        method: b"POST".to_vec(),
+        target: b"/hook".to_vec(),
+        fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+        body: b"{}".to_vec(),
+        timeout_ms: 0,
+    };
+    let ex = Exchange::request_sealed(
+        r,
+        vec![
+            (0, b"authorization".to_vec(), key.bearer()),
+            (9, b"x-api-key".to_vec(), key.field()),
+        ],
+    )
+    .expect("frames");
+    let seen = ex.framed_fields();
+    assert_eq!(
+        seen,
+        vec![
+            (&b"authorization"[..], &b"<sealed>"[..]),
+            (&b"content-type"[..], &b"application/json"[..]),
+            (&b"x-api-key"[..], &b"<sealed>"[..]),
+        ]
+    );
+    let Sending::Framed { head, .. } = &ex.sending else {
+        panic!("framed")
+    };
+    let head = String::from_utf8_lossy(head);
+    assert!(head.contains("authorization: Bearer sk-CANARY"), "{head}");
+    assert!(head.contains("x-api-key: sk-CANARY"), "{head}");
+}
+
+#[test]
+fn a_sealed_body_replaces_the_requests_own() {
+    use crate::abi::sdk::cred::{Cred, FormBody};
+    let secret = Cred::captured(zeroize::Zeroizing::new(b"s3c".to_vec()));
+    let body = FormBody::new()
+        .public("grant_type", "authorization_code")
+        .sealed("client_secret", &secret)
+        .encoded()
+        .expect("encodes");
+    let r = Request {
+        method: b"POST".to_vec(),
+        target: b"/token".to_vec(),
+        fields: vec![],
+        body: b"ignored".to_vec(),
+        timeout_ms: 0,
+    };
+    let ex = Exchange::request_with(r, Vec::new(), Some(body)).expect("frames");
+    let Sending::Framed { body, .. } = &ex.sending else {
+        panic!("framed")
+    };
+    assert_eq!(
+        &body[..],
+        b"grant_type=authorization_code&client_secret=s3c"
+    );
+}
+
+/// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4), RED before the check: a credential the operator's
+/// URL requires secured goes out only to a secured target. A framed request is made whole when its
+/// stream opens, so a target whose scheme is not secure is refused before the open; a credential
+/// with no requirement goes out either way.
+#[test]
+fn a_credential_that_must_go_out_secured_is_refused_on_a_clear_target() {
+    use crate::abi::sdk::cred::{Cred, NOT_SECURE};
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let required = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()))
+        .secure_for("https://far/hook");
+    let free = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()));
+    let go = |cred: &Cred, target: &'static str| {
+        let ex =
+            Exchange::request_sealed(post(), vec![(0, b"authorization".to_vec(), cred.bearer())])
+                .expect("frames");
+        run(http_reply(), false, ex, None, move |c, st| {
+            exchange(c, st, 0, Some(target))
+        })
+    };
+    let refused = go(&required, "http://far/hook");
+    assert!(
+        matches!(&refused.answered, Err(ConnFailure::Refused(t)) if t == NOT_SECURE),
+        "{:?}",
+        refused.answered.as_ref().err()
+    );
+    assert!(
+        refused.ops.is_empty(),
+        "the stream was opened: {:?}",
+        refused.ops
+    );
+    let sent = go(&required, "https://far/hook");
+    assert_eq!(sent.answered.expect("sent secured").status, 200);
+    let clear = go(&free, "http://far/hook");
+    assert_eq!(clear.answered.expect("no requirement").status, 200);
 }

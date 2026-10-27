@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! WHO A NODE IS, AND THE KEY IT SIGNS WITH, KEPT IN THE CONFIGURED STORE (ARCHITECT 2026-10-07 H3
-//! ruling, follow-up): two facts a node with no data directory has nowhere else to keep.
+//! WHO A NODE IS, AND THE KEY IT SIGNS WITH, KEPT IN THE CONFIGURED STORE: two facts a node with no data directory has nowhere else to keep.
 //!
 //! ## The node's identity
 //!
 //! A journal record is named `(node, node_seq)`, and the store keys every record by that pair. Two
 //! nodes numbering under one identity would overwrite each other's records in a shared store, so
-//! each node journals under an identity no other LIVE node holds (Q128 root part 12 HIGH 2;
-//! BUSBAR-1.6.0.md l.206 "Nodes share one store"; THE DESIGN §7, l.1056-1059: a money record never
-//! vanishes silently). There is no `node_id` configuration key: adding one changes the frozen
+//! each node journals under an identity no other LIVE node holds (nodes share one store, and a money
+//! record never vanishes silently). There is no `node_id` configuration key: adding one changes the frozen
 //! configuration schema.
 //!
 //! * WITH A DATA DIRECTORY the identity is the node's own: a 128-bit random id generated at its
@@ -19,7 +17,7 @@
 //!   file yet ADOPTS the id the store's registry holds under this host's name, so one node
 //!   continuing on its host keeps its chain (unless another live node holds that name's lease),
 //!   and then holds that name's lease as a node with no data directory does.
-//! * WITH NO DATA DIRECTORY there is nowhere of its own to keep one (PB-13: no data-dir files), so
+//! * WITH NO DATA DIRECTORY there is nowhere of its own to keep one, so
 //!   the identity is the STABLE one the store's node registry ([`NODE_SCHEMA`]) keeps for this host,
 //!   minted the first time it booted, and a restart resumes that chain and recovers the holds it
 //!   left open. The host name is held under a LEASE ([`take_node`]): a boot that finds the name's
@@ -34,7 +32,7 @@
 //! name, or two with none, never journal under one identity while both are live. A deployment whose
 //! host name changes on every restart mints a new identity each time, and its predecessor's chain
 //! stays in the store under the old one, readable and verified by `/admin/verify`
-//! ([`walk_stored_chains`]) but not resumed (a known limit, ARCHITECT 2026-10-07), and so does a
+//! ([`walk_stored_chains`]) but not resumed, and so does a
 //! process that restarts while its predecessor still refreshes the lease ([`LEASE_TTL_MS`]).
 //!
 //! ## The deployment keyset
@@ -50,7 +48,7 @@
 //! The store ABI has no compare-and-set. Its one atomic step is `redeem_plane_token`, a single-use
 //! TEST-AND-SET: exactly one caller is told it was first (the construction `oauth_as`'s store and
 //! the kernel's own claims use). So two first boots racing on an empty store never keep two
-//! keysets or two ids for one host (ARCHITECT 2026-10-07 H3 ruling):
+//! keysets or two ids for one host:
 //!
 //! * Minting the deployment keyset, and minting a host's node id, each REDEEMS a claim first
 //!   ([`MINT_CLAIM_KIND`]). Only the boot the store answers `true` mints and keeps; every other
@@ -726,8 +724,8 @@ fn write_atomically(
     path: &std::path::Path,
     bytes: &[u8],
 ) -> std::io::Result<()> {
-    busbar_kernel::durable::create_dir_all(dir)?;
-    busbar_kernel::durable::write(path, bytes)
+    crate::root::loader::durable::create_dir_all(dir)?;
+    crate::root::loader::durable::write(path, bytes)
 }
 
 /// Every node the registry names: `(host, node id)`, in key order.
@@ -790,8 +788,9 @@ pub fn keep_keyset(calls: &dyn StoreCalls, seed_hex: &str) -> Result<String, Str
 pub struct StoredWalk {
     /// The node ids whose chains were walked.
     pub chains: Vec<u64>,
-    /// What did not hold: a chain that does not verify, an audit record whose digest or link does
-    /// not hold, or whose signature does not verify under the deployment keyset.
+    /// What did not hold: a chain that does not verify, an audit record that does not decode, whose
+    /// digest or link does not hold, or whose signature does not verify under the deployment
+    /// keyset, and an unsigned one journalled after its chain's `Bootstrap`.
     pub findings: Vec<String>,
 }
 
@@ -841,16 +840,42 @@ pub fn walk_stored_chains(lane: &JournalLane, own: u64, keys: &AuditKeySet) -> S
                     continue;
                 }
             };
-            let audits: Vec<AuditRecord> = decoded
-                .iter()
-                .filter_map(|r| super::decode_audit(r).ok().flatten())
-                .collect();
+            // As the boot resumes a chain (`resume_audit`): a record that will not read back is a
+            // finding, and the first record journalled after this chain's `Bootstrap` is where
+            // its signatures start.
+            let mut audits: Vec<AuditRecord> = Vec::new();
+            let mut keyed = false;
+            let mut signed_from = None;
+            for record in &decoded {
+                keyed |= record.class == busbar_kernel_wal::RecordClass::Bootstrap;
+                match super::decode_audit(record) {
+                    Ok(Some(audit)) => {
+                        if keyed && signed_from.is_none() {
+                            signed_from = Some(audit.seq);
+                        }
+                        audits.push(audit);
+                    }
+                    Ok(None) => {}
+                    Err(why) => walk
+                        .findings
+                        .push(format!("node {node}: record {}: {why}", record.node_seq)),
+                }
+            }
             if let Err(broken) = AuditChain::verify_window(&audits) {
                 walk.findings
                     .push(format!("node {node}: audit chain: {broken:?}"));
             }
             for record in &audits {
                 let Some(key_id) = record.key_id.as_deref() else {
+                    // The signature is not in the digest: stripped, it leaves the chain whole and
+                    // only this rule sees it.
+                    if signed_from.is_some_and(|from| record.seq >= from) {
+                        walk.findings.push(format!(
+                            "node {node}: audit record {} is unsigned, sealed after the keyset \
+                             was bound",
+                            record.seq
+                        ));
+                    }
                     continue;
                 };
                 let verified = keys

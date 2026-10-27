@@ -7,8 +7,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
-    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
+    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_METADATA_ENTRY_NAMES_NO_HOST,
+    CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS,
+    CONFIG_RATE_CARD_ALL_ZERO,
 };
 use crate::plane::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
@@ -97,6 +98,13 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         &cfg.allow_metadata_hosts,
         &mut errors,
     );
+    // An entry that names no host the guard judges booted on 1.5.5 and matched nothing there. It
+    // still boots, is dropped from matching, and is named in one warning line each.
+    warn_unmappable_metadata_entries(
+        "security.blocked_metadata_hosts",
+        &cfg.blocked_metadata_hosts,
+    );
+    warn_unmappable_metadata_entries("security.allow_metadata_hosts", &cfg.allow_metadata_hosts);
 
     // The reasoning effort table drives word<->number projection at the egress seam (the
     // cross-protocol thinking carry). A zero entry would project thinking budgets below the floor
@@ -1834,8 +1842,9 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         None => errors.push(crate::config::store_required()),
         Some(store) if store.module.trim().is_empty() => {
             errors.push(format!(
-                "store.module must be non-empty; use `memory` (the compiled-in RAM store) or a \
+                "store.module must be non-empty; use `{}` (the compiled-in RAM store) or a \
                  store plugin name/alias ({} | <third-party>)",
+                crate::config::migrated_store_module(),
                 crate::config::migrate::legacy_store_text("module_examples")
             ));
         }
@@ -2099,6 +2108,71 @@ fn reject_cidr_metadata_entries(key: &str, entries: &[String], errors: &mut Vec<
     }
 }
 
+/// Warn once for every entry in a metadata host-list config key that names no host the destination
+/// guard can judge. An entry is read as a destination's host is read
+/// (`busbar_kernel_egress::trust::net::list_entry_host`: a non-ASCII entry mapped by UTS #46 to the
+/// ASCII name or address a URL client dials), so a full-width `１６９.２５４.１６９.２５４` names
+/// `169.254.169.254`; and it must then be a host the guard judges
+/// (`busbar_contract::net::judged_host`, the guard's one reading of every target and entry). An
+/// entry UTS #46 refuses, one holding a `%` outside an IPv6 zone id, or one ending in a number that
+/// is no IPv4 address a URL client reads (`1.2.3.4.5`, `１.２.３.４.５`) matches no destination.
+///
+/// 1.5.5 booted with such an entry and it matched nothing (it compared raw strings, and refused only
+/// a `/`, `reject_cidr_metadata_entries`), so the configuration still boots: the guard drops the
+/// entry from matching (`HostSet::parse`), the built-in denylist still blocks every real target, and
+/// this names the key, the entry and the reason in one warning line
+/// ([`CONFIG_METADATA_ENTRY_NAMES_NO_HOST`]). A `/` entry is left to its own 1.5.5 refusal.
+fn warn_unmappable_metadata_entries(key: &str, entries: &[String]) {
+    for entry in entries {
+        if let Some(line) = unmappable_metadata_warning(key, entry) {
+            diag_warn!(CONFIG_METADATA_ENTRY_NAMES_NO_HOST, "{line}");
+        }
+    }
+}
+
+/// The warning line for one metadata host-list entry that names no host, or `None` when it names
+/// one or is a `/` entry, which 1.5.5 refuses on its own ([`warn_unmappable_metadata_entries`]).
+fn unmappable_metadata_warning(key: &str, entry: &str) -> Option<String> {
+    if entry.contains('/') {
+        return None;
+    }
+    let (why, fix) = unmappable_metadata_entry(entry)?;
+    Some(format!(
+        "{key} entry '{entry}' maps to no host: {why}, so it matches nothing and is dropped. {fix}"
+    ))
+}
+
+/// Why a metadata host-list entry names no host the guard judges, and how to write it instead;
+/// `None` when it names one ([`warn_unmappable_metadata_entries`]).
+fn unmappable_metadata_entry(entry: &str) -> Option<(&'static str, &'static str)> {
+    let trimmed = entry.trim();
+    if busbar_kernel_egress::trust::net::list_entry_host(trimmed).is_err() {
+        return Some((
+            "UTS #46 refuses it, so it is no name a URL client would dial",
+            "Write the host in ASCII (an internationalized name as its punycode 'xn--' form), or \
+             remove it",
+        ));
+    }
+    busbar_contract::net::judged_host(trimmed).err()?;
+    let bare = trimmed.trim_start_matches('[');
+    let zone = bare
+        .find('%')
+        .is_some_and(|at| bare[..at].parse::<std::net::Ipv6Addr>().is_ok());
+    Some(if trimmed.contains('%') && !zone {
+        (
+            "it holds a '%' escape outside an IPv6 zone id, which a URL client decodes before it \
+             dials",
+            "Write the host decoded (the name or address it spells), or remove it",
+        )
+    } else {
+        (
+            "its last label reads as a number but it is no IPv4 address a URL client reads",
+            "Write an address as a dotted quad, or a name whose last label is not a number, or \
+             remove it",
+        )
+    })
+}
+
 /// The hardcoded cloud-metadata denylist entries, as human-readable strings — the single source of
 /// truth `ssrf_blocked_host` enforces, surfaced for the `--print-metadata-blocklist` CLI flag and the
 /// startup count so `main.rs` does NOT duplicate the list. The CIDR / individual literals are spelled
@@ -2239,6 +2313,10 @@ fn validate_providers_with(
             &format!("provider '{provider_name}' allow_metadata_hosts"),
             &provider_cfg.allow_metadata_hosts,
             errors,
+        );
+        warn_unmappable_metadata_entries(
+            &format!("provider '{provider_name}' allow_metadata_hosts"),
+            &provider_cfg.allow_metadata_hosts,
         );
         let allow_overrides: Vec<String> = provider_cfg
             .allow_metadata_hosts
@@ -2487,7 +2565,10 @@ fn validate_providers_with(
             }) {
                 Ok(json) => String::from_utf8(json).unwrap_or_default(),
                 Err(e) => {
-                    errors.push(format!("provider '{provider_name}' (jwt-bearer auth): {e}"));
+                    errors.push(format!(
+                        "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
+                        provider_cfg.api_key.describe()
+                    ));
                     String::new()
                 }
             };

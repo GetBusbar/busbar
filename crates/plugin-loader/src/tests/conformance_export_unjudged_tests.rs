@@ -104,18 +104,20 @@ impl TestDoor for FaultingDoor {
         if !have.is_null() {
             return have;
         }
+        let real: Door = *crate::export_door::tests::SCRAPE_DOOR();
         // SAFETY: the real sink's door and its export table are `'static`.
-        let real: Door = unsafe { crate::export_door::tests::SCRAPE_DOOR().read_unaligned() };
-        let ops: Ops = unsafe { real.ops.cast::<Ops>().read_unaligned() };
+        let ops: Ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         let ops: &'static Ops = Box::leak(Box::new(Ops {
             status: Some(test_op::<StatusFaults>),
             check: Some(test_op::<CheckFaults>),
             serve: Some(test_op::<ServeFaults>),
             ..ops
         }));
-        let door = Box::into_raw(Box::new(Door {
-            ops: std::ptr::from_ref(ops).cast(),
-            ..real
+        let door = Box::into_raw(Box::new(unsafe {
+            Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+                ops: std::ptr::from_ref(ops).cast(),
+                ..real.parts()
+            })
         }));
         SLOT.store(door, Ordering::SeqCst);
         door
@@ -124,7 +126,7 @@ impl TestDoor for FaultingDoor {
 
 #[test]
 fn red_a_fault_answers_garbage_and_the_script_reads_none_of_it() {
-    let s = Subject::new(test_door::<FaultingDoor>, "unused", "{}");
+    let s = Subject::of_raw(test_door::<FaultingDoor>, "unused", "{}");
     let d = dispatcher();
     let p = load::<Export>(&s, Leg::Linked, s.bind(&d, "export")).expect("the restated door loads");
     let opened = open(&p, br#"{ "buffer_seconds": 60 }"#);

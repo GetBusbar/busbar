@@ -7,8 +7,8 @@
 //
 // The protocol, routing, and plane-specific behavior this binary boots are each owned by their own
 // crate (the engine core and the individual plane crates) and are not this file's concern — see the
-// linked crates' own docs and the README for what a running deployment answers on the wire and the
-// `--help` output above for the CLI surface this binary exposes.
+// linked crates' own docs and the README for what a running deployment answers on the wire, and
+// `root::cli` (what `busbar --help` renders) for the CLI surface this binary exposes.
 //
 // See `register_protocols`/`register_planes`/`register_diagnostics` below
 // for the composition root's one write into each axis: each linked crate contributes its own
@@ -105,8 +105,10 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
     args.any(|a| a == "--safe-mode")
 }
 
-/// Whether a flag a linked plane declares was passed (its `Flags:` rows, `root::cli::help_rows`):
-/// boot everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
+/// Whether a flag a plane declares was passed (its `Flags:` rows, `root::cli::help_rows`), the plane
+/// compiled in or dropped into `plugins.dir` alike (BUSBAR-1.6.0.md l.2179, Part 2 #2: the dropped-in
+/// planes are discovered by `register_planes`, before anything reads the command line): boot
+/// everything, bind NOTHING, and serve the plane claiming the line carrier on the process's own
 /// stdin/stdout (see `root::serve::lines`). The root names no flag of its own here: the plane states
 /// its spelling, and the root reads it off the plane's declared rows. A scanner like
 /// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
@@ -123,8 +125,9 @@ fn line_serve_requested(
     args.any(|a| root::cli::is_plane_flag(planes, &a))
 }
 
-/// Cap on `advanced.worker_threads`/`TOKIO_WORKER_THREADS` (see the `.min(MAX_WORKER_THREADS)` call in
-/// `main()` for why this exists).
+/// Cap on the resolved data-plane worker count ([`resolve_worker_threads`] applies it to every
+/// source): each worker is an OS thread with its own runtime, listener and allocator arena, so an
+/// operator typo (`worker_threads: 10000`) is held to a count a host can carry.
 const MAX_WORKER_THREADS: usize = 128;
 
 /// Resolve a worker-thread-count env var, warning on an EXPLICITLY-SET but invalid value rather than
@@ -285,6 +288,9 @@ fn register_planes() {
     root::legacy::install();
     // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
     // auth axis, before anything resolves one.
+    // THE DOOR-ROOT ROWS FIRST (status row 195): each crate's door admitted by the loader and its
+    // Statement agreeing with its row, or the boot is refused (exit 2) before any row registers.
+    root::door_root::check_door_roots(LINKED.door_roots);
     root::linked::register_stores(&LINKED);
     busbar_kernel::preflight::install_linked_auth(
         LINKED.auths,
@@ -371,6 +377,10 @@ fn main() {
     // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
+    // A linked transport row logs to its own plugin log file under the configured `plugins.logs`,
+    // read just above as `plugins.dir` was scanned (`root::boot::dropped_from_config`) and handed
+    // to the transport doors before any linked row binds.
+    root::doors::install_plugin_logs(root::boot::plugin_logs());
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
@@ -382,12 +392,6 @@ fn main() {
     // is built from has been read. It runs in `run()`, off the resolved limits, still before any
     // listener is bound. Every axis above is installed by then, which is the ordering the seal
     // needed from this slot in the first place.
-    // THE ROOT-BOUND SEAMS the linked entries drive, each bound once here beside the plane axis and
-    // only when some entry drives it: the parse-time section list a cross-plane hook refusal reads
-    // (after the plane axis, before the CLI flags read `--validate`), and the envelope a
-    // self-enveloping admin verb builds its own reply through. A build whose entries drive none of
-    // them binds none.
-    root::linked::register_seams();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
     if let Some(code) = root::cli::handle_cli_flags() {
@@ -451,11 +455,9 @@ fn main() {
         });
     }
     // Worker-thread count. `advanced.worker_threads` in config.yaml is the operator override; the
-    // DEFAULT is one worker per available core (`available_parallelism`, which respects CPU affinity and
-    // cgroup cpuset — but NOT the CFS bandwidth quota `cpu.max`, which it cannot see). So on a
-    // quota-limited pod (e.g. 2 CPUs of quota on a 64-core node) this defaults to the NODE's core count,
-    // oversubscribing the quota; such deployments should pin `advanced.worker_threads` to their CPU
-    // limit. Uncapped-by-default is what lets throughput scale with cores: v1.3.1–1.3.3 capped the pool
+    // DEFAULT is one worker per available core (`available_parallelism`, which respects CPU affinity,
+    // the cgroup cpuset and, on Linux, the cgroup CPU quota). Uncapped-by-default is what lets
+    // throughput scale with cores: v1.3.1–1.3.3 capped the pool
     // at `min(cores, 4)`, which pinned the data plane to ~4 cores and made throughput plateau no matter
     // how big the box (v1.3.0 itself was uncapped via `#[tokio::main]`; 1.4.0 restores that default
     // explicitly). The request path is CPU-bound on JSON translate, so it genuinely uses the cores.
@@ -469,7 +471,7 @@ fn main() {
     // the normal default path). `TOKIO_WORKER_THREADS` is read as a back-compat fallback so an operator
     // who pinned it on 1.3.0 keeps the same pool size. `eprintln!` because this runs
     // before the tracing subscriber is installed.
-    // See the `.min(MAX_WORKER_THREADS)` call below for why this exists.
+    // The resolved count is capped at [`MAX_WORKER_THREADS`] (see its doc for why).
     // `advanced.worker_threads` in config.yaml is the home for this knob. The deprecated
     // `BUSBAR_WORKER_THREADS` env var still works (deprecation-warned when it parses) and wins when
     // set, so an existing pin is honored across the upgrade; else config.yaml; else the standard
@@ -581,7 +583,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }
 
     // The `advanced.response_headers:` toggles (BOTH default false), read here, at a BOOT-ONCE
-    // spot: `server_timing` is baked into router middleware state below (`build_split_routers_with_limits`) and `route_policy` seeds a
+    // spot: `server_timing` is baked into router middleware state below (`build_split_routers_serving_doors`) and `route_policy` seeds a
     // process-wide `OnceLock` (`proxy::configure_route_policy_headers`) neither of which a later
     // config apply rebuilds — a live `PUT` is stored but restart-to-apply (see `reload_to_apply`).
     let response_headers_cfg = deploy.advanced.response_headers.clone();
@@ -661,11 +663,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
     // THE DESTINATION GUARD (OWNER ruling DESTINATION GUARD): ONE judge for every outbound
-    // connection, built once here, before anything dials: the kernel's `dest.judge` and its own
-    // clients ask it (installed below), and the connector dials by it. Its metadata lists are
-    // re-published at every config commit, this boot's own build included.
+    // connection, built once here, before anything dials: the kernel's `dest.judge` asks it
+    // (composed below), and the connector dials by it. Its metadata lists are re-published at
+    // every config commit, this boot's own build included, through the root's rules that hold it.
     let dest = root::connector::dest_judge(&cfg);
-    root::connector::install_egress_trust(dest.clone());
+    let commit_guard: Arc<dyn busbar_kernel::host_services::DestJudge> = dest.clone();
     // THE SERVE PATH'S ONE COMPOSITION: the kernel's host services go into the dispatcher built at
     // boot, before any plugin is bound (`root::serve`).
     // `records.secret` reads the App's governance through its swap handle, which exists once the App
@@ -804,8 +806,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
     // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
     // planes name once the planes are composed (below), so an apply carrying one the boot would
-    // refuse is refused, its running generation untouched.
-    let root_rules = Arc::new(root::door_steps::Rules::default());
+    // refuse is refused, its running generation untouched. They hold the destination guard, which
+    // hears every configuration commit through them.
+    let root_rules = Arc::new(root::door_steps::Rules::hearing(commit_guard));
+    // The plane doors the boot's configuration does not use, so the boot never loads them (Law 7):
+    // a running process refuses a first section of one (u67 BLOCK 2 item 2).
+    root_rules.hold_unloaded(root::door_steps::unloaded_doors());
 
     // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
     // kept in that store, and a store that cannot keep it is refused by name.
@@ -1031,7 +1037,6 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // Every config apply refreshes each served door plane onto the generation it installed
     // (the ARCHITECT ruling on a served door plane's apply), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
-    #[cfg(linked_section_pools)]
     let door_post = served.post.clone();
     // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with a plane's line-serve flag passed and a
     // served plane claiming the line carrier, the served planes are kept for the process's own
@@ -1092,9 +1097,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }));
     // A CONFIG APPLY REFRESHES THE PLANE SERVING THE `pools` MAP onto the new generation
     // (`DoorAppliers::refresh_models`): the swapped-in App's projected configuration, its lane
-    // table and its secret seam. A build with no node composes no door plane's money, so it has
-    // none to refresh.
-    #[cfg(linked_section_pools)]
+    // table and its secret seam. Which plane that is, is read at run time off each served plane's
+    // declared section, so a plane dropped into `plugins.dir` is refreshed exactly as the same plane
+    // compiled in is (BUSBAR-1.6.0.md l.2179: compiled in or dropped in, one loading path). No
+    // door plane served: no posting site, nothing to refresh.
     if let Some(post) = door_post {
         let (auths, live) = (
             std::sync::Arc::clone(&door_auths),
@@ -1327,13 +1333,17 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // transport. With none there is nothing to serve on stdin/stdout, and `serve_lines` refuses:
     // nonzero exit, the sentence on stderr, no listener bound.
     if let Some(served) = line_served {
+        // The signal is handed to the serve, never raced against it: dropping the serve on the
+        // signal would end the units in flight unanswered and unsettled. The serve stops reading,
+        // drains them within the grace, and returns.
         let stop = recv_shutdown(line_shutdown.unwrap_or_else(|| shutdown_tx.subscribe()));
-        let code = tokio::select! {
-            code = root::serve::lines::serve_lines(served, app_handle.clone(), || {
-                root::kernel::ROOT_CARD.pin()
-            }) => code,
-            () = stop => 0,
-        };
+        let code = root::serve::lines::serve_lines(
+            served,
+            app_handle.clone(),
+            || root::kernel::ROOT_CARD.pin(),
+            stop,
+        )
+        .await;
         let gov = app_handle.load().governance.clone();
         root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
         std::process::exit(code);
@@ -1599,7 +1609,6 @@ fn serve_thread_per_core(
                     // pre-TLS so the balancer can place it on another worker; the TLS handshake
                     // runs after placement, in the serving loop (pinning at accept would change
                     // 1.5.5's per-core placement).
-                    // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md).
                     let via = crate::root::connector::the().address_via();
                     let listener = Listening::bind_stream(via.as_ref(), &bind_at, ROOT_BIND_LIMITS)
                         .unwrap_or_else(|e| {
@@ -1713,8 +1722,8 @@ async fn serve_listener(
 
 /// Resolve when the process receives a shutdown signal: SIGINT/ctrl_c everywhere, plus SIGTERM on
 /// unix and CTRL_CLOSE/CTRL_SHUTDOWN on Windows (the events an orderly non-interactive stop
-/// actually delivers on each platform). Used as
-/// the `axum::serve(...).with_graceful_shutdown` future. Never panics: a signal-handler
+/// actually delivers on each platform). Awaited once, by the task that fans the stop out on the
+/// shutdown broadcast every listener and the line serve subscribe to. Never panics: a signal-handler
 /// registration error is logged and the corresponding branch parks forever, so the other branch
 /// still triggers shutdown and a registration failure can never abort a worker.
 async fn shutdown_signal() {

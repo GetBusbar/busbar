@@ -140,7 +140,7 @@ pub fn run<U: Units>(
     if let Ended::Settled { end, requests, fee } = &ended {
         ledger.post(RecordingRow {
             principal: principal.to_string(),
-            // What the posting settled, not a second count beside it (TODO L1689).
+            // What the posting settled, not a second count beside it.
             amount: end.posted().map_or(0, |posted| posted.settled()),
             requests: *requests,
             fee: *fee,

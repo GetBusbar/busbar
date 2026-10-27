@@ -27,8 +27,9 @@
 
 use core::mem::size_of;
 
-use crate::abi::mechanism::call::AbiStr;
+use crate::abi::mechanism::call::{AbiStr, Op};
 use crate::abi::mechanism::door::{Door, Statement};
+use crate::abi::mechanism::lifecycle::OpsHead;
 use crate::abi::mechanism::{KindCode, DOOR_MAGIC};
 use crate::abi::sdk::door::{AbiIn, AbiOut, KindOps, MacroDoor};
 
@@ -44,8 +45,11 @@ mod sealed {
     }
 }
 
+pub mod chip;
 pub mod fake;
+mod pairs;
 pub mod reply;
+pub mod test_in;
 
 // ── THE ALL-ZERO VALUE ──────────────────────────────────────────────────────────────────────────
 
@@ -340,6 +344,142 @@ pub struct DoorView {
     statement: &'static Statement,
 }
 
+/// ONE SLOT OF A DOOR THE CONTRACT'S MACRO BUILT (status row 159): what [`DoorView::op`] answers
+/// and [`reply::call_in`] enters. It names the door it is a slot of and which slot, and is made
+/// nowhere else, so a test enters only a slot a door states, never a raw `Op`.
+#[derive(Debug, Clone, Copy)]
+pub struct ViewOp {
+    op: Op,
+    door: &'static Door,
+    index: u32,
+    /// The type of the slot's own `in`, from its kind's slot table (`None` for a table no kind
+    /// states: a host's own test double).
+    takes: Option<core::any::TypeId>,
+}
+
+/// THE `in` OF ONE SLOT, read off the kinds' own slot table (the `KindSlot` impls each kind's
+/// `slot_structs!` states, status row 194): `Probe<C, N>` answers `C`'s slot-`N` `in` where `C`
+/// states one (`Has`), and nothing where it does not (`Lacks`, reached only through one more
+/// autoderef). Each table is named concretely below, so the choice is made per table and slot.
+struct Probe<C, const N: u32>(core::marker::PhantomData<C>);
+
+trait Has {
+    fn in_type(&self) -> Option<core::any::TypeId>;
+}
+
+impl<C: crate::abi::sdk::door::KindSlot<N>, const N: u32> Has for &Probe<C, N> {
+    fn in_type(&self) -> Option<core::any::TypeId> {
+        Some(core::any::TypeId::of::<
+            <C as crate::abi::sdk::door::KindSlot<N>>::In,
+        >())
+    }
+}
+
+trait Lacks {
+    fn in_type(&self) -> Option<core::any::TypeId>;
+}
+
+impl<C, const N: u32> Lacks for Probe<C, N> {
+    fn in_type(&self) -> Option<core::any::TypeId> {
+        None
+    }
+}
+
+/// Slot `index`'s `in` in the table `$c` names (slots 0 to 95; no kind states more).
+macro_rules! slot_in_of {
+    ($c:ty, $index:expr; $($n:literal),+) => {
+        'slot: {
+            $(
+                if $index == $n {
+                    break 'slot (&&Probe::<$c, $n>(core::marker::PhantomData)).in_type();
+                }
+            )+
+            None
+        }
+    };
+}
+
+/// The `in` of slot `index` in table `C`, as `C`'s own slot table states it. (`&&Probe` is
+/// the probe: the borrow is how the slot table is consulted.)
+#[allow(clippy::needless_borrow)]
+fn table_in<C: 'static>(index: u32) -> Option<core::any::TypeId> {
+    use core::any::TypeId;
+    macro_rules! tables {
+        ($($t:ty),+) => {
+            $(
+                if TypeId::of::<C>() == TypeId::of::<$t>() {
+                    return slot_in_of!($t, index; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95);
+                }
+            )+
+        };
+    }
+    tables!(
+        crate::abi::sdk::door::Lifecycle,
+        crate::abi::plane::PlaneLifecycle,
+        crate::abi::store::Ops,
+        crate::abi::secret::Ops,
+        crate::abi::auth::Ops,
+        crate::abi::hook::Ops,
+        crate::abi::export::Ops,
+        crate::abi::plane::Ops,
+        crate::abi::transport::Ops
+    );
+    None
+}
+
+// THE PROBE COVERS EVERY SLOT: no kind's table holds more slots than `slot_in_of!` reads (0 to 95).
+// A kind that outgrows it fails to compile here, never skips its check.
+const _: () = {
+    use crate::abi::sdk::door::slot_count;
+    assert!(slot_count::<crate::abi::store::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::secret::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::auth::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::hook::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::export::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::plane::Ops>() <= 96);
+    assert!(slot_count::<crate::abi::transport::Ops>() <= 96);
+};
+
+/// The `in` type of slot `index` of a `T` door: its lifecycle's for a lifecycle slot, its kind's
+/// own otherwise; `None` for a table no kind states (a host's own test double).
+fn slot_in_type<T: KindOps>(index: u32) -> Option<core::any::TypeId> {
+    if index < crate::abi::mechanism::lifecycle::LIFECYCLE_SLOTS {
+        table_in::<T::Lifecycle>(index)
+    } else {
+        table_in::<T>(index)
+    }
+}
+
+impl ViewOp {
+    /// The slot's index in its kind's table (the mechanism's SLOT LAYOUT).
+    #[must_use]
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// The slot and the door it is a slot of, for [`reply`] alone.
+    pub(crate) fn parts(self) -> (Op, &'static Door, u32) {
+        (self.op, self.door, self.index)
+    }
+
+    /// The slot is entered over its own `in` type, `I`, and no other (status row 194): an `in` of
+    /// another slot would hand it fields read as pointers it never was lent.
+    ///
+    /// # Panics
+    ///
+    /// `I` is not the slot's `in`.
+    pub(crate) fn check_in<I: 'static>(self) {
+        if let Some(takes) = self.takes {
+            assert!(
+                takes == core::any::TypeId::of::<I>(),
+                "reply::call_in: the `in` is not slot {}'s own `in` ({})",
+                self.index,
+                core::any::type_name::<I>()
+            );
+        }
+    }
+}
+
 // THE ONE WAY IN, pinned at compile time on every build of this module (this crate's own tests
 // included, with or without the feature): `DoorView::of` takes a `MacroDoor` and nothing else. A
 // change of its parameter to any door function breaks this line before any test runs.
@@ -350,19 +490,10 @@ impl DoorView {
     ///
     /// # Panics
     ///
-    /// The function answers NULL or a misaligned pointer, a door without [`DOOR_MAGIC`], or a door
-    /// with no Statement.
+    /// A door without [`DOOR_MAGIC`], or a door with no Statement.
     #[must_use]
     pub fn of(door: MacroDoor) -> Self {
-        let d = (door.door_fn())();
-        assert!(!d.is_null(), "the door function answered NULL");
-        assert!(
-            d.is_aligned(),
-            "the door function answered a misaligned door"
-        );
-        // SAFETY: a non-NULL, aligned door the door macro's `door` answered: `'static`, a `const`
-        // item the macro laid out.
-        let door: &'static Door = unsafe { &*d };
+        let door: &'static Door = (door.door_fn())();
         assert_eq!(
             door.magic, DOOR_MAGIC,
             "not a busbar door: its magic is wrong"
@@ -460,6 +591,39 @@ impl DoorView {
         // SAFETY: the door is of `T`'s kind, so its tail is the `#[repr(C)]` `T` that kind states
         // (the sealed `KindTail` list), and its head says the plugin wrote all of it.
         unsafe { &*tail }
+    }
+
+    /// ONE SLOT of the door's table, as [`reply::call_in`] enters it: `pick` names the slot
+    /// (`|t| &t.head.open`, `|t| &t.resolve`), and the handle remembers which door and which slot
+    /// it is. `None` when the door leaves the slot absent. A [`ViewOp`] is made here and nowhere
+    /// else (status row 159).
+    ///
+    /// # Panics
+    ///
+    /// As [`DoorView::ops`], or `pick` answers a reference that is not a slot of the table.
+    #[must_use]
+    pub fn op<T: KindOps>(
+        &self,
+        pick: impl FnOnce(&'static T) -> &'static Option<Op>,
+    ) -> Option<ViewOp> {
+        let table = self.ops::<T>();
+        let slot = pick(table);
+        let base = core::ptr::from_ref(table) as usize;
+        let at = core::ptr::from_ref(slot) as usize;
+        let first = base + core::mem::offset_of!(OpsHead, validate);
+        assert!(
+            at >= first
+                && at + size_of::<Option<Op>>() <= base + size_of::<T>()
+                && (at - first).is_multiple_of(size_of::<Option<Op>>()),
+            "DoorView::op: the picked reference is not a slot of the door's table"
+        );
+        let index = crate::abi::sdk::door::slot_at(at - base);
+        (*slot).map(|op| ViewOp {
+            op,
+            door: self.door,
+            index,
+            takes: slot_in_type::<T>(index),
+        })
     }
 
     /// The door's ops table, as the kind's `T`.

@@ -10,6 +10,7 @@
 use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::call::Outcome;
+use busbar_contract::abi::mechanism::ticket::Ticket;
 
 use super::kinds::auth::Auth;
 use super::{Dispatcher, Plugin};
@@ -18,10 +19,15 @@ use super::{Dispatcher, Plugin};
 /// it answers, on the dispatcher's clock; it ends when an answer names `0`, is not READY or
 /// PENDING, or no driver ticket can be minted. It waits on the runtime's timer and holds no
 /// `max_inflight` slot; what pends inside a tick goes on through `drive`, which its wakes call.
+///
+/// The driver ticket is RECYCLED when the schedule ends, and when its task is aborted (the
+/// instance retired or replaced): the slab entry holds the instance, so a ticket never recycled
+/// would keep every reloaded auth instance, and its library, alive for the life of the process.
 pub async fn ticks(plugin: &Plugin<Auth>, dispatcher: &Dispatcher, worker: u32) {
     let Some(driver) = dispatcher.driver(plugin, worker) else {
         return;
     };
+    let _recycled = Recycled { dispatcher, driver };
     let mut at = 0;
     loop {
         let now = super::now_ns();
@@ -33,6 +39,19 @@ pub async fn ticks(plugin: &Plugin<Auth>, dispatcher: &Dispatcher, worker: u32) 
             (Outcome::Ready | Outcome::Pending, Some(next)) if next != 0 => at = next,
             _ => return,
         }
+    }
+}
+
+/// The schedule's driver ticket, recycled when the schedule's future is dropped: on its return,
+/// and on an abort, which drops the future where it awaits.
+struct Recycled<'a> {
+    dispatcher: &'a Dispatcher,
+    driver: Ticket,
+}
+
+impl Drop for Recycled<'_> {
+    fn drop(&mut self) {
+        self.dispatcher.recycle(self.driver);
     }
 }
 

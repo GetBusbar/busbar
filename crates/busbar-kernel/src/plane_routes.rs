@@ -241,6 +241,11 @@ pub struct PlaneReqCtx {
     /// The record of the TICKET the gate spent admitting the caller (row 132), for the unit's
     /// `ticket.take`; `None` when a key (or nothing) admitted it. A plane handler never reads it.
     pub ticket: Option<Vec<u8>>,
+    /// The head fields the auth gate consumed (stripped from [`Self::headers`]), each by its
+    /// lower-case name with its value's scheme word: the value up to its first space, empty when it
+    /// has none. The word names how a credential is spelled, never the credential; an entry fact
+    /// reads a consumed field by it (status row 173).
+    pub consumed_fields: Vec<(String, String)>,
     /// The live engine handle, type-erased. The core adapter erases the router's `Arc<AppHandle>`
     /// state here; a plane still coupled to the engine downcasts it (a transitional reach that the
     /// per-subsystem App-sever removes), but the SEAM names no core type.

@@ -75,9 +75,10 @@ pub mod facts {
 /// A transport in one of these names the constant, in `TransportMeta::STATUS_NAMESPACE`. A transport
 /// with a numbering of its own names it whatever it likes, and none of this applies.
 pub mod status_ns {
-    /// HTTP's status codes, as the `http` (and SSE-over-HTTP) transports read them off a response.
+    /// The status-line numbering: three-digit codes, as the request-response transports (and the
+    /// event streams composed over them) read them off a response.
     pub const HTTP: &str = "http";
-    /// `grpc-status`, as the gRPC transport reads it off an answer's trailer.
+    /// The trailer numbering, as a call-per-path transport reads it off an answer's trailer.
     pub const GRPC: &str = "grpc";
 
     /// Every reserved numbering, for the readers that walk them.

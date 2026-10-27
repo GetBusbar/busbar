@@ -406,6 +406,16 @@ impl Instance {
 /// as [`quarantine_crossing`] quarantines a crossing's (a forged ticket generation is judged on the
 /// worker, after the wake that carried it returned).
 pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
+    quarantine(
+        wake,
+        "a plugin woke a ticket generation the host never minted; the instance is quarantined",
+    );
+}
+
+/// The instance whose handle `wake` is, quarantined for the plugin fault `why`, as
+/// [`quarantine_crossing`] quarantines a crossing's: faulted, never called again on any worker, its
+/// connections gone, its handle naming nothing any more.
+pub(crate) fn quarantine(wake: &'static InstanceWake, why: &'static str) {
     wake.revoked.store(true, Ordering::Release);
     let Some(inst) = wake.instance.get().and_then(std::sync::Weak::upgrade) else {
         return;
@@ -414,10 +424,7 @@ pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
     if let Some((id, table)) = inst.wake.conn.get() {
         super::conn_services::purge(*id, table);
     }
-    tracing::warn!(
-        plugin = %inst.name,
-        "a plugin woke a ticket generation the host never minted; the instance is quarantined"
-    );
+    tracing::warn!(plugin = %inst.name, "{why}");
 }
 
 /// One family's shape, copied from the Statement: its kind and its label count.
@@ -485,6 +492,9 @@ pub(crate) struct Instance {
     inflight: AtomicU32,
     /// Ops in flight that a reload drain waits for: every op but WriteBehind.
     pub(crate) drainable: AtomicU32,
+    /// Ops of ADMITTED UNITS in flight (a plane unit's `on_piece` and `serve`): they hold no
+    /// `max_inflight` unit, and `close` is refused while any is in flight (THE DESIGN §11.13 M1).
+    pub(crate) unit_ops: AtomicU32,
     pub(crate) cap: u32,
     lifecycle_busy: AtomicBool,
     pub(crate) timeout: Outcome,
@@ -495,7 +505,7 @@ pub(crate) struct Instance {
     /// [`Kind::op_name`] of the bound kind.
     op_name: fn(u32) -> &'static str,
     /// [`Kind::unit_of`] of the bound kind.
-    unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
+    pub(crate) unit_of: fn(u32, *const InHead, usize) -> Option<u64>,
     /// [`Kind::cancel_frame`] of the bound kind.
     pub(crate) cancel_frame: fn() -> Box<dyn super::CancelFrame>,
     /// [`Kind::context`] of the bound kind, built from the Statement at bind.
@@ -645,16 +655,31 @@ impl Instance {
     /// Take the `max_inflight` units op `s` needs: one, or for `close` ALL of them and only when
     /// no other op is in flight (one atomic step). `None` over the cap, or `close` with ops in
     /// flight.
+    ///
+    /// `close` is refused too while an admitted unit's op is in flight ([`Instance::unit_ops`];
+    /// THE DESIGN §11.13 M1: "`close` is refused while units are in flight"). The count is read
+    /// again once the units are taken: a unit op counted before that is seen and the units go
+    /// back; one counted after it was submitted after `close` was admitted, and meets the closing
+    /// instance's own refusal.
     pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
         let close = s == slot::CLOSE;
+        if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
+            return None;
+        }
         let want = if close { self.cap } else { 1 };
-        self.inflight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+        let taken = self
+            .inflight
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 let fits = if close { n == 0 } else { n < self.cap };
                 fits.then_some(n + want)
             })
             .ok()
-            .map(|_| want)
+            .map(|_| want)?;
+        if close && self.unit_ops.load(Ordering::SeqCst) != 0 {
+            self.release(taken);
+            return None;
+        }
+        Some(taken)
     }
 
     pub(crate) fn release(&self, units: u32) {
@@ -919,6 +944,30 @@ impl Instance {
         crossed
     }
 
+    /// `cancel` of the op on `ticket` (deadline class `class`, serving `unit`), which the host
+    /// abandoned with no worker to resume it on (a replaced worker's orphan): a TICKET-LESS crossing,
+    /// listed in [`Instance::calls`] so the watchdog judges one that hangs, made on a permanent FFI
+    /// worker ([`crate::ffi_thread`]) since its caller's thread retires. The kind's own frame, as
+    /// the worker's `cancel` sends it.
+    pub(crate) fn cancel_abandoned(
+        &self,
+        ticket: Ticket,
+        class: DeadlineClass,
+        unit: Option<u64>,
+    ) -> Outcome {
+        let mut frame = (self.cancel_frame)();
+        frame.name_unit(unit.unwrap_or(0));
+        let (input, out, out_size) = frame.prepare(ticket, class as u8);
+        let id = self.next_call.fetch_add(1, Ordering::Relaxed);
+        self.lock_calls().push((id, Instant::now(), slot::CANCEL));
+        // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
+        let crossed = crate::ffi_thread::on_plugin_thread(|| unsafe {
+            self.cross(slot::CANCEL, input, out, out_size)
+        });
+        self.lock_calls().retain(|c| c.0 != id);
+        crossed.map_or(Outcome::Fault, |c| c.outcome)
+    }
+
     /// CLOSE THE LIVE BOX OF AN `open` THE HOST JUDGED FAULT: the plugin answered READY or PENDING,
     /// so it freed nothing and holds a live box, but the op is over (no RESUME will come). The host
     /// sends it `close` (the `close` a half-open box admits), so nothing dangles and nothing leaks.
@@ -1046,9 +1095,10 @@ impl Instance {
         }
         // SAFETY: the host wrote `in.size` itself.
         let in_size = unsafe { (*input).size } as usize;
-        // The unit this crossing serves, for the host services it calls.
+        // The unit this crossing serves, and the ticket it carries, for the host services it calls.
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
+        let _ticket = super::services::crossing(ticket);
         // From here an `open` that does not end READY or PENDING, FAULT included, leaves no
         // instance published: the SDK frees a half-open box on any answer but READY/PENDING, so a
         // pointer kept to it would hand a later crossing freed memory; a box the plugin still
@@ -1074,6 +1124,7 @@ impl Instance {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
+                let _ticket = super::services::crossing(ticket);
                 with_crossing(Some(self), || {
                     enter_lifecycle((self.op_name)(s), op, instance, input, output)
                 })
@@ -1341,18 +1392,18 @@ pub(crate) fn judge(raw: RawOutcome, head: &OutHead, ticket: Ticket, out_size: u
     }
 }
 
-/// `len` entries at `p`, or `None` for NULL-with-length or an over-long array.
+/// `len` entries at `p`, or `None` for NULL-with-length, an over-long array, or one misaligned for
+/// `T`: formed only through the one capped, validated reader ([`validate::lent`], THE DESIGN
+/// §11.13 M1).
 ///
 /// # Safety
-/// A non-NULL `p` points to `len` live `T`s.
+/// A range that passes the checks names `len` live `T`s.
 unsafe fn array<'a, T>(p: *const T, len: usize) -> Option<&'a [T]> {
-    match (p.is_null(), len) {
-        (_, 0) => Some(&[]),
-        (true, _) => None,
-        (false, n) if n > MAX_ENVELOPE_ENTRIES => None,
-        // SAFETY: the caller's contract.
-        (false, n) => Some(unsafe { std::slice::from_raw_parts(p, n) }),
+    if len > MAX_ENVELOPE_ENTRIES {
+        return None;
     }
+    // SAFETY: the caller's contract.
+    unsafe { validate::lent(p, len) }
 }
 
 /// `st`'s kind tail as this host's `T`, by THE KIND TAIL GROWTH RULE
@@ -1610,6 +1661,7 @@ impl<K: Kind> Plugin<K> {
                 next_call: AtomicU64::new(0),
                 inflight: AtomicU32::new(0),
                 drainable: AtomicU32::new(0),
+                unit_ops: AtomicU32::new(0),
                 cap: st.max_inflight.clamp(1, bind.max_inflight_cap.max(1)),
                 lifecycle_busy: AtomicBool::new(false),
                 timeout: K::TIMEOUT,
@@ -1767,7 +1819,23 @@ impl<K: Kind> Plugin<K> {
         s: u32,
         frame: &mut Frame<I, O>,
     ) -> Called {
-        self.call_ticketed(s, frame, ticket, resume)
+        // A NEW op on the ticket starts with nothing kept; a resume, or the re-call a short answer
+        // earns, reads what its op kept (`super::inline`, THE DESIGN §11.12).
+        let inline = self
+            .inner
+            .wake
+            .route
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .and_then(|route| route.inline());
+        if let Some(tickets) = &inline {
+            tickets.starting(ticket, self.inner.instance, s, resume);
+        }
+        let called = self.call_ticketed(s, frame, ticket, resume);
+        if let Some(tickets) = &inline {
+            tickets.ended(ticket, s, called.recall.is_some());
+        }
+        called
     }
 
     fn instance_id(&self) -> usize {
@@ -1972,3 +2040,7 @@ pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option
 #[cfg(test)]
 #[path = "../tests/instance_id_tests.rs"]
 mod instance_id_tests;
+
+#[cfg(test)]
+#[path = "../tests/envelope_array_tests.rs"]
+mod envelope_array_tests;

@@ -557,14 +557,14 @@
         "type": "object"
       },
       "AuditEntry": {
-        "description": "One admin audit record. `outcome` is a stable token tooling can branch on. The record is\nHASH-CHAINED for tamper-EVIDENCE: `hash = sha256(prev_hash | seq | ts | action | resource |\noutcome | principal)` FRAMED UNDER THIS RECORD'S OWN `scheme` (see [`AuditEntry::scheme`]), and\n`prev_hash` is the preceding entry's `hash`. Recomputing the chain detects any\naltered/reordered/deleted entry (detection, not prevention; a compromised host can still rewrite\nthe whole chain; prevention is shipping the log off-box to a SIEM).",
+        "description": "One admin audit record. `outcome` is a stable token tooling can branch on. The record is\nHASH-CHAINED for tamper-EVIDENCE: `hash` is the SHA-256 of bytes fixed by this record's own\n`scheme` (the recipe is on `hash`), and `prev_hash` is the preceding entry's `hash`. Recomputing\nthe chain detects any altered/reordered/deleted entry (detection, not prevention; a compromised\nhost can still rewrite the whole chain; prevention is shipping the log off-box to a SIEM).",
         "properties": {
           "action": {
             "description": "The action, `noun.verb` (e.g. `hook.register`, `hook.delete`).",
             "type": "string"
           },
           "hash": {
-            "description": "`sha256(prev_hash | seq | ts | action | resource | outcome | principal)`: the tamper-evidence digest.",
+            "description": "The tamper-evidence digest: lowercase hex SHA-256 over the bytes this record's `scheme` names.\nIntegers are written in decimal ASCII and strings as their UTF-8 bytes unless stated.\n\nScheme 1: `prev_hash|seq|ts|action|resource|outcome|principal`, the fields joined by `|`\n(1.5.5's formula).\n\nScheme 2: `prev_hash|seq` as in scheme 1, then one zero byte (0x00), then `ts`, `action`,\n`resource`, `outcome` and `principal`, each as its byte length (8 bytes, big-endian) followed\nby its bytes; `ts` is its 8-byte big-endian value, so its length is 8.",
             "type": "string"
           },
           "outcome": {
@@ -585,7 +585,7 @@
           },
           "scheme": {
             "default": 1,
-            "description": "WHICH FRAMING RULES this entry was sealed under: [`AUDIT_SCHEME_PIPE`] (1) or\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] (2) — see `crate::audit::Framing`.\n\n`#[serde(default)]` to [`AUDIT_SCHEME_PIPE`]: an entry persisted before this field existed\nsimply lacks the key, and an absent tag means exactly scheme 1, because that is what every\nsuch row actually is — no migration of stored data is required. `link` always writes\n[`AUDIT_SCHEME_LENGTH_PREFIXED`] on a FRESH entry; nothing mints scheme 1 going forward. A\nverifier reads this straight off the record (`ChainedRecord::framing`), so a chain mixing\nboth eras checks each entry under the rules it actually used.",
+            "description": "WHICH RECIPE `hash` was sealed under: 1 (the 1.5.5 pipe join) or 2 (length-prefixed fields);\nboth are stated on `hash`. A record is sealed under 1 when its `action`, `resource` and\n`outcome` carry no `|`, and under 2 otherwise, so its fields always read back exactly. A\nrecord without this field is scheme 1. A verifier checks each record under its own scheme.",
             "format": "uint8",
             "maximum": 255,
             "minimum": 0,

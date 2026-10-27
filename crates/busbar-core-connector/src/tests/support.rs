@@ -70,6 +70,9 @@ pub struct Knobs {
     /// ([`Knobs::messages`]) is a `PIECE_WRITABLE` piece on the scripted stream, and makes it
     /// writable again.
     pub full_at: Option<usize>,
+    /// `locate` answers SHORT, needing this many authority bytes, while the host offers fewer;
+    /// offered as many, it answers READY with the target as its authority.
+    pub authority_needed: Option<u64>,
 }
 
 #[derive(Default)]
@@ -116,6 +119,8 @@ pub struct TestDoor {
     /// The supervision keys whose `dial` it REFUSES, as a carrier's supervisor refuses a member's
     /// program it holds down.
     pub held_keys: Mutex<HashSet<u64>>,
+    /// The authority capacity every `locate` crossing offered (`LocateIn::authority_cap`), in order.
+    pub locate_caps: Mutex<Vec<usize>>,
 }
 
 impl TestDoor {
@@ -138,6 +143,7 @@ impl TestDoor {
             || knobs.fields
             || knobs.silence.is_some()
             || knobs.authority.is_some()
+            || knobs.authority_needed.is_some()
             || knobs.messages.is_some();
         Self {
             facts: DoorFacts {
@@ -165,6 +171,7 @@ impl TestDoor {
             begun_fields: Mutex::new(Vec::new()),
             dialled_keys: Mutex::new(Vec::new()),
             held_keys: Mutex::new(HashSet::new()),
+            locate_caps: Mutex::new(Vec::new()),
         }
     }
 
@@ -359,8 +366,17 @@ impl FramerDoor for TestDoor {
         let silence = self.knobs.silence;
         let mut framings = self.framings.lock().unwrap();
         let (op, answered) = match call {
-            Call::Locate(i, o) => {
+            Call::Locate(i, o) => 'locate: {
+                self.locate_caps.lock().unwrap().push(i.authority_cap);
                 let target = raw(i.target.ptr, i.target.len);
+                if let Some(needed) = self
+                    .knobs
+                    .authority_needed
+                    .filter(|n| *n > i.authority_cap as u64)
+                {
+                    o.authority_needed = needed;
+                    break 'locate ("locate", failed("short"));
+                }
                 let authority = self.knobs.authority.map_or(target, str::as_bytes);
                 // SAFETY: host buffer of `authority_cap` bytes; the test's authorities fit.
                 unsafe {

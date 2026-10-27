@@ -5,13 +5,7 @@
 // content flattening. That second implementation is gone: the hook projection reads the IR the
 // protocol's own reader produced, so nothing under `proxy/` names a dialect to decide what a
 // request SAYS any more.
-// The NEUTRAL proxy vocabulary that stays in core once a plane's engine moved out to its own crate.
-// Core's own staying call sites name these at `crate::proxy::*` via the re-export below; the relocated
-// engine names them across the crate boundary as `busbar_kernel::proxy::*`.
-pub mod proxy_vocab;
-pub use proxy_vocab::{
-    gate_rejected, max_upstream_buffered_bytes, read_capped, GateRejected, ReadEnd, StageShape,
-};
+// The stage taps (`StageShape`, the fan-out, the bounded spawn) are the hook kind's: `crate::hooks::taps`.
 
 // NOTE: cross-protocol max-tokens defaulting lives in `IrReq::prepare_for_egress` — the IR owns its
 // cross-protocol semantics; the engine is operation-blind. Precedence unit tests drive the IR method.
@@ -42,23 +36,6 @@ pub use proxy_vocab::{
 // writes now lives in the neutral substrate (`busbar_kernel::proxy`) — single-compiled, so the
 // router's `.scope()` and the plane's `.try_with()` read the ONE task-local. Re-exported here for
 // core's own `proxy::UPSTREAM_RTT_US` call sites (`router.rs`).
-
-// THE EGRESS ENGINE moved to the neutral substrate (`busbar_kernel::egress::engine`) — the
-// one-egress-stack ruling's home for the owned outbound client every plane builds from. Core
-// re-exports the engine names at their old `crate::proxy::` paths so every call site (state.rs's
-// `EgressClient as Client`, appbuild's builder, the forward/health request assembly, the tests)
-// keeps resolving unchanged. `pub` rather than `pub(crate)` deliberately: some of these names
-// (`EgressConnector`) have no remaining in-core reader after the move, and an externally-visible
-// re-export cannot rot into an unused-import warning while the path contract stands.
-pub use busbar_kernel::egress::engine::{
-    egress_request, install_proxy, EngineClient as EgressClient,
-    EngineConnector as EgressConnector, EngineError as EgressError, EngineSpec as EgressClientSpec,
-};
-
-// The infallible per-lane egress-client shim now lives in the neutral substrate
-// (`busbar_kernel::proxy::build_egress_client`) so a plane crate builds its egress client without
-// reaching into `busbar-core`; re-exported here for core's own `crate::proxy::build_egress_client`
-// call sites (`preflight`, `auth::token`).
 
 // THE MONEY-PATH ENGINE TESTS (usage_tap / on_exhausted / egress_differential / forward_once_pool_cell
 // / pool_upstream_creds / ordered_walk / reroute_pool / probe_* / hook_seam / signal_catalog /
@@ -184,19 +161,6 @@ tokio::task_local! {
     /// neutral substrate (single-compiled) so the router's `.scope()` and the plane's `.try_with()`
     /// read the ONE task-local without the plane reaching into `busbar-core`.
     pub static UPSTREAM_RTT_US: std::sync::Arc<std::sync::atomic::AtomicU64>;
-}
-
-/// Build ONE egress client shard from a caller-supplied [`EngineSpec`](crate::egress::engine::EngineSpec).
-/// An infallible shim over the engine's fallible builder ([`crate::egress::engine::build_client`],
-/// where the parity ledger lives): every spec a resident plane actually passes here carries no extra
-/// trust root and no client identity — the only arms a build can fail on — so the panic path here is
-/// unreachable by construction. Lives HERE so a plane crate builds its egress client without reaching
-/// into `busbar-core`; core's `proxy` re-exports it.
-pub fn build_egress_client(
-    spec: &crate::egress::engine::EngineSpec,
-) -> crate::egress::engine::EngineClient {
-    crate::egress::engine::build_client(spec)
-        .expect("the base egress engine posture has no failing build arm")
 }
 
 // ── THE AGNOSTIC INGRESS-ERROR SHAPER — RELOCATED DOWN from `busbar_kernel::proxy::proxy_vocab` ──────

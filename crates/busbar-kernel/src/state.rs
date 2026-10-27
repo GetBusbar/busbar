@@ -15,16 +15,11 @@ use std::sync::Arc;
 // repointed.
 use busbar_kernel::store::LaneRuntime;
 
-// ── DATA-PLANE TOPOLOGY + the sharded upstream client — RELOCATED to `busbar-substrate::topology`
-// (1.6.0 App-retype WEDGE 3-PREP) so the plane crates reach the neutral worker-count / worker-id
-// process facts and the per-worker-sharded upstream client without naming `busbar-core`. The
-// store-striping readers (`worker_stripes`/`worker_stripe`) still resolve their historical
-// `crate::state::…` path and keep the `pub` visibility they had before the move.
-//
-// `set_data_workers`, `set_worker_id` and `UpstreamClients` are no longer re-exported: the
-// composition root's boot publish now targets `busbar_kernel::topology::…` directly, which left
-// the three `busbar_kernel::state::…` spellings with no caller at all. Nothing outside core names
-// them.
+// ── DATA-PLANE TOPOLOGY — `busbar_kernel::topology` (1.6.0 App-retype WEDGE 3-PREP): the neutral
+// worker-count / worker-id process facts. The store-striping readers (`worker_stripes` /
+// `worker_stripe`) still resolve their historical `crate::state::…` path. `set_data_workers` and
+// `set_worker_id` are not re-exported: the composition root's boot publish targets
+// `busbar_kernel::topology::…` directly.
 pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 
 /// Re-export the neutral companion-slot key DERIVER: a plane's ALWAYS-PRESENT per-generation runtime
@@ -316,7 +311,7 @@ pub struct App {
     /// order = login-page button order). Carries the CORE-only confidential-client secret and the
     /// `browser_login` flag. `GET /auth/token` renders a button per method with a button and drives
     /// its begin/callback. Rebuilt on boot AND reload; Arc-shared for cheap `App::clone`.
-    pub(crate) login_methods: Arc<crate::auth::token::LoginMethods>,
+    pub(crate) login_methods: Arc<crate::auth::login::LoginMethods>,
     /// busbar's PUBLIC base origin (top-level `public_url:`, 1.5.2) — the origin the hosted login
     /// page builds its `/auth/token` authorize/redirect links from and shows devs as their BYOK
     /// `base_url` (verbatim, no `/v1`). `None` ⇒ no hosted login (config_validate requires it when
@@ -420,11 +415,12 @@ pub struct App {
     /// catalog entry's trust verdict. Carried on the snapshot (not a global) so it is testable and
     /// survives swaps.
     pub plugins_cfg: crate::config::PluginsCfg,
-    /// The composition root's ONE plugin trust builder ([`crate::preflight::RootInstall`]'s
-    /// `trust_policy`, the one boot admits plugins under): every admin moment that judges a plugin
-    /// (catalog, install, inspect, rollback) resolves `plugins_cfg` through it and through nothing
-    /// else, so the operator surface reports the verdict boot reaches. `None` = no root installed one.
-    pub plugin_trust: Option<crate::preflight::TrustPolicyBuild>,
+    /// The composition root's PLUGIN ADMISSION ([`crate::preflight::RootInstall`]'s `admission`,
+    /// over the one trust builder boot admits plugins under): every admin moment that judges a
+    /// plugin (catalog, install, inspect, rollback) resolves `plugins_cfg` through it and through
+    /// nothing else, so the operator surface reports the verdict boot reaches. `None` = no root
+    /// installed one.
+    pub plugin_admission: Option<&'static dyn crate::admission::PluginAdmission>,
     // The cross-protocol translation seam's global fallback max-output-tokens and effort→budget table
     // no longer live on `App`: they are plane-specific vocabulary and now ride that plane's own
     // per-generation runtime object, populated from the neutral `PlaneBuildInput` carrier `appbuild`
@@ -786,7 +782,7 @@ impl busbar_kernel::plane_driver::slots::ContainerGateSink for App {
 /// differ across process restarts (a real join key in logs/cost records, not just unique within one
 /// run — two `fetch_add`-from-zero runs would otherwise both hand out `0, 1, 2, …`). Falls back to
 /// boot unix-nanos on the (practically unreachable — see the `getrandom::fill` call sites elsewhere
-/// in this crate, e.g. `auth::token`) case the OS entropy source errors, rather than panicking boot
+/// in this crate, e.g. `auth::login`) case the OS entropy source errors, rather than panicking boot
 /// over a cosmetic collision-avoidance seed.
 pub fn seed_request_id_counter() -> u64 {
     let mut buf = [0u8; 8];

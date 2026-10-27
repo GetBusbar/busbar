@@ -509,7 +509,7 @@ fn migrate_tools_verify_ttl(
 /// `store:` of any other shape, or one that names a module, is left exactly as written.
 fn migrate_store_required(root: &mut Mapping, changes: &mut Vec<String>) {
     let key = Kind::Store.root();
-    let module = crate::config::MIGRATED_STORE_MODULE;
+    let module = crate::config::migrated_store_module();
     match root.get_mut(Value::from(key)) {
         None => {
             let mut store = Mapping::new();
@@ -947,7 +947,7 @@ fn migrate_governance(root: &mut Mapping, changes: &mut Vec<String>, todos: &mut
         store.insert("module".into(), module.clone().into());
         let mut settings = Mapping::new();
         match (module.as_str(), db_path) {
-            (m, _) if m == crate::config::MIGRATED_STORE_MODULE => {}
+            (m, _) if m == crate::config::migrated_store_module() => {}
             // No explicit db_path: 1.4.x's real default was "busbar-governance.db", not memory.
             (m, p) if m == legacy_store_text("gov14_module") => {
                 let p = p.unwrap_or_else(|| legacy_store_text("gov14_db_path").into());

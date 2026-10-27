@@ -616,7 +616,7 @@ pub use busbar_kernel_identity::{
 /// `digest` (the plaintext never crosses the seam), answering for every provider the effective
 /// `providers` back with its module ([`Operator::backed`]).
 pub fn open_operator(
-    registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+    registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
     digest: Option<String>,
     providers: &crate::config::IdentityProviders,
 ) -> Result<Operator, String> {
@@ -636,9 +636,9 @@ pub fn open_operator(
 }
 
 /// Why no door on the auth axis answers `module`, in the registry's own words: the kind-neutral
-/// refusal every axis gives ([`busbar_plugin_loader::PluginRegistry::kind_refusal`]).
+/// refusal every axis gives ([`busbar_contract::plugin_rows::PluginRows::kind_refusal`]).
 pub(crate) fn auth_refusal(
-    registry: &busbar_plugin_loader::PluginRegistry,
+    registry: &dyn busbar_contract::plugin_rows::PluginRows,
     module: &str,
 ) -> String {
     registry.kind_refusal(
@@ -678,7 +678,7 @@ impl AdminAuthChain {
     /// silently-dropped module. Runs at boot AND reload (inside `build_app_from_config`).
     pub fn build(
         cfg: &AuthCfg,
-        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
         let mut modules: std::collections::HashMap<String, AdminModule> =
@@ -723,7 +723,7 @@ impl AdminAuthChain {
                     // A module no door answers is refused in the registry's own words (a name only
                     // a door's Statement alias answers is the axis's).
                     if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry, other)));
+                        return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
                     // The host label is unique per opened instance: the admin chain's provider,
                     // apart from a data-plane provider of the same name.
@@ -774,7 +774,7 @@ impl AuthMiddleware {
     /// off; the instance is opened under it as its host label.
     pub fn new(
         cfg: &AuthCfg,
-        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        registry: &std::sync::Arc<dyn busbar_contract::plugin_rows::PluginRows>,
         secret_resolver: &crate::config::secret::SecretResolver,
     ) -> Result<Self, String> {
         let mut keys_in_chain = false;
@@ -844,7 +844,7 @@ impl AuthMiddleware {
                     // A module no door answers is refused in the registry's own words (a name only
                     // a door's Statement alias answers is the axis's).
                     if !axis.answers(other) {
-                        return Err(refused(auth_refusal(registry, other)));
+                        return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
                     let calls = axis
                         .open(other, &entry.name, &serde_json::Value::Object(resolved))
@@ -943,7 +943,7 @@ impl AuthMiddleware {
     pub fn new_builtin(cfg: &AuthCfg) -> Self {
         let mut mw = Self::new(
             cfg,
-            &std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
+            &crate::test_support::rows::empty(),
             &crate::config::secret::SecretResolver::builtins_only(),
         )
         .expect("builtin-only auth chain never fails to construct");
@@ -2067,17 +2067,16 @@ fn unauthorized_with_completion_taps(
         // ZEROED shape directly (the plane's `capture_stage_shape` would short-circuit an
         // `operation: None` capture to exactly this before any IR read), so core names no
         // plane reader here.
-        let shape = crate::proxy::StageShape::zeroed(app.next_request_id(), "", proto, false);
+        let shape = crate::hooks::taps::StageShape::zeroed(app.next_request_id(), "", proto, false);
         let status = auth_failure_status_and_kind(proto).0.as_u16();
-        // App-retype WEDGE 3 (THE FLIP): fire through the SUBSTRATE stage-tap fan-out so this synthetic
-        // auth-denial tap shares the ONE 1024-permit bounded-spawn gate with the engine's stage/global
-        // taps (a single cap, byte-identical `busbar_tap_notifications_dropped_total` +
-        // `busbar_admission_denied_total{gate="tap"}` on saturation) — core's own `fire_stage_taps`/
-        // `spawn_bounded_tap` are retired with this move so the cap is never split into two gates. The
-        // host is minted over `app` (an alloc-free `engine_host_value`); the group-scope walk folds
-        // `&app.groups_registry` in host-side, byte-identical to the former raw-tree walk.
+        // Fired through the hook kind's one stage-tap fan-out, so this synthetic auth-denial tap shares
+        // the ONE 1024-permit bounded-spawn gate with every other stage tap (one cap, one
+        // `busbar_tap_notifications_dropped_total` + `busbar_admission_denied_total{gate="tap"}` on
+        // saturation). The host is minted over `app` (an alloc-free `engine_host_value`); the
+        // group-scope walk folds `&app.groups_registry` in host-side.
         let host = crate::plane_driver::engine_host_value(app);
-        busbar_kernel::proxy::proxy_vocab::fire_stage_taps(
+        let host: &dyn crate::plane_driver::EngineHost = &host;
+        crate::hooks::taps::fire_stage_taps_where(
             &app.tap_hooks_response,
             &shape,
             busbar_contract::hook_wire::HookStageProjection {
@@ -2093,8 +2092,7 @@ fn unauthorized_with_completion_taps(
             Default::default(),
             // An auth denial has no authenticated caller, so no group binding: unscoped taps fire,
             // group-scoped taps do not (a groupless caller matches only an unscoped hook).
-            None,
-            &host,
+            &|groups: &[String]| host.caller_in_hook_groups(None, groups),
         );
     }
     unauthorized_response(app, path, door)
@@ -2735,12 +2733,12 @@ pub fn resolve_data_plane_identity(
 }
 
 /// Whether an identified principal that earned NO governance key is refused whatever its roles and
-/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None` such a principal
-/// meets no pool ACL and no budget, and its spend is booked to the `anonymous` actor. `false` is
-/// 1.5.5's behaviour, which this build keeps until the owner signs the change (Q128 u27): the
-/// three-part guard of v1.5.5 crates/busbar/src/auth/mod.rs:1543. The owner's signature flips this
-/// one line.
-pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = false;
+/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None`, such a principal
+/// met no pool ACL and no budget and its spend was booked to the `anonymous` actor (1.5.5's
+/// three-part guard, v1.5.5 crates/busbar/src/auth/mod.rs:1543). OWNER-SIGNED 2026-10-24 (M30): an
+/// identified principal with no grant is refused (`NoGrant`, 401), so every admitted request is
+/// governed and its spend attributed.
+pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = true;
 
 /// Whether `principal`, identified by `module` and earning no governance key, is admitted ungoverned
 /// under [`REFUSE_EVERY_UNGOVERNED_PRINCIPAL`].
@@ -2879,11 +2877,11 @@ pub mod self_keys;
 /// the [`self_keys`] seam).
 pub mod exchange;
 
-/// The `GET /auth/token` hosted browser-login page (1.5.2): the chooser / begin / callback
-/// sub-states, PKCE + state + nonce, the plugin's `complete_login` (the plugin redeems the code
-/// itself, with the client secret it was lent at `open`), and the render of the key-issued page —
-/// all issuing through the SAME [`self_keys`] seam as the headless `POST`.
-pub mod token;
+/// The hosted login's identity side (row 159, K3#2): the login methods, one login step on a
+/// plugin's door, and the self-serve key a verified identity is issued through the SAME
+/// [`self_keys`] seam as the headless `POST`. The flow itself (pages, cookie, PKCE) is
+/// `busbar-core-oauth2`'s, reached through [`login::seam`].
+pub mod login;
 
 /// TEST STAND-INS ONLY: an in-process module as a chain position.
 #[cfg(any(test, feature = "test-support"))]

@@ -1127,7 +1127,10 @@ fn a_claim_states_only_known_flags() {
     // A signed-ingress path is a known flag (ARCHITECT ruling 2026-10-16, 3b A).
     let signed = claim("V", "/t", CLAIM_EXACT | CLAIM_SIGNED_INGRESS);
     assert_eq!(check_claims(&[signed], 1), Ok(()));
-    // RED: a bit none of the known claim bits.
+    // An entry fact is a known flag (status row 173).
+    let entry = claim("V", "path:/t/*", CLAIM_ENTRY);
+    assert_eq!(check_claims(&[entry], 1), Ok(()));
+    // RED: a bit none of the known claim bits, the first past `CLAIM_TICKET` (the highest).
     let unknown = claim("V", "/t", crate::abi::plane::CLAIM_TICKET << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
@@ -3692,12 +3695,15 @@ fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
             "{pair}"
         );
     }
-    // The bit is a known claim bit; the next one up is not.
+    // The bit is a known claim bit; the first one past every claim bit (`CLAIM_ENTRY` and
+    // `CLAIM_TICKET`, the next ones up, are claims of their own) is not.
     assert_eq!(
         check_claims(&[claim("V", "/model/*/converse", CLAIM_RAW_AFFIX)], 0),
         Ok(())
     );
-    assert!(check_claims(&[claim("V", "/t", CLAIM_RAW_AFFIX << 1)], 0).is_err());
+    // `CLAIM_RAW_AFFIX << 1` is `CLAIM_ENTRY` now (status row 173), and `CLAIM_ENTRY << 1` is
+    // `CLAIM_TICKET`: the first bit past the known claim bits stays refused.
+    assert!(check_claims(&[claim("V", "/t", crate::abi::plane::CLAIM_TICKET << 1)], 0).is_err());
 }
 
 /// A RAW AFFIX MATCHES THE RAW PATH AS BYTES, so the previous release's rule (`starts_with` the
@@ -3735,6 +3741,56 @@ fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
     assert!(
         !raw_affix_matches("/model/converse", "/model/converse"),
         "not a raw affix"
+    );
+}
+
+/// AN ENTRY FACT (status row 173, `CLAIM_ENTRY`): its target is one or more predicates, `field:`
+/// (present, or its value's prefix) and at most one `path:` pattern, in which `*` is any run of
+/// bytes and a whole segment `{}` or `{<field>}` one non-empty segment, a named one captured. A
+/// malformed target, or the flag beside another, is refused at bind.
+#[test]
+fn an_entry_facts_target_is_its_predicates_and_its_path_captures_named_segments() {
+    use crate::abi::plane::check::EntryPredicate::{Field, Path};
+    use crate::abi::plane::check::{check_claim_target, entry_fact, entry_path_matches};
+    assert_eq!(entry_fact("field:x-key"), Some(vec![Field("x-key", None)]));
+    assert_eq!(
+        entry_fact("field:authorization=SCHEME path:*/end"),
+        Some(vec![Field("authorization", Some("SCHEME")), Path("*/end")])
+    );
+    for bad in [
+        "",
+        "field:",
+        "field:X",
+        "field:a=",
+        "path:x",
+        "path:/a path:/b",
+        "path:/a{b}",
+        "path:/{a/b}",
+        "path:/{A}",
+        "other:x",
+    ] {
+        assert_eq!(entry_fact(bad), None, "RED: `{bad}` is no entry fact");
+    }
+    let mut caps = Vec::new();
+    assert!(entry_path_matches("/{pool}/v1/x", "/p%20q/v1/x", &mut caps));
+    assert_eq!(caps, vec![("pool", &b"p%20q"[..])]);
+    caps.clear();
+    assert!(!entry_path_matches("/{pool}/v1/x", "/a/b/v1/x", &mut caps));
+    assert!(caps.is_empty(), "a failed match captures nothing");
+    assert!(entry_path_matches("/{}/{model}/x", "/a/b/x", &mut caps));
+    assert_eq!(caps, vec![("model", &b"b"[..])]);
+    caps.clear();
+    assert!(entry_path_matches("*:act*", "/m/n:act", &mut caps));
+    assert!(entry_path_matches("/m/*", "/m/", &mut caps));
+    assert!(!entry_path_matches("/m/*", "/m", &mut caps));
+    assert_eq!(check_claim_target("path:/m/*", CLAIM_ENTRY), Ok(()));
+    assert_eq!(
+        check_claim_target("path:/m/*", CLAIM_ENTRY | CLAIM_OPEN),
+        f(Rule::Contradiction, "claim.flags")
+    );
+    assert_eq!(
+        check_claim_target("nope", CLAIM_ENTRY),
+        f(Rule::Contradiction, "claim.entry")
     );
 }
 

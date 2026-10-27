@@ -40,6 +40,7 @@ legacy_rows:
   gov14_busy_timeout_key: sqlite_busy_timeout_ms
   gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
   module_examples: "sqlite | postgres | valkey"
+  store_1_5_default: memory
   retired.store.redis: valkey
   retired.store.busbar-store-redis: valkey
   retired.store.busbar-store-redis-plugin: valkey

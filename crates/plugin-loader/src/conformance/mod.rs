@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE PUBLISHED CONFORMANCE SUITE** (TODO ABI-b4; BUSBAR-1.6.0.md THE DESIGN §11.4 "compiled in
+//! **THE PUBLISHED CONFORMANCE SUITE** (BUSBAR-1.6.0.md THE DESIGN §11.4 "compiled in
 //! or dropped in, the same table", §11.11 M6/contract; Part 2 #2 and #11). OWNER 2026-10-03: *"NO
 //! TEST PLUGINS. We have real plugins for everything. PLUGINS test themselves against busbar.
 //! busbar doesn't test plugins."* So busbar PUBLISHES this suite and every real plugin repo RUNS it,
@@ -42,7 +42,8 @@
 //!
 //! * the dropped-in library states exactly the linked door's Statement (the signed manifest's
 //!   rendering IS the linked row's), and both are admitted by the ONE loader ([`load_linked`] /
-//!   [`load_dropped`]) and bound to a dispatcher of their own, as the kernel binds them;
+//!   [`load_dropped_bytes`], the library's bytes staged as every production load stages them) and
+//!   bound to a dispatcher of their own, as the kernel binds them;
 //! * the KIND'S SCRIPT (one module per kind, below) drives each leg through the same table, step by
 //!   step, and records per step its answer and the crossings the instance made, counted by the
 //!   dispatcher's own crossing gate;
@@ -83,7 +84,7 @@
 //! module; a move to another home moves this directory and the macro's path, nothing else.
 //!
 //! [`load_linked`]: crate::dispatch::load_linked
-//! [`load_dropped`]: crate::dispatch::load_dropped
+//! [`load_dropped_bytes`]: crate::dispatch::load_dropped_bytes
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
@@ -93,13 +94,14 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, InHead, OutHead, Outcome, RawOutcome, BLOB_JSON,
 };
-use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::rendering::{self as rendering, RENDERING_MAGIC};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::{PlaneOpenIn, PlaneOpenOut};
+use busbar_contract::abi::sdk::door::RawDoorFn;
 
 use crate::dispatch::kinds::{
     auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
@@ -108,9 +110,9 @@ use crate::dispatch::kinds::{
 use busbar_contract::conn::DeclaredConns;
 
 use crate::dispatch::{
-    in_head, load_dropped, load_linked, out_head, rendering_of, rendering_of_library, Bind, Called,
+    in_head, load_dropped_bytes, load_linked, out_head, rendering_of_library, Bind, Called,
     ConnTable, DispatchConfig, Dispatcher, Done, Frame, InFrame, Kind, Lent, LinkedRow, LoadError,
-    NoSink, OutFrame, Plugin,
+    OutFrame, Plugin,
 };
 use crate::tcp_conns::TcpConns;
 use busbar_contract::abi::mechanism::ticket::Ticket;
@@ -123,6 +125,7 @@ mod export;
 pub use auth::{
     outbound_plant, red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte,
 };
+pub mod canary;
 mod hook;
 pub mod host_io;
 mod plane;
@@ -144,7 +147,7 @@ pub const EXPECT_RELEASE_ENV: &str = "BUSBAR_EXPECT_RELEASE";
 /// inputs its kind's script drives.
 pub struct Subject {
     /// The LINKED door: the plugin's logic crate's door function, compiled into the test binary.
-    pub door: DoorFn,
+    pub door: RawDoorFn,
     /// The DROPPED door: the built cdylib of this crate (snake case), found in the test's target.
     pub cdylib_crate: &'static str,
     /// The plugin's `conformance.json`.
@@ -234,6 +237,12 @@ impl Subject {
     /// When `inputs` is not a JSON object.
     #[must_use]
     pub fn new(door: DoorFn, cdylib_crate: &'static str, inputs: &str) -> Self {
+        Self::of_raw(crate::dispatch::load::raw(door), cdylib_crate, inputs)
+    }
+
+    /// [`Subject::new`] over a door the suite holds raw: a [`LoadedDoor`](crate::dispatch::LoadedDoor)'s,
+    /// or one of its own restated doors.
+    pub(crate) fn of_raw(door: RawDoorFn, cdylib_crate: &'static str, inputs: &str) -> Self {
         let inputs: serde_json::Value = serde_json::from_str(inputs)
             .unwrap_or_else(|e| panic!("conformance.json is not JSON: {e}"));
         assert!(inputs.is_object(), "conformance.json is not a JSON object");
@@ -248,6 +257,36 @@ impl Subject {
         };
         s.apply_env();
         s
+    }
+
+    /// [`Subject::new`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows 159
+    /// and 194). #1469 makes `new` take the `MacroDoor` alone and keeps this name beside it, so
+    /// `Subject::of_macro(plugin::MACRO_DOOR, ..)` compiles before and after.
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_macro(
+        door: busbar_contract::abi::sdk::door::MacroDoor,
+        cdylib_crate: &'static str,
+        inputs: &str,
+    ) -> Self {
+        Self::new(door.door_fn(), cdylib_crate, inputs)
+    }
+
+    /// [`Subject::new`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows 159 and
+    /// 194): a `MacroDoor`'s, or a door a crate that exports its `door` function alone restates
+    /// (`unsafe { LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
+    ///
+    /// # Panics
+    /// As [`Subject::new`].
+    #[must_use]
+    pub fn of_loaded(
+        door: crate::dispatch::LoadedDoor,
+        cdylib_crate: &'static str,
+        inputs: &str,
+    ) -> Self {
+        Self::of_raw(door.door, cdylib_crate, inputs)
     }
 
     /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
@@ -332,8 +371,8 @@ impl Subject {
     pub fn kind(&self) -> KindCode {
         let p = crate::dispatch::load::enter_door(self.door);
         assert!(!p.is_null(), "the door function answered NULL");
-        // SAFETY: a door function answers a `'static` door; only its `kind` word is read.
-        let raw = unsafe { std::ptr::addr_of!((*p).kind).read_unaligned() };
+        // SAFETY: a door function answers a `'static` door at least its stated size.
+        let raw = unsafe { Door::read_parts(p) }.kind;
         KindCode::from_raw(raw).unwrap_or_else(|| panic!("the door names kind {raw}"))
     }
 
@@ -459,8 +498,8 @@ impl Subject {
     /// When the door's Statement does not render or read back.
     #[must_use]
     pub fn needs(&self) -> Vec<rendering::ReadNeed> {
-        let row =
-            LinkedRow::of(self.door).unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
+        let row = LinkedRow::of_raw(self.door)
+            .unwrap_or_else(|e| panic!("the linked door is refused: {e}"));
         rendering::read(&row.statement)
             .unwrap_or_else(|e| panic!("the door's Statement does not read back: {e:?}"))
             .needs
@@ -694,7 +733,7 @@ pub fn distinct_images(s: &Subject) {
 ///
 /// # Errors
 /// The library does not load, exports no door, or answers the linked door or its ops table.
-pub(crate) fn distinct(door: DoorFn, path: &Path) -> Result<(), String> {
+pub(crate) fn distinct(door: RawDoorFn, path: &Path) -> Result<(), String> {
     let (dropped, ops) = crate::dispatch::load::door_addresses_of_library(path)
         .map_err(|e| format!("the dropped image {path:?} does not load: {e}"))?
         .ok_or_else(|| format!("the dropped image {path:?} exports no door"))?;
@@ -702,8 +741,8 @@ pub(crate) fn distinct(door: DoorFn, path: &Path) -> Result<(), String> {
     if linked.is_null() {
         return Err("the door function answered NULL".into());
     }
-    // SAFETY: a door function answers a `'static` door; only its `ops` word is read.
-    let linked_ops = unsafe { std::ptr::addr_of!((*linked).ops).read_unaligned() } as usize;
+    // SAFETY: a door function answers a `'static` door at least its stated size.
+    let linked_ops = unsafe { Door::read_parts(linked) }.ops as usize;
     if dropped == linked as usize || ops == linked_ops {
         return Err(format!(
             "the dropped image {path:?} answers the LINKED door (door {dropped:#x}, ops {ops:#x}): \
@@ -793,7 +832,7 @@ pub fn dispatcher_serving(
     d
 }
 
-/// A test's restated door, written in plain Rust; [`test_door`] is its [`DoorFn`].
+/// A test's restated door, written in plain Rust; [`test_door`] is its [`RawDoorFn`].
 #[cfg(test)]
 pub(crate) trait TestDoor {
     fn door() -> *const Door;
@@ -855,7 +894,7 @@ pub fn woken() -> Result<(), String> {
     }
 }
 
-/// The bind the kernel makes: a label, the inflight clamp, no envelope sink, the adopting
+/// The bind the kernel makes: a label, the inflight clamp, the fold's recording sink, the adopting
 /// dispatcher, SERVING with no connection table (a door that declares a need is refused;
 /// [`Subject::bind`] adds the plugin's table).
 #[must_use]
@@ -863,7 +902,7 @@ pub fn bind(d: &Dispatcher, instance: &str) -> Bind {
     Bind {
         instance: Arc::from(instance),
         max_inflight_cap: 1024,
-        sink: Arc::new(NoSink),
+        sink: canary::heard(),
         dispatcher: d.adopter(),
         conns: ConnTable::NoNeeds,
     }
@@ -899,9 +938,26 @@ pub fn bind_far(d: &Dispatcher, instance: &str, s: &Subject) -> Bind {
 /// The loader's refusal.
 pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadError> {
     match leg {
-        Leg::Linked => load_linked::<K>(&LinkedRow::of(s.door)?, b),
-        Leg::Dropped => load_dropped::<K>(&s.cdylib(), &s.stated(), b),
+        Leg::Linked => load_linked::<K>(&LinkedRow::of_raw(s.door)?, b),
+        Leg::Dropped => load_dropped_staged::<K>(&s.cdylib(), &s.stated(), b),
     }
+}
+
+/// The dropped-in library at `path`, admitted against `stated` as every production caller admits a
+/// dropped plugin: its bytes read and handed to [`load_dropped_bytes`], which stages them by the
+/// loader's one staging path (a sealed `memfd` on Linux, a private `0700` copy elsewhere) and opens
+/// exactly those bytes, never the build path itself (THE DESIGN §11.4: one loading path).
+///
+/// # Errors
+/// The loader's refusal; a library that cannot be read is refused as one that does not open.
+pub(crate) fn load_dropped_staged<K: Kind>(
+    path: &Path,
+    stated: &[u8],
+    b: Bind,
+) -> Result<Plugin<K>, LoadError> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| LoadError::Open(format!("cannot read {}: {e}", path.display())))?;
+    load_dropped_bytes::<K>(&bytes, &path.display().to_string(), stated, b)
 }
 
 /// The crossings `p` has made, by the dispatcher's own crossing gate: every crossing, and of them
@@ -1139,14 +1195,16 @@ pub fn called(c: &Called) -> String {
     format!("{:?} lease={} {text}", c.outcome, c.lease != 0)
 }
 
-/// THE HOST'S SECRET LENDING, as the suite's host does it: each key the plugin's Statement names as a
-/// secret reference (`Plugin::secret_refs`, a `.`-separated settings path) has its value lent in
-/// `open`/`refresh`'s `secrets`, in the Statement's order: a string's bytes (the suite's test
-/// material stands in for the material the kernel would resolve the reference to); an absent or
-/// non-string value lends empty bytes, which the plugin refuses. `keep`: the key stays in the
-/// settings, as the secret kind's host (`secret_calls`) leaves it; otherwise it is taken out, as
-/// the boot's and the auth axis's hosts take it (`boot::resolve_secrets`,
-/// `auth_door::split_secrets`). Settings with no such key pass through unchanged.
+/// THE HOST'S SECRET LENDING, as the suite's host does it: each EXACT path the plugin's Statement
+/// names as a secret reference (`Plugin::secret_refs`, a `.`-separated settings path) has its
+/// value lent in `open`/`refresh`'s `secrets`, in the Statement's order: a string's bytes (the
+/// suite's test material stands in for the material the kernel would resolve the reference to);
+/// an absent or non-string value lends empty bytes, which the plugin refuses. Then each WILDCARD
+/// path's (`*` = any key or index) string matches, in document order, each replaced in the
+/// settings by its `{"$secret": <index>}` marker (`busbar_contract::secret_fields::lend`). `keep`:
+/// an exact key stays in the settings, as the secret kind's host (`secret_calls`) leaves it;
+/// otherwise it is taken out, as the auth hosts take it (`boot::resolve_secrets`,
+/// `auth_door::split_secrets`). Settings with no such path pass through unchanged.
 #[must_use]
 pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, Vec<Vec<u8>>) {
     if refs.is_empty() {
@@ -1155,29 +1213,64 @@ pub fn lend_secrets(refs: &[String], settings: &[u8], keep: bool) -> (Vec<u8>, V
     let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(settings) else {
         return (settings.to_vec(), vec![Vec::new(); refs.len()]);
     };
-    let secrets = refs
-        .iter()
-        .map(|path| {
-            let (parent, last) = match path.rsplit_once('.') {
-                Some((head, last)) => (head.split('.').try_fold(&mut v, |v, k| v.get_mut(k)), last),
-                None => (Some(&mut v), path.as_str()),
-            };
-            let object = parent.and_then(serde_json::Value::as_object_mut);
-            let value = if keep {
-                object.and_then(|o| o.get(last).cloned())
-            } else {
-                object.and_then(|o| o.remove(last))
-            };
-            match value {
-                Some(serde_json::Value::String(s)) => s.into_bytes(),
-                _ => Vec::new(),
-            }
-        })
-        .collect();
-    if keep {
+    let as_bytes = |v: Option<serde_json::Value>| match v {
+        Some(serde_json::Value::String(s)) => s.into_bytes(),
+        _ => Vec::new(),
+    };
+    let secrets = busbar_contract::secret_fields::lend(
+        &mut v,
+        refs,
+        keep,
+        |_, v| Ok::<_, std::convert::Infallible>(as_bytes(v)),
+        |_, v| Ok(as_bytes(Some(v))),
+    )
+    .unwrap_or_else(|e| match e {});
+    if keep
+        && !refs
+            .iter()
+            .any(|p| busbar_contract::secret_fields::is_wildcard(p))
+    {
         return (settings.to_vec(), secrets);
     }
     (v.to_string().into_bytes(), secrets)
+}
+
+/// What kind `K`'s host hands `open`/`refresh` over `settings`: the auth kind's hosts take the
+/// declared secrets out and lend them, the secret kind's host lends them and leaves the exact
+/// keys in place ([`lend_secrets`]); every other kind's host (store, hook, export, plane) lends
+/// nothing, its settings already resolved by the kernel at the declared paths
+/// ([`settings_as_the_kernel_resolves`]).
+fn host_lends<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+    match K::CODE {
+        KindCode::Auth => lend_secrets(p.secret_refs(), settings, false),
+        KindCode::Secret => lend_secrets(p.secret_refs(), settings, true),
+        _ => (settings.to_vec(), Vec::new()),
+    }
+}
+
+/// `settings` (one JSON object) AS THE KERNEL RESOLVES THEM before they cross to `p`
+/// (`busbar_contract::secret_fields::resolve_declared`): a secret reference at a position `p`'s
+/// Statement does not declare secret is refused in the kernel's sentence; each one at a declared
+/// position is replaced by the string `resolve` answers for it. A plugin's suite proves its
+/// declared fields with it: `{env: VAR}` at a declared field resolves; anywhere else, it is
+/// refused.
+///
+/// # Errors
+/// The settings are not a JSON document, the refusal, or `resolve`'s error.
+pub fn settings_as_the_kernel_resolves<K: Kind>(
+    p: &Plugin<K>,
+    settings: &[u8],
+    resolve: impl FnMut(&str, &busbar_contract::secret_ref::SecretRef) -> Result<String, String>,
+) -> Result<Vec<u8>, String> {
+    let mut tree: serde_json::Value = serde_json::from_slice(settings)
+        .map_err(|e| format!("the settings are not a JSON document: {e}"))?;
+    busbar_contract::secret_fields::resolve_declared(
+        &mut tree,
+        p.secret_refs(),
+        p.name(),
+        resolve,
+    )?;
+    Ok(tree.to_string().into_bytes())
 }
 
 /// The blobs `open`/`refresh` lend over `secrets`.
@@ -1194,8 +1287,17 @@ fn secret_blobs(secrets: &[Vec<u8>]) -> Vec<Blob> {
         .collect()
 }
 
-/// `validate` over `settings`.
+/// `validate` over `settings` as the kind's host passes them: the auth host takes a provider's
+/// secret references out first (`auth_door::split_secrets`); every other kind's host validates the
+/// block as written (`export_axis::probe`).
 pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
+    let split;
+    let settings = if K::CODE == KindCode::Auth {
+        split = lend_secrets(p.secret_refs(), settings, false).0;
+        &split[..]
+    } else {
+        settings
+    };
     let mut err = [0_u8; 512];
     let mut f: Frame<ValidateIn, OutHead> = Frame::new(input(), output());
     f.input.settings = json(settings);
@@ -1209,10 +1311,9 @@ pub fn validate<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// the kind's check FAULTs an `open` whose `out` cannot hold it); every other kind's is the
 /// lifecycle's `OpenIn`/`OpenOut`.
 ///
-/// The keys the Statement names as secret references are taken out of the settings and their
-/// material lent in `secrets` ([`lend_secrets`]), as the host lends them.
+/// The settings and the secrets are what kind `K`'s host hands `open` (`host_lends`).
 pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
-    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let (settings, secrets) = host_lends(p, settings);
     let blobs = secret_blobs(&secrets);
     if K::CODE == KindCode::Plane {
         let mut f: Frame<PlaneOpenIn, PlaneOpenOut> = Frame::new(input(), output());
@@ -1236,7 +1337,7 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
 /// ([`OpenLend`]), never this call's stack.
 pub fn open_resumed<K: Kind>(p: &Plugin<K>, d: &Dispatcher, settings: &[u8]) -> Called {
     let deadline = crate::dispatch::now_ns().saturating_add(OPEN_DEADLINE.as_nanos() as u64);
-    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let (settings, secrets) = host_lends(p, settings);
     let blobs = secret_blobs(&secrets);
     let lend = OpenLend {
         settings,
@@ -1367,7 +1468,7 @@ const OPEN_DEADLINE: Duration = Duration::from_secs(30);
 
 /// `refresh` over `settings`, generation 2.
 pub fn refresh<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
-    let (settings, secrets) = lend_secrets(p.secret_refs(), settings, K::CODE == KindCode::Secret);
+    let (settings, secrets) = host_lends(p, settings);
     let blobs = secret_blobs(&secrets);
     let mut f: Frame<RefreshIn, OutHead> = Frame::new(input(), output());
     f.input.settings = json(&settings);
@@ -1446,7 +1547,7 @@ fn kind_fold(s: &Subject, leg: Leg) -> Fold {
 pub fn both_ways(s: &Subject) {
     s.apply_env();
     assert_eq!(
-        LinkedRow::of(s.door)
+        LinkedRow::of_raw(s.door)
             .unwrap_or_else(|e| panic!("the linked door is refused: {e}"))
             .statement,
         s.stated(),
@@ -1490,7 +1591,42 @@ pub fn both_ways(s: &Subject) {
     }
 }
 
-/// RED (TODO L-R22): a plane declaring a billable class no conformance case reports is refused by
+/// THE CANARY: no credential the subject's inputs name crosses back through either door, in any
+/// step's answer or any log record the instance raised ([`canary`]).
+///
+/// # Panics
+/// A spelling of a named credential was emitted (the panic names where, never the value).
+pub fn canary(s: &Subject) {
+    s.apply_env();
+    let planted = canary::credentials(&s.inputs);
+    if planted.is_empty() {
+        return;
+    }
+    for leg in [Leg::Linked, Leg::Dropped] {
+        let _ = canary::take_heard();
+        let f = fold(s, leg);
+        let mut emitted: Vec<(String, Vec<u8>)> = f
+            .iter()
+            .map(|st| {
+                (
+                    format!("step '{}'", st.label),
+                    st.answer.clone().into_bytes(),
+                )
+            })
+            .collect();
+        emitted.extend(
+            canary::take_heard()
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| (format!("log record {i}"), t)),
+        );
+        if let Some(at) = canary::find(&planted, &emitted) {
+            panic!("{leg:?}: a configured credential crossed back in {at}");
+        }
+    }
+}
+
+/// RED: a plane declaring a billable class no conformance case reports is refused by
 /// the plane script's class contract. Nothing to plant for a door of another kind.
 ///
 /// # Panics
@@ -1553,14 +1689,18 @@ impl Restated {
         }
     }
 
-    fn set(&self, d: Door) {
+    fn set(&self, d: DoorParts) {
+        // SAFETY: every restated door is the subject's real door (`real_door`) with one part
+        // replaced by `'static` data the suite built to the same contract: a Statement leaked
+        // whole, a table copied from the real one, or a `ready` of its own.
+        let d = unsafe { Door::__from_parts(d) };
         self.door
             .store(Box::into_raw(Box::new(d)), Ordering::SeqCst);
     }
 
     /// [`Self::set`], held: the door stays `d` until the guard drops. A lock poisoned by an arm
     /// that panicked holding it (a RED twin's expected failure) is taken as is: `d` restates anew.
-    fn hold(&'static self, d: Door) -> MutexGuard<'static, ()> {
+    fn hold(&'static self, d: DoorParts) -> MutexGuard<'static, ()> {
         let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
         self.set(d);
         held
@@ -1621,28 +1761,17 @@ extern "C" fn ready_fails(
     failed
 }
 
-/// The subject's door, read.
-fn real_door(s: &Subject) -> Door {
+/// The subject's door, read: its parts, stating the host's whole size (a door ending before
+/// `ready` reads `None` there).
+fn real_door(s: &Subject) -> DoorParts {
     let p = (s.door)();
     assert!(!p.is_null(), "the door function answered NULL");
-    // SAFETY: a door function answers a `'static` door at least its stated size; the whole
-    // struct is read only when its size covers it (a door ending before `ready` reads `None`).
-    unsafe {
-        let size = std::ptr::addr_of!((*p).size).read_unaligned() as usize;
-        if size >= std::mem::size_of::<Door>() {
-            p.read_unaligned()
-        } else {
-            Door {
-                magic: std::ptr::addr_of!((*p).magic).read_unaligned(),
-                mechanism_version: std::ptr::addr_of!((*p).mechanism_version).read_unaligned(),
-                size: std::mem::size_of::<Door>() as u32,
-                kind: std::ptr::addr_of!((*p).kind).read_unaligned(),
-                kind_abi: std::ptr::addr_of!((*p).kind_abi).read_unaligned(),
-                statement: std::ptr::addr_of!((*p).statement).read_unaligned(),
-                ops: std::ptr::addr_of!((*p).ops).read_unaligned(),
-                ready: None,
-            }
-        }
+    // SAFETY: a door function answers a `'static` door at least its stated size; `read_parts`
+    // reads `ready` only when that size covers it.
+    let real = unsafe { Door::read_parts(p) };
+    DoorParts {
+        size: std::mem::size_of::<Door>() as u32,
+        ..real
     }
 }
 
@@ -1712,11 +1841,11 @@ pub fn red_kind_abi(s: &Subject) {
         real.kind_abi, host,
         "the door states its kind's current ABI"
     );
-    ABI_UP.set(Door {
+    ABI_UP.set(DoorParts {
         kind_abi: host + 1,
         ..real
     });
-    ABI_DOWN.set(Door {
+    ABI_DOWN.set(DoorParts {
         kind_abi: host.wrapping_sub(1),
         ..real
     });
@@ -1726,15 +1855,15 @@ pub fn red_kind_abi(s: &Subject) {
         load::<K>(s, Leg::Linked, s.bind(&d, "honest-linked")).expect("the honest door loads linked");
         load::<K>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
             .expect("the honest library loads dropped in");
-        for (door, abi) in [(abi_up_door as DoorFn, host + 1), (abi_down_door, host.wrapping_sub(1))] {
+        for (door, abi) in [(abi_up_door as RawDoorFn, host + 1), (abi_down_door, host.wrapping_sub(1))] {
             let want = LoadError::KindAbi { kind, door: abi, host };
-            assert_eq!(rendering_of(door).err(), Some(want.clone()), "the pack tool signs no ABI {abi} door");
-            let refused = LinkedRow::of(door)
+            assert_eq!(crate::dispatch::load::rendering_of_raw(door).err(), Some(want.clone()), "the pack tool signs no ABI {abi} door");
+            let refused = LinkedRow::of_raw(door)
                 .and_then(|row| load_linked::<K>(&row, s.bind(&d, "red-linked")).map(|_| ()))
                 .expect_err("a linked door at another kind ABI is refused");
             assert_eq!(refused, want);
             assert!(refused.to_string().contains("rebuild"), "{refused}");
-            let refused = load_dropped::<K>(&s.cdylib(), &stating_abi(&stated, abi), s.bind(&d, "red-dropped"))
+            let refused = load_dropped_staged::<K>(&s.cdylib(), &stating_abi(&stated, abi), s.bind(&d, "red-dropped"))
                 .map(|_| ())
                 .expect_err("a manifest stating another kind ABI is refused");
             assert_eq!(refused, LoadError::ManifestKindAbi { stated: abi, host });
@@ -1755,7 +1884,7 @@ pub fn red_kind_abi(s: &Subject) {
 pub fn red_ready(s: &Subject) {
     s.apply_env();
     let real = real_door(s);
-    READY_FAILS.set(Door {
+    READY_FAILS.set(DoorParts {
         size: std::mem::size_of::<Door>() as u32,
         ready: Some(ready_fails),
         ..real
@@ -1763,7 +1892,8 @@ pub fn red_ready(s: &Subject) {
     let settings = s.fold_settings("red");
     if s.kind() == KindCode::Store {
         let d = dispatcher();
-        let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
+        let row =
+            LinkedRow::of_raw(ready_fails_door).expect("the restated door states its Statement");
         let p =
             load_linked::<Store>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
@@ -1788,7 +1918,7 @@ pub fn red_ready(s: &Subject) {
     }
     by_kind!(s.kind(), K => {
         let d = dispatcher();
-        let row = LinkedRow::of(ready_fails_door).expect("the restated door states its Statement");
+        let row = LinkedRow::of_raw(ready_fails_door).expect("the restated door states its Statement");
         let p = load_linked::<K>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
         let o = open_resumed(&p, &d, &settings);
@@ -1806,7 +1936,7 @@ pub fn red_ready(s: &Subject) {
 /// The real door restated with one outbound need over the stream double's transport
 /// (`stand_in.json`), its target its own (the RED arm's subject
 /// for a door that declares none).
-fn with_an_outbound_need(real: Door) -> Door {
+fn with_an_outbound_need(real: DoorParts) -> DoorParts {
     use busbar_contract::abi::host::conn::connector::{Need, DIRECTION_OUTBOUND, KEEP_NAMED};
     use busbar_contract::abi::mechanism::door::Statement;
     const NONE: AbiStr = AbiStr {
@@ -1844,7 +1974,7 @@ fn with_an_outbound_need(real: Door) -> Door {
         needs_len: needs.len(),
         ..st
     }));
-    Door {
+    DoorParts {
         statement: st,
         ..real
     }
@@ -1856,9 +1986,9 @@ fn with_an_outbound_need(real: Door) -> Door {
 /// arm runs) and its address.
 fn connection_fixture(
     s: &Subject,
-    door: DoorFn,
+    door: RawDoorFn,
 ) -> (Arc<dyn DeclaredConns>, Box<dyn std::any::Any>, String) {
-    let table = Subject::new(door, s.cdylib_crate, "{}")
+    let table = Subject::of_raw(door, s.cdylib_crate, "{}")
         .conns(&dispatcher())
         .expect("the suite's test table serves the restated need");
     let listening = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
@@ -1882,13 +2012,13 @@ pub fn red_no_table(s: &Subject) {
         let d = dispatcher();
         load::<K>(s, Leg::Linked, s.bind(&d, "honest")).expect("the honest door binds over the suite's table");
         let restated = needs == 0;
-        let (door, needs): (DoorFn, usize) = if restated {
+        let (door, needs): (RawDoorFn, usize) = if restated {
             NETWORKED.set(with_an_outbound_need(real));
             (restated_door::<0>, 1)
         } else {
             (s.door, needs)
         };
-        let row = LinkedRow::of(door).expect("the door states its Statement");
+        let row = LinkedRow::of_raw(door).expect("the door states its Statement");
         let plugin = rendering::read(&row.statement).expect("its Statement reads back").name;
         let want = LoadError::NoConnectionTable { plugin: plugin.clone(), needs };
         let refused = load_linked::<K>(&row, bind(&d, "red-no-table"))
@@ -2042,6 +2172,54 @@ pub fn profile(debug: bool) {
     );
 }
 
+/// THE DOOR A SUITE NAMES, as either form a plugin states it (status rows 159 and 194): its
+/// `door` function, or the `MACRO_DOOR` `plugin_door!` expands beside it. #1469 makes the suite take the `MacroDoor` alone; a plugin moves to `door:
+/// plugin::MACRO_DOOR` first, and the same line compiles before and after.
+///
+/// The two forms are told apart by method resolution: a `MacroDoor` answers its door function by
+/// value (`MacroDoorArg`); any other value (a door function) answers itself through a reference
+/// (`DoorFnArg`), and the caller's `DoorFn` annotation coerces the function item.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __conformance_door {
+    ($door:path) => {{
+        #[allow(unused_imports)]
+        use $crate::conformance::{DoorFnArg as _, MacroDoorArg as _};
+        let door: $crate::conformance::ConformanceDoorFn = (&$door).door_arg();
+        door
+    }};
+}
+
+/// The door function type a suite runs over, named where `__conformance_door!` expands.
+#[doc(hidden)]
+pub type ConformanceDoorFn = DoorFn;
+
+/// `__conformance_door!`'s arm for a `MacroDoor`.
+#[doc(hidden)]
+pub trait MacroDoorArg {
+    /// The door function the macro door names.
+    fn door_arg(&self) -> DoorFn;
+}
+
+impl MacroDoorArg for busbar_contract::abi::sdk::door::MacroDoor {
+    fn door_arg(&self) -> DoorFn {
+        self.door_fn()
+    }
+}
+
+/// `__conformance_door!`'s arm for a door function: the value itself, coerced by the caller.
+#[doc(hidden)]
+pub trait DoorFnArg<F> {
+    /// The door function, as given.
+    fn door_arg(&self) -> F;
+}
+
+impl<F: Copy> DoorFnArg<F> for &F {
+    fn door_arg(&self) -> F {
+        **self
+    }
+}
+
 /// **THE SUITE, IN A PLUGIN REPO'S `tests/conformance.rs`.** Emits the suite's tests over the
 /// plugin's linked door, its cdylib and its inputs; `plugin-ci.yml` runs them under `--release`
 /// and requires every one to RUN. The names are the contract the CI step reads.
@@ -2057,12 +2235,104 @@ macro_rules! conformance_suite {
         $(,)?
     ) => {
         fn __busbar_conformance_subject() -> $crate::conformance::Subject {
-            #[allow(unused_mut)]
-            let mut s = $crate::conformance::Subject::new($door, $cdylib, $inputs);
-            $(s = s.with_host($host);)?
-            $(s = s.with_anchors($tls);)?
-            $(s = s.with_namespace($create, $drop);)?
-            s.declared_in(env!("CARGO_MANIFEST_DIR"))
+            $crate::conformance_suite!(
+                @subject door: $door,
+                manifest_dir: env!("CARGO_MANIFEST_DIR"),
+                cdylib: $cdylib,
+                inputs: $inputs
+                $(, host: $host)?
+                $(, tls: $tls)?
+                $(, namespace: ($create, $drop))?
+            )
+        }
+        $crate::conformance_suite!(@tests);
+    };
+    // A door named by a `LoadedDoor` (a crate that exports its `door` function alone restates it:
+    // `loaded: unsafe { LoadedDoor::from_raw(plugin::door) }`), the name #1469 keeps.
+    (
+        loaded: $loaded:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+        $(,)?
+    ) => {
+        fn __busbar_conformance_subject() -> $crate::conformance::Subject {
+            $crate::conformance_suite!(
+                @subject loaded: $loaded,
+                manifest_dir: env!("CARGO_MANIFEST_DIR"),
+                cdylib: $cdylib,
+                inputs: $inputs
+                $(, host: $host)?
+                $(, tls: $tls)?
+                $(, namespace: ($create, $drop))?
+            )
+        }
+        $crate::conformance_suite!(@tests);
+    };
+    // INTERNAL: the subject a suite runs over, its door named by either form, with the plugin
+    // crate's manifest dir (the suite passes its own `CARGO_MANIFEST_DIR`; a loader test passes a
+    // scratch dir). Both forms finish in the one `@declared` step, so each reads the declares file.
+    (
+        @subject door: $door:path,
+        manifest_dir: $dir:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+    ) => {
+        $crate::conformance_suite!(
+            @declared $crate::conformance::Subject::new(
+                $crate::__conformance_door!($door),
+                $cdylib,
+                $inputs,
+            ),
+            manifest_dir: $dir
+            $(, host: $host)?
+            $(, tls: $tls)?
+            $(, namespace: ($create, $drop))?
+        )
+    };
+    (
+        @subject loaded: $loaded:expr,
+        manifest_dir: $dir:expr,
+        cdylib: $cdylib:expr,
+        inputs: $inputs:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+    ) => {
+        $crate::conformance_suite!(
+            @declared $crate::conformance::Subject::of_loaded($loaded, $cdylib, $inputs),
+            manifest_dir: $dir
+            $(, host: $host)?
+            $(, tls: $tls)?
+            $(, namespace: ($create, $drop))?
+        )
+    };
+    // INTERNAL: the one step both forms share: the host, anchors and namespace hooks named, then
+    // the plugin crate's declares file read ([`Subject::declared_in`]).
+    (
+        @declared $subject:expr,
+        manifest_dir: $dir:expr
+        $(, host: $host:path)?
+        $(, tls: $tls:expr)?
+        $(, namespace: ($create:path, $drop:path))?
+    ) => {{
+        #[allow(unused_mut)]
+        let mut s: $crate::conformance::Subject = $subject;
+        $(s = s.with_host($host);)?
+        $(s = s.with_anchors($tls);)?
+        $(s = s.with_namespace($create, $drop);)?
+        s.declared_in($dir)
+    }};
+    (@tests) => {
+        /// THE CANARY: no configured credential crosses back, linked or dropped in.
+        #[test]
+        fn no_configured_credential_crosses_back() {
+            $crate::conformance::canary(&__busbar_conformance_subject());
         }
 
         /// THE BOTH-WAYS ARM: linked vs dropped in, exact crossings, equal folds.
@@ -2190,3 +2460,7 @@ macro_rules! conformance_suite {
 #[cfg(test)]
 #[path = "../tests/conformance_suite_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/conformance_declared_tests.rs"]
+mod declared_tests;

@@ -1,8 +1,8 @@
 //! The per-destination LIFETIME request budget: a `total`-window cap scoped to the destination, not
 //! the principal.
 //!
-//! Spent AFTER the upstream's 2xx response headers (never on the client-facing status), and
-//! reversed only when the response body then fails to transfer intact — a compensating refund, not
+//! Spent AFTER the upstream's successful answer head (never on what the caller is answered), and
+//! reversed only when the answer's body then fails to transfer intact — a compensating refund, not
 //! a general-purpose credit. An exhausted destination is excluded from the walk (never "ordered
 //! last"); see [`crate::LaneState::BudgetExhausted`].
 
@@ -25,9 +25,14 @@ impl LifetimeBudget {
         }
     }
 
-    /// A budget capped at `max_requests` (must be `>= 0`; a negative value is unlimited — use
-    /// [`Self::unlimited`] instead, since a negative cap has no unit to spend from).
+    /// A budget capped at `max_requests`. A negative cap is the unlimited sentinel (1.5.5's `-1`,
+    /// see the type's doc) and builds [`Self::unlimited`]: a cap below zero has no unit to spend
+    /// from, and a limited budget holding one would be refused at every spend while reading as
+    /// not exhausted.
     pub fn limited(max_requests: i64) -> Self {
+        if max_requests < 0 {
+            return Self::unlimited();
+        }
         Self {
             remaining: AtomicI64::new(max_requests),
             limited: true,
@@ -82,7 +87,7 @@ impl LifetimeBudget {
     }
 
     /// Return one previously-spent unit — the inverse of a single [`Self::spend`], used to
-    /// compensate a spend charged optimistically on the response headers when the body then failed
+    /// compensate a spend charged optimistically on the answer's head when the body then failed
     /// to transfer. Always paired with a prior successful spend on the same request, so a plain
     /// increment can never push the budget above its configured ceiling.
     pub fn refund(&self) {

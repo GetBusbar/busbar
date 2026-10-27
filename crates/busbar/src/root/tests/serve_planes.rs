@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR PLANES' COMPOSITION (TODO U6-U7, ARCHITECT Q-SW4 2026-10-02), over the test plane
+//! THE DOOR PLANES' COMPOSITION, over the test plane
 //! dropped in (its `plane_driver_test_plane` example `cdylib`, admitted against the Statement its
 //! own library states; the binary forbids unsafe code, so the fixture's source is never compiled
 //! into it): a bound plane whose section the deployment writes is opened, driven and its admin
@@ -318,6 +318,8 @@ test_plane_owned:
         .live
         .refreshed(
             &sections["test_plane"],
+            // A plane that reads no section beside its own is handed its section bare.
+            &sections["test_plane"],
             &serde_json::Map::new(),
             2,
             secrets,
@@ -529,4 +531,101 @@ pub(crate) fn chained_records(
 #[should_panic(expected = "is not built: run")]
 fn a_missing_fixture_cdylib_fails_the_test_and_names_its_build() {
     missing("no_such_fixture", BUILD_BUSBAR_EXAMPLES);
+}
+
+/// RED (row 159): a config apply onto the door serving the `pools` map
+/// ([`super::DoorAppliers::refresh_models`]) whose plane answers its `refresh` READY with a
+/// snapshot the host's checks refuse retires that generation, so the plane never keeps the
+/// generation the host refused as its newest: it answers from the one the host keeps serving.
+/// The test plane is composed, then applied as the door serving `pools` (the same instance, its
+/// served section that map's); opened `unchecked_refresh`, its refreshed snapshot states an
+/// arrival span the host's copy refuses, and it records each generation it retires.
+///
+/// RED before: `refresh_models` kept its generation and left the refused one unretired (no
+/// `retired.<next>` recorded); it retired only a generation whose seal failed.
+#[test]
+fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
+    use crate::root::loader::dispatch::kinds::plane::ServedFacts;
+    let pid = std::process::id();
+    let dir = std::env::temp_dir().join(format!("busbar-pools-refresh-refused-{pid}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let section: serde_yaml::Value = serde_yaml::from_str(&format!(
+        "capture_to: \"{}\"\nunchecked_refresh: true\n",
+        dir.display()
+    ))
+    .expect("yaml");
+    let mut sections = BTreeMap::new();
+    sections.insert("test_plane", section);
+    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let instance = "serve-pools-refresh-refused";
+    let _one = PUBLISHING.blocking_lock();
+    let _published = Published(instance);
+    let plane = bound(instance, &dispatcher);
+    let late = composed_services();
+    let served = compose_planes(
+        &[(instance.to_string(), plane)],
+        &dispatcher,
+        &late,
+        &sections,
+        None,
+        &money,
+        None,
+        None,
+    )
+    .expect("the door plane composes");
+    let composed = &served.planes[0].live;
+    let pools = Arc::new(super::DoorApply {
+        plugin: Arc::clone(&composed.plugin),
+        served_facts: ServedFacts {
+            section: busbar_contract::section::RESERVED_POOLS_KEY,
+            ..composed.served_facts.clone()
+        },
+        facts: composed.facts.clone(),
+        reach: None,
+        live: std::sync::RwLock::new(composed.current()),
+        driver: Arc::clone(&composed.driver),
+        probe_schedule: Arc::clone(&composed.probe_schedule),
+        scope_kinds: composed.scope_kinds.clone(),
+        clock: Arc::clone(&composed.clock),
+        units: Arc::clone(&composed.units),
+    });
+    let kept = pools.current().generation;
+    let providers = BTreeMap::new();
+    let reach = crate::root::door_steps::DoorReach {
+        providers: &providers,
+        secrets: Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+        auths: Arc::new(crate::root::door_steps::OutboundAuths::new(
+            Arc::clone(&dispatcher),
+            crate::LINKED.auths,
+            None,
+            crate::root::loader::dispatch::ConnTable::NoNeeds,
+        )),
+        conns: Arc::new(busbar_core_connector::Connector::new()),
+        stream_ceiling_secs: 1,
+        catalog: None,
+        models: None,
+        upgrades: Vec::new(),
+    };
+    let mut applied = BTreeMap::new();
+    applied.insert(
+        busbar_contract::section::RESERVED_POOLS_KEY,
+        serde_yaml::Value::Mapping(Default::default()),
+    );
+    super::DoorAppliers(vec![Arc::clone(&pools)]).refresh_models(
+        &applied,
+        &super::DoorEgress {
+            reach: &reach,
+            journal: post() as Arc<dyn busbar_kernel_egress::ports::Journal>,
+        },
+    );
+    assert_eq!(
+        pools.current().generation,
+        kept,
+        "the host keeps serving its generation"
+    );
+    assert!(
+        dir.join(format!("retired.{}", kept + 1)).exists(),
+        "the generation the host refused was retired at the plane"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

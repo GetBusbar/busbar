@@ -1,6 +1,0 @@
-# A SYNTHETIC `[[cell]]` ROW, appended by the kind-isolation matrix selftest. No crate of the
-# census is named `kind-isolation-selftest-gone`, so this cell measures nothing, on every tree, and
-# must be refused as dead: the state a crate's row is left in once the crate leaves the census.
-[[cell]]
-crate = "kind-isolation-selftest-gone"
-kind = "store"

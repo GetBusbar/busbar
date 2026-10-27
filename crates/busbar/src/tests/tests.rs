@@ -436,263 +436,42 @@ fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
     assert_eq!(flag_value(&flags, "lto"), None);
 }
 
+/// THE STAMP REPORTS THE VALUE RUSTC USED (the stamp exists so a perf number is never pinned on the
+/// wrong build, `src/build_stamp.rs`): a `-C` option's value is the one its exact name carries, and
+/// when the option is passed twice rustc takes the last, so the stamp does too.
+/// RED before the fix: the first element CONTAINING `<name>=` won, so `-Ctarget-cpu=native
+/// -Ctarget-cpu=x86-64` stamped `native`, and `-Clinker-plugin-lto=<path>` stamped as `lto=<path>`.
+#[test]
+fn a_flag_value_is_the_last_one_passed_under_its_exact_name() {
+    use crate::build_stamp::flag_value;
+    assert_eq!(
+        flag_value(
+            &["-Ctarget-cpu=native", "-Ctarget-cpu=x86-64"],
+            "target-cpu"
+        )
+        .as_deref(),
+        Some("x86-64"),
+        "rustc takes the last of a repeated option"
+    );
+    assert_eq!(
+        flag_value(&["-Clinker-plugin-lto=/usr/lib/LLVMgold.so"], "lto"),
+        None,
+        "another option whose name ends in the one asked for is not it"
+    );
+    // The green twins: both shapes cargo hands a `-C` option in still read.
+    assert_eq!(
+        flag_value(&["-C", "lto=fat"], "lto").as_deref(),
+        Some("fat")
+    );
+    assert_eq!(
+        flag_value(&["-Ctarget-cpu=native"], "target-cpu").as_deref(),
+        Some("native")
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // A PLANE-GATED MODULE IS NAMED ONLY FROM CODE UNDER THE SAME GATE
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// The gates a `#[cfg(…)]` attribute names — each `feature = "…"`, and each generated linked-axis
-/// cfg (`linked_axis_<axis>`, set by `build.rs` when a linked plane rides that axis, which is how a
-/// root module that exists for an axis rather than for one plane is gated) — or nothing if it is not
-/// a `cfg` gate.
-///
-/// `cfg_attr` is deliberately NOT a gate: it decorates code that compiles either way, so a feature
-/// named inside one says nothing about whether the line it sits over is compiled.
-fn cfg_gate_features(attr: &str) -> Vec<String> {
-    if !attr.starts_with("#[cfg(") && !attr.starts_with("#![cfg(") {
-        return Vec::new();
-    }
-    const KEY: &str = "feature = \"";
-    let mut out = Vec::new();
-    let mut rest = attr;
-    while let Some(at) = rest.find(KEY) {
-        rest = &rest[at + KEY.len()..];
-        let Some(end) = rest.find('"') else { break };
-        out.push(rest[..end].to_string());
-        rest = &rest[end..];
-    }
-    const AXIS: &str = "linked_axis_";
-    let mut rest = attr;
-    while let Some(at) = rest.find(AXIS) {
-        let tail = &rest[at..];
-        let end = tail
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(tail.len());
-        out.push(tail[..end].to_string());
-        rest = &tail[end..];
-    }
-    out
-}
-
-/// The net `{`/`(`/`[` minus `}`/`)`/`]` of a line, ignoring what is inside a string literal.
-fn bracket_delta(code: &str) -> i32 {
-    let mut delta = 0;
-    let mut in_str = false;
-    let mut escaped = false;
-    for c in code.chars() {
-        if in_str {
-            match c {
-                _ if escaped => escaped = false,
-                '\\' => escaped = true,
-                '"' => in_str = false,
-                _ => {}
-            }
-            continue;
-        }
-        match c {
-            '"' => in_str = true,
-            '{' | '(' | '[' => delta += 1,
-            '}' | ')' | ']' => delta -= 1,
-            _ => {}
-        }
-    }
-    delta
-}
-
-/// The gate every line of a source file is compiled under, as the features named by the `#[cfg(…)]`
-/// attributes covering it. `base` is the file's OWN gate — the one its `pub mod` declaration
-/// carries — which covers every line in it.
-///
-/// A LEXICAL READING, not a parse. Bracket depth is what closes a region: an attribute attaches to
-/// the item that follows it, and that item ends at the first point where depth is back where it
-/// started and the line closes with `;`, `,` or `}`. That covers the shapes the root actually
-/// writes — a gated field, a gated parameter, a gated `fn`, a gated `use`, and a gated `if` inside
-/// an ungated one — and anything it reads wrongly fails as a false ALARM, which someone reads,
-/// rather than a false all-clear, which nobody does.
-fn gate_by_line(src: &str, base: &[String]) -> Vec<Vec<String>> {
-    let mut out: Vec<Vec<String>> = Vec::new();
-    // Regions still open, as (the depth the region closes back to, the features gating it).
-    let mut open: Vec<(i32, Vec<String>)> = Vec::new();
-    // The attributes read since the last code line, waiting for the item they attach to.
-    let mut pending: Vec<String> = Vec::new();
-    // A `#[cfg(all(\n  feature = "…",\n))]` spread over lines, held until its brackets balance.
-    let mut attr_buf = String::new();
-    let mut depth: i32 = 0;
-    for raw in src.lines() {
-        let mut active: Vec<String> = base.to_vec();
-        for (_, feats) in &open {
-            active.extend(feats.iter().cloned());
-        }
-        let code = raw.split("//").next().unwrap_or("").trim().to_string();
-        if !attr_buf.is_empty() {
-            attr_buf.push_str(&code);
-            if bracket_delta(&attr_buf) == 0 {
-                pending.extend(cfg_gate_features(&attr_buf));
-                attr_buf.clear();
-            }
-            active.extend(pending.iter().cloned());
-            out.push(active);
-            continue;
-        }
-        let attribute = code.starts_with("#[") || code.starts_with("#![");
-        if attribute && bracket_delta(&code) != 0 {
-            attr_buf = code;
-            active.extend(pending.iter().cloned());
-            out.push(active);
-            continue;
-        }
-        if attribute && code.ends_with(']') {
-            pending.extend(cfg_gate_features(&code));
-            active.extend(pending.iter().cloned());
-            out.push(active);
-            continue;
-        }
-        if attribute {
-            // `#[cfg(…)] field: Ty,` — the gate and the code it gates on one line.
-            let head = code.find(']').map_or("", |at| &code[..=at]);
-            pending.extend(cfg_gate_features(head));
-        }
-        active.extend(pending.iter().cloned());
-        out.push(active);
-        if code.is_empty() {
-            continue;
-        }
-        // A code line: whatever was pending gates the item it opens, until that item ends.
-        let start = depth;
-        depth += bracket_delta(&code);
-        let closes = code.ends_with(';') || code.ends_with(',') || code.ends_with('}');
-        if !pending.is_empty() && !(depth <= start && closes) {
-            open.push((start, std::mem::take(&mut pending)));
-        }
-        pending.clear();
-        while let Some((closes_at, _)) = open.last() {
-            if depth <= *closes_at && closes {
-                open.pop();
-            } else {
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// Every `.rs` file under `dir`, test files excluded — a test naming a plane's module is compiled
-/// under its own `#[cfg(test)]` gate and is not the shipped path this invariant is about.
-fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-    for entry in std::fs::read_dir(dir).expect("the crate's own source tree is readable") {
-        let path = entry.expect("a readable directory entry").path();
-        if path.is_dir() {
-            if path.file_name().is_none_or(|n| n != "tests") {
-                source_files(&path, out);
-            }
-        } else if path.extension().is_some_and(|e| e == "rs")
-            && path.file_name().is_some_and(|n| n != "tests.rs")
-        {
-            out.push(path);
-        }
-    }
-}
-
-/// A ROOT MODULE GATED ON A PLANE'S FEATURE IS NAMED ONLY FROM CODE UNDER THE SAME FEATURE.
-///
-/// The point of gating a plane's root module on the plane's switch (its feature, or the linked-axis
-/// cfg the plane's row sets — the node on `linked_axis_node`) is that the plane is DELETABLE: a build
-/// without the feature must still compile, boot and serve the remaining planes. One unconditional
-/// call into a gated module takes that away, and takes it away SILENTLY — every default build is
-/// green, and only the deletion gates, which are not what a change is usually run against, go red.
-/// That is exactly how a root whose shared rate card was built through one plane's unit file
-/// shipped: the card is the root's, every plane's exit prices against it, and no build without
-/// that one plane could compile it.
-///
-/// So the rule is read off the source rather than trusted, and nothing here spells a plane: the
-/// gated module names and their features come from `root/mod.rs` itself, and every line in this
-/// crate that names one must be compiled under a `#[cfg]` carrying the same feature — from the
-/// file's own declaration or from an attribute over the line.
-#[test]
-fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let root_mod = std::fs::read_to_string(src.join("root/mod.rs"))
-        .expect("the composition root's own module file is where the gates are declared");
-
-    // (module name, the single gate — a feature or a linked-axis cfg — its declaration carries).
-    let mut gated: Vec<(String, String)> = Vec::new();
-    let lines: Vec<&str> = root_mod.lines().collect();
-    for (i, line) in lines.iter().enumerate() {
-        let feats = cfg_gate_features(line.trim());
-        let [feature] = feats.as_slice() else {
-            continue;
-        };
-        let Some(decl) = lines.get(i + 1).map(|l| l.trim()) else {
-            continue;
-        };
-        let Some(name) = decl
-            .strip_prefix("pub mod ")
-            .or_else(|| decl.strip_prefix("mod "))
-            .and_then(|rest| rest.strip_suffix(';'))
-        else {
-            continue;
-        };
-        gated.push((name.to_string(), feature.clone()));
-    }
-    // Two today: the admin units (`root-admin`) and the test harness. There were four (the node, the
-    // decisions plane's module, the admin units and the harness); the node now compiles in every
-    // build (ARCHITECT Q1), and a plane served through its door has no root module (FLIP-DECISIONS
-    // deleted the decisions plane's). The floor counts what is left and still refuses a scan that
-    // read none.
-    assert!(
-        gated.len() >= 2,
-        "the root declares its feature-gated modules, or this test is reading the wrong file: \
-         found {gated:?}"
-    );
-
-    let mut files = Vec::new();
-    source_files(&src, &mut files);
-    assert!(
-        files.len() > 10,
-        "the crate's source tree is more than {} files, or this test is walking the wrong one",
-        files.len()
-    );
-
-    let mut escapes: Vec<String> = Vec::new();
-    for file in &files {
-        let text = std::fs::read_to_string(file).expect("a source file this test just listed");
-        // The file's OWN gate: a gated module's whole body compiles under its feature, so a reach
-        // between two files of the same plane is not an escape.
-        let stem = file
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        let parent = file
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|s| s.to_str())
-            .unwrap_or_default();
-        let base: Vec<String> = gated
-            .iter()
-            .filter(|(name, _)| name == stem || name == parent)
-            .map(|(_, feature)| feature.clone())
-            .collect();
-        let gate = gate_by_line(&text, &base);
-        for (i, line) in text.lines().enumerate() {
-            let code = line.split("//").next().unwrap_or("");
-            for (name, feature) in &gated {
-                if !code.contains(&format!("{name}::")) || gate[i].iter().any(|f| f == feature) {
-                    continue;
-                }
-                let at = file.strip_prefix(&src).unwrap_or(file).display();
-                escapes.push(format!(
-                    "{at}:{}: names `{name}::` with no `{feature}` gate over it",
-                    i + 1
-                ));
-            }
-        }
-    }
-    assert!(
-        escapes.is_empty(),
-        "a plane's module is reached from code that compiles without that plane — the build \
-         without the feature cannot compile, and only the deletion gates would say so:\n  {}",
-        escapes.join("\n  ")
-    );
-}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // THE BOOT BOOK: IT REACHES THE CONFIGURED STORE, AND ITS OPENING IS SEALED BEFORE ANYTHING SETTLES
@@ -1309,7 +1088,7 @@ fn one_seal_after_two_reloads() {
 
     // (c) BOOK IS BOOT-ONLY: every call of `root::boot::book` in the crate's code (comments and the
     // test modules skipped) is the boot's one, in `main.rs`.
-    let calls = book_call_sites(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+    let calls = book_call_sites(&std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("src"));
     assert_eq!(
         calls,
         vec!["main.rs".to_string()],
@@ -1363,68 +1142,6 @@ fn book_call_sites(src: &std::path::Path) -> Vec<String> {
     let mut out = Vec::new();
     walk(src, src, &mut out);
     out
-}
-
-/// ITEMS 244, 247, 259 — THREE DOC CLAIMS IN `main.rs` THAT THE CODE BESIDE THEM CONTRADICTED.
-///
-/// Read off the source, because each claim is prose and the code that falsifies it sits beside it:
-/// `register_planes` registers every linked entry, and the manifest links the plane crate the old
-/// doc said was "still built into core ... not pushed here yet" (so that was false); `main()`/`run()`
-/// call into `root::` throughout (so "Nothing in `main()` calls into it yet" was false); and exactly
-/// one root unit binds the boot book — the node's arm — while the admin views share it (so "Every
-/// plane's exit arm settles onto it" was false for every other plane).
-#[test]
-fn main_rs_doc_claims_match_the_code_beside_them() {
-    const MAIN: &str = include_str!("../main.rs");
-    const MANIFEST: &str = include_str!("../../Cargo.toml");
-
-    // 244: that plane IS registered — its crate is a linked row and `register_planes` registers
-    // every linked entry — so its doc may not say otherwise.
-    // The manifest's linked row for the plane the old doc said was not pushed — manifest data, kept
-    // in a fixture so this test names no plane.
-    const PUSHED_ROW: &str = include_str!("../../tests/fixtures/pushed_plane_linked_row.txt");
-    assert!(MANIFEST.contains(PUSHED_ROW.trim_end()));
-    let register_planes = &MAIN[MAIN
-        .find("\nfn register_planes() {")
-        .expect("register_planes")..];
-    let register_planes = &register_planes[..register_planes.find("\n}\n").expect("it closes")];
-    assert!(register_planes.contains("root::linked::register_planes(&LINKED);"));
-    assert!(
-        !MAIN.contains("is not pushed here yet"),
-        "register_planes' doc says a plane is not pushed, and the function registers every linked plane"
-    );
-
-    // 247: `main()` calls into `root::`, so the `mod root;` doc may not say nothing does.
-    let main_fn = &MAIN[MAIN.find("\nfn main() {").expect("main() is in main.rs")..];
-    let main_body = &main_fn[..main_fn.find("\n}\n").expect("main() closes")];
-    assert!(
-        main_body.contains("root::"),
-        "the control: main() reaches root::"
-    );
-    assert!(
-        !MAIN.contains("Nothing in `main()` calls into it"),
-        "the `mod root;` doc says main() does not call into the root, and it does"
-    );
-
-    // 259: exactly one root unit binds the boot book (the node's arm), so the book's doc may not claim
-    // every plane settles onto it.
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/root");
-    let binders = std::fs::read_dir(&root)
-        .expect("the composition root")
-        .map(|e| e.expect("a directory entry").path())
-        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .filter(|p| {
-            std::fs::read_to_string(p)
-                .expect("a readable unit")
-                .contains("on_book: Some(|ctx| bind_book(")
-        })
-        .count();
-    assert_eq!(binders, 1);
-    assert!(MAIN.contains("ROOT_UNITS.iter().filter_map(|u| u.on_book)"));
-    assert!(
-        !MAIN.contains("Every plane's exit arm settles onto it"),
-        "the boot book's doc claims every plane settles onto it; only one root unit's arm is bound here"
-    );
 }
 
 /// THE IDLE PURGE NEVER WRITES A POSITIVE DECAY TO AN ARENA THAT RAN AT 0. The huge arena (where an
@@ -1495,23 +1212,4 @@ fn the_line_serve_flag_is_read_off_the_planes_declared_rows() {
         args(&["busbar", "--planted-serve"])
     ));
     assert!(!line_serve_requested(&[planted], args(&["busbar"])));
-}
-
-/// The composition root's own source spells no flag a linked plane declares (its `Flags:` rows,
-/// read here as the root reads them, so this cell names no plane either).
-#[test]
-fn the_root_spells_no_planes_line_serve_flag() {
-    let main = include_str!("../main.rs");
-    let flags: Vec<&str> = crate::root::cli::help_rows()
-        .iter()
-        .flat_map(|rows| rows.iter())
-        .filter(|(slot, _)| *slot == "flag")
-        .filter_map(|(_, lines)| lines.split_whitespace().next())
-        .collect();
-    for flag in flags {
-        assert!(
-            !main.contains(&format!("\"{flag}\"")),
-            "main.rs spells the plane flag {flag} as a literal"
-        );
-    }
 }

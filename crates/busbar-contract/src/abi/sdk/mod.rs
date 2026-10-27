@@ -31,9 +31,16 @@ pub use crate::{export_door, plugin_door};
 pub mod capture;
 // THE SAFE SURFACE (THE DESIGN, plugins and the plugin ABI): a slot body with no `unsafe` — host-lent memory read and
 // host buffers filled through `Lent`/`HostBuf`, the instance typed through `Instance`.
+// `#[macro_use]`: the lists `lent.rs` states its accessors from are the test support's too (its
+// pointer and length pairs, status row 194): one list, read in both places.
+#[macro_use]
 pub mod lent;
 pub mod safe;
 pub use lent::{open_failed, HostBuf, Lent, LentList, SignalScalar};
+// THE GENERATION BORROW: what an op's `out` may name at runtime, held by the borrow checker to
+// memory that lives until the instance's next refresh generation (status row 194).
+pub mod generation;
+pub use generation::Gen;
 // A SLOT'S `out`, WRITTEN BY THE SDK: scalars set, every pointer through an SDK writer.
 pub mod out;
 pub use out::{Out, Scalar};
@@ -49,12 +56,16 @@ pub use safe::{Instance, Safe, SafeSlot};
 pub mod services;
 pub use services::{
     CredentialSecret, Judged, Minted, Names, Pend, Records, ServiceError, Services, Signature,
-    Signed, TrustItem, TrustItems, Wake,
+    Signed, StaticServices, StaticWake, TrustItem, TrustItems, Wake,
 };
 // THE ONE DIGEST A PLUGIN TAKES without linking a crypto crate of its own.
 pub mod digest;
 // THE ONE WIPED HMAC-SHA256 an auth plugin keys over secret material.
 pub mod hmac;
+// A PLUGIN'S CREDENTIALS: sealed at settings parse, no getter, no Debug (the chip design, its section on plugin credentials).
+pub mod cred;
+// THE CHIP'S RECIPES: every auth step performed by the credential (the chip design, its section on recipe classes).
+pub mod chip;
 // THE AUTH KIND'S VERIFY DOOR over the safe layer (`auth_verify_door!`). An auth plugin keeps its
 // inbound verdict cache inside itself (THE DESIGN, section 11.11).
 pub mod auth_door;

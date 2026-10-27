@@ -311,10 +311,10 @@ pub fn bind(
                             }
                         }
                     };
-                    busbar_kernel::durable::write_with(
+                    crate::root::loader::durable::write_with(
                         &file,
                         format!("{seed}\n").as_bytes(),
-                        busbar_kernel::durable::DurableOpts {
+                        crate::root::loader::durable::DurableOpts {
                             mode: Some(0o600),
                             exclusive: true,
                         },
@@ -411,6 +411,7 @@ fn bind_in_store(
 /// # Errors
 ///
 /// [`KeysetError::NoEntropy`] only.
+#[cfg(test)]
 pub fn bind_ephemeral(durability: &mut Durability) -> Result<KeysetSource, KeysetError> {
     let token = crate::root::kernel::new_kernel().durability_token();
     bind(durability, None, &token, StepName::Meter, 0)

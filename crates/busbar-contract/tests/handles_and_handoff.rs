@@ -54,15 +54,15 @@ fn a_detached_stream_carries_the_layer_that_handed_it_up() {
     // anything, and a stream that lost it would be adopted by whoever took it. The peer travels with
     // it so the adopting layer does not have to ask a socket it does not own.
     let stream = RawStream::new(
-        "http",
+        "request",
         "198.51.100.4:44300".to_string(),
         Box::new(futures::io::Cursor::new(Vec::new())),
     );
-    assert_eq!(stream.from(), "http");
+    assert_eq!(stream.from(), "request");
     assert_eq!(stream.peer(), "198.51.100.4:44300");
 
     let rendered = format!("{stream:?}");
-    assert!(rendered.contains("http"), "{rendered}");
+    assert!(rendered.contains("request"), "{rendered}");
     assert!(rendered.contains("198.51.100.4:44300"), "{rendered}");
     assert!(rendered.contains("RawStream"), "{rendered}");
 
@@ -73,19 +73,19 @@ fn a_detached_stream_carries_the_layer_that_handed_it_up() {
 
 #[test]
 fn a_handoff_between_two_layers_is_told_apart_by_the_layer_it_names() {
-    // Two streams that differ only in which layer detached them. A target that composes over `http`
-    // adopts the first and refuses the second, so the field the refusal turns on has to be the one
-    // the source actually named.
-    let from_http = RawStream::new(
-        "http",
+    // Two streams that differ only in which layer detached them. A target that composes over
+    // `request` adopts the first and refuses the second, so the field the refusal turns on has to
+    // be the one the source actually named.
+    let from_request = RawStream::new(
+        "request",
         "peer:1".to_string(),
         Box::new(futures::io::Cursor::new(Vec::new())),
     );
-    let from_stdio = RawStream::new(
-        "stdio",
+    let from_piped = RawStream::new(
+        "piped",
         "peer:1".to_string(),
         Box::new(futures::io::Cursor::new(Vec::new())),
     );
-    assert_ne!(from_http.from(), from_stdio.from());
-    assert_eq!(from_http.peer(), from_stdio.peer());
+    assert_ne!(from_request.from(), from_piped.from());
+    assert_eq!(from_request.peer(), from_piped.peer());
 }

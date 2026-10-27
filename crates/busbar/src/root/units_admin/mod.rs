@@ -692,23 +692,27 @@ impl LedgerView for NodeLedger {
         ))
     }
 
-    /// Re-derived from this node's chain under the lock a seal takes, so the held set the walk
-    /// reads is the one the ring holds ([`Durability::each_held_checkpoint`]).
+    /// Re-derived from this node's chain as of one hold of the lock a seal takes, so the held set
+    /// the walk reads is the one the ring holds ([`Durability::held_walk`]); the walk itself, which
+    /// reads the store, runs without it.
     ///
-    /// [`Durability::each_held_checkpoint`]: crate::root::durability::Durability::each_held_checkpoint
+    /// [`Durability::held_walk`]: crate::root::durability::Durability::held_walk
     fn each_checkpoint(
         &self,
         each: &mut dyn FnMut(&Checkpoint),
     ) -> Result<(), CheckpointUnreadable> {
-        self.lock().each_held_checkpoint(each)
+        let walk = self.lock().held_walk();
+        walk.each(each)
     }
 
     fn checkpoint_keys(&self) -> AuditKeySet {
         crate::root::durability::keyset_of(&self.lock().record)
     }
 
+    /// The chain as of one hold of the lock, read without it: the read scans the store.
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
-        self.lock().migration_marker()
+        let chain = self.lock().chain_at();
+        chain.migration_marker()
     }
 
     /// The deployment's dated history, pinned — a relay and no more.
@@ -747,17 +751,23 @@ impl LedgerView for NodeLedger {
         self.lock().refused_balances()
     }
 
-    /// Read off this node's own journal, under the same lock every other read takes.
+    /// Read off this node's own journal as of one hold of the lock every other read takes, and
+    /// without it: the read scans the store.
     fn recorded_counts(&self, amends: &str) -> Option<RecordedCounts> {
-        adjust::recorded_in(&self.lock(), amends)
+        let chain = self.lock().chain_at();
+        adjust::recorded_in(chain, amends)
     }
 
-    /// Both halves under ONE hold of the lock a settlement takes.
+    /// Both halves as of ONE hold of the lock a settlement takes: the book and the chain taken
+    /// under it, the walk of the chain, which reads the store, after it.
     fn verify_snapshot(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
-        let durability = self.lock();
+        let (walk, book) = {
+            let durability = self.lock();
+            (durability.held_walk(), durability.ledger.book().snapshot())
+        };
         VerifySnapshot {
-            read: durability.each_held_checkpoint(each),
-            book: Some(durability.ledger.book().snapshot()),
+            read: walk.each(each),
+            book: Some(book),
             anchored: None,
         }
     }
@@ -782,14 +792,21 @@ impl LedgerView for NodeLedger {
         crate::root::durability::walk_stored_chains(&lane, own, &keys).findings
     }
 
-    /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads
-    /// cannot read as a head that differs.
+    /// All three as of ONE hold of the lock a seal takes, so a checkpoint sealed between reads
+    /// cannot read as a head that differs; the walk of the chain, which reads the store, after it.
     fn verify_snapshot_anchored(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
-        let durability = self.lock();
+        let (walk, book, anchored) = {
+            let durability = self.lock();
+            (
+                durability.held_walk(),
+                durability.ledger.book().snapshot(),
+                durability.anchored_head(),
+            )
+        };
         VerifySnapshot {
-            read: durability.each_held_checkpoint(each),
-            book: Some(durability.ledger.book().snapshot()),
-            anchored: durability.anchored_head(),
+            read: walk.each(each),
+            book: Some(book),
+            anchored,
         }
     }
 }
@@ -953,17 +970,45 @@ impl AuditView for NodeAudit {
         take(&durability.record, Some(&durability.audit_records));
     }
 
+    /// A window the cache covers is answered under one hold of the lock. An older one is read off
+    /// the chain as of one hold and WITHOUT the lock — the read scans the store, and every unit's
+    /// settle waits on this lock (THE DESIGN §11.2) — then answered under a second hold, with what
+    /// was sealed in between added from the cache so the records and the chain's head are still of
+    /// one moment ([`Durability::audit_window_since`]).
+    ///
+    /// [`Durability::audit_window_since`]: crate::root::durability::Durability::audit_window_since
     fn read_window(
         &self,
         from: u64,
         to: u64,
         take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
     ) {
-        let durability = self.lock();
-        // A window the journal would not read back is not answered at all, which the range read
-        // renders as the store failure it is; never as an empty window.
-        if let Some(records) = durability.audit_window(from, to) {
-            take(&durability.record, Some(&records));
+        use crate::root::durability::AuditWindowAt;
+        loop {
+            let (chain, sealed_before) = {
+                let durability = self.lock();
+                match durability.audit_window_at(from, to) {
+                    AuditWindowAt::Cached(records) => {
+                        take(&durability.record, Some(&records));
+                        return;
+                    }
+                    AuditWindowAt::OnChain {
+                        chain,
+                        sealed_before,
+                    } => (chain, sealed_before),
+                }
+            };
+            // A window the journal would not read back is not answered at all, which the range
+            // read renders as the store failure it is; never as an empty window.
+            let Some(mut records) = chain.audit_window(from, to) else {
+                return;
+            };
+            let durability = self.lock();
+            if durability.audit_window_since(&mut records, sealed_before, from, to) {
+                take(&durability.record, Some(&records));
+                return;
+            }
+            // More was sealed while the chain was read than the cache still holds: read it again.
         }
     }
 
@@ -1245,9 +1290,14 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 VerbScope::ReadOnly => busbar_contract::authz::Scope::ReadOnly,
             };
             let principal = &self.attribution.principal;
-            return adjust::adjust_effect(request, scope, principal, &*self.pools, |amends| {
-                self.ledger.recorded_counts(amends)
-            })
+            return adjust::adjust_effect(
+                request,
+                scope,
+                principal,
+                &*self.pools,
+                self.amendments.as_deref(),
+                |amends| self.ledger.recorded_counts(amends),
+            )
             .map(|answer| answer.pack());
         }
         // The four verbs owner answer Q71(2) binds (see `bound`). Admitted by the verbs unit — scope
@@ -1364,7 +1414,7 @@ fn json_answer(body: Vec<u8>) -> AdminAnswer {
 
 /// Whether `view` already holds `correction`: an amendment entry by the same author for the same
 /// reason over the same window, carrying every figure the correction names. That is what the same
-/// body produces each time it is applied, so a second one is a replay (TODO M28).
+/// body produces each time it is applied, so a second one is a replay.
 fn already_applied(
     view: busbar_kernel_ledger::cost::HistoryView<'_>,
     correction: &crate::root::kernel::Correction,
@@ -1437,7 +1487,7 @@ fn amend_rate_history_effect(
     if effective_until.is_some_and(|until| until <= effective_from) {
         return Err(GovernanceError::Validation);
     }
-    // A CORRECTION IS BACK-DATED OR IT IS NOT A CORRECTION (TODO M28; #79 "an entry whose
+    // A CORRECTION IS BACK-DATED OR IT IS NOT A CORRECTION (#79 "an entry whose
     // `effective_from` lies in the past"). A window that opens after the instant the correction
     // arrived prices a future no booked line has reached yet: that is a forward price, which is a
     // configuration write, and an amendment signed today must not be able to stand in for one.
@@ -1542,7 +1592,10 @@ fn amend_rate_history_effect(
     // principal that submitted it and the canonical bytes of the correction.
     //
     // AHEAD, not after: an amendment the journal will not take is REFUSED (`Store`) and the history
-    // is not touched, so no correction can price a window without its durable record. A history with
+    // is not touched, so no correction can price a window without its durable record. And the
+    // converse: a record the journal chained but could not keep yet is retained and lands ahead of
+    // the next append (`AmendmentJournal::seal_policy`), so its correction is applied as the chain
+    // will hold it (#79) and answered 503 "do not re-submit" below. A history with
     // no opening entry is refused first, so a record is never written for a correction that would
     // then not apply (the holder never returns to empty once resolved).
     //
@@ -1575,7 +1628,7 @@ fn amend_rate_history_effect(
     };
     let seq = history
         .amend(&correction, |card, base| {
-            // A CORRECTION APPLIES ONCE (TODO M28). The body names the window, the cells, the fee
+            // A CORRECTION APPLIES ONCE. The body names the window, the cells, the fee
             // and the reason, and nothing that makes one submission different from the next — so
             // the same bytes, sent again after a later correction moved the window on, would put
             // the earlier price back with no new operator act. Under the apply lock (this closure
@@ -1896,7 +1949,7 @@ impl AmendmentJournal {
     ///
     /// # Errors
     ///
-    /// `Store` when the journal could not make the record durable — the caller then refuses the
+    /// `Store` when the record can never land ([`Self::seal_policy`]) — the caller then refuses the
     /// amendment rather than applying a correction nothing recorded.
     pub fn record(
         &self,
@@ -1929,17 +1982,33 @@ impl AmendmentJournal {
     /// record before it), at most [`crate::root::durability::ACK_DEADLINE`], without the book's
     /// lock. A journal on a disk answers at once: the disk took it.
     ///
+    /// A record the log still OWES is not kept, on a disk or in the store: its write, its sync or
+    /// its hand-over to the store failed, and the log retained it to write ahead of the next append
+    /// ([`Self::seal_policy`]).
+    ///
     /// # Errors
     ///
-    /// The store refused or did not answer in time. The record stays on the chain and is offered
-    /// again.
+    /// The log still owes the record, or the store refused or did not answer in time. The record
+    /// stays on the chain and is offered again.
     pub fn acked(&self, node_seq: u64) -> Result<(), String> {
         let (lane, node) = {
             let durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
+            let node = durability.journal.node();
+            let owed = durability.journal.log().owed().iter().any(|record| {
+                let (of, seq) = record.identity();
+                of == node && seq <= node_seq
+            });
+            if owed {
+                return Err(
+                    "the journal could not make the record durable; it is retained on \
+                     this node's journal and written ahead of the next record"
+                        .to_string(),
+                );
+            }
             if !durability.durable_in_store() {
                 return Ok(());
             }
-            (durability.lane().cloned(), durability.journal.node())
+            (durability.lane().cloned(), node)
         };
         lane.map_or(Ok(()), |lane| {
             lane.wait_acked(node, node_seq, crate::root::durability::ACK_DEADLINE)
@@ -1949,9 +2018,17 @@ impl AmendmentJournal {
     /// Append one `Policy`-class record whose body the caller built, dated `wall_secs`, and answer
     /// with its node sequence and chain hash — the position an operator cites it by.
     ///
+    /// SEALED IS SEALED, KEPT OR NOT (#79). The journal chains the record before the log is asked to
+    /// take it, and a log that could not make it durable RETAINS it and writes it ahead of the next
+    /// append (`busbar-kernel-wal` `Journal::append`, `Wal::append_batch`): it reaches the chain a
+    /// restart rebuilds from. So a `DurabilityLost` the log holds or owes the record for answers
+    /// its position like any other seal — the caller applies what it records and asks
+    /// [`Self::acked`], which says it is not kept yet.
+    ///
     /// # Errors
     ///
-    /// `Store` when the journal could not make the record durable; the caller then refuses.
+    /// `Store` when the log neither holds nor owes the record, so it can never land; the caller
+    /// then refuses. A log that retains on every arm never answers it.
     pub fn seal_policy(
         &self,
         body: Vec<u8>,
@@ -1960,19 +2037,46 @@ impl AmendmentJournal {
         let entry = busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Policy, body)
             .at(wall_secs, 0);
         let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
-        let ack = durability
+        match durability.journal.append(
+            &self.token,
+            busbar_contract::caps::StepName::Route,
+            &[entry],
+        ) {
+            Ok(ack) => {
+                let sealed = ack
+                    .sealed
+                    .last()
+                    .ok_or(busbar_core_admin::GovernanceError::Store)?;
+                Ok((sealed.node_seq, sealed.hash))
+            }
+            Err(_lost) => {
+                // The record was sealed last, so it is the number just below the journal's next
+                // and the chain's head.
+                let journal = &durability.journal;
+                let sealed = (journal.node(), journal.next_seq().saturating_sub(1));
+                let log = journal.log();
+                if log.holds(sealed.0, sealed.1)
+                    || log.owed().iter().any(|r| r.identity() == sealed)
+                {
+                    Ok((sealed.1, journal.head()))
+                } else {
+                    Err(busbar_core_admin::GovernanceError::Store)
+                }
+            }
+        }
+    }
+
+    /// The node sequence of the newest record on this journal: at or past every record sealed on it
+    /// before the call — an amendment the node amendment journal's sink put on this book as it was
+    /// sealed included (`durability::bind_amendments`).
+    #[must_use]
+    pub fn sealed_through(&self) -> u64 {
+        self.book
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .journal
-            .append(
-                &self.token,
-                busbar_contract::caps::StepName::Route,
-                &[entry],
-            )
-            .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
-        let sealed = ack
-            .sealed
-            .last()
-            .ok_or(busbar_core_admin::GovernanceError::Store)?;
-        Ok((sealed.node_seq, sealed.hash))
+            .next_seq()
+            .saturating_sub(1)
     }
 }
 

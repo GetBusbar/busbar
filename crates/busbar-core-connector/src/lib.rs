@@ -44,8 +44,10 @@
 //! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
 //!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
 //!
-//! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
-//! raw pointers as a plugin does.
+//! No `unsafe` is written here outside two places: the reactor registration in [`io::register`],
+//! one call to tokio's `AsyncFd::register_with_interest` on a descriptor the registration owns
+//! (RUSTSEC-2026-0386), and the tests' framer entry, which writes a host sink through its raw
+//! pointers as a plugin does.
 //!
 //! No thread is started per connection: every socket's readiness is the registering worker's
 //! reactor's, and every wait is not-ready with a wake. The threads that are started: a name lookup
@@ -116,7 +118,7 @@ use crate::framer::FramerDoor;
 use crate::hostio::HostIo;
 use crate::line::{Line, EVERY};
 use crate::listen::{AcceptLimits, Listening};
-use crate::pool::{PoolKey, PoolPosture, Pools, SealRef};
+use crate::pool::{PoolKey, PoolPosture, Pools, Same};
 use crate::registry::Transports;
 
 /// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
@@ -129,6 +131,11 @@ pub type Verdict = u64;
 /// Where a pended judgement goes: the address to dial, or the verdict refusing it. Called once,
 /// from any thread.
 pub type Judged = Box<dyn FnOnce(Result<SocketAddr, Verdict>) + Send>;
+
+/// Where a pended judgement goes with the name's OTHER admitted addresses, in the resolver's order:
+/// a connect the pinned address refuses moves on to each in turn, as 1.5.5's client did. Called
+/// once, from any thread.
+pub type JudgedAll = Box<dyn FnOnce(Result<SocketAddr, Verdict>, Vec<SocketAddr>) + Send>;
 
 /// A need's `egress_class` `0`: the connector's default class (`busbar_contract::abi::host::conn::
 /// Need::egress_class`). A need declared in another class is judged under that class, never this.
@@ -159,6 +166,24 @@ pub trait DialJudge: Send + Sync {
         done: Judged,
     ) -> Option<Result<SocketAddr, Verdict>> {
         self.judge_dial(dest, class, done)
+    }
+
+    /// [`DialJudge::judge_dial`] (with the need's private reach when `reach`) whose pended answer
+    /// also names the resolved name's other admitted addresses, each held to the same judgement.
+    /// The default names none.
+    fn judge_dial_all(
+        &self,
+        dest: &str,
+        class: u32,
+        reach: bool,
+        done: JudgedAll,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        let done: Judged = Box::new(move |v| done(v, Vec::new()));
+        if reach {
+            self.judge_dial_reaching(dest, class, done)
+        } else {
+            self.judge_dial(dest, class, done)
+        }
     }
 
     /// THE STATIC ARM ALONE: the refusal `dest` (`host:port`) meets under class `class` before any
@@ -325,7 +350,15 @@ struct DeclaredNeed {
 }
 
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
-type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
+/// The judgement's answer, the waker of the read or wait that found it unanswered, and the name's
+/// other admitted addresses ([`JudgedAll`]).
+type Answer = Arc<
+    Mutex<(
+        Option<Result<SocketAddr, Verdict>>,
+        Option<Waker>,
+        Vec<SocketAddr>,
+    )>,
+>;
 
 /// The trust anchors sealed per destination (the transport pin, ARCHITECT 2026-10-03), by the need's owner, the need and
 /// the destination's authority (lower-case, `host:port`).
@@ -809,13 +842,6 @@ impl Connector {
         self
     }
 
-    /// The proxy choice this connector's dials honour (the process's environment, read once), for
-    /// the composition root to hand the kernel's remaining egress engine.
-    #[must_use]
-    pub fn proxy(&self) -> Option<Arc<proxy::ProxyChoice>> {
-        self.proxy.clone()
-    }
-
     /// The proxy a dial of `planned` goes through: a framed dial (never a carrier carried as
     /// itself) not pinned `within` an address set, to a host the scheme's slot has a proxy for and
     /// `NO_PROXY` does not exclude.
@@ -838,18 +864,15 @@ impl Connector {
         answer: &Answer,
     ) -> Option<Result<SocketAddr, Verdict>> {
         let answering = Arc::clone(answer);
-        let done: Judged = Box::new(move |v| {
+        let done: JudgedAll = Box::new(move |v, also| {
             let mut a = answering.lock().expect("judgement");
             a.0 = Some(v);
+            a.2 = also;
             if let Some(w) = a.1.take() {
                 w.wake();
             }
         });
-        if reach {
-            self.judge.judge_dial_reaching(dest, class, done)
-        } else {
-            self.judge.judge_dial(dest, class, done)
-        }
+        self.judge.judge_dial_all(dest, class, reach, done)
     }
 
     /// The same connector keeping dialled connections under `posture` (the deployment's
@@ -1337,7 +1360,7 @@ impl Connector {
         let Some(j) = judging.as_mut() else {
             return Ok(true);
         };
-        let got = {
+        let (got, also) = {
             let mut a = j.answer.lock().expect("judgement");
             match a.0 {
                 None => {
@@ -1346,7 +1369,7 @@ impl Connector {
                     }
                     return Ok(false);
                 }
-                Some(got) => got,
+                Some(got) => (got, std::mem::take(&mut a.2)),
             }
         };
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
@@ -1404,10 +1427,16 @@ impl Connector {
             j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
             return Err(ConnError::Refused);
         }
+        // The name's other admitted addresses a refused connect falls back to, each held to the
+        // need's class and `within` as the pinned one is.
+        let also: Vec<SocketAddr> = also
+            .into_iter()
+            .filter(|&at| class_admits(j.egress_class, secure, &j.within, &target, at))
+            .collect();
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
         let early = std::mem::take(&mut j.early);
         *judging = None;
-        let conn = planned.dial_at(addr).map_err(|f| map(&f))?;
+        let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
         let line = self.ride(held, conn);
         for (bytes, end, text) in early {
             line.emit(EXCHANGE_STREAM, &bytes, end, text)
@@ -1443,7 +1472,7 @@ impl Connector {
         within: &[IpAddr],
         reach: bool,
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
-        let answer: Answer = Arc::new(Mutex::new((None, None)));
+        let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
         // A destination the need holds a private reach to is judged with it (the one guard, as an
         // allowlist entry naming it; the class unchanged).
         let judged = self.judge_into(planned.authority(), judged_class, reach, &answer);
@@ -1483,7 +1512,7 @@ impl Connector {
                 Some(_) => {}
             }
             proxied.target_judged = true;
-            let answer: Answer = Arc::new(Mutex::new((None, None)));
+            let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
             let proxy_authority = proxied.spec.endpoint();
             return match self.judge_into(&proxy_authority, judged_class, true, &answer) {
                 None => Ok((
@@ -1974,6 +2003,26 @@ impl DeclaredConns for Connector {
         }
     }
 
+    /// THE DIAL HAS LANDED: its judgement answered and the far end took the connect (a name's
+    /// refused address moving on to its next admitted one first). A lease, a held session's leg,
+    /// and a line lent from the pool are landed when they open.
+    fn landed(&self, caller: InstanceId, conn: ConnId, ticket: Ticket) -> Result<(), ConnError> {
+        let (_, held) = self.slab.get(caller, conn)?;
+        if held.lease.is_some() || held.dialled.is_some() {
+            return Ok(());
+        }
+        let waker = self.waker(caller, ticket);
+        if !self.settle(&held, Some(&waker))? {
+            return Err(ConnError::Pending);
+        }
+        let (line, stream) = held.line().ok_or(ConnError::Closed)?;
+        match line.poll_landed(stream, &mut Context::from_waker(&waker)) {
+            Poll::Ready(Ok(())) => Ok(()),
+            Poll::Ready(Err(f)) => Err(map(&f)),
+            Poll::Pending => Err(ConnError::Pending),
+        }
+    }
+
     /// A need is framed when the entry serving its transport is a FRAMER (its tail's role, ARCHITECT
     /// ruling Q128 U7: http's kind, over the carrier the connector chose); a CARRIER entry is a raw
     /// stream.
@@ -2062,6 +2111,60 @@ impl DeclaredConns for Connector {
             .expect("declared needs")
             .insert((owner, need), (spec.clone(), answer));
         answer
+    }
+
+    /// THE INSTANCE IS GONE: its connections close (a member lease among them ends), then every
+    /// need it declared is dropped, which retires its members ([`Connector::set_need`]), so each
+    /// member program is killed now that no lease holds it. What it sealed, bound and held per
+    /// destination goes with it.
+    fn forget(&self, owner: InstanceId) {
+        for conn in self.slab.forget(owner) {
+            let _ = self.close(owner, conn);
+        }
+        self.pools.forget(owner);
+        self.listeners
+            .lock()
+            .expect("listeners")
+            .retain(|(o, _), _| *o != owner);
+        let needs: Vec<NeedId> = self
+            .over
+            .lock()
+            .expect("needs")
+            .keys()
+            .filter(|(o, _)| *o == owner)
+            .map(|(_, n)| *n)
+            .collect();
+        for need in needs {
+            self.set_need(owner, need, None);
+        }
+        self.declared
+            .lock()
+            .expect("declared needs")
+            .retain(|(o, _), _| *o != owner);
+        self.anchored
+            .lock()
+            .expect("anchored")
+            .retain(|(o, _, _), _| *o != owner);
+        self.member_anchored
+            .lock()
+            .expect("member anchored")
+            .retain(|(o, _, _), _| *o != owner);
+        self.registered
+            .lock()
+            .expect("registered")
+            .retain(|(o, _, _), _| *o != owner);
+        self.reaching
+            .lock()
+            .expect("reaching")
+            .retain(|(o, _, _), _| *o != owner);
+        self.auths
+            .lock()
+            .expect("auths")
+            .retain(|(o, _, _, _), _| *o != owner);
+        self.authority_held
+            .lock()
+            .expect("authority held")
+            .remove(&owner);
     }
 }
 
@@ -2211,6 +2314,9 @@ impl Connector {
             head_words: (desc.method.to_vec(), desc.head_target.to_vec()),
             anchors: None,
         };
+        // The very client config the dial is secured with: a pooled line is lent only to an open
+        // secured with it.
+        let trust = dial.tls.clone().map(Same);
         let planned = self.plan(&door, dial).map_err(|f| map(&f))?;
         // THE DESTINATION'S TRUST ANCHORS (the transport pin, ARCHITECT 2026-10-03): every connection to a sealed
         // destination is held to them; one that pins the far end's key and is not secured has no
@@ -2246,7 +2352,7 @@ impl Connector {
             }
         };
         // The very seal the dial is held to: a pooled line is lent only to an open held to it.
-        let sealed = anchors.clone().map(SealRef);
+        let sealed = anchors.clone().map(Same);
         if anchors
             .as_ref()
             .is_some_and(|a| a.key_pin.is_some() && !planned.secure())
@@ -2303,6 +2409,7 @@ impl Connector {
                     class: (judged_class, egress_class),
                     reach,
                     anchored_as,
+                    trust,
                     sealed,
                 },
             )

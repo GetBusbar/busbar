@@ -6,7 +6,7 @@
 //! A plugin of any kind is two crates (abi-v2, the door's "crate shape"):
 //!
 //! * the LOGIC crate invokes [`plugin_door!`](crate::plugin_door) once. It expands, IN THAT CRATE,
-//!   to `pub extern "C" fn door() -> *const Door` — a [`DoorFn`](crate::abi::mechanism::door::DoorFn) answering a `'static`
+//!   to `pub extern "C" fn door() -> &'static Door` — a [`DoorFn`](crate::abi::mechanism::door::DoorFn) answering a `'static`
 //!   [`Door`] (magic [`DOOR_MAGIC`], [`MECHANISM_VERSION`], the kind, the kind's ABI version, the
 //!   plugin's [`Statement`] and its ops table). No `#[no_mangle]`: a composition root that links
 //!   several plugins links several `door` functions, one per crate, and a compiled-in row holds
@@ -53,7 +53,7 @@ use std::ptr;
 use crate::abi::host::conn::connector::Need;
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome, RawOutcome};
 use crate::abi::mechanism::door::{
-    Door, DoorFn, KindTailHead, MarkWord, MetricFamily, Rewrite, Section, Statement,
+    Door, DoorFn, DoorParts, KindTailHead, MarkWord, MetricFamily, Rewrite, Section, Statement,
 };
 use crate::abi::mechanism::lifecycle::{
     self as lc, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, ReadyIn, RefreshIn,
@@ -594,24 +594,160 @@ pub const fn stamp<T: KindOps>(statement: Statement) -> Statement {
 }
 
 /// The [`Door`] of a `T` plugin; `ready` is its optional `ready` op (the door's tail), `None` for
-/// a plugin that has none.
+/// a plugin that has none. The door macro's plumbing.
+///
+/// # Safety
+///
+/// As [`Door::__from_parts`]: `statement`'s lists, strings, blobs and kind tail point at their
+/// stated counts of live `'static` data, and every non-NULL slot of `ops` honours the call
+/// convention. The door macro's own `statement` and table meet it as the macro lays them out.
+#[doc(hidden)]
 #[must_use]
-pub const fn door<T: KindOps>(
+pub const unsafe fn door<T: KindOps>(
     statement: &'static Statement,
     ops: &'static T,
     ready: Option<Op>,
 ) -> Door {
-    Door {
-        magic: DOOR_MAGIC,
-        mechanism_version: MECHANISM_VERSION,
-        size: size_of::<Door>() as u32,
-        kind: T::KIND as u32,
-        kind_abi: T::KIND.abi_version(),
-        statement,
-        ops: ptr::from_ref(ops).cast::<OpsHead>(),
-        ready,
+    // SAFETY: the caller's contract; the head is the mechanism's own and `T`'s.
+    unsafe {
+        Door::__from_parts(DoorParts {
+            magic: DOOR_MAGIC,
+            mechanism_version: MECHANISM_VERSION,
+            size: size_of::<Door>() as u32,
+            kind: T::KIND as u32,
+            kind_abi: T::KIND.abi_version(),
+            statement,
+            ops: ptr::from_ref(ops).cast::<OpsHead>(),
+            ready,
+        })
     }
 }
+
+/// THE SEALED DOOR (status row 195, ARCHITECT ruling on `admit_linked`): a [`DoorFn`] answers a
+/// `&'static Door`, and a [`Door`]'s fields are private behind the `unsafe`
+/// [`Door::__from_parts`] ([`door`] is `unsafe` over it), so the loader's safe `admit_linked`
+/// takes any `DoorFn` safe code can name. Each refusal below has a twin that differs in the one
+/// forbidden spelling and MUST compile.
+///
+/// A door literal is refused (its fields are private):
+///
+/// ```compile_fail
+/// use busbar_contract::abi::mechanism::door::Door;
+/// fn main() {
+///     let _ = Door {
+///         magic: 0,
+///         mechanism_version: 0,
+///         size: 0,
+///         kind: 0,
+///         kind_abi: 0,
+///         statement: core::ptr::null(),
+///         ops: core::ptr::null(),
+///         ready: None,
+///     };
+/// }
+/// ```
+///
+/// The constructor is refused in safe code; inside `unsafe` it is not:
+///
+/// ```compile_fail
+/// use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+/// fn main() {
+///     let _ = Door::__from_parts(DoorParts {
+///         magic: 0,
+///         mechanism_version: 0,
+///         size: 0,
+///         kind: 0,
+///         kind_abi: 0,
+///         statement: core::ptr::null(),
+///         ops: core::ptr::null(),
+///         ready: None,
+///     });
+/// }
+/// ```
+///
+/// ```
+/// use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+/// fn main() {
+///     let _ = unsafe {
+///         Door::__from_parts(DoorParts {
+///             magic: 0,
+///             mechanism_version: 0,
+///             size: 0,
+///             kind: 0,
+///             kind_abi: 0,
+///             statement: core::ptr::null(),
+///             ops: core::ptr::null(),
+///             ready: None,
+///         })
+///     };
+/// }
+/// ```
+///
+/// The SDK's `door` is refused in safe code too:
+///
+/// ```compile_fail
+/// # use busbar_contract::abi::sdk::door::{absent_table, door, statement, stamp};
+/// # use busbar_contract::abi::secret::Ops;
+/// const ST: &busbar_contract::abi::mechanism::door::Statement =
+///     &stamp::<Ops>(statement("p", "0", 1));
+/// const OPS: &Ops = &absent_table::<Ops>();
+/// fn main() {
+///     let _ = door::<Ops>(ST, OPS, None);
+/// }
+/// ```
+///
+/// ```
+/// # use busbar_contract::abi::sdk::door::{absent_table, door, statement, stamp};
+/// # use busbar_contract::abi::secret::Ops;
+/// const ST: &busbar_contract::abi::mechanism::door::Statement =
+///     &stamp::<Ops>(statement("p", "0", 1));
+/// const OPS: &Ops = &absent_table::<Ops>();
+/// fn main() {
+///     let _ = unsafe { door::<Ops>(ST, OPS, None) };
+/// }
+/// ```
+///
+/// A raw door function is no `DoorFn`; the door macro's `door` is:
+///
+/// ```compile_fail
+/// extern "C" fn fake() -> *const busbar_contract::abi::mechanism::door::Door {
+///     std::ptr::null()
+/// }
+/// fn main() {
+///     let _: busbar_contract::abi::mechanism::door::DoorFn = fake;
+/// }
+/// ```
+///
+/// ```
+/// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
+/// # struct P;
+/// # impl Life for P {
+/// #     const CANCEL: u32 = 0;
+/// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+/// #         Ok(P)
+/// #     }
+/// #     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+/// #         Ok(Refreshed::default())
+/// #     }
+/// # }
+/// # mod plugin {
+/// #     busbar_contract::plugin_door! {
+/// #         ops: busbar_contract::abi::secret::Ops,
+/// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
+/// #         lifecycle: life(super::P),
+/// #     }
+/// # }
+/// fn main() {
+///     let _: busbar_contract::abi::mechanism::door::DoorFn = plugin::door;
+/// }
+/// ```
+///
+/// A [`RawDoorFn`], by contrast, is a door function as a `dlsym` answers it and the C header
+/// spells it: a raw pointer the host has not yet checked (NULL, misaligned, short or another
+/// kind's are all possible). The exported [`DOOR_SYMBOL`](crate::abi::mechanism::DOOR_SYMBOL) is
+/// one ([`export_door!`](crate::export_door) forwards a [`DoorFn`] through it); only a loader's
+/// reviewed `unsafe` enters one.
+pub type RawDoorFn = extern "C" fn() -> *const Door;
 
 /// A door the contract's own door macro built ([`plugin_door!`](crate::plugin_door), and every
 /// kind macro over it), as the `MACRO_DOOR` it expands beside `door` states it. Its one field is
@@ -714,7 +850,7 @@ pub const fn door<T: KindOps>(
 /// # }
 /// # use busbar_contract::abi::sdk::door::MacroDoor;
 /// fn main() {
-///     let _ = MacroDoor::__from_door_macro(forged);
+///     let _ = MacroDoor::__from_door_macro(plugin::door);
 /// }
 /// ```
 ///
@@ -742,7 +878,7 @@ pub const fn door<T: KindOps>(
 /// # }
 /// # use busbar_contract::abi::sdk::door::MacroDoor;
 /// fn main() {
-///     let _ = unsafe { MacroDoor::__from_door_macro(forged) };
+///     let _ = unsafe { MacroDoor::__from_door_macro(plugin::door) };
 /// }
 /// ```
 ///
@@ -870,7 +1006,7 @@ impl MacroDoor {
 
     /// The door function.
     #[must_use]
-    pub fn door_fn(self) -> DoorFn {
+    pub const fn door_fn(self) -> DoorFn {
         self.door
     }
 }
@@ -884,7 +1020,7 @@ impl MacroDoor {
 /// root unsafe-ABI change on branch `lane-row159-abi-unsafe-fn` puts behind `const` constructors
 /// from `'static` slices and strs.
 /// Invoked once, in a plugin's LOGIC crate; expands there to
-/// `pub extern "C" fn door() -> *const Door` over a `'static` door, Statement and ops table.
+/// `pub extern "C" fn door() -> &'static Door` over a `'static` door, Statement and ops table.
 ///
 /// ```ignore
 /// busbar_contract::plugin_door! {
@@ -996,7 +1132,7 @@ macro_rules! plugin_door {
 
         /// This plugin's door: the `'static` `Door` a compiled-in row holds and `export_door!`
         /// forwards to.
-        pub extern "C" fn door() -> *const $crate::abi::mechanism::door::Door {
+        pub extern "C" fn door() -> &'static $crate::abi::mechanism::door::Door {
             use $crate::abi::mechanism::lifecycle as __lc;
             use $crate::abi::sdk::door as __sdk;
             // A `path` fragment cannot open a struct literal; an alias can.
@@ -1059,11 +1195,15 @@ macro_rules! plugin_door {
                 )*)?
                 ..__sdk::absent_table::<__Ops>()
             };
-            const __DOOR: &$crate::abi::mechanism::door::Door = &__sdk::door::<__Ops>(
-                __STATEMENT,
-                __OPS,
-                $crate::plugin_door!(@ready __Capture $(, $ready)?),
-            );
+            // SAFETY: the Statement and table are the `const` items laid out just above; the
+            // Statement's content is the caller's own `const` data (see `MACRO_DOOR` below).
+            const __DOOR: &$crate::abi::mechanism::door::Door = &unsafe {
+                __sdk::door::<__Ops>(
+                    __STATEMENT,
+                    __OPS,
+                    $crate::plugin_door!(@ready __Capture $(, $ready)?),
+                )
+            };
             __DOOR
         }
 
@@ -1077,6 +1217,7 @@ macro_rules! plugin_door {
             // that its counts match its storage is closed by the root unsafe-ABI change on branch
             // `lane-row159-abi-unsafe-fn`.
             unsafe { $crate::abi::sdk::door::MacroDoor::__from_door_macro(door) };
+
     };
 }
 
@@ -1096,7 +1237,7 @@ macro_rules! export_door {
         #[unsafe(no_mangle)]
         pub extern "C" fn busbar_plugin_door() -> *const $crate::abi::mechanism::door::Door {
             const __DOOR_FN: $crate::abi::mechanism::door::DoorFn = $door;
-            __DOOR_FN()
+            ::core::ptr::from_ref(__DOOR_FN())
         }
     };
 }

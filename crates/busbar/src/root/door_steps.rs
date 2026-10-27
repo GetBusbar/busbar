@@ -559,6 +559,9 @@ pub struct DoorFacts {
     /// (`busbar_translations_total`), as the previous release counted it, and a usage-tap fault
     /// an answer carries is counted under the unit's dialect. Empty = none counted.
     pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
+    /// The plane's dialect names, by the index `arrive` answers: the `ingress` its units' request
+    /// span records (status row 173).
+    pub dialects: Arc<[String]>,
     /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
@@ -963,6 +966,43 @@ impl DriverSteps for DoorSteps<'_> {
         let mut u = self.lock();
         u.op = Some(op);
         u.named = Some((route, pool.map(<[u8]>::to_vec)));
+    }
+
+    /// THE UNIT'S REQUEST SPAN, `forward`, as the previous release opened it around its dispatch
+    /// (v1.5.5 `proxy/engine/mod.rs:120-152`): at the hot-path level, with the pool the charge
+    /// landed on (a budget downgrade's, else the one the unit named), the dialect it was read in,
+    /// its operation class and a correlation id off the process's one counter, stamped once per
+    /// dispatched unit as 1.5.5 stamped one per dispatched request (status row 173).
+    fn request_span(
+        &self,
+        _ctx: &UnitCtx,
+        decoded: &busbar_kernel::plane_driver::Decoded,
+        op: OpClassId,
+    ) -> Option<(tracing::Span, u64)> {
+        let request_id = self.app.next_request_id();
+        let pool = self.downgraded().or_else(|| {
+            decoded
+                .pool
+                .as_deref()
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+        });
+        let ingress = self.facts.dialects.get(decoded.dialect as usize);
+        let span = tracing::span!(
+            busbar_kernel::observability::HOTPATH_LEVEL,
+            "forward",
+            pool = tracing::field::Empty,
+            ingress = tracing::field::Empty,
+            op = %op,
+            request_id = tracing::field::Empty
+        );
+        if let Some(pool) = pool.as_deref() {
+            span.record("pool", tracing::field::display(pool));
+        }
+        if let Some(ingress) = ingress {
+            span.record("ingress", tracing::field::display(ingress));
+        }
+        span.record("request_id", request_id);
+        Some((span, request_id))
     }
 
     fn expected(&self, _ctx: &UnitCtx, units: &[UnitCount]) {
@@ -1394,6 +1434,7 @@ pub fn door_facts(
         audit_kind: OpClassId::new(audit_kind),
         keeps,
         translations: (Arc::from(Vec::new()), Arc::default()),
+        dialects: Arc::from(Vec::new()),
         bench_below_trip_threshold: None,
         metric_lanes: Vec::new(),
         stream_ceiling_secs: 0,
@@ -1698,8 +1739,9 @@ pub fn owned_anchors_refusal<P: AsRef<str>>(
 /// trust anchors the composed door planes name (`owned.<section>.<key>`): each, as a
 /// configuration writes it, judged by [`owned_anchor_refusal`], the rule the boot judges it by, so a
 /// configuration whose anchor the boot would refuse never goes live through an apply, and the
-/// running generation (its declared trust among it) is untouched.
-#[derive(Debug, Default)]
+/// running generation (its declared trust among it) is untouched. They also hold the deployment's
+/// one destination guard, which hears each committed configuration's destinations through them.
+#[derive(Default)]
 pub struct Rules {
     /// The owned trust anchors the composed door planes name, held as each plane is composed.
     owned_anchors: Mutex<Vec<&'static str>>,
@@ -1708,9 +1750,38 @@ pub struct Rules {
     /// ([`Rules::hold_unopened`]). A door plane is opened once, at boot, so a configuration that
     /// writes one of these is restart-to-apply ([`Rules::planes_awaiting_restart`]).
     unopened: Mutex<Vec<&'static str>>,
+    /// The deployment's one destination guard (`root::connector::dest_judge`), told each committed
+    /// configuration's destinations ([`Rules::hearing`]). `None`: no guard hears a commit.
+    guard: Option<Arc<dyn busbar_kernel::host_services::DestJudge>>,
+    /// The discovered plane doors the boot's configuration did not use, so the boot never loaded
+    /// them (Law 7), held from the boot plan ([`Rules::hold_unloaded`]). A running process cannot
+    /// take a first section of one: an apply or reload that writes one is refused
+    /// ([`unloaded_plane_refusal`]).
+    unloaded: Mutex<Vec<crate::root::loader::boot::Candidate>>,
+}
+
+impl std::fmt::Debug for Rules {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rules")
+            .field("owned_anchors", &self.owned_anchors)
+            .field("unopened", &self.unopened)
+            .field("guard", &self.guard.is_some())
+            .finish()
+    }
 }
 
 impl Rules {
+    /// The rules of a boot whose destination guard is `guard`: it re-reads its metadata lists at
+    /// every configuration commit, the boot's own build included, as 1.5.5 re-read them at every
+    /// reload.
+    #[must_use]
+    pub fn hearing(guard: Arc<dyn busbar_kernel::host_services::DestJudge>) -> Self {
+        Self {
+            guard: Some(guard),
+            ..Self::default()
+        }
+    }
+
     /// Hold the owned trust anchors among a door plane's need `trust_from` paths (`paths`).
     pub fn hold_owned_anchors(&self, paths: &[&'static str]) {
         let mut held = self
@@ -1725,6 +1796,15 @@ impl Rules {
                 held.push(path);
             }
         }
+    }
+
+    /// Hold the discovered plane doors the boot did not load (`candidates`): each one the boot's
+    /// configuration used by no section of its ([`unloaded_doors`]).
+    pub fn hold_unloaded(&self, candidates: Vec<crate::root::loader::boot::Candidate>) {
+        self.unloaded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(candidates);
     }
 
     /// Hold the declaring sections of the door planes the boot left unopened (`sections`): each a
@@ -1749,7 +1829,60 @@ pub(crate) fn writes_plane(section: &str, cfg: &busbar_kernel::config::RootCfg) 
     cfg.plane_sections.contains(section)
 }
 
+/// THE DISCOVERED PLANE DOORS THE BOOT DID NOT LOAD: every plane door discovered (linked or dropped
+/// in) that [`crate::root::boot::load_door_planes`] did not bind, because the boot's configuration
+/// uses it by no section (`used_planes`, Law 7). Read once the door planes are loaded.
+#[must_use]
+pub fn unloaded_doors() -> Vec<crate::root::loader::boot::Candidate> {
+    let bound = crate::root::boot::door_planes();
+    crate::root::boot::DOOR_CANDIDATES
+        .get()
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|c| c.kind == busbar_contract::abi::mechanism::KindCode::Plane)
+        .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
+        .cloned()
+        .collect()
+}
+
+/// THE REFUSAL OF A FIRST SECTION OF AN UNLOADED PLANE (u67 BLOCK 2 item 2, ruled (iv)): the first
+/// of `unloaded` that a document whose root keys are `keys` uses (`plane_use`, the boot's own
+/// selection), named with the section that uses it. A plane is loaded only at start, when config
+/// uses it (Law 7, BUSBAR-1.6.0.md l.547), so its first section cannot take effect on a running
+/// process: the change is refused whole and nothing is changed (§6 item 8, l.980-982).
+#[must_use]
+pub fn unloaded_plane_refusal(
+    unloaded: &[crate::root::loader::boot::Candidate],
+    keys: &[&str],
+) -> Option<String> {
+    let uses = crate::root::loader::boot::Uses {
+        roots: keys.iter().map(|k| (*k).to_string()).collect(),
+        ..Default::default()
+    };
+    unloaded.iter().find_map(|c| {
+        crate::root::loader::boot::plane_use(&uses, c).map(|section| {
+            format!(
+                "`{section}:` is the section of the `{plane}` plane, which this process did not \
+                 load because its configuration did not use it at start; a first `{section}:` \
+                 cannot take effect on a running process, so the change was refused and nothing \
+                 was changed: write it in the config file and restart.",
+                plane = c.name
+            )
+        })
+    })
+}
+
 impl busbar_kernel::appbuild::RootRules for Rules {
+    fn unloaded_plane_refusal(&self, keys: &[&str]) -> Option<String> {
+        unloaded_plane_refusal(
+            &self
+                .unloaded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            keys,
+        )
+    }
+
     fn planes_awaiting_restart(&self, cfg: &busbar_kernel::config::RootCfg) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = self
             .unopened
@@ -1773,6 +1906,12 @@ impl busbar_kernel::appbuild::RootRules for Rules {
             return Ok(());
         }
         owned_anchors_refusal(&anchors, &raw_sections(cfg))
+    }
+
+    fn destinations_applied(&self, destinations: &busbar_kernel::config::Destinations) {
+        if let Some(guard) = &self.guard {
+            guard.destinations_applied(destinations);
+        }
     }
 }
 
@@ -2094,9 +2233,10 @@ pub struct OutboundAuths {
     /// serving: no row is bound to read them (Law 7; ARCHITECT ruling 2026-10-20: reading a row's
     /// static declaration, its kind tail included, is reading, not loading).
     linked_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
-    /// Each dropped-in row's outbound facts, read only when no linked row states a style asked
-    /// for. A dropped row's auth tail is in its library alone (its signed rendering states the
-    /// tail's size, never its styles), so each is bound once to read them.
+    /// Each dropped-in row's outbound facts, READ off its SIGNED MANIFEST's Statement rendering at
+    /// the first serving no linked row answers: no row is bound or opened to read them (ARCHITECT
+    /// ruling 2026-10-20, audit root#7 / loader#9: the rendering carries the whole kind tail, and
+    /// admitting the row compares its door's Statement with it).
     dropped_facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
     /// The opened instances, by key: opened OUTSIDE the map's lock (THE DESIGN §11.13 M1: the
     /// plugin's validate and open crossings never run under a host lock).
@@ -2286,10 +2426,12 @@ impl OutboundAuths {
         })
     }
 
-    /// Every dropped-in row's outbound facts, read once: each row is bound once to read them (its
-    /// tail is in its library alone), then let go. A row that will not load is passed over.
+    /// Every dropped-in row's outbound facts, read once off its signed manifest's Statement
+    /// rendering: the styles its auth tail states, and whether a need of its takes its target from
+    /// its settings. No row is bound or opened. A row whose rendering a bind refuses states nothing
+    /// here.
     fn dropped_facts(&self) -> &[AuthRowFacts] {
-        use crate::root::loader::dispatch::auth_outbound::outbound_styles;
+        use crate::root::loader::dispatch::kinds::auth::rendered_facts;
         self.dropped_facts.get_or_init(|| {
             self.dropped
                 .map_or(&[][..], |r| r.loadable())
@@ -2297,14 +2439,15 @@ impl OutboundAuths {
                 .enumerate()
                 .filter(|(_, r)| r.manifest.kind == "auth")
                 .filter_map(|(i, r)| {
-                    let name = r.manifest.name.clone();
-                    let door = AuthRowDoor::Dropped(i);
-                    let plugin = self.load(&name, door)?;
+                    let stated = r.manifest.stated_rendering().ok().flatten()?;
+                    let styles = rendered_facts(&stated).ok()?.styles;
+                    let per_binding = busbar_contract::abi::mechanism::rendering::read(&stated)
+                        .is_ok_and(|r| r.needs.iter().any(|n| !n.target_from.is_empty()));
                     Some(AuthRowFacts {
-                        styles: outbound_styles(&plugin),
-                        per_binding: plugin.targets_from_settings(),
-                        name,
-                        door,
+                        name: r.manifest.name.clone(),
+                        door: AuthRowDoor::Dropped(i),
+                        styles,
+                        per_binding,
                     })
                 })
                 .collect()
@@ -2690,13 +2833,20 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         self.inner
             .declare_member_programs(owner, need, spec, programs)
     }
+
+    fn forget(&self, owner: busbar_contract::conn::InstanceId) {
+        self.inner.forget(owner);
+    }
 }
 
 impl OutboundAuths {
     /// CHECK, NEVER DIAL: `credential` bound under `settings` on a FRESH instance of the plugin
-    /// serving `style`, loaded with no need granted (so it mints nothing), and the refusals it names
-    /// for the credential itself — its `credential:` lines, their text. Empty when it accepts the
-    /// credential or no row states the style.
+    /// serving `style`, loaded as a CHECK bind (`ConnTable::Probe`: a need it declares is not
+    /// declared and it is handed no table, so it reaches nothing), and the refusals it names for the
+    /// credential itself — its `credential:` lines, their text. Empty when it accepts the credential
+    /// or no row states the style. A `ConnTable::NoNeeds` bind would REFUSE every plugin that
+    /// declares a need (a token endpoint), so the styles that mint would be passed over and their
+    /// malformed credentials pass `--validate` that boot refuses (oracle BOOT-035).
     ///
     /// # Errors
     ///
@@ -2710,7 +2860,7 @@ impl OutboundAuths {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
         use crate::root::loader::dispatch::ConnTable;
         for row in self.stating(style) {
-            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::NoNeeds) else {
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::Probe) else {
                 continue;
             };
             let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;

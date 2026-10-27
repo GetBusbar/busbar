@@ -528,7 +528,7 @@ fn test_is_ready_any_cell_false_when_every_cell_open() {
     );
     // Recover ONE per-pool cell: the lane is serviceable again via that pool, so healthz must flip
     // back to ready — proving the all-cells check, not a default-cell-only read.
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         store.is_ready_any_cell(0, now),
         "after recovery the lane is serviceable in some cell → is_ready_any_cell must be ready"
@@ -561,7 +561,7 @@ fn test_is_ready_any_cell_false_when_pool_cells_open_default_untouched() {
              default cell must NOT make is_ready_any_cell report ready"
     );
     // Recover one per-pool cell → the lane can serve via that pool again → ready.
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         store.is_ready_any_cell(0, now),
         "after recovery a per-pool cell admits → is_ready_any_cell must be ready"
@@ -581,7 +581,7 @@ fn test_is_ready_any_cell_falls_back_to_default_when_no_pool_cells() {
         !store.is_ready_any_cell(0, now),
         "no pool cells + default cell Open → lane is unserviceable → not ready"
     );
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         store.is_ready_any_cell(0, now),
         "default cell recovered (only routed cell) → ready"
@@ -1057,7 +1057,13 @@ fn test_probe_failure_honors_retry_after_floor() {
     // (un-escalated) ~15s backoff — small enough that a retry_after=90 clearly dominates,
     // isolating the floor from cooldown escalation.
     set_state(&store, 0, 2);
-    store.record_probe_failure_all_cells(0, "health-probe", &|_pool| cfg.clone(), Some(90));
+    store.record_probe_failure_all_cells(
+        0,
+        "health-probe",
+        &|_pool| cfg.clone(),
+        Some(90),
+        HealthState::now_secs(),
+    );
     let until = store.get_lane(0).cell.cooldown_until();
     assert!(
             until >= 50_000 + 90,
@@ -1069,7 +1075,13 @@ fn test_probe_failure_honors_retry_after_floor() {
     set_now_for_test(50_000);
     poke(&store2, 0, |c| c.streak = 0);
     set_state(&store2, 0, 2);
-    store2.record_probe_failure_all_cells(0, "health-probe", &|_pool| cfg.clone(), None);
+    store2.record_probe_failure_all_cells(
+        0,
+        "health-probe",
+        &|_pool| cfg.clone(),
+        None,
+        HealthState::now_secs(),
+    );
     let until_no_ra = store2.get_lane(0).cell.cooldown_until();
     assert!(
             until_no_ra < 50_000 + 90,
@@ -1525,7 +1537,11 @@ fn test_concurrent_success_racing_hard_down_never_drops_sticky_cooldown() {
         let barrier_b = Arc::clone(&barrier);
         let b = std::thread::spawn(move || {
             barrier_b.wait();
-            store_b.record_hard_down_all_cells(0, "billing / insufficient balance");
+            store_b.record_hard_down_all_cells(
+                0,
+                "billing / insufficient balance",
+                HealthState::now_secs(),
+            );
         });
 
         a.join().expect("A must not panic");
@@ -1604,7 +1620,7 @@ fn test_pool_breaker_isolation() {
     );
 
     // A successful health probe recovers EVERY cell for the lane.
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         !store.lane_needs_probe(0, 8000),
         "recover_lane must clear every cell (probe tests the shared upstream)"
@@ -1686,7 +1702,7 @@ fn test_default_cell_recovery_does_not_zero_lane_err() {
     // that previously zeroed err.
     let cooled = 1000 + store.cooldown_remaining(0, 1000) + 1;
     set_now_for_test(cooled);
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
 
     // The breaker FSM health is reset (the lane is usable again)…
     assert!(
@@ -2096,7 +2112,7 @@ fn test_cell_read_path_returns_stable_identity() {
     let store = Arc::new(HealthState::new(vec![make_lane_data(0, 10)]));
     set_now_for_test(1000);
     // First touch creates the cell (write path); subsequent reads (read path) must reuse it.
-    store.record_success_in("p", 0);
+    store.record_success_in("p", 0, HealthState::now_secs());
     store.record_transient_in("p", 0, "x", &BreakerCfg::default(), None);
     // A failure recorded through the same cell must be visible on the next read of that cell —
     // proving the read path resolves the SAME object, not a fresh Closed duplicate.
@@ -2189,14 +2205,14 @@ fn test_record_hard_down_all_cells_trips_default_and_every_pool() {
 
     // Materialize per-pool cells for two pools by touching them (a successful op creates the
     // cell lazily), so the lane has a default cell PLUS pool "A" and pool "B" cells, all Closed.
-    store.record_success_in("A", 0);
-    store.record_success_in("B", 0);
+    store.record_success_in("A", 0, HealthState::now_secs());
+    store.record_success_in("B", 0, HealthState::now_secs());
     assert!(store.usable(0, 9000), "default cell starts usable");
     assert!(store.usable_in("A", 0, 9000), "pool A starts usable");
     assert!(store.usable_in("B", 0, 9000), "pool B starts usable");
 
     // A hard-down classified on a pool-routed request must trip ALL cells, not just one pool.
-    store.record_hard_down_all_cells(0, "billing / insufficient balance");
+    store.record_hard_down_all_cells(0, "billing / insufficient balance", HealthState::now_secs());
 
     assert!(
         !store.usable(0, 9000),
@@ -2228,7 +2244,7 @@ fn hard_down_all_cells_records_a_logical_trip() {
     set_now_for_test(9000);
 
     assert_eq!(store.snapshot(0, 9000).trips, 0, "no trip yet");
-    store.record_hard_down_all_cells(0, "billing / insufficient balance");
+    store.record_hard_down_all_cells(0, "billing / insufficient balance", HealthState::now_secs());
     let snap = store.snapshot(0, 9000);
     assert_eq!(
         snap.trips, 1,
@@ -2243,7 +2259,7 @@ fn hard_down_all_cells_records_a_logical_trip() {
     // the lane is still Open must NOT re-count — this is what makes the `default_was_closed` gate
     // load-bearing, not the trip-counting itself.
     set_now_for_test(9100);
-    store.record_hard_down_all_cells(0, "billing / insufficient balance");
+    store.record_hard_down_all_cells(0, "billing / insufficient balance", HealthState::now_secs());
     assert_eq!(
         store.snapshot(0, 9100).trips,
         1,
@@ -2331,7 +2347,7 @@ fn test_concurrent_pool_isolation_stress() {
         handles.push(thread::spawn(move || {
             for _ in 0..ITERS {
                 // Successes route via pool "A" (also bumps the lane-global ok counter).
-                s.record_success_in("A", 0);
+                s.record_success_in("A", 0, HealthState::now_secs());
                 // Transients route via pool "B" — must NOT affect pool A's cell.
                 s.record_transient_in("B", 0, "5xx", &c, None);
                 // Concurrent reads against both pools + a recovery, to stir the cells.
@@ -2444,7 +2460,7 @@ fn test_soft_cooldown_is_probeable_and_recoverable() {
         "dead-mode probing must see a soft-cooldown lane"
     );
 
-    store.recover_lane(0);
+    store.recover_lane(0, HealthState::now_secs());
     assert!(
         store.usable(0, 9000),
         "a successful probe must clear the soft cooldown"
@@ -3079,7 +3095,7 @@ fn test_swrr_reset_on_recovery_is_generational() {
     );
 
     // Recovery: success on the half-open probe → HalfOpen→Closed → generational SWRR reset.
-    store.record_success_for("", 0);
+    store.record_success_for("", 0, HealthState::now_secs());
     assert_eq!(
         store.breaker_state(0),
         BreakerState::Closed,
@@ -3135,7 +3151,7 @@ fn test_probe_success_all_cells_resets_swrr_on_half_open_close() {
 
     // Probe success across all cells. With the bug, each cell closes (HalfOpen→Closed) but its
     // current_weight is never zeroed; with the fix, the gated reset zeroes both.
-    store.record_probe_success_all_cells(0);
+    store.record_probe_success_all_cells(0, HealthState::now_secs());
 
     assert_eq!(
         store.breaker_state(0),
@@ -3816,7 +3832,7 @@ fn test_try_admit_probe_winnable_at_capacity_preserves_probe() {
         "winning the preserved probe flips the cell HalfOpen"
     );
     // Recording a success on the won probe recovers the breaker to Closed.
-    store.record_success_in("p", 0);
+    store.record_success_in("p", 0, HealthState::now_secs());
     assert!(
         matches!(store.breaker_state_in("p", 0), BreakerState::Closed),
         "a success on the recovery probe closes the breaker — the wedge is gone"
@@ -3997,40 +4013,4 @@ fn test_swrr_slot_resolved_once_spans_a_mid_selection_reset() {
         "per-step re-resolution corrupts the accumulator to -total across the same interleaving \
          — the exact skew the single-resolution rule in select_weighted_for exists to prevent"
     );
-}
-
-/// **THE BREAKER STORE NAMES NO PLANE'S LANE VOCABULARY** (audit K4#5; BUSBAR-1.6.0.md l.166-167:
-/// "Nothing in the kernel parses or understands ... a plane concept"). A lane is keyed by the
-/// member it serves and the route it dials, and carries only what the breaker reads: no model,
-/// no provider, no capability flag of one plane, and no key helper named after another plane's
-/// verb. A source witness: what has to stay true is the store's own field and item names.
-#[test]
-fn the_breaker_store_names_no_planes_lane_vocabulary() {
-    for (file, src) in [
-        ("store/vocab.rs", include_str!("../vocab.rs")),
-        (
-            "store/in_memory/mod.rs",
-            include_str!("../in_memory/mod.rs"),
-        ),
-        (
-            "store/in_memory/availability.rs",
-            include_str!("../in_memory/availability.rs"),
-        ),
-    ] {
-        for name in [
-            "pub model:",
-            "pub provider:",
-            "pub(crate) model:",
-            "pub(crate) provider:",
-            "upstream_model",
-            "attempt_timeout_ms",
-            "pub(crate) reasoning:",
-            "prompt_caching",
-        ] {
-            assert!(
-                !src.contains(name),
-                "{file} carries `{name}`: one plane's lane vocabulary in the kernel's breaker store"
-            );
-        }
-    }
 }

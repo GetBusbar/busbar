@@ -223,18 +223,12 @@ fn an_open_that_never_completes_is_held_to_its_timeout() {
 
 /// A self-signed CA and a leaf for `localhost`: (ca_der, leaf_der, key_der).
 fn localhost_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
-    let ca_kp = KeyPair::generate().unwrap();
-    let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
-    ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    let ca = ca_params.self_signed(&ca_kp).unwrap();
-    let issuer = Issuer::from_params(&ca_params, ca_kp);
-    let kp = KeyPair::generate().unwrap();
-    let leaf = CertificateParams::new(vec!["localhost".to_owned()])
-        .unwrap()
-        .signed_by(&kp, &issuer)
-        .unwrap();
-    (ca.der().to_vec(), leaf.der().to_vec(), kp.serialize_der())
+    let ca = crate::test_support::private_ca();
+    (
+        crate::test_support::certs_from_pem(&ca.ca_pem).remove(0),
+        ca.leaf_der,
+        ca.key_der,
+    )
 }
 
 /// TLS is the connector's, with the protocol offer the registration states: the framer is told
