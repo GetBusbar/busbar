@@ -572,7 +572,8 @@ impl IoHost for HostIo {
     }
 
     fn close(&self, owner: u64, id: u64) -> IoResult<()> {
-        ended(&self.release(owner, id)?);
+        let e = self.release(owner, id)?;
+        ended(&e);
         Ok(())
     }
 
