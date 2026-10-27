@@ -175,8 +175,8 @@ pub const ERR_NET_TIMEOUT: &str = "timeout";
 /// The fields the upstream connection derives for itself, beyond HTTP's hop-by-hop set.
 ///
 /// `accept-encoding` is here because busbar reads the answer to meter it and decodes no content
-/// coding: a client's `gzip` would make the far end compress what busbar must read (escalated
-/// 2026-10-02, PROTO-FIXES; the owner's ruling decides whether it stays).
+/// coding: a client's `gzip` would make the far end compress what busbar must read, and 1.5.5
+/// sent none (pinned by `a_clients_accept_encoding_never_goes_upstream`).
 pub const RE_DERIVED: &[&str] = &["host", "content-length", "accept-encoding"];
 
 /// busbar's own header namespace: a client field under it is addressed to busbar, never upstream.
