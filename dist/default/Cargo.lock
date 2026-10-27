@@ -447,7 +447,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-scope",
  "busbar-kernel-wal",
  "busbar-plane-a2a",
  "busbar-plane-decisions",
@@ -602,7 +601,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-scope",
  "busbar-kernel-wal",
  "bytes",
  "crc32fast",
@@ -676,13 +674,6 @@ dependencies = [
  "busbar-contract",
  "ring",
  "serde",
-]
-
-[[package]]
-name = "busbar-kernel-scope"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
 ]
 
 [[package]]
