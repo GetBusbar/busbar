@@ -902,7 +902,7 @@ fn the_body_keeps_the_texts_texts_and_the_numbers_decimal_text() {
 fn a_node_above_two_to_the_fifty_three_is_published_exactly() {
     let node: u64 = 16_045_690_984_833_335_023;
     let mut chain = AuditChain::new().signing_with(signer()).sealing_as(node);
-    let record = chain.seal(inputs(1), &token());
+    let record = chain.seal(inputs(1), &pass::<AuditStep>());
     let body = expose::range_body(&chain, std::slice::from_ref(&record), 1, 1);
     assert!(
         body.contains("\"node\":\"16045690984833335023\","),
