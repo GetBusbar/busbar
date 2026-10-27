@@ -10,9 +10,9 @@
 //!
 //! The provider key and the principal id are frozen configuration text naming a module no crate in
 //! the kernel declares. They sit in the composition root's legacy table, and the root hands them in
-//! with its linked auth rows as [`OperatorWords`] (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2;
-//! BUSBAR-1.6.0.md:173, "sit in the root legacy table"). The kernel hands the provider on as `op`,
-//! so neither this module nor the kernel names an instance.
+//! with its linked auth rows as [`OperatorWords`] (BUSBAR-1.6.0.md:173, "sit in the root legacy
+//! table"). The kernel hands the provider on as `op`, so neither this module nor the kernel names
+//! an instance.
 
 use std::sync::Arc;
 
@@ -22,9 +22,9 @@ use busbar_contract::auth_calls::{
 };
 
 /// A linked auth row: the key configuration names it by (and the auth catalog, `/info` and every
-/// refusal print), its CANONICAL name (the manifest name its release tarball carries, which config
-/// may name it by too: ARCHITECT C'), and its door on the auth kind's memory ABI — the same door its
-/// dropped-in build exports (THE DESIGN: compiled-in = dropped-in).
+/// refusal print), its CANONICAL name (the manifest name its release tarball carries, which config may name it by too), and its door
+/// on the auth kind's memory ABI — the same door its dropped-in build exports (THE DESIGN:
+/// compiled-in = dropped-in).
 pub type LinkedAuth = (&'static str, &'static str, AuthDoor);
 /// The door a linked auth row is opened through (`abi::auth`, one dispatcher).
 pub type AuthDoor = busbar_contract::abi::mechanism::door::DoorFn;
@@ -101,8 +101,8 @@ pub fn answered(op: &str) -> bool {
 }
 
 /// Whether `module` names the plugin of the linked auth row keyed `op` by its identity, not its
-/// spelling: the key itself or the row's canonical name (ARCHITECT C': one plugin, one identity,
-/// whichever name config gives it). The kernel adds the names its legacy table gives the key.
+/// spelling: the key itself or the row's canonical name (one plugin, one identity, whichever name
+/// config gives it). The kernel adds the names its legacy table gives the key.
 pub fn names(op: &str, module: &str) -> bool {
     module == op
         || linked()
@@ -187,8 +187,7 @@ pub fn migrated_token(op: &str) -> String {
 
 /// What the operator credential answered one request: a verdict — identified, a bad credential
 /// (1.5.5's refusal bytes), or not its credential — and what rides with it. A verifier that is
-/// overloaded or answered no verdict is a bad credential, denied with 1.5.5's 401 (no admin 503
-/// ships: Q134).
+/// overloaded or answered no verdict is a bad credential, denied with 1.5.5's 401.
 #[derive(Debug)]
 pub struct Judgement {
     /// The verdict.
