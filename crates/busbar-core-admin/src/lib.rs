@@ -61,9 +61,6 @@ pub mod test_support;
 pub mod verb;
 pub mod verbs;
 pub mod versions;
-// The test-build admin-error witness ledger (moved from the kernel's `admin_witness`).
-#[cfg(any(test, feature = "test-support"))]
-pub mod witness;
 
 pub use admin_state::{AdminState, AppAdmin};
 pub use governance::{Governance, GovernanceError};
