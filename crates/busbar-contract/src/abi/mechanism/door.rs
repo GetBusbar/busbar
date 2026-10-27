@@ -579,6 +579,70 @@ pub const REWRITE_SUGAR_NAMES: u32 = 5;
 /// one role refuse the load.
 pub const REWRITE_SUGAR_ROLE: u32 = 6;
 
+/// [`Rewrite::class`]: the plugin RENAMED one of its own top-level settings keys: `from` is the
+/// former name, still accepted, and `to` the name now. The host moves `from` to `to` in every
+/// instance's settings on load, with one deprecation line, and `busbar --migrate-config` rewrites
+/// it, as core's own renames go (owner ruling 2026-10-27); the old name keeps working until the
+/// next major version. A block that sets both is refused. Each needs its
+/// [`REWRITE_RENAMED_SINCE`].
+pub const REWRITE_RENAMED: u32 = 7;
+/// [`Rewrite::class`]: `from` is a former name a [`REWRITE_RENAMED`] of the same Statement
+/// declares; `to` is the plugin release that renamed it (semver), which the deprecation line names.
+pub const REWRITE_RENAMED_SINCE: u32 = 8;
+
+/// The settings renames `rewrites` (a Statement's, as its rendering reads back: `(class, from,
+/// to)`) declare: `(from, to, since)`, in declaration order.
+///
+/// # Errors
+/// A rename that is not of one top-level key to another, a former name renamed twice or chained
+/// into another rename, a rename with no release or two, or a release about a name no rename of
+/// this Statement declares.
+pub fn renamed_settings(
+    rewrites: &[(u32, String, String)],
+) -> Result<Vec<(String, String, String)>, String> {
+    let key = |k: &str| !k.is_empty() && !k.contains('.') && k.trim() == k;
+    let mut out: Vec<(String, String, String)> = Vec::new();
+    for (class, from, to) in rewrites {
+        if *class != REWRITE_RENAMED {
+            continue;
+        }
+        if !key(from) || !key(to) || from == to {
+            return Err(format!(
+                "the rename `{from}` -> `{to}` is not of one top-level settings key to another"
+            ));
+        }
+        if out
+            .iter()
+            .any(|(f, t, _)| f == from || t == from || f == to)
+        {
+            return Err(format!(
+                "the settings key `{from}` is renamed twice, or chained"
+            ));
+        }
+        out.push((from.clone(), to.clone(), String::new()));
+    }
+    for (class, from, since) in rewrites {
+        if *class != REWRITE_RENAMED_SINCE {
+            continue;
+        }
+        let Some(r) = out.iter_mut().find(|(f, _, _)| f == from) else {
+            return Err(format!(
+                "a release is stated for the rename of `{from}`, which no rename declares"
+            ));
+        };
+        if !r.2.is_empty() || since.trim().is_empty() {
+            return Err(format!(
+                "the rename of `{from}` states its release twice, or empty"
+            ));
+        }
+        r.2.clone_from(since);
+    }
+    if let Some((from, _, _)) = out.iter().find(|(_, _, since)| since.is_empty()) {
+        return Err(format!("the rename of `{from}` states no release"));
+    }
+    Ok(out)
+}
+
 /// [`REWRITE_SUGAR_ROLE`]: a config `${VAR}` at a credential position names the value of this
 /// sugar.
 pub const SUGAR_ROLE_FILL: &str = "fill";

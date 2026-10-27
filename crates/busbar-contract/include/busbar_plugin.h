@@ -73,6 +73,8 @@ extern "C" {
 #define BB_MECH_REWRITE_SUGAR_SHOWN UINT32_C(4) /* [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the placeholder */
 #define BB_MECH_REWRITE_SUGAR_NAMES UINT32_C(5) /* [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is what its value */
 #define BB_MECH_REWRITE_SUGAR_ROLE UINT32_C(6) /* [`Rewrite::class`]: `from` is a sugar word the same Statement declares; `to` is the core role */
+#define BB_MECH_REWRITE_RENAMED UINT32_C(7) /* [`Rewrite::class`]: the plugin RENAMED one of its own top-level settings keys: `from` is the */
+#define BB_MECH_REWRITE_RENAMED_SINCE UINT32_C(8) /* [`Rewrite::class`]: `from` is a former name a [`REWRITE_RENAMED`] of the same Statement */
 #define BB_MECH_SUGAR_ROLE_FILL "fill" /* [`REWRITE_SUGAR_ROLE`]: a config `${VAR}` at a credential position names the value of this */
 #define BB_MECH_SUGAR_ROLE_PATH "path" /* [`REWRITE_SUGAR_ROLE`]: the value of this sugar is a file path a credential may name in place of */
 #define BB_MECH_SECTION_DECLARING UINT32_C(1) /* [`Section::flags`]: the plugin's declaring section (a plane's verb). */

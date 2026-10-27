@@ -34,6 +34,8 @@ pub mod named_map;
 pub mod parse;
 /// The secret-reference type: `{ module, settings }` + the `{env}`/`{file}` sugar.
 pub mod patch;
+/// Plugin setting renames: a plugin's renamed settings key moved on load and by the migrator.
+pub mod plugin_renames;
 /// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen
 /// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
 pub mod prepass;

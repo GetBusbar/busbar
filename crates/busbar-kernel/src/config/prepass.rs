@@ -568,9 +568,12 @@ pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, serde_yaml::Error> 
 
 /// The format-agnostic form of [`deploy_from_yaml_str`] — the lift is a property of the DOCUMENT,
 /// not of YAML, so the JSON-shaped paths (a config document built by the management surface) get
-/// it too.
+/// it too. So are the plugins' own setting renames ([`super::plugin_renames::apply`]): every parse
+/// of a document moves a renamed key to its new name, with its one deprecation line.
 pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(de: D) -> Result<DeployCfg, D::Error> {
-    SplitDocument::deserialize(de).map(|d| d.0)
+    let mut deploy = SplitDocument::deserialize(de)?.0;
+    super::plugin_renames::apply(&mut deploy).map_err(D::Error::custom)?;
+    Ok(deploy)
 }
 
 /// The [`serde_yaml::Value`] twin of [`deploy_from_yaml_str`], for the paths that have already

@@ -409,6 +409,14 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // 1.4.x `governance:` database into `store:`, so only a config that still names no store gains
     // the one 1.5.x ran it on.
     migrate_store_required(&mut root, &mut changes);
+    // The plugins' own setting renames (`declares.renamed_settings`), the same table and the same
+    // rule boot applies on load (`plugin_renames`). Runs last: every instance is in its final
+    // `module:`/`settings:` shape by now.
+    changes.extend(
+        super::plugin_renames::migrate(&mut root)?
+            .iter()
+            .map(super::plugin_renames::Renamed::change),
+    );
 
     let body = serde_yaml::to_string(&Value::Mapping(root))
         .map_err(|e| format!("could not serialize the migrated config: {e}"))?;

@@ -12,7 +12,7 @@
 use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
 use super::door::{
     MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_HOOK,
-    MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_SUGAR, REWRITE_SUGAR_ROLE,
+    MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_RENAMED_SINCE, REWRITE_SUGAR,
     SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
 };
 use crate::abi::host::conn::connector::{
@@ -459,7 +459,7 @@ pub fn check_rewrites(rewrites: &[Rewrite]) -> Result<(), Fault> {
         code(
             u64::from(r.class),
             u64::from(REWRITE_ALIAS),
-            u64::from(REWRITE_SUGAR_ROLE),
+            u64::from(REWRITE_RENAMED_SINCE),
             "rewrite.class",
         )?;
         named(r.from, "rewrite.from")?;

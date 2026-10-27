@@ -96,6 +96,7 @@ pub mod plane_node;
 pub mod plugin_fetch;
 pub mod policy;
 pub mod registry;
+pub mod renames;
 pub mod serve;
 pub mod shutdown;
 pub mod transports;

@@ -302,6 +302,9 @@ fn register_planes() {
     root::boot::discover_planes(&LINKED, dropped);
     root::linked::register_planes(&LINKED);
     root::linked::register_exports(dropped);
+    // The plugins' own setting renames, before any configuration is parsed or migrated: every
+    // parse moves a renamed key and `--migrate-config` rewrites it (`busbar_kernel::config::plugin_renames`).
+    root::renames::install(&LINKED, dropped);
     // A plugin that declares an inbound need is refused until an accepted connection has a
     // consumer, after the axes it selects against are registered.
     if let Some(registry) = dropped {
