@@ -1438,6 +1438,8 @@ fn secrets_block_rejects_builtin_resolver_names() {
 /// - the built-in secrets are resolved only when asked.
 #[test]
 fn one_validator_refuses_in_one_order() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let plugins = crate::config::PluginsCfg::default();
     let check = |cfg: &crate::config::RootCfg,
                  root: &dyn Fn(&crate::config::RootCfg) -> Result<(), String>,
