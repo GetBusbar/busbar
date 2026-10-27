@@ -3548,7 +3548,7 @@ The loader checks in this order:
   - the ten 1.6.0 ledger ops: `append_batch`, `reserve`, `slice_release`, `heads`, `session_put`, `session_remove`, `sessions_for`, `record_put`, `record_get`, `record_scan`, with the semantics in `store_adapter.rs` documented per slot (constant slice epoch, replay cache `REPLAY_TTL_SECS` surviving a restore, shipping ack);
   - batch slots `add_usage_batch`, `add_metering_batch`, `append_audit_batch`.
 - **Writes.** Every additive or appending write carries `op_id` and is deduped, and uses the `write_behind` class.
-- **Kernel side.** The migration read (`legacy_audit_head`, `legacy_cells_read`) and the marker run in the kernel over `StoreClient`; the `store-persist` cell proves them. ITEM-580 closes: the store's own declared version is read.
+- **Kernel side.** The migration read (`migration_audit_head`, `migration_cells_read`) and the marker run in the kernel over `StoreClient`; the `store-persist` cell proves them. ITEM-580 closes: the store's own declared version is read.
 - **Tail:** `ephemeral`, `durable_plane`, `fork_refusal` (Q79). [STATUS 2026-10-14: `ephemeral` is a Statement mark (`MARK_EPHEMERAL`, abi/sdk/door.rs); the tail holds `durable_plane` and `fork_refusal` (`crates/busbar-contract/src/abi/store/mod.rs:238-253`)]
 - **Behaviour:** network stores use driver tickets; memory is always READY. There are no UNSUPPORTED fallbacks and no floor.
 
