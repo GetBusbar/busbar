@@ -817,9 +817,6 @@ pub fn check_offered_points(extensions: &[u8]) -> Result<AuthPoints, Fault> {
     Ok(AuthPoints(bits))
 }
 
-/// The most field predicates one route may carry.
-pub const MAX_ROUTE_FIELDS: u64 = 32;
-
 /// A route's CONTENT, read: a method set inside the vocabulary and not empty, a known path form, a
 /// path that is not empty; an exact, pattern or prefix path that starts with `/`; a pattern that
 /// keeps the syntax; field names that are non-empty lower-case tokens; a value on a value-prefix
