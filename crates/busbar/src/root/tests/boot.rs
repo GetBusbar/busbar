@@ -362,7 +362,7 @@ fn red_the_roots_listeners_head_the_one_list_of_listeners() {
 
 use busbar_contract::plugin::Kind;
 
-/// RED (TODO step 9): at 3g each seat is dealt only its own section, reserved sub-keys stripped,
+/// RED: at 3g each seat is dealt only its own section, reserved sub-keys stripped,
 /// and a plugin's validation refusal names the operator's file position in 1.5.5's form.
 #[test]
 fn red_3g_deals_each_seat_its_section_and_positions_a_refusal() {
@@ -703,7 +703,7 @@ fn features_reached(manifest: &str, root: &str) -> std::collections::BTreeSet<St
 
 /// THE RELEASE ARTIFACT NEVER CARRIES THE HARNESS SEAM (ARCHITECT ruling, busbar #700, condition b):
 /// the release builds (`scripts/release-build.sh`, both `scripts/pgo-build.sh` builds) compile
-/// `-p busbar` with its default features and name no `--features` or `--all-features`, and the
+/// the default distribution (`dist/default`) with its default features and name no `--features` or `--all-features`, and the
 /// default feature set does not reach `test-harness`. RED arm: a manifest whose default reaches it
 /// through another feature is caught, so the walk is not vacuous.
 #[test]
@@ -732,7 +732,10 @@ fn the_release_feature_set_excludes_test_harness() {
             .collect();
         assert!(!builds.is_empty(), "{script} names its release build");
         for b in builds {
-            assert!(b.contains("-p busbar"), "{script}: {b}");
+            assert!(
+                b.contains("--manifest-path dist/default/Cargo.toml --bin busbar"),
+                "{script} builds the default distribution: {b}"
+            );
             assert!(
                 !b.contains("--features") && !b.contains("--all-features"),
                 "{script}'s release build must take busbar's default features: {b}"

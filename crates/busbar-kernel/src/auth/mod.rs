@@ -2785,12 +2785,12 @@ pub fn resolve_data_plane_identity(
 }
 
 /// Whether an identified principal that earned NO governance key is refused whatever its roles and
-/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None` such a principal
-/// meets no pool ACL and no budget, and its spend is booked to the `anonymous` actor. `false` is
-/// 1.5.5's behaviour, which this build keeps until the owner signs the change (Q128 u27): the
-/// three-part guard of v1.5.5 crates/busbar/src/auth/mod.rs:1543. The owner's signature flips this
-/// one line.
-pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = false;
+/// whatever its module's bindings (Q20, 1.6.0 item 144). Admitted with `key: None`, such a principal
+/// met no pool ACL and no budget and its spend was booked to the `anonymous` actor (1.5.5's
+/// three-part guard, v1.5.5 crates/busbar/src/auth/mod.rs:1543). OWNER-SIGNED 2026-10-24 (M30): an
+/// identified principal with no grant is refused (`NoGrant`, 401), so every admitted request is
+/// governed and its spend attributed.
+pub const REFUSE_EVERY_UNGOVERNED_PRINCIPAL: bool = true;
 
 /// Whether `principal`, identified by `module` and earning no governance key, is admitted ungoverned
 /// under [`REFUSE_EVERY_UNGOVERNED_PRINCIPAL`].

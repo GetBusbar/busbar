@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOOK AXIS, THE ROOT'S (SWITCH-OVER, the hook root axis; ARCHITECT ruling 2026-09-29, the
-//! opener seam: a kind's `<Kind>Axis` is the contract's, implemented over the ONE dispatcher and
+//! THE HOOK AXIS, THE ROOT'S (the opener seam: a kind's `<Kind>Axis` is the contract's, implemented over the ONE dispatcher and
 //! the registry, and installed through the kernel's `RootInstall`). [`axis`] answers the contract's
 //! `HookAxis` over one configuration's plugin registry and this build's linked hook doors
-//! (`LINKED.hook_doors`; two different plugins answering one word refuse the configuration,
-//! ARCHITECT Q-P4-12): every `kind: hook` row, bound
+//! (`LINKED.hook_doors`; two different plugins answering one word refuse the configuration): every `kind: hook` row, bound
 //! through the loader's one load (`load_linked` / `load_dropped`) on the process's one dispatcher
 //! (`root::dispatch`), each OPENED instance logging to its own file under `plugins.logs` and
 //! declaring its needs on the process's one connector (`root::connector::the()`), read when the

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 
-fn verdict_now(r: Ran) -> Stored {
+pub(crate) fn verdict_now(r: Ran) -> Stored {
     match r {
         Ran::Now(s) => s,
         Ran::Later => panic!("the answer pended"),
@@ -69,9 +69,19 @@ use crate::trust::reverify::Policy;
 use crate::trust::section::{DeclaredPin, TrustEntry};
 
 /// The memory store's typed record reads.
-struct Mem(Arc<MemoryStore>);
+pub(crate) struct Mem(pub(crate) Arc<MemoryStore>);
 
 impl RecordRows for Mem {
+    fn claim(&self, token: &str, expires_at: u64, now: u64) -> Result<bool, StoreError> {
+        busbar_contract::records::RecordStore::redeem_plane_token(
+            &*self.0,
+            crate::host_records::CLAIM_KIND,
+            token,
+            expires_at,
+            now,
+        )
+        .map_err(|e| StoreError::Rejected(e.0))
+    }
     fn record_put(
         &self,
         schema: RecordSchemaId,
@@ -124,7 +134,7 @@ const KIND: RecordSchemaId = RecordSchemaId::new("approval");
 const SECTION_KEY: &str = "tools";
 
 /// An instance of the one test plugin, by its label.
-fn caller(instance: &str) -> Caller {
+pub(crate) fn caller(instance: &str) -> Caller {
     Caller {
         instance: Arc::from(instance),
         plugin: Arc::from("the-plugin"),
@@ -902,6 +912,10 @@ struct Gauge {
 }
 
 impl RecordRows for Gauge {
+    /// One writer in this test: every claim is the first.
+    fn claim(&self, _token: &str, _expires_at: u64, _now: u64) -> Result<bool, StoreError> {
+        Ok(true)
+    }
     fn record_put(
         &self,
         _schema: RecordSchemaId,
@@ -1225,6 +1239,10 @@ impl Gate {
 }
 
 impl RecordRows for Gate {
+    /// One writer in this test: every claim is the first.
+    fn claim(&self, _token: &str, _expires_at: u64, _now: u64) -> Result<bool, StoreError> {
+        Ok(true)
+    }
     fn record_put(
         &self,
         _schema: RecordSchemaId,
@@ -1299,6 +1317,10 @@ fn a_call_past_the_pools_bound_answers_failed_at_once() {
 struct Refusing(Mem);
 
 impl RecordRows for Refusing {
+    /// One writer in this test: every claim is the first.
+    fn claim(&self, _token: &str, _expires_at: u64, _now: u64) -> Result<bool, StoreError> {
+        Ok(true)
+    }
     fn record_put(
         &self,
         _schema: RecordSchemaId,
@@ -2455,4 +2477,131 @@ fn a_trust_decision_the_store_refused_never_takes_effect() {
         Ok(()),
         "kept, it is in force"
     );
+}
+
+/// **AN OPERATOR'S TRUST DECISION MADE THROUGH ANOTHER NODE TAKES EFFECT HERE WITHIN ONE WINDOW.** Two
+/// nodes over one store, both admitting the same instance: the operator approves a counterparty
+/// through node `a`, and node `b`'s re-sync tick applies the kept approval.
+///
+/// RED while the kept decisions were read only at an instance's first admit: node `b` kept the
+/// counterparty pending (and a revoke made through `a` stayed unenforced on `b`) until `b` restarted.
+#[test]
+fn a_trust_decision_made_through_another_node_takes_effect_within_one_window() {
+    use crate::trust::book::Ruling;
+    let r = rig();
+    let me = caller("inst");
+    let b = restarted(&r);
+    b.admit("inst", trusting(Some("fp"))).unwrap();
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "c1", l)).value,
+        svc::TRUST_NEW,
+        "a first sighting on node a"
+    );
+    r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    assert_eq!(
+        b.trust_unreached(&me, "cp").value,
+        svc::TRUST_NEW,
+        "node b has not re-synced yet"
+    );
+    b.trust_resync_tick();
+    assert_eq!(
+        b.trust_unreached(&me, "cp").value,
+        svc::TRUST_SAME,
+        "node b applies the approval node a kept"
+    );
+}
+
+/// A store that is down: every plane-record call fails.
+struct DownStore;
+
+impl crate::store::plane_view::PlaneStore for DownStore {
+    fn upsert_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(down())
+    }
+    fn get_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
+        Err(down())
+    }
+    fn append_plane_record(
+        &self,
+        _record: busbar_contract::records::PlaneRecordRef<'_>,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(down())
+    }
+    fn list_plane_records(
+        &self,
+        _kind: &str,
+        _selector: &busbar_contract::records::PlaneSelector,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
+        Err(down())
+    }
+    fn list_plane_record_parents(
+        &self,
+        _kind: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
+        Err(down())
+    }
+    fn purge_plane_records_before(
+        &self,
+        _kind: &str,
+        _before: u64,
+    ) -> busbar_contract::records::RecordStoreResult<u64> {
+        Err(down())
+    }
+    fn delete_plane_record(
+        &self,
+        _kind: &str,
+        _id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        Err(down())
+    }
+    fn redeem_plane_token(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Err(down())
+    }
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_contract::records::RecordStoreResult<bool> {
+        Err(down())
+    }
+}
+
+fn down() -> busbar_contract::records::RecordStoreError {
+    busbar_contract::records::RecordStoreError("store down (test)".to_string())
+}
+
+/// **AN INSTANCE WHOSE TRUST RECORDS CANNOT BE READ IS NOT ADMITTED.** The demotions and the
+/// operator's trust decisions are kept in the store; a restart whose store will not hand them back
+/// must refuse the instance, not admit it with the configured trust standing over a revoke or a
+/// quarantine it cannot see.
+///
+/// RED while an unreadable read was taken for "none kept": the instance was admitted.
+#[test]
+fn an_instance_whose_trust_records_cannot_be_read_is_not_admitted() {
+    let record = DemotionRecord::default();
+    record.set_sink(Arc::new(DownStore));
+    let restarted = KernelServices::new()
+        .with_demotions(Arc::new(record), SECTION_KEY)
+        .with_pool(Arc::new(Inline));
+    match restarted.admit("inst", trusting(Some("fp"))) {
+        Err(AdmitRefused::TrustUnread(why)) => {
+            assert!(why.contains("store down"), "{why}")
+        }
+        other => panic!("an unreadable trust record must refuse the admit, got {other:?}"),
+    }
 }

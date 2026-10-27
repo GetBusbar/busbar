@@ -1494,6 +1494,30 @@ impl Connection {
         }
     }
 
+    /// WHETHER THE DIAL HAS LANDED: the far end took the connect (through the proxy's tunnel,
+    /// where one is asked for). `Ready(Ok)` once it has, `Ready(Err)` once the connect failed
+    /// (every address the name admitted refused it, or its deadline passed), `Pending` with `cx`'s
+    /// waker while it connects. What the far end sends meanwhile is kept for the reader.
+    ///
+    /// # Errors
+    ///
+    /// Why the connection failed.
+    pub fn poll_landed(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
+        loop {
+            match &self.phase {
+                Phase::Failed(f) => return Poll::Ready(Err(f.clone())),
+                Phase::Connecting => {}
+                _ if self.tunnel.as_ref().is_some_and(|t| t.asked) => {}
+                _ => return Poll::Ready(Ok(())),
+            }
+            match self.drive(cx) {
+                Ok(true) => {}
+                Ok(false) => return Poll::Pending,
+                Err(f) => self.fail(f),
+            }
+        }
+    }
+
     /// Whether a piece (or the end) is ready, without taking it.
     pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         loop {

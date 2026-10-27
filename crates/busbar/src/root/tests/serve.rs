@@ -350,7 +350,7 @@ async fn an_ingress_write_waits_for_the_body_to_take_the_piece_before_it() {
     assert!(second.await, "taken: the second write resolves");
 }
 
-/// AFTER ITS HEAD THE UNIT RUNS ON ITS OWN TASK (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a
+/// AFTER ITS HEAD THE UNIT RUNS ON ITS OWN TASK: a
 /// caller that stops reading a streamed answer with its socket open leaves the body unpolled, and
 /// the unit still runs, so its own deadline can fire. Here the unit's second write waits on the
 /// unread body under a timer of the unit's own, which fires and lets the unit end. RED: the unit was
@@ -458,7 +458,7 @@ async fn an_ingress_head_the_wire_cannot_carry_is_a_plane_fault() {
     assert!(response.headers().is_empty());
 }
 
-// ── the late attach (ARCHITECT S7-TICK 2026-10-01, ruling A) ─────────────────────────────────────
+// ── the late attach ─────────────────────────────────────
 
 /// The composed kernel services are kept whole for the plane driver, installed once.
 #[test]
@@ -530,7 +530,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     let k = Arc::new(kernel(&[], false));
     late.install_kernel(Arc::clone(&k), k).expect("the install");
     let k = late.kernel().expect("kept");
-    // A declared pin: a first sighting pins nothing (ARCHITECT 2026-10-06).
+    // A declared pin: a first sighting pins nothing.
     let entry = TrustEntry {
         pin: Some(busbar_kernel::trust::section::DeclaredPin {
             mechanism: "fingerprint".into(),
@@ -608,7 +608,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     );
 }
 
-/// THE RECORD STORE (ARCHITECT Q-L3B-RECORDS): the late attach binds the configured governance
+/// THE RECORD STORE: the late attach binds the configured governance
 /// store — opened through its door on the store axis, as boot opens it — as the kernel's record
 /// store, its typed records served over its store v3 slots ([`busbar_kernel::host_records::StoreRows`]).
 /// A governance store with no door binds nothing.
@@ -725,7 +725,7 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
         method: b"POST".to_vec(),
         target: b"/framed".to_vec(),
         fields: Default::default(),
-        body: Arc::from(&b"\x02ab\x02cd"[..]),
+        body: bytes::Bytes::from_static(b"\x02ab\x02cd"),
     };
     let messages = vec![b"ab".to_vec(), b"cd".to_vec()];
     let (arrival, caller, _reply) = deframed_arrival(framed, &messages);
@@ -781,7 +781,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     assert!(handed.get("fs").is_some(), "the plane's own entry is kept");
 }
 
-/// AN OPEN CLAIM'S LINE TAKES NO AUTH, WHATEVER THE CHAIN (ARCHITECT, FLIP-A2A): a plane's
+/// AN OPEN CLAIM'S LINE TAKES NO AUTH, WHATEVER THE CHAIN: a plane's
 /// discovery documents answer a caller who holds no credential yet, with the operator's data chain
 /// configured exactly as without one.
 #[cfg(linked_section_pools)]
@@ -1168,7 +1168,7 @@ async fn a_data_port_api_request_answers_the_1_5_5_admin_refusal() {
     }
 }
 
-/// THE CLAIM DOORS' BINDS (row 132): a served plane's INBOUND need whose `target_from` block in its
+/// THE CLAIM DOORS' BINDS: a served plane's INBOUND need whose `target_from` block in its
 /// section states a `listen` is bound there, under the need's transport and its own index, and the
 /// setting is named as the operator spells it. An outbound need, a need with no `target_from`, a
 /// block that states no `listen` and a plane whose section is absent bind nothing; an address that

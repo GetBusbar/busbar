@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-stub-store"
+version = "1.5.0"
+edition = "2021"
+rust-version = "1.97"
+license = "Apache-2.0"
+publish = false
+description = "The default in-memory (RAM) backend for busbar's durable governance store — ephemeral, zero-setup."
+
+[lib]
+name = "busbar_stub_store"
+test = false
+doctest = false
+# rlib: the LINKED door (a busbar build holds this crate's store v3 `door` as its compiled-in row,
+# `linked::STORE`). The DROPPED-IN door is the sibling `busbar-store-memory-plugin` cdylib: its
+# `dropped-in` feature switches on the one below, so the one `export_door!` stays this crate's
+# source and no build can define the door symbol twice.
+crate-type = ["rlib"]
+
+[features]
+# THE DROPPED-IN DOOR (`door_export`): this crate's store v3 `door` exported as the image's ONE symbol
+# (`busbar_plugin_door`) through the contract's `export_door!`. OFF in a build that links this crate
+# (the compiled-in row holds the same `door`); the dropped-in artifact is the plugin crate's cdylib:
+# `cargo build -p busbar-store-memory-plugin --release --features dropped-in`.
+dropped-in = []
+
+# DEPENDENCY POLICY. A plugin's busbar closure is busbar-contract and nothing else; third-party crates
+# come from the workspace table (`{ workspace = true }`), which is busbar's dependency policy.
+[dependencies]
+# The record half of the store protocol. `busbar_contract::abi::sdk::store::StoreSlots` declares
+# `record_put`, `record_get` and `record_scan` for a plane's kernel-held durable records, and this
+# backend answers them at the contract's own spelling. busbar-contract is the ONE busbar crate a
+# plugin names, pinned by git rev to the busbar commit in `.busbar-ref` (the workspace row).
+busbar-contract = { workspace = true }
+# The dedupe log keeps a SHA-256 digest of each op's value fields, never their text, so what it
+# holds per op is fixed size. Already in busbar-contract's own closure: no crate is added.
+sha2 = { workspace = true }
+
+[dev-dependencies]
+# The `Store` contract conformance suites live in this crate's own tests (no shared test util
+# between plugins); they serialise typed rows into the opaque `PlaneRecord` body exactly as core
+# does, which is the whole of what they need from serde.
+# The store kind's shared epoch and slice-life cases (`busbar_contract::testkit::store_v3`), which
+# every store runs; the test kit is dev-only (`test-seal`: no test kit ships).
+busbar-contract = { workspace = true, features = ["test-seal"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -1152,3 +1152,103 @@ fn a_completed_exchange_reports_its_heads_status() {
     let status = r.answered.expect("the exchange completes").status;
     assert_eq!(r.state.head_status(), Some(status));
 }
+
+#[test]
+fn sealed_fields_go_in_at_their_place_and_never_read_back() {
+    use crate::abi::sdk::cred::Cred;
+    let key = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()));
+    let r = Request {
+        method: b"POST".to_vec(),
+        target: b"/hook".to_vec(),
+        fields: vec![(b"content-type".to_vec(), b"application/json".to_vec())],
+        body: b"{}".to_vec(),
+        timeout_ms: 0,
+    };
+    let ex = Exchange::request_sealed(
+        r,
+        vec![
+            (0, b"authorization".to_vec(), key.bearer()),
+            (9, b"x-api-key".to_vec(), key.field()),
+        ],
+    )
+    .expect("frames");
+    let seen = ex.framed_fields();
+    assert_eq!(
+        seen,
+        vec![
+            (&b"authorization"[..], &b"<sealed>"[..]),
+            (&b"content-type"[..], &b"application/json"[..]),
+            (&b"x-api-key"[..], &b"<sealed>"[..]),
+        ]
+    );
+    let Sending::Framed { head, .. } = &ex.sending else {
+        panic!("framed")
+    };
+    let head = String::from_utf8_lossy(head);
+    assert!(head.contains("authorization: Bearer sk-CANARY"), "{head}");
+    assert!(head.contains("x-api-key: sk-CANARY"), "{head}");
+}
+
+#[test]
+fn a_sealed_body_replaces_the_requests_own() {
+    use crate::abi::sdk::cred::{Cred, FormBody};
+    let secret = Cred::captured(zeroize::Zeroizing::new(b"s3c".to_vec()));
+    let body = FormBody::new()
+        .public("grant_type", "authorization_code")
+        .sealed("client_secret", &secret)
+        .encoded()
+        .expect("encodes");
+    let r = Request {
+        method: b"POST".to_vec(),
+        target: b"/token".to_vec(),
+        fields: vec![],
+        body: b"ignored".to_vec(),
+        timeout_ms: 0,
+    };
+    let ex = Exchange::request_with(r, Vec::new(), Some(body)).expect("frames");
+    let Sending::Framed { body, .. } = &ex.sending else {
+        panic!("framed")
+    };
+    assert_eq!(
+        &body[..],
+        b"grant_type=authorization_code&client_secret=s3c"
+    );
+}
+
+/// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4), RED before the check: a credential the operator's
+/// URL requires secured goes out only to a secured target. A framed request is made whole when its
+/// stream opens, so a target whose scheme is not secure is refused before the open; a credential
+/// with no requirement goes out either way.
+#[test]
+fn a_credential_that_must_go_out_secured_is_refused_on_a_clear_target() {
+    use crate::abi::sdk::cred::{Cred, NOT_SECURE};
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let required = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()))
+        .secure_for("https://far/hook");
+    let free = Cred::captured(zeroize::Zeroizing::new(b"sk-CANARY".to_vec()));
+    let go = |cred: &Cred, target: &'static str| {
+        let ex =
+            Exchange::request_sealed(post(), vec![(0, b"authorization".to_vec(), cred.bearer())])
+                .expect("frames");
+        run(http_reply(), false, ex, None, move |c, st| {
+            exchange(c, st, 0, Some(target))
+        })
+    };
+    let refused = go(&required, "http://far/hook");
+    assert!(
+        matches!(&refused.answered, Err(ConnFailure::Refused(t)) if t == NOT_SECURE),
+        "{:?}",
+        refused.answered.as_ref().err()
+    );
+    assert!(
+        refused.ops.is_empty(),
+        "the stream was opened: {:?}",
+        refused.ops
+    );
+    let sent = go(&required, "https://far/hook");
+    assert_eq!(sent.answered.expect("sent secured").status, 200);
+    let clear = go(&free, "http://far/hook");
+    assert_eq!(clear.answered.expect("no requirement").status, 200);
+}

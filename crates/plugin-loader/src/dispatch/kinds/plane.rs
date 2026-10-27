@@ -613,15 +613,6 @@ pub fn linked_probe(
     })
 }
 
-/// [`linked_probe`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows 159
-/// and 194). #1469 makes `linked_probe` take the `MacroDoor` alone and keeps this name beside it.
-pub fn linked_probe_macro(
-    door: busbar_contract::abi::sdk::door::MacroDoor,
-    instance: &str,
-) -> ProbeBind {
-    linked_probe(door.door_fn(), instance)
-}
-
 /// THE COMMAND-LINE HELP A LINKED PLANE DOOR STATES: its tail's `cli_help`, read off its `'static`
 /// Statement without binding it (no `validate` or `open` runs), so `busbar --help` can render it
 /// before any configuration is read. `None` when the tail states none.

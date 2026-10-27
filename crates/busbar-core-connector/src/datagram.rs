@@ -1280,12 +1280,6 @@ impl Bridge {
         self.stopped = true;
     }
 
-    /// Whether the bridge is stopped.
-    #[must_use]
-    pub fn stopped(&self) -> bool {
-        self.stopped
-    }
-
     /// The stream a frame on `leg`'s `stream` crosses to on the other leg; `None` = the stream is
     /// no line, the legs do not mirror, or the bridge is stopped.
     #[must_use]

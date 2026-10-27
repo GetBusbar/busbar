@@ -488,7 +488,6 @@ impl Listening {
     /// connection to the worker that accepted it (1.5.5's per-core placement). The serving loop
     /// runs the connector's prepared connection security, under the configured handshake bound,
     /// after placement.
-    // TRANSITIONAL: drains at K1 U6/U7 (1.6.0-TODO.md) for the data door; the admin surface keeps it.
     pub fn poll_accept_stream(&mut self, cx: &mut Context<'_>) -> Poll<Handed> {
         loop {
             let (got, peer, slot) = std::task::ready!(self.poll_conn(cx));

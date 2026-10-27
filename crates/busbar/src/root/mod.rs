@@ -133,10 +133,11 @@ mod doors_refresh;
 #[path = "tests/linked_door_root.rs"]
 mod linked_door_root;
 
-// The crate's one plugin fixture (`tests/common/plugins.rs`), shared with the integration tests:
-// how a unit test packs a plugin, drops it in and reads what the boot's scan makes of it.
+// The crate's one plugin fixture (`tests/test_plugins.rs`), shared with the default distribution's
+// integration tests: how a unit test packs a plugin, drops it in and reads what the boot's scan
+// makes of it.
 #[cfg(test)]
-#[path = "../../tests/common/plugins.rs"]
+#[path = "tests/test_plugins.rs"]
 pub(crate) mod test_plugins;
 
 // A configured store's record slots over a map the test holds: the store a node with no data

@@ -15,16 +15,11 @@ use std::sync::Arc;
 // repointed.
 use busbar_kernel::store::LaneRuntime;
 
-// ── DATA-PLANE TOPOLOGY + the sharded upstream client — RELOCATED to `busbar-substrate::topology`
-// (1.6.0 App-retype WEDGE 3-PREP) so the plane crates reach the neutral worker-count / worker-id
-// process facts and the per-worker-sharded upstream client without naming `busbar-core`. The
-// store-striping readers (`worker_stripes`/`worker_stripe`) still resolve their historical
-// `crate::state::…` path and keep the `pub` visibility they had before the move.
-//
-// `set_data_workers`, `set_worker_id` and `UpstreamClients` are no longer re-exported: the
-// composition root's boot publish now targets `busbar_kernel::topology::…` directly, which left
-// the three `busbar_kernel::state::…` spellings with no caller at all. Nothing outside core names
-// them.
+// ── DATA-PLANE TOPOLOGY — `busbar_kernel::topology` (1.6.0 App-retype WEDGE 3-PREP): the neutral
+// worker-count / worker-id process facts. The store-striping readers (`worker_stripes` /
+// `worker_stripe`) still resolve their historical `crate::state::…` path. `set_data_workers` and
+// `set_worker_id` are not re-exported: the composition root's boot publish targets
+// `busbar_kernel::topology::…` directly.
 pub use busbar_kernel::topology::{worker_stripe, worker_stripes};
 
 /// Re-export the neutral companion-slot key DERIVER: a plane's ALWAYS-PRESENT per-generation runtime

@@ -507,12 +507,6 @@ impl Carried {
         let _ = wr.cross(self.door.as_ref(), Carry::Shut(&mut i, &mut o), None);
     }
 
-    /// Whether the connection was closed.
-    #[must_use]
-    pub fn is_shut(&self) -> bool {
-        self.shut.load(Ordering::Acquire)
-    }
-
     /// TAKE the dialled or accepted socket off the host's table as the byte stream moves on to the
     /// kernel's own serving loop, and forget the carrier's connection.
     #[must_use]

@@ -517,7 +517,7 @@ fn arrival_by(method: &str, target: &str, body: &[u8]) -> Arrival {
         method: method.as_bytes().to_vec(),
         target: target.as_bytes().to_vec(),
         fields: vec![(b"content-type".to_vec(), b"text/plain".to_vec())],
-        body: Arc::from(body),
+        body: bytes::Bytes::copy_from_slice(body),
     }
 }
 
@@ -821,9 +821,16 @@ async fn a_wedged_on_piece_keeps_the_units_buffers_until_it_returns() {
             Far::new(&["wedge"], CHUNKS),
             Caller::default(),
         );
+        // The body's one owner, counted: every clone of the unit's `Bytes` shares it.
+        struct Counted(Arc<[u8]>);
+        impl AsRef<[u8]> for Counted {
+            fn as_ref(&self) -> &[u8] {
+                &self.0
+            }
+        }
         let body: Arc<[u8]> = Arc::from(&b"wedged"[..]);
         let arrival = Arrival {
-            body: body.clone(),
+            body: bytes::Bytes::from_owner(Counted(body.clone())),
             ..arrival("/call", b"")
         };
         let units = r.driver.unit(&steps, &far, &caller, arrival, 0);

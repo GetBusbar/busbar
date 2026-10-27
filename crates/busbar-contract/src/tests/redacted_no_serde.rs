@@ -17,8 +17,7 @@
 //!
 //! We cannot write a `where Secret<T>: !Serialize` bound on stable Rust (negative bounds are
 //! unstable), and this crate deliberately carries no `static_assertions`/`trybuild` dev-dep. So we
-//! detect the impl the way `redacted_tests.rs::redacted_does_not_implement_serialize` already does,
-//! generalized to BOTH directions: a `Probe<T>` whose inherent method exists ONLY when `T: Serialize`
+//! detect the impl in BOTH directions: a `Probe<T>` whose inherent method exists ONLY when `T: Serialize`
 //! (resp. `DeserializeOwned`) and thereby SHADOWS a trait-default method that always reports `false`.
 //! Method resolution picks the inherent method IFF the bound holds — so the returned bool is a live
 //! reflection of "does an impl exist right now". A control probe over a type that IS `Serialize`/
