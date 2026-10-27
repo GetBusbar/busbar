@@ -9,15 +9,8 @@
 //! as a dropped-in one (BUSBAR-1.6.0.md THE DESIGN, §11.4), so once the instance is loaded, the host has bound it
 //! to its own log sink, and opening that sink creates `<plugins.logs.dir>/metrics.log`. The file
 //! exists as soon as the instance is bound, whether or not the plugin has logged anything yet.
-//!
-//! RED IN THIS BUILD, KNOWN, AND OWNED (ARCHITECT ruling 2026-09-28, BOOT-CHAIN (3)): the one load
-//! (the loader's `boot::load`, KERNEL<>PLUGINS step 6) binds every memory-ABI instance it
-//! loads to `PluginLogConfig::sink` — proven at the loader by
-//! `boot::tests::the_one_load_binds_each_selected_instance_to_its_own_log_sink` — but the compiled-in
-//! scrape sink is still a cold-ABI plugin, so no memory-ABI instance is loaded here and no file
-//! appears. Its `#[ignore]` comes off when the scrape sink is a `plugin_door!` memory-ABI plugin.
-//!
-//! Run it: `cargo test -p busbar --test plugin_log_file_boot -- --ignored`
+//! The one load (the loader's `boot::load`) binds every memory-ABI instance it loads to
+//! `PluginLogConfig::sink`, and the compiled-in scrape sink is linked through its door.
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
 
@@ -120,10 +113,6 @@ fn scrape_status(port: u16) -> Option<u16> {
 }
 
 #[test]
-#[ignore = "RED BY DESIGN: the one load binds every memory-ABI instance to \
-            PluginLogConfig::sink (KERNEL<>PLUGINS step 6), but the scrape sink is still a cold-ABI \
-            plugin; the scrape sibling on plugin_door! removes this ignore. Run with \
-            --ignored; do not weaken this test to make it green."]
 fn a_loaded_plugin_instance_has_its_own_log_file() {
     let dir = fixture_dir();
     let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());

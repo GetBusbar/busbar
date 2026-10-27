@@ -44,7 +44,7 @@
 # THE C PATH (`plugin_lang: c`; BUSBAR-1.6.0.md decision #84, witness GetBusbar/busbar-secret-c): a
 # plugin repo with no Rust and no busbar crate. Its `.c` sources (`c_dir`) are compiled with the
 # system C compiler against `busbar_plugin.h` from busbar AT THE PIN, into the library a release
-# packs; then busbar's own `crates/plugin-loader/tests/dropped_conformance.rs`, at the same pin,
+# packs; then busbar's own `crates/plugin-loader/examples/dropped_conformance.rs`, at the same pin,
 # loads that library through `load_dropped`, drives the kind's conformance script over the plugin's
 # `<c_dir>/conformance.json`, and keeps its RED arm (the sources rebuilt at another kind ABI are
 # refused). It has no crates, so the Rust steps and the Rust gates do not run for it; the pin check
@@ -426,10 +426,7 @@ jobs:
         working-directory: busbar
         run: |
           set -euo pipefail
-          out="$(cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
-          passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
-          [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests (the script and the RED arm)"; exit 1; }
-          echo "C conformance: $passed test(s) passed"
+          cargo run --locked -p busbar-plugin-loader --example dropped_conformance
 
   macos:
     name: build, test [macos]
@@ -565,10 +562,8 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -pedantic -fPIC -shared \
             -I busbar/crates/busbar-contract/include -o "$lib" "$src"/*.c
           cd busbar
-          out="$(BUSBAR_DROPPED_LIB="$lib" BUSBAR_DROPPED_SOURCES="$src" BUSBAR_DROPPED_SCRIPT="$src/conformance.json" \
-            cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
-          passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
-          [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests"; exit 1; }
+          BUSBAR_DROPPED_LIB="$lib" BUSBAR_DROPPED_SOURCES="$src" BUSBAR_DROPPED_SCRIPT="$src/conformance.json" \
+            cargo run --locked -p busbar-plugin-loader --example dropped_conformance
 
   coverage:
     name: coverage
