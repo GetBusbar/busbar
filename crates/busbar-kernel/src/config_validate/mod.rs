@@ -1101,7 +1101,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     if let Some(auth) = &cfg.auth {
         // Every module named in the data-plane chain must resolve to EITHER the built-in `keys`
         // module OR a loadable `kind: auth` plugin. This function runs before the plugin registry
-        // exists (see this module's own doc + `preflight_plugins_and_secrets`'s doc comment: "the
+        // exists (see this module's own doc + `config_validate::check`'s doc comment: "the
         // plugin pre-flight... cannot run until the registry exists"), so it CANNOT tell a genuine
         // plugin name from a typo at this point — only `main.rs`'s post-resolve
         // `auth_plugin_refs`/registry check (run right after this) can. Only the names this function
@@ -1856,7 +1856,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // is trusted is resolved against the plugin REGISTRY — but this function runs at boot AND
     // `--validate` BEFORE the plugin pre-flight builds that registry, and captures none, so it
     // CANNOT tell an installed plugin from a typo. Therefore the module-EXISTENCE check is DEFERRED
-    // to the shared plugin pre-flight (`validate_secret_refs`, called from `plugins_preflight`'s two
+    // to the shared plugin pre-flight (`registry_refusal`, called from `plugins_preflight`'s two
     // call-sites) — the SAME deferral the `store.module` plugin reference already uses. Here we
     // validate ONLY the STRUCTURE that is checkable without the registry: the settings key each
     // loaded secret plugin's declared shorthand names (its Statement's `REWRITE_SUGAR`; audit
@@ -1887,12 +1887,12 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             errors.push(refusal);
         }
         // A module no loaded plugin declares a shorthand for is NOT rejected here: its existence is
-        // proven against the registry in `validate_secret_refs` at plugin pre-flight, which refuses
+        // proven against the registry in `registry_refusal` at plugin pre-flight, which refuses
         // an unknown module in 1.5.5's words.
     };
     // Enumerate EVERY secret reference in the config through ONE shared walk (`secret_refs`), so the
     // structural check here and the registry-backed module-existence check at plugin pre-flight
-    // (`validate_secret_refs`) can never drift over WHICH refs they cover.
+    // (`registry_refusal`) can never drift over WHICH refs they cover.
     for (what, r) in secret_refs(cfg) {
         check_secret(what, r);
     }
@@ -2205,7 +2205,12 @@ pub mod deal;
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
-pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allowed, secret_refs};
+#[cfg(test)]
+pub(crate) use secret_refs::registry_refusal;
+pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_refs};
+/// The one validator every caller runs.
+mod check;
+pub use check::{check, no_root_rules, Check, Refusal};
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way

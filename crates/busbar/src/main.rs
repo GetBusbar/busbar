@@ -40,10 +40,8 @@ use std::time::Duration;
 
 use axum::Router;
 
-// `preflight_plugins_and_secrets`, `validate_builtin_secrets_resolve`, `DEFAULT_CONFIG_PATH` and
-// `ENV_PROVIDERS` left with the flag surface (`root::cli`): the first two are what `--validate`
-// checks without booting, and the last two are the config/providers path precedence the scanners
-// there answer for boot AND for every command.
+// `DEFAULT_CONFIG_PATH` and `ENV_PROVIDERS` left with the flag surface (`root::cli`): they are the
+// config/providers path precedence the scanners there answer for boot AND for every command.
 use busbar_kernel::{
     build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
