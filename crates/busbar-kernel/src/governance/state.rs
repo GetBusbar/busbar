@@ -1598,7 +1598,7 @@ impl GovState {
     }
 
     /// How many times the money view has priced a bucket on this node. Test-only.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn money_view_pricings(&self) -> u64 {
         self.money_view.pricings()
     }
