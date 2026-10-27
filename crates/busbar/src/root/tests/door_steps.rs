@@ -1379,9 +1379,12 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
         let n = opened.len();
         let body = match self.answer {
             Some(answer) => answer(&opened[n - 1].3),
+            // The first token lives 10 s, so the plugin re-mints it at about half its life (its
+            // short-token rule): the window in which the first bearer is presented is seconds
+            // wide, not the one second a 2 s token left a loaded test thread to observe it in.
             None => format!(
                 r#"{{"access_token":"oracle-minted-{n}","expires_in":{}}}"#,
-                if n == 1 { 2 } else { 3600 }
+                if n == 1 { 10 } else { 3600 }
             ),
         };
         let id = self.slab.insert(caller, need, ())?;
