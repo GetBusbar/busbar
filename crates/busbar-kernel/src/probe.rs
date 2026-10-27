@@ -31,10 +31,6 @@ use crate::plane_driver::route_input::HealthModeInput as HealthMode;
 /// `far_future` horizon and the config-validation ceiling on every duration (item 147).
 pub const NEVER_PROBE_DEADLINE: Duration = Duration::from_secs(30 * 365 * 86_400);
 
-/// The cap on the bytes read from a non-2xx probe answer before classification: a hostile or
-/// misconfigured upstream must not force an unbounded allocation because a probe failed.
-pub const PROBE_ERROR_BODY_CAP: usize = 64 * 1024;
-
 /// Sentinel for "this member has no deadline yet". `0` is a legitimate deadline at the origin.
 const UNSCHEDULED: u64 = u64::MAX;
 

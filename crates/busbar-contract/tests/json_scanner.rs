@@ -368,13 +368,14 @@ fn ten_thousand_open_brackets_are_an_answer_rather_than_a_stack_overflow() {
 
 #[test]
 fn the_depth_bound_is_where_the_documentation_says_it_is() {
-    let (body, pointer) = nested(60);
-    assert_eq!(found(&body, &pointer), b"1", "60 deep is inside the bound");
+    // v1.5.5's bound: 128 deep reads, 129 deep is refused (`MAX_JSON_DEPTH`).
+    let (body, pointer) = nested(128);
+    assert_eq!(found(&body, &pointer), b"1", "128 deep is inside the bound");
 
-    let (body, pointer) = nested(70);
+    let (body, pointer) = nested(129);
     assert_eq!(
         resolve_pointer(&body, &pointer),
         Resolved::Malformed,
-        "70 deep is past it"
+        "129 deep is past it"
     );
 }

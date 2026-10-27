@@ -264,3 +264,65 @@ fn a_successful_read_unions_and_closes_the_window() {
     );
     assert_eq!(rev.synced_at(), t, "success closes the staleness window");
 }
+
+/// **A KEY ANOTHER NODE MINTED, ROTATED OR DELETED IS SEEN WITHIN ONE RE-SYNC WINDOW.** Two nodes
+/// over one store: a key node `a` mints authenticates on node `b`, a rotation on `a` retires the old
+/// token on `b`, and a deletion on `a` stops `b` admitting the key.
+///
+/// RED while the key caches were reloaded only after this node's own mutations: `b` never saw the
+/// key `a` minted, and kept admitting the token `a`'s rotation retired until `b` restarted.
+#[test]
+fn a_key_another_node_minted_rotated_or_deleted_is_seen_within_one_window() {
+    use crate::governance::signing::{TokenSigner, DEFAULT_KID};
+    use crate::governance::{GovState, NewKeySpec};
+
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let node = || {
+        GovState::new_with_signer(
+            Arc::clone(&store),
+            None,
+            Some(TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID)),
+        )
+        .expect("a node over the store")
+    };
+    let (a, b) = (node(), node());
+    let t0 = busbar_kernel::store::now();
+    let exp = t0 + REVOCATION_SYNC_TTL_SECS * 1_000;
+    let window = |n: u64| t0 + REVOCATION_SYNC_TTL_SECS * 2 * n;
+
+    let (key, first) = a
+        .mint_signed(
+            NewKeySpec {
+                name: "fleet".into(),
+                ..Default::default()
+            },
+            exp,
+            t0,
+        )
+        .expect("node a mints");
+    let first = first.expose(&crate::seal::lend()).to_string();
+    assert!(
+        b.verify_token(&first, window(1), None).is_some(),
+        "node b admits the key node a minted"
+    );
+
+    let rotated = a
+        .rotate_key(&key.id, exp)
+        .expect("node a rotates")
+        .expect("the key exists");
+    let second = rotated.token.expose(&crate::seal::lend()).to_string();
+    assert!(
+        b.verify_token(&first, window(2), None).is_none(),
+        "node b retires the token node a's rotation replaced"
+    );
+    assert!(
+        b.verify_token(&second, window(2), None).is_some(),
+        "node b admits the rotated token"
+    );
+
+    a.delete_key(&key.id).expect("node a deletes");
+    assert!(
+        b.verify_token(&second, window(3), None).is_none(),
+        "node b stops admitting a key node a deleted"
+    );
+}

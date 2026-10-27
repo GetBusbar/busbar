@@ -35,7 +35,7 @@
 //! and testable and the substrate takes no ambient clock.
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 /// The neutral session identity — a stable hash of the request's session key (e.g. the `x-session-id`
@@ -49,14 +49,24 @@ pub struct SessionKey(pub u64);
 /// tenants can hold independent state for the same session.
 pub type OwnerKey = &'static str;
 
+/// The most expired slots one `put` drops. The sweep walks the expiry order from its front, so each
+/// call does bounded work under the lock however many slots expired since the last one; a backlog
+/// drains at this many slots per put, far faster than one put can add to it.
+const SWEEP_PER_PUT: usize = 64;
+
+type SlotKey = (SessionKey, OwnerKey);
+
 struct Slot {
     value: Arc<dyn Any + Send + Sync>,
     /// Pinned slots are exempt from LRU and TTL — explicit-removal-only. For durable/active tenants
     /// (another plane's live tasks) so eviction cannot drop state the tenant still owns.
     pinned: bool,
-    last_touch_ms: u64,
+    /// The slot's place in the recency order: `(last touch, touch sequence)`. Unused while `pinned`.
+    lru_at: (u64, u64),
     /// Absolute expiry; `None` = no TTL. Ignored while `pinned`.
     expires_at_ms: Option<u64>,
+    /// Breaks ties in the expiry order; fixed for the slot's life.
+    id: u64,
 }
 
 impl Slot {
@@ -65,10 +75,113 @@ impl Slot {
     }
 }
 
+/// The slots and the two orders over them, under one lock. `lru` holds every UNPINNED slot by
+/// `(last touch, touch sequence)`; `expiry` holds every unpinned slot with a TTL by
+/// `(expires at, id)`. Both are kept in step with `map` by `insert`/`take`/`touch`, so the LRU victim
+/// and the next expired slot are each the front of an ordered map, never a scan of every slot.
+#[derive(Default)]
+struct Slots {
+    map: HashMap<SlotKey, Slot>,
+    lru: BTreeMap<(u64, u64), SlotKey>,
+    expiry: BTreeMap<(u64, u64), SlotKey>,
+    tick: u64,
+}
+
+impl Slots {
+    fn next_tick(&mut self) -> u64 {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+
+    fn insert(
+        &mut self,
+        key: SlotKey,
+        value: Arc<dyn Any + Send + Sync>,
+        pinned: bool,
+        now_ms: u64,
+        expires_at_ms: Option<u64>,
+    ) {
+        self.take(&key);
+        let id = self.next_tick();
+        let lru_at = (now_ms, id);
+        if !pinned {
+            self.lru.insert(lru_at, key);
+            if let Some(e) = expires_at_ms {
+                self.expiry.insert((e, id), key);
+            }
+        }
+        self.map.insert(
+            key,
+            Slot {
+                value,
+                pinned,
+                lru_at,
+                expires_at_ms,
+                id,
+            },
+        );
+    }
+
+    /// Remove a slot and its places in both orders.
+    fn take(&mut self, key: &SlotKey) -> Option<Slot> {
+        let slot = self.map.remove(key)?;
+        if !slot.pinned {
+            self.lru.remove(&slot.lru_at);
+            if let Some(e) = slot.expires_at_ms {
+                self.expiry.remove(&(e, slot.id));
+            }
+        }
+        Some(slot)
+    }
+
+    /// Move a live slot to the recency front and hand back its value.
+    fn touch(&mut self, key: &SlotKey, now_ms: u64) -> Option<Arc<dyn Any + Send + Sync>> {
+        let tick = self.next_tick();
+        let slot = self.map.get_mut(key)?;
+        if !slot.pinned {
+            self.lru.remove(&slot.lru_at);
+            slot.lru_at = (now_ms, tick);
+            self.lru.insert(slot.lru_at, *key);
+        }
+        Some(slot.value.clone())
+    }
+
+    /// Drop at most `budget` expired unpinned slots, earliest expiry first.
+    fn sweep_expired(&mut self, now_ms: u64, budget: usize) {
+        for _ in 0..budget {
+            match self.expiry.first_key_value() {
+                Some((&(e, _), &key)) if now_ms >= e => {
+                    self.take(&key);
+                }
+                _ => break,
+            }
+        }
+    }
+
+    /// While over `capacity`, evict the least-recently-used UNPINNED slot. Pinned slots are never in
+    /// the recency order — so the store may exceed `capacity` if pinned slots alone exceed it, which
+    /// is correct: pinned = a tenant still owns it.
+    fn bound(&mut self, capacity: usize) {
+        while self.map.len() > capacity {
+            match self.lru.first_key_value() {
+                Some((_, &key)) => {
+                    self.take(&key);
+                }
+                // Only pinned slots remain; they are exempt, so stop.
+                None => break,
+            }
+        }
+    }
+}
+
 /// The neutral session substrate. Cheap to clone the handle (`Arc` internally is the caller's job if
 /// shared); typically one process-global instance.
+///
+/// Every operation is bounded: a `get`, `put` or `remove` costs O(log n) in the slot count, plus at
+/// most `SWEEP_PER_PUT` expired-slot drops per `put` — never a walk of the whole store under the
+/// lock, which at the production capacity would serialise every gated request behind it.
 pub struct SessionStore {
-    inner: Mutex<HashMap<(SessionKey, OwnerKey), Slot>>,
+    inner: Mutex<Slots>,
     /// Hard cap on live slots — the memory-safety bound. Unpinned slots are evicted LRU on overflow.
     capacity: usize,
     /// Default TTL applied to `put` when the caller does not specify one; `None` = no default.
@@ -79,20 +192,22 @@ impl SessionStore {
     /// A substrate bounded to `capacity` slots, with an optional default TTL.
     pub fn new(capacity: usize, default_ttl_ms: Option<u64>) -> SessionStore {
         SessionStore {
-            inner: Mutex::new(HashMap::new()),
+            inner: Mutex::new(Slots::default()),
             capacity: capacity.max(1),
             default_ttl_ms,
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<(SessionKey, OwnerKey), Slot>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Slots> {
         // Poison-recovering: a panicking tenant must not wedge the substrate for every other tenant.
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Write an opaque value for `(session, owner)`, replacing any existing slot. `pinned` exempts it
     /// from LRU/TTL (use for durable/active tenants). Uses the default TTL unless `ttl_ms` overrides;
-    /// `pinned` slots ignore TTL. Evicts the LRU unpinned slot if this pushes past capacity.
+    /// `pinned` slots ignore TTL. Drops a bounded batch of expired slots, then evicts the LRU
+    /// unpinned slot if this still pushes past capacity — so an expired slot is always dropped
+    /// before a live one is evicted.
     pub fn put<T: Any + Send + Sync>(
         &self,
         session: SessionKey,
@@ -109,17 +224,10 @@ impl SessionStore {
                 .or(self.default_ttl_ms)
                 .map(|d| now_ms.saturating_add(d))
         };
-        let mut map = self.lock();
-        map.insert(
-            (session, owner),
-            Slot {
-                value,
-                pinned,
-                last_touch_ms: now_ms,
-                expires_at_ms,
-            },
-        );
-        Self::sweep_and_bound(&mut map, self.capacity, now_ms);
+        let mut slots = self.lock();
+        slots.insert((session, owner), value, pinned, now_ms, expires_at_ms);
+        slots.sweep_expired(now_ms, SWEEP_PER_PUT);
+        slots.bound(self.capacity);
     }
 
     /// Read the opaque value for `(session, owner)`, downcast to `T`. Touches LRU. Returns `None` if
@@ -130,60 +238,29 @@ impl SessionStore {
         owner: OwnerKey,
         now_ms: u64,
     ) -> Option<Arc<T>> {
-        let mut map = self.lock();
+        let mut slots = self.lock();
         let key = (session, owner);
-        match map.get_mut(&key) {
-            Some(slot) if slot.is_expired(now_ms) => {
-                map.remove(&key);
-                None
-            }
-            Some(slot) => {
-                slot.last_touch_ms = now_ms;
-                // Cheap Arc<dyn Any> → Arc<T> without cloning the inner value on failure.
-                slot.value.clone().downcast::<T>().ok()
-            }
-            None => None,
+        if slots.map.get(&key)?.is_expired(now_ms) {
+            slots.take(&key);
+            return None;
         }
+        // Cheap Arc<dyn Any> → Arc<T> without cloning the inner value on failure.
+        slots.touch(&key, now_ms)?.downcast::<T>().ok()
     }
 
     /// Remove a slot regardless of pin state (the only way a pinned slot leaves).
     pub fn remove(&self, session: SessionKey, owner: OwnerKey) -> bool {
-        self.lock().remove(&(session, owner)).is_some()
+        self.lock().take(&(session, owner)).is_some()
     }
 
-    /// Current live slot count (after no sweep — for tests/metrics).
+    /// Current slot count, expired slots not yet swept included (for tests/metrics).
     pub fn len(&self) -> usize {
-        self.lock().len()
+        self.lock().map.len()
     }
 
     /// Whether the substrate holds no slots.
     pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
-    }
-
-    /// Drop every expired unpinned slot, then, while still over `capacity`, evict the least-recently-
-    /// used UNPINNED slot. Pinned slots are never evicted here — so the store may exceed `capacity`
-    /// if pinned slots alone exceed it, which is correct: pinned = a tenant still owns it.
-    fn sweep_and_bound(
-        map: &mut HashMap<(SessionKey, OwnerKey), Slot>,
-        capacity: usize,
-        now_ms: u64,
-    ) {
-        map.retain(|_, slot| !slot.is_expired(now_ms));
-        while map.len() > capacity {
-            let victim = map
-                .iter()
-                .filter(|(_, s)| !s.pinned)
-                .min_by_key(|(_, s)| s.last_touch_ms)
-                .map(|(k, _)| *k);
-            match victim {
-                Some(k) => {
-                    map.remove(&k);
-                }
-                // Only pinned slots remain; they are exempt, so stop.
-                None => break,
-            }
-        }
+        self.lock().map.is_empty()
     }
 }
 

@@ -444,3 +444,227 @@ async fn a_session_refused_at_its_open_seals_a_refused_record() {
         "a refused unit has no amount"
     );
 }
+
+/// [`ToDestination`], whose route leg's hook stage ran `hooks`: the kernel's hook stage reports
+/// them to the node at the head of the leg, through the port a driver is built with
+/// ([`busbar_kernel::plane_driver::HookJournal`], audit root#3). `None`: no hook bound, and a
+/// stage that ran none reports nothing.
+struct Hooked<'p> {
+    post: &'p NodeEndPost,
+    hooks: Option<Vec<busbar_kernel_audit::HookApplied>>,
+}
+
+impl Units for Hooked<'_> {
+    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
+        ToDestination.arrival(token, ctx)
+    }
+
+    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> SeatVerdict<Decode> {
+        ToDestination.decode(token, ctx)
+    }
+
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
+        ToDestination.authenticate(token, ctx)
+    }
+
+    fn verify(
+        &self,
+        token: &Pass<Verify>,
+        trust: &Grant<Dial>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> SeatVerdict<Verify> {
+        ToDestination.verify(token, trust, ctx, principal)
+    }
+
+    fn approve(
+        &self,
+        token: &Pass<Approve>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Approve> {
+        ToDestination.approve(token, ctx, principal, destinations)
+    }
+
+    fn admit(
+        &self,
+        token: &Pass<Admit>,
+        admit: &Grant<Admittance>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
+    ) -> SeatVerdict<Admit> {
+        ToDestination.admit(token, admit, ctx, principal, destinations, leases)
+    }
+
+    fn route(
+        &self,
+        token: &Pass<Route>,
+        ctx: &UnitCtx,
+        destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Route> {
+        ToDestination.route(token, ctx, destinations)
+    }
+
+    fn meter(
+        &self,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+        destinations: &[VerifiedDestination],
+    ) -> SeatVerdict<Meter> {
+        ToDestination.meter(token, usage, ctx, provisional, destinations)
+    }
+
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
+        ToDestination.audit(token, ctx, outcome)
+    }
+
+    fn audit_refused(
+        &self,
+        token: &Pass<Audit>,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
+    ) -> SeatVerdict<Audit> {
+        ToDestination.audit_refused(token, ctx, refusal)
+    }
+
+    fn encode(
+        &self,
+        token: &Pass<Encode>,
+        ctx: &UnitCtx,
+        outcome: &Outcome,
+    ) -> SeatVerdict<Encode> {
+        ToDestination.encode(token, ctx, outcome)
+    }
+
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        ToDestination.evidence(ctx)
+    }
+}
+
+impl RouteAwait for Hooked<'_> {
+    fn route_leg<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        ctx: &'a UnitCtx,
+        destinations: &'a [VerifiedDestination],
+    ) -> RouteLeg<'a> {
+        // THE HOOK STAGE, at the head of the leg: what ran is reported under the unit's key.
+        if let Some(hooks) = &self.hooks {
+            busbar_kernel::plane_driver::HookJournal::hooks_ran(
+                self.post,
+                &busbar_kernel::plane_driver::HooksRan {
+                    unit: ctx.key,
+                    hooks: hooks.clone(),
+                },
+            );
+        }
+        ToDestination.route_leg(token, ctx, destinations)
+    }
+
+    fn abandoned(&self, _ctx: &UnitCtx, _ended: Ended) {}
+}
+
+/// One hook that ran, keyed `hook`.
+fn ran(
+    hook: &str,
+    head: busbar_kernel_audit::HookHead,
+    failed: bool,
+) -> busbar_kernel_audit::HookApplied {
+    busbar_kernel_audit::HookApplied {
+        hook: hook.to_string(),
+        head,
+        failed,
+    }
+}
+
+/// Drive one borrowed unit whose hook stage ran `hooks` (none: a unit no hook binds, which reports
+/// nothing) and hand back the one record the node sealed for it.
+async fn sealed_after(
+    hooks: Option<Vec<busbar_kernel_audit::HookApplied>>,
+) -> busbar_kernel_audit::AuditRecord {
+    let node = Arc::new(Node::new());
+    let book = crate::root::durability::node_book();
+    node.bind_book(Arc::clone(&book.durability));
+    let post = NodeEndPost::new(Arc::clone(&node));
+    let hooked = Hooked { post: &post, hooks };
+    let outcome = node
+        .drive_borrowed(
+            node.mint(),
+            node.arrived(),
+            &PrincipalId::new("acct:seal"),
+            &post,
+            &hooked,
+            Box::new(|| -> Option<Reported> { None }),
+            None,
+            None,
+            OpClassId::new("seal"),
+        )
+        .await;
+    assert!(outcome.is_some(), "the table took the unit and it ended");
+    assert_eq!(post.open_units(), 0, "its facts closed at its end");
+    let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
+    let records = durability.audit_records.clone();
+    assert_eq!(records.len(), 1, "one record for the one unit: {records:?}");
+    records.into_iter().next().expect("one record")
+}
+
+/// A UNIT THAT PASSED TWO SEATED HOOKS seals a record whose "hooks applied" lists both, in the
+/// order they ran, each by its key with its decision head (audit root#3; THE DESIGN §1: "controls
+/// (hold/settle seqs, slice, hooks applied)"). RED before the fix: the node sealed
+/// `hooks_applied: []` whatever the unit's hook stage ran.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_unit_that_passed_two_hooks_seals_both_in_order_with_their_heads() {
+    use busbar_kernel_audit::HookHead;
+    let record = sealed_after(Some(vec![
+        ran("screen", HookHead::Pass, false),
+        ran("compress", HookHead::Modify, false),
+    ]))
+    .await;
+    assert_eq!(
+        record.controls.hooks_applied,
+        vec![
+            ran("screen", HookHead::Pass, false),
+            ran("compress", HookHead::Modify, false),
+        ],
+        "the record lists every hook that ran, in order, with its head"
+    );
+    assert!(!record.outcome.hook_failed, "no hook failed");
+}
+
+/// A HOOK THAT FAILED is recorded failed, never dropped: the record lists it with its failure, and
+/// says a hook failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_unit_whose_hook_failed_seals_it_as_failed() {
+    use busbar_kernel_audit::HookHead;
+    let record = sealed_after(Some(vec![
+        ran("screen", HookHead::Pass, true),
+        ran("compress", HookHead::Modify, false),
+    ]))
+    .await;
+    assert_eq!(
+        record.controls.hooks_applied,
+        vec![
+            ran("screen", HookHead::Pass, true),
+            ran("compress", HookHead::Modify, false),
+        ],
+        "the failed hook is in the record, marked failed"
+    );
+    assert!(record.outcome.hook_failed, "the record says a hook failed");
+}
+
+/// A UNIT NO HOOK RAN FOR seals an empty "hooks applied": the record never invents one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_unit_with_no_hooks_seals_an_empty_hook_list() {
+    let record = sealed_after(None).await;
+    assert!(
+        record.controls.hooks_applied.is_empty(),
+        "no hook ran, none is listed: {:?}",
+        record.controls.hooks_applied
+    );
+    assert!(!record.outcome.hook_failed, "no hook failed");
+}

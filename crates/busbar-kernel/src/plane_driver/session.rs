@@ -241,7 +241,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             (dialect, st.caller_ref.clone())
         };
         let far_state = Mutex::new(UnitState::default());
-        let none: Arc<[u8]> = Arc::from(&[][..]);
+        let none = bytes::Bytes::new();
         let mut near_run = Pumping::new(
             d,
             token,

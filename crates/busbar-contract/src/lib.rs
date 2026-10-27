@@ -122,15 +122,14 @@ pub mod redacted;
 // the serde round-trips.
 #[allow(missing_docs)]
 pub mod records;
-// Which reply wakes which waiting unit: the AwaitReply leg's waiting table, a shape over the
-// contract's own correlation and leg types (DECISIONS #83).
-pub mod reply;
 pub mod scratch;
 #[allow(missing_docs)]
 pub mod secret;
 // The config secret-reference SHAPE (DECISIONS #83 MERGE, fold F1): the former `busbar-secret-ref`
 // crate. Its `SecretRef` is also the kind ABI's (`kinds::SecretRef` re-exports it): one type.
 pub mod secret_ref;
+// DECLARED SECRET FIELDS: the paths a Statement names in `secret_refs`, matched, lent and policed.
+pub mod secret_fields;
 pub mod section;
 pub mod services;
 pub mod signal;
@@ -179,10 +178,10 @@ pub use count::{
     MAX_ACROSS_A_64_BIT_COLUMN, MIN_ACROSS_A_64_BIT_COLUMN, SCALE_MICRO_UNITS, SCALE_WHOLE_UNITS,
 };
 pub use dest::{
-    AuthDecoration, CandidateIdx, CandidateSet, ClientMode, DestinationFacts, DestinationId,
-    EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
-    UpstreamAddress, VerifiedDestination, VetoCode,
+    AuthDecoration, ClientMode, DestinationFacts, DestinationId, EgressBody, Leg, RoutePlan,
+    SecretOnce, SecretSlot, TransportKeyHandle, UpstreamAddress, VerifiedDestination,
 };
+
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,
     SelectorFamily, SelectorForm, SignedOver,

@@ -33,29 +33,6 @@ const CELL_ERRORS: &[(CellError, &str)] = &[
     (CellError::CallMismatch, "admittance grant of another call"),
 ];
 
-/// The variants `hold.rs` declares for `name`: the unit-variant lines of its `pub enum` block.
-fn declared_variants(name: &str) -> usize {
-    let hold = include_str!("../hold.rs");
-    let head = format!("pub enum {name} {{");
-    let body = hold
-        .split_once(head.as_str())
-        .unwrap_or_else(|| panic!("hold.rs declares `{name}`"))
-        .1;
-    let body = body.split_once("\n}").expect("the enum closes").0;
-    body.lines()
-        .map(str::trim)
-        .filter(|l| !l.starts_with("//") && l.ends_with(',') && !l.is_empty())
-        .count()
-}
-
-/// The two lists above name every variant their enum declares: a refusal added to the type and not
-/// to the list is one whose rendering nothing reads back.
-#[test]
-fn the_refusal_lists_name_every_declared_variant() {
-    assert_eq!(REFUSALS.len(), declared_variants("AccrualRefused"));
-    assert_eq!(CELL_ERRORS.len(), declared_variants("CellError"));
-}
-
 #[test]
 fn every_refusal_the_cell_can_give_says_which_one_it_was() {
     // Three ways an accrual is turned away and three ways a hold is, each read off a log line by

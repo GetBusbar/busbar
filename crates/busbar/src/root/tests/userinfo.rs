@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE BASIC CREDENTIAL A URL'S USERINFO SPELLS, HELD BY THE ROOT (row 74, F25): read the way
+//! THE BASIC CREDENTIAL A URL'S USERINFO SPELLS, HELD BY THE ROOT: read the way
 //! reqwest 0.12.28 read it, and presented through the auth kind's outbound call as 1.5.5 sent it
 //! — first, unless the binding's own answer names `authorization`.
 

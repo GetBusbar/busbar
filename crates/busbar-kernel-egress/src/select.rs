@@ -125,19 +125,6 @@ impl WeightedFloor {
         Self::default()
     }
 
-    /// How many owned pool names the floor is holding, and how many credits.
-    ///
-    /// The bound made observable: the first number is what the pool name costs, and it is a
-    /// function of the number of pools alone.
-    #[cfg(test)]
-    pub(crate) fn tracked(&self) -> (usize, usize) {
-        let credits = self.credits.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            credits.len(),
-            credits.values().map(HashMap::len).sum::<usize>(),
-        )
-    }
-
     /// One turn of the rotation over exactly these members.
     ///
     /// Every member offered here has already passed the filter — non-zero weight, usable

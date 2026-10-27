@@ -41,11 +41,6 @@ use busbar_contract::hook_wire::{OP_DECIDE, OP_TRANSFORM};
 /// The Statement name every double instance answers with.
 pub const DOUBLE_NAME: &str = "hook-double";
 
-/// The bytes a double's registry row carries where a dropped-in plugin's library would be. No
-/// loader ever reads them as code: the double's axis answers every open of the row.
-pub const DOUBLE_ROW_BYTES: &[u8] =
-    b"hook double: no library; the hook axis double answers this row";
-
 /// One instance's behaviour, read from its settings.
 #[derive(serde::Deserialize, Default, Clone)]
 struct Behaviour {
@@ -177,7 +172,7 @@ struct DoubleCalls {
 
 /// Run `work` off the caller's worker, bounded by `budget`: its value, `TimedOut` past the budget,
 /// `Broken` when it panicked (the door's FAULT, as the hook seam reads it).
-async fn bounded<T: Send + 'static>(
+pub(super) async fn bounded<T: Send + 'static>(
     budget: Duration,
     work: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, Answered<std::convert::Infallible>> {
@@ -191,7 +186,7 @@ async fn bounded<T: Send + 'static>(
 }
 
 /// An unanswered call's [`Answered`], retyped.
-fn unanswered<O>(a: Answered<std::convert::Infallible>) -> Answered<O> {
+pub(super) fn unanswered<O>(a: Answered<std::convert::Infallible>) -> Answered<O> {
     match a {
         Answered::TimedOut => Answered::TimedOut,
         Answered::Broken(why) => Answered::Broken(why),
@@ -203,7 +198,7 @@ fn unanswered<O>(a: Answered<std::convert::Infallible>) -> Answered<O> {
 /// answers the verdict; `answer` lowers it into the frame (`Some(error)` for a hook that could not
 /// answer, `short` for an answer the frame's buffers cannot hold), and a short answer takes the one
 /// re-call on the frame `regrow` builds, as the loader's crossing does.
-async fn verdict<V: Send + 'static, O>(
+pub(super) async fn verdict<V: Send + 'static, O>(
     frame: Arc<DecideFrame>,
     budget: Duration,
     reply: impl FnOnce(&DecideFrame) -> V + Send + 'static,
@@ -348,7 +343,6 @@ impl HookCalls for DoubleCalls {
 pub struct HookAxisDouble {
     rows: Vec<String>,
     linked: Arc<dyn HookAxis>,
-    opens: AtomicU64,
 }
 
 impl std::fmt::Debug for HookAxisDouble {
@@ -363,19 +357,12 @@ impl HookAxisDouble {
     /// A double answering `modules`, beside the build's linked rows.
     #[must_use]
     pub fn new(modules: &[&str]) -> Arc<Self> {
-        let empty = Arc::new(busbar_plugin_loader::PluginRegistry::empty());
-        let linked = super::hook_axis_stand_in(&empty).expect("the build's linked hook rows");
+        let linked =
+            super::hook_axis_stand_in(&super::rows::empty()).expect("the build's linked hook rows");
         Arc::new(Self {
             rows: modules.iter().map(|m| m.to_string()).collect(),
             linked,
-            opens: AtomicU64::new(0),
         })
-    }
-
-    /// How many instances the double has opened.
-    #[must_use]
-    pub fn opens(&self) -> u64 {
-        self.opens.load(Ordering::Relaxed)
     }
 
     fn answers(&self, module: &str) -> bool {
@@ -424,7 +411,6 @@ impl HookAxis for HookAxisDouble {
                 format!("hook plugin '{module}': invalid hook double settings: {e}")
             })?,
         };
-        self.opens.fetch_add(1, Ordering::Relaxed);
         Ok(Arc::new(DoubleCalls {
             gate: Arc::new(Gate {
                 b,

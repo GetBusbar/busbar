@@ -221,3 +221,36 @@ impl Drop for GateHold {
         }
     }
 }
+
+/// A tracing layer that records the `diag = "BUSBAR-NNNN"` field of every ERROR event, so a test can
+/// assert a coded diagnostic was actually EMITTED — not merely that an aggregate count rose.
+#[derive(Clone, Default)]
+pub struct DiagCapture(pub std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl<S> tracing_subscriber::Layer<S> for DiagCapture
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if *event.metadata().level() != tracing::Level::ERROR {
+            return;
+        }
+        struct V<'a>(&'a mut Option<String>);
+        impl tracing::field::Visit for V<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "diag" {
+                    *self.0 = Some(format!("{value:?}"));
+                }
+            }
+        }
+        let mut diag = None;
+        event.record(&mut V(&mut diag));
+        if let Some(d) = diag {
+            self.0.lock().unwrap().push(d);
+        }
+    }
+}

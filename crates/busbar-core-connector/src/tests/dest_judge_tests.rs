@@ -177,7 +177,7 @@ fn addresses(s: &Stored) -> Vec<String> {
         .collect()
 }
 
-/// THE JUDGED ADDRESSES (ARCHITECT DEST-PIN 2026-10-01): asked to resolve and admitted, `dest.judge`
+/// THE JUDGED ADDRESSES: asked to resolve and admitted, `dest.judge`
 /// writes every address its one judgement judged, one span each, the pin first, from the SAME
 /// resolution (no second lookup); an IP literal names itself; a refusal and a judgement that did
 /// not resolve name none. RED on the judge that answered the verdict alone.
@@ -316,7 +316,7 @@ fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
 /// off for `dest.judge` and for the connector's dial alike (both are `judge_dial`): a metadata
 /// literal is admitted and pinned, a metadata name is resolved and its metadata answer pinned.
 /// RED on the judge that lifted only the denylist and kept the address guard's own metadata refusal.
-/// The overrides are a provider dial's only (ARCHITECT ruling on #413): every other class refuses.
+/// The overrides are a provider dial's only: every other class refuses.
 #[test]
 fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
     let r = Arc::new(HandResolver::default());
@@ -455,7 +455,7 @@ fn an_operator_blocked_answer_is_refused_on_the_dial() {
     assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
 }
 
-/// ASKED TO REFUSE PRIVATE REACH AND TO EXPLAIN (ARCHITECT ruling on a plane's guard words): under a
+/// ASKED TO REFUSE PRIVATE REACH AND TO EXPLAIN: under a
 /// deployment that does NOT block private addresses, `DEST_REFUSE_PRIVATE` refuses a private
 /// literal, a loopback name and a name answering a private address all the same; with
 /// `DEST_EXPLAIN` a refusal an address decided names it (a cloud-metadata answer included), a
@@ -576,4 +576,113 @@ fn a_private_reach_admits_a_private_address_in_its_class_and_never_metadata() {
         got.lock().unwrap().take().expect("answered").ok(),
         Some("192.168.7.9:443".parse().unwrap())
     );
+}
+
+/// RED (HIGH, the SSRF guard bypass through a plugin's argument guard): `dest.judge` asked
+/// about the exact host strings that guard passes it (a bare host, an IPv6 literal bracketed,
+/// never resolved; `DEST_REFUSE_PRIVATE` for a registration granted no private reach, none for one
+/// granted it) answers each odd spelling with the verdict of the plain ASCII host a URL client
+/// dials it as. On the guard that compared hosts only ASCII-lowercased, `ｌｏｃａｌｈｏｓｔ` and
+/// `①⑥⑨.②⑤④.①⑥⑨.②⑤④` were DEST_ALLOWED and the upstream fetched loopback and the metadata
+/// address.
+#[test]
+fn dest_judge_answers_an_odd_spelling_as_the_ascii_host_it_maps_to() {
+    let r = Arc::new(HandResolver::default());
+    let s = services(Arc::clone(&r), Destinations::default());
+    let judge = |dest: &str, flags: u32| {
+        let got = verdict_now(s.dest_judge(dest, 0, flags, None));
+        assert_eq!(got.outcome, Stored::ready(0).outcome, "{dest}");
+        got.value
+    };
+    let rows = [
+        // Full-width `ｌｏｃａｌｈｏｓｔ`.
+        (
+            "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}",
+            "localhost",
+            svc::DEST_INTERNAL,
+        ),
+        // Circled digits `①②⑦.0.0.1`.
+        (
+            "\u{2460}\u{2461}\u{2466}.0.0.1",
+            "127.0.0.1",
+            svc::DEST_INTERNAL,
+        ),
+        // Circled digits `①⑥⑨.②⑤④.①⑥⑨.②⑤④`.
+        (
+            "\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}.\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}",
+            "169.254.169.254",
+            svc::DEST_METADATA,
+        ),
+        // The ideographic full stop: `LOCALHOST。`.
+        ("LOCALHOST\u{3002}", "localhost", svc::DEST_INTERNAL),
+        // Full-width `０ｘ７ｆ．１` beside `0x7f.1`.
+        (
+            "\u{ff10}\u{ff58}\u{ff17}\u{ff46}\u{ff0e}\u{ff11}",
+            "0x7f.1",
+            svc::DEST_OBFUSCATED,
+        ),
+        // Full-width `０１７７００００００００１` beside `017700000001`.
+        (
+            "\u{ff10}\u{ff11}\u{ff17}\u{ff17}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff11}",
+            "017700000001",
+            svc::DEST_OBFUSCATED,
+        ),
+    ];
+    for (odd, plain, refused) in rows {
+        assert_eq!(judge(plain, svc::DEST_REFUSE_PRIVATE), refused, "{plain}");
+        for flags in [svc::DEST_REFUSE_PRIVATE, 0] {
+            assert_eq!(
+                judge(odd, flags),
+                judge(plain, flags),
+                "`{odd}` beside `{plain}`"
+            );
+        }
+        // The `://` spelling of the same destination, as an argument guard's undeclared-URL path carries it.
+        let url = |h: &str| format!("https://{h}/latest/meta-data/");
+        assert_eq!(
+            judge(&url(odd), svc::DEST_REFUSE_PRIVATE),
+            judge(&url(plain), svc::DEST_REFUSE_PRIVATE),
+            "`{odd}` as a URL"
+        );
+    }
+    // A host `url` dials as `0.0.0.0` that the address reader reads as a name is unjudgeable.
+    for host in ["0x", "1.0x", "https://0x/"] {
+        assert_eq!(judge(host, 0), svc::DEST_NO_HOST, "{host}");
+    }
+    // GREEN control: a public IDN name is admitted, as its punycode name is.
+    for host in ["b\u{fc}cher.example", "xn--bcher-kva.example"] {
+        assert_eq!(
+            judge(host, svc::DEST_REFUSE_PRIVATE),
+            svc::DEST_ALLOWED,
+            "{host}"
+        );
+    }
+    assert_eq!(r.asked.load(Ordering::SeqCst), 0, "nothing resolved");
+}
+
+/// RED (HIGH, the percent-escape the guard did not decode): `dest.judge` asked about a bare host
+/// holding a `%` escape, without `DEST_RESOLVE` (the argument guard's own question), answers
+/// `DEST_NO_HOST`, at once, nothing resolved. `%6c%6fcalhost` was `DEST_ALLOWED`: the guard read
+/// it as an unknown name, and a client that decodes it dials `localhost`. The `://` spelling, which
+/// the one URL reader decodes, is judged as the host it decodes to, as before.
+#[test]
+fn dest_judge_refuses_a_bare_host_holding_a_percent_escape() {
+    let r = Arc::new(HandResolver::default());
+    let s = services(Arc::clone(&r), Destinations::default());
+    for dest in [
+        "%6c%6fcalhost",
+        "%6c%6fcalhost:8080",
+        "%31%32%37.0.0.1:443",
+        "%31%36%39.254.169.254",
+        "api%2eexample.com",
+    ] {
+        for flags in [0, svc::DEST_REFUSE_PRIVATE, svc::DEST_RESOLVE] {
+            let got = verdict_now(s.dest_judge(dest, 0, flags, None));
+            assert_eq!(got.outcome, Stored::ready(0).outcome, "{dest}");
+            assert_eq!(got.value, svc::DEST_NO_HOST, "{dest} under {flags}");
+        }
+    }
+    let got = verdict_now(s.dest_judge("https://%6c%6fcalhost/", 0, 0, None));
+    assert_eq!(got.value, svc::DEST_INTERNAL, "the URL's host decodes");
+    assert_eq!(r.asked.load(Ordering::SeqCst), 0, "nothing resolved");
 }

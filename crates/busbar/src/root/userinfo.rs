@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! AN OPERATOR URL'S USERINFO AS A BASIC CREDENTIAL OF THE AUTH KIND (row 74, F25; ARCHITECT ruling
-//! on #913: "the kernel never sees the key", `BUSBAR-1.6.0.md` l.650-660, 828-834, 872-873).
+//! AN OPERATOR URL'S USERINFO AS A BASIC CREDENTIAL OF THE AUTH KIND (the kernel never sees
+//! the key).
 //!
 //! 1.5.5 sent every provider request, and every token POST, with reqwest over the URL as the
 //! operator wrote it (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1669-1670`,
@@ -71,7 +71,7 @@ impl UserinfoBasic {
     }
 
     /// The value a legacy hop handed across the auth axis (`AuthAxis::serving_presenting`), as
-    /// the root holds it. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+    /// the root holds it. TRANSITIONAL: deleted with the legacy lane plane.
     #[must_use]
     pub fn from_value(bytes: &[u8]) -> Option<Self> {
         (!bytes.is_empty()).then(|| Self(Arc::new(Secret::new(bytes.to_vec()))))

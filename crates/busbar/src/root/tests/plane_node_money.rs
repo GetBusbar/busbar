@@ -153,35 +153,11 @@ const EPOCH: u64 = 1_700_000_000;
 /// The first entry is effective from zero for the same reason the holder's is: an instant before
 /// the first entry is a hole and a hole is a refusal.
 fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
-    let mut history = busbar_kernel_ledger::cost::History::new();
-    for (n, (from, output)) in entries.iter().enumerate() {
-        let card = crate::root::kernel::card_from_config(
-            [(
-                "lane",
-                busbar_contract::billing::RawTierRates {
-                    input: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
-                    output: busbar_kernel_ledger::cost::representable_nano_rate(*output),
-                    cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
-                    cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
-                },
-            )],
-            0,
-            true,
-        );
-        history.append(busbar_kernel_ledger::cost::CardEntryDraft {
-            effective_from: if n == 0 { 0 } else { *from },
-            effective_until: None,
-            card,
-            appended_at: *from,
-            author: busbar_kernel_ledger::cost::Author::Config {
-                policy_epoch: n as u64,
-            },
-        });
-    }
-    crate::root::kernel::PinnedHistory::for_test(
-        std::sync::Arc::new(history),
-        busbar_kernel_ledger::cost::HistorySeq((entries.len() - 1) as u64),
-    )
+    let entries: Vec<_> = entries
+        .iter()
+        .map(|&(from, output)| (from, 0.0, output, 0))
+        .collect();
+    fee_history_of(&entries, true)
 }
 
 /// A report of `output` tokens on the lane the histories above price.
@@ -904,16 +880,7 @@ fn a_settled_figure_past_the_record_refuses_and_is_never_pinned() {
 // PORT of `crates/busbar/src/root/tests/plane_node.rs::a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold`, verbatim: it names no plane.
 #[test]
 fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
-    let node = Node::new();
-    let book = Arc::new(Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-            Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-        )
-        .expect("a memory-buffered journal cannot fail to open"),
-    ));
-    node.bind_book(Arc::clone(&book));
+    let (node, book) = swept_node();
 
     let who = PrincipalId::new("acct:swept");
     let key = UnitKey::new(41);
@@ -1398,14 +1365,11 @@ fn rerank_history_on(
     )
 }
 
-/// A rerank's drained report: `units` search units and one billable request, no tokens.
+/// A rerank's drained report on `"lane"`: `units` search units and one billable request, no tokens.
 fn rerank_report(units: u64) -> Report {
     Report {
-        usage: busbar_contract::billing::Usage {
-            usage_units: std::collections::BTreeMap::from([(SEARCH_UNITS.to_string(), units)]),
-        },
-        fee_count: 1,
         lane: "lane".to_string(),
+        ..rerank_report_on(Some(units))
     }
 }
 
@@ -1853,15 +1817,8 @@ fn a_declared_open_class_on_an_absent_card_posts_its_counts_unrefused() {
 #[test]
 fn a_dispatch_record_is_written_on_the_book_under_its_units_facts() {
     use busbar_kernel_egress::ports::{Dispatched, DurabilityUnavailable, Journal};
-    let node = Arc::new(Node::new());
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    let book = Arc::new(std::sync::Mutex::new(durability));
-    node.bind_book(Arc::clone(&book));
+    let (node, book) = swept_node();
+    let node = Arc::new(node);
     let written = || {
         book.lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1911,15 +1868,7 @@ fn the_exit_arm_seals_no_money_figure_into_the_record() {
     use busbar_contract::caps::{Admittance, Hold, Posted, Usage, WriteMoney};
     use busbar_kernel::test_support::tokens::{end, grant, origin, pass};
 
-    let node = Node::new();
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    let book = Arc::new(std::sync::Mutex::new(durability));
-    node.bind_book(Arc::clone(&book));
+    let (node, book) = swept_node();
 
     // The figure the settlement writer moved: 150 nano-units against a hold of 100.
     const MONEY: u64 = 150;
@@ -2415,15 +2364,8 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     use busbar_kernel::plane_driver::EndPost;
-    let node = Arc::new(Node::new());
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    let book = Arc::new(std::sync::Mutex::new(durability));
-    node.bind_book(Arc::clone(&book));
+    let (node, book) = swept_node();
+    let node = Arc::new(node);
     let posted = || {
         book.lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -2479,15 +2421,8 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     use busbar_kernel::plane_driver::EndPost;
-    let node = Arc::new(Node::new());
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Box::new(busbar_kernel_ledger::legacy::RecordingRows::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
-    let book = Arc::new(std::sync::Mutex::new(durability));
-    node.bind_book(Arc::clone(&book));
+    let (node, book) = swept_node();
+    let node = Arc::new(node);
     let records = || {
         book.lock()
             .unwrap_or_else(|p| p.into_inner())

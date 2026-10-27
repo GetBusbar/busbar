@@ -647,17 +647,26 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
 /// The download's table over a connector serving the composing door beside the test carrier, every
 /// IP literal its own address: the door's own plain scheme, and the table.
 fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
+    use busbar_core_connector::Judged;
+    let judge = |dest: &str, _: u32, _: Judged| {
+        Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
+    };
+    fetch_table_judged(std::sync::Arc::new(judge))
+}
+
+/// The download's table over a connector serving the composing door beside the test carrier, its
+/// dials judged by `judge`: the door's own plain scheme, and the table.
+fn fetch_table_judged(
+    judge: std::sync::Arc<dyn busbar_core_connector::DialJudge>,
+) -> (&'static str, busbar_core_connector::fetch::Table) {
     use busbar_contract::conn::{DeclaredConns, InstanceId, NeedId, PollConns};
     use busbar_core_connector::registry::{Entry, Transports};
-    use busbar_core_connector::{Connector, Judged};
+    use busbar_core_connector::Connector;
 
     let door = composing_door();
     let scheme = door.facts().claims[0];
     let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
         std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
-    let judge = |dest: &str, _: u32, _: Judged| {
-        Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
-    };
     let c = std::sync::Arc::new(Connector::serving(
         Transports::new(vec![
             Entry {
@@ -670,7 +679,7 @@ fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
             },
         ])
         .unwrap(),
-        std::sync::Arc::new(judge),
+        judge,
         None,
         std::sync::Arc::new(|_, _| {}),
     ));
@@ -687,7 +696,16 @@ fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
 /// One download of `path` from a far end answering `response` (a [`respond`] template), off the
 /// runtime as boot and reload run it: what came back, and the request head the far end read.
 fn fetch_once(path: &str, response: &str, cap: usize) -> (Result<Vec<u8>, String>, String) {
-    let (scheme, table) = fetch_table();
+    fetch_once_over(fetch_table(), path, response, cap)
+}
+
+/// [`fetch_once`] over `table` (its door's scheme and the table).
+fn fetch_once_over(
+    (scheme, table): (&'static str, busbar_core_connector::fetch::Table),
+    path: &str,
+    response: &str,
+    cap: usize,
+) -> (Result<Vec<u8>, String>, String) {
     let response = respond(scheme, response);
     let path = path.to_owned();
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -797,4 +815,49 @@ fn the_plugins_fetch_download_refuses_to_follow_a_redirect() {
         ),
         "{err}"
     );
+}
+
+/// The deployment's own dial judge: the one destination guard over `destinations`, the owner's
+/// default (`block_private_addresses: true`) and the extra refusals named.
+fn guarded(blocked: &[&str]) -> std::sync::Arc<dyn busbar_core_connector::DialJudge> {
+    let destinations = busbar_kernel::config::Destinations {
+        block_private_addresses: true,
+        blocked: blocked.iter().map(|b| (*b).to_owned()).collect(),
+        ..busbar_kernel::config::Destinations::default()
+    };
+    busbar_core_connector::process::judge(
+        busbar_core_connector::process::dest_judge(&destinations).expect("a valid guard"),
+        &[],
+    )
+}
+
+/// RED (row 159, a plaintext private plugin registry): 1.5.5's download took plaintext http to a
+/// loopback or private host (a local dev registry) and refused only cloud metadata
+/// (v1.5.5 `crates/busbar/src/main.rs` `plugin_fetch_downloader_with_cap`). Under the deployment's
+/// own guard and its default, a `plugins.fetch` URL is the operator's own destination: a private
+/// registry downloads, as it did.
+#[test]
+fn a_plaintext_private_registry_downloads_under_the_default_guard() {
+    let (got, _) = fetch_once_over(
+        fetch_table_judged(guarded(&[])),
+        "/releases/busbar-oracle-fetch-1.0.0.tar.gz",
+        "{V} 200 OK\r\ncontent-length: 8\r\nconnection: close\r\n\r\nartifact",
+        4096,
+    );
+    assert_eq!(got.as_deref(), Ok(&b"artifact"[..]));
+}
+
+/// GREEN twin: the download is still judged by the one guard: an address the operator's extra
+/// refusals name is refused before any request reaches it.
+#[test]
+fn a_download_the_guard_refuses_never_reaches_the_registry() {
+    let (got, head) = fetch_once_over(
+        fetch_table_judged(guarded(&["127.0.0.1"])),
+        "/releases/busbar-oracle-fetch-1.0.0.tar.gz",
+        "{V} 200 OK\r\ncontent-length: 8\r\nconnection: close\r\n\r\nartifact",
+        4096,
+    );
+    let err = got.expect_err("an address the guard refuses is never downloaded from");
+    assert!(err.contains("error sending request"), "{err}");
+    assert!(head.is_empty(), "no request reached the far end: {head}");
 }

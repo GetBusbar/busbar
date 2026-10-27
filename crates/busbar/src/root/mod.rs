@@ -62,6 +62,7 @@
 #![allow(dead_code)]
 
 pub mod adapters;
+pub mod admission;
 pub mod auth_bindings;
 pub mod boot;
 pub mod cli;
@@ -70,6 +71,9 @@ pub mod credentials;
 pub mod dispatch;
 pub mod door_steps;
 pub mod doors;
+// The door-root rows: every linked row whose crate exports only `door`, read off its Statement
+// (status row 195).
+pub mod door_root;
 pub mod durability;
 pub mod egress_ports;
 pub mod exports;
@@ -99,6 +103,14 @@ pub mod transports;
 pub mod units_admin;
 pub mod userinfo;
 
+// The operator surface's plugin verbs under THE ROOT'S REAL ADMISSION: real tarballs uploaded,
+// inspected, listed and rolled back through the admin router on a snapshot carrying
+// `root::admission::ADMISSION` (the admin crate names no loader, so its loader-judgement tests live
+// here).
+#[cfg(test)]
+#[path = "tests/admin_plugin_admission.rs"]
+mod admin_plugin_admission;
+
 /// THE PROCESS-WIDE ADMIN SURFACES' ONE TEST LOCK: the admin route table and the operator audit
 /// ring are the process's one each, so a test that publishes a plane's admin routes, or that
 /// counts the audit rows its own admin writes sealed, holds this for as long as either is in play.
@@ -110,10 +122,17 @@ pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const
 #[path = "tests/doors_refresh.rs"]
 mod doors_refresh;
 
-// The crate's one plugin fixture (`tests/common/plugins.rs`), shared with the integration tests:
-// how a unit test packs a plugin, drops it in and reads what the boot's scan makes of it.
+// A linked transport row is its bare `door`: its key, layers and session are its Statement's
+// (`linked::linked_transport!`, `doors::row_facts`).
 #[cfg(test)]
-#[path = "../../tests/common/plugins.rs"]
+#[path = "tests/linked_door_root.rs"]
+mod linked_door_root;
+
+// The crate's one plugin fixture (`tests/test_plugins.rs`), shared with the default distribution's
+// integration tests: how a unit test packs a plugin, drops it in and reads what the boot's scan
+// makes of it.
+#[cfg(test)]
+#[path = "tests/test_plugins.rs"]
 pub(crate) mod test_plugins;
 
 // A configured store's record slots over a map the test holds: the store a node with no data

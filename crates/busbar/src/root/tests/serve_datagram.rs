@@ -244,7 +244,7 @@ async fn boot_binds_a_claim_door_for_each_datagram_listener_and_no_other() {
 }
 
 /// A datagram session's open answers under the head its plane states on the session's first
-/// crossing (ARCHITECT row 132 ruling (a)): the plane's status and its fields, `location` among
+/// crossing: the plane's status and its fields, `location` among
 /// them, as it stated them.
 #[tokio::test]
 async fn the_open_answers_under_the_head_the_plane_states() {

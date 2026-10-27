@@ -209,7 +209,6 @@ impl LedgerEntry {
 
     /// Add one class's count. A repeated class REPLACES rather than accumulating, because two
     /// counts for one class on one row is a caller bug and silently adding them would hide it.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_count(mut self, class: impl Into<String>, count: Count) -> LedgerEntry {
         self.counts.insert(class.into(), count);
         self
@@ -231,7 +230,6 @@ impl LedgerEntry {
     }
 
     /// Set the tier multiplier in basis points.
-    #[cfg(any(test, feature = "test-support"))]
     pub fn with_tier(mut self, tier_bp: u32) -> LedgerEntry {
         self.tier_bp = tier_bp;
         self

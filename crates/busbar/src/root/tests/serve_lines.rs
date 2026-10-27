@@ -6,13 +6,13 @@ use crate::root::linked::LinkedTransport;
 
 /// A transport row whose claims are `claims` and whose first-line claims are `lines`, built never.
 fn row(
-    key: &'static str,
+    key: crate::root::linked::KeyOf,
     claims: fn() -> Vec<&'static str>,
     lines: fn() -> Vec<&'static str>,
 ) -> LinkedTransport {
     LinkedTransport {
         key,
-        composes_over: &[],
+        composes_over: || &[],
         build: |_| unreachable!("the carrier is read off the rows, never off a built wire"),
         claims,
         upgrades: Vec::new,
@@ -27,11 +27,11 @@ fn row(
 fn the_line_carrier_is_the_claim_a_row_declares_opening_on_its_first_line() {
     let rows = [
         row(
-            "framed-wire",
+            || "framed-wire",
             || vec!["framed-wire", "framed-too"],
             Vec::new,
         ),
-        row("pipe-wire", || vec!["pipe-wire"], || vec!["pipe-wire"]),
+        row(|| "pipe-wire", || vec!["pipe-wire"], || vec!["pipe-wire"]),
     ];
     assert_eq!(line_carrier(&rows), Ok(Some("pipe-wire")));
     assert_eq!(line_carrier(&rows[..1]), Ok(None));
@@ -43,8 +43,12 @@ fn the_line_carrier_is_the_claim_a_row_declares_opening_on_its_first_line() {
 #[test]
 fn two_claims_opening_on_their_first_line_are_refused() {
     let rows = [
-        row("pipe-wire", || vec!["pipe-wire"], || vec!["pipe-wire"]),
-        row("other-pipe", || vec!["other-pipe"], || vec!["other-pipe"]),
+        row(|| "pipe-wire", || vec!["pipe-wire"], || vec!["pipe-wire"]),
+        row(
+            || "other-pipe",
+            || vec!["other-pipe"],
+            || vec!["other-pipe"],
+        ),
     ];
     let refusal = line_carrier(&rows).expect_err("two line carriers are ambiguous");
     assert!(refusal.contains("`pipe-wire`"), "{refusal}");
@@ -76,7 +80,7 @@ fn the_credential_variable_is_spelled_from_the_plane_and_the_carrier() {
 /// A LINE PAST THE BOUND IS DROPPED WHOLE, its tail with it, and the next line is read as it is
 /// (the carrier's own contract: "a longer one is read to its end and dropped ... so the session
 /// goes on"). The reader hands the line over in pieces smaller than the bound, so the bound is
-/// crossed mid-line and pieces of the same line follow it. RED before Q128 root-p9 #5: the buffer
+/// crossed mid-line and pieces of the same line follow it. RED before the fix: the buffer
 /// was cleared where the bound was crossed and the rest of the line kept, so its tail (`bb`) came
 /// back as a line of its own.
 #[tokio::test]

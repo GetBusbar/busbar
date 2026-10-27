@@ -94,6 +94,11 @@ struct State {
     input: Vec<u8>,
     /// What [`Wire::os_user`] read off the host.
     identity: Option<ProcessId>,
+    /// The pending write carries a credential that goes out only secured: the host connector
+    /// confirms the stream secured before it is written.
+    confirm_secure: bool,
+    /// The stream was found in the clear: a sealed write on it refuses on every re-entry.
+    insecure: bool,
 }
 
 /// THE BODY'S WIRE: its one connection's services, each an `async` call [`drive`] answers.
@@ -233,6 +238,27 @@ impl Wire {
         }
         self.state().out.extend_from_slice(bytes);
         self.ask(Ask::Write).await.map(|_| ())
+    }
+
+    /// Write a sealed auth message whole (`abi::sdk::chip`). The buffer it passed through is
+    /// wiped once the connector took it, or on failure.
+    ///
+    /// # Errors
+    /// The connector's failure.
+    pub async fn write_sealed(
+        &self,
+        seal: &crate::abi::sdk::cred::Seal,
+    ) -> Result<(), ConnFailure> {
+        {
+            let mut st = self.state();
+            st.out.extend_from_slice(seal.wire());
+            st.confirm_secure = seal.secure_required();
+        }
+        let written = self.ask(Ask::Write).await.map(|_| ());
+        let mut st = self.state();
+        zeroize::Zeroize::zeroize(&mut st.out);
+        st.confirm_secure = false;
+        written
     }
 
     /// Read more bytes onto the input ([`Wire::input`]): how many arrived; `0` = the far end
@@ -869,6 +895,23 @@ fn serve<T>(cx: &mut Op<'_>, running: &Running<T>, ask: &Ask, buf: &mut [u8]) ->
             unreachable!("answered above")
         }
         Ask::Write => loop {
+            if wire.state().confirm_secure {
+                let confirmed = crate::abi::sdk::cred::confirm_secure(&mut services, stream);
+                let insecure = wire.state().insecure;
+                match confirmed {
+                    Poll::Ready(Ok(())) if !insecure => wire.state().confirm_secure = false,
+                    Poll::Pending if !insecure => return Served::Pending { wake_at_ns: 0 },
+                    _ => {
+                        let mut st = wire.state();
+                        zeroize::Zeroize::zeroize(&mut st.out);
+                        st.unfit = true;
+                        st.insecure = true;
+                        return Served::Answer(Err(ConnFailure::Refused(
+                            crate::abi::sdk::cred::NOT_SECURE.into(),
+                        )));
+                    }
+                }
+            }
             let out = std::mem::take(&mut wire.state().out);
             let answer = services.write(stream, &out);
             let mut st = wire.state();

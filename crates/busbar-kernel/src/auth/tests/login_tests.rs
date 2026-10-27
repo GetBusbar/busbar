@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The hosted login's identity side, the kernel's (row 159, K3#2): the login methods it opens and
+//! The hosted login's identity side, the kernel's: the login methods it opens and
 //! the `browser_login` rules it checks at build. The flow's own tests (pages, cookie, PKCE) moved
 //! with it to `busbar-core-oauth2`.
 
@@ -45,8 +45,7 @@ impl AuthCalls for OpenedLogin {
     }
 }
 
-/// A kind-neutral login door double for the REGISTRY row the build reads a Statement off: it never
-/// opens here (the build opens through the test's axis), so only its Statement matters.
+/// A kind-neutral login door double: it never opens here (the build opens through the test's axis).
 struct StatedLogin;
 
 impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for StatedLogin {
@@ -61,33 +60,8 @@ impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for StatedLogin {
     }
 }
 
-/// Its Statement names the `client_secret` secret reference.
-mod slotted {
-    use super::StatedLogin;
-    use busbar_contract::abi::auth::{AuthPoints, AuthTail};
-    use busbar_contract::abi::mechanism::call::AbiStr;
-    use busbar_contract::abi::mechanism::door::Statement;
-    use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail};
-    use busbar_contract::abi::sdk::door::{abi_str, statement};
-
-    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
-    const SECRET_REFS: &[AbiStr] = &[abi_str("client_secret")];
-
-    busbar_contract::auth_verify_door!(
-        StatedLogin,
-        with_tail(
-            Statement {
-                secret_refs: SECRET_REFS.as_ptr(),
-                secret_refs_len: SECRET_REFS.len(),
-                ..statement("idp-plugin", "1.0.0", 8)
-            },
-            TAIL
-        )
-    );
-}
-
-/// Its Statement names no secret reference.
-mod unslotted {
+/// The linked auth door `idp-plugin`: only its Statement is read, and only by the loader.
+mod door {
     use super::StatedLogin;
     use busbar_contract::abi::auth::{AuthPoints, AuthTail};
     use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail};
@@ -101,16 +75,15 @@ mod unslotted {
     );
 }
 
-/// A registry holding `door` as the linked auth row `idp-plugin`.
-fn registry_of(
-    door: busbar_contract::abi::mechanism::door::DoorFn,
-) -> busbar_plugin_loader::PluginRegistry {
-    busbar_plugin_loader::PluginRegistry::empty()
-        .link(vec![busbar_plugin_loader::LinkedPlugin::auth_door(
-            "idp-plugin",
-            door,
-        )])
-        .expect("the linked door registers")
+/// The rows holding the linked auth door `idp-plugin`, whose Statement states the secret
+/// references `slots`. The kernel has no loader to read a door's Statement, so the rows double
+/// states the slots (the loader's reading of `secret_refs` is proven in `crates/plugin-loader`,
+/// `rows_tests::secret_slots_are_the_secret_refs_the_statement_names`).
+fn rows_of(slots: &[&str]) -> crate::test_support::rows::Rows {
+    crate::test_support::rows::Rows::new().with_linked_secret_slots(
+        crate::preflight::LinkedRow::Auth(("idp-plugin", "idp-plugin", door::door)),
+        slots,
+    )
 }
 
 /// An axis that answers `idp-plugin` and records every `open` it is asked for.
@@ -205,7 +178,7 @@ async fn the_client_secret_is_lent_at_open() {
     let cfg = idp_with_secret("BUSBAR_TEST_LOGIN_SECRET_LENT");
     let _methods = LoginMethods::build_on(
         &cfg,
-        &registry_of(slotted::door),
+        &rows_of(&["client_secret"]),
         &crate::config::secret::SecretResolver::builtins_only(),
         || Some(axis.clone() as std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>),
     )
@@ -223,7 +196,7 @@ async fn the_client_secret_is_lent_at_open() {
     assert_eq!(opened[0].2["client_id"], "client-abc");
 }
 
-/// THE CLIENT SECRET IS LENT ONLY INTO A STATED SECRET SLOT (Q128 p9#2; THE DESIGN §6 item 7: IdP
+/// THE CLIENT SECRET IS LENT ONLY INTO A STATED SECRET SLOT (IdP
 /// logins hold their own client secret). The loader lifts out of the settings only the keys a
 /// plugin's Statement names in `secret_refs`; a plugin that names no `client_secret` slot would be
 /// handed the resolved secret inline in its plain settings text. Such a method is refused at build
@@ -236,7 +209,7 @@ async fn a_login_plugin_stating_no_client_secret_slot_is_refused_the_secret() {
     let cfg = idp_with_secret("BUSBAR_TEST_LOGIN_SECRET_UNSLOTTED");
     let built = LoginMethods::build_on(
         &cfg,
-        &registry_of(unslotted::door),
+        &rows_of(&[]),
         &crate::config::secret::SecretResolver::builtins_only(),
         || Some(axis.clone() as std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>),
     );
@@ -258,7 +231,7 @@ async fn a_login_plugin_stating_no_client_secret_slot_is_refused_the_secret() {
     );
 }
 
-/// THE KERNEL KEEPS NO COPY OF WHAT IT LENT (Q128 p9#5; THE DESIGN §6 K2: auth material is
+/// THE KERNEL KEEPS NO COPY OF WHAT IT LENT (auth material is
 /// zeroised). Every string of the lent settings document, nested ones included, is wiped.
 #[test]
 fn the_lent_settings_are_wiped() {
@@ -294,7 +267,7 @@ fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
     );
     let Err(refusal) = LoginMethods::build_on(
         &cfg,
-        &busbar_plugin_loader::PluginRegistry::empty(),
+        &crate::test_support::rows::Rows::new(),
         &crate::config::secret::SecretResolver::builtins_only(),
         || None,
     ) else {
@@ -311,7 +284,7 @@ fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
     );
 }
 
-/// THE KERNEL SERVES NO HOSTED LOGIN PAGE OF ITS OWN (row 159, K3#2; THE DESIGN §8: the hosted
+/// THE KERNEL SERVES NO HOSTED LOGIN PAGE OF ITS OWN (the hosted
 /// login flow is `busbar-core-oauth2`'s). It mounts `GET /auth/token` declared open and reaches the
 /// flow through the login seam; with no flow registered (this test binary links none) the path
 /// answers 404, never a page, and never the chain's 401. RED before the move: the kernel rendered

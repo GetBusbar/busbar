@@ -23,14 +23,10 @@
 /// The transport's fault reading, as the contract owns it.
 pub use busbar_contract::transport::wire::WireFault;
 
-/// The status class and the disposition, as the contract owns them. The class is kept here under
-/// its historical path for the callers that name it beside the disposition.
-pub use busbar_contract::upstream::{Disposition, StatusClass};
+/// The disposition, as the contract owns it: what [`classify`] answers.
+pub use busbar_contract::upstream::Disposition;
 
-/// Convert an operator's class token to a [`StatusClass`]. `None` for anything unrecognized.
-pub fn status_class_from_str(s: &str) -> Option<StatusClass> {
-    StatusClass::parse(s)
-}
+use busbar_contract::upstream::StatusClass;
 
 /// What the breaker knows about one attempt's answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

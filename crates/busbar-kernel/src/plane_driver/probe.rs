@@ -68,7 +68,7 @@ impl PlaneDriver {
             method: Vec::new(),
             target: Vec::new(),
             fields: Vec::new(),
-            body: Arc::from(&[][..]),
+            body: bytes::Bytes::new(),
         };
         // What the units before it left owing ([`super::close`]): a plane only probed, with no
         // caller's unit arriving to pay it, still has its probes' units closed.

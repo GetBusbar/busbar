@@ -18,19 +18,14 @@
 //! 2. **Every field carries its own length**, checked on the preimage bytes themselves rather than
 //!    inferred from a digest agreeing with itself.
 
-use busbar_contract::caps::{
-    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, Pass, UnitKey,
-};
+use crate::test_support::tokens::pass;
+use busbar_contract::caps::{Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, UnitKey};
 
 use busbar_kernel_audit::digest::{Digest, Framing};
 use busbar_kernel_audit::record::{
     Audit, AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, QuantitySource,
     Subject, Usage, UsageLine, What,
 };
-
-fn token() -> Pass<AuditStep> {
-    Pass::mint(&KernelSeal::acquire_for_kernel())
-}
 
 /// One set of record inputs, with the two caller-named text fields under the test's control.
 fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
@@ -97,10 +92,16 @@ fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
 #[test]
 fn a_bar_moved_between_two_caller_named_fields_of_the_new_record_changes_its_digest() {
     let mut chain = AuditChain::new();
-    let left = chain.seal(record_inputs("chat.completion|upstream-a", "eu"), &token());
+    let left = chain.seal(
+        record_inputs("chat.completion|upstream-a", "eu"),
+        &pass::<AuditStep>(),
+    );
 
     let mut chain = AuditChain::new();
-    let right = chain.seal(record_inputs("chat.completion", "upstream-a|eu"), &token());
+    let right = chain.seal(
+        record_inputs("chat.completion", "upstream-a|eu"),
+        &pass::<AuditStep>(),
+    );
 
     assert_ne!(
         AuditChain::digest_of(&left),

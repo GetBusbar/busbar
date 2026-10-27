@@ -1,5 +1,4 @@
-//! THE ONE COUNTING ALLOCATOR a plugin's allocation gates read (ARCHITECT ruling 2026-10-21,
-//! superseding the `cfg_attr(not(test), forbid)` pair: plugin crate roots keep the literal
+//! THE ONE COUNTING ALLOCATOR a plugin's allocation gates read (superseding the `cfg_attr(not(test), forbid)` pair: plugin crate roots keep the literal
 //! `#![forbid(unsafe_code)]`, BUSBAR-1.6.0.md l.273, so the `GlobalAlloc` impl a gate needs lives
 //! here instead of in the plugin).
 //!

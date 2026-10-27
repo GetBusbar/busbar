@@ -365,3 +365,53 @@ fn an_append_completes_while_a_resume_is_parked_reading_another_scope() {
     );
     assert_eq!(j.next_seq("scope-a"), 3);
 }
+
+/// RED on the unbounded claim wait (audit finding kernel-K4#9): a second append to a scope whose
+/// first durable write is parked inside the store waited on the claim with no deadline, so it
+/// never returned while the store held the first write. It must be refused at the claim deadline,
+/// with the first write still parked, and mint nothing: the parked write lands as seq 1 once
+/// released and the next append takes seq 2, linked, with no gap.
+#[test]
+fn a_same_scope_append_behind_a_parked_store_write_is_refused_at_the_claim_deadline() {
+    let store = Arc::new(GateStore::default());
+    let mut journal = Journal::<StreamRecord>::new(1024);
+    journal.set_claim_wait(Duration::from_millis(50));
+    journal.set_sink(store.clone());
+    let j = Arc::new(journal);
+    let (entered, release) = park(&store, Op::Append, "scope-a");
+    let first = append_in_thread(&j, "scope-a", b"first");
+    entered
+        .recv_timeout(WAIT)
+        .expect("the first write reaches the store");
+    // The first write stays parked until `release` below, so the second append can only return
+    // through the claim deadline.
+    let second = append_in_thread(&j, "scope-a", b"second");
+    let second_done = second.recv_timeout(WAIT);
+    let _ = release.send(());
+    let refused = second_done
+        .expect("the second append returns while the first write is still parked in the store");
+    assert!(
+        refused.is_err(),
+        "the second append is refused at the claim deadline: {refused:?}"
+    );
+    assert_eq!(first.recv_timeout(WAIT).expect("first finishes"), Ok(1));
+    assert_eq!(
+        j.append_scoped(KIND, "scope-a", input(b"third"), &reframe)
+            .map(|r| r.seq())
+            .map_err(|e| e.to_string()),
+        Ok(2),
+        "the refused append burned no sequence"
+    );
+    let records: Vec<StreamRecord> = store
+        .list_plane_records(KIND, &PlaneSelector::Parent("scope-a".into()))
+        .unwrap()
+        .iter()
+        .map(|body| reframe("scope-a", body))
+        .collect::<RecordStoreResult<_>>()
+        .unwrap();
+    assert_eq!(
+        records.iter().map(|r| r.seq()).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert!(verify_chain(&records).is_ok(), "the two records chain");
+}

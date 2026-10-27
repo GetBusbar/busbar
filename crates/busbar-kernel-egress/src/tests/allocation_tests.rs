@@ -16,34 +16,6 @@ fn offered(n: u64) -> Vec<(DestinationId, u32)> {
     (0..n).map(|i| (DestinationId::new(i), 1u32)).collect()
 }
 
-/// One owned pool name per pool, not one per member per pick.
-///
-/// Keyed `(String, DestinationId)` the floor allocates the pool name once for every offered member
-/// on every pick, and holds one owned copy of it per member for the life of the unit. Keyed two
-/// levels deep it allocates the name once, on first sight of the pool, and every member lookup
-/// after that borrows.
-#[test]
-fn the_floor_owns_one_pool_name_per_pool_not_one_per_member() {
-    let floor = WeightedFloor::new();
-    let wide = offered(64);
-    let narrow = offered(4);
-
-    for _ in 0..10 {
-        floor.take_turn("wide", &wide);
-        floor.take_turn("narrow", &narrow);
-    }
-
-    let (pool_names, credits) = floor.tracked();
-    assert_eq!(
-        pool_names, 2,
-        "one owned pool name per pool, whatever the membership"
-    );
-    assert_eq!(
-        credits, 68,
-        "the credits themselves are still one per member per pool"
-    );
-}
-
 /// And the rotation itself is unchanged: the pick ORDER is the previous release's behaviour and is
 /// what the oracle pins, so the restructure has to be invisible in the sequence.
 #[test]

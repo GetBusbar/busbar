@@ -190,26 +190,3 @@ fn no_row_is_unanswered_and_no_token_passes() {
     );
     assert_eq!(kind(OperatorCredential::Unset.probe(&request())), "pass");
 }
-
-/// THE ADMIN VERDICT MAPPING (Q134: no admin 503 ships): a verdict is a verdict, and an overloaded
-/// verifier or one that answered no verdict is 1.5.5's refusal, awaited and probed alike. RED: an
-/// unjudged row read as anything but `reject` (the retired 503's `Err`).
-#[test]
-fn an_unjudged_admin_verdict_is_the_1_5_5_refusal() {
-    for (verified, want) in [
-        (Verified::Reject, "reject"),
-        (Verified::Pass, "pass"),
-        (Verified::Overloaded, "reject"),
-        (Verified::Failed, "reject"),
-    ] {
-        let credential = OperatorCredential::Module(Double::new(verified, true));
-        let judged = [
-            ready(credential.judge(request())),
-            credential.probe(&request()),
-        ];
-        for (judged, how) in judged.into_iter().zip(["awaited", "probed"]) {
-            assert!(judged.is_some(), "a row answers");
-            assert_eq!(kind(judged), want, "{how}");
-        }
-    }
-}

@@ -413,7 +413,7 @@ mod plugin {
 
 fn table() -> &'static Ops {
     // SAFETY: the macro's `'static` door, whose table is the store kind's `Ops`.
-    unsafe { &*(*plugin::door()).ops.cast::<Ops>() }
+    unsafe { &*plugin::door().ops().cast::<Ops>() }
 }
 
 fn zeroed<T>() -> T {

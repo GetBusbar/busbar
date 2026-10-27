@@ -47,9 +47,9 @@ pub fn set_max_upstream_buffered_bytes(bytes: usize) {
 /// Historical default egress translate-body cap (bytes) — 32 MiB, the value read before any operator
 /// config is installed (unit tests, pre-boot). MUST equal core's `config::DEFAULT_REQUEST_BODY_MAX_BYTES`
 /// (the one knob that drives both the inbound `DefaultBodyLimit` and this egress translate cap); the two
-/// are pinned equal by construction and by core's `limits` tests. Owned HERE, in the neutral substrate,
-/// so a plane crate reads the cap without reaching into `busbar-core`.
-pub const TRANSLATE_BODY_MAX_BYTES_DEFAULT: usize = 32 * 1024 * 1024;
+/// are pinned equal by construction and by core's `limits` tests. The one definition is the
+/// contract's, which a plane reads.
+pub use busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT;
 
 /// Process-global egress translate-body cap (bytes). Seeded to the historical default so an
 /// UNINSTALLED read (unit tests, pre-boot) is byte-identical to core's
@@ -153,10 +153,6 @@ pub async fn read_capped<E>(
 pub const ERR_NET_CONNECT: &str = "connect";
 /// `err_type` recorded when the upstream did not answer within the attempt's deadline.
 pub const ERR_NET_TIMEOUT: &str = "timeout";
-/// `err_type` recorded when the transport failed after the connection opened.
-pub const ERR_NET_TRANSPORT: &str = "transport";
-/// `err_type` recorded when a HalfOpen probe's degraded forward returns a non-2xx (bumps cooldown).
-pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 
 // ── CLIENT-HEADER FORWARDING — THE NEUTRAL MECHANISM (OWNER HARD RULE 2026-10-02, "BUSBAR IS
 //    INVISIBLE TO UPSTREAMS") ──────────────────────────────────────────────────────────────────────

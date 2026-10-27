@@ -148,10 +148,9 @@ mod page {
     use busbar_kernel::diagnostics::{render_json_for, render_markdown_for, REGISTRY};
 
     /// The committed operator page, relative to this crate's manifest dir.
-    const COMMITTED_MD: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.md");
+    const COMMITTED_MD: &str = concat!(env!("BUSBAR_CORE_DIR"), "/../../docs/diagnostics.md");
     /// The committed machine-readable page.
-    const COMMITTED_JSON: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/diagnostics.json");
+    const COMMITTED_JSON: &str = concat!(env!("BUSBAR_CORE_DIR"), "/../../docs/diagnostics.json");
 
     /// The numbers the committed JSON page publishes.
     fn published_numbers() -> std::collections::BTreeSet<u64> {

@@ -38,7 +38,7 @@ use busbar_contract::records::{
     PlaneSelector, RecordStore, RecordStoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 
-use super::{MemoryStore, NAME};
+use super::{now, MemoryStore, NAME};
 
 busbar_contract::store_door!(MemoryStore, NAME, env!("CARGO_PKG_VERSION"), 1024);
 
@@ -188,7 +188,7 @@ impl MemoryStore {
             Seen::Conflict => Err(OpRefused::Conflict),
             Seen::New => {
                 let answer = apply(self, &mut inner)?;
-                inner.record(self.now(), op, body, answer.clone());
+                inner.record(now(), op, body, answer.clone());
                 Ok(answer)
             }
         }
@@ -418,7 +418,7 @@ impl MemoryStore {
             });
         }
         grants.extend(granted.iter().copied());
-        inner.record(self.now(), op, body, Answer::Grants(granted));
+        inner.record(now(), op, body, Answer::Grants(granted));
         Ok(())
     }
 
@@ -431,7 +431,7 @@ impl MemoryStore {
     ) -> OpResult<()> {
         let items: Vec<(u64, u64)> = items.collect();
         let body = format!("slice_release:{epoch}:{items:?}");
-        let now = self.now();
+        let now = now();
         let answer = self.deduped(op, body, |_, inner| {
             if inner.closed.len() > 1024 {
                 inner
@@ -538,7 +538,7 @@ impl MemoryStore {
             }
         }
         inner.caps.extend(pushed);
-        inner.record(self.now(), op, body, Answer::Done);
+        inner.record(now(), op, body, Answer::Done);
         Ok(())
     }
 }

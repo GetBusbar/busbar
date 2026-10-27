@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-stub-export-carried"
+version = "1.5.0"
+edition = "2021"
+rust-version = "1.97"
+description = "The request-log WEBHOOK export sink as a kind:export plugin: POSTs each request-log line to the operator's https:// target through the host's connector (it never dials), linked into the busbar binary or dropped into plugins/ — one crate, one registration."
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "busbar_stub_export_carried"
+test = false
+doctest = false
+# rlib: THE LOGIC and its door. A build that LINKS this crate registers `door` as its compiled-in
+# row (no symbol is exported from here); the sibling `busbar-export-webhook-plugin` cdylib exports
+# the same door as `busbar_plugin_door`. One source, both doors (THE DESIGN §11.4).
+crate-type = ["rlib"]
+
+[dependencies]
+# The ONE busbar crate a plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into it
+# as `busbar_contract::abi::sdk`, so a plugin's busbar closure is exactly busbar-contract). Pinned by
+# git rev to the busbar commit in `.busbar-ref`; a busbar build that links this crate `[patch]`es the
+# busbar git source to its own tree, so ONE copy of the contract links.
+busbar-contract = { workspace = true }
+# The settings shape (`deny_unknown_fields`, so the operator's typo is the same refusal it was).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The userinfo mask on the target URL the sink's diagnostics name (its own lines, never the host's).
+url = { workspace = true }
+# The sink's operator log lines, with the catalogue's `diag` banner field; the door's call capture
+# carries them to the instance's plugin log (THE DESIGN §11.2).
+tracing = { workspace = true }

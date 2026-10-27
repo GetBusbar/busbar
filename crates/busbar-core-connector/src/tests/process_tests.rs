@@ -102,8 +102,8 @@ fn every_egress_class_is_judged_by_the_one_guard() {
 
 /// RED: under the default, the provider class and a request-data class (the default class,
 /// open-web) refuse a private and a loopback address unless allowlisted (THE DESIGN §5 destination
-/// guard, ARCHITECT ruling CRATES-14); operator infrastructure is allowed them (§5 egress-class
-/// table, owner 2026-09-27); metadata is refused in all.
+/// guard); operator infrastructure is allowed them (§5 egress-class
+/// table); metadata is refused in all.
 #[test]
 fn a_private_address_is_refused_for_providers_and_request_data_unless_allowlisted() {
     let strict = process_judge(&[], vec![]);
@@ -230,4 +230,61 @@ fn the_nodes_own_ports_are_read_off_its_listen_addresses() {
         own_ports(&["0.0.0.0:8080", "127.0.0.1:8081", "[::1]:9", "nowhere"]),
         vec![8080, 8081, 9]
     );
+}
+
+/// A resolver recording every name it is asked, answering from a fixed table off the caller's
+/// thread.
+#[derive(Default)]
+struct Asked {
+    names: std::sync::Mutex<Vec<String>>,
+    table: Vec<(&'static str, IpAddr)>,
+}
+
+impl Resolve for Asked {
+    fn resolve(&self, host: &str, done: Resolved) {
+        self.names.lock().unwrap().push(host.to_owned());
+        Table(self.table.clone()).resolve(host, done);
+    }
+}
+
+/// RED (P0, an IDN 1.5.5 dialled): a bare non-ASCII name the guard admitted is resolved as its
+/// UTS #46 punycode name, the name the guard judged and the one 1.5.5's client resolved, and the
+/// dial is pinned to what that name answered. The judge asked the resolver for the name as written,
+/// which a resolver does not know (`NXDOMAIN` here, as from `getaddrinfo`), and refused the dial
+/// `DEST_UNRESOLVABLE`. An ASCII name is asked for as written, byte for byte, its case kept.
+#[test]
+fn an_idn_name_is_resolved_as_its_punycode_name() {
+    let public: IpAddr = "93.184.216.34".parse().unwrap();
+    let asked = Arc::new(Asked {
+        table: vec![
+            ("xn--bcher-kva.example", public),
+            ("Api.Example.COM", public),
+        ],
+        ..Asked::default()
+    });
+    let judge = judge(
+        Arc::new(GuardJudge::new(
+            Guard::default(),
+            Arc::clone(&asked) as Arc<dyn Resolve>,
+        )),
+        &[OWN],
+    );
+    for (dest, name) in [
+        ("b\u{fc}cher.example:443", "xn--bcher-kva.example"),
+        ("B\u{dc}CHER.example:443", "xn--bcher-kva.example"),
+        ("https://b\u{fc}cher.example/", "xn--bcher-kva.example"),
+        ("Api.Example.COM:443", "Api.Example.COM"),
+    ] {
+        asked.names.lock().unwrap().clear();
+        assert_eq!(
+            pended(&judge, dest, EGRESS_PROVIDER),
+            Ok(SocketAddr::new(public, 443)),
+            "{dest}"
+        );
+        assert_eq!(
+            *asked.names.lock().unwrap(),
+            vec![name.to_owned()],
+            "{dest}"
+        );
+    }
 }

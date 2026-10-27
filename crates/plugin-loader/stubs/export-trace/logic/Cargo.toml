@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-stub-export-trace"
+version = "1.6.0"
+edition = "2021"
+rust-version = "1.97"
+description = "The OTLP trace export sink as a kind:export plugin: encodes each batch of busbar's traces stream as an OTLP/HTTP protobuf ExportTraceServiceRequest and POSTs it to the operator's collector through the host's connector (it never dials), linked into the busbar binary or dropped into plugins/ — one crate, one door."
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "busbar_stub_export_trace"
+test = false
+doctest = false
+# rlib only: the logic and its door. A build that LINKS this crate registers `door::door` as its row
+# (no symbol is exported from here); the dropped-in cdylib is `busbar-export-otlp-plugin` (same
+# repo), which exports the same door as `busbar_plugin_door`.
+crate-type = ["rlib"]
+
+[dependencies]
+# The ONE busbar crate a plugin names (#40: contract only; DECISIONS #84 merged the plugin SDK into it
+# as `busbar_contract::abi::sdk`, so a plugin's busbar closure is exactly busbar-contract). Pinned by
+# git rev to the busbar commit in `.busbar-ref`; a busbar build that links this crate `[patch]`es the
+# busbar git source to its own tree, so ONE copy of the contract links.
+busbar-contract = { workspace = true }
+# The settings shape (`deny_unknown_fields`, so the operator's typo is the same refusal it was).
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The operator's endpoint: its userinfo moves into an `Authorization: Basic` header and out of the
+# URL, and is masked in every line this sink writes.
+url = { workspace = true }
+# The sink's own operator lines (enabled, disabled, a dropped export): the door's call capture
+# carries them, linked or dropped in, to the instance's own log (THE DESIGN §11.2 Plugin logging).
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The OpenTelemetry project's own generated OTLP types: the sink's suite decodes every request it
+# builds with them and re-encodes it, so "an OTLP/HTTP protobuf ExportTraceServiceRequest" is
+# checked against the proto's publisher, not against this crate's own encoder. Test-only.
+opentelemetry-proto = { workspace = true }
+prost = { workspace = true, features = ["default"] }

@@ -79,7 +79,8 @@ pub use recipe::{
 };
 pub use record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass,
-    HookApplied, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
+    HookApplied, HookHead, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine,
+    What,
 };
 pub use sign::{
     checkpoint_preimage, AuditKeySet, AuditSigningKey, AuditVerifyingKey, KeyError,

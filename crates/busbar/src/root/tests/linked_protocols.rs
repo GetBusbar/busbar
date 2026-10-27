@@ -1,10 +1,9 @@
 //! THE PROTOCOL AXIS AS THE SHIPPED BUILD LINKS IT — the registry and detection folds over the REAL
 //! declarations the root installs, read off the linked table (`crate::LINKED.protocols`), never named.
 //!
-//! These assertions moved here from the composition root's integration suites (ARCHITECT on N4,
-//! option (b)): what they prove is a property of the composition — the host's folds over what this
+//! These assertions moved here from the composition root's integration suites: what they prove is a property of the composition — the host's folds over what this
 //! build links — so the root holds them. The protocol names, paths, headers and bodies they are held
-//! to are fixture DATA (`fixtures/linked_protocols.json`, ARCHITECT F-T), so this source names no
+//! to are fixture DATA, so this source names no
 //! plane. The registry's own machinery over synthetic declarations is the kernel's to prove
 //! (`busbar-kernel`'s `proto` tests, `registry_fold`).
 //!
@@ -345,7 +344,7 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
     }
 }
 
-// ══ THE METRIC LABELS ARE DECLARED DATA (ARCHITECT ruling 2026-10-16 item 4) ═════════════════════════
+// ══ THE METRIC LABELS ARE DECLARED DATA ═════════════════════════
 
 /// The fallback plane every linked door row folds to, as the composition root folds it: the one
 /// linked door whose Statement tail flags it the fallback.
@@ -378,7 +377,7 @@ fn the_fallback_doors_declared_dialects_are_the_1_5_5_metric_labels() {
     );
 }
 
-/// **THE PROVIDER PROTOCOLS ARE DECLARED DATA, AND 1.5.5'S** (ARCHITECT ruling 2026-10-16 item 3). The
+/// **THE PROVIDER PROTOCOLS ARE DECLARED DATA, AND 1.5.5'S**. The
 /// boot accepts a provider whose `protocol` a registered plane declares provider-capable (its
 /// door's `dialect_auth` lines flagged `DIALECT_PROVIDER`), and the validator's `must be one of:`
 /// tail and the lane build's `(supported: …)` list are that declaration, in order. Held to the 1.5.5

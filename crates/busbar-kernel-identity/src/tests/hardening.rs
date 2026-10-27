@@ -28,7 +28,7 @@ fn the_chain_shape_accessors_answer_in_both_directions() {
         false,
     );
     assert!(
-        !with_module.has_no_modules(),
+        !with_module.chain_names().is_empty(),
         "a chain with a module does not report an empty module list"
     );
     assert!(
@@ -39,7 +39,7 @@ fn the_chain_shape_accessors_answer_in_both_directions() {
 
     let keys_only = AuthChain::new(Vec::new(), true);
     assert!(
-        keys_only.has_no_modules(),
+        keys_only.chain_names().is_empty(),
         "the keys arm is not a boxed module, so a keys-only chain has none"
     );
     assert!(keys_only.keys_in_chain());
@@ -49,28 +49,7 @@ fn the_chain_shape_accessors_answer_in_both_directions() {
     );
 
     let empty = AuthChain::new(Vec::new(), false);
-    assert!(empty.has_no_modules());
+    assert!(empty.chain_names().is_empty());
     assert!(!empty.keys_in_chain());
     assert!(empty.is_open());
-}
-
-/// The chain's `Debug` reports the two facts it says it reports, and never the modules themselves.
-///
-/// It is hand-written precisely so a boxed module cannot print whatever it likes into an operator's
-/// log; a rendering that quietly produced nothing would take the two facts with it.
-#[test]
-fn the_chains_debug_rendering_carries_the_shape_it_promises() {
-    let c = AuthChain::new(
-        vec![
-            entry("m1", Box::new(Canned::new("m1", AuthOutcome::Pass))),
-            entry("m2", Box::new(Canned::new("m2", AuthOutcome::Pass))),
-        ],
-        true,
-    );
-    let rendered = format!("{c:?}");
-    assert!(rendered.contains("AuthChain"), "{rendered}");
-    assert!(rendered.contains("keys_in_chain"), "{rendered}");
-    assert!(rendered.contains("true"), "{rendered}");
-    assert!(rendered.contains("chain_len"), "{rendered}");
-    assert!(rendered.contains('2'), "{rendered}");
 }

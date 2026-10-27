@@ -148,8 +148,7 @@ fn an_unbound_node_binds_no_authority() {
 }
 
 // ------------------------------------------------------------------------------------------------
-// THE ROOT LEGACY TABLE'S OPERATOR WORDS — 1.5.5's bytes, pinned where the words live (ARCHITECT
-// 2026-09-30, KERNEL-AUTH-ZERO Q2: the byte-pin tests move to crates/busbar). The kernel's own tests
+// THE ROOT LEGACY TABLE'S OPERATOR WORDS — 1.5.5's bytes, pinned where the words live. The kernel's own tests
 // run on a kind-neutral double; these run on the words this root hands in at boot.
 // ------------------------------------------------------------------------------------------------
 
@@ -358,8 +357,7 @@ fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
 /// `BUSBAR_ADMIN_TOKEN`: no brace-form interpolation of it may appear anywhere (comments included,
 /// since `interpolate_env` scans the whole file).
 ///
-/// RE-HOMED from the kernel's `test_shipped_example_config_resolves` (ARCHITECT 2026-09-30,
-/// KERNEL-AUTH-ZERO Q2): the shipped config names the operator credential by the root legacy
+/// RE-HOMED from the kernel's `test_shipped_example_config_resolves`: the shipped config names the operator credential by the root legacy
 /// table's word, so it resolves only on the words this root hands in. Its parse-and-resolve half is
 /// `tests/docs_examples.rs::shipped_config_artifacts_validate`, which runs the real binary's
 /// `--validate` (parse, resolve, validate) on the same config.yaml against providers.yaml. The
@@ -368,7 +366,7 @@ fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
 #[test]
 fn the_shipped_config_needs_no_admin_token_to_boot() {
     let config_raw =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../config.yaml")).unwrap();
+        std::fs::read_to_string(concat!(env!("BUSBAR_CORE_DIR"), "/../../config.yaml")).unwrap();
     assert!(
         !config_raw.contains("${BUSBAR_ADMIN_TOKEN}"),
         "the shipped config must not force a mandatory boot failure on unset BUSBAR_ADMIN_TOKEN"

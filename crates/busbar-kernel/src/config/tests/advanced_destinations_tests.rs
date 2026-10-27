@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DESTINATION GUARD'S CONFIG (OWNER ruling DESTINATION GUARD): `advanced.block_private_addresses`
+//! THE DESTINATION GUARD'S CONFIG: `advanced.block_private_addresses`
 //! (default on), `advanced.allow_destinations`, and the 1.5.5 keys folded into the same inputs.
 
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ fn the_destination_keys_parse_under_advanced() {
     assert_eq!(a.allow_destinations, ["10.0.0.0/8", "*.corp.example"]);
 }
 
-/// RED: the guard is on by default (owner-signed), with nothing allowed.
+/// RED: the guard is on by default, with nothing allowed.
 #[test]
 fn private_addresses_are_blocked_by_default() {
     assert!(AdvancedCfg::default().block_private_addresses);

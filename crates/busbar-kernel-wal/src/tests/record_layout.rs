@@ -148,7 +148,7 @@ fn the_header_leaves_the_documented_amount_of_room_for_a_payload() {
     assert_eq!(FRAME_PAYLOAD_BYTES, 415);
     assert_eq!(FRAME_TRAILER_BYTES, 1);
     assert_eq!(FRAME_VERSION, 3);
-    assert_eq!(FRAME_BYTES, crate::MAX_RECORD_BYTES);
+    assert_eq!(FRAME_BYTES, busbar_contract::MAX_RECORD_BYTES);
 }
 
 /// Every frame ENDS with its end mark, and the end mark is never zero: it is the byte that says the

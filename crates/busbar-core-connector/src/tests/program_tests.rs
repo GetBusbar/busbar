@@ -850,21 +850,45 @@ fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
     });
 }
 
-/// RED (row 159): NO STATIC HOLDS THE SPAWN SECRET RESOLVER. Before, `spawn_env.rs` kept it in a
-/// process-wide `OnceLock` the root installed into, the first install standing for every connector
-/// of the process; it is now handed to the connector at its construction.
+/// RED (audit row 159, connector HIGH 5): an instance that is gone (replaced by a reload, closed or
+/// quarantined) leaves no member program running. Its needs are dropped, its open lease is closed,
+/// and every member program it held is killed, even the one a lease was still holding.
 #[test]
-fn no_static_holds_the_spawn_secret_resolver() {
-    let held: Vec<&str> = include_str!("../spawn_env.rs")
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or_default())
-        .filter(|code| {
-            code.contains("SPAWN_SECRETS")
-                || (code.contains("static ") && code.contains("SpawnSecretFn"))
-        })
-        .collect();
-    assert!(
-        held.is_empty(),
-        "a static holds the spawn secret resolver: {held:?}"
-    );
+fn a_forgotten_instance_leaves_no_member_program_running() {
+    worker().block_on(async {
+        let c = connector();
+        declare(
+            &c,
+            &[("idle", sh(ECHO_PID, &[])), ("leased", sh(ECHO_PID, &[]))],
+        )
+        .unwrap();
+        let idle = open(&c, "idle", b"").unwrap();
+        generation(&c, idle).await;
+        let idle_pid = pid_of(&c, idle, "i").await;
+        c.close(OWNER, idle).unwrap();
+        let leased = open(&c, "leased", b"").unwrap();
+        generation(&c, leased).await;
+        let leased_pid = pid_of(&c, leased, "l").await;
+        c.forget(OWNER);
+        assert!(
+            until_gone(&idle_pid).await,
+            "an idle member's program is killed with its instance"
+        );
+        assert!(
+            until_gone(&leased_pid).await,
+            "a member's program is killed with its instance, its open lease closed"
+        );
+        assert_eq!(
+            c.close(OWNER, leased),
+            Err(ConnError::Closed),
+            "the instance's connection was closed"
+        );
+        assert_eq!(c.declared(OWNER, NEED), None, "the need is dropped");
+        assert_eq!(
+            open(&c, "idle", b""),
+            Err(ConnError::UndeclaredNeed),
+            "no open reaches a forgotten instance's need"
+        );
+        c.forget(OWNER);
+    });
 }

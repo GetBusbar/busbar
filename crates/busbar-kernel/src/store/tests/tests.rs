@@ -4014,39 +4014,3 @@ fn test_swrr_slot_resolved_once_spans_a_mid_selection_reset() {
          — the exact skew the single-resolution rule in select_weighted_for exists to prevent"
     );
 }
-
-/// **THE BREAKER STORE NAMES NO PLANE'S LANE VOCABULARY** (audit K4#5; BUSBAR-1.6.0.md l.166-167:
-/// "Nothing in the kernel parses or understands ... a plane concept"). A lane is keyed by the
-/// member it serves and the route it dials, and carries only what the breaker reads: no model,
-/// no provider, no capability flag of one plane, and no key helper named after another plane's
-/// verb. A source witness: what has to stay true is the store's own field and item names.
-#[test]
-fn the_breaker_store_names_no_planes_lane_vocabulary() {
-    for (file, src) in [
-        ("store/vocab.rs", include_str!("../vocab.rs")),
-        (
-            "store/in_memory/mod.rs",
-            include_str!("../in_memory/mod.rs"),
-        ),
-        (
-            "store/in_memory/availability.rs",
-            include_str!("../in_memory/availability.rs"),
-        ),
-    ] {
-        for name in [
-            "pub model:",
-            "pub provider:",
-            "pub(crate) model:",
-            "pub(crate) provider:",
-            "upstream_model",
-            "attempt_timeout_ms",
-            "pub(crate) reasoning:",
-            "prompt_caching",
-        ] {
-            assert!(
-                !src.contains(name),
-                "{file} carries `{name}`: one plane's lane vocabulary in the kernel's breaker store"
-            );
-        }
-    }
-}

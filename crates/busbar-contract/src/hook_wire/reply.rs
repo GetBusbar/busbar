@@ -5,8 +5,7 @@
 //! switch-over (the design: hooks are on the memory ABI; a hook's `decide`/`transform` reply
 //! crosses as the hook kind's fixed `out`, lowered from 1.5.5 JSON on the PLUGIN side by
 //! `abi::sdk::hook::lower_decide_reply` / `lower_transform_reply`, and read back by the kernel's host
-//! hook stage, `plane_driver::hooks::policy`). Moved here from the kernel's `hooks::wire` (P2 D4,
-//! ARCHITECT Q-D4-HOOKS 2026-10-04: the hook reply wire shapes live in the contract, beside the
+//! hook stage, `plane_driver::hooks::policy`). Moved here from the kernel's `hooks::wire` (the hook reply wire shapes live in the contract, beside the
 //! request side in [`super`]). What is here is the host's half of 1.5.5's reply contract, which the
 //! fixed `out` does not do for it: the reject-status clamp and message sanitiser, the rewrite parsed
 //! fail-closed, and the `status`/`describe` blobs (1.5.5 JSON, carried verbatim by the ABI) with the

@@ -13,6 +13,7 @@
 //! completed unit is never closed twice. None of it writes a byte to the caller: the close is the
 //! plane's, after the caller's answer.
 
+use super::hook_cases::Nobody;
 use super::*;
 
 use busbar_contract::caps::{Canary, Outcome as UnitOutcome, ReasonCode, StepName};
@@ -133,24 +134,6 @@ fn screened(stuck: u32, panics: bool) -> (Arc<Double>, PlaneDriver) {
         panics,
     }));
     (r.plane, r.driver.with_hooks(Arc::new(binder)))
-}
-
-/// A caller the routed hooks know nothing of.
-struct Nobody;
-
-impl busbar_kernel::plane_driver::CallerFacts for Nobody {
-    fn key(&self, _: &str) -> Option<busbar_kernel::plane_driver::CallerKey> {
-        None
-    }
-    fn in_groups(&self, _: Option<&str>, groups: &[String]) -> bool {
-        groups.is_empty()
-    }
-    fn rate_headroom(&self, _: &str, _: &str) -> Option<f64> {
-        None
-    }
-    fn budget(&self, _: &str) -> Vec<busbar_contract::hooks::BudgetBucketState> {
-        Vec::new()
-    }
 }
 
 /// A driver whose ROUTED request stage (the head of the route leg, before the unit's pump and its

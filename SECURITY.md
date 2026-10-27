@@ -47,13 +47,25 @@ LLM providers. The [threat model](THREAT_MODEL.md) documents the trust boundarie
 assets, and the threats we design against (with pointers to each mitigation in code).
 Issues of particular interest include:
 
-- Credential leakage (logs, error bodies, `/stats`, responses relayed to clients).
-- Authentication bypass on Busbar's own front-door auth (including timing-based).
-- SSRF via a config-controlled upstream (`base_url` / `path` / `path_base` / `token_url`) or a hook `webhook:` URL.
+- Credential leakage (logs, error bodies, `/stats`, responses relayed to clients, the store).
+- Authentication bypass on Busbar's own front-door auth (including timing-based), or reaching an
+  admin-scoped operation with a read-only credential.
+- SSRF via a configured or request-derived destination (`base_url` / `path` / `path_base` /
+  `token_url`, a tool server, agent or export URL, a plugin fetch URL), including a way past the
+  connector's destination guard (DNS rebinding, alternate address spellings).
 - AWS SigV4 outbound-signing correctness (signed-vs-sent divergence).
 - Admin-plane isolation (reaching the control plane from the data port).
 - Request smuggling / routing confusion between pools, models, or providers.
-- Escape from a dynamically loaded plugin into the host or another plane.
+- Loading a plugin the trust policy should refuse: an unsigned or unallowlisted plugin, a tampered
+  tarball, an older build below its version floor, or bytes other than the ones verified.
+- A plugin reaching, through the plugin ABI, kernel state or another plane's state it was not
+  granted.
+- A plugin obtaining, through the ABI, a credential it was not configured with, or a host path that
+  prints, logs, serializes or sends to the wrong host a credential a plugin was configured with. (In
+  1.6.0 a plugin receives the credentials it is configured with, and native code can read Busbar's
+  own process memory; see [threat model T9 and T10](THREAT_MODEL.md).)
+- Calling an MCP tool or A2A agent whose advertised definition differs from the one approved
+  (a way around verify-on-call; see [tool and agent trust](docs/tool-and-agent-trust.md)).
 - Denial of service against the gateway or its circuit breaker.
 - The circuit breaker mis-attributing a client fault as an upstream fault (or vice
   versa) in a way that drains a pool or leaks state across requests.

@@ -60,6 +60,7 @@ use crate::hooks::{
 };
 use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_message};
 use busbar_contract::ir::facts::{ContentItem, IrFacts, ScreenedContent, Slot};
+use busbar_kernel_audit::record::{HookApplied, HookHead};
 use std::borrow::Cow;
 
 /// The answer a firing site acts on. Deliberately NOT the model plane's `PolicyOutcome`: that type
@@ -79,7 +80,7 @@ pub(crate) enum GateVerdict {
         message: String,
         /// The transport/policy name, for the audit row and the log line: "it was refused" is not
         /// an operator-actionable fact unless it says by WHAT.
-        hook: &'static str,
+        hook: String,
     },
 }
 
@@ -252,15 +253,21 @@ const NO_CANDIDATES: &[Candidate<'static>] = &[];
 ///
 /// ZERO COST when nothing is attached: an empty slice returns before any projection is built, which
 /// is the same shape (and the same guarantee) as the model plane's `global_gates.is_empty()`
-/// early-out. When the content could not be read (a door
-/// plane's projected body that is absent or not JSON), a gate granted the content cannot screen
-/// it: it is a gate that could not answer, and its `on_error` decides, never a gate shown empty
-/// content that abstains (audit Q128 p15#3). A shape-only gate (`prompt: no`) reads no content and
-/// fires as it always does.
+/// early-out. Each gate that ran is pushed onto `ran` in the order it ran, with its decision head
+/// and whether it failed (THE DESIGN §1: the audit record's "controls (... hooks applied)"). A gate
+/// the incremental scan had nothing new for was not asked and is not pushed. A failed gate's
+/// `on_error` links are pushed after it, each as it ran ([`Fallback::walk`]): a link the walk asked
+/// is a hook applied.
+///
+/// When the content could not be read (a door plane's projected body that is absent or not JSON),
+/// a gate granted the content cannot screen it: it is a gate that could not answer, and its
+/// `on_error` decides, never a gate shown empty content that abstains (audit Q128 p15#3). A
+/// shape-only gate (`prompt: no`) reads no content and fires as it always does.
 pub(crate) async fn decide_over(
     gates: &[(u16, ResolvedPolicy)],
     subject: &GateSubject<'_>,
     readable: bool,
+    ran: &mut Vec<HookApplied>,
 ) -> GateVerdict {
     if gates.is_empty() {
         return GateVerdict::Proceed;
@@ -318,7 +325,7 @@ pub(crate) async fn decide_over(
                 protocol = subject.ingress_protocol,
                 "request gate cannot read the request's content; applying its on_error"
             );
-            if let Some(v) = fallback.walk().await {
+            if let Some(v) = fallback.walk(ran).await {
                 return v;
             }
             continue;
@@ -351,7 +358,7 @@ pub(crate) async fn decide_over(
                     error = %e,
                     "request gate failed; applying its on_error"
                 );
-                if let Some(v) = fallback.walk().await {
+                if let Some(v) = fallback.walk(ran).await {
                     return v;
                 }
                 continue;
@@ -364,15 +371,19 @@ pub(crate) async fn decide_over(
                     timeout_ms = timeout.as_millis() as u64,
                     "request gate deadline exceeded; applying its on_error"
                 );
-                if let Some(v) = fallback.walk().await {
+                if let Some(v) = fallback.walk(ran).await {
                     return v;
                 }
                 continue;
             }
         };
         if let Some(v) = verdict_of(answer, policy.name(), subject) {
+            // The gate answered, and its reject stops the unit.
+            ran.push(gate_ran(policy.name(), HookHead::Veto, false));
             return v;
         }
+        // The gate answered, and nothing else acts on these protocols: it passed the unit.
+        ran.push(gate_ran(policy.name(), HookHead::Pass, false));
         // A clean pass (no reject returned above): record the pieces just screened as cleared for this
         // hook on this container, so the next turn in this session skips them. Rejects never reach
         // here — a blocked piece is deliberately NOT cached and is re-screened on retry.
@@ -381,6 +392,26 @@ pub(crate) async fn decide_over(
         }
     }
     GateVerdict::Proceed
+}
+
+/// A gate keyed `hook` that could not answer, as it ran: a veto when its `on_error` (a link's reject,
+/// or the terminal) closed, else a pass. The failure is kept either way.
+fn failed_gate(hook: &str, closed: bool) -> HookApplied {
+    let head = if closed {
+        HookHead::Veto
+    } else {
+        HookHead::Pass
+    };
+    gate_ran(hook, head, true)
+}
+
+/// A gate keyed `hook` as it ran: its head, and whether it failed.
+fn gate_ran(hook: &str, head: HookHead, failed: bool) -> HookApplied {
+    HookApplied {
+        hook: hook.to_string(),
+        head,
+        failed,
+    }
 }
 
 /// One answer a gate (or a fallback link) gave, as the verdict a firing site acts on:
@@ -395,14 +426,14 @@ pub(crate) async fn decide_over(
 /// p15#5).
 fn verdict_of(
     answer: RoutingDecision,
-    hook: &'static str,
+    hook: &str,
     subject: &GateSubject<'_>,
 ) -> Option<GateVerdict> {
     match answer {
         RoutingDecision::Reject { status, message } => Some(GateVerdict::Reject {
             status: clamp_reject_status(status),
             message: sanitize_reject_message(&message),
-            hook,
+            hook: hook.to_string(),
         }),
         // The two candidate-set verbs. Nothing to act on, and saying so at `debug` is what stops an
         // operator concluding their compliance restrict is in force here.
@@ -433,7 +464,7 @@ struct Fallback<'f, 's> {
     /// Whether the request's content could be read (a link granted the content cannot screen an
     /// unreadable request either, so it is a link that failed).
     readable: bool,
-    failed: &'static str,
+    failed: &'f str,
 }
 
 impl Fallback<'_, '_> {
@@ -445,7 +476,21 @@ impl Fallback<'_, '_> {
     /// proceeds). Every link failing lands on the terminal ([`fail_closed`]). An empty chain (a
     /// terminal named directly, the common case) goes straight to the terminal (audit Q128
     /// p15#1).
-    async fn walk(&self) -> Option<GateVerdict> {
+    ///
+    /// The failed gate and every link the walk asked are pushed onto `ran` as they ran (one record
+    /// of the hooks applied, THE DESIGN §1): the failed gate first, its head what its chain made of
+    /// it ([`failed_gate`]), then each link: one that answered with its own head, one that failed
+    /// (or could not read the content it was granted) as a failed pass.
+    async fn walk(&self, ran: &mut Vec<HookApplied>) -> Option<GateVerdict> {
+        let at = ran.len();
+        let verdict = self.links(ran).await;
+        ran.insert(at, failed_gate(self.failed, verdict.is_some()));
+        verdict
+    }
+
+    /// The chain's links in order, then its terminal: [`Fallback::walk`]'s answer, each link asked
+    /// pushed onto `ran`.
+    async fn links(&self, ran: &mut Vec<HookApplied>) -> Option<GateVerdict> {
         let subject = self.subject;
         for fb in self.chain {
             let send_prompt = self.send_prompt && fb.send_prompt;
@@ -457,6 +502,7 @@ impl Fallback<'_, '_> {
                     "on_error fallback hook cannot read the request's content; continuing down the \
                      chain"
                 );
+                ran.push(gate_ran(fb.policy.name(), HookHead::Pass, true));
                 continue;
             }
             let req = project(subject, self.content, send_prompt, send_user);
@@ -482,7 +528,14 @@ impl Fallback<'_, '_> {
                         container = subject.container,
                         "on_error fallback hook answered for the failed gate"
                     );
-                    return verdict_of(answer, fb.policy.name(), subject);
+                    let verdict = verdict_of(answer, fb.policy.name(), subject);
+                    let head = if verdict.is_some() {
+                        HookHead::Veto
+                    } else {
+                        HookHead::Pass
+                    };
+                    ran.push(gate_ran(fb.policy.name(), head, false));
+                    return verdict;
                 }
                 // This link failed too — follow the chain to the next (its own on_error was
                 // flattened into this chain at resolution).
@@ -493,6 +546,7 @@ impl Fallback<'_, '_> {
                         error = %e,
                         "on_error fallback hook failed; continuing down the chain"
                     );
+                    ran.push(gate_ran(fb.policy.name(), HookHead::Pass, true));
                 }
                 Err(_) => {
                     tracing::warn!(
@@ -501,6 +555,7 @@ impl Fallback<'_, '_> {
                         timeout_ms = fb.timeout.as_millis() as u64,
                         "on_error fallback hook deadline exceeded; continuing down the chain"
                     );
+                    ran.push(gate_ran(fb.policy.name(), HookHead::Pass, true));
                 }
             }
         }
@@ -516,11 +571,11 @@ impl Fallback<'_, '_> {
 /// ([`crate::hooks::failed_call_refuses`]) and answers the one client-facing refusal every other
 /// seat answers ([`crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS`] and its message): a broken
 /// load-bearing gate is the same retryable condition on every plane (audit kernel-K4 #7).
-fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &'static str) -> Option<GateVerdict> {
+fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &str) -> Option<GateVerdict> {
     crate::hooks::failed_call_refuses(on_error).then(|| GateVerdict::Reject {
         status: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
         message: crate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE.to_string(),
-        hook,
+        hook: hook.to_string(),
     })
 }
 
@@ -693,10 +748,11 @@ fn read_projected(projected: Option<&[u8]>) -> Option<busbar_contract::ir::invok
 }
 
 /// FIRE THE GATES OF A REQUEST SERVED THROUGH A PLANE'S DOOR (ARCHITECT RULING 2026-10-03,
-/// the session half): the same gate the engine fired, over the plane's projected body, with the
-/// incremental scan KEYED ON THE VIEW'S SESSION, bound to the caller principal and the hook
-/// generation exactly as the engine's was ([`IncrementalScan::derive_session_key_octets`]), and each
-/// clearance bound to the container ([`clearance_of`]). A request whose view names no session, or
+/// the session half): the same gate the engine fired (each gate that ran pushed onto `ran`), over
+/// the plane's projected body, with the incremental scan KEYED ON THE VIEW'S SESSION, bound to the
+/// caller principal and the hook generation exactly as the engine's was
+/// ([`IncrementalScan::derive_session_key_octets`]), and each clearance bound to the container
+/// ([`clearance_of`]). A request whose view names no session, or
 /// a node that did not opt in, screens the whole projection every time.
 ///
 /// The hook view is the plane's projection (THE DESIGN Appendix B.9 l.5436-5437, Law 0): the
@@ -707,6 +763,7 @@ fn read_projected(projected: Option<&[u8]>) -> Option<busbar_contract::ir::invok
 pub(crate) async fn decide_door(
     gates: &[(u16, ResolvedPolicy)],
     door: &DoorSubject<'_>,
+    ran: &mut Vec<HookApplied>,
 ) -> GateVerdict {
     if gates.is_empty() {
         return GateVerdict::Proceed;
@@ -737,7 +794,7 @@ pub(crate) async fn decide_door(
         incremental,
         session,
     };
-    decide_over(gates, &subject, readable).await
+    decide_over(gates, &subject, readable, ran).await
 }
 
 /// The system slot, flattened — `None` when the request has none, which is what the wire contract

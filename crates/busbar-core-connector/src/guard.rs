@@ -5,6 +5,12 @@
 //! check every outbound connection asks, whatever dials it. It is the only code that decides
 //! whether an address may be dialled.
 //!
+//! * Every name is compared in ONE form (`norm`, `busbar_contract::net::judged_host`): the ASCII
+//!   name or address a URL client dials, UTS #46 to-ASCII and `url`'s IPv4 reading, so
+//!   `ｌｏｃａｌｈｏｓｔ` is `localhost` and `①⑥⑨.②⑤④.①⑥⑨.②⑤④` is `169.254.169.254`. A host that maps
+//!   to nothing, or holds a `%` escape outside an IPv6 zone id (`%6c%6fcalhost`, which a decoding
+//!   client dials as `localhost`), is refused as unjudgeable ([`DEST_NO_HOST`]) before any other
+//!   rule is asked.
 //! * [`Guard::judge_name`] runs BEFORE resolution: a cloud-metadata name, an alternate IPv4
 //!   spelling, a `localhost` name and an IP literal (judged as its own answer) are decided here,
 //!   at once, so a hostile name never reaches a resolver.
@@ -48,11 +54,11 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use busbar_contract::abi::host::conn::connector;
 use busbar_contract::abi::host::service::{
-    DEST_INTERNAL, DEST_METADATA, DEST_NO_ADDRESSES, DEST_OBFUSCATED,
+    DEST_INTERNAL, DEST_METADATA, DEST_NO_ADDRESSES, DEST_NO_HOST, DEST_OBFUSCATED,
 };
 use busbar_contract::net::{
     embedded_ipv4, host_ip, ip_is_cloud_metadata, ip_is_internal, is_alternate_ipv4_encoding,
-    is_link_local_v6, METADATA_HOSTS,
+    is_link_local_v6, judged_host, METADATA_HOSTS,
 };
 use busbar_kernel::config::Destinations;
 
@@ -112,7 +118,9 @@ pub fn is_loopback(addr: IpAddr) -> bool {
 /// The loopback-allowed class's plaintext rule reads loopback through this one predicate.
 #[must_use]
 pub fn names_loopback(host: &str) -> bool {
-    let name = norm(host);
+    let Some(name) = norm(host) else {
+        return false;
+    };
     match host_ip(&name) {
         Some(ip) => is_loopback(ip),
         None => name == "localhost" || name.ends_with(".localhost"),
@@ -177,6 +185,13 @@ impl std::fmt::Display for Refusal {
                 f,
                 "host `{h}` is a loopback name; list it in {ALLOW_KEY} to allow it"
             ),
+            (DEST_NO_HOST, _) => write!(
+                f,
+                "host `{h}` cannot be judged: it maps to no name or address a URL client would \
+                 dial (UTS #46 refuses it, it holds a `%` escape outside an IPv6 zone id, or it \
+                 ends in a number the guard does not read as the IPv4 address a URL client \
+                 dials), so it is refused"
+            ),
             (DEST_OBFUSCATED, _) => write!(
                 f,
                 "host `{h}` is an alternate IPv4 encoding the resolver expands; write the address \
@@ -240,9 +255,22 @@ fn prefix_eq(net: &[u8], addr: &[u8], len: u8) -> bool {
         && (rest == 0 || (net[whole] ^ addr[whole]) & (0xff_u8 << (8 - rest)) == 0)
 }
 
-/// A target name as the guard compares it: unbracketed, lowercased, one trailing dot dropped.
-fn norm(host: &str) -> String {
-    let h = host.trim_start_matches('[').trim_end_matches(']');
+/// THE ONE MAPPING every name the guard compares goes through, a target's and a configured
+/// entry's alike: unbracketed, mapped to the ASCII name or address a URL client dials
+/// (`busbar_contract::net::judged_host`: UTS #46 to-ASCII, held to `url` 2.5.8's IPv4 reading),
+/// lowercased, one trailing dot dropped. An ASCII host, an alternate IPv4 spelling and an IPv6
+/// literal (a zone id included) are what this compared before, byte for byte. `None`: a host that
+/// maps to nothing the guard can judge, refused as such ([`DEST_NO_HOST`]).
+fn norm(host: &str) -> Option<String> {
+    judged_host(host).ok()
+}
+
+/// An `advanced.allow_destinations` entry as [`strict`] reads it: unbracketed, lowercased, one
+/// trailing dot dropped. Not mapped: a name entry must be ASCII letters, digits, `-` and `_`
+/// ([`is_name`]) and an address entry parses as an address, so every entry admitted is ASCII,
+/// which [`norm`] reads as it is written; a non-ASCII entry is refused at boot as before.
+fn fold(entry: &str) -> String {
+    let h = entry.trim_start_matches('[').trim_end_matches(']');
     h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase()
 }
 
@@ -256,10 +284,13 @@ fn full(ip: IpAddr) -> u8 {
 }
 
 /// A 1.5.5 list entry (`allow_metadata_hosts`, `blocked_metadata_hosts`), read as 1.5.5 read it:
-/// an address in any literal spelling, else a name. Never refused (their 1.5.5 validation runs at
-/// configuration time).
+/// an address in any literal spelling, else a name, mapped as a target is ([`norm`]) so the two are
+/// compared in one form. Never refused here: their validation runs at configuration time, which
+/// refuses, naming it, every entry this mapping reads as nothing (UTS #46 refuses it, it holds a
+/// `%` outside an IPv6 zone id, or it ends in a number that is no IPv4 address); one that reaches
+/// here anyway names no target the guard admits to judgement, so it is dropped.
 fn legacy(entry: &str) -> Option<Entry> {
-    let e = norm(entry.trim());
+    let e = norm(entry.trim())?;
     if e.is_empty() {
         return None;
     }
@@ -290,7 +321,7 @@ fn strict(i: usize, entry: &str) -> Result<Entry, String> {
     let bad = || {
         format!("{ALLOW_KEY}[{i}]: `{shown}` is not a host, a `*.domain` wildcard, an IP or a CIDR")
     };
-    let e = norm(entry.trim());
+    let e = fold(entry.trim());
     let e = e.as_str();
     if let Some((ip, len)) = e.split_once('/') {
         let ip: IpAddr = ip.trim_end_matches(']').parse().map_err(|_| bad())?;
@@ -354,9 +385,10 @@ impl Metadata {
         let mut by_host: HashMap<String, Vec<Entry>> = HashMap::new();
         for (url, own) in &d.url_allow {
             // The one http(s) URL reader; a URL it cannot read names no host, so carves nothing.
-            if let Ok((_, host, _, _)) = busbar_kernel_egress::trust::net::split_url(url) {
+            let read = busbar_kernel_egress::trust::net::split_url(url).ok();
+            if let Some(host) = read.and_then(|(_, host, _, _)| norm(&host)) {
                 by_host
-                    .entry(norm(&host))
+                    .entry(host)
                     .or_default()
                     .extend(own.iter().filter_map(|e| legacy(e)));
             }
@@ -509,13 +541,17 @@ impl Guard {
         strict: bool,
         reach: bool,
     ) -> Result<Option<IpAddr>, Refusal> {
-        let name = norm(host);
         let refuse = |verdict| {
             Err(Refusal {
                 verdict,
                 host: host.to_owned(),
                 addr: None,
             })
+        };
+        // Every comparison below is of the mapped name: a host no mapping reads is not judged at
+        // all (fail closed), whatever the allowlist or the class.
+        let Some(name) = norm(host) else {
+            return refuse(DEST_NO_HOST);
         };
         let m = self.metadata();
         let allowed = self.allow.iter().any(|e| e.names(&name));
@@ -560,25 +596,10 @@ impl Guard {
     ///
     /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
     pub fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), Refusal> {
-        self.judge_answer_as(host, addrs, class, false)
+        self.judge_answer_with(host, addrs, class, false, false)
     }
 
-    /// [`Guard::judge_answer`], private reach refused whatever the deployment says when `strict`.
-    ///
-    /// # Errors
-    ///
-    /// No address answered ([`DEST_NO_ADDRESSES`]), or the first refused address's [`Refusal`].
-    pub fn judge_answer_as(
-        &self,
-        host: &str,
-        addrs: &[IpAddr],
-        class: u32,
-        strict: bool,
-    ) -> Result<(), Refusal> {
-        self.judge_answer_with(host, addrs, class, strict, false)
-    }
-
-    /// [`Guard::judge_answer_as`] for a destination its need holds a private reach to
+    /// [`Guard::judge_answer`] for a destination its need holds a private reach to
     /// ([`Guard::judge_name_with`]).
     ///
     /// # Errors
@@ -613,7 +634,13 @@ impl Guard {
         strict: bool,
         reach: bool,
     ) -> Result<(), Refusal> {
-        let name = norm(host);
+        let Some(name) = norm(host) else {
+            return Err(Refusal {
+                verdict: DEST_NO_HOST,
+                host: host.to_owned(),
+                addr: Some(addr),
+            });
+        };
         let m = self.metadata();
         let metadata = ip_is_cloud_metadata(&addr);
         // IPv6 LINK-LOCAL (fe80::/10, ARCHITECT PB-100: metadata and link-local are refused on

@@ -13,7 +13,7 @@ x-admin-token: <token>
 Authorization: Bearer <token>
 ```
 
-A missing or wrong credential is `401 unauthorized` (in the same JSON error envelope as every other admin error) on every endpoint. `admin_auth: []` is the explicit open dev posture (anonymous, full authority); external admin modules (SSO/AD) slot into the same chain at compile time. Admin requests deliberately bypass virtual-key governance: the operator credential manages keys, it is not one.
+A missing or wrong credential is `401 unauthorized` (in the same JSON error envelope as every other admin error) on every endpoint. `admin_auth: []` is the explicit open dev posture (anonymous, full authority); external identity providers (SSO/AD, each a `kind: auth` plugin defined under `identity-providers:`) slot into the same chain by name. Admin requests deliberately bypass virtual-key governance: the operator credential manages keys, it is not one.
 
 **Authorization is two scopes** on the authenticated principal, derived from **method + path, never the request body** (a crafted body cannot escalate): `read-only` (reads) and `full` (everything else).
 
@@ -33,12 +33,12 @@ A role may instead (or as well) be granted admin verbs ONE BY ONE with `verbs:` 
 | Class | Budget | Covers |
 |---|---|---|
 | config | 10/min | `POST /config/apply`, `PUT /config/settings`, `POST /config/reload`, `POST /config/rollback`, `PUT /admin-auth`, `DELETE /overlay/{section}`, `POST /plugins/reload`, `POST /plugins/rollback`, `POST /restart`, and the named-definition-map writes `PUT /identity-providers/{name}`, `PATCH /identity-providers/{name}/settings`, `DELETE /identity-providers/{name}`, `PUT /export/{name}`, `PATCH /export/{name}/settings`, `DELETE /export/{name}`, `PUT /tools/{name}`, `PATCH /tools/{name}/settings`, `DELETE /tools/{name}`, `PUT /agents/{name}`, `PATCH /agents/{name}/settings`, `DELETE /agents/{name}`, plus the MCP trust verb `POST /tools/{name}/connect` and the A2A trust verbs `POST /agents/{name}/connect` and `POST /agents/{name}/approve` (the blast-radius set: each rebuilds and swaps the whole App. The trust verb does not rebuild it, but it reaches an operator-named endpoint on the estate and replaces the recorded observation, which can demote a server, so it takes the same 10/min budget rather than the 6x-looser CRUD one; the A2A pair is the same shape: the preview reaches the registered agent's card endpoint, and the approval moves a registration into service) |
-| CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, **and `/config/validate`** (a dry-run never contends with the config budget) |
+| CRUD | 60/min | every other mutation: hooks, keys, groups, cache flush, and the 1.6.0 mutating verbs (`adjust`, `ledger/amend-rate-history`, `plane-record-write`, `commit-upgrade`, `chain-break`, `store-restore`, `reseal-epoch-floor`, `trust/approve`, `trust/revoke`), **and `/config/validate`** (a dry-run never contends with the config budget) |
 | plugin-inspect | 30/min | `POST /plugins/inspect` ONLY. It gets its own dedicated bucket, not the shared CRUD budget (decompressing + parsing an attacker-controlled archive is a heavier, mutation-like cost profile per call than an ordinary CRUD mutation, and a fleet-wide upgrade preview would otherwise burn the same 60/min an operator needs for real mutating work in that window) and not unmetered either, despite being `read-only` scope |
 
 Over-budget is `429 rate_limited` with a **`Retry-After: 60`** header, and the event is audited. Reads are unmetered.
 
-**The static admin token is one shared principal.** Per-principal budgeting is only as isolating as the principal identity, and the built-in `admin-tokens` module ([GetBusbar/busbar-auth-admin-tokens](https://github.com/GetBusbar/busbar-auth-admin-tokens) `auth-admin-tokens/src/lib.rs:31,87`, linked into the default build at a pinned rev) maps *every* successful static-token authentication, regardless of which holder presented it, to the same constant principal id, `"admin"`. So if you hand the one static token to busbar-ui, your CI, your Terraform, and an operator's `curl`, they all collapse onto that single principal and **share one bucket per class** (10/min config-mutation, 60/min CRUD, 30/min plugin-inspect): a script hammering one of them can 429 the others, and the two are indistinguishable from the response alone. Failed attempts also spend budget (deliberate, anti-enumeration), which sharpens this. If you need per-caller isolation and attribution, don't fan the static token out to multiple automations. Authenticate them through a **role-bound external admin module** instead (OIDC/SSO/AD; see `admin_auth:` above and `auth.role_bindings.<provider>`). Role-carrying principals from an external module get distinct principal ids and therefore distinct rate buckets.
+**The static admin token is one shared principal.** Per-principal budgeting is only as isolating as the principal identity, and the built-in `admin-tokens` module ([GetBusbar/busbar-auth-admin-tokens](https://github.com/GetBusbar/busbar-auth-admin-tokens), linked into the default build at a pinned rev) maps *every* successful static-token authentication, regardless of which holder presented it, to the same constant principal id, `"admin"`. So if you hand the one static token to busbar-ui, your CI, your Terraform, and an operator's `curl`, they all collapse onto that single principal and **share one bucket per class** (10/min config-mutation, 60/min CRUD, 30/min plugin-inspect): a script hammering one of them can 429 the others, and the two are indistinguishable from the response alone. Failed attempts also spend budget (deliberate, anti-enumeration), which sharpens this. If you need per-caller isolation and attribution, don't fan the static token out to multiple automations. Authenticate them through a **role-bound external admin module** instead (OIDC/SSO/AD; see `admin_auth:` above and `auth.role_bindings.<provider>`). Role-carrying principals from an external module get distinct principal ids and therefore distinct rate buckets.
 
 ## The error contract
 
@@ -57,6 +57,7 @@ Every `/api/v1/admin` error (including 401, 404 on an unmatched path, and 405 on
 | `invalid_request` | 400 | Malformed body, bad parameter, malformed `If-Match`, or a foreign pagination cursor |
 | `version_conflict` | 409 | **Retryable**: your `If-Match` is stale, re-read for a fresh ETag and retry |
 | `conflict` | 409 | **Terminal**: the request contradicts server state in a way a retry cannot fix (governance disabled, base-defined hook or group, a group another group still parents on, immutable grant change, in-flight idempotency reservation, lockout guard) |
+| `unpriced_class` | 409 | **Terminal**: a usage read (`GET /usage`, `/groups/{name}/usage`, `/keys/{id}/usage`) hit a billable class or lane the rate card in force names no price for, so the figure cannot be priced (see [configuration.md](configuration.md#per-plane-rate-cards-toolsrate_card-agentsrate_card-streamsrate_card-decisionsrate_card)) |
 | `rate_limited` | 429 | The principal's per-minute mutation budget is spent (`Retry-After: 60`) |
 | `internal` | 500 | An internal failure (details are logged server-side, never returned) |
 | `unavailable` | 503 | The node could not take the request into its administrative loop, or could not record what the operation would do (an administrative write that cannot be journalled is not performed). Retry later |
@@ -104,21 +105,37 @@ The live endpoint requires a booted, authenticated instance. So that tooling can
 There is one administrative OpenAPI document. It is generated from the code and describes every
 operation the build can serve — the 1.6.0 additions included. A node serves it at
 `GET /api/v1/admin/openapi.json` filtered to the planes that node configured, so a node running a
-1.5.5 config describes no `tools`/`agents` operation; the release asset is the full document. Three marks say what a reader cannot
-tell from the path alone (the document explains them itself, under `info.x-busbar-marks`):
+1.5.5 config describes no `tools`/`agents` operation; the release asset is the full document. The
+full document describes 101 operations: the 66 carried from 1.5.5, the 20 the 1.6.0 closed verb
+table adds, and the 15 the MCP and A2A planes contribute. Two marks say what a reader cannot tell
+from the path alone (the document explains them itself, under `info.x-busbar-marks`):
 
 - **`x-busbar-plane: <section>`** — the operation belongs to a plane (`tools`, `agents`) and is
   mounted only on a node whose config carries that `<section>:` block. On any other node its path
   answers `404 not_found`, exactly as a path the surface has never had, and the document that node
   serves leaves the operation out (with every schema only it references).
-- **`x-busbar-since: 1.6.0`** — one of the 26 operations 1.6.0 adds to the closed verb table, answered
-  by the node's administrative loop: the 18 money-governance verbs, the five ledger views and the
-  three audit-chain reads.
-- **`x-busbar-effect-bound: false`** — the verb resolves and runs its gates (scope, rate class, the
-  operator ceremony, dual control) and writes its audit row, but this build binds no effect to it:
-  an admitted call answers `404 not_found`. Such an operation documents no success response.
+- **`x-busbar-since: 1.6.0`** — one of the 20 operations 1.6.0 adds to the closed verb table, answered
+  by the node's administrative loop: the 12 kernel verbs (nine money-governance verbs and three
+  trust verbs), the five ledger views and the three audit-chain reads.
 
 `GET /api/v1/admin/ledger/openapi.json` serves the full document, unfiltered.
+
+The 1.6.0 kernel verbs (each is served; every mutation is audited and spends the CRUD rate budget):
+
+| Operation | Path | Scope | Does |
+| --- | --- | --- | --- |
+| `verify` | `GET /api/v1/admin/verify` | `read-only` | Verify this node's ledger: every sealed checkpoint re-hashes to its body, no node sequence goes backwards, the book is measured against the last checkpoint, and postings reconcile with the previous release's rows. A failed verification is still `200`: `ok` is the answer and `findings` says why |
+| `plane_facts` | `GET /api/v1/admin/plane-facts?plane=` | `read-only` | What a plane this node serves declares about itself (config sections, grant kinds, billable classes, record kinds, operation classes) |
+| `plane_record_write` | `POST /api/v1/admin/plane-record-write` | `full` | Upsert one record, by `(kind, id)`, of a kind the named plane declares. Honors `Idempotency-Key` |
+| `adjust` | `POST /api/v1/admin/adjust` | `full` | Correct a recorded unit's counts (below) |
+| `amend_rate_history` | `POST /api/v1/admin/ledger/amend-rate-history` | `full` | Append a signed, back-dated correction to the dated rate-card history (below) |
+| `commit_upgrade` | `POST /api/v1/admin/commit-upgrade` | `full` | Commit the fleet to the release this node runs; a release this node does not run is refused. Honors `Idempotency-Key` |
+| `chain_break` | `POST /api/v1/admin/chain-break` | `full` | Deliberately break the journal chain (disaster recovery). `204` |
+| `reseal_epoch_floor` | `POST /api/v1/admin/reseal-epoch-floor` | `full` | Reseal the epoch floor after a chain break or restore. `204` |
+| `store_restore` | `POST /api/v1/admin/store-restore` | `full` | Always refused: the configured store has no restore operation (a body without `backup_ref` is `400`; an admitted call is `503 unavailable`). Restore off-node with the store's own tooling |
+| `get_trust` | `GET /api/v1/admin/trust` | `read-only` | Every trust key in the kernel's trust book and its state: what it is approved at and what it was last sighted at |
+| `trust_approve` | `POST /api/v1/admin/trust/approve` | `full` | Approve one trust key at what it was last sighted at. Durable across restart; idempotent |
+| `trust_revoke` | `POST /api/v1/admin/trust/revoke` | `full` | Revoke one trust key: refused until approved again. Durable across restart; idempotent |
 
 The ledger views and audit-chain reads:
 
@@ -157,11 +174,11 @@ that two cards price (a config apply or an earlier correction lands inside it), 
 with no card of its own, is refused `400 invalid_request` and nothing is recorded: split the
 window at the boundary and sign each part.
 
-The closed verb table also declares thirteen money-governance verbs whose effect this release does
-not bind (`verify`, `plane-facts`, `plane-record-write`, `operator-key`, `escrow`, `dual-control`,
-`overdraft-ceiling`, `dispute-max-age`, `commit-upgrade`, `disputes/resolve`, `slices/resolve`,
-`export-keyset`, `approve`). They are not served: each answers exactly what a path the node does not
-have answers (`404 not_found`, no audit row), and the OpenAPI document does not describe them.
+The money-governance verbs the design once named but 1.6.0 does not ship (`set_operator_key`,
+`set_escrow`, `set_dual_control`, `set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`,
+`resolve_slice`, `export_keyset`, `approve`) are not in the closed verb table at all: their paths
+answer exactly what a path the node does not have answers (`404 not_found`, no audit row), and the
+OpenAPI document does not describe them.
 
 These paths are served by the composition root's own loop. A node built without it answers them
 exactly as it answers any other path it does not have — the same `404` envelope, no hint that the
@@ -187,7 +204,7 @@ operation exists elsewhere.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /hooks` | The hook registry: each hook's `kind` (tap/gate), transport, access grants (`prompt`/`user`), `priority`, `on_error`, `timeout_ms`, `settings`, whether it's globally wired, and its SELECTION scope: `groups` (which callers, empty = all) and the stage pair below |
+| `GET /hooks` | The hook registry: each hook's `kind` (tap/gate), transport, access grants (`prompt`/`user`), `priority`, `on_error`, `timeout_ms`, `settings_keys` (key names only, never values), whether it's globally wired, and its SELECTION scope: `groups` (which callers, empty = all) and the stage pair below |
 | `GET /hooks/{name}` | One hook's definition |
 | `GET /hooks/{name}/health` | Best-effort reachability of a forwarding hook's sidecar (a short-timeout connect probe against its configured `settings.url`; `reachable` is `null` for an in-process `kind: hook` plugin with no external endpoint, with a `detail` note). Never fires the hook |
 | `GET /hooks/{name}/schema` | The hook's **self-described settings schema** (the `describe` wire message, proxied verbatim; `{"name", "schema": null}` when the hook doesn't answer) |
@@ -394,6 +411,25 @@ curl -s -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/hooks/compre
 curl -s -X DELETE -H "x-admin-token: $TOK" http://localhost:8081/api/v1/admin/hooks/compress
 ```
 
+### Named-definition maps: `identity-providers`, `export`, `tools`, `agents`
+
+Each top-level named-definition map (`name -> {module, settings, ...}`) has the same five
+operations under its own root. `tools` and `agents` are plane operations (`x-busbar-plane`):
+mounted only on a node whose config carries that section.
+
+| Endpoint | Does |
+|---|---|
+| `GET /<map>` | Every definition in the map. Secrets are never projected (`read-only`) |
+| `GET /<map>/{name}` | One definition; `404` for an unknown name (`read-only`) |
+| `PUT /<map>/{name}` | Create or replace one definition (upsert), persisted to the overlay and live after an atomic rebuild-and-swap. A base-config-defined entry is `409` (edit config.yaml). On `identity-providers`, raising `max_admin_scope` is refused outright. Honors `If-Match` |
+| `PATCH /<map>/{name}/settings` | Replace only the opaque `settings:` bag; every other field is left byte-identical. Honors `If-Match` |
+| `DELETE /<map>/{name}` | Remove one definition; refused `409` while another config section still references it by bare name. Honors `If-Match` |
+
+All of these mutations take the config-class rate budget (see above). The plane trust verbs
+(`POST /tools/{name}/connect`, `GET /tools/{name}/changes`, `GET /tools/{name}/health`,
+`POST /agents/{name}/connect`, `POST /agents/{name}/approve`) are described in the
+[Hooks & plugins](#hooks--plugins) table.
+
 ## Dynamic plugins: install, list, remove, reload
 
 The admin API can push a signed plugin tarball into `plugins.dir` remotely, the same artifact you
@@ -431,11 +467,11 @@ anything absolute or cross-origin rather than fetch it.**
 ```bash
 # Install a signed store plugin tarball (takes effect on the next plugin (re)load)
 curl -s -X POST -H "x-admin-token: $TOK" -H 'content-type: application/json' \
-  -d "{\"file\": \"busbar-store-valkey-1.5.0.tar.gz\",
-       \"tarball_b64\": \"$(base64 < busbar-store-valkey-1.5.0-x86_64-linux.tar.gz | tr -d '\n')\"}" \
+  -d "{\"file\": \"busbar-store-valkey-1.6.0.tar.gz\",
+       \"tarball_b64\": \"$(base64 < busbar-store-valkey-1.6.0-x86_64-linux.tar.gz | tr -d '\n')\"}" \
   http://localhost:8081/api/v1/admin/plugins
-# -> 201 {"file":"busbar-store-valkey-1.5.0.tar.gz","name":"busbar-store-valkey-plugin",
-#         "interface_version":1,"trust":"trusted","version":"1.5.0","publisher":"busbar",
+# -> 201 {"file":"busbar-store-valkey-1.6.0.tar.gz","name":"busbar-store-valkey",
+#         "interface_version":3,"trust":"trusted","version":"1.6.0","publisher":"busbar",
 #         "note":"installed durably in the plugins directory; ..."}
 
 # An UNSIGNED tarball against the strict default posture is refused, nothing written:
@@ -448,7 +484,7 @@ curl -s -H "x-admin-token: $TOK" 'http://localhost:8081/api/v1/admin/plugins?typ
 
 # Remove it
 curl -s -X DELETE -H "x-admin-token: $TOK" \
-  http://localhost:8081/api/v1/admin/plugins/busbar-store-valkey-1.5.0.tar.gz
+  http://localhost:8081/api/v1/admin/plugins/busbar-store-valkey-1.6.0.tar.gz
 ```
 
 ## Example

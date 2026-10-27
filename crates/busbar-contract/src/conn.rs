@@ -339,6 +339,24 @@ pub trait DeclaredConns: Conns {
         Err(ConnError::Refused)
     }
 
+    /// WHETHER `conn`'s DIAL HAS LANDED: the far end took the connect. An open answers with its
+    /// dial still in flight; `ESTABLISH` (`abi::host::conn::connector::service::ESTABLISH`: "dial
+    /// the need's endpoints ... and answer the stream") answers a raw stream only once it has
+    /// landed, so a far end that refuses the connect is the establish's own answer, and a plugin
+    /// trying an endpoint list in order (open; on reject close and try the next) moves on. `Ok`
+    /// once it has landed, [`ConnError::Pending`] with interest under `ticket` while it connects.
+    /// A table whose opens land before they answer (or that cannot tell) answers `Ok`.
+    ///
+    /// # Errors
+    ///
+    /// [`ConnError::Pending`]; the connect's failure ([`ConnError::Refused`],
+    /// [`ConnError::Timeout`], ...), its cause readable through [`DeclaredConns::cause`];
+    /// [`ConnError::NotOwner`], [`ConnError::Closed`].
+    fn landed(&self, caller: InstanceId, conn: ConnId, ticket: Ticket) -> Result<(), ConnError> {
+        let _ = (caller, conn, ticket);
+        Ok(())
+    }
+
     /// Whether `owner`'s `need` is carried over a FRAMED transport (a framer composed over a
     /// carrier, http's kind): its request goes out as one opening message, head words, fields and
     /// body, so the host opens it when the request is whole. A raw byte stream, or a need never
@@ -448,6 +466,16 @@ pub trait DeclaredConns: Conns {
     ) -> Result<(), ConnError> {
         let _ = (owner, need, spec, programs);
         Err(ConnError::Refused)
+    }
+
+    /// THE INSTANCE IS GONE (closed, replaced by a reload, or quarantined): it never crosses
+    /// again, so nothing `owner` declared outlives it. Every need it declared is dropped (an open
+    /// on one is refused as undeclared, and [`DeclaredConns::declared`] reads `None`), every
+    /// connection it still holds is closed, and every member program of its member-program needs
+    /// is retired and killed: the instance that replaces it declares its own. A table that holds
+    /// nothing per instance ignores it. Forgetting an instance twice is forgetting it once.
+    fn forget(&self, owner: InstanceId) {
+        let _ = owner;
     }
 }
 
@@ -889,6 +917,28 @@ impl<T> ConnSlab<T> {
             Entry::Live { state, .. } => Ok(state),
             Entry::Free { .. } => unreachable!("checked live above"),
         }
+    }
+
+    /// Forget `owner`: every need it declared is dropped (an insert or a need check for it is
+    /// refused as undeclared), and the ids of every connection it still holds are answered, live,
+    /// for the host to close through [`ConnSlab::remove`].
+    pub fn forget(&self, owner: InstanceId) -> Vec<ConnId> {
+        self.declared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|(o, _)| *o != owner);
+        self.lock()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                Entry::Live {
+                    generation,
+                    owner: o,
+                    ..
+                } if *o == owner => Some(ConnId((u64::from(*generation) << 32) | (i as u64 + 1))),
+                _ => None,
+            })
+            .collect()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Entry<T>>> {

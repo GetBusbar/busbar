@@ -97,17 +97,10 @@ impl crate::ir::facts::IrFacts for InvokeReq {
     fn shape(&self) -> crate::ir::facts::Shape {
         // Summed over the SAME items a content-granted hook is shown, for the reason
         // `ContentItem::screenable_text` gives: a size signal and a content projection computed by
-        // two functions is a size signal that can drift from what was screened. `system_chars` is
-        // accumulated in THIS walk rather than by a second pass.
-        let mut text_chars = 0usize;
-        let mut system_chars = 0usize;
-        for item in crate::ir::facts::IrFacts::content(self) {
-            let n = item.screenable_text().chars().count();
-            text_chars += n;
-            if matches!(item.slot(), crate::ir::facts::Slot::System) {
-                system_chars += n;
-            }
-        }
+        // two functions is a size signal that can drift from what was screened.
+        let items = crate::ir::facts::IrFacts::content(self);
+        let (text_chars, system_chars) = crate::ir::facts::Shape::counts_over(&items);
+
         crate::ir::facts::Shape {
             // ONE unit of work. An invocation is not a conversation, and reporting `0` would tell a
             // hook the request is empty.

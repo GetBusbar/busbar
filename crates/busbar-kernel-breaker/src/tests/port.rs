@@ -129,7 +129,7 @@ fn the_stated_wait_floors_only_a_transient_fault() {
     );
 }
 
-/// HEALTHY (ARCHITECT row 68): the destination answered, whatever the status. Relayed as a
+/// HEALTHY: the destination answered, whatever the status. Relayed as a
 /// caller's answer is, and recorded as a SUCCESS, never as nothing.
 #[test]
 fn a_healthy_reading_is_a_relayed_success() {

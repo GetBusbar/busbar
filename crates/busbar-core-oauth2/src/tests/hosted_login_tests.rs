@@ -331,34 +331,33 @@ async fn refresh_flag_for(
         .refresh
 }
 
-/// 1.5.5 PARITY CELL (Q128 u27): `GET /auth/token?method=<m>&refresh=1` ROTATES the key whatever
-/// the navigation's `Sec-Fetch-Site`, a cross-site link, a typed URL, a sibling subdomain and a
-/// header-less client included, as 1.5.5 did (v1.5.5 crates/busbar/src/auth/token.rs:324). RED
-/// against the same-origin rule (K3 #20), under which only `same-origin` rotates.
+/// A REFRESH LINK ROTATES ONLY FROM BUSBAR'S OWN PAGE (owner-signed 2026-10-24, M29; K3 #20).
+/// `GET /auth/token?method=<m>&refresh=1` rotates the key only on a `Sec-Fetch-Site: same-origin`
+/// navigation; a cross-site link, a typed or mailed URL, a sibling subdomain and a header-less client
+/// get a plain issue. RED against 1.5.5, which rotated from any origin (v1.5.5
+/// crates/busbar/src/auth/token.rs:324).
 #[tokio::test]
-async fn a_refresh_link_rotates_from_any_origin_as_1_5_5_did() {
+async fn a_refresh_link_rotates_only_from_busbars_own_page() {
     let app = test_app_with_methods(vec![("microsoft", true)]);
     let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app));
-    for site in [
-        Some("cross-site"),
-        None,
-        Some("none"),
-        Some("same-site"),
-        Some("same-origin"),
-    ] {
+    for site in [Some("cross-site"), None, Some("none"), Some("same-site")] {
         assert!(
-            refresh_flag_for(&handle, site).await,
-            "Sec-Fetch-Site {site:?} rotates the key, as 1.5.5 did"
+            !refresh_flag_for(&handle, site).await,
+            "Sec-Fetch-Site {site:?} does not rotate the key"
         );
     }
+    assert!(
+        refresh_flag_for(&handle, Some("same-origin")).await,
+        "busbar's own Refresh link rotates the key"
+    );
 }
 
-/// THE SIGNABLE RULE, held ready (K3 #20): under `needs_same_origin` only a navigation from
+/// THE RULE AGAINST 1.5.5'S (K3 #20): under `needs_same_origin` (shipped, M29) only a navigation from
 /// busbar's own page (`same-origin`) rotates; a cross-site link, a typed or mailed URL (`none`), a
-/// sibling subdomain (`same-site`) or no header at all is a plain issue. Without it every
-/// `refresh=1` rotates, and no navigation without `refresh=1` ever does.
+/// sibling subdomain (`same-site`) or no header at all is a plain issue. 1.5.5 rotated on every
+/// `refresh=1`; no navigation without `refresh=1` ever rotates.
 #[test]
-fn the_same_origin_refresh_rule_is_held_ready_behind_its_const() {
+fn the_same_origin_refresh_rule_against_1_5_5s() {
     for site in [Some("cross-site"), None, Some("none"), Some("same-site")] {
         assert!(!refresh_rotates_under(true, true, site), "{site:?}");
         assert!(refresh_rotates_under(false, true, site), "{site:?}");

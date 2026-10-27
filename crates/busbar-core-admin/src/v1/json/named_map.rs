@@ -409,11 +409,12 @@ async fn apply(
         // Everything below reads config files + the overlay and re-runs the boot pipeline, so it is
         // queued onto `spawn_blocking` — under the mutation guard, off the reactor.
         Ok(txn.read_store(move || {
-            let mut loaded = busbar_kernel::load_config_from_disk(
+            let mut loaded = busbar_kernel::load_config_from_disk_judged(
                 &config_path,
                 Some(&providers_path),
                 false,
                 busbar_kernel::config::EnvSubst::Strict,
+                &*snapshot.root_rules,
             )
             .map_err(AdminError::Validation)?;
             // BASE-CONFIG PROTECTION: an entry declared in `config.yaml` is operator file config and

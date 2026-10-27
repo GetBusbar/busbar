@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A POLICY REFUSAL IS A REFUSAL, NOT A SERVER FAULT (ARCHITECT ruling, policy refusals answer 4xx).
+//! A POLICY REFUSAL IS A REFUSAL, NOT A SERVER FAULT.
 //!
 //! The kernel's default status per refusal class (`plane_driver::class_status`) is what every plane
 //! that states no row of its own answers, and every reason a plane that states rows does not

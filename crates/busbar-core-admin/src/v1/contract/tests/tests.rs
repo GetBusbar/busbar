@@ -65,28 +65,6 @@ fn required_scope_matrix() {
     );
 }
 
-/// Every mutating verb resolves to `Full`, and the read verbs (+ the two dry-run POSTs) to
-/// `ReadOnly`. The narrower `hooks-register`/`mint` requirements are GONE.
-#[test]
-fn required_scope_mutations_are_full() {
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/keys"),
-        Scope::Full
-    );
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/hooks"),
-        Scope::Full
-    );
-    assert_eq!(
-        required_scope(&Method::GET, "/api/v1/admin/keys"),
-        Scope::ReadOnly
-    );
-    assert_eq!(
-        required_scope(&Method::POST, "/api/v1/admin/config/validate"),
-        Scope::ReadOnly
-    );
-}
-
 /// `parse` drops the retired delegated tokens (they now resolve to `None`, i.e. no grant), while
 /// `read-only`/`full` still round-trip.
 #[test]

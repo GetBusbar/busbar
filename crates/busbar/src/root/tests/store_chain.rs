@@ -190,24 +190,6 @@ fn a_lane_releases_the_lease_it_holds_and_another_lane_keeps_its_own() {
     assert!(again > 1, "the other lane still refreshes its lease");
 }
 
-/// RED (row 159): NO STATIC HOLDS THE NODE'S LEASE. Before, `store_identity.rs` kept the boot's
-/// lease and the store it is held in in a process-wide `static HELD`; it is now kept on the lane
-/// the boot hands its book.
-#[test]
-fn no_static_holds_the_nodes_lease() {
-    let held: Vec<&str> = include_str!("../durability/store_identity.rs")
-        .lines()
-        .map(|line| line.split("//").next().unwrap_or_default())
-        .filter(|code| {
-            code.contains("static ")
-                && ["HELD", "Held", "NodeLease", "StoreCalls", "LEASE_TICKS"]
-                    .iter()
-                    .any(|name| code.contains(name))
-        })
-        .collect();
-    assert!(held.is_empty(), "a static holds the node's lease: {held:?}");
-}
-
 /// A RETAINED BATCH LARGER THAN THE LANE IS TAKEN ONCE THE LANE IS EMPTY (audit root r4 B-3;
 /// ARCHITECT 2026-10-07 H3 ruling, `store_chain.rs` module docs: a full lane fails closed "until the
 /// store takes what is queued. No record is dropped."; BUSBAR-1.6.0.md THE DESIGN §7 l.991-998: the

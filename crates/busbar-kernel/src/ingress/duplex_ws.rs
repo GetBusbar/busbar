@@ -10,8 +10,7 @@
 //! The HTTP handshake and the router path that carries it are transport concerns, so they live HERE at
 //! the acceptor — never in the neutral pump, which names no protocol and reads only `Vec<u8>` frames.
 //! [`accept`] takes the axum [`WebSocketUpgrade`] extractor a data route received, and on upgrade hands
-//! the plane the split socket as the frame channel; [`serve`] wires that straight into the pump for a
-//! plane that supplies a [`DuplexPlane`]. A caller that wants the raw channel (to funnel one socket's
+//! the plane the split socket as the frame channel. A caller that wants the raw channel (to funnel one socket's
 //! write side elsewhere, as a proxy topology does) uses [`channel`] on the already-upgraded socket.
 //!
 //! Text and binary WS messages both arrive as `Vec<u8>` frames; control frames (ping/pong/close) are
@@ -19,14 +18,10 @@
 //! message — the plane maps its own wire (text or binary) to bytes at this boundary and the pump stays
 //! framing-agnostic, exactly as its `serve_messages` header describes.
 
-use std::sync::Arc;
-
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use futures::channel::mpsc::{channel as bounded, unbounded, Receiver, UnboundedSender};
 use futures::{SinkExt, StreamExt};
-
-use crate::ingress::byte_duplex::{serve_messages, DuplexPlane};
 
 /// How many inbound frames one accepted socket may hold for a reader that has not taken them yet. The
 /// queue is what stands between a client's write rate and this node's memory: unbounded, every frame a
@@ -186,18 +181,4 @@ pub fn bridge(upgrade: WebSocketUpgrade, pipe: crate::plane_routes::SessionPipe)
                 () = outbound => {}
             }
         })
-}
-
-/// SERVE one inbound WS session on the neutral pump: accept the upgrade, then drive `plane`'s two
-/// callbacks (`classify` + `handle`) over the upgraded socket through
-/// [`serve_messages`](crate::ingress::byte_duplex::serve_messages) until the peer closes. The one-call
-/// path a plane whose whole socket IS its session uses; the HTTP-upgrade boundary and the pump are wired
-/// once, here, so the plane supplies only session logic.
-pub fn serve<P>(upgrade: WebSocketUpgrade, plane: Arc<P>) -> Response
-where
-    P: DuplexPlane,
-{
-    accept(upgrade, move |stream, sink| async move {
-        serve_messages(stream, sink, plane).await;
-    })
 }

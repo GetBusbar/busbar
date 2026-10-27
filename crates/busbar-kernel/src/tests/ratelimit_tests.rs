@@ -68,6 +68,57 @@ fn an_out_of_order_now_cannot_refill_a_spent_budget() {
     );
 }
 
+/// A FORWARD WALL-CLOCK STEP THAT IS CORRECTED MUST NOT PIN THE BUDGET IN THE FUTURE (K5#8).
+///
+/// The clamp made `latest_window` monotone, so a clock stepped a day ahead and then set right left
+/// every subsequent check judged against that one future window: the operator's ten config mutations were
+/// all they got until the clock caught up a day on. Once the corrected clock has read behind the
+/// high-water mark for a whole window, the budget refills as any new window does. On dev the last
+/// check is still judged against the stepped window and is denied.
+#[test]
+fn a_corrected_forward_clock_step_does_not_pin_the_budget_in_the_future() {
+    let l = MutationLimiter::new();
+    let t = 1_000_020; // window-aligned (16_667 * 60)
+    let stepped = t + 86_400;
+    for _ in 0..10 {
+        assert!(l.check("op", MutationClass::Config, stepped).admitted());
+    }
+    assert!(!l.check("op", MutationClass::Config, stepped).admitted());
+    // The step is corrected. For the first window the clamp still holds the spent budget.
+    assert!(
+        !l.check("op", MutationClass::Config, t).admitted(),
+        "a clock that has only just read behind is still judged against the live window"
+    );
+    assert!(!l.check("op", MutationClass::Config, t + 59).admitted());
+    // After a whole window of corrected time the budget refills, and keeps windowing normally.
+    for i in 0..10 {
+        assert!(
+            l.check("op", MutationClass::Config, t + 60).admitted(),
+            "attempt {i}: a corrected forward step still pins the limiter in the future"
+        );
+    }
+    assert!(!l.check("op", MutationClass::Config, t + 60).admitted());
+    assert!(l.check("op", MutationClass::Config, t + 120).admitted());
+}
+
+/// The correction is taken only from a clock that STAYS behind for a whole window. A reading back
+/// on the high-water mark ends the watch, so a clock oscillating between two timelines never
+/// counts as corrected and never refills a spent budget.
+#[test]
+fn a_clock_that_returns_to_the_high_water_mark_restarts_the_watch() {
+    let l = MutationLimiter::new();
+    for _ in 0..10 {
+        assert!(l.check("alice", MutationClass::Config, 600).admitted());
+    }
+    let _ = l.check("mallory", MutationClass::Crud, 0); // behind: the watch starts at 0
+    let _ = l.check("mallory", MutationClass::Crud, 600); // back on the mark: the watch ends
+    assert!(
+        !l.check("alice", MutationClass::Config, 60).admitted(),
+        "a window measured across a return to the high-water mark refilled a spent budget"
+    );
+    assert!(!l.check("alice", MutationClass::Config, 600).admitted());
+}
+
 /// The denial path writes a durable audit record, which is a blocking store round-trip. Only the
 /// FIRST denial per (principal, class, window) may do so, or a client that ignores its 429s
 /// drives unbounded blocking work through the very limiter meant to stop work — and can park the

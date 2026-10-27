@@ -4,7 +4,7 @@
 //! THE HOOK STAGE ON THE DRIVER (`BUSBAR-1.6.0.md` Part 3, section 12, "Hooks"; ARCHITECT K5,
 //! 2026-10-02): the request-stage hooks run at the head of the route leg, after admission, over the
 //! plane's own projection of the unit's request (`project`, pure, ticketless), in the order the
-//! previous release ran them for an LLM unit:
+//! previous release ran them:
 //!
 //! 1. the REWRITE chain (`prompt: rw` gates, the global ones then the pool's): each hook sees the
 //!    request as the previous one left it; a rewrite goes back to the plane (`ProjectIn::rewrite`),
@@ -42,6 +42,7 @@ use busbar_contract::hooks::{
     RoutingDecision, RoutingPolicy, RoutingRequest, TransformOutcome,
 };
 use busbar_contract::signal::{Signal, SignalBag, SignalValue};
+use busbar_kernel_audit::record::{HookApplied, HookHead};
 
 use super::{blob, FarEnd, PlaneUnits};
 use crate::config::PolicyOnError;
@@ -104,6 +105,65 @@ pub trait HookBinder: Send + Sync {
     }
 }
 
+// ── the hook report ─────────────────────────────────────────────────────────────────────────────
+
+/// ONE UNIT'S HOOK FACTS, as its hook stage reports them: every hook that ran for it, in the order
+/// it ran, by the key the deployment configured it under (never the instance serving it), with its
+/// decision head and whether it failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HooksRan {
+    /// The unit the hooks ran for: the record is sealed under that unit's facts.
+    pub unit: busbar_contract::UnitKey,
+    /// The hooks, in the order they ran.
+    pub hooks: Vec<HookApplied>,
+}
+
+/// `// contract:` where the hook stage reports what ran (THE DESIGN §1: the audit record's
+/// "controls (... hooks applied)"), shaped as the egress walk's dispatch report is.
+///
+/// A report never stops a unit: the hooks have already decided by the time it is made, and a
+/// unit's record is sealed with whatever reached it.
+pub trait HookJournal: Send + Sync {
+    /// Record the hooks one unit's stage ran.
+    fn hooks_ran(&self, record: &HooksRan);
+}
+
+/// What one hook's answer did, as its head: a reject stops the unit, a rewrite, an order or a
+/// restrict changes it, anything else passes it.
+fn head_of(decided: &Decided) -> HookHead {
+    match decided {
+        Decided::Reject | Decided::RejectRequest { .. } => HookHead::Veto,
+        Decided::Order { .. } | Decided::Restrict { .. } => HookHead::Modify,
+        Decided::Weighted => HookHead::Pass,
+    }
+}
+
+/// One hook that ran, keyed `hook`.
+fn applied(hook: &str, head: HookHead, failed: bool) -> HookApplied {
+    HookApplied {
+        hook: hook.to_string(),
+        head,
+        failed,
+    }
+}
+
+/// A rewrite's answer as the hook that gave it ran: a REJECT the engine minted for a load-bearing
+/// rewrite that could not answer ([`gated::rewrite_refusal`] keeps it unclamped; a hook's own
+/// status is clamped to 4xx, so it cannot spell it) is that hook's failure.
+fn rewrite_applied(hook: &str, outcome: &TransformOutcome) -> HookApplied {
+    match outcome {
+        TransformOutcome::Rewrite(_) => applied(hook, HookHead::Modify, false),
+        TransformOutcome::Reject { status, message } => applied(
+            hook,
+            HookHead::Veto,
+            *status == REQUIRED_HOOK_UNAVAILABLE_STATUS
+                && message.as_str() == REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
+        ),
+        TransformOutcome::Abstain => applied(hook, HookHead::Pass, false),
+        TransformOutcome::Failed { .. } => applied(hook, HookHead::Pass, true),
+    }
+}
+
 /// What a binder is told of one unit.
 #[derive(Debug, Clone, Copy)]
 pub struct Bind<'a> {
@@ -113,6 +173,9 @@ pub struct Bind<'a> {
     pub principal: Option<&'a str>,
     /// The dialect the unit arrived in: the index into the plane's dialects.
     pub dialect: u32,
+    /// The unit's correlation id, where its host minted one (`DriverSteps::request_span`); the
+    /// binder mints one from the process's counter where it is `None`.
+    pub request_id: Option<u64>,
 }
 
 /// The stage taps a unit binds, by stage.
@@ -387,7 +450,7 @@ impl HookBinder for BoundHooks {
         Some(parts.bind(
             bind,
             (&self.caller, &self.dialects),
-            (self.next_request_id)(),
+            bind.request_id.unwrap_or_else(|| (self.next_request_id)()),
         ))
     }
 
@@ -456,7 +519,11 @@ impl HookBinder for HostHooks {
             },
             *h.requested_signals(),
         )?;
-        Some(parts.bind(bind, (&self.caller, &self.dialects), h.next_request_id()))
+        Some(parts.bind(
+            bind,
+            (&self.caller, &self.dialects),
+            bind.request_id.unwrap_or_else(|| h.next_request_id()),
+        ))
     }
 
     fn denied(&self, dialect: u32, status: u16) {
@@ -526,7 +593,7 @@ pub struct Restrict {
     /// What an empty intersection does.
     pub on_empty: PolicyOnError,
     /// The deciding hook.
-    pub name: &'static str,
+    pub name: std::sync::Arc<str>,
 }
 
 /// THE CONSTRAINT THE HOOKS PUT ON THE WALK.
@@ -537,7 +604,7 @@ pub struct Constraint {
     /// The order the walk tries them in (`None` = the walk's own pick).
     pub order: Option<Vec<usize>>,
     /// The policy that ordered or restricted, when one did.
-    pub policy: Option<&'static str>,
+    pub policy: Option<std::sync::Arc<str>>,
     /// Every restrict the hooks decided, re-applied to a fallback pool's members.
     pub restricts: Vec<Restrict>,
 }
@@ -758,7 +825,7 @@ enum Decided {
     /// This ranked order.
     Order {
         order: Vec<usize>,
-        name: &'static str,
+        name: std::sync::Arc<str>,
     },
     /// No opinion: the walk's own pick.
     Weighted,
@@ -768,12 +835,12 @@ enum Decided {
     RejectRequest {
         status: u16,
         message: String,
-        name: &'static str,
+        name: std::sync::Arc<str>,
     },
     /// Only members carrying one of these tags.
     Restrict {
         tags_any: Vec<String>,
-        name: &'static str,
+        name: std::sync::Arc<str>,
         on_empty: PolicyOnError,
     },
 }
@@ -799,15 +866,16 @@ fn fault_clear(key: &str) {
     }
 }
 
-/// Map a decision: an order normalised against the candidates (an empty one abstains), a reject
-/// clamped and sanitised (for every producer), a restrict carried with its `on_empty`.
-fn map_decision(
-    decision: RoutingDecision,
-    name: &'static str,
+/// Map a ranking hook's answer: an order normalised against the candidates (an empty one
+/// abstains), a reject clamped and sanitised (for every producer), a restrict carried with its
+/// `on_empty`.
+fn map_answer(
+    answer: RoutingDecision,
+    name: std::sync::Arc<str>,
     candidates: &[Candidate<'_>],
     on_empty: &PolicyOnError,
 ) -> Decided {
-    match decision {
+    match answer {
         RoutingDecision::Prefer(order) => {
             let valid: HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
             match RoutingDecision::from_ranked(order, &valid) {
@@ -834,7 +902,7 @@ fn map_decision(
 fn coerce_on_error(
     on_error: &PolicyOnError,
     candidates: &[Candidate<'_>],
-    name: &'static str,
+    name: std::sync::Arc<str>,
 ) -> Decided {
     if failed_call_refuses(on_error) {
         return Decided::Reject;
@@ -874,8 +942,9 @@ impl Asked<'_> {
         (self.hooks.reads)(hook, whose, &self.view.dialect, identity);
     }
 
-    /// One decision of `resolved`, under its deadline, its failure walked down its on-error chain.
-    async fn decide(&self, resolved: &ResolvedPolicy) -> Decided {
+    /// One decision of `resolved`, under its deadline, its failure walked down its on-error chain;
+    /// beside it, the hook as it ran ([`applied`], under its key): `None` when it was not asked.
+    async fn decide(&self, resolved: &ResolvedPolicy) -> (Decided, Option<HookApplied>) {
         let ResolvedPolicy::Policy {
             policy,
             on_error,
@@ -886,8 +955,8 @@ impl Asked<'_> {
             on_empty,
         } = resolved;
         if self.named && self.candidates.is_empty() {
-            // Nothing to rank: the walk's own exhaustion answers.
-            return Decided::Weighted;
+            // Nothing to rank: the walk's own exhaustion answers, and the hook is not asked.
+            return (Decided::Weighted, None);
         }
         let req = self.view.request(
             self.hooks.request_id,
@@ -904,15 +973,17 @@ impl Asked<'_> {
             self.read(policy.name(), req.identity.is_some());
         }
         let key = format!("{}@{}", policy.name(), self.pool);
-        match tokio::time::timeout(
+        let decided = match tokio::time::timeout(
             *timeout,
             policy.decide(&req, self.candidates, &ctx, *timeout),
         )
         .await
         {
-            Ok(Ok(decision)) => {
+            Ok(Ok(answer)) => {
                 fault_clear(&key);
-                map_decision(decision, policy.name(), self.candidates, on_empty)
+                let decided = map_answer(answer, policy.name_arc(), self.candidates, on_empty);
+                let ran = applied(policy.name(), head_of(&decided), false);
+                return (decided, Some(ran));
             }
             Ok(Err(e)) => {
                 if fault_enter(&key) {
@@ -932,7 +1003,7 @@ impl Asked<'_> {
                         "routing policy still failing; applying on_error fallback"
                     );
                 }
-                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name())
+                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name_arc())
                     .await
             }
             Err(_) => {
@@ -953,10 +1024,13 @@ impl Asked<'_> {
                         "routing policy deadline still exceeded; applying on_error fallback"
                     );
                 }
-                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name())
+                self.on_error_chain(on_error_chain, on_error, &req, &ctx, policy.name_arc())
                     .await
             }
-        }
+        };
+        // THE HOOK FAILED: what its on-error chain made of it is its head, and the failure is kept.
+        let ran = applied(policy.name(), head_of(&decided), true);
+        (decided, Some(ran))
     }
 
     /// A failed hook's fallback chain: each link projected per its own grants, the first that
@@ -967,7 +1041,7 @@ impl Asked<'_> {
         terminal: &PolicyOnError,
         req: &RoutingRequest<'_>,
         ctx: &RoutingContext<'_>,
-        failed: &'static str,
+        failed: std::sync::Arc<str>,
     ) -> Decided {
         for fb in chain {
             let fb_req = RoutingRequest {
@@ -993,16 +1067,16 @@ impl Asked<'_> {
             )
             .await
             {
-                Ok(Ok(decision)) => {
+                Ok(Ok(answer)) => {
                     fault_clear(&key);
                     crate::diag_debug!(
                         ON_ERROR_FALLBACK_ANSWERED,
-                        policy = failed,
+                        policy = &failed[..],
                         fallback = fb.policy.name(),
                         pool = self.pool,
                         "on_error fallback hook answered for the failed gate"
                     );
-                    return map_decision(decision, fb.policy.name(), self.candidates, &fb.on_empty);
+                    return map_answer(answer, fb.policy.name_arc(), self.candidates, &fb.on_empty);
                 }
                 Ok(Err(e)) => {
                     if fault_enter(&key) {
@@ -1122,13 +1196,37 @@ fn narrow(keep: &mut HashSet<usize>, facts: &[CandidateFacts], tags_any: &[Strin
 /// apply in its own dialect. These bytes are never empty, so a committed rewrite never crosses as
 /// the absent blob ([`blob`] reads empty bytes as "no rewrite"); a reply naming no messages crosses
 /// as one, and the plane applies it as nothing, as 1.5.5 did
-/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines).
+/// (`tests/rewrite_crossing_tests.rs` holds both halves against the 1.5.5 lines). The reply is
+/// serialized straight from the hook's values, never copied into a JSON tree first; its two keys
+/// keep the order a JSON object of them serializes in.
 fn rewrite_bytes(rw: &busbar_contract::hooks::RewriteReply) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "messages": rw.messages,
-        "tools": rw.tools,
-    }))
+    #[derive(serde::Serialize)]
+    struct Crossing<'a> {
+        messages: &'a [serde_json::Value],
+        tools: &'a [serde_json::Value],
+    }
+    serde_json::to_vec(&Crossing {
+        messages: &rw.messages,
+        tools: &rw.tools,
+    })
     .unwrap_or_default()
+}
+
+/// THE UNIT'S CORRELATION ID on its request span (v1.5.5 `proxy/engine/mod.rs:120` recorded it on
+/// `forward` as a native `u64`): on the `forward` its host opened around the unit when the current
+/// span is that one (status row 173: never a second span of the same name beneath it), else on a
+/// `forward` of the kernel's own, as before a host opened one.
+pub(crate) fn record_request_id(request_id: u64) {
+    let current = tracing::Span::current();
+    let hosts = current
+        .metadata()
+        .is_some_and(|m| m.name() == "forward" && m.fields().field("request_id").is_some());
+    if hosts {
+        current.record("request_id", request_id);
+    } else {
+        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
+        span.record("request_id", request_id);
+    }
 }
 
 #[cfg(test)]
@@ -1361,8 +1459,37 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let _held = d.services.units().staged(unit, Arc::new(stage));
     }
 
-    /// THE REQUEST STAGE, at the head of the route leg (module doc, steps 1-5).
+    /// THE REQUEST STAGE, at the head of the route leg (module doc, steps 1-5), the hooks it ran
+    /// reported to the driver's hook journal however it ended ([`Self::report_hooks`]).
     pub(crate) async fn request_stage(&self, token: &Pass<Route>) -> Result<(), Stopped>
+    where
+        S: super::DriverSteps,
+    {
+        let mut ran = Vec::new();
+        let stage = self.run_request_stage(token, &mut ran).await;
+        self.report_hooks(ran);
+        stage
+    }
+
+    /// THE HOOKS ONE UNIT RAN, in the order they ran, reported to the driver's hook journal under
+    /// the unit's key. A unit that ran none reports nothing: its record names none.
+    pub(crate) fn report_hooks(&self, hooks: Vec<HookApplied>) {
+        let Some(journal) = self.driver.hook_journal.as_ref() else {
+            return;
+        };
+        if hooks.is_empty() {
+            return;
+        }
+        let unit = busbar_contract::UnitKey::new(self.lock().unit);
+        journal.hooks_ran(&HooksRan { unit, hooks });
+    }
+
+    /// [`Self::request_stage`], each hook that ran pushed onto `ran` as it answered.
+    async fn run_request_stage(
+        &self,
+        token: &Pass<Route>,
+        ran: &mut Vec<HookApplied>,
+    ) -> Result<(), Stopped>
     where
         S: super::DriverSteps,
     {
@@ -1390,19 +1517,22 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             .principal
             .as_ref()
             .map(|p| p.as_str().to_string());
-        let dialect = self.lock().decoded.as_ref().map_or(0, |d| d.dialect);
+        let (dialect, request_id) = {
+            let st = self.lock();
+            (st.decoded.as_ref().map_or(0, |d| d.dialect), st.request_id)
+        };
         let Some(hooks) = binder.bind(&Bind {
             pool: &walk_pool,
             principal: principal.as_deref(),
             dialect,
+            request_id,
         }) else {
             return Ok(());
         };
         self.lock().hooked_pool.clone_from(&walk_pool);
-        // The unit's correlation id, a native `u64` on its span (never a formatted string), the
-        // same value every hook payload and tap of the unit carries.
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
-        span.record("request_id", hooks.request_id);
+        // The unit's correlation id, a native `u64` on the unit's request span (never a formatted
+        // string): the same value every hook payload and tap of the unit carries.
+        record_request_id(hooks.request_id);
         // A rewrite hook configured for the unit (a global or the pool's: v1.5.5 `:728`) has the
         // plane materialize the request's document BEFORE any hook runs (`:749`): a FAULT is the
         // shared 500 and no hook is invoked.
@@ -1464,13 +1594,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             let outcome = hook.transform(&req, *timeout).await;
             drop(req);
+            ran.push(rewrite_applied(hook.name(), &outcome));
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = rewrite_bytes(&rw);
                     match self.project(Some(&bytes), true) {
                         Ok(next) => {
                             if let Some(body) = &next.rewritten {
-                                self.lock().body = Some(Arc::from(body.as_slice()));
+                                self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
                             }
                             view = next;
                         }
@@ -1522,8 +1653,8 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 &view,
                 (&pool, named),
                 &all,
-                &mut keep,
-                &mut constraint,
+                (&mut keep, &mut constraint),
+                ran,
             )
             .await;
         if let Err(stopped) = decided {
@@ -1546,7 +1677,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             kept.sort_unstable();
             constraint.keep = Some(kept);
         }
-        self.lock().route_policy = constraint.policy;
+        self.lock().route_policy = constraint.policy.clone();
         if constraint != Constraint::default() {
             self.far.constrain(token, constraint);
         }
@@ -1561,10 +1692,10 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         view: &Projection,
         (pool, named): (&str, bool),
         all: &[CandidateFacts],
-        keep: &mut HashSet<usize>,
-        constraint: &mut Constraint,
+        (keep, constraint): (&mut HashSet<usize>, &mut Constraint),
+        ran: &mut Vec<HookApplied>,
     ) -> Result<(), Stopped> {
-        let mut gate_order: Option<(Vec<usize>, &'static str)> = None;
+        let mut gate_order: Option<(Vec<usize>, std::sync::Arc<str>)> = None;
         if !hooks.gates.is_empty() {
             let shown = candidates_of(all, hooks, keep);
             let asked = Asked {
@@ -1574,9 +1705,17 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 candidates: &shown,
                 named,
             };
-            let outcomes: Vec<Decided> =
+            let judged =
                 futures::future::join_all(hooks.gates.iter().map(|(_, gate)| asked.decide(gate)))
                     .await;
+            // Every gate asked ran, in chain order, whichever of them wins below.
+            let outcomes: Vec<Decided> = judged
+                .into_iter()
+                .map(|(decided, hook)| {
+                    ran.extend(hook);
+                    decided
+                })
+                .collect();
             // A REJECT WINS: the first in chain order surfaces.
             for outcome in &outcomes {
                 match outcome {
@@ -1587,14 +1726,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     } => {
                         metrics::counter!(
                             ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => *name,
+                            "policy" => name.to_string(),
                             "pool" => pool.to_string(),
                             "status" => status.to_string(),
                         )
                         .increment(1);
                         crate::diag_debug!(
                             DECISION_GATE_REJECTED,
-                            policy = name,
+                            policy = &name[..],
                             pool = pool,
                             status,
                             message = %message,
@@ -1622,20 +1761,20 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     constraint.restricts.push(Restrict {
                         tags_any: tags_any.clone(),
                         on_empty: on_empty.clone(),
-                        name,
+                        name: Arc::clone(name),
                     });
                     if narrow(keep, all, tags_any) {
                         metrics::counter!(
                             ROUTE_POLICY_SELECTIONS_TOTAL,
-                            "policy" => *name,
+                            "policy" => name.to_string(),
                             "pool" => pool.to_string(),
                         )
                         .increment(1);
-                        constraint.policy = Some(name);
+                        constraint.policy = Some(Arc::clone(name));
                     } else if matches!(on_empty, PolicyOnError::Weighted) {
                         crate::diag_debug!(
                             DECISION_GATE_RESTRICT_WEIGHTED_ESCAPE,
-                            policy = name,
+                            policy = &name[..],
                             pool = pool,
                             "decision gate restrict left no eligible lane; on_empty: weighted \
                              escape — this gate's restriction is skipped"
@@ -1643,14 +1782,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     } else {
                         metrics::counter!(
                             ROUTE_POLICY_REJECTIONS_TOTAL,
-                            "policy" => *name,
+                            "policy" => name.to_string(),
                             "pool" => pool.to_string(),
                             "status" => "503".to_string(),
                         )
                         .increment(1);
                         crate::diag_debug!(
                             DECISION_GATE_RESTRICT_REJECT,
-                            policy = name,
+                            policy = &name[..],
                             pool = pool,
                             "decision gate restrict left no eligible lane (on_empty: reject)"
                         );
@@ -1674,7 +1813,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             if let Some((_, name)) = &gate_order {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
-                    "policy" => *name,
+                    "policy" => name.to_string(),
                     "pool" => pool.to_string(),
                 )
                 .increment(1);
@@ -1696,11 +1835,13 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             candidates: &shown,
             named,
         };
-        match Box::pin(asked.decide(policy)).await {
+        let (decided, hook) = Box::pin(asked.decide(policy)).await;
+        ran.extend(hook);
+        match decided {
             Decided::Order { order, name } => {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
-                    "policy" => name,
+                    "policy" => name.to_string(),
                     "pool" => pool.to_string(),
                 )
                 .increment(1);
@@ -1720,14 +1861,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             } => {
                 metrics::counter!(
                     ROUTE_POLICY_REJECTIONS_TOTAL,
-                    "policy" => name,
+                    "policy" => name.to_string(),
                     "pool" => pool.to_string(),
                     "status" => status.to_string(),
                 )
                 .increment(1);
                 crate::diag_debug!(
                     ROUTING_POLICY_REJECTED,
-                    policy = name,
+                    policy = &name[..],
                     pool = pool,
                     status,
                     message = %message,
@@ -1743,12 +1884,12 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 constraint.restricts.push(Restrict {
                     tags_any: tags_any.clone(),
                     on_empty: on_empty.clone(),
-                    name,
+                    name: Arc::clone(&name),
                 });
                 if narrow(keep, all, &tags_any) {
                     metrics::counter!(
                         ROUTE_POLICY_SELECTIONS_TOTAL,
-                        "policy" => name,
+                        "policy" => name.to_string(),
                         "pool" => pool.to_string(),
                     )
                     .increment(1);
@@ -1757,7 +1898,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 } else if matches!(on_empty, PolicyOnError::Weighted) {
                     crate::diag_debug!(
                         ROUTING_POLICY_RESTRICT_WEIGHTED_ESCAPE,
-                        policy = name,
+                        policy = &name[..],
                         pool = pool,
                         "routing policy restrict left no eligible lane; on_empty: weighted \
                          escape to full-pool SWRR"
@@ -1766,14 +1907,14 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 } else {
                     metrics::counter!(
                         ROUTE_POLICY_REJECTIONS_TOTAL,
-                        "policy" => name,
+                        "policy" => name.to_string(),
                         "pool" => pool.to_string(),
                         "status" => "503".to_string(),
                     )
                     .increment(1);
                     crate::diag_debug!(
                         ROUTING_POLICY_RESTRICT_REJECT,
-                        policy = name,
+                        policy = &name[..],
                         pool = pool,
                         "routing policy restrict left no eligible lane (on_empty: reject)"
                     );
@@ -2030,6 +2171,7 @@ impl SessionStage {
                     pool: &self.pool,
                     principal: self.principal.as_deref(),
                     dialect: self.arrived_in,
+                    request_id: None,
                 })
             })
             .as_ref()

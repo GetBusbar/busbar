@@ -67,7 +67,7 @@ use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::net::{
     extract_normalized_host, host_ip, ip_is_cloud_metadata, ip_is_internal,
-    is_alternate_ipv4_encoding, parse_url, METADATA_HOSTS,
+    is_alternate_ipv4_encoding, judged_host, parse_url, METADATA_HOSTS,
 };
 use busbar_contract::plane_calls::InstanceDecl;
 use busbar_contract::services::{
@@ -207,7 +207,8 @@ impl Host {
                         })
                     })
                     .collect();
-                (norm(name), addrs)
+                // A stated name no mapping reads is never asked: the name arm refuses it first.
+                (norm(name).unwrap_or_else(|| name.to_string()), addrs)
             })
             .collect();
         let rows = v["records"]
@@ -348,7 +349,7 @@ impl Host {
         if let Some(ip) = literal {
             return Ok(vec![ip]);
         }
-        let Some(addrs) = self.resolve.get(&norm(&host)) else {
+        let Some(addrs) = norm(&host).and_then(|name| self.resolve.get(&name)) else {
             return Err((
                 DEST_UNRESOLVABLE,
                 Some(format!("the host's resolver answers no `{host}`")),
@@ -367,10 +368,11 @@ impl Host {
 
 // ── the destination guard at the owner default ────────────────────────────────────────────────
 
-/// A target name as the guard compares it: unbracketed, lowercased, one trailing dot dropped.
-fn norm(host: &str) -> String {
-    let h = host.trim_start_matches('[').trim_end_matches(']');
-    h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase()
+/// A target name as the guard compares it, through the guard's own mapping
+/// (`busbar_contract::net::judged_host`: UTS #46 to-ASCII, held to `url`'s IPv4 reading); `None`, a
+/// host the guard refuses as unjudgeable (`DEST_NO_HOST`).
+fn norm(host: &str) -> Option<String> {
+    judged_host(host).ok()
 }
 
 /// Loopback as the guard reads it: IPv4 `127.0.0.0/8`, IPv6 `::1`, and the IPv4-mapped and
@@ -384,7 +386,9 @@ fn is_loopback(addr: IpAddr) -> bool {
 
 /// A host WRITTEN as loopback: a loopback literal in any spelling, or the `localhost` family.
 fn names_loopback(host: &str) -> bool {
-    let name = norm(host);
+    let Some(name) = norm(host) else {
+        return false;
+    };
     match host_ip(&name) {
         Some(ip) => is_loopback(ip),
         None => name == "localhost" || name.ends_with(".localhost"),
@@ -421,7 +425,7 @@ fn judge_address(addr: IpAddr, class: u32, strict: bool) -> Result<(), u64> {
 /// The name arm, before any resolution: `Some(ip)` for an IP literal (judged as its own answer),
 /// `None` for a name to resolve.
 fn judge_name(host: &str, class: u32, strict: bool) -> Result<Option<IpAddr>, u64> {
-    let name = norm(host);
+    let name = norm(host).ok_or(DEST_NO_HOST)?;
     if METADATA_HOSTS.iter().any(|h| name == *h) {
         return Err(DEST_METADATA);
     }

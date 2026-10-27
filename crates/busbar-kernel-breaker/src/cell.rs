@@ -1,19 +1,32 @@
 //! The per-(pool, destination) circuit-breaker state machine.
 //!
-//! Moved byte-identical from `busbar-core::store::in_memory::breaker` (1.5.5's
-//! `crates/busbar-core/src/store/in_memory/breaker.rs`). The SWRR weighted-selection state and the
-//! striped lifetime counters that lived alongside `BreakerCell` in the source belong to the EGRESS
-//! unit (it owns the pool and picks among members) — they are intentionally not ported here; this
-//! crate owns only the breaker's own fields: state, streak, cooldown, the single-flight probe, the
-//! error counter, and the sliding outcome window.
+//! Ported from 1.5.5's `crates/busbar/src/store/in_memory/breaker.rs`. The SWRR weighted-selection
+//! state and the striped lifetime counters that lived alongside `BreakerCell` in the source belong
+//! to the EGRESS unit (it owns the pool and picks among members) — they are intentionally not ported
+//! here; this crate owns only the breaker's own fields: state, streak, cooldown, the single-flight
+//! probe, the error counter, and the sliding outcome window.
 //!
 //! One structural simplification from the source: 1.5.5 had TWO cell shapes (`LaneState`'s
 //! embedded default-cell fields, and a separate `BreakerCell` for named pools) unified behind a
 //! `BreakerCellAccess` trait so the FSM logic could run against either without duplication. This
 //! unit has exactly one destination-cell shape (every cell, including a lane's default `""` pool,
-//! is a [`BreakerCell`]), so that trait collapses to inherent methods on one struct — the FSM
-//! arithmetic itself (cooldown, jitter, the requested-wait floor, every state transition) is
-//! unchanged.
+//! is a [`BreakerCell`]), so that trait collapses to inherent methods on one struct.
+//!
+//! Where the port differs from the source, deliberately:
+//!
+//! - The jitter seed mixes the caller's `now` in whole seconds, not a wall-clock read in
+//!   nanoseconds: a unit crate owns no clock, and a decision replayed from the same inputs arms the
+//!   same cooldown ([`BreakerCell::compute_cooldown_with_retry_after`]).
+//! - The jitter clamp's floor is capped at the ceiling, so a configuration whose floor would exceed
+//!   its ceiling arms the ceiling instead of panicking `Ord::clamp`.
+//! - [`BreakerCell::record_success`] records a success on a Closed cell with no streak without
+//!   taking the transition lock.
+//! - [`BreakerCfg::bench_below_trip_threshold`] is new: a cell configured without it (a
+//!   single-member cell, with no sibling to shed to) is not benched by a failure below the trip
+//!   threshold; a wait its destination stated is still armed, for as long as it asked.
+//!
+//! Every other piece of arithmetic (the escalation, the jitter span, the requested-wait floor and
+//! its ceiling) and every state transition is the source's.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -32,7 +45,7 @@ const ST_HALF_OPEN: u64 = 2;
 const OUTCOME_WINDOW_CAPACITY: usize = 1024;
 
 /// FNV-1a 64-bit hash constants — used only to decorrelate simultaneous trips' jitter (see
-/// [`compute_cooldown_with_retry_after`]), not for any identity or security property.
+/// [`BreakerCell::compute_cooldown_with_retry_after`]), not for any identity or security property.
 const FNV1A_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
 
@@ -112,7 +125,8 @@ pub struct BreakerCell {
     outcome_window: Mutex<OutcomeWindow>,
     /// Serializes every transition that touches BOTH `breaker_state` and `cooldown_until` as a
     /// pair (trip, close, the Open→HalfOpen probe acquire). The hot read path
-    /// ([`breaker_verdict`]) does not take this lock; only the comparatively rare transitions do.
+    /// ([`BreakerCell::verdict`]) does not take this lock; only the comparatively rare transitions
+    /// do.
     transition_lock: Mutex<()>,
 }
 
@@ -227,6 +241,45 @@ pub struct CellSnapshot {
     pub err: u64,
 }
 
+impl CellSnapshot {
+    /// The verdict a cell [`BreakerCell::restore`]d from this snapshot would give at `now`, read
+    /// without building one. A snapshot taken mid-probe reads as Open, as `restore` stores it.
+    pub fn verdict(&self, now: u64) -> BreakerVerdict {
+        let state = if self.state == ST_HALF_OPEN {
+            ST_OPEN
+        } else {
+            self.state
+        };
+        decode(state, self.cooldown_until, now)
+    }
+}
+
+/// A cell's verdict from its state and cooldown, the one decoding [`BreakerCell::verdict`] and
+/// [`CellSnapshot::verdict`] share.
+fn decode(state: u64, until: u64, now: u64) -> BreakerVerdict {
+    match state {
+        ST_CLOSED => {
+            if now >= until {
+                BreakerVerdict::Ready
+            } else {
+                BreakerVerdict::Open { until }
+            }
+        }
+        ST_OPEN => {
+            if now >= until {
+                BreakerVerdict::ProbeWinnable
+            } else {
+                BreakerVerdict::Open { until }
+            }
+        }
+        ST_HALF_OPEN => BreakerVerdict::HalfOpen,
+        // Fails SAFE: an unrecognized encoding is never reachable under the atomic-sentinel
+        // invariant this module maintains, but a never-elapsing Open denies admission rather
+        // than panicking the caller.
+        _ => BreakerVerdict::Open { until: u64::MAX },
+    }
+}
+
 /// Public FSM state, independent of any pending soft cooldown detail beyond `until`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BreakerState {
@@ -293,8 +346,8 @@ pub enum ProbeAdmit {
 ///
 /// The arm is decided under the cell's transition lock and reported from there, so a caller never
 /// has to infer it from a state read taken before the call — a read a concurrent transition can
-/// invalidate. Two different callers need two different facts out of the same event: a trip metric
-/// counts a fresh trip, and the probe journal records a reopen.
+/// invalidate: a trip metric counts a fresh trip, and must not count a failed recovery probe's
+/// reopen as one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureEffect {
     /// A Closed cell reached its trip threshold and opened. The logical trip a metric counts.
@@ -314,12 +367,6 @@ impl FailureEffect {
     pub fn tripped(self) -> bool {
         matches!(self, FailureEffect::Tripped)
     }
-
-    /// Whether this reopened a cell whose recovery probe failed — the event the probe journal
-    /// records.
-    pub fn reopened(self) -> bool {
-        matches!(self, FailureEffect::Reopened)
-    }
 }
 
 impl BreakerCell {
@@ -336,27 +383,7 @@ impl BreakerCell {
         // so the cooldown read that follows is at least as fresh as the state.
         let state = self.breaker_state.load(Ordering::Acquire);
         let until = self.cooldown_until.load(Ordering::Acquire);
-        match state {
-            ST_CLOSED => {
-                if now >= until {
-                    BreakerVerdict::Ready
-                } else {
-                    BreakerVerdict::Open { until }
-                }
-            }
-            ST_OPEN => {
-                if now >= until {
-                    BreakerVerdict::ProbeWinnable
-                } else {
-                    BreakerVerdict::Open { until }
-                }
-            }
-            ST_HALF_OPEN => BreakerVerdict::HalfOpen,
-            // Fails SAFE: an unrecognized encoding is never reachable under the atomic-sentinel
-            // invariant this module maintains, but a never-elapsing Open denies admission rather
-            // than panicking the caller.
-            _ => BreakerVerdict::Open { until: u64::MAX },
-        }
+        decode(state, until, now)
     }
 
     /// Side-effect-free readiness: would this cell admit a request right now, without stealing the
@@ -615,8 +642,7 @@ impl BreakerCell {
     ///
     /// Reports which arm it took, decided under the transition lock rather than from a state a
     /// caller read beforehand: between such a read and this call the cell can move, and a caller
-    /// that guessed would journal a probe failure for a fresh trip, or miss one for a reopen it did
-    /// not know it was doing.
+    /// that guessed could count a failed probe's reopen as a fresh trip, or miss a trip.
     ///
     /// [`FailureEffect::tripped`] is the logical Closed→Open trip a trip metric counts. A
     /// HalfOpen→Open reopen (a failed recovery probe) is NOT a fresh trip — the cell was already

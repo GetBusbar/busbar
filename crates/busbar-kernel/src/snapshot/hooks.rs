@@ -12,7 +12,7 @@
 //! `hook="<name>"` label for provenance and multi-hook disambiguation — and the scrape sink reads
 //! them through the host snapshot service (`snapshot.read`, scope `SNAPSHOT_SCOPE_HOOKS`,
 //! `crate::export::scrape`) to answer its own `/metrics/hooks` route. Moved here from the kernel's
-//! `hooks::scrape` (P2 D4; owner law 2026-09-27, ARCHITECT Q-U2-4: `/metrics/hooks` leaves core;
+//! `hooks::scrape` (`/metrics/hooks` leaves core;
 //! the fold is the snapshot service's, the route and the rendering the plugin's). The kernel writes
 //! no exposition text.
 //!

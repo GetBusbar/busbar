@@ -76,7 +76,7 @@ pub struct TransportRow {
     pub claims: &'static [Claim],
 }
 
-/// ONE CLAIM of a transport entry (ARCHITECT 2026-09-27, TRANSPORT-STACK (A)): a scheme the entry
+/// ONE CLAIM of a transport entry: a scheme the entry
 /// answers for, and everything the root reads per scheme. One entry carries one or more claims — a
 /// carrier or a single-wire framer carries one, a framer that frames several wires carries one per
 /// wire — and each claim is registered as a row of its own, pointing at the one entry. How one claim rides another inside the plugin is the plugin's own business and never

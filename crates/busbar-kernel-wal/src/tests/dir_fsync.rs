@@ -149,3 +149,46 @@ fn a_deep_data_directory_has_every_directory_it_creates_fsynced() {
         "one parent fsync per created directory, shallowest first"
     );
 }
+
+/// **CREATING A SEGMENT FSYNCS THE DIRECTORY THAT HOLDS IT; OPENING ONE THAT EXISTS DOES NOT.**
+///
+/// RED before the fix: the factory opened (and so created) `<index>.wal` with no directory fsync,
+/// so a segment rolled into could vanish from the directory after a power loss even though every
+/// write in it had synced. Measured on the factory a durable log uses, for the first segment and
+/// for a roll's next one.
+#[test]
+fn a_created_segment_has_its_holding_directory_fsynced_and_a_reopened_one_does_not() {
+    let scratch = Scratch::new("segdir");
+    let mut factory = DirectoryFactory::new(scratch.path()).expect("the data directory opens");
+    let dir = factory
+        .segment_path(0)
+        .parent()
+        .expect("a segment lives in the data directory")
+        .to_path_buf();
+
+    fault_reset();
+    let _first = factory.open(0).expect("segment 0 is created");
+    assert_eq!(
+        parents_fsynced(),
+        vec![dir.clone()],
+        "creating segment 0 fsyncs its directory"
+    );
+
+    fault_reset();
+    let _next = factory
+        .open(1)
+        .expect("segment 1 is created, as a roll does");
+    assert_eq!(
+        parents_fsynced(),
+        vec![dir.clone()],
+        "creating the next segment fsyncs it too"
+    );
+
+    fault_reset();
+    let _again = factory.open(1).expect("segment 1 reopens");
+    assert!(
+        parents_fsynced().is_empty(),
+        "an existing segment's entry is already durable; reopening it syncs nothing"
+    );
+    assert!(factory.segment_path(1).is_file());
+}

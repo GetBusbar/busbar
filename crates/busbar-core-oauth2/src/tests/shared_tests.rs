@@ -91,18 +91,31 @@ impl OneStore {
             .collect()
     }
 
-    /// Age every record that says when it was written (an `at` member) by `secs`, as if it had
-    /// been written that much earlier.
+    /// Age every record that says when it was written (an `at` member, at any depth) by `secs`,
+    /// as if it had been written that much earlier.
     fn age(&self, secs: u64) {
+        fn older(v: &mut serde_json::Value, secs: u64) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    for (k, member) in map.iter_mut() {
+                        match member.as_u64() {
+                            Some(at) if k == "at" => {
+                                *member = serde_json::json!(at.saturating_sub(secs))
+                            }
+                            _ => older(member, secs),
+                        }
+                    }
+                }
+                serde_json::Value::Array(items) => items.iter_mut().for_each(|i| older(i, secs)),
+                _ => {}
+            }
+        }
         let mut records = self.records.lock().unwrap_or_else(|p| p.into_inner());
         for (_, body) in records.values_mut() {
             let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(body) else {
                 continue;
             };
-            let Some(at) = v.get("at").and_then(serde_json::Value::as_u64) else {
-                continue;
-            };
-            v["at"] = serde_json::json!(at.saturating_sub(secs));
+            older(&mut v, secs);
             *body = serde_json::to_vec(&v).expect("a JSON body serializes");
         }
     }
@@ -734,6 +747,56 @@ async fn a_sweep_past_every_expiry_leaves_no_record_behind() {
     assert!(left.is_empty(), "rows the sweep never reclaims: {left:#?}");
 }
 
+/// How many held-back point reads of the server's `bucket` records are still unspent.
+fn bucket_reads_left(store: &OneStore) -> usize {
+    let bucket = format!("{LABEL}bucket");
+    store
+        .stalls
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter(|(slot, kind, _)| *slot == "get" && *kind == bucket)
+        .count()
+}
+
+/// RED: the sweep judges each client's records on the body its listing already read, and reads a
+/// client's records again only when it has something to reclaim. Ten clients that hold nothing
+/// lapsed cost no point read; one whose code has lapsed is still read and swept. Before the fix
+/// the sweep read every client's records a second time, every minute, on every node.
+#[tokio::test]
+async fn the_sweep_reads_again_only_the_records_it_changes() {
+    let store = OneStore::default();
+    let s = SharedStorage::new(Arc::new(Shared::new(store.calls())));
+    for i in 0..10 {
+        s.put_client(client(&format!("idle-{i}")))
+            .await
+            .expect("registers");
+    }
+    s.put_client(client("lapsing")).await.expect("registers");
+    s.put_authorization_code(code("code-1", "lapsing"))
+        .await
+        .expect("issues a code");
+    // Every point read of a bucket from here spends one of these, so what is left counts them.
+    for _ in 0..32 {
+        store.stall("get", "bucket", std::time::Duration::ZERO);
+    }
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+    let removed = s.sweep_expired(later).await.expect("sweeps");
+    assert_eq!(removed, 1, "the lapsed code is reclaimed");
+    assert_eq!(
+        32 - bucket_reads_left(&store),
+        1,
+        "only the client with something lapsed is read again"
+    );
+    assert!(
+        s.take_authorization_code("code-1")
+            .await
+            .expect("takes")
+            .is_none(),
+        "the lapsed code is gone"
+    );
+}
+
 fn code(code: &str, client_id: &str) -> oauth_as::authorization::AuthorizationCodeRecord {
     oauth_as::authorization::AuthorizationCodeRecord::new(
         code,
@@ -895,5 +958,130 @@ async fn an_idle_self_registered_client_leaves_the_store() {
         store.rows().iter().filter(|(k, _, _)| *k == bucket).count(),
         1,
         "the reclaimed client's bucket is still kept"
+    );
+}
+
+/// The keys of every row of the server's record kind `name` the store still holds.
+fn rows_of(store: &OneStore, name: &str) -> Vec<String> {
+    let k = format!("{LABEL}{name}");
+    store
+        .rows()
+        .into_iter()
+        .filter(|(kind, _, _)| *kind == k)
+        .map(|(_, id, _)| id)
+        .collect()
+}
+
+/// Whether any row of the server's record kind `name` names `word` in its body.
+fn names(store: &OneStore, name: &str, word: &str) -> bool {
+    let k = format!("{LABEL}{name}");
+    store
+        .records
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter(|((kind, _, _), _)| *kind == k)
+        .any(|(_, (_, body))| body.windows(word.len()).any(|w| w == word.as_bytes()))
+}
+
+/// RED (audit core-oauth2 #4): a subject's index entry for a client is reclaimed once that client
+/// no longer holds a consent of the subject, and only then; once no client holds one, nothing of
+/// the subject's index is left. Two clients hold `alice`'s consent; one is withdrawn, then the
+/// other. Before the fix every subject index row was kept forever.
+#[tokio::test]
+async fn a_sweep_reclaims_a_subject_index_its_clients_no_longer_hold() {
+    use oauth_as::store::RevocationWindow;
+    let store = OneStore::default();
+    let shared = Arc::new(Shared::new(store.calls()));
+    let s = SharedStorage::new(Arc::clone(&shared));
+    let now = std::time::SystemTime::now();
+    let window = RevocationWindow {
+        recorded_at: now,
+        until: now + std::time::Duration::from_secs(60),
+    };
+    let consent = |id: &str, client: &str| oauth_as::consent::ConsentRecord {
+        consent_id: id.into(),
+        client_id: oauth_as::client::ClientId::new(client),
+        subject: "alice".into(),
+        scope: oauth_as::scope::ScopeSet::default(),
+        resource: Vec::new(),
+        granted_at: now,
+        authentication: None,
+    };
+    for (id, client_id) in [("c-1", "agent-1"), ("c-2", "agent-2")] {
+        s.put_client(client(client_id)).await.expect("registers");
+        s.put_consent(consent(id, client_id))
+            .await
+            .expect("records the consent");
+    }
+    assert!(names(&store, "ix.subj", "agent-1") && names(&store, "ix.subj", "agent-2"));
+    s.revoke_consent("c-1", window).await.expect("withdraws");
+
+    store.age(crate::shared::INDEX_GRACE_SECS + 1);
+    s.sweep_expired(now).await.expect("sweeps");
+    let held = s.consents_for_subject("alice").await.expect("lists");
+    assert_eq!(held.len(), 1, "the kept consent is still found");
+    assert_eq!(held[0].client_id.as_str(), "agent-2");
+    assert!(
+        !names(&store, "ix.subj", "agent-1"),
+        "the withdrawn client's subject entry is reclaimed"
+    );
+    assert!(
+        names(&store, "ix.subj", "agent-2"),
+        "the holder's subject entry is kept"
+    );
+
+    s.revoke_consent("c-2", window).await.expect("withdraws");
+    store.age(crate::shared::INDEX_GRACE_SECS + crate::shared::RETIRE_AFTER_SECS + 1);
+    let later = now + std::time::Duration::from_secs(3600);
+    s.sweep_expired(later).await.expect("sweeps");
+    s.sweep_expired(later).await.expect("sweeps again");
+    assert_eq!(
+        rows_of(&store, "ix.subj"),
+        Vec::<String>::new(),
+        "no client holds alice's consent: nothing of her index is left"
+    );
+    assert!(s
+        .consents_for_subject("alice")
+        .await
+        .expect("lists")
+        .is_empty());
+}
+
+/// RED (audit core-oauth2, the sweep-abort note): one index row whose client's records cannot be
+/// read is said and skipped; it never ends the pass. A credential index row whose client's bucket
+/// does not decode comes first; a lapsed row of a later index must still be reclaimed. Before the
+/// fix the `?` on that read ended the whole index sweep.
+#[tokio::test]
+async fn one_unreadable_client_never_ends_the_index_sweep() {
+    let store = OneStore::default();
+    let shared = Arc::new(Shared::new(store.calls()));
+    let s = SharedStorage::new(Arc::clone(&shared));
+    store.put(
+        &format!("{LABEL}bucket"),
+        &crate::shared::digest("unreadable"),
+        b"not a bucket",
+    );
+    shared
+        .index("tok", "at-unreadable", "unreadable")
+        .await
+        .expect("indexes");
+    shared
+        .index("rt", "rt-gone", "agent-1")
+        .await
+        .expect("indexes");
+    store.age(crate::shared::INDEX_GRACE_SECS + 1);
+    s.sweep_expired(std::time::SystemTime::now())
+        .await
+        .expect("sweeps");
+    assert_eq!(
+        rows_of(&store, "ix.rt"),
+        Vec::<String>::new(),
+        "a later index is swept past the unreadable client"
+    );
+    assert_eq!(
+        rows_of(&store, "ix.tok").len(),
+        1,
+        "the row it could not judge is kept"
     );
 }

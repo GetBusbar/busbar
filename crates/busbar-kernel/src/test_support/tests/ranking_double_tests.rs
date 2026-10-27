@@ -1,7 +1,7 @@
 //! Tests for the ranking double's rules: it ranks as 1.5.5 ranked (the v1.5.5 ranking natives'
 //! `lib.rs:64-106`; hook behaviour is frozen at 1.5.5), including the keys
 //! 1.5.5 never filtered: an infinity is ordered like any key and signed zeros tie; a `NaN` sorts
-//! after every number (the shipped door's total order, the coordinator's ruling of 2026-10-18). A
+//! after every number (the shipped door's total order). A
 //! direct child module, so `super::` reaches [`rank`](super::rank).
 
 use super::{rank, Strategy};
@@ -87,7 +87,7 @@ fn signed_zeros_tie_and_the_index_decides_as_1_5_5_did() {
 }
 
 /// A `NaN` sorts after every number and ties every absent key, the index deciding between them
-/// (the shipped door's total order, the coordinator's ruling of 2026-10-18): no sort can panic on
+/// (the shipped door's total order): no sort can panic on
 /// it.
 #[test]
 fn a_nan_cost_sorts_after_every_number_and_ties_an_absent_one() {

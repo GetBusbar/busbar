@@ -11,7 +11,6 @@
 use crate::budget::LifetimeBudget;
 use crate::cell::{BreakerCell, BreakerState, FailureEffect, ProbeAdmit};
 use crate::cfg::{BreakerCfg, TripConfig, TripMode};
-use crate::classify::{status_class_from_str, StatusClass};
 use crate::{BreakerUnit, DestinationId};
 
 /// A fixed "now" for the tests that need one but are not ABOUT it — the kernel supplies this value
@@ -22,38 +21,6 @@ const NOW: u64 = 1_700_000_000;
 /// that drive the `Pass<Route>`-taking seam run in busbar-kernel (`src/tests/members/breaker/`),
 /// where the token comes from the kernel's test token helper.
 mod probe;
-
-// ── The class vocabulary the unit still names ────────────────────────────────────────────────────
-
-#[test]
-fn status_class_from_str_maps_known_values_and_rejects_unknown() {
-    assert!(matches!(
-        status_class_from_str("rate_limit"),
-        Some(StatusClass::RateLimit)
-    ));
-    assert!(matches!(
-        status_class_from_str("overloaded"),
-        Some(StatusClass::Overloaded)
-    ));
-    assert!(matches!(
-        status_class_from_str("server_error"),
-        Some(StatusClass::ServerError)
-    ));
-    assert!(matches!(
-        status_class_from_str("timeout"),
-        Some(StatusClass::Timeout)
-    ));
-    assert!(matches!(
-        status_class_from_str("network"),
-        Some(StatusClass::Network)
-    ));
-    assert!(matches!(
-        status_class_from_str("auth"),
-        Some(StatusClass::Auth)
-    ));
-    assert!(status_class_from_str("not_a_class").is_none());
-    assert!(status_class_from_str("").is_none());
-}
 
 // ── Not ported ───────────────────────────────────────────────────────────────────────────────────
 //
@@ -243,13 +210,13 @@ fn the_armed_cooldown_is_a_function_of_the_now_the_caller_supplied() {
     );
 }
 
-// ── The probe journal is a function of what the cell actually did ───────────────────────────────
+// ── A failure reports what it did to the cell ────────────────────────────────────────────────────
 
 /// `record_failure` says which arm it took, so a caller never has to guess from a state it read
 /// beforehand.
 ///
-/// The three answers are distinct because the consequences are: a fresh trip is what the kernel's
-/// trip metric counts, a reopen is what the probe journal records, and a bench is neither.
+/// The answers are distinct because the consequences are: a fresh trip is what the kernel's trip
+/// metric counts, and a reopen (a failed recovery probe) and a bench are not.
 #[test]
 fn record_failure_says_which_arm_it_took() {
     let cfg = consecutive_cfg(100, 10_000);
@@ -421,6 +388,29 @@ fn budget_spend_never_drives_the_counter_negative() {
     assert_eq!(budget.remaining(), Some(0));
     budget.refund();
     assert_eq!(budget.remaining(), Some(1));
+}
+
+/// A negative cap is the unlimited sentinel, whichever constructor it reaches.
+///
+/// `limited` once stored a negative cap as a limited budget: every spend refused it (nothing is
+/// left above zero), while the unit's exhaustion test asked only for exactly zero, so the
+/// destination read as admissible, was selected, and was then refused at the spend.
+#[test]
+fn a_negative_cap_is_unlimited_and_never_an_admissible_budget_that_refuses_every_spend() {
+    let budget = LifetimeBudget::limited(-1);
+    assert_eq!(
+        budget.remaining(),
+        None,
+        "a negative cap is the unlimited sentinel"
+    );
+    assert!(budget.spend(), "an unlimited budget admits every spend");
+
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(41);
+    unit.set_budget(d, -7);
+    assert_eq!(unit.budget_remaining(d), None);
+    assert!(unit.try_admit("", d, NOW).is_ok());
+    assert!(unit.spend_budget(d));
 }
 
 // ── The DEFAULT trip mode's decision table ───────────────────────────────────────────────────────
@@ -702,7 +692,7 @@ fn dropping_armed_guard_releases_probe() {
     let d = DestinationId::new(0);
     let epoch = win_probe(&unit, d);
 
-    unit.release_probe("", d, epoch, NOW + 86_400);
+    unit.release_probe("", d, epoch);
 
     let cell = unit.cell("", d);
     assert!(
@@ -742,7 +732,7 @@ fn stalled_guard_does_not_release_a_newer_probe() {
     assert_ne!(fresh, stale, "a NEW probe was won on the re-opened lane");
 
     // Now the STALE guard A finally drops (late). The owner check makes it a no-op.
-    unit.release_probe("", d, stale, NOW + 86_400);
+    unit.release_probe("", d, stale);
 
     let cell = unit.cell("", d);
     assert!(

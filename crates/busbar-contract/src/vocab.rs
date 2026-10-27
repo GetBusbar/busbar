@@ -76,17 +76,6 @@ pub const REASON_CALLER_ASK_PENDING: &str = "caller_ask_pending";
 /// it, what it named, and that it became task work.
 pub const REASON_TASK_CREATED: &str = "task_created";
 
-/// A GOVERNANCE BUCKET REFUSED THE REQUEST: a rate, concurrency or budget limit the presenting key
-/// is bound to was already at its ceiling, so nothing was dispatched.
-///
-/// Its own word rather than [`REASON_NOT_GRANTED`], because the two send an operator to different
-/// places and the remedies are different objects: `not_granted` means this caller may never reach
-/// this thing and the remedy is a scope, while this means the caller is entitled and has spent its
-/// allowance — the remedy is a quota, or waiting for the window to roll. Flattening them would make
-/// an operator audit the grant matrix for a decision the grant matrix did not take, which is the
-/// exact failure this vocabulary exists to prevent.
-pub const REASON_LIMIT_EXCEEDED: &str = "limit_exceeded";
-
 /// The reason token for a call an operator's HOOK GATE refused (`tools.hooks:` /
 /// `tools.<server>.hooks:`).
 ///
@@ -102,53 +91,6 @@ pub const REASON_HOOK_REJECTED: &str = "hook_rejected";
 /// a principal is a chain with a hole an attacker can choose.
 pub const REASON_MALFORMED: &str = "malformed_params";
 
-// ── THE FAILOVER SEAM'S REASONS ─────────────────────────────────────────────────────────────────
-//
-// `crate::failover` asks one question before every hop on every plane — is there anywhere left, are
-// these two the same deployment, and may this call be made twice. Its refusals are recorded, so its
-// words are audit words and they live here with the rest rather than in the module that decides.
-//
-// THEY STAY PLURAL, for the reason the whole file states: each one sends an operator somewhere
-// different. One is an outage, one is a configuration that does not hold up against the digests
-// busbar computed, and one is busbar declining to repeat something with effects.
-
-/// There is nowhere left to send this request: the pool names no candidate, or every candidate in it
-/// refused admission. ONE word for both, because they are one incident with one operator question
-/// ("what is up with that pool?") — the refusal itself carries the per-candidate reasons in the
-/// shared `Unavailable` taxonomy, so nothing is lost by not spelling them apart here.
-// Named by `crate::failover` (see its header for why that module is not on a dispatch path yet);
-// the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
-// later must find it rather than spell a fourth synonym.
-#[cfg_attr(not(test), allow(dead_code))]
-pub const REASON_NO_UPSTREAM_LEFT: &str = "no_upstream_left";
-
-/// A FAILOVER HOP WAS REFUSED BECAUSE THE PINS DISAGREE. The operator declared two registrations to
-/// be the same deployment, busbar compared the fingerprints it already had, and they are not equal —
-/// so the request was not moved.
-///
-/// Its own word because it indicts neither the caller nor the upstream: it is the one refusal that
-/// says the CONFIGURATION claimed something checkable and the check failed. Distinct from
-/// [`REASON_ARTIFACT_DRIFTED`], which is one upstream changing under an approval; this is two
-/// upstreams that were never the same thing.
-// Named by `crate::failover` (see its header for why that module is not on a dispatch path yet);
-// the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
-// later must find it rather than spell a fourth synonym.
-#[cfg_attr(not(test), allow(dead_code))]
-pub const REASON_NOT_INTERCHANGEABLE: &str = "not_interchangeable";
-
-/// THE SAFETY RULE FIRED. The call already went out, it is not declared repeatable, and busbar
-/// therefore did NOT send it to a second member of the pool.
-///
-/// Recorded rather than folded into a generic failure because it is the one outcome an operator may
-/// actually want to change, and the change is a deliberate one: declare the operation safe to repeat.
-/// A log that called this "upstream failed" would hide the fact that busbar had somewhere else to go
-/// and chose not to use it.
-// Named by `crate::failover` (see its header for why that module is not on a dispatch path yet);
-// the word is defined HERE regardless, because the audit vocabulary is core's and a plane arriving
-// later must find it rather than spell a fourth synonym.
-#[cfg_attr(not(test), allow(dead_code))]
-pub const REASON_NOT_REPEATABLE: &str = "not_repeatable";
-
 // ── THE ORDERED REQUEST VALIDATOR'S REASONS ─────────────────────────────────────────────────────
 //
 // `crate::trust::validate` asks one ordered question before every dispatch on every plane —
@@ -156,7 +98,8 @@ pub const REASON_NOT_REPEATABLE: &str = "not_repeatable";
 // snapshot it was admitted under is still live. Its refusals are recorded, so its words are audit
 // words and they live here with the rest.
 //
-// THEY STAY PLURAL FOR THE SAME REASON THE THREE ABOVE DO. Each one sends an operator somewhere
+// THEY STAY PLURAL, for the reason the whole file states. Each one sends an operator somewhere
+
 // different: re-issue a credential, grant a scope, edit the target's egress list, work a changes
 // queue, retry. A gate that answered "refused" to all five would be the admin log's single word
 // re-invented one layer down.

@@ -1,10 +1,12 @@
 # A2A
 
-Busbar fronts your A2A agents and delegates to the ones you register, over all three of the specification's bindings — JSON-RPC, HTTP+JSON and gRPC — on the one listener. A caller authenticates against Busbar with an audience-bound token, sees only the agents its key grants it, submits work that becomes a durable task, and gets a task id back. Everything a model-plane request already got — the key, its grants, its budget, hooks and the audit chain — applies to an agent task unchanged.
+Busbar fronts your A2A agents and delegates to the ones you register, over all three of the specification's bindings — JSON-RPC, HTTP+JSON and gRPC. A caller authenticates against Busbar with an audience-bound token, sees only the agents its key grants it, submits work that becomes a durable task, and gets a task id back. The key, its grants, its budget, hooks and the audit trail apply to an agent task as they do to a model request.
 
-This page is the operator's reference: what a deployment gets by turning it on, the complete configuration grammar and every boot refusal, how identity is established, the three bindings and their routes, the task lifecycle, push-notification delivery, what a tripped agent returns, and what the plane emits.
+This page is the operator's reference: what a deployment gets by turning it on, the configuration grammar and its refusals, how identity is established, the three bindings and their routes, the task lifecycle, push-notification delivery, what a tripped agent returns, and what the plane emits.
 
-Cross-references: [MCP](/docs/mcp/) (the sibling plane, one vocabulary) · [Circuit breaker](/docs/circuit-breaker/) (the one FSM, on all three planes) · [Configuration](/docs/configuration/) · [Observability](/docs/observability/) · [Hooks](/docs/hooks/).
+The A2A plane is not code in this repository. It is the plane plugin built from GetBusbar/busbar-plane-a2a (crate `plane-a2a`), which the host links; this repository pins a revision of it in `Cargo.toml`. Plane code is cited below as `plane-a2a/src/<file>.rs` in GetBusbar/busbar-plane-a2a; host code as `crates/<crate>/src/<file>.rs`.
+
+Cross-references: [MCP](/docs/mcp/) (the sibling plane, one vocabulary) · [Circuit breaker](/docs/circuit-breaker/) · [Configuration](/docs/configuration/) · [Observability](/docs/observability/) · [Hooks](/docs/hooks/).
 
 ---
 
@@ -14,19 +16,19 @@ The `agents:` section registers external A2A agents. Registering one turns on **
 
 **The receiving side** — Busbar *fronts* those agents. It serves its own agent card, an extended card that lists the agents a caller is entitled to, and the A2A operation surface on three bindings. A caller talks to Busbar; Busbar relays to the registered backend.
 
-**The delegating side** — Busbar reaches out to a registered agent as a client, presenting a leased credential of its own, over the binding that agent's verified card declares.
+**The delegating side** — Busbar reaches each registered agent as a client, at that agent's own `url`, over the binding its verified card declares, presenting busbar's own credential for it where one is configured.
 
-### A deployment with no `agents:` block gains nothing
+### A deployment that registers no agent gains no route
 
-`A2aPlane::from_config` returns `None` when no agent is configured, and that is the whole gate: no registry, no re-verification, no route (`crates/busbar-a2a/src/a2a/plane.rs`). "Is the A2A plane running here?" is answered by the mounted surface rather than by a boolean an operator has to trust.
+An `agents:` section that registers no agent — absent, or carrying only its reserved section-level keys — states no route at all: no claim, no audience, no metadata document, and not busbar's public push callback. The plane's two trust verbs stay stated and answer every name `404`, because none is registered (`plane-a2a/src/door_statement.rs`, `agents_snapshot_spec`).
 
-### And a delegating-only deployment mounts no route either
+### And neither does a deployment with no `public_url:`
 
-The receiving side additionally needs a top-level **`public_url:`**. `A2aPlane::admission()` answers `None` without one (`crates/busbar-a2a/src/a2a/plane.rs:301-307`), `receive::mount` then returns the router untouched (`crates/busbar-a2a/src/a2a/receive.rs:2393-2396`), and `appbuild` claims no path and binds no audience (`crates/busbar-core/src/appbuild.rs:1469-1487`). That is deliberate rather than an oversight: an operator may configure `agents:` for the delegating direction alone, and a deployment that only delegates fronts nothing — it has no resource for a token to be bound to and no metadata document to point a refused caller at. Refusing to boot would make the receiving side's requirement the whole plane's.
+The receiving side additionally needs a top-level **`public_url:`**. Without a readable one the plane claims nothing: a plane with no public base has no audience a token could name and no metadata document to point a refused caller at (`agents_snapshot_spec`). An operator may configure `agents:` for the delegating direction alone; refusing to boot would make the receiving side's requirement the whole plane's.
 
-Concretely, with `agents:` but no `public_url:` you get none of `/a2a`, `/a2a/`, `/a2a/agents/{id}`, the REST routes, `/a2a/push`, `/lf.a2a.v1.A2AService/*`, `/.well-known/agent-card.json` or `/.well-known/oauth-protected-resource/a2a`. The relay, the credential leases, the registry and verify-on-call all still exist.
+Concretely, with `agents:` but no `public_url:` you get none of `/a2a`, `/a2a/`, `/a2a/agents/{agent_id}`, the HTTP+JSON routes, `/lf.a2a.v1.A2AService/*`, `/.well-known/agent-card.json` or `/.well-known/oauth-protected-resource/a2a`.
 
-There is a second consequence worth knowing: the `a2a_inbound` credential kind is conferred **only** when the plane is audience-bound (`crates/busbar-a2a/src/a2a/receive.rs:53-62`), and `inbound::authorize` refuses the empty kind. So even if a route existed, nothing could be admitted through it.
+Busbar's own push callback has one further condition: Busbar registers its callback with a backend only when `public_url` is `https`. A task token in cleartext is refused, with no knob (`plane-a2a/src/mirror.rs`, `callback_url`).
 
 ---
 
@@ -34,47 +36,47 @@ There is a second consequence worth knowing: the `a2a_inbound` credential kind i
 
 ### The `agents:` section
 
-`agents:` is a sibling of `pools:` and `tools:`: a map whose keys are registrations, with the same two words reserved at the section level on every plane (`crates/busbar-plane-a2a/src/a2a/config.rs:327-329`).
+`agents:` is a sibling of `tools:` and the model plane's `pools:`: a map whose keys are registrations, with the same two words reserved at the section level on every plane (`plane-a2a/src/a2a/config.rs`).
 
 | Reserved section key | Type | Combine rule |
 |---|---|---|
 | `agents.hooks` | list of bare hook names | **ADDITIVE** — union with each agent's own `hooks:`, deduped by name |
 | `agents.upstream_credentials` | `own` (`passthrough` refused) | **OVERRIDE** — an entry's own value replaces it |
 
-Naming an agent `hooks` or `upstream_credentials` is refused at parse (`crates/busbar-core/src/plane/config.rs:278-287`, `:312-317`).
+Naming an agent `hooks` or `upstream_credentials` is refused by the shared section parser.
 
 #### `agents.<name>` — one registered agent
 
-`deny_unknown_fields`: a typo'd key fails boot rather than silently un-pinning an agent (`crates/busbar-plane-a2a/src/a2a/config.rs:249`).
+`deny_unknown_fields`: a typo'd key fails boot rather than silently un-pinning an agent.
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `url` | string | **yes** | — | The agent's A2A endpoint. `http://` or `https://`. Never client-visible: callers reach it through Busbar. |
-| `pin` | object | **yes** | — | The out-of-band trust root. Required even when it is `unpinned`. |
-| `pin.mechanism` | `jws_issuer_key` \| `cert_spki` \| `mtls` \| `unpinned` | **yes** | — | |
-| `pin.key` | string | required for the three rooted mechanisms; **refused** for `unpinned` | — | JWS verification key, or a certificate SPKI hash. For `cert_spki` and `mtls` the key is the SHA-256 of the endpoint certificate's whole SubjectPublicKeyInfo, written `sha256/<base64>` (canonical, standard base64 with padding); the plain `<base64>` is accepted as an alias. Anything that is not one 32-byte digest in either spelling is refused when the registration is sealed (the configuration is not loaded). |
-| `pin.fingerprint` | string | no | absent | A canonical card fingerprint you already have. It is recorded and reported (`fingerprint_pinned` on the registration view, `crates/busbar-a2a/src/a2a/admin_view.rs:33`), and it is intent, not an approval: the registration stays pending, and serves nothing, until an operator runs `approve`. `approve` does not compare against it: the body names the fingerprint `connect` reported, and that must be the fingerprint of the card the endpoint is serving at that moment (`crates/busbar-a2a/src/a2a/verbs.rs:671-702`). Absent is the normal first registration: capture the fingerprint at `connect` and approve it. |
+| `url` | string | **yes** | — | The agent's A2A endpoint. `http://` or `https://`, with a host and **no userinfo** (a `user@` or `user:password@` is refused without being repeated; the credential belongs under `upstream_credential:`). Never client-visible: callers reach it through Busbar. |
+| `pin` | object | **yes** | — | The out-of-band trust root. Required even when it is `unpinned`. A kernel-owned trust key: the kernel parses and judges it before the plane sees the section. |
+| `pin.mechanism` | `jws_issuer_key` \| `cert_spki` \| `mtls` \| `unpinned` | **yes** | — | The first three are authenticity roots; `unpinned` is not. Under `cert_spki` and `mtls` the pinned key is the far end's key, which the connector holds every connection to the agent to. |
+| `pin.key` | string | required for the three rooted mechanisms; refused for `unpinned` | — | JWS verification key, or a certificate SPKI hash. |
+| `pin.fingerprint` | string | no | absent | A canonical card fingerprint you already have. It is intent, not an approval: the registration still serves nothing until an operator runs `approve`. Absent is the normal first registration: capture the fingerprint at `connect` and approve it. |
 | `client_identity` | object | **required** when `pin.mechanism: mtls`; optional otherwise; **refused** on an `http://` URL | absent | The certificate Busbar PRESENTS to this endpoint. |
 | `client_identity.cert` | `SecretRef` | yes (within the block) | — | PEM chain, leaf first. |
-| `client_identity.key` | `SecretRef` | yes (within the block) | — | PEM private key (PKCS#8, PKCS#1 or SEC1). **There is deliberately no way to write PEM bytes here** — an inlined private key is a private key in every config dump, every `--validate` output, every admin GET and every version-history row. |
-| `reverify_ttl` | `<n><s\|m\|h\|d>` | no | `5s` (`a2a/config.rs`) | The longest a verification may be reused on the delegation path before the card is re-fetched and re-verified. `0` = strict-live; a larger value is an explicit security downgrade. See [Tool and agent trust](/docs/tool-and-agent-trust/). |
-| `recovery_backoff` | `<n><s\|m\|h\|d>` | no | `15m` (`a2a/config.rs:80`) | How long after a DRIFT a clean answer is disbelieved. The only half of the cadence that is ever held. |
-| `protocol_version` | string | no | the release default | Pinned per registration because the well-known card path moved between versions, and a registration that follows whatever the upstream now claims has no pin at all. |
+| `client_identity.key` | `SecretRef` | yes (within the block) | — | PEM private key (PKCS#8, PKCS#1 or SEC1). **There is deliberately no way to write PEM bytes here** — an inlined private key is a private key in every config dump, every `--validate` output and every admin GET. |
+| `reverify_ttl` | `<n><s\|m\|h\|d>` | no | `5s` | The longest a verification may be reused on the delegation path before the card is re-fetched and re-verified. `0` = strict-live; a larger value is an explicit security downgrade. A kernel-owned trust key. See [Tool and agent trust](/docs/tool-and-agent-trust/). |
+| `recovery_backoff` | `<n><s\|m\|h\|d>` | no | `15m` | How long after a DRIFT a clean answer is disbelieved. The only half of the cadence that is ever held. A kernel-owned trust key. |
+| `protocol_version` | string | no | absent | **Accepted and read by nothing.** The key is kept so an older config still parses; the plane pins nothing on it, and fetches the card at both well-known paths, canonical first, whatever version it names. |
 | `allow_private` | bool | no | `false` | Permits a plaintext `http://` endpoint and a loopback / link-local / RFC1918 / CGNAT address for this one agent. **Never** permits a cloud-metadata address, whatever it says. |
 | `upstream_credentials` | `own` | no; **`passthrough` refused** | | |
-| `upstream_credential` | object | no | absent | Busbar's own credential for this agent, presented on every hop. See below. Absent ⇒ the agent is dialled with no credential. |
-| `egress_scopes` | list of strings | no | `[]` | Accepted and validated (an empty name is refused), and **never enforced**: no relayed hop consults it, and none ever did (the delegation check that would have read it had no caller). What gates a hop is the caller key's own `agent:<id>` grant for the agent it reaches, and the key being live. |
+| `upstream_credential` | object | no | absent | Busbar's own credential for this agent. See below. Absent ⇒ the agent is dialled with no credential. |
+| `egress_scopes` | list of strings | no | `[]` | Judged for shape only (an empty name is refused) and **read by nothing**: no request is ever judged against this list. What gates a hop is the caller key's own `agent:<id>` grant for the agent it reaches. |
 | `hooks` | list of bare names | no | `[]` | Adds to `agents.hooks:`. |
 
-**`upstream_credential`** (`crates/busbar-plane-a2a/src/a2a/creds.rs`), `deny_unknown_fields`, three fields and no more:
+**`upstream_credential`** (`plane-a2a/src/a2a/creds.rs`), `deny_unknown_fields`, three fields and no more:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `secret` | `SecretRef` | **yes** | — | A reference, re-resolved once per lease, off the request path. Never the secret, never the caller's. |
+| `secret` | `SecretRef` | **yes** | — | A reference, never the secret, never the caller's. |
 | `placement` | `bearer` \| `{ header: <name> }` | no | `bearer` | `bearer` sends `Authorization: Bearer <secret>`; `header:` sends the named header carrying the secret verbatim, which is several vendors' `APIKey` scheme. It is an enum precisely so a secret cannot be placed in a query string, which lands in every access log on the path. |
-| `lease_ttl_ms` | u64 milliseconds | **yes** | — | Must be > 0. How long one resolution of `secret` is presented: the host re-resolves it once per lease. |
+| `lease_ttl_ms` | u64 milliseconds | **yes** | — | Must be > 0: a lease that expires at the instant it is minted is a credential that can never be presented. |
 
-The credential is **busbar's own**, never the caller's, and the plane never holds it. The composition root binds it to the auth kind that serves its placement (`bearer`, or `api-key` over the named header) and the kernel presents it through that auth kind's per-request call on every request to the agent: relayed hops, the extended card read through the relay, and busbar's own requests to it (the `ListTasks` refresh, the push-config mirror). The door's public and verification card fetches carry no credential. The `secret` reference is resolved when the configuration is applied and **re-resolved once per lease** (`lease_ttl_ms`) by the host, on a thread of its own and never on a request: a rotated secret is presented from the first hop after the next re-resolution, and the binding is re-opened only when the resolved value changed (`crates/busbar/src/root/door_steps.rs` `upstream_credential_binding`, `refresher`). A secret that does not resolve when the configuration is applied refuses the load, naming the agent. One that **stops resolving** afterwards refuses every hop from the next re-resolution on with `502`, and nothing is dialled: a relayed task hop answers `-32006` "the backend agent did not complete this task" naming the task, which ends `failed`; the extended card read answers `-32006` "the extended agent card could not be fetched"; busbar's own requests to the agent are not made. `lease_ttl_ms` must be greater than zero. It is how long one resolution of the credential is presented before the host resolves it again: a rotation, or a secret that stopped resolving, is seen within one lease. The previous plane minted a lease from the secret on every hop and presented it at once; 1.6.0 resolves the secret off the request path instead (a resolution can block its thread, and no request waits on one), and the lease is its cadence.
+The credential is **busbar's own**, never the caller's, and the plane never holds it: minting and presenting a lease is the host's (`creds.rs`). The plane's Statement lists `settings.*.upstream_credential.secret`, `settings.*.client_identity.cert` and `settings.*.client_identity.key` as the section's secret references, so `--validate` and boot resolve each one (`plane-a2a/src/door_statement.rs`, `SECRET_REFS`). A hop the host refuses because the agent's credential could not be leased is refused and logged as `BUSBAR-7013`. The door's public card fetch carries no credential.
 
 ```yaml
 public_url: https://gateway.example.com     # REQUIRED for the receiving side
@@ -91,74 +93,57 @@ agents:
       secret: { env: PLANNER_API_KEY }
       placement: { header: X-API-Key }
       lease_ttl_ms: 30000
-    egress_scopes: [triage]                 # accepted and validated; no hop reads it
     hooks: [planner-audit]
 ```
 
 ### Boot refusals: the `agents:` section
 
-`validate_agent` is called from **both** the config file's `Deserialize` and the admin write path, so the API refuses exactly what the file refuses (`crates/busbar-plane-a2a/src/a2a/config.rs:370`). This was not always true, and the defect it fixed is instructive: the API used to persist a definition the file would have refused, then drop it at the next rebuild with a log line.
+`validate_agent` is called both when the section is read from the config file and from the host's admin write path, so the API refuses exactly what the file refuses (`plane-a2a/src/a2a/config.rs`). The pin and the two cadence durations are kernel-owned trust keys and are judged by the kernel before the section reaches the validator.
 
-| Refusal | Condition | `a2a/config.rs` |
+| Refusal | Condition | Judged by |
 |---|---|---|
-| `url:` must name the agent's A2A endpoint | empty | `326-328` |
-| `url:` must be an http:// or https:// endpoint | any other scheme; checked at boot so it does not land on a delegation six hours later | `331-337` |
-| rooted `pin.mechanism` with no `pin.key` | a pin with nothing to verify with is not a pin | `341-348` |
-| `pin.mechanism: unpinned` carrying `pin.key` | key material never verified against reads to an operator as protection that does not exist | `349-355` |
-| `pin.mechanism: mtls` with no `client_identity:` | `mtls` means the endpoint is served behind mutual TLS; a client with nothing to present is refused at the handshake with `CertificateRequired`, not at the pin — and it would fail six hours later on a re-verification tick rather than here | `361-368` |
-| `client_identity:` on an `http://` URL | a client certificate is a TLS-handshake object and plaintext has no handshake to present it in | `372-377` |
-| **`upstream_credentials: passthrough`** | at the section level *and* per entry | `303-305`, `383-385` |
-| `upstream_credential.lease_ttl_ms: 0` | a lease that expires at the instant it is minted is a credential that can never be presented | `389-394` |
-| `upstream_credential.placement.header:` empty | | `395-401` |
-| `egress_scopes:` contains an empty name | an empty scope grants nothing and reads as though it grants something | `404-411` |
-| `reverify_ttl:` / `recovery_backoff:` unparseable | | `413-419` |
-| a `hooks:` entry that is not a bare name, or that reaches onto another section | | `plane/config.rs:180-201` |
-| a `hooks:` entry naming a hook not defined in the top-level `hooks:` map | checked over the whole config in `resolve` | `config/mod.rs:4405-4414` |
+| `url:` must name the agent's A2A endpoint | empty | `validate_agent` |
+| `url:` must be an http:// or https:// endpoint | any other scheme, checked at boot rather than at the first delegation | `validate_agent` |
+| `url:` carries a userinfo | `user@` or `user:password@` in the authority | `validate_agent` |
+| rooted `pin.mechanism` with no `pin.key`; `unpinned` carrying `pin.key`; an unparseable `reverify_ttl:` / `recovery_backoff:` | | the kernel (trust keys) |
+| `pin.mechanism: mtls` with no `client_identity:` | a client with nothing to present is refused at the handshake with `CertificateRequired`, not at the pin | `validate_agent` |
+| `client_identity:` on an `http://` URL | plaintext has no handshake to present a certificate in | `validate_agent` |
+| **`upstream_credentials: passthrough`** | per entry, and at the section level | `validate_agent`; the kernel for the section key |
+| `upstream_credential.lease_ttl_ms: 0` | | `validate_agent` |
+| `upstream_credential.placement.header:` empty | | `validate_agent` |
+| `egress_scopes:` contains an empty name | an empty scope grants nothing and reads as though it grants something | `validate_agent` |
+| a dotted `hooks:` reference | the kernel sees every section; the plane's validator sees only its own | the kernel |
 
-**The `passthrough` refusal is the one to understand.** `passthrough` means "forward the CALLER's credential upstream". On the delegation plane that would hand a third-party vendor a working Busbar credential belonging to somebody else — the caller's key authenticated them *to Busbar* and authorised them against *Busbar's* scopes, and it means nothing anywhere else. **Busbar delegates as itself.** The word stays reserved on every plane so the vocabulary is learned once; the value is refused loudly, because accepting it and quietly doing something else is how an operator ends up believing a credential is being forwarded when it is not, or the reverse (`crates/busbar-plane-a2a/src/a2a/config.rs:130-145`).
+**The `passthrough` refusal is the one to understand.** `passthrough` means "forward the CALLER's credential upstream". On the delegation plane that would hand a third-party vendor a working Busbar credential belonging to somebody else — the caller's key authenticated them *to Busbar* and authorised them against *Busbar's* scopes, and it means nothing anywhere else. **Busbar delegates as itself.** The word stays reserved on every plane so the vocabulary is learned once; the value is refused loudly (`REFUSE_PASSTHROUGH_SECTION`, `plane-a2a/src/a2a/config.rs`).
 
-### There is no empty-`auth.chain` boot refusal on this plane
+### Governance is required at runtime
 
-`config_validate`'s **rule set** has no `agents:` arm. The MCP plane refuses to start with `mcp:` present and an empty `auth.chain` (`crates/busbar-core/src/config_validate/mod.rs:945-956`); **A2A has no equivalent check**, and you should not read that as the plane serving anonymously. (`config_validate` does walk `agents:`, but only to collect secret references, exhaustively and with no `..` — `crates/busbar-core/src/config_validate/secret_refs.rs:345-389`.)
+The plane's admission is an audience on a Busbar-minted token plus that key's `agent` grants, and neither exists without governance and an `auth.chain`. A misconfiguration here surfaces as requests being refused at runtime rather than as a process that will not start. Configure `auth.chain` before you turn the plane on.
 
-What enforces it instead is a runtime requirement stated in three places:
+### Failover pools: `agents.pools`
 
-- **Governance is mandatory on the receiving path.** A request arriving with no governed key answers `governance_required()` ahead of the media-type and version gates and before any parse (`crates/busbar-a2a/src/a2a/receive.rs:745-748`), and a deployment with `app.governance` absent is refused again at the meter, before the work rather than after (`receive.rs:953-955`). The plane's whole admission story is an audience on a Busbar-minted token plus that key's `agent` scopes, and neither exists with governance off (`receive.rs:597-598`).
-- **The credential kind is conferred only by an audience-bound mount**, and `inbound::authorize` refuses the empty kind (`receive.rs:53-62`).
-- **An unknown agent id resolves to an empty grant list**, so the ordered gate refuses (`crates/busbar-a2a/src/a2a/inbound.rs:177-186`).
+A pool under the `agents:` section's reserved `pools` sub-key is an A2A failover pool; the top-level `pools:` map belongs to the model plane, and which plane a pool is on is where you wrote it. It tells Busbar that two registrations are **the same agent registered twice**. The host hands the section its own pools, each pool's members in declared order, the first the primary (`plane-a2a/src/door_statement.rs`, `read_agents_section`; `crates/busbar/src/root/door_steps.rs`, `DoorPools`).
 
-The practical difference from MCP: a misconfiguration here surfaces as every request being refused at runtime rather than as a process that will not start. Configure `auth.chain` before you turn the plane on.
-
-### Failover pools: `pools:`
-
-A pool in the one neutral top-level `pools:` map whose members are `agents:` registrations is an A2A failover pool — the pool's kind is **inferred from its members**, so the same grammar in core serves every plane and an operator learns the concept once (`crates/busbar-core/src/failover/mod.rs:113-118`). It tells Busbar that two registrations are **the same agent registered twice**, and the walk runs at the admission of every fresh submission (`crates/busbar-a2a/src/a2a/route.rs:167`).
-
-It is **opt-in and declaring no A2A pool is exactly today's behaviour**.
-
-| Key | Type | Required | Default | Notes |
-|---|---|---|---|---|
-| `members` | list of bare `agents:` names | yes, **≥ 2** | `[]` | ORDERED: the first is the primary, and its approved card fingerprint is the one every other member must match. |
-| `repeatable` | list of operation names | no | `[]` | Operations safe to perform TWICE. |
+It is **opt-in, and declaring no A2A pool is exactly today's behaviour**.
 
 ```yaml
-pools:
-  planner:                        # kind = A2A, inferred from its `agents:` members
-    members: [planner-eu, planner-us]
+agents:
+  planner-eu: { url: https://eu.agents.example }
+  planner-us: { url: https://us.agents.example }
+  pools:
+    planner:
+      members: [planner-eu, planner-us]
 ```
 
-Boot refusals are identical to those for an MCP pool, from the same function (`crates/busbar-core/src/config/mod.rs:1585-1639`): fewer than two members; a member named twice; **a member that is an entry in `tools:` or `models:` rather than `agents:`** — no pool may straddle two planes (a pool's kind is inferred from its members, so they must all be the same kind), and the message names the section the entry really lives in; a member defined nowhere; an empty `repeatable:` entry.
+**Interchangeability is checked, not asserted.** A fresh submission the walk places on a member whose approved card fingerprint is not the pool primary's is refused rather than relayed (`plane-a2a/src/agent_door.rs`), logged as `BUSBAR-7003`. You are asserting only *"these names are the same deployment"*.
 
-**Interchangeability is checked, not asserted.** On this plane the pin the walk compares is the **approved canonical card fingerprint** (`crates/busbar-core/src/failover/mod.rs:180-186`). A request moves between two candidates only when those fingerprints agree; a candidate with nothing approved yet can never match, not even another unapproved one — two unknowns are not one fact. You are asserting only *"these names are the same deployment"*.
-
-**A reroute is not a retry**, and the seam draws the line there. Before the first byte, the request never left Busbar and moving it duplicates nothing: that is the movement the rule allows by default. After a dispatch has gone out, moving it is a genuine repeat of work the backend may already have done, and the rule refuses it unless the operation is named in `repeatable:` (`crates/busbar-core/src/failover/mod.rs:60-80`). There is no `repeatable: all`.
-
-Reroute never means Busbar found somewhere else to send a task on its own. It means the walk chose a different member of a pool you declared, whose fingerprint Busbar verified matches. There is no discovery, and no member you did not write down. It also applies to **fresh submissions only**: an accepted task lives at the member that accepted it, and a verb naming that task is refused rather than moved.
+Reroute never means Busbar found somewhere else to send a task on its own: there is no discovery, and no member you did not write down. It also applies to **fresh submissions only**: a request naming an existing task — or resuming an interrupted one under its `contextId` — goes to the member that holds it (`plane-a2a/src/task_hop.rs`, `holder`).
 
 ---
 
 ## The three bindings, and what is mounted
 
-The A2A specification models three bindings as three interfaces of **one** agent (`supportedInterfaces[]`, not three agents), and Busbar mounts them that way. The plane declares three wire formats, ordered, with JSON-RPC canonical (`crates/busbar-core/src/plane/mod.rs:208-228`).
+The A2A specification models three bindings as three interfaces of **one** agent, and Busbar mounts them that way. The plane declares three dialects, in order, with JSON-RPC first (`plane-a2a/src/door_statement.rs`, `DIALECTS`).
 
 | Route | Method | Auth | What it is |
 |---|---|---|---|
@@ -166,20 +151,19 @@ The A2A specification models three bindings as three interfaces of **one** agent
 | `/.well-known/agent-card.json` | GET | **none** | Busbar's own agent card. |
 | `/a2a` and `/a2a/` | POST | key | The JSON-RPC binding, plane-scoped: the agent is resolved from the caller's catalogue. |
 | `/a2a/agents/{agent_id}` | GET | key | One fronted agent's rewritten card. |
-| `/a2a/agents/{agent_id}` | POST | key | The JSON-RPC binding, addressed to one agent. |
-| `/a2a/message:send`, `/a2a/message:stream`, `/a2a/tasks`, `/a2a/tasks/{id}`, `/a2a/tasks/{id}` (verb), `/a2a/tasks/{id}/pushNotificationConfigs[/{config_id}]`, `/a2a/extendedAgentCard` | per row | key | The HTTP+JSON binding. |
+| `/a2a/agents/{agent_id}/.well-known/agent-card.json` | GET | key | The same card at the protocol's well-known path under the agent's endpoint. |
+| `/a2a/agents/{agent_id}` (and `/a2a/agents/{agent_id}/`) | POST | key | The JSON-RPC binding, addressed to one agent. |
+| `/a2a/message:send`, `/a2a/message:stream`, `/a2a/tasks`, `/a2a/tasks/{id}` (GET, and POST for the colon verbs), `/a2a/tasks/{id}/pushNotificationConfigs[/{config_id}]`, `/a2a/extendedAgentCard` | per row | key | The HTTP+JSON binding. |
 | `/a2a/push` | POST | **none** (own token) | Busbar's own push-notification callback. See [Push notifications](#push-notifications). |
 | `/lf.a2a.v1.A2AService/{method}` | POST | key | The gRPC binding. |
 
-Mounted by `crates/busbar-a2a/src/a2a/receive.rs:2388-2486` and `crates/busbar-a2a/src/a2a/rest.rs:561-628`. `/a2a/` with a trailing slash is a second claim rather than a redirect, because `httpx` — which the official TCK's JSON-RPC client uses — resolves a base URL to it (`receive.rs:2447-2452`).
+The route table is `ROUTES` in `plane-a2a/src/door_statement.rs`; the push callback is a public route on the data listener, declared among the plane's admin routes and served to an agent that holds no Busbar key (`ADMIN_VERBS`, `PUSH_ROUTE`). `/a2a/` with a trailing slash is a second claim rather than a redirect, and each configured agent's `/a2a/agents/<id>/` spelling is claimed exactly, because an A2A client joins relative calls to the card's `url` and arrives there (`agent_slash_claims`).
 
-The gRPC binding is served at the path the vendored `a2a.proto`'s package and service name dictate and **cannot** be served under `/a2a`: a gRPC channel takes an authority, never a path prefix. Busbar therefore claims that path for the plane explicitly, because a claimed path is where the RFC 8707 audience is found — leaving it unclaimed would have admitted a token minted for any other resource (`crates/busbar-core/src/plane/mod.rs:296-311`, `appbuild.rs:1477-1486`).
-
-**gRPC rides the existing listener.** `grpc::serve` is an ordinary axum handler over h2c prior-knowledge, not a `route_service`, so the route carries a normal route-table entry and there is no second socket to bind, no second TLS config and no second port to open in a firewall (`crates/busbar-a2a/src/a2a/grpc.rs:56-85`, `:123-128`). Busbar implements the generated service itself rather than adopting the SDK's server, because that would pull the SDK's own task store and give two answers to "what happened" (`grpc.rs:14-21`).
+The gRPC binding is served at the path the vendored `a2a.proto`'s package and service name dictate and **cannot** be served under `/a2a`: a gRPC client is given an authority, never a path prefix. That path is claimed for the plane explicitly, so the gRPC leg's tokens are audience-checked too (`GRPC_MOUNT_PATH`, `plane-a2a/src/lib.rs`). The line is a transcoding: the call's protobuf request is composed into the v1.0 JSON-RPC request it is, served exactly as the JSON-RPC line serves its own, and the answer transcoded back (`plane-a2a/src/framed.rs`).
 
 ### The eleven operations
 
-Both dialects are accepted and canonicalised to the v1.0 spelling (`crates/busbar-a2a/src/a2a/relay.rs:853-875`):
+Both dialects are accepted. The method spelling decides the dialect: v0.3's are slash paths, v1.0's PascalCase (`plane-a2a/src/local.rs`, `Dialect::of_method`).
 
 | v1.0 | v0.3 | HTTP+JSON row |
 |---|---|---|
@@ -189,27 +173,23 @@ Both dialects are accepted and canonicalised to the v1.0 spelling (`crates/busba
 | `ListTasks` | `tasks/list` | `GET /tasks` |
 | `CancelTask` | `tasks/cancel` | `POST /tasks/{id}:cancel` |
 | `SubscribeToTask` | `tasks/resubscribe` | `POST /tasks/{id}:subscribe` |
-| `CreateTaskPushNotificationConfig` | `tasks/pushNotificationConfig/set` | `POST /tasks/{taskId}/pushNotificationConfigs` |
-| `GetTaskPushNotificationConfig` | `tasks/pushNotificationConfig/get` | `GET /tasks/{taskId}/pushNotificationConfigs/{id}` |
-| `ListTaskPushNotificationConfigs` | `tasks/pushNotificationConfig/list` | `GET /tasks/{taskId}/pushNotificationConfigs` |
-| `DeleteTaskPushNotificationConfig` | `tasks/pushNotificationConfig/delete` | `DELETE /tasks/{taskId}/pushNotificationConfigs/{id}` |
+| `CreateTaskPushNotificationConfig` | `tasks/pushNotificationConfig/set` | `POST /tasks/{id}/pushNotificationConfigs` |
+| `GetTaskPushNotificationConfig` | `tasks/pushNotificationConfig/get` | `GET /tasks/{id}/pushNotificationConfigs/{config_id}` |
+| `ListTaskPushNotificationConfigs` | `tasks/pushNotificationConfig/list` | `GET /tasks/{id}/pushNotificationConfigs` |
+| `DeleteTaskPushNotificationConfig` | `tasks/pushNotificationConfig/delete` | `DELETE /tasks/{id}/pushNotificationConfigs/{config_id}` |
 | `GetExtendedAgentCard` | `agent/getAuthenticatedExtendedCard` | `GET /extendedAgentCard` |
 
-The REST table is at `crates/busbar-a2a/src/a2a/relay.rs:761-844`. There are **exactly two** `POST /tasks/{id}:<verb>` verbs — `cancel` and `subscribe` — and any other suffix, or none, is a `MethodNotFound`-class refusal whose message names the two that exist (`crates/busbar-a2a/src/a2a/rest.rs:101-102`, `:368-396`).
+`ListTasks`, the four push-config verbs, and the refusals of `SubscribeToTask` are answered by Busbar itself from its own task records; every other method is relayed (`plane-a2a/src/local.rs`, `LOCAL_VERB_METHODS` in `lib.rs`).
 
-On the HTTP+JSON binding the request body **is** the JSON-RPC `params` verbatim and the success body **is** the `result` verbatim; `message:stream` and `tasks/{id}:subscribe` answer `text/event-stream` (`rest.rs:10-11`, `:45`).
+On the HTTP lines a request that names no protocol version is a 0.3 request; on the gRPC line it is a 1.0 request, because there is no v0.3 protobuf. The version metadata key is `a2a-version` (`plane-a2a/src/framed.rs`, `DEFAULT_VERSION`).
 
-### How Busbar picks a binding for a backend
+### What Busbar publishes
 
-From the registration's **cached, verified** card: `supportedInterfaces[].protocolBinding` in order, taking the first word Busbar speaks — which is the specification's own preference rule (`crates/busbar-a2a/src/a2a/relay.rs:650-673`). A card declaring no interfaces defaults to JSON-RPC. A card declaring interfaces Busbar speaks **none** of is refused **by name** at the hop rather than silently sent a JSON-RPC envelope by a peer that just said it does not speak one. There is no production "default binding" third answer.
+Busbar's own card advertises every binding the plane serves at its mount — `JSONRPC`, `HTTP+JSON`, `GRPC` — and the gRPC entry's address is the authority of `public_url`. A *fronted agent's* rewritten card advertises **`JSONRPC` only**, because the only thing mounted at `/a2a/agents/{id}` is the JSON-RPC endpoint: an interface entry busbar cannot serve there is dropped, and a card that offers no binding busbar serves there is refused (`plane-a2a/src/served_card.rs`, `SERVABLE_BINDINGS`, `AGENT_ADDRESS_BINDINGS`). The rewrite sweeps every URL whose host is the backend's and refuses a card that still names the backend authority afterwards, so the backend endpoint is never published.
 
-What Busbar **publishes** is narrower than what it speaks. Its own card advertises every binding the plane serves, derived from the plane's wire-format list rather than hand-written, so the card cannot claim a binding the plane does not answer (`crates/busbar-a2a/src/a2a/serve.rs:191-197`). A *fronted agent's* rewritten card advertises **`JSONRPC` only**, because the only thing mounted at `/a2a/agents/{id}` is the JSON-RPC handler and there is no spelling of a gRPC address that means "this one fronted agent" (`serve.rs:216-234`). Its `capabilities` are the agent's own, exactly as its card states them: busbar relays a fronted agent's extended card read to the agent itself, so the served card never promises an extended card (or anything else) the agent's card does not, and a card stating none is served with an empty `capabilities` (`crates/busbar-plane-a2a/src/served_card.rs` `rewrite_card`).
+### A gRPC-specific limit, stated
 
-### Two gRPC-specific limits, stated
-
-- **The gRPC binding cannot be a courier.** It is a typed parse, so a proto field the SDK's conversions do not carry is a field dropped on this binding only. The JSON-RPC binding's verbatim property is untouched (`crates/busbar-a2a/src/a2a/grpc.rs:44-54`).
-- **gRPC has no v0.3 protobuf**, so a request naming no version is a 1.0 request (`grpc.rs:110`). The version metadata key is `a2a-version`.
-- Busbar's own card is narrowed by exactly one member — `capabilities.stateTransitionHistory` — before transcoding to a protobuf `AgentCard`, because the generated ProtoJSON type is `deny_unknown_fields` and the transcode used to fail with `INTERNAL` for every caller of the extended card (`grpc.rs:350`, `:370-381`). The card served over the two HTTP bindings is untouched.
+The gRPC binding is a typed parse, so a proto field the SDK's conversions do not carry is a field dropped on this binding only. Busbar's own card is narrowed to what the protobuf `AgentCard` carries before it is transcoded for `GetExtendedAgentCard` (`framed.rs`, `narrowed_to_the_proto`); the card served over the two HTTP bindings is untouched.
 
 ---
 
@@ -217,109 +197,71 @@ What Busbar **publishes** is narrower than what it speaks. Its own card advertis
 
 ### The audience
 
-The A2A plane's RFC 8707 resource indicator is **`<public_url>/a2a`**, derived rather than configured separately, because a caller reads the audience to ask for off the card Busbar served it — an independently configured audience is a confused-deputy gap that opens the first time somebody edits one of the two (`crates/busbar-a2a/src/a2a/serve.rs:285-287`, `crates/busbar-a2a/src/a2a/plane.rs:295-307`). The metadata document is at `<origin>/.well-known/oauth-protected-resource/a2a`.
-
-The check is the same one the MCP plane uses and it lives in the same place: beside the **mount**, so every path behind the door inherits it, compared for **equality** and never as a prefix (`crates/busbar-core/src/plane/mod.rs:363-375`). Both `/a2a` and `/lf.a2a.v1.A2AService` are claimed for the plane, so the gRPC leg's tokens are audience-checked too. An opaque bearer — one with no readable claims — is refused, for the reason given in [the MCP guide](/docs/mcp/#what-busbar-issues-and-what-it-does-not): the honest answer to "I cannot tell whether this was minted for me" on a confused-deputy defence is refusal (`crates/busbar-core/src/auth/audience.rs:38-47`).
+The A2A plane's RFC 8707 resource indicator is **`<public_url>/a2a`**, derived rather than configured separately, so the audience a caller reads off the card and the one Busbar checks cannot be edited apart. The metadata document is at `<public_url>/.well-known/oauth-protected-resource/a2a` (`agents_snapshot_spec`). Both `/a2a` and `/lf.a2a.v1.A2AService` are claimed for the plane, so the gRPC leg's tokens are audience-checked too. An opaque bearer — one with no readable claims — is refused, for the reason given in [the MCP guide](/docs/mcp/#what-busbar-issues-and-what-it-does-not).
 
 ### The scheme Busbar advertises
 
-Busbar's card advertises exactly one security scheme, **`busbarA2aInbound`**, on the `authorization` header with RFC 7235 scheme `Bearer` (`crates/busbar-a2a/src/a2a/serve.rs:98-101`, `:547`). It is published in the proto `oneof` spelling `{"httpAuthSecurityScheme": {…}}` and the requirement as `[{"schemes": {"busbarA2aInbound": {"list": []}}}]` (`serve.rs:555-589`); the OpenAPI spelling it replaced set no variant and left conformant clients unable to classify it. `bearerFormat` is deliberately absent.
-
-Internally this is a **value** on the existing generalized credential type — `a2a_inbound` — not a new type, table or trait method (`crates/busbar-a2a/src/a2a/inbound.rs:19-25`, `:57`).
+Every card Busbar serves advertises exactly one security scheme, **`busbarA2aInbound`**, on the `authorization` header with RFC 7235 scheme `Bearer`, in the normative proto spelling. The backend's own security schemes describe how to reach the backend and are replaced. The credential kind an inbound caller presents is `a2a_inbound` (`plane-a2a/src/served_card.rs`).
 
 ### What Busbar signs, and what it does not
 
-**Busbar signs the agent cards it serves, and nothing else.** Both its own card and each rewritten fronted-agent card, with the signature attached **last** — after the rewrite and after the backend-leak check — because a signature over anything other than the published bytes is worthless (`crates/busbar-a2a/src/a2a/serve.rs:533-540`). The vendor's own `signatures` member is **dropped** during the rewrite: carrying a signature that cannot verify over a rewritten document is worse than carrying none (`serve.rs:456-457`).
+**Busbar signs the agent cards it serves.** Both its own card and each rewritten fronted-agent card are signed after the rewrite, over the published document. The vendor's own `signatures` member is **dropped** during the rewrite: a signature over a document busbar has changed would not verify.
 
-The signing key is a **domain-separated subkey** derived from the token secret, not the token signing key itself: `SHA-256("busbar/subkey/v1" ‖ token_secret ‖ "a2a/agent-card-signing/v1")` (`crates/busbar-a2a/src/a2a/sign.rs:14-44`, `:65`, `:121`). A served card is largely vendor-authored bytes, so signing it with the credential-minting key would make card signing a signing oracle. The blast radius is stated both ways: a card-key compromise does not reach tokens, and a token-secret compromise takes the card key too. The `kid` is `busbar-a2a-card-{token_kid}`, so a rotation is visible to callers. Algorithm is Ed25519 / `EdDSA`.
+The plane holds no signing key: it reaches the host's signing service, under the domain `a2a/agent-card-signing/v1`, with a `kid` prefixed `busbar-a2a-card-`, and the JWS header names `EdDSA` (`served_card.rs`, `sign_card`; `door_statement.rs`, `CARD_SIGNING_DOMAIN`, `CARD_KID_PREFIX`). A deployment with **no** signing key serves cards **unsigned**; a key that will not sign refuses the card, so a missing signature always means "no key".
 
-A card with **no** signing key configured is served **unsigned** rather than refused; a card that has a key and fails to sign is refused (`serve.rs:59-63`).
-
-**There is no message-level signing of outbound requests.** Nothing on this plane signs a relayed request body. An outbound hop carries a leased credential in a header and nothing else. The only other MAC Busbar mints here is the per-task push-back capability token, which authenticates a backend calling *in*.
+**There is no message-level signing of outbound requests.** The only other signature Busbar makes on this plane is the per-task push-callback token, which authenticates a backend calling *in*.
 
 ### What Busbar verifies
 
-A fetched card's JWS, against the operator's out-of-band issuer key. **The algorithm is decided by the key, never by the header**: `EdDSA` over Ed25519 and nothing else, and a **missing `alg` is refused rather than defaulted** (`crates/busbar-a2a/src/a2a/jws.rs:11-25`, `:249-252`). The issuer key must be supplied as a full SPKI wrapper so the key material itself names its algorithm. At most 8 signatures are considered. A verification answers *which* signature index and *which* `kid` verified, so an operator view can say so.
-
-The order is verify-then-fingerprint, always. A failed verification is recorded as a *failed sighting*, which derives an error state and serves nothing — never as an absence of contact (`crates/busbar-a2a/src/a2a/verify.rs:11-23`). `VerifyRefusal` distinguishes, among others, `TransportPinNotObserved` from `TransportPinMismatch`: "we could not look" and "it matched" must stay apart (`verify.rs:49-90`).
-
-**`unpinned` is registrable and never approvable** — there is no fingerprint to approve (`crates/busbar-a2a/src/a2a/pin.rs:90`, `:217`).
-
-**There is no knob that slows detection or delays a demotion.** Only recovery is held (`recovery_backoff:`), and a test enumerates the knobs and fails if one grows a direction (`verify.rs`). The `reverify_ttl:` you set is the longest a verification may be reused on the delegation path; a stale card is re-verified **on the call**, single-flight and fail-closed, with no background job — see [Tool and agent trust](/docs/tool-and-agent-trust/).
+A fetched card is verified against the operator's out-of-band root before its fingerprint is taken; a failed verification is recorded as a failed sighting, which derives an error state and serves nothing. **`unpinned` is registrable and never approvable** — there is no root, so there is nothing to approve. There is no knob that slows detection or delays a demotion; only recovery is held (`recovery_backoff:`). A stale card is re-verified **on the call** — see [Tool and agent trust](/docs/tool-and-agent-trust/).
 
 ---
 
 ## What a caller can see and call
 
-One scope kind gates this plane, and it gates **both directions** (`crates/busbar-a2a/src/a2a/inbound.rs:64`, `crates/busbar-core/src/plane/mod.rs:156-162`):
+One scope kind gates this plane (`plane-a2a/src/door_statement.rs`, `SCOPE`):
 
 | Scope kind | Grants |
 |---|---|
-| `agent` | "may this key invoke fronted agent X", and "may fronted agent Y delegate to registered agent X" |
+| `agent` | may this key reach fronted agent X |
 
 ```yaml
 allowed_scopes:
   - { kind: agent, value: planner }
 ```
 
-**Enumeration and invocation ask the same question of the same key** (`crates/busbar-a2a/src/a2a/inbound.rs:27-32`). There is one function that produces a dispatch — `inbound::authorize` — so there is no path to a backend that skipped the check (`inbound.rs:141-148`, `:155-213`). Its order is: credential kind → registration lookup → **one ordered gate** (identity, grant, agent trust state, registry generation).
-
 ### The two cards
 
-**The public card** at `/.well-known/agent-card.json` is unauthenticated and therefore carries **no skills and no enumeration of fronted agents** — it cannot ask who is asking (`crates/busbar-a2a/src/a2a/serve.rs:611-621`).
+**The public card** at `/.well-known/agent-card.json` is unauthenticated and therefore carries **no enumeration of fronted agents** — it cannot ask who is asking.
 
-**The extended card** (`GetExtendedAgentCard`, authenticated) is built from the caller's own catalogue and carries **one skill per entitled agent**: skill id = Busbar's `agent_id`, `tags: ["agent"]`, name and description from the vendor's cached card (`serve.rs:786-842`, `crates/busbar-a2a/src/a2a/registry.rs:496-504`). The backends' own `skills[]` are deliberately **not** republished, because upstream skill ids collide across vendors and duplicate ids are refused. Each entry is scanned against its own backend's host and silently dropped, with a warning logged, if it mentions it — the same backend-leak rule the card rewrite enforces.
+**The extended card** (`GetExtendedAgentCard`, authenticated) is built from the caller's own catalogue. On `POST /a2a` it names no agent and is billed against the plane pool (see [Governance](#governance)).
 
 ### Resolving an agent at the plane endpoint
 
-A `POST /a2a` names no agent, so Busbar resolves one from **this caller's catalogue** for the shape of work asked for (`crates/busbar-a2a/src/a2a/receive.rs:248-…`):
-
-| Matches | Answer |
-|---|---|
-| exactly one | dispatch |
-| **zero** | the *same* refusal an unauthorised caller gets — the endpoint is not an inventory oracle |
-| more than one | `InvalidParams`, naming the ids, telling the caller to address `/a2a/agents/{id}` |
-
-`registry::Excluded` enumerates why a registration was not a candidate: `NotTrusted(state)`, `NotInScope`, `CallerNotLive`, `NoEgressGrant`, `SkillNotDeclared(name)`, and a capability-not-declared arm (`crates/busbar-a2a/src/a2a/registry.rs:287-…`); `registry::explain` re-derives the reason for one registration for an operator view.
-
-### Refusal statuses
-
-`InboundRefusal::status()` (`crates/busbar-a2a/src/a2a/inbound.rs:96-103`):
-
-| Refusal | Status |
-|---|---|
-| `WrongCredentialKind` | `401` |
-| `KeyNotLive` | `401` |
-| `NoSuchAgent` | `404` |
-| `NotInScope` | `403` |
-| `NotServing` (agent state) | `503` |
-
-The 404/403 split is a deliberate, documented, bounded existence leak: the catalogue already tells an authorized caller which agents exist, and ids are operator-chosen rather than derived from anything sensitive (`inbound.rs:90-95`). For an **unknown** agent id the grant list is deliberately empty so the trust step refuses and the answer is `404`, preserving 404-before-403 (`inbound.rs:177-186`).
+A `POST /a2a` names no agent, so Busbar resolves one from **this caller's grants**: exactly one reachable entry is dispatched to; several are refused, naming them, telling the caller to address `/a2a/agents/{id}`.
 
 ### The error vocabulary
 
-Every refusal on this plane is a JSON-RPC error whose HTTP status is the one A2A §5.4 binds to it — kept, rather than flattened to `200` (`crates/busbar-a2a/src/a2a/rpcerror.rs:30-36`). `data` is a ProtoJSON **array**, carrying a `google.rpc.ErrorInfo` with `domain: "a2a-protocol.org"` and a `reason` re-derived from Busbar's own table.
+Every refusal on this plane is a JSON-RPC error whose HTTP status is the one A2A §5.4 binds to it, rather than `200`. `data` is a ProtoJSON **array** carrying a `google.rpc.ErrorInfo` with `domain: "a2a-protocol.org"` and the specification's `reason` token for the A2A-specific codes (`plane-a2a/src/lib.rs`, `ERRORS`; `plane-a2a/src/task_identity.rs`, `status_of_code`). On the gRPC line the error ends the call with a status and the `ErrorInfo` in its details.
 
-| Error | Code | HTTP | gRPC | `reason` |
-|---|---|---|---|---|
-| `TaskNotFound` | `-32001` | 404 | `NotFound` | `TASK_NOT_FOUND` |
-| `TaskNotCancelable` | `-32002` | 409 | `FailedPrecondition` | `TASK_NOT_CANCELABLE` |
-| `UnsupportedOperation` | `-32004` | 400 | `Unimplemented` | `UNSUPPORTED_OPERATION` |
-| `ContentTypeNotSupported` | `-32005` | 415 | `InvalidArgument` | `CONTENT_TYPE_NOT_SUPPORTED` |
-| `InvalidAgentResponse` | `-32006` | 502 | `Internal` | `INVALID_AGENT_RESPONSE` |
-| `ExtendedAgentCardNotConfigured` | `-32007` | 400 | `FailedPrecondition` | `EXTENDED_AGENT_CARD_NOT_CONFIGURED` |
-| `VersionNotSupported` | `-32009` | 400 | `Unimplemented` | `VERSION_NOT_SUPPORTED` |
-| `InvalidRequest` | `-32600` | 400 | `InvalidArgument` | — |
-| `MethodNotFound` | `-32601` | 404 | `Unimplemented` | — |
-| `InvalidParams` | `-32602` | 400 | `InvalidArgument` | — |
-| `Internal` | `-32603` | 500 | `Internal` | — |
-| `Parse` | `-32700` | 400 | `InvalidArgument` | — |
+| Error | Code | HTTP | `reason` |
+|---|---|---|---|
+| `TaskNotFound` | `-32001` | 404 | `TASK_NOT_FOUND` |
+| `TaskNotCancelable` | `-32002` | 409 | `TASK_NOT_CANCELABLE` |
+| `PushNotificationNotSupported` | `-32003` | 400 | `PUSH_NOTIFICATION_NOT_SUPPORTED` |
+| `UnsupportedOperation` | `-32004` | 400 | `UNSUPPORTED_OPERATION` |
+| `ContentTypeNotSupported` | `-32005` | 415 | `CONTENT_TYPE_NOT_SUPPORTED` |
+| `InvalidAgentResponse` | `-32006` | 502 | `INVALID_AGENT_RESPONSE` |
+| `ExtendedAgentCardNotConfigured` | `-32007` | 400 | `EXTENDED_AGENT_CARD_NOT_CONFIGURED` |
+| `ExtensionSupportRequired` | `-32008` | 400 | `EXTENSION_SUPPORT_REQUIRED` |
+| `VersionNotSupported` | `-32009` | 400 | `VERSION_NOT_SUPPORTED` |
+| `InvalidRequest` | `-32600` | 400 | — |
+| `MethodNotFound` | `-32601` | 404 | — |
+| `InvalidParams` | `-32602` | 400 | — |
+| `Internal` | `-32603` | 500 | — |
+| `Parse` | `-32700` | 400 | — |
 
-(`crates/busbar-a2a/src/a2a/rpcerror.rs:107-156`, `:212-260`.)
-
-Two things an operator should know about this table. **`TaskNotFound` and `MethodNotFound` are constructed by no production call site on this plane** (`rpcerror.rs:52-60`): Busbar is content-blind on the receiving side, so those are the backend's words and Busbar carries the answer. And **Busbar's own admission refusals — a hook reject, a spent budget — are rendered as `UnsupportedOperation`** with the real reason in the message and the gate's own HTTP status where applicable (`receive.rs:931-947`, `:965-974`). `UnsupportedOperation` is this plane's binding for "Busbar will not do this for you"; a body in another plane's shape is a body the TCK rejects by schema.
-
-A forbidden `Origin` answers `403` with an `UnsupportedOperation` body (`crates/busbar-a2a/src/a2a/words.rs:51-60`).
+`TaskNotFound` is Busbar's own word for a task this caller does not hold: every local verb, and every relayed request addressed to a task (a task verb, or a message whose `taskId` names one), answers `404`, `-32001`, "no task with that id is open for this caller", and relays nothing (`plane-a2a/src/local.rs`, `NO_SUCH_TASK`; `plane-a2a/src/task_hop.rs`). Another caller's task, a retired one and one that never existed read alike, so the refusal is no existence oracle. A `CancelTask` of a task Busbar holds as terminal answers `409`, `-32002`, from Busbar's own row. Busbar's own refusals of work it will not do for you are rendered as `UnsupportedOperation` with the reason in the message.
 
 ---
 
@@ -327,9 +269,9 @@ A forbidden `Origin` answers `403` with an `UnsupportedOperation` body (`crates/
 
 ### States and legal transitions
 
-Eight states (`crates/busbar-plane-a2a/src/a2a/task.rs:76-108`): `submitted`, `working`, `input-required`, `auth-required`, `completed`, `failed`, `canceled`, `rejected`. The last four are terminal; `input-required` and `auth-required` are *interrupted* — paused awaiting the caller, consuming no compute, and the exact rows the durable store exists for.
+Eight states (`plane-a2a/src/a2a/task.rs`): `submitted`, `working`, `input-required`, `auth-required`, `completed`, `failed`, `canceled`, `rejected`. The last four are terminal; `input-required` and `auth-required` are *interrupted* — paused awaiting the caller, and the rows the durable store exists for.
 
-`can_transition_to` is total over the pair rather than a set of guards at call sites, so the combination nobody thought about is refused by default (`task.rs:156-189`):
+`can_transition_to` is total over the pair rather than a set of guards at call sites, so the combination nobody thought about is refused by default:
 
 | From | Legal `to` |
 |---|---|
@@ -339,83 +281,92 @@ Eight states (`crates/busbar-plane-a2a/src/a2a/task.rs:76-108`): `submitted`, `w
 | `auth-required` | `working`, `input-required`, and the four terminals |
 | any terminal | **nothing, including itself** |
 
-A repeated `completed` is refused because it is the shape of a duplicate delivery, and honouring it would double-append provenance and billing (`task.rs:187`). An illegal move is `TaskError::IllegalTransition { from, to }`, and `updated_at` moves only on an accepted transition.
-
-An unknown state token from the store **fails closed** (`task.rs:112-129`). A row written by a newer engine carrying a state this binary does not know is a row it cannot reason about — it cannot tell whether it is terminal (safe to compact) or interrupted (must be preserved and resumed) — and the cheap guess, "unknown means terminal", is the one that deletes a live task on a downgrade.
+A repeated `completed` is refused because it is the shape of a duplicate delivery. An unknown state token from the store **fails closed**: a row this binary cannot classify as terminal or interrupted is refused rather than guessed at, because "unknown means terminal" is the guess that deletes a live task on a downgrade.
 
 ### Task ids
 
-Minted at `crates/busbar-a2a/src/a2a/receive.rs:1201-1213` as `a2a-<agent_id>-<16 hex>`. The hex is a hash over the request body, the clock, a **process-wide monotonic counter** and the process id; the counter is the only ingredient that guarantees anything, and it was added after resume tests found two identical submissions replacing each other's rows (`receive.rs:2358-2380`). It is explicitly not a UUID. If the request carries no `contextId`, the context id is the task id. If the caller addressed an existing owned task, or a resumable one is found for the context, no new id is minted.
+A fresh task's id is minted as **`a2a-<agent>-<16 hex>`**, the hex being eight bytes from the kernel's random service; `<agent>` is the agent the caller addressed, not the pool member the walk placed it on (`plane-a2a/src/task_identity.rs`, `mint`; `plane-a2a/src/task_hop.rs`, `open`). If the request names no `contextId`, the context id is the task id. No new id is minted when the request names a task the caller holds (in its `params`, or its message's `taskId`), or when its `contextId` names one of the caller's interrupted tasks on that agent — the newest such task moves back to `working` instead.
 
-`a2a/idmap.rs` is the inverse map — Busbar's task id → the backend's — and it is **process-local and does not survive a restart** (`idmap.rs:28-37`). That is a stated limitation rather than an oversight: the durable home would be a new column on the store plugin's task row, i.e. an ABI change. Capacity 100 000, oldest-first eviction. Every lookup takes the principal and delegates the ownership boundary to the scoped read; there is deliberately no unscoped twin, because the id-only version was an IDOR on `GetTask` and `CancelTask`.
+The agent's answer leaves under Busbar's identity: the far end's own task id is read first, then Busbar's id and context are written over the payload, its status message and its history, and `referenceTaskIds` Busbar knows are rewritten too (`rewrite_identity`). A later request naming Busbar's id is sent on with the far end's id spliced in, every other byte as the caller wrote it (`translate_request`).
 
-### Durability and boot
+That map from Busbar's task id to the far end's is **plane memory, keyed by caller, and a restart forgets it** (`plane-a2a/src/agent_door.rs`, `backends`). Every lookup goes through the caller's own scoped read, so an id only translates for a task that caller holds.
 
-The task store writes through to the configured governance store on every append, and `submit` persists **before** the task is acknowledged (`crates/busbar-a2a/src/a2a/taskstore.rs:14-20`, `:241`). With `store: memory` nothing persists and the restore honestly reports zero.
+### Durability and restore
 
-At boot, `restore_from_store` walks the store's task rows (`taskstore.rs:191-239`):
+Tasks are host records, never a store of the plane's own: one `task` record per task, keyed `<caller>/<task>` where `<caller>` is the kernel's opaque per-principal reference, a hash-chained `task_event` record per change, and a `push_config` record per task (`plane-a2a/src/tasks.rs`, `plane-a2a/src/records.rs`). A key under another caller's prefix is one this caller can never name, which is how a foreign task reads exactly as a missing one. Every write of a task first claims the next sequence of its chain, so concurrent writers cannot interleave.
 
-- unparseable rows are counted as `unreadable` and logged at ERROR, never silently dropped;
-- **terminal tasks are counted and deliberately not loaded** into the working set;
-- active and interrupted tasks are loaded and their provenance chain is re-verified from the stored events;
-- **a chain that fails to verify is still restored.** Refusing to restore it would turn a detection control into a deletion primitive: anyone who can corrupt one event could erase a task. The break is named loudly, counted, and the chain continues from the broken tail rather than being silently re-based onto it.
+A fresh task is submitted and its dispatch recorded before the hop; a task that cannot be recorded refuses the request `503`, `-32603`, "the task could not be recorded".
 
-`Rehydrated` reports `active`, `terminal`, `unreadable` and `chain_breaks` separately, so a boot log line distinguishes "nothing to restore" from "I could not read what was there".
+When the plane's instance opens it restores (`tasks::restore`):
 
-**Reads are scoped.** "No such task" and "not yours" answer the same refusal and render `403` — a distinguishable not-found would be an enumeration oracle (`taskstore.rs:30-35`, `:63-67`).
+- unreadable rows are counted, never silently skipped (`BUSBAR-7024`); a store that cannot be listed at all is `BUSBAR-7025`;
+- **terminal tasks are counted and their chains not read back**;
+- each in-flight task's chain is read back through the host, which verifies it;
+- **a chain the host reports broken is still held.** A break is named (`BUSBAR-2030`), never a deletion: refusing to restore it would let anyone able to corrupt one event erase a task.
 
-> **Retention is a mechanism with no wired sweep today.** `compact(before)` exists and calls the store's purge, but there is no production call site for it in the tree (`taskstore.rs:37-40`, `:590-600`). Terminal task rows accumulate in the durable store until something outside Busbar removes them. Plan for that in your store's own retention policy.
+Serving does not wait on the restore: each task is read from its own record when a request names it.
+
+### Retention
+
+**There is a retention sweep, and it touches only settled tasks** (`plane-a2a/src/tasks.rs`, `retention_sweep`). Its rule:
+
+- a terminal task stays readable for **300 seconds** after its last change (`TERMINAL_TTL_SECS`); past that a read answers it as not found, and the sweep tombstones its `task` record, its event chain and its push config;
+- at most **4096** terminal tasks are kept (`MAX_RETAINED`); past that the oldest go first, whatever their age;
+- **an active task — working or interrupted — is never touched**, however long it has been idle. Live tasks are bounded at admission by the kernel instead.
+
+The sweep **runs from a submission**, in the same record writes that open a fresh task, and never from a read, a callback or a timer. Each submission retires at most **32** settled tasks (`SWEEP_BUDGET`); the rest wait for the next. A sweep that fails retires nothing and fails no submission (`plane-a2a/src/task_hop.rs`). These are constants: there is no configuration key for the window, the cap or the budget.
 
 ---
 
 ## Push notifications
 
-A caller registers a push-notification config and expects a callback when its task moves. Busbar does **not** relay that config to the backend.
+A caller registers a push-notification config — with the push-config verbs, or inline on a message — and expects a callback when its task moves. Busbar holds exactly **one config per task**; registering a second with a different id is refused until the first is deleted (`plane-a2a/src/local.rs`).
 
-**The substitution.** Busbar registers *its own* callback with the backend — `<public_url>/a2a/push`, with a per-task capability token — and holds the caller's URL and credential itself (`crates/busbar-a2a/src/a2a/pushback.rs:27-42`, `:172-180`). The token is `<task-id>.<hex HMAC-SHA256(task_id)>` under a **process-local** 32-byte secret from `getrandom` (`pushback.rs:44-57`, `:98-122`). If `getrandom` fails the secret stays unset, the mint answers `None`, and Busbar registers **no** callback at all rather than one under a guessable key. **A restart invalidates every prior token.** Busbar registers a callback only while the task is non-terminal.
+**What Busbar stores.** The config is a `push_config` host record: the callback URL, the A2A version it was registered under (which decides the notification's shape), and, if the caller gave one, its `authentication` credential as a sealed field. A read verb answers `id` and `url` only and never echoes the credential. Because the record is durable, **the URL and the caller's credential both survive a restart**: each delivery reads the task's config record and takes the credential from it (`plane-a2a/src/push_door.rs`, `queue_moved`). Between a config naming a credential and the task ending (its terminal delivery settling) or the config being deleted, the plane also holds it in memory. The credential type has no `Display` and a redacted `Debug`, and it never reaches a log line or an error text (`plane-a2a/src/push.rs`, `PushCredential`).
 
-**Busbar's callback endpoint** (`POST /a2a/push`, `pushback.rs:259-347`) is unauthenticated by the key chain and authenticates itself against that token:
+A config's `authentication` must name a `scheme` (an HTTP authentication scheme token such as `Bearer`), or `schemes[0]`; its `credentials` must be bytes an HTTP header can carry. A config `token` is refused with `UnsupportedOperation`: there is no header or body member a delivery would put it in.
+
+**The callback floor.** A callback URL is judged when it is registered and again on every delivery attempt, by the host's destination judge — the one check every outbound connection passes — with private reach refused whatever the deployment's private-address setting. The words a refused callback gets (`local::judge_callback`):
+
+- a scheme other than **https** — "a callback carries task metadata off-box and must be https";
+- a URL with no host, or one carrying a userinfo, is malformed;
+- an alternate IPv4 encoding of the host is refused;
+- a host that resolves to no addresses — "nothing was checked, so nothing is allowed";
+- an internal or metadata address.
+
+**Busbar's own callback at the agent.** Busbar does not hand the caller's URL or credential to the backend. When a caller creates, reads, lists or deletes a push config for a task Busbar holds as live and whose agent has named it, Busbar mirrors that onto the agent: a create registers busbar's own callback, `<public_url>/a2a/push`, under config id `busbar-<agent's task id>`, with `authentication: {scheme: Bearer, credentials: <token>}`; a delete removes it; a read that does not find busbar's registration re-arms it (`plane-a2a/src/mirror.rs`). The mirror is best effort, never changes the caller's answer, and bills nothing. It is skipped when `public_url` is not `https`.
+
+**The callback token.** The token is `<task-id>.<64 lower-case hex>`: the first 32 bytes of the host signing service's signature over the domain `busbar-a2a-push-token\0` followed by the task id. The plane never holds the key; it verifies a presented token by asking the host to sign again and comparing in constant time. Which caller each token's task belongs to is plane memory, so **a restart refuses every earlier token**. At most 4096 tokens are held per instance; past that no token is minted, and Busbar registers no callback of its own for that task (`plane-a2a/src/push.rs`, `Tokens`, `MAX_TOKENS`).
+
+**Busbar's callback endpoint** (`POST /a2a/push`, `plane-a2a/src/push_serve.rs`) takes no Busbar key. The backend presents the token as `Authorization: Bearer <token>`. In order, each step a refusal that costs nothing further:
 
 | Condition | Answer |
 |---|---|
-| no A2A plane | `404` |
-| missing, unparseable or non-verifying token | `401`, with a message that says nothing about which |
-| body over 64 KiB | `413` |
-| token verified but the task row is gone | `401` — not `404`, so existence is never revealed |
-| token verified and the task has ENDED | `401` — the same sentence, for the same reason |
+| no token, a token this instance did not mint, or one whose signature does not verify | `401` |
+| the task's push-volume budget is spent: more than **60** pushes in its fixed **60-second** window | `429`, `Retry-After: 60` |
+| body over **64 KiB** | `413` |
+| the task is gone, past its retention window, or has ENDED | `401` — the same sentence, so existence is never revealed |
 | body not JSON | `400` |
 | otherwise | `202` with an empty body |
 
-**The token's lifetime is the task's.** It is a *capability for one task*, not a one-time nonce: a backend reports the same task several times — `working`, then `input-required`, then `completed` — and the same token carries all of them. What ends it is the task ending. The update that moves a task to a terminal state (`completed`, `failed`, `canceled`, `rejected`) **revokes** the token as part of the same plan that records the move, so the callback that reports the ending is the last one the token authorises and every later one is refused. Nothing else ends it: a task that goes quiet keeps its token until the task itself ends, because busbar never ends live work on its own.
+Every `401` carries the one sentence "this endpoint is addressed by the push token busbar registered with the agent". Refusals are `{"error":{"message":…}}`, not a JSON-RPC error body.
 
-Busbar asks that liveness of the task itself, and both planes ask it of the same fact through one predicate rather than through two mechanisms. Over the composition root the task's lifetime is a store record under kind `push_config` that the neutral `plane_token_live` verb reads and the route plan's revoke leg deletes on the update that made the task terminal; that verb's default is **fail-closed**, so a deployment whose store cannot say whether a token is still live refuses the callback rather than accepting it. On the plane that serves the binary the task ROW is that record and its state is that reading (`pushback::token_live`), and the terminal transition — which goes through the same transition table as every other observation of the task — is that revocation. The revocation is durable and monotone: terminal states accept nothing, so a task that has ended can never leave the state that killed its token, across a restart included.
+**The token's lifetime is the task's.** It is a capability for one task, not a one-time nonce: a backend reports `working`, then `input-required`, then `completed` with the same token. The report that moves the task to a terminal state is the last one it authorises: the token is forgotten once that answer is final, and it is also forgotten whenever the task ends any other way (a relayed answer, a cancel). An active task's token is never retired for idling.
 
-There is no second deadline. The retention sweep touches only settled tasks: an ACTIVE task is never cancelled or evicted for idling, however long it idles, so a task's token retires when the task ends — by its backend's report or its caller's cancel (`docs/design/BUSBAR-1.6.0.md` THE DESIGN §1, "an active work handle is never evicted"). The sweep runs from a submission only, never from a read, a callback or a timer. (Before the liveness check, the callback endpoint checked only that the MAC verified and that the row existed — no liveness, no revocation, no deadline — so a captured token replayed indefinitely, and each replay re-notified the caller and appended another entry to the task's durable provenance chain.)
+**What a push records.** The reported state goes through the same transition table as every other observation of the task. A push that reports no state this build can read, or the state the task already holds, is `202` and moves nothing. A move the table refuses — an older state replayed after a newer one, anything after a terminal — is `202` and records nothing, so the backend does not retry-loop. **Nothing from the pushed body reaches the caller's webhook**: the onward delivery is composed from Busbar's own task row.
 
-**A state that goes backwards is refused, and refused quietly.** The reported state goes through the same transition table as every other observation of the task (`crates/busbar-a2a/src/a2a/task.rs`), and that table is what defines "backwards": terminal states accept nothing at all — including a repeat of themselves, which is the shape a duplicate delivery takes — and `working` never returns to `submitted`, because a task that has started cannot truthfully claim it has not. So an older state replayed after a newer one is **inert**: nothing is written, no provenance event is appended, no delivery is made, and the answer is still `202` so the backend does not retry-loop. The refusal is logged at INFO.
-
-The reported state goes through the **same** task-store transition and the same per-task chain as everything else; a re-report of the state already held is treated as a retry and not a transition; an unrecordable transition logs at INFO and still answers `202`, so a backend does not retry-loop. Refusals are `{"error":{"message":…}}` and deliberately not a JSON-RPC error body. **Nothing from the pushed body reaches the caller's webhook** — the onward delivery is composed from Busbar's own task row.
-
-**The onward delivery** (`crates/busbar-a2a/src/a2a/pushdeliver.rs`) carries:
+**The onward delivery** (`plane-a2a/src/push.rs`, `notification_body`) is shaped by the version the callback was registered under, always with Busbar's ids:
 
 ```json
-{ "task": { "id": "a2a-planner-…", "contextId": "…", "kind": "task",
-            "status": { "state": "completed", "timestamp": 1771027200 } } }
+{ "task": { "id": "a2a-planner-…", "contextId": "…",
+            "status": { "state": "TASK_STATE_COMPLETED", "timestamp": "2026-02-14T00:00:00Z" } } }
 ```
 
-A `StreamResponse` nested under `"task"` — not a bare task and not a JSON-RPC envelope (`pushdeliver.rs:299-…`). The ids are always Busbar's, never the backend's.
+That is v1.0 (and a config written before the version was kept): a `StreamResponse` with the task under `"task"`, the ProtoJSON state token and no `kind`. A v0.3 callback gets the `Task` object itself, `"kind": "task"` and the lower-case state word. `status.timestamp` is RFC 3339.
 
-**The SSRF guard runs at delivery, not only at registration** (`pushdeliver.rs:17-37`). Before every delivery the host is re-resolved through the plane's resolver, the full guard runs again over the fresh answer, and the socket goes to a just-passed pinned address with no second lookup. Where a pin from a previous delivery exists and the URL matches, the fresh answer must pass **and overlap the pin**; a fresh answer that is public but shares no address with the pin is `PinDrifted` and held for an operator, because a legitimate DNS change and a takeover look identical from here.
+**Delivery.** Each task's notifications are queued in order, at most **64** per task; past that the oldest not-yet-attempted one is dropped and counted. One due notification is attempted per lifecycle tick, the tasks served in turn. Each attempt re-runs the destination judge, dials only the addresses that judgement admitted, attaches the caller's credential as `Authorization: <scheme> <credentials>` **only after** the judge has passed, and is bounded at **10 seconds** (`push_door.rs`). A delivery makes **at most three attempts**: the second waits 250 ms and the third 500 ms, each moved by up to 20% either way, and only a transport error, a `5xx` or a `429` is retried. A refused destination or any other `4xx` ends it at once. Success is a `2xx`. Delivery is best-effort: a failure never touches the task.
 
-The guard itself (`crates/busbar-a2a/src/a2a/pushnotify.rs:53-75`) refuses:
-
-- any scheme other than **https** — "there is no deployment in which another one is accepted";
-- a missing host;
-- an **obfuscated** host, refused on the host *string* before resolution (`2130706433`, `0x7f000001`, `127.1`, `017700000001`);
-- an **empty** resolution — "checked nothing" must never read as "found nothing wrong";
-- **any** resolved address that is internal: loopback, private, link-local, unique-local, CGNAT, unspecified, multicast, broadcast, or cloud metadata. There is no "prefer the public one".
-
-**Which certificates a delivery trusts.** A delivery's connection verifies the webhook's certificate chain and name against the public roots. An operator whose callers' webhooks sit under a private CA writes that CA, as PEM, in the plane's own `agent_push:` block, beside `agents:`:
+**Which certificates a delivery trusts.** A delivery verifies the webhook's certificate chain and name against the public roots. An operator whose callers' webhooks sit under a private CA writes that CA, as PEM, in the plane's own `agent_push:` section, beside `agents:`:
 
 ```yaml
 agent_push:
@@ -425,167 +376,101 @@ agent_push:
     -----END CERTIFICATE-----
 ```
 
-The CA is trusted **on top of** the public roots, never instead of them, and chain and name verification stay on (it is the connector's per-connection operator CA, the push need's `trust_from` naming `owned.agent_push.ca`: `crates/busbar-plane-a2a/src/door.rs` `PUSH_TRUST_FROM`). A webhook under any other private CA is refused. The block is optional: without it a delivery trusts the public roots alone. Its one key is `ca`; any other key, or a `ca` that is not text, refuses the configuration, and a `ca` that is not a usable PEM certificate refuses the boot, naming `agent_push.ca`. A config apply re-reads it under the same rule: an apply carrying an unusable `ca` is refused with the same words, before anything of it is built, and the running configuration (its anchor among it) stays in force.
+The CA is trusted **on top of** the public roots, never instead of them, and chain and name verification stay on: it is the connector's per-connection operator CA, reached through the push need's `trust_from` (`owned.agent_push.ca`, `plane-a2a/src/door_statement.rs`, `PUSH_TRUST_FROM`). The section is optional. Its one key is `ca`; any other key, a non-mapping section, or a `ca` that is not non-empty text refuses the configuration (`read_push_section`), and a `ca` the host cannot use as a trust anchor refuses the boot.
 
-**The callback credential is the caller's own**, presented as `Authorization: <scheme> <credentials>`, and it is attached only **after** the guard passes, so a refused destination can never see it (`pushdeliver.rs:102-121`, `:226-236`). It lives in a process-local map, never persisted, never logged, never echoed on a read verb — the store seam has no notion of a secret. The consequence, stated because it is operationally visible: **a credential does not survive a restart while the URL does, so Busbar keeps delivering without the header.**
-
-**A failed delivery is retried, at most three attempts in all.** The second attempt waits 250 ms and the third 500 ms, each moved by up to 20% either way, and only a failure the receiver might not repeat is retried: a transport error, a `5xx` or a `429`. A refused destination or any other `4xx` ends the delivery at once, because it would answer the same "no" again. Every retry re-runs the destination guard (`crates/busbar-plane-a2a/src/push.rs:48-52`, `Deliveries::settle`). Delivery is best-effort beyond that, and a failure never touches the task. Success is HTTP `200..300`. Every attempt is chained to the task's own provenance under one of three kinds, and the split is deliberate so an operator is sent to the right place:
+Every attempt's outcome is chained to the task's own provenance under one of three kinds, filed on a later relayed answer of the same caller:
 
 | Provenance kind | When |
 |---|---|
-| `task.push_delivered` | the receiver accepted it |
-| `task.push_refused` | **nothing left the process** — Busbar's guard, DNS, or a bad URL |
-| `task.push_failed` | it went out and the receiver failed it |
-
-A `NoCallback` produces no record at all.
+| `task.push_delivered` | the receiver answered `2xx` |
+| `task.push_refused` | **nothing left the process** — the destination judge refused it, or the request could not be framed |
+| `task.push_failed` | it went out and the receiver failed it, or the transport did |
 
 ---
 
 ## What a tripped agent returns
 
-The circuit breaker runs on all three planes. There is one FSM: a registered A2A agent is a cell on the same breaker a model lane sits on, keyed `agent:<agent-id>` with lane index 0 (`crates/busbar-core/src/store/planes.rs:22-30`, `:112-114`). See [circuit-breaker.md](/docs/circuit-breaker/) for the state machine.
+The circuit breaker runs on every plane, and a registered A2A agent is a cell on the same breaker a model lane sits on. See [Circuit breaker](/docs/circuit-breaker/) for the state machine.
 
-**The breaker is consulted immediately after the demotion gate and before the socket** — trust first, then availability. One admission there covers all three bindings by construction, because the relay preamble sits beneath the transport axis (`crates/busbar-a2a/src/a2a/relay.rs:1462-1481`).
+**These cells refuse on a trip and nothing less.** The plane declares `bench_below_trip_threshold: false` (its `declares.json` in GetBusbar/busbar-plane-a2a): one transient failure below the trip threshold never benches an agent's cell. An upstream's own `Retry-After` is still honoured. A failover pool's `breaker:` block, where its `agents.pools` entry states one, is read for an A2A pool exactly as for any other (`crates/busbar/src/root/door_steps.rs`, `DoorPools::breaker`); otherwise the built-in defaults apply.
 
-A tripped agent answers **HTTP `503`** with an exact **`Retry-After`** from the cell's own remaining cooldown, and a JSON-RPC `UnsupportedOperation` (`-32004`) body **carrying the task id**:
+A tripped agent answers **HTTP `503`** with a `Retry-After` and a JSON-RPC error. **A fresh submission the open breaker refused before the socket is opened and ended `rejected`, not `failed`**, and the refusal names its task id as a `google.rpc.ResourceInfo` in `error.data` (`resourceType: "a2a.busbar/task"`, `plane-a2a/src/task_identity.rs`, `about_task`). The task id rides there rather than as a `taskId` member of the error object, because JSON-RPC 2.0 §5 admits only `code`, `message` and `data`. `failed` means *we tried and it broke*; `rejected` means *we did not accept this work*, which is what a breaker refusing to start a call has done. The calling agent decides whether and when to retry.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "error": {
-    "code": -32004,
-    "message": "agent `planner` is unavailable: its circuit breaker is open after repeated backend failures; busbar did not dispatch this request. Retry after 12s",
-    "data": [
-      { "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-        "domain": "a2a-protocol.org", "reason": "UNSUPPORTED_OPERATION" },
-      { "@type": "type.googleapis.com/google.rpc.ResourceInfo",
-        "resourceType": "a2a.busbar/task", "resourceName": "a2a-planner-…" }
-    ]
-  }
-}
-```
+**An addressed task is different.** A verb naming an existing task does not end it: that task exists at exactly one backend, and the row keeps its last-known state.
 
-(`crates/busbar-a2a/src/a2a/receive.rs:1991-2028`; the `ResourceInfo` shape is `crates/busbar-a2a/src/a2a/rpcerror.rs:361-386`. The task id rides as a `google.rpc.ResourceInfo` rather than a `taskId` member of the error object, because JSON-RPC 2.0 §5 admits only `code`, `message` and `data`, and the TCK rejects the other shape by schema.)
-
-**And the task state is `rejected`, not `failed`.** A2A has what MCP lacks: task state is first class, and the specification gives both words. `failed` means *we tried and it broke*. `rejected` means *we did not accept this work*, which is literally what a breaker refusing to start a call has done. The caller still gets a task id to poll and correlate — the row predates the hop, so the id resolves — and **the calling agent decides whether and when to retry.** Busbar does not invent a retry schedule on another agent's behalf.
-
-**An addressed task is different.** A verb naming an existing task does *not* transition it: the task exists at exactly one backend, and a tripped backend must not end it. The verb gets the refusal and the row keeps its last-known state, readable from Busbar's own store (`receive.rs:1997-2006`). Either way it is `503` plus an exact `Retry-After`.
-
-`503` is also what a *demoted* registration answers, from the trust axis rather than the availability axis, so a caller sees one answer for "this agent is not serving" whichever axis said so (`crates/busbar-a2a/src/a2a/relay.rs:397-410`).
-
-### What records against the cell, and what deliberately does not
-
-The relay is this plane's Stage-1 normalizer; Stage 2 is the one core classifier (`crates/busbar-a2a/src/a2a/relay.rs:1380-1435`):
-
-| Hop outcome | Recorded as |
-|---|---|
-| an answer, of any kind | **success** |
-| a well-formed A2A error from the backend | **success** — the backend was reachable and answered; a task-level failure from a backend that answered is the *work* failing, not the wire |
-| transport error | network failure |
-| an HTTP status | classified: 401/403 → hard down, 5xx/429 → transient, other 4xx → client fault (never a penalty) |
-| body too large / not JSON / uncorrelated | server error — the backend answered 2xx and the answer was unusable |
-| Busbar's own guard, a lease failure, an unframable operation | **nothing** — nothing reached the backend |
-| a demotion | **nothing** — that is trust, not health |
-| the breaker itself | **nothing** — the cell is already speaking |
-
-**These cells refuse on a trip and nothing less**, exactly as the MCP cells do and for the same reason: `bench_below_trip_threshold: false` (`crates/busbar-core/src/store/planes.rs:81-99`). The predicate is **error rate ≥ 0.5 over at least 5 outcomes in a 30-second window**, cooldown 15 s escalating to 120 s (`crates/busbar-core/src/store/in_memory/mod.rs:563-574`, `:629-639`). There is no `breaker:` key under `agents:` and none on an agent pool; these planes run on the built-in defaults. An upstream's own `Retry-After` is honoured.
-
-**A tripped agent that is a member of a `pools:` failover pool is not what produces the `rejected` task above.** For a FRESH submission the walk runs at admission, before any refusal is composed, and tries the next member whose approved card fingerprint matches the primary's (`crates/busbar-a2a/src/a2a/route.rs:82-219`); the caller gets that member's answer. Only an *exhausted* pool yields the `rejected` task, and then it names the **pool**, because the pool is the unit with nothing left (`crates/busbar-a2a/src/a2a/receive.rs:1497-1501`). A verb naming an **existing** task is unaffected either way: that task is pinned to the member that accepted it, so a tripped backend refuses the verb and the row keeps its last-known state.
-
-### No anomaly-driven suspension
-
-There is no anomaly breaker on this plane. No `agents:` key configures one and nothing accumulates the observations one would judge, so a registration is taken out of service by the breaker above and by its trust state, and by nothing else.
+For a member of an `agents.pools` failover pool, a fresh submission is placed by the pool's walk, so a tripped member is not by itself what produces a `rejected` task.
 
 ---
 
 ## Observability
 
-The A2A plane emits on **its own pair of request families** — `busbar_plane_requests_total` and `busbar_plane_request_duration_seconds` (the `plane`-labelled counterparts of the model plane's `busbar_requests_total` / `busbar_request_duration_seconds`, kept separate so those stay byte-identical to 1.5.4) — and it labels its own requests **from inside**, because two of its three bindings are spoken at the same door and only the reader knows which one spoke (`crates/busbar-a2a/src/a2a/receive.rs:671-712`).
+**Plane-defined metric families.** The plane's Statement declares two counters, both about the push channel (`plane-a2a/src/door_statement.rs`, `FAMILIES`):
 
-| Metric | Type | Labels | On this plane |
-|---|---|---|---|
-| `busbar_plane_requests_total` | counter | `plane`, `ingress_protocol`, `pool`, `outcome` | `plane="a2a"`; `ingress_protocol` is **`jsonrpc`, `http+json` or `grpc`** — the binding the request actually arrived on; `pool="unresolved"` |
-| `busbar_plane_request_duration_seconds` | histogram | `plane`, `ingress_protocol`, `pool` | same |
+| Metric | Type | Meaning |
+|---|---|---|
+| `busbar_a2a_push_notifications_dropped_total` | counter | push notifications dropped, oldest first, from a full per-task queue |
+| `busbar_a2a_push_outcomes_unfiled_total` | counter | push delivery outcomes dropped unfiled from a full book of owed outcomes (at most 4096 are held) |
 
-That per-binding label is what makes a per-binding number readable from Busbar's own telemetry rather than only from a conformance suite's stdout (`crates/busbar-core/src/transport.rs:172-183`). `pool` is pinned to the `unresolved` sentinel because the routing target is client-supplied and an unbounded label value is a memory-exhaustion DoS one valid credential can drive.
+Requests on the plane are counted by the host's shared plane request families, labelled with the binding the request arrived on; see [Observability](/docs/observability/). The plane's counter lane words are its three dialect names.
 
-A handled response is stamped so the plane's mount-level boundary does not count it a second time (`receive.rs:705-712`). **A refusal that reached no handler is still counted** — the audience-bound `401`, a `413`, a `404` — and on the gRPC binding, which has a door of its own, it is counted with the `grpc` label off the claim without any handler running (`crates/busbar-core/src/plane/observe.rs:51-70`).
+**Diagnostics.** The plane raises exactly ten catalogue codes, and its `declares.json` states exactly those (`plane-a2a/src/diagnostics.rs`, `DIAGNOSTICS`):
 
-**No metric family is defined inside the A2A tree.** There are no A2A-specific counters, histograms or gauges: the plane's only emission is the mounted-plane request pair above. Provenance produces audit rows, chain events and log lines, not metrics.
+| Code | Slug |
+|---|---|
+| `BUSBAR-2030` | `a2a-task-chain-verify-failed` |
+| `BUSBAR-7003` | `a2a-pool-not-interchangeable` |
+| `BUSBAR-7013` | `a2a-outbound-cred-unleased` |
+| `BUSBAR-7018` | `a2a-relayed-stream-refused` |
+| `BUSBAR-7020` | `a2a-relayed-outcome-unrecorded` |
+| `BUSBAR-7021` | `a2a-relayed-submission-failed` |
+| `BUSBAR-7023` | `a2a-failure-unrecorded` |
+| `BUSBAR-7024` | `a2a-task-rows-unreadable` |
+| `BUSBAR-7025` | `a2a-task-state-unread` |
+| `BUSBAR-7104` | `plane-sse-frame-not-utf8` |
 
-**There is no `operation` metric label**, on this plane or any other. `invoke` / `catalogue` / `fetch` / `task` / `subscribe` / `control` are `OpShape::as_str()` values — a closed internal vocabulary for the *shape* of an exchange (`crates/busbar-core/src/operation.rs:174-183`). No metric family carries them (`crates/busbar-core/src/metrics.rs:147-153`).
-
-The client leg lands on the shared upstream families, emitted on every plane: `busbar_upstream_attempts_total{pool,lane}` and `busbar_upstream_failures_total{pool,lane,disposition}` (`crates/busbar-core/src/telemetry.rs:788-830`).
+The other `BUSBAR-70xx`/`71xx` codes the plane's predecessor registered are never raised by the plane. The plane's `dev` catalogue holds them as reserved (never declared, never reissued to another meaning); the generated A2A diagnostics page still lists them until this build's pin of the plane includes that change. See the A2A diagnostics catalogue for each code's action.
 
 ---
 
 ## Governance
 
-**Budgets are enforced before the work.** A submission is admitted through the shared governance ledger — the same `try_admit` the model plane uses — and a spent budget records an audit rejection and answers HTTP **429** with an `UnsupportedOperation` body reading "this key's budget is spent" (`crates/busbar-a2a/src/a2a/receive.rs:956-974`). A successful call records one metered event with resource `agent:<agent_id>` and provider `a2a`, so an existing cost dashboard groups agent traffic without knowing what A2A is (`receive.rs:1317-1322`).
+**Every admitted unit leaves an audit row**, action `agent.call`, resource `agent:<agent_id>`: `applied` when the unit was served (its hop left the plane, or the plane answered it), rejected when it was refused after its admission — a gate, a budget, a breaker, a hop that never left (`plane-a2a/src/door_statement.rs`, `AUDIT_ACTION`, `audit_write`).
 
-**Locally-answered verbs are metered too, and so is the catalogue card.** `ListTasks` and the push-config verbs are admitted against the agent they named and write the ordinary `agent:<agent_id>` row on their way out. `GetExtendedAgentCard` on `POST /a2a` names *no* agent — it asks Busbar about itself and is answered before the catalogue selects anything — so it is admitted and billed against the **plane pool**, whose spelling is this plane's config section (`agents`). That cannot collide with a member line, because members are keyed with an `agent:` prefix. In both cases the row carries `requests: 1` and zero tokens: the flat per-request fee needs a selected upstream and a relayed response frame, and a verb Busbar answers out of its own state has neither.
+**Billing.** The plane reports units and never a price: a hop's moved bytes, and a fee unit, `per_request`, reported `1` once the unit is served, so a unit refused before that has its fee refunded (`BILLABLE_CLASSES`). Verbs Busbar answers itself (`ListTasks`, the push-config verbs) are metered against the agent they named. `GetExtendedAgentCard` on `POST /a2a` names *no* agent, so its row names the **plane pool**, spelled as this plane's config section, `agents` (`PLANE_POOL_RESOURCE`); that cannot collide with a member row, because members are keyed with an `agent:` prefix. The task store records no charge: a charge, an audit row, a breaker verdict and an outbound credential are the kernel's (`plane-a2a/src/records.rs`).
 
-Both were unmetered until 1.6.0. The card verb reached a handler, read the caller's whole catalogue and built a document, and left no ledger row at all; `ListTasks` — a scan of every task the caller owns, the most expensive read on the plane — returned above the plane's single charge. A verb no deployment can see, cap or bill is a verb an unbounded caller can sit on.
+**Hooks** attach as `agents.hooks:` ∪ `agents.<agent>.hooks:`. The plane's tail declares its hooks gated: an agent's gates screen the projected `{tool, arguments}` — the method as the target, `params` as the arguments — first, fail-closed, a veto answered at the hook's own status; then its rewrites apply (`door_statement.rs`, `TAIL`).
 
-**Attribution differs by direction, and the difference is a type rather than a convention** (`crates/busbar-a2a/src/a2a/meter.rs:48-119`). On the *receiving* side the presenting key is billed and it covers downstream L2 MCP spend. On the *delegating* side the **initiating** key is billed — never a synthetic identity for the fronted agent — and it does not cover downstream L2 spend. `covers_callee_internal_spend` is **always false** on both arms, and it is a field rather than an omission so the claim is visible where the numbers are read: Busbar does not and cannot bill for what happens inside somebody else's agent.
+**The per-task provenance chain** is one hash chain per task, kept and verified by the host. Each event carries `ts`, `kind`, `context_id`, `principal`, `agent_id` and `state`, each length-prefixed so no byte can cross a field boundary unseen; the host frames the previous hash, the chain's scope and the sequence ahead of them. `request_id` is not chained (`plane-a2a/src/tasks.rs`, `suffix`). Event kinds include `task.submitted`, `task.delegated`, `task.artifact`, the state moves, and the three push kinds above. The claim is **tamper-evidence, not tamper-prevention**: the restore reports breaks while still holding the rows.
 
-**Hooks fire through the same seam as the MCP plane** — one hooks implementation, one projection, one verdict type (`crates/busbar-a2a/src/a2a/receive.rs:888-948`). `agents.hooks:` ∪ `agents.<agent>.hooks:`, keyed by agent, resolved once per config generation, and an agent with no attached hook costs one hash lookup that misses (`crates/busbar-core/src/state.rs:314-318`).
-
-Placement is stated and load-bearing: **after** admission (the agent is what the attach is keyed on, so there is nothing to look up before it) and **before** the meter, the egress gate, the callback guard and the task row — everything after that line spends the caller's budget, leases Busbar's own credential, or mints durable state, and a refusal must cost none of them (`receive.rs:880-883`). It fires for **every verb**, not only `message/send`: a gate attached to an agent is a statement about that agent, and a plane that fired it for submissions but not for the task verbs would be a plane where the control's scope depends on which method a caller happened to use.
-
-The projection is the `invoke` IR: the method name as the target, `params` as the arguments — so a message's `parts` are *inside* the projection a screening gate reads rather than summarised beside it. A rejection is audited and answered with the hook's clamped HTTP status and its own message.
-
-**Two audit chains touch this plane, and they answer different questions.**
-
-The **admin audit log** records one row per admitted call under action `agent.call` / resource `agent:<agent_id>`, plus rejections on the hook path, the budget path and the egress gate — three rejection sites, not two (`receive.rs:45`, `:919-924`, `:959-964`, `:1098-1103`, `:1326-1332`). The trust verbs record `a2a_agent.connect` and `a2a_agent.approve` against resource `a2a_agent:<name>` (`crates/busbar-core/src/plane/mod.rs:186-192`, `crates/busbar-core/src/admin/planeverbs.rs:115-133`).
-
-The **per-task provenance chain** is one hash chain per task, over the core chain mechanism rather than a second implementation (`crates/busbar-a2a/src/a2a/provenance.rs:48-50`). Its event kinds are constants so tooling can branch on them: `task.submitted`, `task.working`, `task.interrupted`, `task.resumed`, `task.delegated`, `task.artifact`, `task.terminal`, `task.rehydrated`, plus the three push kinds. The digest covers `prev_hash | task_id | seq | ts | kind | context_id | principal | agent_id | state` and deliberately **excludes `request_id`** — a join key absent on the boot-rehydrate and retention paths, and a sometimes-absent field must not make an intact chain unverifiable (`provenance.rs:171-186`). Adding a new event *kind* is safe; adding a new digest *field* is not.
-
-The claim is **tamper-evidence, not tamper-prevention**, and the boot verifier reports breaks while still restoring the rows.
-
-**Egress is gated by the caller's grant.** A hop reaches an agent only when the caller's key is live and holds the `agent:<id>` grant for that agent; busbar does not spend its own credential on behalf of a caller that is not itself authorised for the backend agent. `egress_scopes:` is accepted and validated but no hop reads it.
+**Egress is gated by the caller's grant.** A hop reaches an agent only when the caller's key holds the `agent:<id>` grant for that agent; Busbar does not spend its own credential on behalf of a caller that is not itself authorised for the backend agent. `egress_scopes:` is not read.
 
 ---
 
 ## Operator surfaces
 
-| Route | Scope | What it does |
-|---|---|---|
-| `POST /api/v1/admin/agents/{name}/connect` | mutation | **Reaches the network.** Fetches the agent's card, verifies it against the operator's root, records the observation, and audits whatever it found as `a2a_agent.connect`. It **grants nothing**. |
-| `POST /api/v1/admin/agents/{name}/approve` | mutation | Body `{"fingerprint": "…"}` — the fingerprint `connect` reported, echoed back. |
+| Route | What it does |
+|---|---|
+| `POST /api/v1/admin/agents/{name}/connect` | **Reaches the network.** Fetches the agent's card, verifies it against the operator's root, records it as the agent's card records, and reports the fingerprint. It **approves nothing**. A card that could not be authenticated is still a `200`, with the reason in `failure` and the state `error`. Audited as `connect`. |
+| `POST /api/v1/admin/agents/{name}/approve` | Body `{"fingerprint": "…"}` — the fingerprint `connect` reported, echoed back. The card is re-fetched and re-verified, and an approval naming any other fingerprint is refused. Audited as `approve`. |
 
-Mounted at `crates/busbar-core/src/admin/v1/json/mod.rs:91-100`. **Without these the `agents:` surface is CRUD only, every registration stays `Pending`, and no sequence of operator actions can make a fronted agent serve** — `Pending` is the fail-closed floor its only constructor puts it in.
+Both are served by the plane on the kernel's admin mount (`plane-a2a/src/door_statement.rs`, `ADMIN_VERBS`, `ADMIN_OPENAPI`). Without them every registration stays pending and no fronted agent can serve.
 
-`approve` refuses if the observed fingerprint differs from the one you echoed, if the sighting is `Failed`, or if the registration is `unpinned` (there is no authenticity root, so there is nothing to approve). The `404` is answered **before** the body is parsed, so the error shape is not an existence oracle (`crates/busbar-a2a/src/a2a/verbs.rs:505-516`, `:600-…`). The write re-finds the registration **under the registry lock** rather than mutating a clone, because a config apply may have removed the row while the card was being fetched.
+`connect` deliberately does not approve: adopting what was seen is a separate, explicit operator act, so a poisoned card cannot be adopted by the same call that fetched it. `unpinned` cannot be approved.
 
-**The decision is the kernel's** (ARCHITECT, FLIP-A2A): `connect` SIGHTS the verified card fingerprint on the kernel's trust book, and `approve` approves the agent's trust key `<instance>/<agent>` there — the same decision the generic `POST /api/v1/admin/trust/approve` makes, which an operator may use instead (`/trust/revoke` refuses the agent again). A first sighting is refused until approved; a card that moves from its approved fingerprint quarantines the agent until it is approved again; an unreachable card keeps the last verdict. An agent the book does not serve is refused `403`, `-32004`, "fronted agent `<id>` is not serving (Pending)" (or `(Quarantined)`).
-
-`connect` deliberately does not approve. Adopting what was seen is a separate, explicit operator act, precisely so a poisoned card cannot be adopted by the same call that fetched it (`crates/busbar-core/src/admin/planeverbs.rs:44-47`).
-
-Both verbs answer the same `A2aTrustView`: `{name, state, pin_mechanism, fingerprint, pin_changed, added, changed, removed, observed_skills, failure}` (`crates/busbar-a2a/src/a2a/verbs.rs:361`).
-
-> **`sync`, `operator_suspend` and `operator_resume` are implemented but not mounted** (`crates/busbar-a2a/src/a2a/verbs.rs:55-57`). Each needs its own admin verb and its own audit row. Today an operator suspends a registration by removing or editing it.
-
-A registration that is missing from either the registry or config answers the same `404` — two answers a caller could tell apart would be an existence oracle (`crates/busbar-core/src/admin/planeverbs.rs:28-35`).
-
-### The registry generation
-
-The registry carries a monotonic generation, re-taken on **any** mutation, and it is what makes an in-flight request unable to outlive the approval it was admitted under: admission records the value, the gate immediately before the socket re-reads it, and a move is a refusal (`crates/busbar-a2a/src/a2a/plane.rs:62-73`). It is bumped for any mutation rather than only trust-relevant ones — deciding whether a particular change mattered means re-deriving the whole admission, and "did this specific change affect me" is the reasoning that lets a revocation slip through. Movement is refusal; the caller retries and is re-admitted under the new registry.
+Both verbs answer the same `A2aTrustView`: `{name, state, pin_mechanism, fingerprint, pin_changed, added, changed, removed, observed_skills, failure}`, where `state` is `pending`, `approved`, `quarantined`, `suspended` or `error`, derived on every read. The approved card and its skills are host records (`card`, `card_approval`), so a restart keeps what drift is judged against (`plane-a2a/src/records.rs`).
 
 ---
 
 ## Conformance
 
-Busbar's A2A claims are gated by **two independent instruments plus a governance probe**, run from this repository (`.github/workflows/a2a-conformance.yml`):
+Busbar's A2A claims are gated by two independent instruments, run against a Busbar booted from the commit under test:
 
-- `testing/a2a-harness/` — an independent battery written from the published specification alone, with adversarial and hostile-peer coverage;
-- `testing/a2a-tck/` — a wrapper around the publisher's own TCK at a pinned commit, covering all three transports across 36 modules;
-- `testing/a2a-governance/` — budgets, quarantine, trust lifecycle. **Product policy, not protocol**, and it can never contribute to a conformance verdict: the harness raises if a governance test is ever registered inside it. A perfectly conformant agent that ignores every budget and quarantines nothing scores 100% on conformance.
+- `testing/a2a-harness/` — an independent battery written from the published specification;
+- `testing/a2a-tck/` — a wrapper around the publisher's own TCK at a pinned commit.
 
 The same two rules as the MCP battery apply: **control legs run always** (a battery that cannot judge a known-good peer cannot be trusted to judge Busbar) and **the subject leg is armed or red** (a disarmed leg renders as the same green tick as a leg that judged Busbar and passed).
 
-The subject is booted **from the commit under test**, on loopback, by `scripts/a2a-subject/boot.sh` — not against a deployed URL, because that makes both verdicts unreadable. The script asks the OS for five free ports, generates the signing key with `busbar --generate-signing-key`, hands Busbar the same bytes through `auth.signing_key`, and signs one audience-correct token; Busbar's A2A mount refuses any credential whose audience is not exactly `<public_url>/a2a`, and an opaque API key is refused outright, so there is no "just use an API key" path.
+The subject is booted on loopback by `scripts/a2a-subject/boot.sh` — not against a deployed URL, because that makes both verdicts unreadable. The script asks the OS for five free ports, generates the signing key with `busbar --generate-signing-key`, hands Busbar the same bytes through `auth.signing_key`, and signs one audience-correct token; Busbar's A2A mount refuses any credential whose audience is not exactly `<public_url>/a2a`, and an opaque API key is refused outright, so there is no "just use an API key" path.
 
 ```
 scripts/a2a-subject/boot.sh --battery      # the independent battery, --role server
@@ -603,7 +488,5 @@ The boundary proof presents five credentials to the booted process past any shim
 **Stated gaps, worth knowing before you read a number:**
 
 - the **delegating direction is not exercised** — the battery still runs `--role server`;
-- the **HTTP+JSON binding is not armed by the TCK**, so its requirements report as *untested* rather than failed. That is a gap in this harness and not in the card: Busbar's own card advertises all three bindings, because `servable_bindings()` is the plane's own wire-format list upper-cased (`crates/busbar-a2a/src/a2a/serve.rs:191-197`, `crates/busbar-core/src/plane/mod.rs:228`). A *fronted agent's* card is narrower and advertises `JSONRPC` only, because `/a2a/agents/{id}` mounts a JSON-RPC reader and nothing else (`serve.rs:225-227`);
-- `PUSH-DELIVER-001/002/003` are **red and waived**, with the reason recorded in `testing/a2a-tck/WAIVERS.md`: the suite's receiver URL is literal `http://`, and Busbar refuses a plaintext webhook before it looks at the address. All three still run, still fail, and are still counted in the MUST row.
-
-The verdict logic refuses an empty waiver pin outright and treats `NOT TESTED` requirements as reported-but-not-gated; `--selftest` exercises both directions of that with red and green fixtures.
+- the **HTTP+JSON binding is not driven by the TCK** in this rig, so its requirements report as *untested* rather than failed. That is a gap in the rig and not in the card: Busbar's own card advertises all three bindings. A *fronted agent's* card advertises `JSONRPC` only, because `/a2a/agents/{id}` mounts a JSON-RPC endpoint and nothing else;
+- `PUSH-DELIVER-001/002/003` are **red and waived**, with the reason recorded in `testing/a2a-tck/WAIVERS.md`: the suite's receiver URL is literal `http://`, and Busbar refuses a plaintext webhook before it looks at the address. All three still run, still fail, and are still counted.

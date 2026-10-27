@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The settlement WRITER, row by row, and the two quantity rules beside it (TD step 13,
-//! re-baselined from the old settlement table).
+//! The settlement WRITER, row by row, and the two quantity rules beside it,
+//! re-baselined from the old settlement table.
 //!
 //! THE PLANE REPORTS; THE KERNEL WRITES (`BUSBAR-1.6.0.md` §7, #77(2)). The kernel
 //! decides no figure and no fee: whatever the end, it writes what the plane reported, adds no
@@ -109,7 +109,7 @@ fn a_lost_settle_record_keeps_the_amount_and_marks_it_unposted() {
 
 #[test]
 fn the_fee_units_are_the_planes_as_told_on_every_end() {
-    // The kernel decides no fee (TD step 13: the kernel fee decider is deleted); it writes the fee
+    // The kernel decides no fee; it writes the fee
     // units the plane reported, whatever the end, and never invents one.
     for fee_units in [0u32, 1, 3] {
         let evidence = Evidence {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MID-STREAM SECURITY UPGRADE (ARCHITECT ruling Q-FC3: ldaps and StartTLS work as they did in
+//! THE MID-STREAM SECURITY UPGRADE (ldaps and StartTLS work as they did in
 //! 1.5.5; `abi::host::conn::connector::service::UPGRADE_SECURE`). Through the connector, over real
 //! TLS far ends whose certificates chain to a private CA:
 //!
@@ -320,7 +320,7 @@ fn self_signed() -> (Vec<u8>, Vec<u8>) {
     (cert.der().to_vec(), kp.serialize_der())
 }
 
-/// RED (ARCHITECT ruling 2026-10-03 on Q-L16-4, 1.5.5's `rediss://…#insecure`): a self-signed far
+/// RED (1.5.5's `rediss://…#insecure`): a self-signed far
 /// end is REFUSED by a verifying upgrade; with the operator's verify-off opt-in on an
 /// operator-infrastructure need it is ACCEPTED and carries bytes; the opt-in on a need of any other
 /// class is REFUSED.
@@ -413,7 +413,7 @@ async fn read_short(c: &Connector, id: ConnId, want: usize) -> Vec<u8> {
     got
 }
 
-/// RED (audit core-connector#3, STARTTLS response injection): the far end's clear `OK\n` arrives
+/// RED: the far end's clear `OK\n` arrives
 /// with forged bytes behind it in ONE segment. The plugin reads its three-byte answer with a
 /// three-byte buffer, so the forged bytes are a short read's rest when it asks for the upgrade.
 /// The upgrade is refused and the stream fails: the forged bytes are never read, least of all as
@@ -441,7 +441,7 @@ fn an_upgrade_over_a_short_reads_unread_rest_is_refused_and_the_stream_fails() {
     });
 }
 
-/// RED (audit core-connector#3): the forged bytes come as a segment of their own after the clear
+/// RED: the forged bytes come as a segment of their own after the clear
 /// `OK\n`, and a readiness wait takes them off the socket onto the line before the plugin asks for
 /// the upgrade. Parked and unread, they refuse the upgrade and fail the stream.
 #[test]
@@ -474,7 +474,7 @@ fn an_upgrade_over_a_piece_parked_on_the_line_is_refused_and_the_stream_fails() 
     });
 }
 
-/// RED (audit core-connector#10): the channel-binding input is the far end's certificate hashed
+/// RED: the channel-binding input is the far end's certificate hashed
 /// as RFC 5929 section 4.1 `tls-server-end-point` says: with the certificate's signature hash. A
 /// leaf signed `ecdsa-with-SHA384` binds with SHA-384 (a SCRAM-*-PLUS server computes the same).
 #[test]

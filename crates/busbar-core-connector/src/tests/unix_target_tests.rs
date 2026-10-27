@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! UNIX-DOMAIN TARGETS (ARCHITECT ruling 2026-10-03 12:10Z, VALKEY-UNIX: "unix-socket URLs keep
-//! working — the connector serves unix-domain targets for operator-infrastructure needs; no socket
-//! in the plugin"). A `tcp` need names `unix:/absolute/path` as its target:
+//! UNIX-DOMAIN TARGETS (unix-socket URLs keep
+//! working: the connector serves unix-domain targets for operator-infrastructure needs; no socket
+//! in the plugin). A `tcp` need names `unix:/absolute/path` as its target:
 //!
 //! * in the operator-infrastructure class it opens a raw stream to a real
 //!   unix-domain far end, writes reach it, and a read with nothing ready pends and is woken through
@@ -139,7 +139,7 @@ fn an_operator_infrastructure_need_reaches_a_unix_domain_far_end() {
     });
 }
 
-/// RED (ARCHITECT ruling 2026-10-03, VALKEY-UNIX: "the connector serves unix-domain targets for
+/// RED ("the connector serves unix-domain targets for
 /// operator-infrastructure needs"; THE DESIGN §5: loopback-allowed is "https, or loopback
 /// plaintext; the node's own ports refused"): a loopback-allowed need is refused a unix target
 /// before any dial. Admitted with no judgement at all, it could reach any local socket the process

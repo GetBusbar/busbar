@@ -461,8 +461,8 @@ impl crate::proxy::egress_unit::ports::Breaker for Cells {
         );
     }
 
-    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
-        self.0.release_probe(pool, destination, epoch, now);
+    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {
+        self.0.release_probe(pool, destination, epoch);
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {

@@ -226,6 +226,19 @@ impl busbar_kernel_wal::ship::Shipper<Record> for KeepingShipper {
     }
 }
 
+/// A store that will not take anything. What a memory-buffered node's durability failure looks like
+/// from the log's side, and the only way to make the buffer grow at all.
+#[derive(Debug, Default)]
+pub struct RefusingShipper;
+
+impl busbar_kernel_wal::ship::Shipper<Record> for RefusingShipper {
+    fn ship(&mut self, _records: &[Record]) -> Result<(), busbar_kernel_wal::ship::ShipError> {
+        Err(busbar_kernel_wal::ship::ShipError::Unavailable(
+            "the store is not answering".into(),
+        ))
+    }
+}
+
 /// `n` records with bodies of the given length, numbered from `first_seq`.
 pub fn records(node: u64, first_seq: u64, n: u64, body_len: usize) -> Vec<Record> {
     (0..n)

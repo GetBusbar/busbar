@@ -47,35 +47,17 @@ pub(crate) const CACHE_WRITE: &str = "cache_write";
 /// only be built by the usage unit holding its own token, which is the property being relied on
 /// everywhere else in this crate. The seal is confined to the kernel in real code; these lines are
 /// test-only and are the same exception the capability crate's own tests take.
-pub(crate) fn usage(lines: &[(&'static str, u64)]) -> Usage {
+pub(crate) fn usage(entries: &[(&'static str, u64)]) -> Usage {
     let seal = KernelSeal::acquire_for_kernel();
     let token = Grant::<Consumption>::mint(&seal);
-    let lines = lines
-        .iter()
-        .map(|(class, quantity)| UsageLine {
-            class: MeterClassId::new(class),
-            quantity: *quantity,
-            source: QuantitySource::Count,
-            estimated: false,
-        })
-        .collect();
-    Usage::report(&token, lines).expect("a test report stays within the line bound")
+    Usage::report(&token, lines(entries)).expect("a test report stays within the line bound")
 }
 
 /// The same, marked as the kernel's own floor rather than a reported figure.
-pub(crate) fn estimated_usage(lines: &[(&'static str, u64)]) -> Usage {
+pub(crate) fn estimated_usage(entries: &[(&'static str, u64)]) -> Usage {
     let seal = KernelSeal::acquire_for_kernel();
     let token = Grant::<Consumption>::mint(&seal);
-    let lines = lines
-        .iter()
-        .map(|(class, quantity)| UsageLine {
-            class: MeterClassId::new(class),
-            quantity: *quantity,
-            source: QuantitySource::Count,
-            estimated: false,
-        })
-        .collect();
-    Usage::estimate(&token, lines).expect("a test report stays within the line bound")
+    Usage::estimate(&token, lines(entries)).expect("a test report stays within the line bound")
 }
 
 /// The plain line form the read-time derivation takes.

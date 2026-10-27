@@ -8,7 +8,7 @@
 use super::*;
 
 fn bufs(claim: u32) -> PieceBufs {
-    let mut b = PieceBufs::new(&BufferCaps::default(), Arc::from(&b"body"[..]));
+    let mut b = PieceBufs::new(&BufferCaps::default(), bytes::Bytes::from_static(b"body"));
     b.claim = claim;
     b.dialect = 3;
     b.caller_ref = b"c0ffee".to_vec();
@@ -320,4 +320,24 @@ fn the_final_mark_agrees_with_the_failover_verdict_and_every_far_flag_set_is_adm
     }
     assert!(fails_over(false, false));
     assert!(!fails_over(true, false) && !fails_over(false, true));
+}
+
+/// BODY BY REFERENCE (ABI-MACHINERY S5a): a far-end piece's bytes become the plane's input
+/// without a copy: the input is the piece's own allocation.
+#[test]
+fn a_far_end_piece_is_lent_to_the_plane_without_a_copy() {
+    let bytes = b"a far-end chunk".to_vec();
+    let at = bytes.as_ptr();
+    let mut piece = FarPiece {
+        bytes,
+        ..FarPiece::default()
+    };
+    let mut input = Vec::with_capacity(64);
+    lend_piece(&mut input, &mut piece);
+    assert_eq!(input, b"a far-end chunk");
+    assert_eq!(
+        input.as_ptr(),
+        at,
+        "the plane's input is the piece's own bytes, never a copy"
+    );
 }

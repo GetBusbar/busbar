@@ -3,17 +3,16 @@
 
 //! THE ROOT LEGACY TABLE, held to 1.5.5: one test per retired word. Each installs the root's table
 //! (as `main` does), then holds `--migrate-config`'s rewrite and change line, and boot's 1.x refusal,
-//! to the bytes 1.5.5 printed for that word (`tests/fixtures/legacy_retired_1_5_5.yaml`). The words
+//! to the bytes 1.5.5 printed for that word (`src/root/tests/fixtures/legacy_retired_1_5_5.yaml`). The words
 //! and the bytes are data; this file spells neither.
 
 use super::{install, LEGACY_ROWS};
 
 /// The 1.5.5 golden entry `n` of the retired words.
 fn golden(n: usize) -> serde_yaml::Value {
-    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
-        "../../../tests/fixtures/legacy_retired_1_5_5.yaml"
-    ))
-    .expect("the golden parses");
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("fixtures/legacy_retired_1_5_5.yaml"))
+            .expect("the golden parses");
     doc["retired"][n].clone()
 }
 
@@ -216,10 +215,9 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
 /// its 1.5.5 bytes fails here rather than shipping unproven.
 #[test]
 fn every_retired_row_has_a_1_5_5_golden() {
-    let doc: serde_yaml::Value = serde_yaml::from_str(include_str!(
-        "../../../tests/fixtures/legacy_retired_1_5_5.yaml"
-    ))
-    .expect("the golden parses");
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(include_str!("fixtures/legacy_retired_1_5_5.yaml"))
+            .expect("the golden parses");
     let golden: Vec<String> = doc["retired"]
         .as_sequence()
         .expect("a list")
@@ -267,7 +265,7 @@ fn the_kernel_test_stand_in_is_the_root_table() {
 // manifest's `[package.metadata.busbar.legacy]` is their render, and an edit to either side alone is
 // red here, with the table to paste printed.
 
-const MANIFEST: &str = include_str!("../../../Cargo.toml");
+const MANIFEST: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
 const REGISTRY: &str = include_str!("../../../../../plugins.yaml");
 const HEADER: &str = "[package.metadata.busbar.legacy]";
 const NOTE: &str = "# THE ROOT LEGACY TABLE (BUSBAR-1.6.0.md §2), @generated from plugins.yaml (`legacy:` and each\n\
@@ -355,7 +353,7 @@ fn table(manifest: &str) -> String {
     let start = lines
         .iter()
         .position(|l| l.trim() == HEADER)
-        .unwrap_or_else(|| panic!("crates/busbar/Cargo.toml carries no `{HEADER}`"));
+        .unwrap_or_else(|| panic!("dist/default/Cargo.toml carries no `{HEADER}`"));
     let mut end = lines[start + 1..]
         .iter()
         .position(|l| l.trim_start().starts_with('['))
@@ -372,7 +370,7 @@ fn drift(manifest: &str, registry: &str) -> Option<String> {
     let want = render(registry);
     (table(manifest) != want).then(|| {
         format!(
-            "crates/busbar/Cargo.toml: `{HEADER}` is not the render of plugins.yaml; replace it with:\n\n{want}"
+            "dist/default/Cargo.toml: `{HEADER}` is not the render of plugins.yaml; replace it with:\n\n{want}"
         )
     })
 }

@@ -87,17 +87,12 @@ fn an_accepted_connection_is_framed_on_the_accept_side_and_answered() {
 }
 
 fn localhost_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
-    let kp = KeyPair::generate().unwrap();
-    let mut ca_params = CertificateParams::new(Vec::new()).unwrap();
-    ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    let ca = ca_params.clone().self_signed(&kp).unwrap();
-    let issuer = Issuer::new(ca_params, &kp);
-    let leaf = CertificateParams::new(vec!["localhost".to_owned()])
-        .unwrap()
-        .signed_by(&kp, &issuer)
-        .unwrap();
-    (ca.der().to_vec(), leaf.der().to_vec(), kp.serialize_der())
+    let ca = crate::test_support::private_ca();
+    (
+        crate::test_support::certs_from_pem(&ca.ca_pem).remove(0),
+        ca.leaf_der,
+        ca.key_der,
+    )
 }
 
 fn server(leaf: Vec<u8>, key: Vec<u8>) -> Arc<rustls::ServerConfig> {

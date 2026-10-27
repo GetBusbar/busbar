@@ -50,8 +50,7 @@ test-support = ["busbar-kernel/test-support"]
 openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
 
 [dev-dependencies]
-# Test-only (json body decode + public-key hex in the service tests); no production use.
-hex = { workspace = true }
+# Test-only (json body decode in the service tests); no production use.
 http-body-util = { workspace = true }
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }

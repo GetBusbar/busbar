@@ -10,9 +10,9 @@
 //!
 //! Usage on the hot path:
 //! ```ignore
-//! let _t = crate::profile::start(crate::profile::Stage::LanePick);
+//! let _t = crate::profile::start(crate::profile::Stage::Finish);
 //! // ... work ...
-//! drop(_t); // records elapsed nanos into the LanePick bucket (no-op when disabled)
+//! drop(_t); // records elapsed nanos into the Finish bucket (no-op when disabled)
 //! ```
 //! or the explicit form [`record`] when a scope guard doesn't fit (across `?`/early-return arms).
 //!
@@ -36,65 +36,8 @@ pub enum Stage {
     /// `auth_middleware` pre-handler work: carrier token extract + chain/cache verdict + extension
     /// inserts (the span ends BEFORE `next.run`, so downstream time is not attributed here).
     MwAuth,
-    /// Body already-parsed handling + candidate op-support filter + wants_stream/affinity derivation
-    /// (the pre-dispatch bookkeeping in `forward_with_pool_parsed_inner` before the failover loop).
-    Prepare,
-    /// `pick_among`: session-affinity fast path + SWRR weighted selection + breaker probe + permit.
-    LanePick,
-    /// Per-hop request shaping: `translate_request_cross_protocol` (same-proto pristine short-circuit
-    /// or cross-protocol IR translate + serialize).
-    TranslateReq,
-    /// Egress auth headers (bearer / SigV4) + URL/path build + `reqwest::RequestBuilder` construction.
-    ClientBuild,
-    /// Sub-stage of ClientBuild: `sign_and_wire_path_parts` + `lane_auth_headers` (auth String allocs
-    /// + `HeaderValue::from_str`).
-    CbAuth,
-    /// Sub-stage of ClientBuild: `convert_headers` (HeaderMap rebuild) + the reqwest builder chain
-    /// (`post(format!(url))`, `.headers()`, `.header()×3`, `.body()`).
-    CbReqwest,
-    /// `req.send().await` — the upstream round-trip to response headers (the mock upstream here).
-    UpstreamSend,
-    /// Post-2xx breaker/latency/budget bookkeeping (record_success/record_latency/spend_budget).
-    RecordSuccess,
-    /// Response body streaming setup: `FirstByteBody::new` + `into_body` + response builder + headers.
-    RespBuild,
-    /// Sub-stage of RespBuild: header/CT/relay-id capture + SSE detection + translate resolution
-    /// (everything before `FirstByteBody::new`).
-    RbPre,
-    /// Sub-stage of RespBuild: `FirstByteBody::new` + `into_body` + the axum `Response::builder`
-    /// chain + `maybe_attach_*` header calls + `.body()`.
-    RbBody,
     /// The ingress `finish` boundary: metrics record + request-log gate + refund check.
     Finish,
-    /// Inbound request-body JSON validate + head-project (`LazyBody::parse`) in `forward_with_pool_keyed`
-    /// — busbar's OWN parse of the caller's request bytes, BEFORE any stage below. Not part of the
-    /// upstream RTT; pure busbar CPU. (Zero when the caller pre-parsed, e.g. the real ingress layer.)
-    InboundParse,
-    /// `forward_with_pool_parsed` wrapper setup BEFORE the dispatch core: `next_request_id` + span
-    /// record + response-tap shape capture (light path: taps empty → near-zero) + `app.clone()`.
-    WrapSetup,
-    /// Per-attempt pre-dispatch bookkeeping BETWEEN lane_pick and translate_req: routing-stage taps
-    /// (light path: none), `metric_pool_label`, and the `upstream_attempt` telemetry bump.
-    AttemptSetup,
-    /// Sub-stage of RbBody: `r.bytes_stream()` + `FirstByteBody::new` + `into_body` (the streaming
-    /// body wrapper construction).
-    RbNew,
-    /// Sub-stage of RbBody: the axum `Response::builder` chain + CT/relay-id/route-policy header
-    /// attaches + `.body(axum_body)` (the response head assembly + return).
-    RbFinish,
-    /// Sub-stage of RbFinish: `Response::builder().status()` + the Content-Type header attach
-    /// (fresh `HeaderMap` alloc + `HeaderName`/`HeaderValue` parse-validate).
-    RbfBuild,
-    /// Sub-stage of RbFinish: `maybe_attach_response_request_id` + `maybe_attach_route_policy`
-    /// (the `decl_for` protocol resolves + conditional header attaches).
-    RbfAttach,
-    /// Sub-stage of RbFinish: `.body(axum_body)` finalize + return.
-    RbfBody,
-    /// Between UpstreamSend end and RecordSuccess: the post-`.send()` response handling on the
-    /// SUCCESS path — status/`StatusClass` classification, 2xx detection, the failover/refund branch
-    /// selection up to the success arm. This is the last uncounted span inside `busbar;dur` (the
-    /// former ~2µs residual); on a non-2xx/failover path it covers the error-classify work instead.
-    PostSend,
 }
 
 impl Stage {
@@ -103,27 +46,7 @@ impl Stage {
     fn name(self) -> &'static str {
         match self {
             Stage::MwAuth => "mw_auth",
-            Stage::Prepare => "prepare",
-            Stage::LanePick => "lane_pick",
-            Stage::TranslateReq => "translate_req",
-            Stage::ClientBuild => "client_build",
-            Stage::CbAuth => "  cb_auth",
-            Stage::CbReqwest => "  cb_reqwest",
-            Stage::UpstreamSend => "upstream_send",
-            Stage::RecordSuccess => "record_success",
-            Stage::RespBuild => "resp_build",
-            Stage::RbPre => "  rb_pre",
-            Stage::RbBody => "  rb_body",
             Stage::Finish => "finish",
-            Stage::InboundParse => "inbound_parse",
-            Stage::WrapSetup => "wrap_setup",
-            Stage::AttemptSetup => "attempt_setup",
-            Stage::RbNew => "    rb_new",
-            Stage::RbFinish => "    rb_finish",
-            Stage::RbfBuild => "      rbf_build",
-            Stage::RbfAttach => "      rbf_attach",
-            Stage::RbfBody => "      rbf_body",
-            Stage::PostSend => "post_send",
         }
     }
 }
@@ -274,30 +197,7 @@ pub fn dump() {
     }
     let mut b = buckets().lock().unwrap_or_else(|p| p.into_inner());
     // A stable, readable report order.
-    let order = [
-        Stage::MwAuth,
-        Stage::InboundParse,
-        Stage::WrapSetup,
-        Stage::Prepare,
-        Stage::LanePick,
-        Stage::AttemptSetup,
-        Stage::TranslateReq,
-        Stage::ClientBuild,
-        Stage::CbAuth,
-        Stage::CbReqwest,
-        Stage::UpstreamSend,
-        Stage::PostSend,
-        Stage::RecordSuccess,
-        Stage::RespBuild,
-        Stage::RbPre,
-        Stage::RbBody,
-        Stage::RbNew,
-        Stage::RbFinish,
-        Stage::RbfBuild,
-        Stage::RbfAttach,
-        Stage::RbfBody,
-        Stage::Finish,
-    ];
+    let order = [Stage::MwAuth, Stage::Finish];
     b.sort_by_key(|(stage, _)| order.iter().position(|s| s == stage).unwrap_or(usize::MAX));
     for (stage, bucket) in b.iter_mut() {
         let samples = &mut bucket.samples;

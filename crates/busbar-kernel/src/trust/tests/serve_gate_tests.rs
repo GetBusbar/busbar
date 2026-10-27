@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE OWNER FOR "MAY THIS ITEM SERVE?" (choke point I, ARCHITECT Q3): the kernel's Approve.
+//! ONE OWNER FOR "MAY THIS ITEM SERVE?": the kernel's Approve.
 //!
 //! A plane states its trust facts and the kernel decides: the registration's configured item
 //! approvals arrive through the plane's declared item-approvals trust key

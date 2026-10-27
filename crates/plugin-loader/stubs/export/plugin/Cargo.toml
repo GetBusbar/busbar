@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-stub-export-plugin"
+version = "1.5.0"
+publish = false            # first-party signed cdylib, shipped as a packed/signed tarball, not to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "First-party signed kind:export plugin cdylib: the request-log FILE sink (`module: request-log-file`), packaged as a droppable busbar plugin. Drop the signed tarball into `plugins/` and name it from an `export.<name>.module: request-log-file` block."
+license = "Apache-2.0"
+
+[lib]
+test = false
+doctest = false
+# cdylib: the DROPPED-IN door (a signed tarball in `plugins/`). rlib: REQUIRED for `cargo test` to
+# emit the cdylib artifact the conformance test packs (a cdylib-only package builds a trivial test
+# harness and never produces the .so/.dylib — the store-postgres-plugin / store-mysql-plugin note).
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# THE DROPPED-IN DOOR: `export_door!` emits the one C symbol `busbar_plugin_door`, and ONLY the
+# dropped-in cdylib may export it (compiled in = dropped in, one table: a busbar build that links
+# this crate as a row, alone or beside others, must carry no door symbol, or two doors in one
+# binary multiply define it under `lto = "fat"`). OFF by default; the dropped-in artifact is built
+# `cargo build --release -p busbar-export-file-plugin --features dropped-in`, and `cargo test` names this crate
+# below with it on so the cdylib the conformance test opens carries the door.
+dropped-in = []
+
+[dependencies]
+# THE LOGIC, same repo: its `door` is the door this image exports.
+busbar-stub-export = { path = "../logic" }
+# `export_door!`, the macro that emits the image's one symbol. Same pinned rev as the logic crate's.
+busbar-contract = { workspace = true }

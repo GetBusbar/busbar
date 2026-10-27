@@ -25,19 +25,16 @@
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
 
 use busbar_contract::abi::host::io::{DIR_BOTH, DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::Program;
 use busbar_contract::io_host::{IoHost, IoRefusal, IoResult, Spawn};
 
-use crate::compose::{DEFAULT_OPEN_TIMEOUT, MAX_PENDING_LOOKUPS};
 use crate::io::{self as reactor, Direction, Registered};
 use crate::socket::{self, Sock};
 
@@ -238,27 +235,6 @@ impl HostIo {
                 Sock::Unix(_) => None,
             },
             _ => None,
-        }
-    }
-
-    /// SHUT the write half of handle `id` (a stream's FIN; a program's input closed), as the layer a
-    /// detached stream moved on to ends its writing and keeps reading. A handle no longer held is
-    /// already shut.
-    pub fn shut_write(&self, id: u64) {
-        let Ok(e) = self.lookup(id) else {
-            return;
-        };
-        match &e.kind {
-            Kind::Stream { sock, .. } => {
-                let _ = sock.get_ref().shutdown(Shutdown::Write);
-            }
-            Kind::Program(p) => {
-                p.stdin
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take();
-            }
-            Kind::Listener(_) => {}
         }
     }
 
@@ -683,110 +659,6 @@ impl IoHost for HostIo {
                 String::new(),
             )),
             Kind::Program(_) => Ok((0, String::new())),
-        }
-    }
-}
-
-/// THE SYSTEM NAME LOOKUP the kernel's remaining resolve-then-pin dials ask through its egress-trust
-/// capability (row 130 E2: the kernel opens no socket, a resolver's included, so its lookup is the
-/// connector's host I/O, the one place here that touches the OS; the root installs this behind the
-/// capability at boot). Returns EVERY address the
-/// name answered with, de-duplicated but otherwise untouched and unsorted: filtering or re-ordering
-/// would quietly decide which address the guard gets to judge, and the guard judges all of them; a
-/// name answering one address under both a v4 and a v6 query is ONE fact.
-///
-/// ## Why a thread of its own, and why it is never joined
-///
-/// The seam is synchronous, so this runs `getaddrinfo` and waits. Not `Handle::current().block_on`
-/// and not `block_in_place`: both make assumptions about the caller (that there IS a runtime, that
-/// it is multi-threaded) that a synchronous seam cannot make, and its callers reach it from
-/// different postures — a foreign thread already inside `Runtime::block_on`, a boxed future on a
-/// shared worker, a plain `async fn`. A thread with its own current-thread runtime has no such
-/// precondition and cannot panic on the caller's behalf. (Moved from the kernel's deleted
-/// `net_guard::SystemResolver`.)
-///
-/// The wait is BOUNDED by the dial's own bound, [`DEFAULT_OPEN_TIMEOUT`] (the open's bound when
-/// the caller states none; the seam carries no deadline, so this lookup states none): `getaddrinfo`
-/// can wedge, and a join with no bound would hold the caller for as long as it does. The answer
-/// comes back over a channel the caller waits on for at most that long; a lookup with no answer by
-/// then is a resolution FAILURE (`Err`), which the guard reads as an unresolvable name. The wedged
-/// thread is let go, never joined: it ends when its lookup does, and its answer, if one comes, has
-/// no one to hear it. Let-go threads are CAPPED: at most [`MAX_PENDING_LOOKUPS`] lookups are in
-/// flight at once, and one more is refused at once (an unresolvable name) until one ends.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SystemNames;
-
-impl busbar_kernel_egress::trust::net::Resolver for SystemNames {
-    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
-        // Port zero: this seam answers about ADDRESSES. The port belongs to the URL and is applied
-        // by the caller that built the pin, so asking the resolver about one would be asking a
-        // second question.
-        let target = format!("{host}:0");
-        within(DEFAULT_OPEN_TIMEOUT, move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| format!("name lookup: could not start a runtime: {e}"))?;
-            rt.block_on(async move {
-                let answered = tokio::net::lookup_host(target)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let mut out: Vec<IpAddr> = Vec::new();
-                for sa in answered {
-                    let ip = sa.ip();
-                    if !out.contains(&ip) {
-                        out.push(ip);
-                    }
-                }
-                Ok(out)
-            })
-        })
-    }
-}
-
-/// The name lookups in flight now, against [`MAX_PENDING_LOOKUPS`].
-static PENDING_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
-
-/// Runs one `lookup` on a thread of its own and waits for its answer at most `bound`: no answer by
-/// then, or a lookup that died without one, is an `Err`. The thread is never joined, so a lookup
-/// that never returns holds only itself and one of the [`MAX_PENDING_LOOKUPS`] places.
-fn within<F>(bound: Duration, lookup: F) -> Result<Vec<IpAddr>, String>
-where
-    F: FnOnce() -> Result<Vec<IpAddr>, String> + Send + 'static,
-{
-    within_capped(bound, MAX_PENDING_LOOKUPS, &PENDING_LOOKUPS, lookup)
-}
-
-/// [`within`] with its cap and its count stated: a lookup takes a place in `in_flight` BEFORE its
-/// thread starts, and with `cap` places taken it is refused at once, no thread started. The place is
-/// given back when the lookup ends (answers, errs or panics), even if no one is waiting for it.
-fn within_capped<F>(
-    bound: Duration,
-    cap: usize,
-    in_flight: &'static AtomicUsize,
-    lookup: F,
-) -> Result<Vec<IpAddr>, String>
-where
-    F: FnOnce() -> Result<Vec<IpAddr>, String> + Send + 'static,
-{
-    let place = LookupPlace::take(cap, in_flight)
-        .ok_or_else(|| format!("name lookup: {cap} lookups already in flight"))?;
-    let (answer, answered) = std::sync::mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("busbar-names".into())
-        .spawn(move || {
-            // Given back when this thread ends, an unwinding panic included.
-            let _place = place;
-            // The caller may have stopped waiting: then no one hears this, and that is fine.
-            let _ = answer.send(lookup());
-        })
-        // A thread that never started dropped its closure, and the place with it.
-        .map_err(|e| format!("name lookup: could not start a thread: {e}"))?;
-    match answered.recv_timeout(bound) {
-        Ok(found) => found,
-        Err(RecvTimeoutError::Timeout) => Err(format!("name lookup: no answer within {bound:?}")),
-        Err(RecvTimeoutError::Disconnected) => {
-            Err("name lookup: the worker thread panicked".to_string())
         }
     }
 }

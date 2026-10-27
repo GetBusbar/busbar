@@ -176,12 +176,14 @@ identically. Elements are framed in order, each element's members in the order b
 | 36 | `policy_epoch` | number |
 | 37 | `hooks_count` | number |
 | 38 | `hooks[].hook` | text |
-| 39 | `replayed` | number |
-| 40 | `children_count` | number |
-| 41 | `children[]` | number |
-| 42 | `correlation_hash` | text |
+| 39 | `hooks[].head` | text |
+| 40 | `hooks[].failed` | number |
+| 41 | `replayed` | number |
+| 42 | `children_count` | number |
+| 43 | `children[]` | number |
+| 44 | `correlation_hash` | text |
 
-Fields 22–25 repeat once per usage line, 37 once per hook, 40 once per child unit.
+Fields 23–26 repeat once per usage line, 38–40 once per hook that ran, 43 once per child unit.
 
 `subject_tag` is one of `principal`, `arrival`, `node`, `aggregate`; `subject_value` is the
 principal identifier for a principal, the node's number for a node, and empty otherwise. `node` (field
@@ -189,6 +191,11 @@ principal identifier for a principal, the node's number for a node, and empty ot
 the sealing process mints. `outcome`, `step`,
 `finish` and `lines[].source` are frozen text spellings the node publishes verbatim — you never need
 to derive them, only to frame what you were given.
+
+`hooks[].hook` is the key the deployment configured the hook under, never the plugin that serves
+it; `hooks[].head` is what its answer did to the unit, one of `pass`, `veto`, `modify`;
+`hooks[].failed` is `1` when the hook could not answer (an error or a deadline) and its head is what
+its `on_error` made of that, else `0`. The hooks are listed in the order they ran.
 
 ---
 

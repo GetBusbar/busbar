@@ -333,7 +333,7 @@ const ADMIN_STALLED_TEXT: &str =
 
 /// 4005: a data-plane admission budget with no slot free within the wait denies with 1.5.5's
 /// saturation text. A door whose own `max_inflight` is full is not 4005: the walk hands it back
-/// apart for the data plane's 503 (owner ruling Q134). RED: a door that refused denies too, and
+/// apart for the data plane's 503. RED: a door that refused denies too, and
 /// says nothing of saturation.
 #[test]
 fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
@@ -352,7 +352,7 @@ fn a_saturated_data_plane_verifier_says_4005_in_1_5_5_words_and_denies() {
         )
         .await
     });
-    assert_eq!(judged, Err(VerifierOverloaded), "Q134: handed back apart");
+    assert_eq!(judged, Err(VerifierOverloaded), "handed back apart");
     assert!(!said.text().contains("BUSBAR-4005"), "{:?}", said.text());
 
     // The budget itself: every slot held, the wait elapses, the request is denied unverified.
@@ -493,7 +493,7 @@ fn the_door_path_diagnostics_warn_once_then_debug_as_1_5_5() {
 
 // ───────────────────────── 2. pre-mint READY-with-zero-fields -> no auth header ───────────────
 
-/// THE ADMIN CREDENTIAL NEVER REACHES A LOG LINE (ARCHITECT ruling 2026-09-30, AUTH-DOOR: admin
+/// THE ADMIN CREDENTIAL NEVER REACHES A LOG LINE (admin
 /// requests terminate locally and the verify answer's strips are not applied there, so nothing the
 /// chain writes may carry the credential). Every answer the operator's door can give — an identity,
 /// a bad credential, a pass, an overloaded verifier, an outage — is walked with both carriers

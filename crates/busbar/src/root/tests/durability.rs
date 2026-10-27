@@ -2932,7 +2932,7 @@ fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
     use busbar_kernel_ledger::cost::LaneClass;
     const RATE: u64 = 3_000;
     // The plane rows the linked doors fold to, as the composition root folds them: the fallback
-    // plane is a door row (DEV-GREEN row 83), so its declaration is its door's Statement.
+    // plane is a door row, so its declaration is its door's Statement.
     let fallback = {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         let mut fallbacks: Vec<_> = crate::LINKED
@@ -3029,7 +3029,7 @@ fn every_fallback_open_class_prices_at_the_card_and_replays_idempotently() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// H3 (ARCHITECT 2026-10-07): THE JOURNAL KEPT BY THE CONFIGURED STORE
+// H3: THE JOURNAL KEPT BY THE CONFIGURED STORE
 // ---------------------------------------------------------------------------------------------
 
 /// A book over `slots` with no data directory, as node `node`: the production boot's shape.
@@ -3067,8 +3067,7 @@ fn drained(durability: &Durability) {
     );
 }
 
-/// **A NODE WITH NO DATA DIRECTORY KEEPS ITS CHAIN IN ITS STORE ACROSS A RESTART** (ARCHITECT
-/// 2026-10-07 H3 ruling (a)-(b); THE DESIGN §7). Sealed audit records, an open hold killed with the
+/// **A NODE WITH NO DATA DIRECTORY KEEPS ITS CHAIN IN ITS STORE ACROSS A RESTART**. Sealed audit records, an open hold killed with the
 /// node (kill -9) and a settled posting go on the chain; a second book over the SAME store resumes
 /// that chain: the audit cache is rebuilt from it, the hold a predecessor left is recovered, the
 /// settled figure is on the book, and the numbering continues past every stored record.
@@ -3150,7 +3149,7 @@ fn a_restart_over_the_same_store_keeps_the_chain_the_audit_records_and_the_holds
     );
 }
 
-/// **A STORE THAT REFUSES DOES NOT REFUSE A DATA UNIT** (ARCHITECT 2026-10-07 H3 ruling (c)): the
+/// **A STORE THAT REFUSES DOES NOT REFUSE A DATA UNIT**: the
 /// unit settles, its record waits in the lane and is re-offered, and it lands once the store
 /// recovers — read back by the next boot. Meanwhile the lane is unhealthy, which is what a durable
 /// verb refuses on.
@@ -3194,7 +3193,7 @@ fn a_data_unit_rides_a_refusing_store_and_its_record_lands_once_it_recovers() {
     );
 }
 
-/// **A FULL LANE FAILS CLOSED AND DROPS NOTHING** (ARCHITECT 2026-10-07 H3 ruling): with the store
+/// **A FULL LANE FAILS CLOSED AND DROPS NOTHING**: with the store
 /// refusing, the lane fills; the book then refuses new money-bearing work with its reason, the
 /// journal keeps every record it is handed (no `ChainBreak`, nothing dropped), and once the store
 /// recovers everything lands and the book admits again.
@@ -3266,9 +3265,8 @@ fn a_full_lane_refuses_new_money_and_drops_no_record() {
     );
 }
 
-/// **A LONG OUTAGE DOES NOT WEDGE THE BOOK** (audit root r4 B-3; ARCHITECT 2026-10-07 H3 ruling,
-/// the `durability` module docs: a full lane fails closed "until the store takes what waits" and "no
-/// record is dropped"; BUSBAR-1.6.0.md THE DESIGN §7 l.991-998). With the store refusing, the journal
+/// **A LONG OUTAGE DOES NOT WEDGE THE BOOK** (a full lane fails closed "until the
+/// store takes what waits" and "no record is dropped"). With the store refusing, the journal
 /// keeps appending past the lane's bound — what a fail-closed node still writes (admin units, the
 /// checkpoint cadence, accruals) — so the batch it retains grows past the bound too. Once the store
 /// recovers and the lane drains, the next append's re-offer is taken whole: every record reaches the
@@ -3407,7 +3405,7 @@ fn a_chain_read_between_two_parts_of_a_queued_record_warns_nothing() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// H3 follow-up (ARCHITECT 2026-10-07): THE DEPLOYMENT KEYSET AND THE NODE'S IDENTITY IN THE STORE
+// H3 follow-up: THE DEPLOYMENT KEYSET AND THE NODE'S IDENTITY IN THE STORE
 // ---------------------------------------------------------------------------------------------
 
 /// A book over `slots` as node `node`, its deployment keyset bound the way the boot binds it.
@@ -3424,8 +3422,7 @@ fn keyed_store_book(slots: &crate::root::store_double::RecordSlots, node: u64) -
     durability
 }
 
-/// **A RESTART OVER THE SAME STORE VERIFIES THE PRIOR BOOT'S RECORDS** (ARCHITECT 2026-10-07 H3
-/// ruling, follow-up (1)): with no data directory the deployment keyset is kept in the store and
+/// **A RESTART OVER THE SAME STORE VERIFIES THE PRIOR BOOT'S RECORDS**: with no data directory the deployment keyset is kept in the store and
 /// read back, so the audit records a predecessor signed verify under the key this boot holds, and
 /// `/admin/verify`'s walks find nothing.
 ///
@@ -3847,8 +3844,7 @@ fn a_driven_unit_killed_mid_stream_over_the_store_is_recovered_at_its_flushed_ch
     assert_eq!(recovered.settled, 300, "priced at its epoch, above zero");
 }
 
-/// **TWO NODES ON ONE STORE NEVER COLLIDE, AND VERIFY WALKS BOTH CHAINS** (ARCHITECT 2026-10-07 H3
-/// ruling, follow-up (2)): each host takes its own stable id from the store's node registry, a
+/// **TWO NODES ON ONE STORE NEVER COLLIDE, AND VERIFY WALKS BOTH CHAINS**: each host takes its own stable id from the store's node registry, a
 /// restart on the same host takes the same one back, each node resumes exactly its own chain, and
 /// the walk `/admin/verify` makes reads and verifies both — and names an edit made to the other
 /// node's chain in the store.
@@ -3920,7 +3916,7 @@ fn two_nodes_on_one_store_never_collide_and_verify_walks_both_chains() {
     );
 }
 
-/// **RACING FIRST BOOTS KEEP ONE DEPLOYMENT KEYSET** (ARCHITECT 2026-10-07 H3 ruling): minting the
+/// **RACING FIRST BOOTS KEEP ONE DEPLOYMENT KEYSET**: minting the
 /// keyset redeems the store's single-use claim first, so a boot that lost it takes the key the
 /// winner keeps rather than keeping its own over it.
 ///
@@ -3998,7 +3994,7 @@ fn a_lost_keyset_claim_with_nothing_kept_refuses_until_the_claim_lapses() {
     );
 }
 
-/// **RACING FIRST BOOTS OF ONE HOST TAKE ONE NODE ID** (ARCHITECT 2026-10-07 H3 ruling): minting a
+/// **RACING FIRST BOOTS OF ONE HOST TAKE ONE NODE ID**: minting a
 /// host's id redeems the store's claim on that host first, so the boot that lost it takes the id
 /// the winner keeps.
 ///
@@ -4281,7 +4277,7 @@ impl Drop for Refreshing {
 
 /// Two LIVE nodes that share one host name — `host`, or none at all — on one store: each takes its
 /// identity, seals its own audit records and settles its own money, and each restarted book over
-/// the store reads back exactly its own (Q128 root part 12 HIGH 2).
+/// the store reads back exactly its own.
 fn two_live_nodes_keep_their_own_records(host: &str) {
     let slots = crate::root::store_double::RecordSlots::new();
     let a = take_node(slots.calls().as_ref(), host).expect("the first node's identity");
@@ -4338,8 +4334,7 @@ fn two_live_nodes_keep_their_own_records(host: &str) {
     );
 }
 
-/// **TWO LIVE NODES WITH ONE HOST NAME KEEP SEPARATE MONEY AND AUDIT RECORDS** (Q128 root part 12
-/// HIGH 2): the second takes a fresh id because the first holds the name's lease.
+/// **TWO LIVE NODES WITH ONE HOST NAME KEEP SEPARATE MONEY AND AUDIT RECORDS**: the second takes a fresh id because the first holds the name's lease.
 ///
 /// RED before the fix: the identity was the host name's alone, so both nodes journaled under one
 /// id and overwrote each other's records in the store.
@@ -4348,7 +4343,7 @@ fn two_live_nodes_with_one_host_name_keep_separate_money_and_audit_records() {
     two_live_nodes_keep_their_own_records("host-same");
 }
 
-/// **TWO LIVE NAMELESS NODES KEEP SEPARATE MONEY AND AUDIT RECORDS** (Q128): no host name is one
+/// **TWO LIVE NAMELESS NODES KEEP SEPARATE MONEY AND AUDIT RECORDS**: no host name is one
 /// name, held under one lease like any other.
 ///
 /// RED before the fix: every nameless host shared the empty name's one identity.
@@ -4357,7 +4352,7 @@ fn two_live_nameless_nodes_keep_separate_money_and_audit_records() {
     two_live_nodes_keep_their_own_records("");
 }
 
-/// **A CRASH-RESTART RESUMES THE SAME CHAIN AND RECOVERS ITS HOLDS** (Q128): a node with no data
+/// **A CRASH-RESTART RESUMES THE SAME CHAIN AND RECOVERS ITS HOLDS**: a node with no data
 /// directory killed with a hold open (its lease neither released nor refreshed again) restarts at
 /// once; the new boot watches the lease, sees it lapse unrefreshed, takes the host's id back under
 /// a lease of its own and resumes its chain. (The in-process sweep never sees a dead process's
@@ -4414,8 +4409,7 @@ fn a_restart_after_the_lease_lapsed_resumes_the_chain_and_recovers_the_holds() {
     assert_eq!(next.id, first.id, "a released lease is taken at once");
 }
 
-/// **A BOOT WHILE ITS PREDECESSOR STILL REFRESHES THE LEASE TAKES A FRESH ID** (Q128, the
-/// overlap): the lease is refreshed while the second process watches it, so its holder is live, and
+/// **A BOOT WHILE ITS PREDECESSOR STILL REFRESHES THE LEASE TAKES A FRESH ID**: the lease is refreshed while the second process watches it, so its holder is live, and
 /// the second journals under an id of its own and leaves the host's chain untouched.
 ///
 /// RED before the fix: the second process took the host's id and wrote over the first's chain.
@@ -4478,7 +4472,7 @@ fn dir_store_book(
     .expect("the directory opens")
 }
 
-/// **A NODE WITH A DATA DIRECTORY KEEPS ITS ID IN IT, AND A RESTART READS IT BACK** (Q128): the id
+/// **A NODE WITH A DATA DIRECTORY KEEPS ITS ID IN IT, AND A RESTART READS IT BACK**: the id
 /// is the directory's own, so two directories on one host name are two identities.
 ///
 /// RED before the fix: the id came from the host name in the store, and nothing was kept in the
@@ -4515,7 +4509,7 @@ fn a_restart_over_the_same_data_dir_keeps_its_id() {
     assert_eq!(full.trim().len(), 32, "a 128-bit id: {full:?}");
 }
 
-/// **MIGRATION: THE HOST NAME'S OLD REGISTRY ID IS ADOPTED, AND THE CHAIN KEEPS READING** (Q128):
+/// **MIGRATION: THE HOST NAME'S OLD REGISTRY ID IS ADOPTED, AND THE CHAIN KEEPS READING**:
 /// a data directory written by a build that keyed the node by its host name has no id file; its
 /// first boot on this build adopts the id the registry holds under that name, keeps it in the
 /// directory, and the chain written under it reads back whole.
@@ -4568,8 +4562,7 @@ fn the_first_boot_adopts_the_host_names_registry_id_and_the_chain_keeps_reading(
     );
 }
 
-/// **A DATA-DIRECTORY NODE THAT ADOPTED ITS HOST NAME'S ID HOLDS THAT NAME'S LEASE** (Q128, the
-/// mixed pair): a live node with no data directory and the same name then takes a fresh id, so the
+/// **A DATA-DIRECTORY NODE THAT ADOPTED ITS HOST NAME'S ID HOLDS THAT NAME'S LEASE**: a live node with no data directory and the same name then takes a fresh id, so the
 /// two never journal under one identity.
 ///
 /// RED before the fix: both took the host name's registry id.
@@ -4597,8 +4590,7 @@ fn a_data_dir_node_that_adopted_the_host_id_holds_its_lease_against_a_no_data_di
     assert!(peer.lease.is_none(), "and the peer holds none");
 }
 
-/// THE HELD CHECKPOINTS ARE RE-DERIVED FROM THE CHAIN, AS THEY WERE SEALED (Q128 kernel-ledger
-/// HIGH 1, ARCHITECT ruling A1): the node keeps each seal's head and not its balances, and one
+/// THE HELD CHECKPOINTS ARE RE-DERIVED FROM THE CHAIN, AS THEY WERE SEALED: the node keeps each seal's head and not its balances, and one
 /// ordered walk of its journal hands every held checkpoint back with the very figures it sealed,
 /// oldest first, the same set the ring holds.
 #[test]
@@ -4640,7 +4632,7 @@ fn every_held_checkpoint_is_re_derived_from_the_chain_as_it_was_sealed() {
     }
 }
 
-/// RED (ARCHITECT A1): A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE IS REFUSED BY ITS SEQUENCE
+/// RED: A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE IS REFUSED BY ITS SEQUENCE
 /// NUMBER, never served with numbers. A figure the book moved with no record behind it is sealed
 /// into the second checkpoint, so the chain re-derives figures that are not the sealed ones; and a
 /// held head no record on the chain carries is refused as not on the chain.
@@ -4688,7 +4680,7 @@ fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_by_its_seq() {
     );
 }
 
-/// RED (Q128 kernel-ledger HIGH 1, the held-checkpoint walk): ON A NODE RESUMED FROM THE STORE WHOSE
+/// RED: ON A NODE RESUMED FROM THE STORE WHOSE
 /// CHAIN OUTGREW ONE MEMORY SEGMENT, EVERY HELD CHECKPOINT STILL RE-DERIVES. The memory log keeps only
 /// its newest segment resident (`Wal::memory_seeded`); the rest of the chain is the store's. A walk
 /// of the journal's own replay starts mid-chain, misses the settlement sealed before the roll, and
@@ -4778,8 +4770,7 @@ fn a_store_resumed_chain_past_one_segment_re_derives_every_held_checkpoint() {
     }
 }
 
-/// THE HELD CHECKPOINTS RE-DERIVE ACROSS A RETIREMENT (Q128 kernel-ledger HIGH 1 with row 159's
-/// 31-day retirement). The chain keeps every window the book let go; the seal that left a window out
+/// THE HELD CHECKPOINTS RE-DERIVE ACROSS A RETIREMENT. The chain keeps every window the book let go; the seal that left a window out
 /// was taken from a book that no longer held it. The walk drops every window retired at or before
 /// each held seal, so the seal before the retirement is served WITH the window, the seal that left
 /// it out WITHOUT it, and both as they were sealed. RED with the walk folding the whole chain into
@@ -4827,7 +4818,7 @@ fn a_held_checkpoint_sealed_without_a_retired_window_still_re_derives() {
     );
 }
 
-/// RED (row 159 retirement x Q128 A1): WHAT THE NODE KEEPS TO RE-DERIVE ITS HELD CHECKPOINTS ACROSS
+/// RED: WHAT THE NODE KEEPS TO RE-DERIVE ITS HELD CHECKPOINTS ACROSS
 /// RETIREMENTS IS BOUNDED BY THE 31-DAY HORIZON, not by how many windows it ever retired. Forty
 /// windows are sealed while young; each seal after it carries one more past the horizon, and the
 /// seal leaves it out. Once every one of them is retired, no held seal kept a window past its
@@ -4870,7 +4861,7 @@ fn many_retirements_across_seals_keep_only_what_the_horizon_requires() {
     );
 }
 
-/// RED (row 159 retirement x Q128 A1): A WINDOW POSTED AGAIN AFTER ITS RETIREMENT STILL RE-DERIVES.
+/// RED: A WINDOW POSTED AGAIN AFTER ITS RETIREMENT STILL RE-DERIVES.
 /// The second seal leaves the window out and the book lets it go; a late posting then lands on that
 /// window, so the book holds it again with only the new figure, and the third seal carries it. The
 /// walk drops the retired window from its scratch book when it passes the seal that left it out, so

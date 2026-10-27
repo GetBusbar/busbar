@@ -1,7 +1,8 @@
 //! The resolved runtime breaker configuration the state machine evaluates.
 //!
-//! Moved byte-identical from `busbar-substrate::store::{BreakerCfg, TripConfig, TripMode}`
-//! (1.5.5's `crates/busbar-substrate/src/store.rs:205-259`). Plain data — no serialization or
+//! Ported from the `BreakerCfg`, `TripConfig` and `TripMode` of 1.5.5's
+//! `crates/busbar/src/store/in_memory/mod.rs`, with the same fields and defaults, and one field the
+//! source did not have: [`BreakerCfg::bench_below_trip_threshold`]. Plain data — no serialization or
 //! config-grammar concerns live here; a config-owning crate lowers its own grammar into this type.
 
 /// Which signal decides when a cell trips from closed to open.

@@ -134,12 +134,6 @@ impl AuthChain {
         self.chain.iter().map(|e| e.module.name()).collect()
     }
 
-    /// Whether the module list is empty. Note that this alone is NOT the open door — see
-    /// [`AuthChain::is_open`], which also asks about the keys arm.
-    pub fn has_no_modules(&self) -> bool {
-        self.chain.is_empty()
-    }
-
     /// Whether the front door is open: no boxed module and no keys arm.
     pub fn is_open(&self) -> bool {
         self.chain.is_empty() && !self.keys_in_chain

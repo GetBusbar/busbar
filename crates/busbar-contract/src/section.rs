@@ -28,7 +28,7 @@ pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", UPSTREAM_CREDENTIALS_KEY];
 /// `passthrough`), the section's default and a registration's override.
 pub const UPSTREAM_CREDENTIALS_KEY: &str = "upstream_credentials";
 
-/// A registration's RFC 8693 `token_exchange:` block (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): busbar's
+/// A registration's RFC 8693 `token_exchange:` block: busbar's
 /// own subject token is exchanged, per call, for a token down-scoped to the caller's grant and
 /// audience-bound to the registration's [`AUDIENCE_KEY`]. Its keys are [`TOKEN_URL_KEY`],
 /// [`SUBJECT_TOKEN_KEY`] (a secret reference) and [`SUBJECT_TOKEN_TYPE_KEY`].
@@ -79,8 +79,7 @@ pub const AUDIENCE_KEY: &str = "aud";
 /// THE RESERVED `pools` SUB-KEY of a plane's section (#47, POOLS-VERBS): its named pools, each a list
 /// of the section's own entries under `members`, and the operations it may repeat under
 /// [`POOL_REPEATABLE_KEY`]. Core-owned: the kernel walks it; a plane reads it only to name the pool
-/// a unit routes over and whether its operation is performed at most once (ARCHITECT round 4
-/// Q-L3B-SURFACES (h)).
+/// a unit routes over and whether its operation is performed at most once.
 pub const RESERVED_POOLS_KEY: &str = "pools";
 
 /// The operations a pool may perform twice, inside its [`RESERVED_POOLS_KEY`] entry: an operation
@@ -103,8 +102,7 @@ pub const WORK_MAX_LIVE_KEY: &str = "max_live";
 /// How long a settled work handle is retained, in seconds, inside [`RESERVED_WORK_KEY`].
 pub const WORK_RETAIN_S_KEY: &str = "retain_s";
 
-/// THE RESERVED PER-ENTRY `timeout:` of any plane's section (ARCHITECT timeout ruling; R2-G: "PoolSpec
-/// carries ... per-member tier and timeout"): an entry's wall-clock bound on ONE attempt to reach it,
+/// THE RESERVED PER-ENTRY `timeout:` of any plane's section: an entry's wall-clock bound on ONE attempt to reach it,
 /// `<n><s|m|h|d>`. Core-owned: the kernel judges it ([`entry_timeout_ms`]) and holds every attempt
 /// its walk makes to that entry's member to it (`Member::attempt_timeout_ms`), for every plane alike;
 /// a plane names none of it. An entry that writes none is bounded by its walk's own budget.
@@ -156,7 +154,7 @@ pub const POOL_MEMBER_NAME_KEY: &str = "name";
 /// plane is handed the member's bare name.
 pub const POOL_MEMBER_TIER_KEY: &str = "tier";
 
-/// THE MEMBER-TARGET PATH of a need's `target_from` (ARCHITECT Q-L3B-ROUTES: a door plane's member
+/// THE MEMBER-TARGET PATH of a need's `target_from` (a door plane's member
 /// routes come from its own section): `settings.*.<key>`, where `*` stands for EACH registration of
 /// the section, names every member's own target — its registration's `<key>` — rather than one
 /// target for the instance: that member's URL. Such a need is not pinned at `open`: the composition
@@ -173,8 +171,7 @@ pub fn member_target(target_from: &str) -> Option<&str> {
         .filter(|key| !key.is_empty() && !key.contains('.'))
 }
 
-/// THE MEMBER-PROGRAM PATH of a need's `target_from` (ARCHITECT round 5, the member-program
-/// upstream ruling (A)): `settings.*`, where `*` stands for EACH registration of the section, names
+/// THE MEMBER-PROGRAM PATH of a need's `target_from`: `settings.*`, where `*` stands for EACH registration of the section, names
 /// every member's own PROGRAM — the registration's `command`, `args` and `env`
 /// ([`crate::conn::Program::of_member`]; its other keys are not the program's). A registration that
 /// names no `command` is not a member of such a need. The host keeps ONE long-lived program
@@ -187,8 +184,7 @@ pub fn member_program(target_from: &str) -> bool {
     target_from == MEMBER_PROGRAM
 }
 
-/// THE OWNED-SECTION PATH of a need's `trust_from` (ARCHITECT ruling on a plane's push trust,
-/// 2026-10-14): `owned.<section>.<key>[...]` names a value in one of the plane's OTHER OWNED
+/// THE OWNED-SECTION PATH of a need's `trust_from`: `owned.<section>.<key>[...]` names a value in one of the plane's OTHER OWNED
 /// SECTIONS (the Statement's sections beside its declaring one, lifted raw and handed at `open` in
 /// `PlaneOpenIn::owned` and at `refresh` under `abi::plane::EXT_OWNED`), never in its own settings:
 /// a namespace of its own, with no fallback between it and `settings.`. An owned section is

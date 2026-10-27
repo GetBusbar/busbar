@@ -9,7 +9,7 @@
 #
 # Per push to dev:
 #   1. `build` builds `busbar` at the pushed commit for linux x86_64 and aarch64
-#      (`cargo build --locked --release -p busbar --bin busbar`, the oracle check's own build) and
+#      (`cargo build --locked --release --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target`, the oracle check's own build) and
 #      uploads each as the run artifact `busbar-linux-<arch>`, holding `busbar-linux-<arch>-<sha>`;
 #   2. `hashes` states both binaries' sha256 as the generator's subjects;
 #   3. `provenance` is slsa-github-generator's generic generator over those subjects: one signed
@@ -69,7 +69,7 @@ jobs:
       - name: Toolchain (rust-toolchain.toml)
         run: rustup toolchain install
       - name: Build busbar
-        run: cargo build --locked --release -p busbar --bin busbar
+        run: cargo build --locked --release --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target
       - name: Name it for the hand-off
         run: |
           mkdir -p out

@@ -24,8 +24,8 @@ use busbar_contract::caps::{Abort, MeterClassId, Outcome, ReasonCode, StepName, 
 
 use crate::record::{
     abort_tag, direction_tag, finish_tag, outcome_tag, reason_tag, step_tag, AuditRecord, Controls,
-    FinishClass, HookApplied, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine,
-    What,
+    FinishClass, HookApplied, HookHead, OpClassId, OutcomeFacts, QuantitySource, Subject, Usage,
+    UsageLine, What,
 };
 
 /// The tag every journalled audit record opens with.
@@ -85,6 +85,8 @@ pub fn journal_body(record: &AuditRecord) -> Vec<u8> {
     w.num(c.hooks_applied.len() as u64);
     for hook in &c.hooks_applied {
         w.text(&hook.hook);
+        w.text(hook.head.as_str());
+        w.num(u64::from(hook.failed));
     }
     w.num(u64::from(c.replayed));
     w.num(c.children.len() as u64);
@@ -208,6 +210,12 @@ fn decode(
     for _ in 0..r.num().ok_or_else(|| bad("hooks"))? {
         controls.hooks_applied.push(HookApplied {
             hook: r.text().ok_or_else(|| bad("hook"))?,
+            head: r
+                .text()
+                .as_deref()
+                .and_then(HookHead::from_tag)
+                .ok_or_else(|| bad("hook head"))?,
+            failed: r.flag().ok_or_else(|| bad("hook failed"))?,
         });
     }
     controls.replayed = r.flag().ok_or_else(|| bad("replayed"))?;

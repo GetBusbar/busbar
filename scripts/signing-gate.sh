@@ -147,13 +147,14 @@ def string():
 def blob():
     u32(); u32(); take(u32())
 strs = lambda: [string() for _ in range(count())]
-if take(8) != b"BBSTMT01":
+if take(8) != b"BBSTMT02":   # RENDERING_MAGIC in busbar-contract: exactly the current version
     sys.exit("manifest statement is not a Statement rendering: the magic")
 u32(); u32(); u32(); u32()                       # mechanism, kind, kind_abi, max_inflight
 string(); string()                               # name, version
 for _ in range(count()):                         # families
     string(); string(); string(); strs(); u8()
-strs(); u32(); blob(); strs(); blob(); u64()     # diag_ids, kind_tail, extensions, secret_refs, settings_schema, marks
+strs(); u32(); take(u32())                       # diag_ids, kind_tail, kind_tail_facts (bytes)
+blob(); strs(); blob(); u64()                    # extensions, secret_refs, settings_schema, marks
 for _ in range(count()): u32(); string()         # mark_words
 for _ in range(count()): u32(); string(); string()  # rewrites
 for _ in range(count()): string(); u32()         # sections

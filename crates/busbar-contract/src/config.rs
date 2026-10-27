@@ -105,9 +105,7 @@ pub fn neg1() -> i64 {
 /// otherwise-ambiguous credential scheme to the single native header the caller's real client
 /// produces. (Split out of the old `AuthMode`, now its own config key — `AuthMode` is gone.)
 // `Serialize` is additive and is what lets a config section carrying this field be projected back
-// to a raw definition document — the base half of the config overlay's per-entry MERGE
-// (`NamedMapSection::entry_as_document`). A section whose entry cannot round-trip to a document
-// cannot be patched per field, only replaced wholesale.
+// to a raw definition document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamCreds {

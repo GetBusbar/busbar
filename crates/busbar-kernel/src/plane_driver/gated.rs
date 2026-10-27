@@ -28,9 +28,10 @@ use busbar_contract::hook_wire::reply::{clamp_reject_status, sanitize_reject_mes
 use busbar_contract::hooks::TransformOutcome;
 
 use super::super::{DriverSteps, FarEnd, PlaneUnits};
-use super::{veto_by, HookBinder, Projection, RewriteChain, Stopped};
+use super::{rewrite_applied, veto_by, HookBinder, Projection, RewriteChain, Stopped};
 use crate::hooks::gate::{decide_door, DoorSubject, GateVerdict, ScanSubstrate};
 use crate::hooks::ResolvedPolicy;
+use busbar_kernel_audit::record::HookApplied;
 
 /// The order a plane's request-stage hooks run in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -127,8 +128,21 @@ impl HookBinder for HostGatedHooks {
 
 impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
     /// THE GATE-FIRST REQUEST STAGE (module doc): the entry's gates over the projection, then its
-    /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more.
+    /// rewrite chain. Nothing is bound for the entry: the unit pays nothing more. The hooks it ran
+    /// are reported to the driver's hook journal however it ended.
     pub(crate) async fn gated_stage(&self, binder: &dyn HookBinder) -> Result<(), Stopped> {
+        let mut ran = Vec::new();
+        let stage = self.run_gated_stage(binder, &mut ran).await;
+        self.report_hooks(ran);
+        stage
+    }
+
+    /// [`Self::gated_stage`], each hook that ran pushed onto `ran` as it answered.
+    async fn run_gated_stage(
+        &self,
+        binder: &dyn HookBinder,
+        ran: &mut Vec<HookApplied>,
+    ) -> Result<(), Stopped> {
         let first = self.project(None, false);
         let (principal, recorded, route) = {
             let st = self.lock();
@@ -169,7 +183,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     dialect: binder.dialect(self.lock().decoded.as_ref().map_or(0, |d| d.dialect)),
                     ..Projection::default()
                 };
-                return self.screen_gates(&hooks, &null).await;
+                return self.screen_gates(&hooks, &null, ran).await;
             }
             Err(other) => return Err(other),
         };
@@ -180,14 +194,17 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             return Ok(());
         };
         let entry = entry.to_string();
-        let Some(hooks) = binder.bind_gated(&entry, principal.as_deref()) else {
+        let Some(mut hooks) = binder.bind_gated(&entry, principal.as_deref()) else {
             return Ok(());
         };
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
-        span.record("request_id", hooks.request_id);
+        // The unit's own correlation id, where its host minted one (status row 173).
+        if let Some(id) = self.lock().request_id {
+            hooks.request_id = id;
+        }
+        super::record_request_id(hooks.request_id);
 
         // 1. THE DECISION GATES, over the projected invocation, keyed on the view's session.
-        self.screen_gates(&hooks, &view).await?;
+        self.screen_gates(&hooks, &view, ran).await?;
 
         // 2. THE ENTRY'S REWRITE CHAIN, each rewrite applied by the plane and projected again.
         for (timeout, hook) in &hooks.rewrites {
@@ -202,6 +219,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
             let outcome = hook.transform(&req, *timeout).await;
             drop(req);
+            ran.push(rewrite_applied(hook.name(), &outcome));
             match outcome {
                 TransformOutcome::Rewrite(rw) => {
                     let bytes = super::rewrite_bytes(&rw);
@@ -223,7 +241,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                         return Err(Stopped::Unreadable);
                     }
                     if let Some(body) = &next.rewritten {
-                        self.lock().body = Some(Arc::from(body.as_slice()));
+                        self.lock().body = Some(bytes::Bytes::copy_from_slice(body));
                     }
                     view = next;
                 }
@@ -247,7 +265,12 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
 
     /// THE ENTRY'S DECISION GATES over `view`, the projected invocation, keyed on the view's
     /// session: the first rejecting gate refuses the unit.
-    async fn screen_gates(&self, hooks: &GatedHooks, view: &Projection) -> Result<(), Stopped> {
+    async fn screen_gates(
+        &self,
+        hooks: &GatedHooks,
+        view: &Projection,
+        ran: &mut Vec<HookApplied>,
+    ) -> Result<(), Stopped> {
         if !hooks.gates.is_empty() {
             let now_ms = crate::store::now_ms();
             let door = DoorSubject {
@@ -275,7 +298,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                 status,
                 message,
                 hook,
-            } = decide_door(&hooks.gates, &door).await
+            } = decide_door(&hooks.gates, &door, ran).await
             {
                 tracing::info!(
                     entry = %view.pool,
@@ -283,7 +306,7 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
                     status,
                     "a unit refused by a hook gate"
                 );
-                return Err(veto_by(status, message, hook));
+                return Err(veto_by(status, message, &hook));
             }
         }
         Ok(())

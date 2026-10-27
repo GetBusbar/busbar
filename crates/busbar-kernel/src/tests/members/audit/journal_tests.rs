@@ -4,15 +4,12 @@
 //! A sealed record survives the journal: `audit.v4` keeps the whole record, and reading it back
 //! gives the record that was sealed — the same digest, the same signature, still verifying.
 
-use busbar_contract::caps::{Audit as AuditStep, KernelSeal, MeterClassId, Pass};
+use crate::test_support::tokens::pass;
+use busbar_contract::caps::{Audit as AuditStep, MeterClassId};
 
 use busbar_kernel_audit::journal::{from_journal_body, journal_body, JOURNAL_TAG};
 use busbar_kernel_audit::record::{AuditBreakKind, AuditChain};
 use busbar_kernel_audit::sign::AuditSigningKey;
-
-fn token() -> Pass<AuditStep> {
-    Pass::mint(&KernelSeal::acquire_for_kernel())
-}
 
 /// The classes the fixture's lines name, as a node's registered vocabulary would resolve them.
 fn declared(name: &str) -> Option<MeterClassId> {
@@ -35,7 +32,7 @@ fn sealed(n: u64) -> Vec<busbar_kernel_audit::record::AuditRecord> {
         .map(|unit| {
             let mut inputs = super::sign_tests::rich_inputs(unit);
             inputs.what.incarnation = 3;
-            busbar_kernel_audit::record::Audit::seal(&mut chain, inputs, &token())
+            busbar_kernel_audit::record::Audit::seal(&mut chain, inputs, &pass::<AuditStep>())
         })
         .collect()
 }

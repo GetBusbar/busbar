@@ -162,7 +162,7 @@ mod plugin {
 
 fn table() -> &'static crate::abi::secret::Ops {
     // SAFETY: the macro's `'static` door and table.
-    unsafe { &*(*plugin::door()).ops.cast::<crate::abi::secret::Ops>() }
+    unsafe { &*plugin::door().ops.cast::<crate::abi::secret::Ops>() }
 }
 
 fn in_head<T>(op: u32) -> InHead {

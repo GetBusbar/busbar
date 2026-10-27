@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A TRANSPORT THAT STATES NO FAULT READING READS AS NONE (ARCHITECT breaker ruling, 2026-10-05).
+//! A TRANSPORT THAT STATES NO FAULT READING READS AS NONE.
 //!
 //! A transport built before the fault byte was named (a carrier, whose pieces carry
 //! no status at all) wrote that byte as alignment padding, always `0`, and its tail stops short of

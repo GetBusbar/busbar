@@ -112,7 +112,7 @@ pub struct OutboundStyle {
 /// auth Statement is none: `false`. Reads the door's `'static` Statement only; nothing is opened.
 #[must_use]
 pub fn declares_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn) -> bool {
-    crate::dispatch::load::validate::<Auth>(door)
+    crate::dispatch::load::validate::<Auth>(crate::dispatch::load::raw(door))
         .ok()
         .and_then(|v| facts(&v.statement).ok())
         .is_some_and(|f| {
@@ -126,7 +126,7 @@ pub fn declares_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn
 /// is opened.
 #[must_use]
 pub fn operator_principal(door: busbar_contract::abi::mechanism::door::DoorFn) -> Option<String> {
-    crate::dispatch::load::validate::<Auth>(door)
+    crate::dispatch::load::validate::<Auth>(crate::dispatch::load::raw(door))
         .ok()
         .and_then(|v| facts(&v.statement).ok())
         .and_then(|f| f.operator_principal)
@@ -142,6 +142,13 @@ pub fn operator_principal(door: busbar_contract::abi::mechanism::door::DoorFn) -
 /// The door's Statement does not read as an auth Statement, or its tail is one a bind refuses.
 pub fn stated_facts(
     door: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<AuthFacts, String> {
+    stated_facts_raw(crate::dispatch::load::raw(door))
+}
+
+/// [`stated_facts`] over a door the loader already holds raw (a registry row's).
+pub(crate) fn stated_facts_raw(
+    door: busbar_contract::abi::sdk::door::RawDoorFn,
 ) -> Result<AuthFacts, String> {
     let v = crate::dispatch::load::validate::<Auth>(door).map_err(|e| e.to_string())?;
     facts(&v.statement)

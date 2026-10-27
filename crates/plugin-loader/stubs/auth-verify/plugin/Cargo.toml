@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-stub-auth-verify-plugin"
+version = "1.5.0"
+publish = false            # first-party signed cdylib, shipped as a packed/signed tarball, not to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "First-party signed kind:auth plugin cdylib: the built-in admin-tokens admin-auth module (the single operator admin token, compared in constant time), packaged as a droppable busbar plugin."
+license = "Apache-2.0"
+
+[lib]
+test = false
+doctest = false
+# cdylib: the DROPPED-IN door (a signed tarball in `plugins/`), exporting `busbar_plugin_door`.
+# rlib: what `cargo test` links, and what a loader test depends on to have the cdylib built.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# THE LOGIC, same repo: its `door::door` is the door this image exports.
+busbar-stub-auth-verify = { path = "../logic" }
+busbar-contract = { workspace = true }

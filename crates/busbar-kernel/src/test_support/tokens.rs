@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE KERNEL'S OWN TEST-ONLY MINT (ARCHITECT ruling B, GATE-GREEN, 2026-10-02).
+//! THE KERNEL'S OWN TEST-ONLY MINT.
 //!
 //! A token (`Pass<S>`, `Grant<C>`) and the kernel's sealed values (`Origin`) are built only inside
 //! `crates/busbar-kernel/src` (construction row `token-sealed*`). A dependent crate's tests (the

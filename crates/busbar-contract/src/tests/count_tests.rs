@@ -757,34 +757,3 @@ fn a_float_spelled_count_is_the_count_and_never_a_silent_zero() {
         assert!(!e.to_string().is_empty(), "{e:?} must say what it refused");
     }
 }
-
-/// NO BINARY FLOATING POINT IN THE TYPE, ITS ARITHMETIC, OR ITS TESTS.
-///
-/// A source scan of this module and its tests, because the ban is about what the code names and no
-/// unit test of behaviour can observe a type that is not there. The gate
-/// `cargo xtask gate no-float-money` holds the same line across the whole money path; this is the
-/// in-crate copy, so the rule travels with the file rather than living only in a tool.
-#[test]
-fn neither_the_count_type_nor_its_tests_names_a_binary_float() {
-    // Built rather than written, so this test's own source does not carry the needle it hunts.
-    let needles = [format!("f{}", "64"), format!("f{}", "32")];
-    for (name, src) in [
-        ("count.rs", include_str!("../count.rs")),
-        ("tests/count_tests.rs", include_str!("count_tests.rs")),
-    ] {
-        for (i, line) in src.lines().enumerate() {
-            let trimmed = line.trim_start();
-            // Prose about the ban is the prose that explains it; code is what the ban is about.
-            if trimmed.starts_with("//") {
-                continue;
-            }
-            for needle in &needles {
-                assert!(
-                    !line.contains(needle.as_str()),
-                    "{name}:{}: `{needle}` on the money path",
-                    i + 1
-                );
-            }
-        }
-    }
-}

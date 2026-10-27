@@ -5,7 +5,7 @@
 //! P2 D4), and v1.5.5's hook reply tests (its `wire.rs`
 //! inline suite, M4 HOOK-PARITY), verbatim. The 1.5.5 host normalized a JSON reply here; on the
 //! memory ABI the reply is lowered by the hook SDK into the kind's fixed `out` and read back by the
-//! kernel (`policy::decision` / `transformed`), so `norm` runs that chain.
+//! kernel (`policy`'s two readers, `answered` here and `transformed`), so `norm` runs that chain.
 
 /// A hook-supplied multi-byte help/label/unit must cap at a CHAR
 /// boundary, never panic (String::truncate takes bytes — 100 × '€' panicked the admin handler).
@@ -135,7 +135,7 @@ fn status_metrics_validates_native_buckets() {
     );
 }
 
-use super::{decision, transformed};
+use super::{decision as answered, transformed};
 use crate::hooks::{
     CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingDecision, RoutingRequest,
 };
@@ -263,7 +263,7 @@ fn opt_in_prompt_without_system_still_sends_messages() {
 
 /// A 1.5.5 `decide` reply, as the host now receives it: the hook SDK lowers the JSON
 /// (`lower_decide_reply`) and states it in the kind's fixed `out` (`write_verdict`: the verb bits,
-/// the stated status, the written parts); the kernel reads that back (`plugin::decision`). The
+/// the stated status, the written parts); the kernel reads that back (`answered`). The
 /// `out` encoding below is the hook ABI's, one line per verdict (the SDK's own tests prove
 /// `write_verdict` writes exactly this and the frame reads it back).
 fn norm(json: &str) -> RoutingDecision {
@@ -285,7 +285,7 @@ fn norm(json: &str) -> RoutingDecision {
             Verdict::Abstain => (VERB_ABSTAIN, 0, String::new(), vec![], vec![]),
             Verdict::Failed(why) => panic!("the reply failed to parse: {why}"),
         };
-    decision(verbs, status, || message, || tags, || order, &cands)
+    answered(verbs, status, || message, || tags, || order, &cands)
 }
 
 /// A 1.5.5 `transform` reply, the same way (`lower_transform_reply`, `write_rewrite`,

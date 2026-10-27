@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-stub-transport-plugin"
+version = "1.6.0"
+publish = false            # first-party signed cdylib, shipped as a packed/signed tarball, not to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "First-party signed kind:transport plugin cdylib: the `tcp` transport, packaged as a droppable busbar plugin. Drop the signed tarball into `plugins/` and the boot seal folds the wire beside the linked ones."
+license = "Apache-2.0"
+
+[lib]
+test = false
+doctest = false
+# cdylib: the DROPPED-IN door (a signed tarball in `plugins/`), exporting `busbar_plugin_door`.
+# rlib: what `cargo test` links, and what makes `cargo test` emit the cdylib the conformance test
+# loads (a cdylib-only package builds a trivial test harness and never produces the library).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# THE LOGIC, same repo: its `door::door` is the door this image exports. A busbar build that LINKS
+# the transport names the logic crate, which exports no symbol.
+busbar-stub-transport = { path = "../logic" }
+busbar-contract = { workspace = true }

@@ -49,17 +49,19 @@ pub(crate) fn restate(slot: &AtomicPtr<Door>, real: DoorFn, needs: &'static [Nee
     if !have.is_null() {
         return have;
     }
+    let door: Door = *real();
     // SAFETY: a door function answers a `'static` door with a `'static` Statement.
-    let door: Door = unsafe { real().read_unaligned() };
-    let st: Statement = unsafe { door.statement.read_unaligned() };
+    let st: Statement = unsafe { door.statement().read_unaligned() };
     let st: &'static Statement = Box::leak(Box::new(Statement {
         needs: needs.as_ptr(),
         needs_len: needs.len(),
         ..st
     }));
-    let door = Box::into_raw(Box::new(Door {
-        statement: st,
-        ..door
+    let door = Box::into_raw(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            statement: st,
+            ..door.parts()
+        })
     }));
     match slot.compare_exchange(
         std::ptr::null_mut(),

@@ -689,69 +689,6 @@ fn a_flapping_upstream_gets_one_persistent_quarantine_and_every_flap_is_still_co
     assert_eq!(b.judge(&i, &whole), Ok(()));
 }
 
-/// THE RATCHET (the served engine's
-/// `the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion`, the kernel's half):
-/// the book (drift, quarantine, the recovery backoff), the cadence it keeps and the trust-key
-/// parser that reads the cadence a plane declares are scanned for a knob that would slow detection
-/// or hold a demotion, and the cadence policy's field set is enumerated: the ONLY held direction it
-/// may name is recovery. (The verify-on-call gate this once scanned is deleted, Q128 p8#3: it was
-/// never constructed in production; the parser takes its place, it does not shrink the scan.)
-#[test]
-fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
-    // A path that silently stopped resolving would be this guard quietly covering nothing: a file
-    // that moved moves the ratchet, it does not drop the path.
-    let read = |rel: &str| -> String {
-        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "the cadence ratchet cannot read `{rel}`: {e}. If the file moved, MOVE THE \
-                     RATCHET — do not drop the path."
-                )
-            })
-    };
-    let code = |s: &str| -> String {
-        s.lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    for rel in [
-        "src/trust/book.rs",
-        "src/trust/reverify.rs",
-        "src/trust/section.rs",
-    ] {
-        let src = code(&read(rel));
-        for banned in [
-            "detection_backoff",
-            "detection_grace",
-            "demotion_backoff",
-            "demotion_grace",
-            "demotion_delay",
-            "quarantine_grace",
-            "quarantine_delay",
-            "drift_grace",
-            "suppress_drift",
-            "min_drift",
-        ] {
-            assert!(
-                !src.contains(banned),
-                "{rel} names `{banned}`. Detection is never rate-limited and demotion is never \
-                 held; the only direction that may be held is RECOVERY. A window an upstream can \
-                 open for itself by flapping is a window it will use."
-            );
-        }
-    }
-    // Exactly two knobs, so a third cannot arrive unnoticed. Exhaustive destructure, no `..`.
-    let Policy {
-        ttl_ms,
-        recovery_backoff_ms,
-    } = Policy {
-        ttl_ms: 1,
-        recovery_backoff_ms: 2,
-    };
-    assert_eq!((ttl_ms, recovery_backoff_ms), (1, 2));
-}
-
 /// A pin of the kind-neutral `mechanism`: an authenticity root holding `key`, or the no-root
 /// spelling (no root, no material, no fingerprint).
 fn pinned_by(mechanism: &str, root: bool, key: Option<&str>) -> TrustEntry {

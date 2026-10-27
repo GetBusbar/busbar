@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT AXIS, THE ROOT'S (WIRE-EXPORT; ARCHITECT ruling 2026-09-29, the opener seam: a kind's
+//! THE EXPORT AXIS, THE ROOT'S (the opener seam: a kind's
 //! `<Kind>Axis` is the contract's, implemented HERE over the ONE dispatcher and the registry, and
 //! installed through the kernel's `RootInstall`). [`EXPORTS`] answers the contract's `ExportAxis`
 //! over the registry boot scanned and linked (`linked::dropped_from_config`, kept by

@@ -153,14 +153,51 @@ pub struct Usage {
     pub bucket_chain_ref: String,
 }
 
-/// One hook that ran.
+/// What one hook's answer did to the unit: its decision head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookHead {
+    /// It let the unit through as it was.
+    Pass,
+    /// It stopped the unit.
+    Veto,
+    /// It changed the unit: rewrote its request, or ordered or narrowed where it may go.
+    Modify,
+}
+
+impl HookHead {
+    /// The frozen text the digest and the journal carry.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookHead::Pass => "pass",
+            HookHead::Veto => "veto",
+            HookHead::Modify => "modify",
+        }
+    }
+
+    /// The head [`HookHead::as_str`] spells `tag`, if any.
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        [HookHead::Pass, HookHead::Veto, HookHead::Modify]
+            .into_iter()
+            .find(|h| h.as_str() == tag)
+    }
+}
+
+/// One hook that ran (THE DESIGN §1: "controls (... hooks applied)").
 ///
-/// Which hook, and nothing priced: what a hook changed is in the counts it changed, and those are
-/// the usage lines.
+/// Which hook, by the key the deployment configured it under (never the instance that serves it),
+/// its decision head, and whether it failed — and nothing priced: what a hook changed is in the
+/// counts it changed, and those are the usage lines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookApplied {
-    /// Which hook.
+    /// Which hook: its configured key.
     pub hook: String,
+    /// What its answer did to the unit.
+    pub head: HookHead,
+    /// It could not answer (an error, a deadline): its head is then what its `on_error` made of
+    /// it. A failure is recorded, never dropped.
+    pub failed: bool,
 }
 
 /// THE CONTROLS that were in force.

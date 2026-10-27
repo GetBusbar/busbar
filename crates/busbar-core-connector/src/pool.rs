@@ -21,8 +21,10 @@
 //! A pooled connection is keyed by everything its dial was judged and secured for: the instance and
 //! the need that dialled it (THE DESIGN §5, a connection belongs to the instance that opened it; §8,
 //! the connector holds each need's trust), the entry, the authority, the security and the name
-//! offered, the egress class it was judged under, and the very seal of trust anchors it was held to
-//! (a destination sealed again is dialled afresh under its new seal). A dial
+//! offered, the egress class it was judged under, the very client config it was secured with (a
+//! need declared again under another operator CA is dialled afresh under its new trust), and the
+//! very seal of trust anchors it was held to (a destination sealed again is dialled afresh under
+//! its new seal). A dial
 //! stated `within` an address set is never pooled (its landing rule is per open). An idle
 //! connection is lent only after it has read what the far end sent while it sat idle, so one the far
 //! end closed or said goodbye on is closed here, never handed out.
@@ -88,25 +90,36 @@ pub(crate) struct PoolKey {
     /// The registration whose own sealed anchors the dial was held to (`None`: the destination's):
     /// a line that presented one registration's client identity is never lent to another's open.
     pub(crate) anchored_as: Option<String>,
+    /// The client config the dial was secured with (`None`: none): the need's own, its operator CA
+    /// on top of the public roots, or the connector's. A line verified under one is never lent to
+    /// an open secured with another, even of the same need declared again.
+    pub(crate) trust: Option<Same<rustls::ClientConfig>>,
     /// The seal of trust anchors the dial was held to (`None`: none): a line verified under one
     /// seal is never lent to an open held to another, even of the same destination sealed again.
-    pub(crate) sealed: Option<SealRef>,
+    pub(crate) sealed: Option<Same<Sealed>>,
 }
 
-/// One seal of trust anchors, by identity: two seals are the same only when they are one seal. The
-/// key holds the seal, so its address is never reused while a line keyed by it is pooled.
-#[derive(Debug, Clone)]
-pub(crate) struct SealRef(pub(crate) Arc<Sealed>);
+/// One trust a dial was held to (a client config, a seal of anchors), by identity: two are the
+/// same only when they are one. The key holds it, so its address is never reused while a line
+/// keyed by it is pooled.
+#[derive(Debug)]
+pub(crate) struct Same<T>(pub(crate) Arc<T>);
 
-impl PartialEq for SealRef {
+impl<T> Clone for Same<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T> PartialEq for Same<T> {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
-impl Eq for SealRef {}
+impl<T> Eq for Same<T> {}
 
-impl std::hash::Hash for SealRef {
+impl<T> std::hash::Hash for Same<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         Arc::as_ptr(&self.0).hash(state);
     }
@@ -383,6 +396,26 @@ impl Pools {
             }
         }
         self.reap_if_due(now);
+    }
+
+    /// `owner` is gone: every line dialled for it leaves the pool, and each nobody holds is
+    /// closed now, never left for the idle reaper. Another instance's lines are untouched.
+    pub(crate) fn forget(&self, owner: InstanceId) {
+        let mut gone = Vec::new();
+        for shard in &*self.shards {
+            shard.lock().expect("pool").retain(|key, entries| {
+                if key.owner != owner {
+                    return true;
+                }
+                gone.extend(entries.drain(..).map(|e| e.line));
+                false
+            });
+        }
+        for line in gone {
+            if line.users() == 0 {
+                line.close();
+            }
+        }
     }
 
     /// Drop `line` from the pool for `key` on `shard` (it failed its exchange's open); closed when

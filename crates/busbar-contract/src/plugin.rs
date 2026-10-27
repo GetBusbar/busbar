@@ -112,13 +112,6 @@ impl Kind {
         Self::Hook,
         Self::Export,
     ];
-
-    /// The kind whose root key is `key`, or `None` for a key no kind owns (a core-owned key, or a
-    /// plane's declared verb).
-    #[must_use]
-    pub fn owning_root_key(key: &str) -> Option<Kind> {
-        Self::ALL.into_iter().find(|k| k.root_key() == Some(key))
-    }
 }
 
 /// Where a kind is configured: one root key the kernel knows, or the verbs each plane plugin

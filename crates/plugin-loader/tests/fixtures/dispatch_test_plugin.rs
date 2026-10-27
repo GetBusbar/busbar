@@ -191,19 +191,21 @@ static OPS: Shared<OpsHead> = Shared(OpsHead {
     close: Some(close),
 });
 
-static DOOR: Shared<Door> = Shared(Door {
-    magic: DOOR_MAGIC,
-    mechanism_version: MECHANISM_VERSION,
-    size: std::mem::size_of::<Door>() as u32,
-    kind: KIND as u32,
-    kind_abi: KIND.abi_version(),
-    statement: &STATEMENT.0 as *const Statement,
-    ops: &OPS.0 as *const OpsHead,
-    ready: None,
+static DOOR: Shared<Door> = Shared(unsafe {
+    Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+        magic: DOOR_MAGIC,
+        mechanism_version: MECHANISM_VERSION,
+        size: std::mem::size_of::<Door>() as u32,
+        kind: KIND as u32,
+        kind_abi: KIND.abi_version(),
+        statement: &STATEMENT.0 as *const Statement,
+        ops: &OPS.0 as *const OpsHead,
+        ready: None,
+    })
 });
 
 /// THE DOOR: the `DoorFn` a compiled-in row holds.
-pub extern "C" fn door() -> *const Door {
+pub extern "C" fn door() -> &'static Door {
     &DOOR.0
 }
 

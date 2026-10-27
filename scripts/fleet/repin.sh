@@ -6,7 +6,10 @@
 #
 #   .busbar-ref          "<sha> <version>";
 #   every Cargo.toml     each `busbar-* = { git = "https://github.com/GetBusbar/busbar", rev = ... }`,
-#                        which is what cargo actually BUILDS against;
+#                        which is what cargo actually BUILDS against, and the `[patch]` entry that
+#                        spells the same repo through `https://www.github.com/GetBusbar/busbar` (the
+#                        one busbar-contract every framer resolves to; Cargo refuses a patch naming
+#                        the source it patches, so busbar-release renders it at the pin that way);
 #   Cargo.lock           the resolved busbar git source, so `--locked` builds keep working;
 #   .github/workflows    each `uses: GetBusbar/busbar/.github/workflows/<file>@<sha>`: the thin
 #                        callers take the reusable CI/release logic at the same busbar commit the
@@ -28,6 +31,8 @@
 set -euo pipefail
 
 SRC='https://github.com/GetBusbar/busbar'
+# The [patch] spelling of the same repo (busbar-release render.rs CONTRACT_PATCH_GIT).
+PATCH_SRC='https://www.github.com/GetBusbar/busbar'
 
 decide() {
   local in_sha="${1-}" in_ver="${2-}" rec_sha="" rec_ver=""
@@ -61,10 +66,12 @@ repin() {
   [ -f Cargo.lock ] || { echo "::error::repin: run from the repo root (no Cargo.lock here)" >&2; return 1; }
 
   local manifests=() m
-  while IFS= read -r m; do manifests+=("$m"); done < <(git ls-files '*Cargo.toml' | xargs grep -l "git = \"${SRC}\"" || true)
+  while IFS= read -r m; do manifests+=("$m"); done < <(git ls-files '*Cargo.toml' | xargs grep -l -e "git = \"${SRC}\"" -e "git = \"${PATCH_SRC}\"" || true)
   [ "${#manifests[@]}" -gt 0 ] || { echo "::error::repin: no manifest names the busbar git source" >&2; return 1; }
   for m in "${manifests[@]}"; do
-    sed -i.repin-bak -E "s#(git = \"${SRC}\", rev = \")[0-9a-f]+\"#\\1${sha}\"#g" "$m"
+    sed -i.repin-bak -E \
+      -e "s#(git = \"${SRC}\", rev = \")[0-9a-f]+\"#\\1${sha}\"#g" \
+      -e "s#(git = \"${PATCH_SRC}\", rev = \")[0-9a-f]+\"#\\1${sha}\"#g" "$m"
     rm -f "$m.repin-bak"
   done
   printf '%s %s\n' "$sha" "$ver" > .busbar-ref

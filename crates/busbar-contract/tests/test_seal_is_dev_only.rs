@@ -197,7 +197,7 @@ fn the_test_seal_feature_is_named_only_on_dev_dependency_edges() {
     );
 }
 
-/// THE `alloc-counter` FEATURE IS NEVER ON IN A PRODUCTION BUILD (ARCHITECT ruling 2026-10-21).
+/// THE `alloc-counter` FEATURE IS NEVER ON IN A PRODUCTION BUILD.
 /// `alloc_counter::Counting` is the one `GlobalAlloc` impl outside `abi/`, compiled for a plugin's
 /// allocation gates only. It must not sit in this crate's `default`, and no `[dependencies]`,
 /// `[build-dependencies]`, `[target.*]` table or other crate's `[features]` entry anywhere in the

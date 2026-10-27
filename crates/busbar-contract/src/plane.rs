@@ -267,7 +267,7 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     /// Say where this unit wants to go.
     fn verify<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> crate::dest::DestinationFacts;
 
-    // NO `approve` AND NO `admit` (ARCHITECT 2026-10-06: trust and admission are the kernel's
+    // NO `approve` AND NO `admit` (trust and admission are the kernel's
     // Approve and Admit steps; a plane STATES facts and decides neither). A plane's trust facts
     // ride its arrival (`abi::plane::ArriveOut`'s `trust_*`), judged by the kernel's Approve.
 

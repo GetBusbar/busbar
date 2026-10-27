@@ -19,7 +19,9 @@
 //! A store that refuses a batch here does not fail the commit — the bytes are on the medium — but
 //! the batch stays owed to the store and is offered again on the next commit, in order, without
 //! being written to the medium a second time. Past [`STORE_BACKLOG_RECORDS`] what is owed is read
-//! back from the segments rather than held in memory; it is never given up on.
+//! back from the segments rather than held in memory; it is never given up on, a restart included:
+//! a log that opens over records owes the store the whole of it once, because nothing durable says
+//! which records the store took before the restart, and the store's put is idempotent.
 //!
 //! Everything below is written so that the mode is a value, not a set of conditionals scattered
 //! through the append path. There is one `append_batch`; what differs is which factory built the
@@ -316,6 +318,16 @@ impl Wal {
             quarantined,
         )?;
         let segments_used = segment.index() + 1;
+        // ON A DISK, WHAT THE STORE IS OWED IS ON THE MEDIUM, AND A RESTART MUST NOT FORGET IT. The
+        // queue and its mark live in this process; a store that was down when it ended is owed
+        // every record it had not taken, and nothing durable says which those were. So a log that
+        // opens over records owes the store the whole of it, oldest segment first, read back off
+        // the medium at the queue's bound like any other debt past it. The store's write is an
+        // idempotent put keyed on the record's identity, so a record it already holds is
+        // overwritten with the same bytes: a re-offer costs a write, never a record. (THE DESIGN,
+        // BUSBAR-1.6.0.md section 7: the journal is the record, the store holds its copy.)
+        let owes_store_on_open =
+            mode == Mode::OnDisk && (!recovered.records.is_empty() || tail_index > 0);
         let mut wal = Wal {
             factory,
             clock,
@@ -329,7 +341,7 @@ impl Wal {
             lost_batch: Vec::new(),
             owed_to_store: Vec::new(),
             store_debt_on_medium: 0,
-            store_owed_from: None,
+            store_owed_from: owes_store_on_open.then_some((0, 0)),
             recovered: Vec::new(),
             segments_used,
             quarantined: Vec::new(),
@@ -341,6 +353,13 @@ impl Wal {
         wal.recovered = recovered.records;
         for q in quarantined {
             wal.take_quarantine(q);
+        }
+        if owes_store_on_open {
+            // Offered at open, not on the first commit: reading the log back is boot work, beside
+            // the two reads of it the boot already makes, and never a cost on a request's path. A
+            // shipper that turns the run away leaves the rest owed from where it stopped.
+            let at = (wal.segment.index(), wal.segment.write_offset());
+            wal.offer_store_debt(&[], at);
         }
         Ok(wal)
     }
@@ -434,6 +453,13 @@ impl Wal {
     /// them, in order, once the store takes what the queue holds.
     pub fn store_debt_on_medium(&self) -> u64 {
         self.store_debt_on_medium
+    }
+
+    /// Whether the store is owed records the queue does not hold, to be read back off the medium:
+    /// past the queue's bound, or everything a log opened over when it was opened. A restart
+    /// cannot know which records a store took before it, so it owes the store the whole log once.
+    pub fn owes_store_from_medium(&self) -> bool {
+        self.store_owed_from.is_some()
     }
 
     /// Give up on the `count` oldest records the log still owes, and hand them back.

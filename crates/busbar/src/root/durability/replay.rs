@@ -67,22 +67,6 @@ pub(super) struct Replayed {
     pub(super) uncounted: std::collections::BTreeSet<(TotalsKey, WindowStart)>,
 }
 
-impl Replayed {
-    /// What a chain that could not be read at all leaves: nothing to rebuild from.
-    pub(super) fn nothing() -> Self {
-        Replayed {
-            open: Vec::new(),
-            unheld_claims: Vec::new(),
-            incarnation: 0,
-            unreadable: Vec::new(),
-            refused: Vec::new(),
-            read: Vec::new(),
-            counted: Vec::new(),
-            uncounted: std::collections::BTreeSet::new(),
-        }
-    }
-}
-
 /// REBUILD A BOOK FROM THE CHAIN, in chain order: every hold opened, every settlement posted — each
 /// figure DERIVED from the record's counts at its epoch against `history` (#71, #79).
 ///

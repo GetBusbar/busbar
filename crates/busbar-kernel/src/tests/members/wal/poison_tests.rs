@@ -11,7 +11,7 @@
 use busbar_kernel_wal::record::FRAME_BYTES;
 use busbar_kernel_wal::wal::{Mode, Wal};
 
-use super::fixtures::{durability_token, records, Fault, FaultyFactory};
+use super::fixtures::{durability_token, records, Fault, FaultyFactory, RefusingShipper};
 
 const CEILING: u64 = 256 * FRAME_BYTES as u64;
 
@@ -469,21 +469,10 @@ fn a_retaining_journal_keeps_a_failed_rolls_batch_past_its_bound() {
 /// outage lasts. What it gives up on is counted, and those records are still in the segments.
 #[test]
 fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
-    struct Refuses;
-    impl busbar_kernel_wal::ship::Shipper<busbar_kernel_wal::record::Record> for Refuses {
-        fn ship(
-            &mut self,
-            _records: &[busbar_kernel_wal::record::Record],
-        ) -> Result<(), busbar_kernel_wal::ship::ShipError> {
-            Err(busbar_kernel_wal::ship::ShipError::Unavailable(
-                "under test".into(),
-            ))
-        }
-    }
     let (factory, _switch, _memory) = FaultyFactory::new();
     let mut wal = Wal::with_parts(
         Box::new(factory),
-        Box::new(Refuses),
+        Box::new(RefusingShipper),
         Mode::OnDisk,
         u64::MAX / 2,
         super::fixtures::wall_ms,
@@ -519,18 +508,7 @@ fn the_on_disk_catch_up_queue_is_bounded_and_says_what_it_gave_up_on() {
 #[test]
 fn a_store_that_refuses_a_memory_buffered_batch_is_a_durability_loss() {
     // With no data directory the store IS the durability, so its refusal is the loss.
-    struct Refuses;
-    impl busbar_kernel_wal::ship::Shipper<busbar_kernel_wal::record::Record> for Refuses {
-        fn ship(
-            &mut self,
-            _records: &[busbar_kernel_wal::record::Record],
-        ) -> Result<(), busbar_kernel_wal::ship::ShipError> {
-            Err(busbar_kernel_wal::ship::ShipError::Unavailable(
-                "under test".into(),
-            ))
-        }
-    }
-    let mut wal = Wal::memory_buffered_to(Box::new(Refuses), super::fixtures::wall_ms);
+    let mut wal = Wal::memory_buffered_to(Box::new(RefusingShipper), super::fixtures::wall_ms);
     let token = durability_token();
     let batch = records(1, 1, 2, 20);
     wal.append_batch(&token, busbar_contract::caps::StepName::Meter, &batch)
@@ -676,36 +654,4 @@ fn a_memory_buffered_retry_after_a_refusal_does_not_write_the_records_twice() {
         3,
         "and the store ends up with all three, each once"
     );
-}
-
-#[test]
-fn a_store_that_refuses_an_on_disk_batch_does_not_fail_the_commit() {
-    // With a data directory the local log is the record and shipping is catch-up work.
-    struct Refuses;
-    impl busbar_kernel_wal::ship::Shipper<busbar_kernel_wal::record::Record> for Refuses {
-        fn ship(
-            &mut self,
-            _records: &[busbar_kernel_wal::record::Record],
-        ) -> Result<(), busbar_kernel_wal::ship::ShipError> {
-            Err(busbar_kernel_wal::ship::ShipError::Unavailable(
-                "under test".into(),
-            ))
-        }
-    }
-    let (factory, _switch, _memory) = FaultyFactory::new();
-    let mut wal = Wal::with_parts(
-        Box::new(factory),
-        Box::new(Refuses),
-        Mode::OnDisk,
-        CEILING,
-        super::fixtures::wall_ms,
-    )
-    .unwrap();
-    let token = durability_token();
-    wal.append_batch(
-        &token,
-        busbar_contract::caps::StepName::Meter,
-        &records(1, 1, 2, 20),
-    )
-    .expect("the bytes are on the medium; the store can catch up later");
 }

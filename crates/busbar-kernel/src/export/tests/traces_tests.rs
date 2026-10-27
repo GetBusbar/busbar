@@ -92,3 +92,65 @@ fn a_traces_record_is_built_to_the_sinks_projection() {
     let ungranted = record(logs_only, &facts);
     assert_eq!(*ungranted, serde_json::json!({}));
 }
+
+static RECORDED: std::sync::Mutex<Vec<Vec<(ExportField, Value)>>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn capture_recorded(facts: &[(ExportField, Value)]) {
+    RECORDED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(facts.to_vec());
+}
+
+/// A VALUE A SPAN RECORDS AFTER IT OPENED IS ONE OF ITS FACTS (status row 173): the unit's
+/// `forward` opens before the plane has read the request and records its `pool`, `ingress` and
+/// `op` once it has (v1.5.5 `proxy/engine/mod.rs:120` carried all three). A field recorded twice
+/// keeps its last value, once. RED before the producer read recorded values: the record carried
+/// none of the three.
+#[test]
+fn a_value_recorded_after_the_span_opened_is_one_of_its_facts() {
+    let subscriber = tracing_subscriber::registry().with(Producer(capture_recorded));
+    tracing::subscriber::with_default(subscriber, || {
+        let span = tracing::debug_span!(
+            "forward",
+            pool = tracing::field::Empty,
+            ingress = tracing::field::Empty,
+            op = tracing::field::Empty,
+            lane = tracing::field::Empty,
+            request_id = tracing::field::Empty
+        );
+        span.record("lane", 3_u64);
+        span.record("pool", "first");
+        span.record("pool", "p1");
+        span.record("ingress", "dialect_a");
+        span.record("op", "chat");
+        span.record("request_id", 7_u64);
+    });
+    let seen = std::mem::take(&mut *RECORDED.lock().unwrap_or_else(|e| e.into_inner()));
+    assert_eq!(seen.len(), 1, "one record per closed span: {seen:?}");
+    let facts = &seen[0];
+    assert_eq!(
+        field(facts, ExportField::Name),
+        Some(&Value::from("forward"))
+    );
+    assert_eq!(field(facts, ExportField::Pool), Some(&Value::from("p1")));
+    assert_eq!(
+        field(facts, ExportField::Ingress),
+        Some(&Value::from("dialect_a"))
+    );
+    assert_eq!(field(facts, ExportField::Op), Some(&Value::from("chat")));
+    assert_eq!(
+        field(facts, ExportField::Lane),
+        Some(&Value::from("3")),
+        "a `u64` field is its text, as 1.5.5's exporter wrote it (0.33 has no `record_u64`)"
+    );
+    assert_eq!(
+        facts
+            .iter()
+            .filter(|(f, _)| *f == ExportField::Pool)
+            .count(),
+        1,
+        "a field recorded twice is one fact: {facts:?}"
+    );
+}
