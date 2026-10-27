@@ -95,7 +95,7 @@ fn script_inputs() -> serde_json::Value {
 
 /// The sources again, into a library with `defines` (`-D`). The system C compiler is REQUIRED.
 fn rebuild(name: &str, defines: &[String]) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+    let dir = std::env::temp_dir()
         .join("dropped-conformance")
         .join(format!("{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("the build dir");
