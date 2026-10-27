@@ -177,7 +177,7 @@ fn addresses(s: &Stored) -> Vec<String> {
         .collect()
 }
 
-/// THE JUDGED ADDRESSES (ARCHITECT DEST-PIN 2026-10-01): asked to resolve and admitted, `dest.judge`
+/// THE JUDGED ADDRESSES: asked to resolve and admitted, `dest.judge`
 /// writes every address its one judgement judged, one span each, the pin first, from the SAME
 /// resolution (no second lookup); an IP literal names itself; a refusal and a judgement that did
 /// not resolve name none. RED on the judge that answered the verdict alone.
@@ -316,7 +316,7 @@ fn judge_dial_answers_the_pinned_address_the_verdict_judged() {
 /// off for `dest.judge` and for the connector's dial alike (both are `judge_dial`): a metadata
 /// literal is admitted and pinned, a metadata name is resolved and its metadata answer pinned.
 /// RED on the judge that lifted only the denylist and kept the address guard's own metadata refusal.
-/// The overrides are a provider dial's only (ARCHITECT ruling on #413): every other class refuses.
+/// The overrides are a provider dial's only: every other class refuses.
 #[test]
 fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
     let r = Arc::new(HandResolver::default());
@@ -455,7 +455,7 @@ fn an_operator_blocked_answer_is_refused_on_the_dial() {
     assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
 }
 
-/// ASKED TO REFUSE PRIVATE REACH AND TO EXPLAIN (ARCHITECT ruling on a plane's guard words): under a
+/// ASKED TO REFUSE PRIVATE REACH AND TO EXPLAIN: under a
 /// deployment that does NOT block private addresses, `DEST_REFUSE_PRIVATE` refuses a private
 /// literal, a loopback name and a name answering a private address all the same; with
 /// `DEST_EXPLAIN` a refusal an address decided names it (a cloud-metadata answer included), a
