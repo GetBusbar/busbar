@@ -17,8 +17,9 @@
 #
 # THE TRANSPORT FRAMERS a networked plugin's conformance host takes as dev-dependencies (rendered by
 # the fleet template, ARCHITECT Q-P4-9: GetBusbar/busbar-transport-*, each its own repo) are pinned
-# too: each such source in the lock must be the one busbar's own Cargo.lock at the pin records for that
-# crate (PIN_CHECK_BUSBAR_LOCK, default: the Cargo.lock of the busbar checkout this script sits in).
+# too: each such source in the lock must be the one busbar's default distribution lock at the pin
+# records for that crate (PIN_CHECK_BUSBAR_LOCK, default: dist/default/Cargo.lock of the busbar
+# checkout this script sits in, which links the framers now that core links no plugin).
 #
 # Two more refusals: a manifest that names a path OUTSIDE the repo (a sibling-checkout dependency
 # builds whatever happens to sit beside the checkout, not the pin), and a retired busbar crate
@@ -108,7 +109,19 @@ check() {
     local framers name src want block
     framers="$(lock_sources "$root/Cargo.lock" | grep -F " git+${FRAMER_SRC}" || true)"
     if [ -n "$framers" ]; then
-      block="${PIN_CHECK_BUSBAR_LOCK:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/Cargo.lock}"
+      block="${PIN_CHECK_BUSBAR_LOCK:-}"
+      if [ -z "$block" ]; then
+        # Core links no plugin: the framers are linked by the default distribution, so its lock
+        # (dist/default/Cargo.lock) is the one that records them. A sparse checkout of scripts/fleet
+        # does not hold that file; read it from the checkout's commit.
+        local bdir
+        bdir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+        block="$bdir/dist/default/Cargo.lock"
+        if [ ! -f "$block" ] && git -C "$bdir" cat-file -e HEAD:dist/default/Cargo.lock 2>/dev/null; then
+          block="$(mktemp)"
+          git -C "$bdir" show HEAD:dist/default/Cargo.lock > "$block"
+        fi
+      fi
       if [ ! -f "$block" ]; then
         err "Cargo.lock resolves a transport framer, and busbar's Cargo.lock at the pin is not at $block to hold it to"
       else
