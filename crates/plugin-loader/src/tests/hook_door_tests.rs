@@ -726,6 +726,70 @@ async fn a_wedged_trial_holds_no_other_caller() {
     assert!(!instance.quarantined());
 }
 
+/// RED (hook ABI defect 2): a quarantine's trial opens its fresh instance over the settings the
+/// hook was opened with, then pushes the last `configure` the hook acknowledged, so an
+/// acknowledged commit outlives the faulted instance. Before, the trial's instance served the
+/// first-open settings and the commit was silently lost.
+#[tokio::test]
+async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
+    use super::{HookInstance, State};
+    use crate::dispatch::{ConnTable, NoSink};
+    use busbar_contract::hook_calls::HookCalls;
+    let axis = rows(
+        hook_door_plugin::configurable::door,
+        "hook_door",
+        Way::Linked,
+    );
+    let c = axis
+        .find(hook_door_plugin::CONFIGURABLE_NAME)
+        .expect("the linked row")
+        .clone();
+    let dispatcher = Arc::clone(&axis.dispatcher);
+    let bind = {
+        let (c, dispatcher) = (c.clone(), Arc::clone(&dispatcher));
+        move || {
+            HookRows::bind(
+                &c,
+                &dispatcher,
+                "hooks.tuned",
+                Arc::new(NoSink),
+                ConnTable::NoNeeds,
+            )
+        }
+    };
+    let instance = HookInstance::open(
+        bind().expect("the hook binds"),
+        Arc::clone(&dispatcher),
+        br#"{"reject_over_messages": 3}"#,
+        bind,
+    )
+    .expect("the hook opens");
+    let rejects = |a: &Answered<busbar_contract::abi::hook::DecideOut>| matches!(a, Answered::Answer { out, .. } if out.reject_status == REJECT_STATUS);
+    assert!(!rejects(&instance.decide(frame(2), BUDGET).await));
+    instance
+        .configure("tuned", r#"{"reject_over_messages": 1}"#, 2, BUDGET)
+        .await
+        .expect("the hook acknowledges version 2");
+    let a = instance.decide(frame(2), BUDGET).await;
+    assert!(
+        rejects(&a),
+        "the acknowledged settings gate: {}",
+        decided(2, &a)
+    );
+    // Faulted, its trial window open now.
+    *instance.inner.lock() = State::Quarantined {
+        trial_at: std::time::Instant::now(),
+        window: super::QUARANTINE_FIRST,
+    };
+    let a = instance.decide(frame(2), BUDGET).await;
+    assert!(
+        rejects(&a),
+        "the trial's instance lost the acknowledged settings: {}",
+        decided(2, &a)
+    );
+    assert!(!instance.quarantined());
+}
+
 /// THE SETTINGS NEVER PRINT. An opened instance keeps the settings bytes it was opened over (a
 /// resolved bag) to re-open a fresh instance on a quarantine trial; its `Debug` names the instance
 /// and nothing else, so `{:?}` in a log line, a `tracing` field or a panic cannot carry them.
