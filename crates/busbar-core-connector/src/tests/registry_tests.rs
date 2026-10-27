@@ -70,7 +70,7 @@ fn door(d: TestDoor) -> Entry {
     }
 }
 
-/// THE ADDRESS CARRIER IS THE DECLARATION'S (ARCHITECT, p2-transport-carrier): the first CARRIER, in
+/// THE ADDRESS CARRIER IS THE DECLARATION'S: the first CARRIER, in
 /// the order the entries are declared, whose claim serves a port. Never a framer (even one whose
 /// claim reads a port), never a carrier that serves no port, never the one that happened to load
 /// first: the same entries declared in the other order answer the other carrier.

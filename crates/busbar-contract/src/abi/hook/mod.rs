@@ -929,6 +929,16 @@ impl Tail {
         routes_len: 0,
     };
 
+    /// This tail with its class and its two grants set: the one constructor a hook plugin's
+    /// `const` goes through, so the plugin SDK names no field of the grants.
+    #[must_use]
+    pub const fn with_access(mut self, kind_class: u32, content: u32, user: u32) -> Tail {
+        self.kind_class = kind_class;
+        self.prompt_access = content;
+        self.user_access = user;
+        self
+    }
+
     abi_lists! {
         requested_signals, requested_signals_len: u32
             => requested_signals_ptr, with_requested_signals, with_raw_requested_signals;

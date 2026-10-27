@@ -39,12 +39,3 @@ futures = { workspace = true }
 # The capped upstream-body read (`upstream::read_capped`) is generic over any chunk stream; `Bytes`
 # is the chunk type it reads and the prefix it returns. Opens nothing.
 bytes = { workspace = true }
-
-# Test-only. `busbar-unit-breaker` is never named by this crate's library code — the breaker seam
-# enters production code through `ports::Breaker` alone, and the composition root binds the two
-# units. This dev-dependency exists only so a test can hold the two units' at-capacity floors to one
-# value (`tests/exhaustion_tests.rs`); the seam proof itself (minting a step token) and the scripted
-# node the route-step tests drive live in busbar-kernel's `src/tests/members/egress/`, where
-# minting is legal.
-[dev-dependencies]
-busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }

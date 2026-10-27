@@ -159,7 +159,7 @@ impl AuthRows {
             },
         };
         let loaded = match row.door() {
-            Some(door) => LinkedRow::of(door).and_then(|r| load_linked::<Auth>(&r, bind)),
+            Some(door) => LinkedRow::of_raw(door).and_then(|r| load_linked::<Auth>(&r, bind)),
             None => match row.manifest.stated_rendering().map_err(refused)? {
                 None => return Err(refused(NO_DOOR.to_string())),
                 Some(stated) => load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind),
@@ -177,7 +177,7 @@ impl AuthRows {
     /// Statement is one a bind refuses.
     fn stated(&self, row: &LoadablePlugin) -> Option<AuthFacts> {
         match row.door() {
-            Some(door) => crate::dispatch::kinds::auth::stated_facts(door).ok(),
+            Some(door) => crate::dispatch::kinds::auth::stated_facts_raw(door).ok(),
             None => row
                 .manifest
                 .stated_rendering()
@@ -251,7 +251,8 @@ impl AuthRows {
     /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the first credential reader, in
     /// [`Self::credential_readers`]' order, whose Statement states an issued shape (its
     /// `MARK_WORD_ISSUED_*` marks, checked at load), as its first credential kind and that shape.
-    /// Read from the Statements, opening no instance: the build's fact, whatever the chain names.
+    /// Read from the Statements ([`Self::stated`]), binding no linked row: the build's fact,
+    /// whatever the chain names.
     #[must_use]
     pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
         let rows = self
@@ -260,16 +261,12 @@ impl AuthRows {
             .iter()
             .chain(self.registry.loadable());
         rows.filter(|p| p.manifest.kind == AUTH).find_map(|row| {
-            let alias = &row.manifest.alias;
-            let Ok(Door::Memory(plugin, _)) = self.load(row, alias, false) else {
-                return None;
-            };
-            let facts = plugin.context::<AuthFacts>()?;
+            let facts = self.stated(row)?;
             if facts.facts & FACT_READS_CREDENTIALS == 0 {
                 return None;
             }
             let kind = facts.credential_kinds.first()?.clone();
-            facts.issued.clone().map(|shape| (kind, shape))
+            facts.issued.map(|shape| (kind, shape))
         })
     }
 
@@ -354,6 +351,7 @@ impl AuthRows {
         let row = self
             .row(module)
             .ok_or_else(|| format!("no `kind: auth` plugin answers to '{module}'"))?;
+        let name = row.manifest.name.clone();
         let Door::Memory(plugin, sink) = self.load(row, label, true)?;
         let kinds = plugin
             .context::<AuthFacts>()
@@ -370,7 +368,7 @@ impl AuthRows {
             text.as_bytes(),
             secrets,
         )
-        .map_err(|e| format!("auth plugin '{module}': {e}"))?;
+        .map_err(|e| format!("plugin '{name}' open failed: {e}"))?;
         Ok(Arc::new(opened))
     }
 
@@ -421,7 +419,7 @@ impl AuthRows {
 /// A rendering that does not read back names nothing here; the load refuses it.
 fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
     let stated = match row.door() {
-        Some(door) => LinkedRow::of(door).ok().map(|r| r.statement),
+        Some(door) => LinkedRow::of_raw(door).ok().map(|r| r.statement),
         None => row.manifest.stated_rendering().ok().flatten(),
     };
     stated

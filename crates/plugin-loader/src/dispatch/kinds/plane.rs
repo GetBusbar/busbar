@@ -641,15 +641,6 @@ pub fn linked_probe(
     })
 }
 
-/// [`linked_probe`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows 159
-/// and 194). #1469 makes `linked_probe` take the `MacroDoor` alone and keeps this name beside it.
-pub fn linked_probe_macro(
-    door: busbar_contract::abi::sdk::door::MacroDoor,
-    instance: &str,
-) -> ProbeBind {
-    linked_probe(door.door_fn(), instance)
-}
-
 /// THE COMMAND-LINE HELP A LINKED PLANE DOOR STATES: its tail's `cli_help`, read off its `'static`
 /// Statement without binding it (no `validate` or `open` runs), so `busbar --help` can render it
 /// before any configuration is read. `None` when the tail states none.
@@ -661,7 +652,7 @@ pub fn linked_cli_help(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<Option<&'static str>, String> {
     let (door, _) = crate::dispatch::load::read_door(
-        crate::dispatch::load::enter_door(door),
+        crate::dispatch::load::enter_door(crate::dispatch::load::raw(door)),
         Some(KindCode::Plane),
     )
     .map_err(|e| format!("{e:?}"))?;
@@ -721,7 +712,7 @@ pub fn linked_declaring_section(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<Option<&'static str>, String> {
     let (door, _) = crate::dispatch::load::read_door(
-        crate::dispatch::load::enter_door(door),
+        crate::dispatch::load::enter_door(crate::dispatch::load::raw(door)),
         Some(KindCode::Plane),
     )
     .map_err(|e| format!("{e:?}"))?;
@@ -752,6 +743,13 @@ pub fn linked_declaring_section(
 pub fn stated_facts(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> Result<(String, PlaneFacts), String> {
+    stated_facts_raw(crate::dispatch::load::raw(door))
+}
+
+/// [`stated_facts`] over a door the loader already holds raw (a [`crate::dispatch::LinkedRow`]'s).
+fn stated_facts_raw(
+    door: busbar_contract::abi::sdk::door::RawDoorFn,
+) -> Result<(String, PlaneFacts), String> {
     let v = crate::dispatch::load::validate::<Plane>(door).map_err(|e| e.to_string())?;
     let name = crate::dispatch::plugin::str_bytes(v.statement.name)
         .map(|n| String::from_utf8_lossy(n).into_owned())
@@ -776,7 +774,7 @@ pub fn stated_registration(
 ) -> Result<busbar_contract::plane_calls::PlaneRegistration, String> {
     match &candidate.origin {
         crate::boot::Origin::Linked(row) => {
-            let (name, facts) = stated_facts(row.door)?;
+            let (name, facts) = stated_facts_raw(row.door)?;
             Ok(registered(
                 &name,
                 &facts.served,

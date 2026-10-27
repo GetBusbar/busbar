@@ -665,7 +665,7 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     let registry = PluginRegistry::empty()
         .link(vec![
             LinkedPlugin::auth_door_named("busbar-auth-judge", "judge", judge::door),
-            LinkedPlugin::auth_door_named(
+            LinkedPlugin::auth_door_named_raw(
                 "busbar-auth-broken",
                 "broken",
                 crate::dispatch_tests::null_door,
@@ -701,7 +701,7 @@ crate::needs_restated::tcp_restated!(networked_judge, judge::door);
 /// The judge restated with a `tcp` need (a directory it dials), linked as `judge`.
 fn networked_rows() -> AuthRows {
     let registry = PluginRegistry::empty()
-        .link(vec![LinkedPlugin::auth_door("judge", networked_judge)])
+        .link(vec![LinkedPlugin::auth_door_raw("judge", networked_judge)])
         .expect("the linked door registers");
     AuthRows::new(Arc::new(registry), dispatcher())
 }
@@ -1161,4 +1161,65 @@ mod ticketed {
         }
         assert_eq!(double.served.load(Ordering::SeqCst), 0);
     }
+}
+
+/// AN AUTH CHAIN MODULE WHOSE `open` FAILS IS NAMED IN 1.5.5's WORDS (oracle BOOT-162): the
+/// operator reads `plugin '<name>' open failed: <reason>`, the plugin's own name and its reason,
+/// as at boot ([`crate::dispatch::Called::open_failure`]). RED before: `auth plugin '<module>': …`.
+#[test]
+fn an_auth_module_whose_open_fails_is_named_in_1_5_5s_words() {
+    use crate::dispatch::ready::ready_plugins::auth::with_secret;
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door_named(
+            "busbar-auth-witness",
+            "witness",
+            with_secret::door,
+        )])
+        .expect("the linked door registers");
+    let rows = AuthRows::new(Arc::new(registry), dispatcher());
+    let Err(refused) = rows.open("witness", "witness", &serde_json::json!({})) else {
+        panic!("an open that refuses does not open");
+    };
+    assert!(
+        refused.starts_with("plugin 'busbar-auth-witness' open failed: "),
+        "{refused}"
+    );
+}
+
+/// A CREDENTIAL FORM IS FORMED ONLY THROUGH THE ONE CAPPED, VALIDATED READER (`BUSBAR-1.6.0.md`
+/// THE DESIGN §11.13 M1: "Every slice built from a plugin-reported length is capped and validated
+/// before it is formed").
+///
+/// RED before `begin_login`'s form went through `dispatch::validate::lent`: a READY answer whose
+/// `form` pointer is not aligned for `LoginField` (the kind's check refuses only NULL) was formed
+/// into a slice as it stood, so the host read plugin memory as fields it does not hold.
+#[test]
+fn a_begin_login_form_misaligned_for_its_fields_is_malformed() {
+    use busbar_contract::abi::auth::{BeginLoginOut, LoginField, BEGIN_FORM};
+    let size = std::mem::size_of::<LoginField>();
+    let align = std::mem::align_of::<LoginField>();
+    assert!(
+        align > 1,
+        "a field holds pointers, so it has an alignment to miss"
+    );
+    // Zeroed bytes are one well-formed field (two empty strings), one byte past an aligned start.
+    let buf = vec![0u64; size.div_ceil(8) + 2];
+    let at = buf.as_ptr().cast::<u8>().wrapping_add(1);
+    assert!(!at.cast::<LoginField>().is_aligned());
+    let out = BeginLoginOut {
+        head: crate::dispatch::out_head(),
+        shape: BEGIN_FORM,
+        _reserved: 0,
+        authorize_url: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        form: at.cast::<LoginField>(),
+        form_len: 1,
+    };
+    assert!(
+        super::login::begun(&out).is_none(),
+        "a form not aligned for its fields is a malformed answer, never read"
+    );
+    drop(buf);
 }

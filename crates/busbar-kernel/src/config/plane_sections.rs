@@ -798,35 +798,6 @@ pub fn refuse_cross_plane_reference(
     judge_hook_ref(hook, sections).map_err(|err| Refusal { at, err }.into())
 }
 
-/// THE SECTION-LIST PROVIDER SEAM — the neutral read side of core's registry-coupled
-/// [`config_sections`] singleton (which stays in `busbar_kernel::config::plane_sections`, since it folds the
-/// process plane registry this crate must not name).
-///
-/// A plane crate that refuses a cross-plane hook reference at parse time needs the WHOLE section
-/// list — its own section plus every other plane's — to judge against, but must not reach into core
-/// to fold it. So the composition root binds core's `config_sections` fn here once (before the CLI
-/// flags read `--validate`), and a plane reads the same list back through [`plane_sections`] without
-/// naming the registry. Before any bind, [`plane_sections`] yields the empty list — a section-less
-/// judgement that still refuses malformed (dotted) references, only not the cross-plane ones, which
-/// is why the bind is on the boot path ahead of config validation rather than lazy.
-static PLANE_SECTIONS: std::sync::OnceLock<fn() -> Vec<&'static str>> = std::sync::OnceLock::new();
-
-/// BIND the process section-list provider. Idempotent (first bind wins); the composition root calls
-/// this once at startup with `busbar_kernel::config::plane_sections::config_sections`.
-pub fn install_plane_sections(provider: fn() -> Vec<&'static str>) {
-    let _ = PLANE_SECTIONS.set(provider);
-}
-
-/// THE PROCESS SECTION LIST, read through the bound provider — or the empty list if none is bound
-/// (the pre-bind / no-planes build), which still lets [`refuse_cross_plane_reference`] refuse a
-/// dotted reference, just not attribute it to a plane.
-pub fn plane_sections() -> Vec<&'static str> {
-    PLANE_SECTIONS
-        .get()
-        .map(|provider| provider())
-        .unwrap_or_default()
-}
-
 /// THE FROZEN 1.5.3 NAMED-DEFINITION-MAP SECTION KEYS, in route/mount order (additive-only since
 /// 1.5.3, guarded by the config-stability gate). `identity-providers`/`export` are core-native;
 /// `tools`/`agents` are the MCP/A2A plane sections, listed here too so a fold matches core's
@@ -839,29 +810,6 @@ pub fn plane_sections() -> Vec<&'static str> {
 /// neutral-purity lint's token rules do not fire on them.
 pub const NAMED_MAP_SECTIONS: [&str; 4] =
     [Kind::Auth.root(), Kind::Export.root(), "tools", "agents"];
-
-/// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
-/// [`install_plane_sections`], so an extracted plane crate reaches the NEUTRAL ABI rather than back
-/// into `busbar_kernel::config::plane_sections::config_sections`. Byte-for-byte the same fold that singleton runs:
-/// every registered plane's own `config_section` (from [`crate::plane::registry::test_registered_planes`],
-/// in registration order) followed by the frozen 1.5.3 named-definition-map sections, deduped in that
-/// order. `tools:`/`agents:` appear in BOTH halves — a plane declares them and they are also 1.5.3
-/// named-map sections — so the trailing pair guarantees they are known even when their owning plane is
-/// not registered in a given test binary, exactly as core's `NamedMapSection::sections()` tail does.
-#[cfg(any(test, feature = "test-support"))]
-pub fn default_plane_sections() -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    for section in crate::plane::registry::test_registered_planes()
-        .iter()
-        .map(|d| d.config_section)
-        .chain(NAMED_MAP_SECTIONS)
-    {
-        if !out.contains(&section) {
-            out.push(section);
-        }
-    }
-    out
-}
 
 /// THE ADDITIVE-LIST COMBINE RULE, stated once for every plane that has one.
 ///

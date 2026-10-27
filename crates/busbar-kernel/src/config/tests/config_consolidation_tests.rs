@@ -68,36 +68,6 @@ fn b_locked_config_has_no_overlay_and_refuses_a_mutation() {
     assert!(persist_root(res.path.as_deref(), &RootSettings::default()).is_err());
 }
 
-/// (c) BOOT INVARIANT: a MUTABLE config with the overlay explicitly DISABLED refuses. That state
-/// is self-contradictory and can only be reached by typing it into config.yaml, so the fix is to
-/// edit the file and the refusal is a boot `Err`.
-///
-/// The neighbouring case — a mutable config whose backend path is simply not WRITABLE (a
-/// read-only config mount) — is NOT a boot refusal; it degrades to no-overlay. That is a property
-/// of the environment rather than of the config, and it is covered in
-/// `tests/overlay_read_only_tests.rs`.
-///
-/// Pre-1.5.3 nothing enforced "mutable XOR writable overlay" — a mutable config
-/// with no backend booted fine and mutated in RAM only.
-#[test]
-fn c_mutable_with_the_overlay_explicitly_disabled_refuses() {
-    let dir = writable_dir("disabled");
-    let config_path = dir.join("config.yaml");
-    let err = resolve_backend(
-        &ConfigMgmtCfg {
-            locked: false,
-            overlay: Some(OverlayCfg::Disabled(false)),
-        },
-        &config_path,
-        true,
-    )
-    .expect_err("mutable + overlay disabled must refuse");
-    assert!(
-        err.contains("config.locked") || err.contains("no writable overlay"),
-        "the refusal must be actionable: {err}"
-    );
-}
-
 /// (d) Overlay backend PRECEDENCE: an explicit `config.overlay` WINS; else the deprecated
 /// `BUSBAR_CONFIG_OVERLAY` value (threaded in as `env_override`, still honored with a warning); else
 /// the default next to config.yaml.

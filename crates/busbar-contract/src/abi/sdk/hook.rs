@@ -823,22 +823,8 @@ pub trait HookOpen: 'static {
 /// The hook kind's Statement tail, for a plugin's `const`. A plugin's hook words are Statement
 /// word marks ([`MARK_WORD_HOOK`](crate::abi::mechanism::door::MARK_WORD_HOOK)), not tail facts.
 #[must_use]
-pub const fn tail(kind_class: u32, prompt_access: u32, user_access: u32) -> Tail {
-    Tail {
-        head: KindTailHead {
-            size: std::mem::size_of::<Tail>() as u32,
-            ..KindTailHead::ZERO
-        },
-        kind_class,
-        prompt_access,
-        user_access,
-        infallible: 0,
-        _reserved: [0; 3],
-        requested_signals: std::ptr::null(),
-        requested_signals_len: 0,
-        routes: std::ptr::null(),
-        routes_len: 0,
-    }
+pub const fn tail(kind_class: u32, content_access: u32, user_access: u32) -> Tail {
+    Tail::EMPTY.with_access(kind_class, content_access, user_access)
 }
 
 /// A Statement over `tail` (see [`crate::abi::sdk::door::statement`]).

@@ -2906,3 +2906,99 @@ fn a_repoll_of_the_same_request_on_its_handle_reads_the_answer_and_is_never_a_fa
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
     assert!(still_served(&d), "a re-poll is never a fault");
 }
+
+/// A second caller on `d`'s route (its dispatcher's store), with an identity of its own.
+fn beside(d: &Double, name: &str) -> HostCtx {
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
+    assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
+    assert!(wake
+        .caller
+        .set(Caller {
+            instance: Arc::from(name),
+            plugin: Arc::from("double-plugin"),
+            kind: busbar_contract::abi::mechanism::KindCode::Plane,
+        })
+        .is_ok());
+    crate::dispatch::handle::mint(wake).expect("the host mints a handle")
+}
+
+/// RED (audit loader-src PL1#4; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.1602-1603: "A pure op
+/// (`arrive`, `refusal`, `project`) or any call made with no ticket that calls a may-pend service
+/// gets REFUSED, never PENDING"): a ticket-less crossing that stamps another op's live ticket on
+/// its handle is REFUSED and the service never runs; so is a ticketed crossing's call naming a
+/// ticket other than its own. RED: only the handle the plugin wrote was read, so the pure op ran
+/// the service as a pending call whose completion woke the other op.
+#[test]
+fn red_a_service_handle_naming_another_crossings_ticket_is_refused_and_never_runs() {
+    let d = double();
+    let refused = "a service handle names the ticket of the crossing that calls it";
+    {
+        let _pure = crossing(Ticket::NONE);
+        let (ret, o) = call_judge(
+            &d,
+            &judge_in("https://api.example.com/", TICKET, 0, DEST_RESOLVE),
+        );
+        assert_eq!(
+            ret.outcome(),
+            Outcome::Refused,
+            "a pure op pended on another op's ticket"
+        );
+        assert_eq!(error(&o), refused);
+    }
+    {
+        let other = Ticket {
+            generation: TICKET.generation ^ 1,
+            ..TICKET
+        };
+        let _ticketed = crossing(other);
+        let (ret, o) = call_judge(
+            &d,
+            &judge_in("https://api.example.com/", TICKET, 0, DEST_RESOLVE),
+        );
+        assert_eq!(
+            ret.outcome(),
+            Outcome::Refused,
+            "an op pended on another op's ticket"
+        );
+        assert_eq!(error(&o), refused);
+    }
+    assert_eq!(
+        d.route.provider.judged.load(Ordering::SeqCst),
+        0,
+        "the service never ran"
+    );
+    assert!(d.route.wakes.lock().unwrap().is_empty());
+    // The GREEN twin: the crossing's own ticket pends.
+    let _own = crossing(TICKET);
+    let (ret, _) = call_judge(
+        &d,
+        &judge_in("https://api.example.com/", TICKET, 0, DEST_RESOLVE),
+    );
+    assert_eq!(ret.outcome(), Outcome::Pending);
+}
+
+/// RED (audit loader-src PL1#4; THE DESIGN `docs/design/BUSBAR-1.6.0.md` l.1611: "Every
+/// per-instance host registry keys by label"): two instances whose ops share one ticket each count
+/// their handles from 0, and each keeps its own result under its own handle 0: the second's call
+/// pends on its own request, is not judged a rebound of the first's, and neither reads the other's
+/// answer. RED: results were keyed by ticket and handle alone, so the second instance's handle 0
+/// named the first's result and the second was quarantined as a rebinder.
+#[test]
+fn red_two_instances_on_one_ticket_each_keep_their_own_results() {
+    let d = double();
+    let second = beside(&d, "second");
+    let first_in = judge_in("https://a.example.com/", TICKET, 0, DEST_RESOLVE);
+    let second_in = judge_in("https://b.example.com/", TICKET, 0, DEST_RESOLVE);
+    assert_eq!(call_judge(&d, &first_in).0.outcome(), Outcome::Pending);
+    let mut o = blank();
+    let f = HOST_SLOTS.dest_judge.unwrap();
+    let ret = f(second, std::ptr::from_ref(&second_in).cast(), &mut o);
+    assert_eq!(
+        ret.outcome(),
+        Outcome::Pending,
+        "the second instance's own handle 0 was judged a rebound of the first's: {}",
+        error(&o)
+    );
+    assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 2);
+}

@@ -354,7 +354,7 @@ fn red_a_stated_rendering_whose_tail_is_not_the_doors_is_refused_at_admit() {
         statement: LinkedRow::of(plain::door)
             .expect("the plain door states itself")
             .statement,
-        door: cacheable::door,
+        door: crate::dispatch::load::raw(cacheable::door),
     };
     assert_eq!(
         load_linked::<Auth>(&lying, bind())
@@ -368,4 +368,92 @@ fn red_a_stated_rendering_whose_tail_is_not_the_doors_is_refused_at_admit() {
         load_linked::<Auth>(&own, bind()).is_ok(),
         "the door's own rendering admits it"
     );
+}
+
+/// A credential reader's kinds: it reads host-held credentials of one kind.
+const READER_KINDS: &[busbar_contract::abi::mechanism::call::AbiStr] =
+    &[busbar_contract::abi::sdk::door::abi_str("kind-a")];
+
+const READER_TAIL: &busbar_contract::abi::auth::AuthTail =
+    &busbar_contract::abi::sdk::auth_door::with_credential_kinds(
+        busbar_contract::abi::sdk::auth_door::verify_tail(
+            0,
+            busbar_contract::abi::auth::AuthPoints::HEAD,
+        ),
+        READER_KINDS,
+    );
+
+/// One issued-credential word mark of `class`.
+const fn issued_mark(
+    class: u32,
+    word: &'static str,
+) -> busbar_contract::abi::mechanism::door::MarkWord {
+    busbar_contract::abi::mechanism::door::MarkWord {
+        class,
+        word: busbar_contract::abi::sdk::door::abi_str(word),
+        ..busbar_contract::abi::mechanism::door::MarkWord::ZERO
+    }
+}
+
+/// The credential reader's issued-credential shape, in its `MARK_WORD_ISSUED_*` word marks.
+const ISSUED_MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] = &[
+    issued_mark(
+        busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX,
+        "PFX",
+    ),
+    issued_mark(
+        busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_LENGTH,
+        "20",
+    ),
+    issued_mark(
+        busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_ALPHABET,
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+    ),
+    issued_mark(
+        busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_SECRET_LENGTH,
+        "40",
+    ),
+    issued_mark(
+        busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_SECRET_ALPHABET,
+        "abc+/",
+    ),
+];
+
+mod issuing_reader {
+    busbar_contract::auth_verify_door!(
+        super::Fixture,
+        super::stating("issuing-reader", super::READER_TAIL, super::ISSUED_MARKS)
+    );
+}
+
+/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; ARCHITECT ruling 2026-10-20 on
+/// root#7 / loader#9: reading a row's static declaration is reading, not loading). THE CREDENTIAL
+/// THE HOST ISSUES is a fact read every auth build makes: it reads the linked rows' Statements, the
+/// credential reader's issued shape included, and binds none. RED before: it bound every auth row
+/// to read its facts, so the bound recorder held each linked row's key.
+#[test]
+fn the_issued_credential_read_binds_no_row() {
+    let rows = linking(&[
+        ("plain", plain::door),
+        ("issuing-reader", issuing_reader::door),
+    ]);
+    assert_eq!(
+        rows.issued_credential(),
+        Some((
+            "kind-a".to_string(),
+            busbar_contract::auth_calls::IssuedShape {
+                id_prefix: "PFX".into(),
+                id_len: 20,
+                id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".into(),
+                secret_len: 40,
+                secret_alphabet: "abc+/".into(),
+            }
+        ))
+    );
+    let bound = rows
+        .bound
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    assert_eq!(bound, Vec::<String>::new(), "a fact read binds no row");
 }

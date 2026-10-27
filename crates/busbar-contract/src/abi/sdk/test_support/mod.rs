@@ -45,6 +45,7 @@ mod sealed {
     }
 }
 
+pub mod chip;
 pub mod fake;
 mod pairs;
 pub mod reply;
@@ -489,19 +490,10 @@ impl DoorView {
     ///
     /// # Panics
     ///
-    /// The function answers NULL or a misaligned pointer, a door without [`DOOR_MAGIC`], or a door
-    /// with no Statement.
+    /// A door without [`DOOR_MAGIC`], or a door with no Statement.
     #[must_use]
     pub fn of(door: MacroDoor) -> Self {
-        let d = (door.door_fn())();
-        assert!(!d.is_null(), "the door function answered NULL");
-        assert!(
-            d.is_aligned(),
-            "the door function answered a misaligned door"
-        );
-        // SAFETY: a non-NULL, aligned door the door macro's `door` answered: `'static`, a `const`
-        // item the macro laid out.
-        let door: &'static Door = unsafe { &*d };
+        let door: &'static Door = (door.door_fn())();
         assert_eq!(
             door.magic, DOOR_MAGIC,
             "not a busbar door: its magic is wrong"

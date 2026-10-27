@@ -205,12 +205,18 @@ impl<R: AsyncRead + Unpin + Send> CallerEnd for LineCaller<R> {
     fn head(&self, _status: u32, _fields: HeadFields) {}
 
     async fn write(&self, bytes: &[u8]) -> bool {
-        let mut line = bytes.to_vec();
-        if !line.ends_with(b"\n") {
-            line.push(b'\n');
-        }
-        self.out.send(line).is_ok()
+        self.out.send(terminated(bytes)).is_ok()
     }
+}
+
+/// `bytes` as one whole line: copied once, with a `\n` appended unless it already ends in one.
+fn terminated(bytes: &[u8]) -> Vec<u8> {
+    let mut line = Vec::with_capacity(bytes.len() + 1);
+    line.extend_from_slice(bytes);
+    if !line.ends_with(b"\n") {
+        line.push(b'\n');
+    }
+    line
 }
 
 impl<R: AsyncRead + Unpin + Send> SessionCaller for LineCaller<R> {
@@ -343,13 +349,7 @@ where
     let number = kernel.open_carrier_session(
         &instance,
         &principal,
-        Arc::new(move |bytes: &[u8]| {
-            let mut line = bytes.to_vec();
-            if !line.ends_with(b"\n") {
-                line.push(b'\n');
-            }
-            sink_out.send(line).is_ok()
-        }),
+        Arc::new(move |bytes: &[u8]| sink_out.send(terminated(bytes)).is_ok()),
     );
     let session_field = axum::http::HeaderValue::from(number);
     let mut units = tokio::task::JoinSet::new();
@@ -374,6 +374,7 @@ where
             app: app.load(),
             // The process's own stdin/stdout: no listener, no connection security.
             scheme: busbar_contract::abi::host::service::SCHEME_PLAIN,
+            consumed_fields: Vec::new(),
         };
         let routes = Arc::clone(&routes);
         let caller = Arc::clone(&caller);

@@ -600,6 +600,51 @@ impl Connector<'_> {
         self.call(service::CLOSE, |s| s.close, input)
             .map(|r| r.map(|_| ()))
     }
+
+    /// What closes this connector's streams once no entry of its op runs ([`Closer`]).
+    pub(crate) fn closer(&self) -> Closer {
+        Closer {
+            ctx: self.host.ctx,
+            conns: self.host.conns,
+        }
+    }
+}
+
+/// WHAT CLOSES A STREAM WITH NO OP RUNNING: the instance's host context and connector table, the
+/// two a CLOSE crosses with, kept by a continuation the SDK parks so that one given up (its op
+/// cancelled, or a fresh op on its ticket) closes the stream it established (status row 159).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Closer {
+    ctx: HostCtx,
+    conns: *const ConnectorSlots,
+}
+
+// SAFETY: as `Host`'s: the context is an opaque handle and the table plain code addresses, both
+// valid for the instance's life; every call goes through the host's own synchronisation.
+unsafe impl Send for Closer {}
+// SAFETY: as `Send`.
+unsafe impl Sync for Closer {}
+
+impl Closer {
+    /// Close `stream` on no ticket: a close never pends, so it is made on none
+    /// ([`Connector::close`]). What the host answers is not read: the stream is given up either
+    /// way.
+    pub(crate) fn close(&self, stream: u64) {
+        let tables = HostTables {
+            size: std::mem::size_of::<HostTables>() as u32,
+            _reserved: 0,
+            ctx: self.ctx,
+            wake: None,
+            conns: self.conns,
+            services: std::ptr::null(),
+            io: std::ptr::null(),
+        };
+        // SAFETY: `ctx` and `conns` are the ones a host lent this instance's `open` (read off its
+        // `Host`, [`Connector::closer`]), valid for the instance's life, which outlives every
+        // continuation it parks; no wake, services or I/O table is named.
+        let host = unsafe { Host::from_raw(&tables) };
+        let _ = host.connector(Ticket::NONE).close(stream);
+    }
 }
 
 impl Connector<'_> {

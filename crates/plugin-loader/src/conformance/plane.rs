@@ -1714,15 +1714,15 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let unreported = unreported_classes(&fold, &billable);
     assert!(
         unreported.is_empty(),
-        "the plane declares billable class(es) {unreported:?} that no conformance case reports \
-         (TODO L-R22): every class a plane's tail declares is reported by at least one case of its \
+        "the plane declares billable class(es) {unreported:?} that no conformance case reports: \
+         every class a plane's tail declares is reported by at least one case of its \
          conformance.json; a class the plane can never emit is a declaration to remove, not a gap \
          to waive. Declared: {billable:?}"
     );
     fold
 }
 
-/// THE DECLARED CLASSES ARE THE EMITTED ONES (TODO L-R22, l.4172). The other direction, a count
+/// THE DECLARED CLASSES ARE THE EMITTED ONES. The other direction, a count
 /// under a class the tail does not declare, is the dispatcher's own check on every answer
 /// (`check_on_piece`: a class index past the tail's billable classes is FAULT). This is the half no
 /// check held: a class the plane declares, an operator prices, and the plane never reports. The

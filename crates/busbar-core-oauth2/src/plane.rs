@@ -83,20 +83,153 @@ pub(crate) struct Carried {
     ephemeral_key: std::sync::OnceLock<Vec<u8>>,
     /// The throttle every generation's server asks ([`Throttle`]): one budget across reloads.
     limiter: Arc<oauth_as::FixedWindowRateLimiter>,
+    /// The node's registration budget ([`Registrations`]): one across reloads, as the limiter is.
+    registrations: Arc<Registrations>,
 }
 
 /// THE CARRIED THROTTLE, as one generation's server holds it. `oauth-as` takes its limiter boxed
 /// and owns it; this hands each generation the SAME counters, so a config reload never refills a
 /// caller's registration, authorization or client-authentication budget.
-struct Throttle(Arc<oauth_as::FixedWindowRateLimiter>);
+///
+/// Registration is counted by [`Registrations`]; every other attempt by `oauth-as`'s own
+/// `FixedWindowRateLimiter`.
+struct Throttle {
+    limiter: Arc<oauth_as::FixedWindowRateLimiter>,
+    registrations: Arc<Registrations>,
+}
 
 impl oauth_as::RateLimiter for Throttle {
     fn check(&self, attempt: oauth_as::Attempt<'_>) -> oauth_as::RateLimitDecision {
-        oauth_as::RateLimiter::check(&*self.0, attempt)
+        if let oauth_as::Attempt::ClientRegistration = attempt {
+            return self.registrations.check();
+        }
+        oauth_as::RateLimiter::check(&*self.limiter, attempt)
     }
 
     fn record(&self, attempt: oauth_as::Attempt<'_>, outcome: oauth_as::AttemptOutcome) {
-        oauth_as::RateLimiter::record(&*self.0, attempt, outcome);
+        if let oauth_as::Attempt::ClientRegistration = attempt {
+            if outcome == oauth_as::AttemptOutcome::Succeeded {
+                self.registrations.admitted();
+            }
+            return;
+        }
+        oauth_as::RateLimiter::record(&*self.limiter, attempt, outcome);
+    }
+}
+
+/// How many registrations one node admits in one [`REGISTRATION_WINDOW`]: `oauth-as`'s own
+/// derivation (its `rate_limit` module), kept as the node's ceiling.
+const REGISTRATIONS_PER_WINDOW: u64 = oauth_as::rate_limit::DEFAULT_CLIENT_REGISTRATION_CAPACITY;
+
+/// The window [`REGISTRATIONS_PER_WINDOW`] is counted over.
+const REGISTRATION_WINDOW: std::time::Duration = oauth_as::rate_limit::DEFAULT_WINDOW;
+
+/// THE NODE'S REGISTRATION BUDGET, counted in registrations it ADMITS.
+///
+/// A registration request names no caller and no client, and this plane is handed no caller
+/// address, so the budget is one per node. Charging every ATTEMPT against it, as `oauth-as`'s
+/// shipped limiter does (a refused one ten times over), let one unauthenticated caller close
+/// registration for everyone: six registrations the policy refuses a minute spent the whole of it.
+/// So what the budget counts is what it exists to bound, the clients a registration writes:
+///
+/// * a registration ADMITTED in this window counts until the window rolls;
+/// * a registration being ANSWERED counts while it is answered, so a burst of concurrent requests
+///   cannot all pass the check before any of them is admitted;
+/// * a registration REFUSED, or a body that does not parse, counts for nothing once its answer is
+///   sent. Its work is one bounded parse and one policy check, a request like any other.
+///
+/// Past [`REGISTRATIONS_PER_WINDOW`] admitted and in flight, a registration is refused until the
+/// window rolls.
+pub(crate) struct Registrations {
+    /// The instant windows are counted from, on the monotonic clock.
+    base: std::time::Instant,
+    state: std::sync::Mutex<RegistrationWindow>,
+}
+
+#[derive(Default)]
+struct RegistrationWindow {
+    /// Which window `admitted` belongs to.
+    index: u64,
+    /// Registrations admitted in that window.
+    admitted: u64,
+    /// Registrations being answered now.
+    in_flight: u64,
+}
+
+impl Default for Registrations {
+    fn default() -> Self {
+        Self {
+            base: std::time::Instant::now(),
+            state: std::sync::Mutex::new(RegistrationWindow::default()),
+        }
+    }
+}
+
+tokio::task_local! {
+    /// The registration request this task is answering ([`AsPlane::handle`]), and whether it holds
+    /// a share of the budget.
+    static REGISTERING: Answering;
+}
+
+/// One registration request being answered. Its share of the budget goes back when it is let go,
+/// however the request ends: answered, refused, or dropped.
+struct Answering {
+    budget: Arc<Registrations>,
+    held: std::cell::Cell<bool>,
+}
+
+impl Drop for Answering {
+    fn drop(&mut self) {
+        if self.held.get() {
+            self.budget.release();
+        }
+    }
+}
+
+impl Registrations {
+    /// The window's counters, rolled to the current window.
+    fn window(&self) -> std::sync::MutexGuard<'_, RegistrationWindow> {
+        let mut w = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = self.base.elapsed().as_secs() / REGISTRATION_WINDOW.as_secs();
+        if w.index != index {
+            w.index = index;
+            w.admitted = 0;
+        }
+        w
+    }
+
+    /// May one more registration be answered? Inside a registration request ([`REGISTERING`]) the
+    /// request holds a share until it is let go; outside one (a caller of the server's own method)
+    /// the attempt is counted as admitted at once, since nothing would give a share back.
+    fn check(&self) -> oauth_as::RateLimitDecision {
+        let mut w = self.window();
+        if w.admitted + w.in_flight >= REGISTRATIONS_PER_WINDOW {
+            return oauth_as::RateLimitDecision::Deny;
+        }
+        match REGISTERING.try_with(|answering| answering.held.replace(true)) {
+            Ok(false) => w.in_flight += 1,
+            // This request already holds its share.
+            Ok(true) => {}
+            Err(_) => w.admitted += 1,
+        }
+        oauth_as::RateLimitDecision::Allow
+    }
+
+    /// A registration was admitted. Counted for the window when a request holds its share; a caller
+    /// with no request was counted at its check.
+    fn admitted(&self) {
+        if REGISTERING.try_with(|_| ()).is_ok() {
+            self.window().admitted += 1;
+        }
+    }
+
+    /// A request let its share go.
+    fn release(&self) {
+        let mut w = self.window();
+        w.in_flight = w.in_flight.saturating_sub(1);
     }
 }
 
@@ -153,7 +286,7 @@ impl std::fmt::Display for AsBuildError {
 
 impl AsPlane {
     /// Build the plane, holding nothing yet (see [`Self::build_carrying`]): a fixture's server.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn build(
         identity: AsIdentity,
         key_material: Option<&str>,
@@ -291,7 +424,10 @@ impl AsPlane {
                 // THE THROTTLE: registration is open and takes no credential, so it is bounded
                 // here, with the authorization endpoint and client authentication (see
                 // `super::policy`, "Registration is bounded").
-                .with_rate_limiter(Box::new(Throttle(Arc::clone(&carried.limiter)))),
+                .with_rate_limiter(Box::new(Throttle {
+                    limiter: Arc::clone(&carried.limiter),
+                    registrations: Arc::clone(&carried.registrations),
+                })),
         );
 
         let sessions = Arc::clone(&carried.sessions);
@@ -395,10 +531,50 @@ impl AsPlane {
                 return response;
             }
         }
+        let registering = request.method() == http::Method::POST
+            && request.uri().path() == self.identity.register_path();
         self.prepare(Seen::of(&request)).await;
         // Box::pin: the whole `oauth-as` dispatch future (~56 KB monomorphized), boxed at its one
         // call site, as `routes::forward` did before this method existed.
-        Box::pin(self.service.handle(request)).await
+        let answer = Box::pin(self.service.handle(request));
+        if !registering {
+            return answer.await;
+        }
+        // A registration request holds its share of the node's budget while it is answered, and
+        // gives it back when the answer is sent ([`Registrations`]).
+        let answering = Answering {
+            budget: Arc::clone(&self.carried.registrations),
+            held: std::cell::Cell::new(false),
+        };
+        REGISTERING.scope(answering, answer).await
+    }
+
+    /// The scope an authorization request from `client_id` is granted on approval, as the consent
+    /// screen names it. `requested` is the request's `scope`, `None` when it named none.
+    ///
+    /// RFC 6749 s3.3, as `oauth-as` applies it at the authorization endpoint: a request naming a
+    /// scope is granted that set (sorted, deduplicated); one naming none is granted the client's
+    /// registered default, trimmed to what the registration allows. That default is the whole
+    /// `default_grant` for a provisioned client, and for a metadata-document client whose document
+    /// names no scope, so the screen names it rather than saying nothing is asked. A client this
+    /// server does not know is granted nothing.
+    pub(crate) async fn granted_scope(&self, client_id: &str, requested: Option<&str>) -> String {
+        use oauth_as::store::Storage as _;
+        if let Some(raw) = requested {
+            // A scope that does not parse is refused at the authorization endpoint; the screen
+            // names it as it was sent.
+            return oauth_as::scope::ScopeSet::parse(raw)
+                .map_or_else(|_| raw.to_string(), |set| set.to_string());
+        }
+        let client = self
+            .server
+            .store()
+            .get_client(&oauth_as::client::ClientId::new(client_id))
+            .await;
+        match client {
+            Ok(Some(client)) => granted_default(&client).to_string(),
+            _ => String::new(),
+        }
     }
 
     /// The display summary of a pushed request that has not been redeemed yet. See
@@ -534,6 +710,20 @@ impl Seen {
             staked_key,
         }
     }
+}
+
+/// A client's registered default scope, trimmed to what its registration allows: what `oauth-as`
+/// grants a request naming no scope (its `AuthorizationServer::granted_default_scope`).
+fn granted_default(client: &oauth_as::client::Client) -> oauth_as::scope::ScopeSet {
+    oauth_as::scope::ScopeSet::from_tokens(
+        client
+            .default_scopes
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|s| client.allowed_scopes.contains(s)),
+    )
+    // Unreachable: every token here came out of a `ScopeSet` and so parsed once already.
+    .unwrap_or_default()
 }
 
 /// `oauth_as.clients:` as `oauth-as` clients: confidential, authenticating with an RFC 7523

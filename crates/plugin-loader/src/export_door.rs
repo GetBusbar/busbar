@@ -17,7 +17,9 @@
 //!   1.5.5's `max_inflight_deliveries`, within the plugin's declared ceiling), each on a ticket of
 //!   its own and none holding a thread while it pends; while fewer lines are queued than deliveries
 //!   may start, each line travels alone, as each 1.5.5 delivery did. Every batch of one instance is
-//!   started on the same worker, in queue order.
+//!   started on the same worker, in queue order. Dropping the instance waits at most
+//!   [`STOP_GRACE`] for the deliveries in flight; past it they are abandoned on the dispatcher's
+//!   client-drop path (a host thread never waits on plugin code, THE DESIGN §11.13 M1).
 //! * **scrape** / **serve** / **status** / **check** — ticket-less, on the caller's thread (the
 //!   watchdog can fault such a crossing but never abandon it, so the buffers lent need no owner);
 //!   the host-owned exposition buffer grows ONCE on a short answer (the short-buffer rule); a
@@ -25,8 +27,10 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
+use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt as _};
 
@@ -41,6 +45,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
     slot as lc, OpenIn, OpenOut, ReleaseIn, ValidateIn,
 };
 use busbar_contract::abi::mechanism::route::Route;
+use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::export_calls::{Delivered, ExportCalls, Family, ServeRequest, Served};
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
@@ -54,6 +59,8 @@ pub const MAX_BATCH_LINES: usize = 256;
 pub const MAX_BATCH_BYTES: usize = 1024 * 1024;
 /// How many times one batch is offered (the first attempt included) before it is dropped.
 pub const DELIVER_ATTEMPTS: u32 = 3;
+/// The longest dropping an instance waits for its deliveries in flight; past it they are abandoned.
+pub const STOP_GRACE: Duration = Duration::from_secs(2);
 /// The exposition buffer a scrape starts with; a short answer grows it once.
 const SCRAPE_BUF: usize = 64 * 1024;
 /// The most request headers a `serve` lends (64 name/value pairs).
@@ -220,6 +227,8 @@ struct Shared {
     /// The flusher's waker, taken by whoever gives it something to do (a line, the stop).
     flusher: Mutex<Option<Waker>>,
     stop: AtomicBool,
+    /// The stop's grace ran out: the deliveries still in flight are abandoned.
+    abandon: AtomicBool,
     /// This process's `op_id` node half; the counter half is [`Shared::minted`].
     node: [u8; 8],
     minted: AtomicU64,
@@ -239,7 +248,7 @@ impl Shared {
         id
     }
 
-    /// Wake the flusher: it has a line to take, or is to stop.
+    /// Wake the flusher: it has a line to take, or is to stop or abandon.
     fn notify(&self) {
         let waker = self
             .flusher
@@ -276,7 +285,9 @@ impl Shared {
     /// so the host-service results and connections one delivery made (stored under `(ticket, n)`,
     /// its handles counting from 0) are never redeemed by another; a FAILED answer is retried with
     /// the same `op_id`. The batch rides with the job: a crossing the watchdog answered still owns
-    /// it until it returns. Awaited, never waited on: a pending delivery holds no thread.
+    /// it until it returns. Awaited, never waited on: a pending delivery holds no thread. Dropped
+    /// unanswered (the flusher abandoned it), its reply's drop is a client drop: the WriteBehind op
+    /// runs on with nobody waiting, still owning the batch, and its ticket is recycled once it ends.
     async fn deliver(self: Arc<Self>, worker: u32, stream: u8, lines: Vec<Line>) {
         let workers = self.dispatcher.workers().max(1);
         let ticket = (0..workers).find_map(|i| self.dispatcher.mint((worker + i) % workers));
@@ -287,6 +298,7 @@ impl Shared {
             );
             return;
         };
+        let _minted = Minted(&self.dispatcher, ticket);
         let mut batch = Vec::with_capacity(lines.iter().map(|l| l.bytes.len() + 1).sum());
         for l in &lines {
             batch.extend_from_slice(&l.bytes);
@@ -302,7 +314,8 @@ impl Shared {
                 _reserved: [0; 7],
                 batch: blob(&batch, BLOB_JSONL),
             };
-            // Every op is answered or ended by the dispatcher (its deadline, or the watchdog).
+            // Submitted with no deadline, the op is answered by the plugin, or ended by the
+            // watchdog; a delivery the flusher abandons drops this reply (a client drop).
             let done = self
                 .dispatcher
                 .submit_lent(
@@ -329,14 +342,15 @@ impl Shared {
                 }
             }
         }
-        self.dispatcher.recycle(ticket);
-        // The lines' holds are released here: the batch has answered.
+        // The lines' holds are released here: the batch has answered. The ticket is recycled as
+        // `_minted` drops.
         drop(lines);
     }
 
     /// THE FLUSHER: up to the instance's `max_inflight` deliveries at once, every batch started on
     /// one worker in queue order; on stop, what is still queued is shed and the deliveries in
-    /// flight answer.
+    /// flight answer, until the stop's grace runs out ([`Shared::abandon`]): then the flusher
+    /// returns, and the deliveries still in flight are dropped, each abandoned to the dispatcher.
     fn flush(self: Arc<Self>) {
         static NEXT_WORKER: AtomicU32 = AtomicU32::new(0);
         let worker = NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % self.dispatcher.workers().max(1);
@@ -348,7 +362,7 @@ impl Shared {
             if self.stop.load(Ordering::Acquire) {
                 // Closing: what is still queued is shed (its holds drop with it).
                 self.lock().clear();
-                return if inflight.is_empty() {
+                return if inflight.is_empty() || self.abandon.load(Ordering::Acquire) {
                     Poll::Ready(())
                 } else {
                     Poll::Pending
@@ -366,8 +380,26 @@ impl Shared {
                 return Poll::Pending;
             }
         }));
+        if !inflight.is_empty() {
+            tracing::warn!(
+                plugin = %self.plugin.name(),
+                deliveries = inflight.len(),
+                "export deliveries still in flight when the instance was dropped are abandoned"
+            );
+        }
     }
 }
+
+/// A delivery's ticket, recycled when the delivery ends, answered or abandoned (the dispatcher
+/// recycles a ticket whose op is still in flight once that op ends).
+struct Minted<'a>(&'a Arc<Dispatcher>, Ticket);
+
+impl Drop for Minted<'_> {
+    fn drop(&mut self) {
+        self.0.recycle(self.1);
+    }
+}
+
 /// This process's `op_id` node half: the process id and the boot instant, mixed.
 fn node_id() -> [u8; 8] {
     let t = std::time::SystemTime::now()
@@ -379,7 +411,8 @@ fn node_id() -> [u8; 8] {
 /// ONE OPENED EXPORT INSTANCE, on the one dispatcher.
 pub struct ExportInstance {
     shared: Arc<Shared>,
-    flusher: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// The flusher thread, and what it sends once [`Shared::flush`] returned.
+    flusher: Mutex<Option<(std::thread::JoinHandle<()>, Receiver<()>)>>,
     /// The first-party grant of its declared series, held for the instance's life: dropped after
     /// [`ExportInstance`]'s own drop has stopped its flusher.
     _grant: Option<crate::observe::SeriesGrant>,
@@ -394,8 +427,9 @@ impl std::fmt::Debug for ExportInstance {
     }
 }
 
-/// Dropping the instance stops its flusher: the deliveries in flight answer, the rest of the queue
-/// is shed.
+/// Dropping the instance stops its flusher: the rest of the queue is shed, and the deliveries in
+/// flight are given [`STOP_GRACE`] to answer; past it they are abandoned, so the dropping thread
+/// never waits on plugin code longer than that (THE DESIGN §11.13 M1).
 impl Drop for ExportInstance {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Release);
@@ -405,7 +439,12 @@ impl Drop for ExportInstance {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take();
-        if let Some(f) = flusher {
+        if let Some((f, flushed)) = flusher {
+            if let Err(RecvTimeoutError::Timeout) = flushed.recv_timeout(STOP_GRACE) {
+                self.shared.abandon.store(true, Ordering::Release);
+                self.shared.notify();
+            }
+            // The flusher returns at once now: abandoning a delivery waits on nothing.
             let _ = f.join();
         }
     }
@@ -453,17 +492,22 @@ impl ExportInstance {
             queue: Mutex::new(VecDeque::new()),
             flusher: Mutex::new(None),
             stop: AtomicBool::new(false),
+            abandon: AtomicBool::new(false),
             node: node_id(),
             minted: AtomicU64::new(0),
         });
         let flusher = shared.clone();
+        let (flushed, done) = std::sync::mpsc::channel();
         let flusher = std::thread::Builder::new()
             .name("busbar-export-flush".into())
-            .spawn(move || flusher.flush())
+            .spawn(move || {
+                flusher.flush();
+                let _ = flushed.send(());
+            })
             .map_err(|e| format!("the export flusher did not start: {e}"))?;
         Ok(Self {
             shared,
-            flusher: Mutex::new(Some(flusher)),
+            flusher: Mutex::new(Some((flusher, done))),
             _grant: None,
         })
     }

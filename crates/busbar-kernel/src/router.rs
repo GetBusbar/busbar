@@ -575,13 +575,10 @@ pub(crate) fn base_data_router(
     router
         .map_router(|r| {
             r
-                // EVERY protocol endpoint — chat and the 1.2 operations, all six dialects — flows
-                // through the catch-all: Router (dumb protocol ID from path+headers) → that
-                // protocol's RequestHandler (reads path+body, decides the operation) → its
-                // OperationHandler cell. Adding a protocol or an operation never touches this file.
-                // Unknown paths / wrong methods keep the pre-collapse native-envelope 404/405
-                // shaping (no bare-proxy tells). A fallback claims no path, so it declares no route:
-                // it takes the normal data-plane bar like any unclaimed path always has.
+                // A path no claimed row owns: the kernel's own 404 (`ingress::protocol_dispatch`).
+                // A plane matches its own claimed routes; the kernel identifies no protocol here.
+                // A fallback claims no path, so it declares no route: it takes the normal
+                // data-plane bar like any unclaimed path always has.
                 .fallback(ingress::protocol_dispatch)
                 // Wrong-method hits on a VALID path (axum's built-in 405) get the same
                 // native-envelope treatment as the 404 fallback above.
@@ -676,6 +673,10 @@ fn mount_plane_route(
               body: axum::body::Bytes| {
             // The plane never sees the caller's credential: the headers the gate consumed go here,
             // before the context — and the HOT request head built from it — exists (#65, #40(b)).
+            // What an entry fact may read of a consumed field, kept before it goes: its name and
+            // its scheme word, never the credential (status row 173).
+            let consumed_fields =
+                auth::ConsumedCredentials::fields_of(consumed.as_deref(), &headers);
             auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
             let caller_credential = consumed
                 .as_deref()
@@ -714,6 +715,7 @@ fn mount_plane_route(
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
                     ticket,
+                    consumed_fields,
                     engine,
                     host,
                     slot,
@@ -767,6 +769,10 @@ fn mount_plane_session(
               mut headers: axum::http::HeaderMap| {
             // As for a data route: the plane never sees the credential the gate consumed; it is
             // lent to a passthrough member only.
+            // What an entry fact may read of a consumed field, kept before it goes: its name and
+            // its scheme word, never the credential (status row 173).
+            let consumed_fields =
+                auth::ConsumedCredentials::fields_of(consumed.as_deref(), &headers);
             auth::ConsumedCredentials::strip_from(consumed.as_deref(), &mut headers);
             let caller_credential = consumed
                 .as_deref()
@@ -806,6 +812,7 @@ fn mount_plane_session(
                         |axum::extract::Extension(l)| l.0,
                     ),
                     ticket,
+                    consumed_fields,
                 };
                 match handler(ctx).await {
                     busbar_kernel::plane_routes::SessionAnswer::Refused(response) => response,
@@ -1348,10 +1355,6 @@ pub(crate) fn apply_inbound_concurrency_limit(
         router
     }
 }
-
-#[cfg(test)]
-#[path = "tests/router_doc_tests.rs"]
-mod router_doc_tests;
 
 #[cfg(test)]
 #[path = "tests/router_door_tests.rs"]

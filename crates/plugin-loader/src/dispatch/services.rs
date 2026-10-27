@@ -72,7 +72,7 @@ pub use busbar_contract::services::{
     Stored,
 };
 
-use super::ticket::{decode, Waking};
+use super::ticket::{decode, InstanceWake, Waking};
 
 /// The error text of a caller-scoped service called from an instance the host states no caller for.
 pub const NO_CALLER: &str = "no caller is bound to this instance";
@@ -80,6 +80,10 @@ pub const NO_CALLER: &str = "no caller is bound to this instance";
 pub const NO_TTL: &str = "a claim states its time to live";
 /// The error text of a may-pend service called with no ticket.
 pub const UNTICKETED: &str = "a service that may pend is callable only inside a ticketed op";
+/// The error text of a ticketed service call whose handle names a ticket other than the one the
+/// calling crossing carries.
+pub const NOT_THIS_CROSSING: &str =
+    "a service handle names the ticket of the crossing that calls it";
 /// The error text of a short answer.
 pub const SHORT: &str = "the buffer is too small";
 /// The refusal of a `random.fill` of no bytes or above `MAX_RANDOM_FILL`, before a byte is drawn.
@@ -160,7 +164,29 @@ struct Held {
     /// Minted fresh (never reused) when the ticket's first result of an op is stored; a forget
     /// (a new op or tick on the ticket, or its recycle) ends it.
     epoch: u64,
-    entries: HashMap<u32, (Bound, Entry)>,
+    entries: HashMap<Issue, (Bound, Entry)>,
+}
+
+/// What one result is kept under on its ticket: the CALLER whose context issued the handle (THE
+/// DESIGN §11.12 H2: "Every per-instance host registry keys by label"), and the handle's issue
+/// number. Two instances whose ops share a ticket each count their handles from 0; neither ever
+/// redeems, completes into or rebinds the other's result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Issue {
+    /// The caller's identity: the address of its leaked [`InstanceWake`] (`0`: no caller).
+    caller: usize,
+    seq: u32,
+}
+
+impl Issue {
+    fn of(route: &Waking, seq: u32) -> Self {
+        Self {
+            caller: route
+                .supplier
+                .map_or(0, |w| std::ptr::from_ref::<InstanceWake>(w) as usize),
+            seq,
+        }
+    }
 }
 
 /// The results of one dispatcher's services, by ticket then issue order, each ticket's under the
@@ -183,12 +209,12 @@ impl ServiceStore {
     }
 
     /// Store a pended service's result; `false` when the handle is not running under `epoch`.
-    fn complete(&self, h: CompletionHandle, epoch: u64, stored: Stored) -> bool {
+    fn complete(&self, h: CompletionHandle, issue: Issue, epoch: u64, stored: Stored) -> bool {
         let mut map = self.lock();
         match map
             .get_mut(&h.ticket)
             .filter(|held| held.epoch == epoch)
-            .and_then(|held| held.entries.get_mut(&h.seq))
+            .and_then(|held| held.entries.get_mut(&issue))
         {
             Some((_, e @ Entry::Running)) => {
                 *e = Entry::Done { stored, shorts: 0 };
@@ -224,7 +250,7 @@ impl ServiceStore {
             })
             .entries
             .insert(
-                seq,
+                Issue { caller: 0, seq },
                 (
                     Bound { op: 0, req: 0 },
                     Entry::Done {
@@ -268,7 +294,8 @@ impl Completer {
         let Some(store) = self.store.upgrade() else {
             return;
         };
-        if store.complete(self.handle, self.epoch, stored) {
+        let issue = Issue::of(&self.waking, self.handle.seq);
+        if store.complete(self.handle, issue, self.epoch, stored) {
             self.waking.wake(self.handle.ticket);
         }
     }
@@ -392,6 +419,11 @@ pub(crate) unsafe fn serve(
         };
     }
     let h = head.handle;
+    // A ticketed handle names the ticket of the crossing that calls it, or the call is refused:
+    // a pure op may not stamp another op's live ticket to pend, nor another op's result redeem.
+    if !crossing_names(h.ticket) {
+        return Answered::bare(Outcome::Refused, NOT_THIS_CROSSING);
+    }
     // A driver ticket's tick may not reuse a handle another exchange issued in a kept cycle
     // (`super::held`): it would read that exchange's kept answer.
     if !store.held.call(h) {
@@ -420,6 +452,7 @@ unsafe fn serve_kept(
 ) -> Answered {
     // The epoch of the op on the ticket: the one its first result minted, or a fresh one; `None`
     // when the handle is bound to another service or request.
+    let issue = Issue::of(route, h.seq);
     let Some((epoch, fresh)) = ({
         let mut map = store.lock();
         let held = map.entry(h.ticket).or_insert_with(|| Held {
@@ -427,7 +460,7 @@ unsafe fn serve_kept(
             entries: HashMap::new(),
         });
         let epoch = held.epoch;
-        match held.entries.entry(h.seq) {
+        match held.entries.entry(issue) {
             std::collections::hash_map::Entry::Occupied(o) => {
                 (o.get().0 == bound).then_some((epoch, false))
             }
@@ -448,7 +481,7 @@ unsafe fn serve_kept(
         };
         match body(Some(completer)) {
             Ran::Now(stored) => {
-                store.complete(h, epoch, stored);
+                store.complete(h, issue, epoch, stored);
             }
             Ran::Later => {}
         }
@@ -457,7 +490,7 @@ unsafe fn serve_kept(
     match map
         .get_mut(&h.ticket)
         .filter(|held| held.epoch == epoch)
-        .and_then(|held| held.entries.get_mut(&h.seq))
+        .and_then(|held| held.entries.get_mut(&issue))
     {
         Some((_, Entry::Running)) => Answered::bare(Outcome::Pending, ""),
         Some((_, Entry::Done { stored, shorts })) => {
@@ -647,6 +680,9 @@ fn framed(
         }
         if may_pend(service) && head.handle.ticket.is_none() {
             return Answered::bare(Outcome::Refused, UNTICKETED);
+        }
+        if !head.handle.ticket.is_none() && !crossing_names(head.handle.ticket) {
+            return Answered::bare(Outcome::Refused, NOT_THIS_CROSSING);
         }
         body(head)
     }))
@@ -1348,6 +1384,33 @@ extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut Service
 thread_local! {
     /// The unit the crossing on this thread serves.
     static SERVING: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// The ticket the crossing on this thread carries (`Ticket::NONE` for a ticket-less one);
+    /// `None` outside any crossing.
+    static CROSSING: std::cell::Cell<Option<Ticket>> = const { std::cell::Cell::new(None) };
+}
+
+/// The ticket a crossing carries, stated for the host services it calls on its thread, and
+/// restored (to that of any crossing it is nested in) when the crossing returns.
+pub(crate) struct Crossing(Option<Ticket>);
+
+impl Drop for Crossing {
+    fn drop(&mut self) {
+        CROSSING.with(|c| c.set(self.0));
+    }
+}
+
+/// State that the crossing on this thread carries `ticket` until the returned guard drops.
+pub(crate) fn crossing(ticket: Ticket) -> Crossing {
+    Crossing(CROSSING.with(|c| c.replace(Some(ticket))))
+}
+
+/// Whether a service handle naming `ticket` may be served on this thread (THE DESIGN §11.12: "A
+/// service that may pend is callable only inside a ticketed op"): inside a crossing, only the
+/// crossing's own ticket; outside any crossing (the host's own calls), any.
+fn crossing_names(ticket: Ticket) -> bool {
+    CROSSING
+        .with(std::cell::Cell::get)
+        .is_none_or(|t| t == ticket)
 }
 
 /// The unit a crossing serves, stated for the host services it calls on its thread, and cleared

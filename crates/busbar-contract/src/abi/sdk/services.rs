@@ -1453,13 +1453,13 @@ impl Services {
             messages: messages.as_ptr(),
             messages_len: messages.len(),
         };
-        let input = HookCallIn {
-            head: head::<HookCallIn>(op::HOOK_CALL, handle),
+        let input = HookCallIn::over(
+            head::<HookCallIn>(op::HOOK_CALL, handle),
             stage,
             from,
-            prompt: &prompt,
-            into: bufs(buf, &mut []),
-        };
+            &prompt,
+            bufs(buf, &mut []),
+        );
         if check_hook_call_in(&input).is_err() {
             return Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)));
         }

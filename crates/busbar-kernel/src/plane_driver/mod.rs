@@ -101,8 +101,8 @@ pub use far_end::{
 };
 pub use hooks::{
     Bind, BoundHooks, CallerFacts, CallerKey, CandidateFacts, Candidates, Constraint, GroupScope,
-    HookBinder, HookRead, HostHooks, Projection, Restrict, RewriteChain, SessionStage, StageTaps,
-    UnitHooks, CONTENT_ROLE, STAGE_GONE,
+    HookBinder, HookJournal, HookRead, HooksRan, HostHooks, Projection, Restrict, RewriteChain,
+    SessionStage, StageTaps, UnitHooks, CONTENT_ROLE, STAGE_GONE,
 };
 pub use hooks::{GatedHooks, GatedScan, GenerationHost, HookOrder, HostGatedHooks, PrincipalKeys};
 pub use host::{
@@ -270,6 +270,9 @@ pub struct PlaneDriver {
     sessions: Mutex<HashMap<u64, Arc<Notify>>>,
     /// Which hooks bind to a unit of this plane; `None` = none ever does.
     hooks: Option<Arc<dyn HookBinder>>,
+    /// Where the hook stage reports the hooks each unit ran (`None` = nowhere: no record names
+    /// them).
+    hook_journal: Option<Arc<dyn HookJournal>>,
     /// The instance's label, as admitted to the services: what its trust entries are admitted
     /// and judged under.
     label: Arc<str>,
@@ -425,6 +428,7 @@ impl PlaneDriver {
             services,
             sessions: Mutex::default(),
             hooks: None,
+            hook_journal: None,
             label: Arc::from(&*d.label),
             audit: Arc::new(CoreAudit),
             refused_piece: false,
@@ -509,6 +513,14 @@ impl PlaneDriver {
     #[must_use]
     pub fn with_refused_piece(mut self) -> Self {
         self.refused_piece = true;
+        self
+    }
+
+    /// Report the hooks each unit's hook stage ran to `journal` (THE DESIGN §1: the audit record's
+    /// "controls (... hooks applied)"): the node its record is sealed on.
+    #[must_use]
+    pub fn with_hook_journal(mut self, journal: Arc<dyn HookJournal>) -> Self {
+        self.hook_journal = Some(journal);
         self
     }
 
@@ -630,7 +642,7 @@ pub struct Arrival {
     /// The head fields.
     pub fields: HeadFields,
     /// The caller's body, kept for every attempt.
-    pub body: Arc<[u8]>,
+    pub body: bytes::Bytes,
 }
 
 /// What `arrive` said.
@@ -712,6 +724,21 @@ pub trait DriverSteps: Units {
         false
     }
 
+    /// THE UNIT'S REQUEST SPAN and the correlation id it carries (status row 173): opened as the
+    /// unit's route leg begins, once it is admitted, and its pool known, its decode `decoded` and
+    /// operation class `op` (as the previous release opened `forward` around its dispatch only, with
+    /// `pool`, `ingress`, `op` and a `request_id` stamped then, v1.5.5 `proxy/engine/mod.rs:120-152`).
+    /// The route leg runs inside it, and the unit's hooks carry the id. `None`: no span, and the
+    /// hooks' binder mints their id.
+    fn request_span(
+        &self,
+        _ctx: &UnitCtx,
+        _decoded: &Decoded,
+        _op: OpClassId,
+    ) -> Option<(tracing::Span, u64)> {
+        None
+    }
+
     /// The words of the refusal one of these steps raised, where it has its own: its Retry-After
     /// seconds (a rolling limit's wait, `RefusalIn::retry_after_s`, the previous release's
     /// `Retry-After` on a limit's 429) and its message (`RefusalIn::text`, the kernel's own message
@@ -762,6 +789,9 @@ pub(crate) struct UnitState {
     unit: u64,
     /// Where the unit stands with its plane's closing call, from `arrive` on ([`close`]).
     close: close::Close,
+    /// The unit's correlation id, where its host minted one with its request span
+    /// ([`DriverSteps::request_span`]): the id its hooks carry. `None`: the hooks' binder mints.
+    request_id: Option<u64>,
     decoded: Option<Decoded>,
     /// A REFUSED `arrive`'s own code and 4xx status.
     declined: Option<(u32, u32)>,
@@ -784,7 +814,7 @@ pub(crate) struct UnitState {
     /// A gate-first plane's hooks screened the unit before the door ([`RouteAwait::screen`]).
     screened: bool,
     /// The body a request-stage rewrite left, kept for every attempt; `None` = the caller's own.
-    body: Option<Arc<[u8]>>,
+    body: Option<bytes::Bytes>,
     /// The unit's hooks and the plane's view of its effective request, once the request stage ran.
     hooked: Option<(UnitHooks, hooks::Projection)>,
     /// The `response` stage tap has fired.
@@ -792,7 +822,7 @@ pub(crate) struct UnitState {
     /// The pool the unit's hooks were bound over (the walk's, else the plane's).
     hooked_pool: String,
     /// The hook that ordered or restricted the walk, for the opt-in transparency fields.
-    route_policy: Option<&'static str>,
+    route_policy: Option<std::sync::Arc<str>>,
     /// Why the kernel's Approve did not trust the unit's stated facts, for the plane's rendering.
     distrust: Option<Distrust>,
 }
@@ -1747,7 +1777,22 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUni
         if session {
             Box::pin(self.session_async(token, ctx, destinations))
         } else {
-            Box::pin(self.route_async(token, ctx))
+            use tracing::Instrument as _;
+            // THE UNIT'S REQUEST SPAN, where its steps open one (status row 173): the route leg
+            // runs inside it, and its hooks carry its correlation id.
+            let decoded = self.lock().decoded.clone();
+            let opened = decoded.as_ref().and_then(|d| {
+                let op = *self.driver.config.op_classes.get(d.op_class as usize)?;
+                self.steps.request_span(ctx, d, op)
+            });
+            let span = match opened {
+                Some((span, request_id)) => {
+                    self.lock().request_id = Some(request_id);
+                    span
+                }
+                None => tracing::Span::none(),
+            };
+            Box::pin(self.route_async(token, ctx).instrument(span))
         }
     }
 

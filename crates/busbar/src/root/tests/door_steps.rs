@@ -1248,7 +1248,7 @@ fn the_signing_region_is_read_off_the_host_the_request_dials() {
     }
 }
 
-// ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
+// ── the minted credential of a member bound under an OAuth grant ─────────────────
 
 /// One open's head fields: `(name, value)`, in the order received.
 type HeadFields = Vec<(String, Vec<u8>)>;
@@ -2097,7 +2097,7 @@ fn a_registration_member_is_reached_at_its_own_target() {
 }
 
 /// THE TOOL DOOR, SERVED END TO END (the fold's flip; BUSBAR-1.6.0.md Part 3 section 12,
-/// "The switch"; TODO P3) — the tool plane's root leg (`qa/teller-steps.json`): a
+/// "The switch") — the tool plane's root leg (`qa/teller-steps.json`): a
 /// `tools/call` the tool door claims reaches that plane's driver through its route on the data
 /// router (mounted at the router's construction), behind the deployment's auth gate, is admitted
 /// and charged by the money steps, crosses the plane's door (`arrive`, the ATTEMPT, the far end's
@@ -2704,6 +2704,7 @@ pub(crate) mod tool_door {
                     })
                 },
                 gov: Arc::clone(&gov),
+                journal: None,
             };
             let mut served = compose_planes(
                 &doors,
@@ -3213,6 +3214,21 @@ pub(crate) mod tool_door {
     struct StoreRows(Arc<busbar_kernel::governance::MemoryStore>);
 
     impl busbar_kernel::host_records::RecordRows for StoreRows {
+        fn claim(
+            &self,
+            token: &str,
+            expires_at: u64,
+            now: u64,
+        ) -> Result<bool, busbar_contract::kinds::StoreError> {
+            busbar_contract::records::RecordStore::redeem_plane_token(
+                &*self.0,
+                busbar_kernel::host_records::CLAIM_KIND,
+                token,
+                expires_at,
+                now,
+            )
+            .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
+        }
         fn record_put(
             &self,
             schema: busbar_contract::ids::RecordSchemaId,
@@ -3258,6 +3274,15 @@ pub(crate) mod tool_door {
     );
 
     impl busbar_kernel::host_records::RecordRows for Rows {
+        /// One writer in this test: every claim is the first.
+        fn claim(
+            &self,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> Result<bool, busbar_contract::kinds::StoreError> {
+            Ok(true)
+        }
         fn record_put(
             &self,
             schema: busbar_contract::ids::RecordSchemaId,
@@ -4152,6 +4177,107 @@ pub(crate) mod tool_door {
         .await;
     }
 
+    /// The SSRF guard bypass's odd host spellings (HIGH), each beside the plain ASCII host a URL
+    /// client dials it as: full-width `ｌｏｃａｌｈｏｓｔ`, circled-digit `①②⑦.0.0.1` and
+    /// `①⑥⑨.②⑤④.①⑥⑨.②⑤④`, `LOCALHOST。` with its ideographic full stop, and the full-width spellings
+    /// of `0x7f.1` and `017700000001`.
+    const ODD_HOSTS: [(&str, &str); 6] = [
+        (
+            "\u{ff4c}\u{ff4f}\u{ff43}\u{ff41}\u{ff4c}\u{ff48}\u{ff4f}\u{ff53}\u{ff54}",
+            "localhost",
+        ),
+        ("\u{2460}\u{2461}\u{2466}.0.0.1", "127.0.0.1"),
+        (
+            "\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}.\u{2460}\u{2465}\u{2468}.\u{2461}\u{2464}\u{2463}",
+            "169.254.169.254",
+        ),
+        ("LOCALHOST\u{3002}", "localhost"),
+        ("\u{ff10}\u{ff58}\u{ff17}\u{ff46}\u{ff0e}\u{ff11}", "0x7f.1"),
+        (
+            "\u{ff10}\u{ff11}\u{ff17}\u{ff17}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff10}\u{ff11}",
+            "017700000001",
+        ),
+    ];
+
+    /// Each of [`ODD_HOSTS`] spelt into a URL by every one of `spellings`, carried in a call's
+    /// arguments, is refused exactly as its plain ASCII host spelt the same way is refused (the same
+    /// status, JSON-RPC code, reason and sentence); each of `zero` (a host `url` dials as
+    /// `0.0.0.0`) is refused; nothing refused reaches the wire; and a public IDN URL is served.
+    async fn odd_hosts_refused_as_their_ascii_hosts(
+        instance: &'static str,
+        spellings: &[fn(&str) -> String],
+        zero: &[&str],
+    ) {
+        let (port, mut heard) = tool_server().await;
+        let rig = Rig::new(instance, port, None);
+        let refusal = |status: StatusCode, body: &[u8], url: &str| {
+            let shown = String::from_utf8_lossy(body);
+            assert_eq!(status.as_u16(), 403, "`{url}` must be refused: {shown}");
+            let body: serde_json::Value = serde_json::from_slice(body).expect("JSON-RPC");
+            assert_eq!(
+                body["error"]["data"]["reason"], "tool_argument_refused",
+                "`{url}`: {body}"
+            );
+            (
+                body["error"]["code"].clone(),
+                body["error"]["data"]["reason"].clone(),
+                body["error"]["message"].clone(),
+            )
+        };
+        for (odd, plain) in ODD_HOSTS {
+            for spell in spellings {
+                let (odd_url, plain_url) = (spell(odd), spell(plain));
+                let (status, body) = send(&rig.router, Some(&rig.token), &fetching(&odd_url)).await;
+                let odd_refusal = refusal(status, &body, &odd_url);
+                let (status, body) =
+                    send(&rig.router, Some(&rig.token), &fetching(&plain_url)).await;
+                let plain_refusal = refusal(status, &body, &plain_url);
+                assert_eq!(
+                    odd_refusal, plain_refusal,
+                    "`{odd_url}` beside `{plain_url}`"
+                );
+            }
+        }
+        for url in zero {
+            let (status, body) = send(&rig.router, Some(&rig.token), &fetching(url)).await;
+            refusal(status, &body, url);
+        }
+        let mut wire = Vec::new();
+        while let Ok(r) = heard.try_recv() {
+            wire.push(r);
+        }
+        assert!(
+            wire.iter().all(|r| !r.contains("\"tools/call\"")),
+            "no refused call reached the wire: {wire:?}"
+        );
+        // GREEN control: a public IDN host is its punycode name, and served.
+        let (status, body) = send(
+            &rig.router,
+            Some(&rig.token),
+            &fetching("https://b\u{fc}cher.example/notes"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    }
+
+    /// RED (HIGH, the SSRF guard bypass): the argument guard refuses an `http://` URL whose host is
+    /// an odd spelling exactly as it refuses the plain ASCII host a URL client dials it as, and
+    /// refuses `http://0x/` (`url` dials it as `0.0.0.0`). On the guard that compared hosts only
+    /// ASCII-lowercased each odd spelling was admitted and sent, and the upstream fetched loopback
+    /// or the metadata address.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_odd_host_spelling_in_the_arguments_is_refused_as_its_ascii_host() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "serve-door-tools-destjudge-odd-hosts";
+        let _published = Published(instance);
+        odd_hosts_refused_as_their_ascii_hosts(
+            instance,
+            &[|h| format!("http://{h}/latest/meta-data/")],
+            &["http://0x/latest/meta-data/"],
+        )
+        .await;
+    }
+
     /// A UNIT THE PLANE ANSWERS ITSELF (ARCHITECT Q-L3B-LOCAL): a keyed `tools/list` names no entry,
     /// is admitted with no route walk and answered 200 by the plane from its catalogue — nothing
     /// charged (only far-end-reported units bill), nothing dialled, every unit ended.
@@ -4910,6 +5036,15 @@ pub(crate) mod door_boundary {
         method: &str,
         path: &str,
     ) -> (u16, serde_json::Value) {
+        admin_on(&rig.app, method, path).await
+    }
+
+    /// One admin request on the admin router over the generation `app`: its status and JSON body.
+    async fn admin_on(
+        app: &Arc<busbar_kernel::state::App>,
+        method: &str,
+        path: &str,
+    ) -> (u16, serde_json::Value) {
         use tower::ServiceExt as _;
         let req = axum::http::Request::builder()
             .method(method)
@@ -4917,7 +5052,7 @@ pub(crate) mod door_boundary {
             .header("x-admin-token", ADMIN_TOKEN)
             .body(axum::body::Body::empty())
             .expect("a request");
-        let router = busbar_core_admin::build_router(Arc::clone(&rig.app));
+        let router = busbar_core_admin::build_router(Arc::clone(app));
         let response = router.oneshot(req).await.expect("answers");
         let status = response.status().as_u16();
         let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
@@ -5155,6 +5290,139 @@ pub(crate) mod door_boundary {
             "{body}"
         );
         assert!(heard.try_recv().is_err(), "connect fetched nothing");
+    }
+
+    /// The environment variable busbar's own subject token is named by in the apply cases below.
+    const APPLY_SUBJECT_VAR: &str = "BUSBAR_DOOR_APPLY_CONNECT_TEST_SUBJECT";
+
+    /// The `tools:` section of one registration `fs` on loopback `port`, its one tool approved;
+    /// with `exchanged`, a `token_exchange:` registration under busbar's own subject token
+    /// [`APPLY_SUBJECT_VAR`] (`aud:` the server's origin).
+    fn connect_section(port: u16, exchanged: bool) -> serde_yaml::Value {
+        let digest = super::tool_door::surface("tool_digest");
+        let token_url = super::tool_door::TOKEN_URL;
+        let exchange = if exchanged {
+            format!(
+                "  aud: \"http://127.0.0.1:{port}\"\n  token_exchange:\n    \
+                 token_url: \"{token_url}\"\n    subject_token: {{ env: {APPLY_SUBJECT_VAR} }}\n"
+            )
+        } else {
+            String::new()
+        };
+        serde_yaml::from_str(&format!(
+            "fs:\n  url: \"http://127.0.0.1:{port}/rpc\"\n  pin: {{ mechanism: pinned_pubkey, key: \"sha256/K=\" }}\n  \
+             allow_private: true\n{exchange}  \
+             tools_allow:\n    read_file: {{ schema_hash: \"{digest}\" }}\n"
+        ))
+        .expect("a section")
+    }
+
+    /// The door composed as `instance` over the `tools:` section `before` (the boot), then a config
+    /// apply of the generation whose `tools:` section is `after`, as the handle's appliers take it
+    /// (`DoorApply::apply`); the operator's `connect` of `fs` on the applied generation's admin
+    /// router, and what the server was sent for it.
+    async fn connect_across_an_apply(
+        instance: &'static str,
+        port: u16,
+        heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+        before: serde_yaml::Value,
+        after: serde_yaml::Value,
+    ) -> (u16, serde_json::Value, String) {
+        std::env::set_var(APPLY_SUBJECT_VAR, "busbar-own-apply-subject");
+        busbar_kernel::preflight::install_linked_auth(
+            crate::LINKED.auths,
+            crate::root::auth_bindings::operator_words(),
+        );
+        busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
+        let chain = vec![busbar_kernel::config::operator_provider().to_string()];
+        let row = row();
+        registry(row);
+        let booted = slot_over(row, before.clone());
+        let rig = rig_tools(instance, port, before, &|app| {
+            dispatched(app.admin_chain(chain.clone()), row, &booted)
+        });
+        let generation = rig.live.current().generation;
+        let applied = dispatched(
+            TestApp::new()
+                .keys_chain()
+                .governance(Arc::clone(&rig.gov))
+                .cost(busbar_kernel::cost::CostModel::flat(1))
+                .admin_chain(chain.clone()),
+            row,
+            &slot_over(row, after),
+        )
+        .build();
+        rig.live.apply(&applied);
+        assert_eq!(
+            rig.live.current().generation,
+            generation + 1,
+            "the door took the apply"
+        );
+        let (status, body) = admin_on(&applied, "POST", "/tools/fs/connect").await;
+        let list = heard.try_recv().unwrap_or_default().to_ascii_lowercase();
+        (status, body, list)
+    }
+
+    /// THE DOOR'S OWN FETCHES PRESENT THE APPLIED GENERATION'S BINDING (round 4 (d): "admin connect +
+    /// verify-on-call fetches use the same binding"; BUSBAR-1.6.0.md l.455: "Auth objects are
+    /// rebuilt per generation", l.980: "Guest lists and bindings belong to a generation"): a
+    /// registration booted with no credential, then given a `token_exchange:` by a config apply, is
+    /// fetched by the operator's `connect` with the token its new binding exchanges, as the walk's
+    /// relayed calls present it.
+    ///
+    /// RED before the fix: an apply re-sealed only the walk; the plane's own fetches stayed on the
+    /// bindings boot bound, so `connect` presented nothing for the member and the server saw no
+    /// `authorization`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_after_an_apply_presents_the_binding_the_apply_gave_the_member() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-connect-apply-added";
+        let _published = Published(instance);
+        let listed = Arc::new(std::sync::Mutex::new(serde_json::json!([
+            {"name": "read_file", "description": super::tool_door::TOOL_DESCRIPTION,
+             "inputSchema": super::tool_door::tool_schema()}
+        ])));
+        let (port, mut heard) = tool_server_listing(listed).await;
+        let (status, body, list) = connect_across_an_apply(
+            instance,
+            port,
+            &mut heard,
+            connect_section(port, false),
+            connect_section(port, true),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            list.contains("authorization: bearer tok-fs_read_file"),
+            "connect presents the token the applied binding exchanged: {list}"
+        );
+    }
+
+    /// GREEN TWIN: a `token_exchange:` registration a config apply leaves as it was keeps presenting
+    /// its exchanged token on the operator's `connect` (BUSBAR-1.6.0.md l.455, l.980).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_after_an_apply_that_keeps_the_member_presents_its_binding() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-connect-apply-kept";
+        let _published = Published(instance);
+        let listed = Arc::new(std::sync::Mutex::new(serde_json::json!([
+            {"name": "read_file", "description": super::tool_door::TOOL_DESCRIPTION,
+             "inputSchema": super::tool_door::tool_schema()}
+        ])));
+        let (port, mut heard) = tool_server_listing(listed).await;
+        let (status, body, list) = connect_across_an_apply(
+            instance,
+            port,
+            &mut heard,
+            connect_section(port, true),
+            connect_section(port, true),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            list.contains("authorization: bearer tok-fs_read_file"),
+            "connect presents the token the member's binding exchanged: {list}"
+        );
     }
 }
 
@@ -6378,9 +6646,9 @@ pub(crate) mod hook_parity {
     pub(crate) fn hook_env() -> busbar_kernel::hooks::HookEnv {
         busbar_kernel::test_support::test_hook_env(
             &["test-hook"],
-            busbar_plugin_loader::sign::HookNeeds {
-                prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-                user: busbar_plugin_loader::sign::NeedLevel::Ro,
+            busbar_kernel::test_support::HookNeeds {
+                prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+                user: busbar_contract::plugin_rows::NeedLevel::Ro,
             },
         )
     }
@@ -8500,6 +8768,67 @@ fn an_unopened_door_plane_is_awaiting_restart_once_a_configuration_writes_its_se
     assert!(
         rules.check(&cfg).is_ok(),
         "awaiting restart is not a refusal: the configuration is accepted and stored"
+    );
+}
+
+/// A FIRST SECTION OF AN UNLOADED PLANE IS REFUSED, NAMED (u67 BLOCK 2 item 2, ruled (iv);
+/// BUSBAR-1.6.0.md Law 7 l.547 and §6 item 8 l.980-982): a document whose root keys use a plane
+/// door the boot did not load (its verb, or a section it marks selecting) is refused with the one pinned
+/// sentence naming the section and the plane, whatever the plane states; a document that uses none
+/// is not. RED before the fix: no rule judged it, and the parse refused the section as an unknown
+/// field without saying the plane was not loaded or what to do.
+#[test]
+fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_plane() {
+    use busbar_kernel::appbuild::RootRules as _;
+    let door = crate::root::loader::boot::Candidate {
+        kind: busbar_contract::abi::mechanism::KindCode::Plane,
+        name: "zz-unloaded-red".to_string(),
+        version: "1.0.0".to_string(),
+        aliases: Vec::new(),
+        sugar: Vec::new(),
+        verbs: vec!["zz_tools_red".to_string()],
+        selecting: vec!["zz_selects_red".to_string()],
+        schemes: Vec::new(),
+        needs: Vec::new(),
+        stated: Vec::new(),
+        origin: crate::root::loader::boot::Origin::Dropped {
+            file: "zz-unloaded-red.tar.gz".to_string(),
+            bytes: std::sync::Arc::new(Vec::new()),
+        },
+        disk: false,
+        orders: true,
+    };
+    let rules = super::Rules::default();
+    assert_eq!(
+        rules.unloaded_plane_refusal(&["providers", "zz_tools_red"]),
+        None,
+        "nothing held, nothing refused"
+    );
+    rules.hold_unloaded(vec![door]);
+    assert_eq!(
+        rules.unloaded_plane_refusal(&["providers", "models", "store"]),
+        None,
+        "a document that uses no unloaded plane is not refused"
+    );
+    assert_eq!(
+        rules
+            .unloaded_plane_refusal(&["providers", "zz_tools_red"])
+            .as_deref(),
+        Some(
+            "`zz_tools_red:` is the section of the `zz-unloaded-red` plane, which this process did \
+             not load because its configuration did not use it at start; a first `zz_tools_red:` \
+             cannot take effect on a running process, so the change was refused and nothing was \
+             changed: write it in the config file and restart."
+        ),
+        "the pinned sentence, naming the section and the plane"
+    );
+    assert!(
+        rules
+            .unloaded_plane_refusal(&["zz_selects_red"])
+            .is_some_and(
+                |r| r.starts_with("`zz_selects_red:` is the section of the `zz-unloaded-red`")
+            ),
+        "a section that selects the plane uses it as its verb does"
     );
 }
 

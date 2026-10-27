@@ -3,19 +3,15 @@
 
 //! The fixed audit record: one shape, no content, and a chain that catches an edit.
 
+use crate::test_support::tokens::pass;
 use busbar_contract::caps::{
-    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, Pass, ReasonCode, StepName,
-    UnitKey,
+    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, ReasonCode, StepName, UnitKey,
 };
 
 use busbar_kernel_audit::record::{
-    Audit, AuditBreakKind, AuditChain, AuditInputs, Controls, FinishClass, HookApplied, OpClassId,
-    OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
+    Audit, AuditBreakKind, AuditChain, AuditInputs, Controls, FinishClass, HookApplied, HookHead,
+    OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
 };
-
-fn token() -> Pass<AuditStep> {
-    Pass::mint(&KernelSeal::acquire_for_kernel())
-}
 
 fn origin() -> Origin {
     Origin::seal(&KernelSeal::acquire_for_kernel(), OriginKind::Client)
@@ -68,6 +64,8 @@ fn inputs(unit: u64) -> AuditInputs {
             policy_epoch: 7,
             hooks_applied: vec![HookApplied {
                 hook: "compress".into(),
+                head: HookHead::Modify,
+                failed: false,
             }],
             replayed: false,
             children: vec![UnitKey::new(unit + 1000)],
@@ -85,7 +83,7 @@ fn frozen_record() -> busbar_kernel_audit::record::AuditRecord {
     with_payloads.outcome.step = Some(StepName::Admit);
     with_payloads.outcome.finish = FinishClass::Error;
     with_payloads.what.incarnation = 3;
-    chain.seal(with_payloads, &token())
+    chain.seal(with_payloads, &pass::<AuditStep>())
 }
 
 /// The node [`frozen_record`] is sealed by.
@@ -123,22 +121,26 @@ fn frozen_v2_record() -> busbar_kernel_audit::record::AuditRecord {
 /// (wall + monotonic, node)"): `v4` had not shipped, and until the 1.6.0 tag a first version is
 /// edited in place with its golden regenerated in the same commit (owner, 2026-09-28). The v2 value
 /// is still pinned by [`a_record_sealed_under_v2_still_verifies_by_the_v2_rules`] and the v1 value
-/// by [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`]. From the 1.6.0 tag on,
-/// the next move needs a new recipe beside these.
+/// by [`the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record`]. Moved a sixth time, in
+/// place under the same rule, when each hook that ran gained its decision `head` and its `failed`
+/// mark beside its key (audit root#3; THE DESIGN §1: "controls (... hooks applied)"): the new hex
+/// was derived outside this crate, from the published table's framing over this fixture's values,
+/// and that derivation reproduces the previous hex `05669b6c…a654` with the two fields left out.
+/// From the 1.6.0 tag on, the next move needs a new recipe beside these.
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     let record = frozen_record();
     assert_eq!(record.recipe, busbar_kernel_audit::recipe::Recipe::V4);
     assert_eq!(record.node, FROZEN_NODE);
     assert_eq!(
-        record.hash, "05669b6c9c61f45500a020440eadac8eb6f296d269b2d6b22d2da0da2bd1a654",
+        record.hash, "c52e40669e4afb81c8a244a7dfbd9142281e3b74179d51426075ad2564b2668b",
         "the sealed digest moved: every persisted chain would now report itself tampered"
     );
 }
 
 /// A `v4` PREIMAGE NAMES NO CURRENCY (#34), and it is `v2` less exactly `currency`, plus
-/// `incarnation` straight after `unit_key` and `node` straight after `mono`, both numbers. Nothing
-/// else moves.
+/// `incarnation` straight after `unit_key` and `node` straight after `mono`, both numbers, and each
+/// hook's `head` (text) and `failed` (number) straight after its key. Nothing else moves.
 #[test]
 fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_incarnation_and_node()
 {
@@ -165,9 +167,12 @@ fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_inc
     expected.insert(at, "node");
     let at = after(&expected, "unit_key");
     expected.insert(at, "incarnation");
+    let at = after(&expected, "hooks[].hook");
+    expected.insert(at, "hooks[].failed");
+    expected.insert(at, "hooks[].head");
     assert_eq!(
         v4_names, expected,
-        "v4 is not v2 less `currency` plus `incarnation` and `node`"
+        "v4 is not v2 less `currency` plus `incarnation`, `node` and each hook's head and failure"
     );
     let node = v4
         .iter()
@@ -196,7 +201,7 @@ fn a_new_record_is_sealed_under_v4_and_its_preimage_is_v2_less_currency_plus_inc
 fn a_record_names_the_node_that_sealed_it_in_its_digest_and_its_range_read() {
     let seal = |node: u64| {
         let mut chain = AuditChain::new().sealing_as(node);
-        let record = chain.seal(inputs(1), &token());
+        let record = chain.seal(inputs(1), &pass::<AuditStep>());
         (chain, record)
     };
     let ((chain_a, a), (_, b)) = (seal(11), seal(12));
@@ -232,7 +237,7 @@ fn two_boots_minting_the_same_unit_key_seal_distinct_verified_records() {
         let mut chain = AuditChain::new();
         let mut i = inputs(1);
         i.what.incarnation = incarnation;
-        chain.seal(i, &token())
+        chain.seal(i, &pass::<AuditStep>())
     };
     let (first, second) = (seal(1), seal(2));
     assert_eq!(first.what.unit_key, second.what.unit_key);
@@ -348,7 +353,9 @@ fn the_v1_frozen_digest_is_reproduced_by_v1_rules_from_a_v2_record() {
 #[test]
 fn a_record_links_to_the_one_before_it_and_the_run_verifies() {
     let mut chain = AuditChain::new();
-    let records: Vec<_> = (1..=4).map(|i| chain.seal(inputs(i), &token())).collect();
+    let records: Vec<_> = (1..=4)
+        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .collect();
     assert_eq!(records[0].prev_hash, "");
     for pair in records.windows(2) {
         assert_eq!(pair[1].prev_hash, pair[0].hash);
@@ -361,7 +368,7 @@ fn a_record_links_to_the_one_before_it_and_the_run_verifies() {
 #[test]
 fn the_correlation_label_is_hashed_and_the_label_itself_is_gone() {
     let mut chain = AuditChain::new();
-    let record = chain.seal(inputs(1), &token());
+    let record = chain.seal(inputs(1), &pass::<AuditStep>());
     let hash = record.correlation_hash.clone().unwrap();
     assert_eq!(
         hash,
@@ -382,14 +389,16 @@ fn a_record_with_no_correlation_label_carries_no_hash() {
     let mut chain = AuditChain::new();
     let mut without = inputs(1);
     without.correlation_label = None;
-    let record = chain.seal(without, &token());
+    let record = chain.seal(without, &pass::<AuditStep>());
     assert!(record.correlation_hash.is_none());
 }
 
 #[test]
 fn editing_any_recorded_fact_is_caught() {
     let mut chain = AuditChain::new();
-    let mut records: Vec<_> = (1..=3).map(|i| chain.seal(inputs(i), &token())).collect();
+    let mut records: Vec<_> = (1..=3)
+        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .collect();
 
     // Every one of these is a fact somebody would have a reason to change.
     let edits: Vec<(&str, Edit)> = vec![
@@ -430,6 +439,12 @@ fn editing_any_recorded_fact_is_caught() {
         ("a hook's name", |r| {
             r.controls.hooks_applied[0].hook = "decompress".into()
         }),
+        ("a hook's head", |r| {
+            r.controls.hooks_applied[0].head = HookHead::Veto
+        }),
+        ("whether a hook failed", |r| {
+            r.controls.hooks_applied[0].failed = true
+        }),
         ("the replay mark", |r| r.controls.replayed = true),
         ("the wall clock", |r| r.wall += 1),
         ("the correlation hash", |r| {
@@ -441,7 +456,8 @@ fn editing_any_recorded_fact_is_caught() {
         let mut edited = records.clone();
         edit(&mut edited[1]);
         let brk = AuditChain::verify_chain(&edited)
-            .unwrap_err_or_else(|| panic!("editing {what} went undetected"));
+            .err()
+            .unwrap_or_else(|| panic!("editing {what} went undetected"));
         assert_eq!(brk.kind, AuditBreakKind::DigestMismatch, "editing {what}");
         assert_eq!(brk.at_index, 2);
     }
@@ -459,11 +475,11 @@ fn two_nodes_do_not_digest_the_same() {
     let mut chain = AuditChain::new();
     let mut a = inputs(1);
     a.subject = Subject::Node(1);
-    let first = chain.seal(a, &token());
+    let first = chain.seal(a, &pass::<AuditStep>());
     let mut chain = AuditChain::new();
     let mut b = inputs(1);
     b.subject = Subject::Node(2);
-    let second = chain.seal(b, &token());
+    let second = chain.seal(b, &pass::<AuditStep>());
     assert_ne!(first.hash, second.hash);
 }
 
@@ -475,7 +491,7 @@ fn a_plane_contributes_exactly_two_identifiers() {
     let mut other_plane = inputs(1);
     other_plane.what.op_class = OpClassId::new("tool.call");
     other_plane.outcome.finish = FinishClass::TurnComplete;
-    let record = chain.seal(other_plane, &token());
+    let record = chain.seal(other_plane, &pass::<AuditStep>());
 
     // Same shape, different two ids.
     assert_eq!(record.what.op_class.as_str(), "tool.call");
@@ -487,10 +503,12 @@ fn a_plane_contributes_exactly_two_identifiers() {
 #[test]
 fn a_chain_resumed_from_a_persisted_tail_continues_it() {
     let mut chain = AuditChain::new();
-    let first: Vec<_> = (1..=2).map(|i| chain.seal(inputs(i), &token())).collect();
+    let first: Vec<_> = (1..=2)
+        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .collect();
 
     let mut resumed = AuditChain::resume(&first);
-    let third = resumed.seal(inputs(3), &token());
+    let third = resumed.seal(inputs(3), &pass::<AuditStep>());
     assert_eq!(third.prev_hash, first[1].hash);
 
     let mut all = first;
@@ -503,7 +521,9 @@ fn a_chain_resumed_from_a_persisted_tail_continues_it() {
 #[test]
 fn a_record_carries_its_position_and_the_position_is_digested() {
     let mut chain = AuditChain::new();
-    let records: Vec<_> = (1..=3).map(|i| chain.seal(inputs(i), &token())).collect();
+    let records: Vec<_> = (1..=3)
+        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .collect();
     assert_eq!(
         records.iter().map(|r| r.seq).collect::<Vec<_>>(),
         vec![1, 2, 3]
@@ -533,7 +553,9 @@ fn a_record_carries_its_position_and_the_position_is_digested() {
 #[test]
 fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
     let mut chain = AuditChain::new();
-    let records: Vec<_> = (1..=4).map(|i| chain.seal(inputs(i), &token())).collect();
+    let records: Vec<_> = (1..=4)
+        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .collect();
 
     let brk = AuditChain::verify_chain(&records[1..]).unwrap_err();
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
@@ -552,7 +574,9 @@ fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
 #[test]
 fn a_window_verifies_a_contiguous_middle_run_and_not_a_gapped_one() {
     let mut chain = AuditChain::new();
-    let records: Vec<_> = (1..=6).map(|i| chain.seal(inputs(i), &token())).collect();
+    let records: Vec<_> = (1..=6)
+        .map(|i| chain.seal(inputs(i), &pass::<AuditStep>()))
+        .collect();
 
     assert!(AuditChain::verify_window(&records[2..5]).is_ok());
 
@@ -571,20 +595,6 @@ fn an_empty_run_verifies_and_the_limit_is_deliberate() {
 
 /// One hand-edit to a sealed record.
 type Edit = fn(&mut busbar_kernel_audit::record::AuditRecord);
-
-/// A small helper so the edit battery reads as one line per fact rather than four.
-trait UnwrapErrOrElse<T, E> {
-    fn unwrap_err_or_else(self, f: impl FnOnce() -> E) -> E;
-}
-
-impl<T, E> UnwrapErrOrElse<T, E> for Result<T, E> {
-    fn unwrap_err_or_else(self, f: impl FnOnce() -> E) -> E {
-        match self {
-            Ok(_) => f(),
-            Err(e) => e,
-        }
-    }
-}
 
 /// What a break SAYS, and the two halves of the checks that find one.
 #[path = "break_reporting_tests.rs"]

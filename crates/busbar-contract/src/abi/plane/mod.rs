@@ -401,13 +401,25 @@ pub const CLAIM_SIGNED_INGRESS: u32 = 1 << 4;
 /// route and takes no arrival (ARCHITECT ruling 2026-10-17). Never with [`CLAIM_OPEN`],
 /// [`CLAIM_EXACT`] or [`CLAIM_PATTERN`]. Bits 3 and 4 are taken by flags in flight.
 pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
+/// [`Claim::flags`]: the target is an ENTRY FACT, the request shape whose arrival opens the entry
+/// span the claim states ([`PlaneSnapshot::arrival_spans`]; an empty name ends the reading there,
+/// and the arrival opens none). The host reads a plane's entry facts in its snapshot's order, ahead
+/// of the span the arrival's own claim states, and the first one the request meets decides. The
+/// target is one or more space-separated predicates, every one of which the request must meet:
+/// `field:<name>` (a head field `<name>`, lower-case, is present), `field:<name>=<prefix>` (its value
+/// starts with `<prefix>`; a field the host's auth consumed is read by its scheme word alone), and
+/// at most one `path:<pattern>` over the raw, undecoded path, in which `*` matches any run of bytes
+/// and a whole segment `{}` or `{<field>}` matches one non-empty segment, `{<field>}` recording it,
+/// percent-decoded, as the span's field `<field>` ([`check::entry_fact`]). An entry fact mounts no
+/// route and takes no arrival. Never with another flag.
+pub const CLAIM_ENTRY: u32 = 1 << 6;
 /// [`Claim::flags`]: the route's inbound credential may be a TICKET the host minted for the plane
 /// ([`op::TICKET_MINT`](crate::abi::host::service::op::TICKET_MINT)). The gate verifies a credential
 /// carrying the plane's declared issued-id prefix as a ticket on this route only, consumes it when
 /// it admits the unit (a ticket admits one unit, once), and holds its record for
 /// [`op::TICKET_TAKE`](crate::abi::host::service::op::TICKET_TAKE). A key admits as on any keyed
 /// route. Never with [`CLAIM_OPEN`].
-pub const CLAIM_TICKET: u32 = 1 << 6;
+pub const CLAIM_TICKET: u32 = 1 << 7;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
@@ -1129,7 +1141,7 @@ pub const fn nothing_sent(reason: u32) -> bool {
 // ── the one refusal classification ───────────────────────────────────────────────────────────────
 
 /// THE ONE REFUSAL CLASSIFICATION: which family of answer a refusal reason gets, whatever the
-/// plane. This is the P-item "refusal-reason collapse" (spec DONE item 2; TODO L-ENG9).
+/// plane. This is the P-item "refusal-reason collapse" (spec DONE item 2).
 ///
 /// A refusal reason is the kernel's own word, and a client never sees it. A client sees the plane's
 /// rendering of it. Before this table there were eight hand-copied reason matches, and they

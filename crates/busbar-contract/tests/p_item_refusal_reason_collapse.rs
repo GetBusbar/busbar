@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! P-ITEM: REFUSAL-REASON COLLAPSE (spec DONE item 2, `docs/design/BUSBAR-1.6.0.md`, "All P-item
-//! behaviours match 1.5.5"; the drive log's P1/P2, commit 470351a480; TODO L-ENG9).
+//! behaviours match 1.5.5"; the drive log's P1/P2, commit 470351a480).
 //!
 //! THE 1.5.5 BEHAVIOUR. 1.5.5 had one plane (owner correction 2026-09-28). On it
 //! every limit reason reached the caller as its own status and kind, and none of them became an

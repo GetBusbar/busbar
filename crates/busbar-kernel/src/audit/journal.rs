@@ -48,11 +48,22 @@
 //! with the map released, then commits. The claim orders writers of ONE scope (two appends to a
 //! scope cannot both build on the same position); appends to OTHER scopes of the kind never wait
 //! on it, and a store that appends to another scope from inside its own write cannot deadlock.
+//!
+//! ## A same-scope wait has a deadline
+//!
+//! A second writer of a claimed scope waits for the first one's store crossing, but never past
+//! [`CLAIM_WAIT`]. The admin audit log writes ONE scope, so without a deadline one slow store write
+//! would park every admin mutation's audit write, and whichever thread made it (a runtime worker
+//! included), for as long as the store took. On the deadline the append is refused with a store
+//! error and commits nothing, exactly like a failed durable write: the position is untouched, the
+//! next append reuses the sequence, and the caller handles it as it handles any failed write (the
+//! admin audit log queues the record and lands it on its next successful write).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::ThreadId;
+use std::time::{Duration, Instant};
 
 use indexmap::IndexMap;
 
@@ -61,6 +72,11 @@ use crate::store::plane_view::{encode, PlaneStore};
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
 };
+
+/// The longest an append waits for ANOTHER thread's store crossing on the same scope before it is
+/// refused (see the module docs). Far above any healthy store write, so only a stalled store reaches
+/// it.
+const CLAIM_WAIT: Duration = Duration::from_secs(5);
 
 /// Why a journal write could not be made durable. ONE variant today: the durable append failed. It is
 /// SURFACED rather than swallowed — an evidence record that is not durable is one a restart will lose,
@@ -149,6 +165,8 @@ pub(crate) struct Journal<R> {
     claimed: Mutex<HashMap<String, ThreadId>>,
     /// Signalled whenever a claim is released.
     released: Condvar,
+    /// The deadline on waiting for another thread's claim: [`CLAIM_WAIT`], shortened only by tests.
+    claim_wait: Duration,
 }
 
 /// One scope's claim on its store crossing. Dropping it, on success, on error and on unwind alike,
@@ -180,15 +198,27 @@ impl<R: ChainedRecord> Journal<R> {
             resume_breaks: Mutex::new(Vec::new()),
             claimed: Mutex::new(HashMap::new()),
             released: Condvar::new(),
+            claim_wait: CLAIM_WAIT,
         }
+    }
+
+    /// TEST ONLY: replace [`CLAIM_WAIT`] so a cell can watch the deadline fire without waiting
+    /// seconds for it.
+    #[cfg(test)]
+    pub(crate) fn set_claim_wait(&mut self, wait: Duration) {
+        self.claim_wait = wait;
     }
 
     /// CLAIM `scope` for one store crossing: wait while another thread holds it, then hold it until
     /// the returned claim drops. Only the claim map is locked, and only to test and mark it; the
-    /// wait releases it. A claim the CALLING thread already holds is refused: that is a store
-    /// re-entering the journal for the scope it is writing, which would otherwise wait on itself.
+    /// wait releases it. The wait is bounded by [`Journal::claim_wait`] from entry, however many
+    /// releases of other scopes wake it meanwhile; past it the claim is refused, so no caller stays
+    /// parked behind another thread's store crossing. A claim the CALLING thread already holds is
+    /// refused at once: that is a store re-entering the journal for the scope it is writing, which
+    /// would otherwise wait on itself.
     fn claim(&self, scope: &str) -> RecordStoreResult<ScopeClaim<'_>> {
         let me = std::thread::current().id();
+        let deadline = Instant::now() + self.claim_wait;
         let mut claimed = self.claimed.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
             let holder = claimed.get(scope).copied();
@@ -202,10 +232,19 @@ impl<R: ChainedRecord> Journal<R> {
                     ));
                 }
                 Some(_) => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(RecordStoreError(
+                            "a journal scope stayed claimed by another thread's store write past \
+                             the claim deadline; refused rather than waiting on it without end"
+                                .to_string(),
+                        ));
+                    }
                     claimed = self
                         .released
-                        .wait(claimed)
-                        .unwrap_or_else(PoisonError::into_inner);
+                        .wait_timeout(claimed, left)
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .0;
                 }
             }
         }
@@ -358,7 +397,11 @@ impl<R: ChainedRecord> Journal<R> {
     /// The scope is CLAIMED for the whole append, and the position map is held only to read the
     /// cached position and to commit the new one: the resume read and the durable write cross the
     /// store with no host lock held. The claim is what keeps two appends to one scope from minting
-    /// the same sequence. A failed write commits nothing, so the next append reuses the sequence.
+    /// the same sequence; waiting for it is bounded ([`CLAIM_WAIT`]), and a refused claim fails the
+    /// append before anything is minted. A failed write commits nothing and FORGETS the scope's
+    /// cached position, so the next append resumes from the store's tail: the sequence is reused
+    /// when nothing else wrote, and a chain another node of the fleet advanced is continued rather
+    /// than refused as a fork on every append after.
     /// The scope may be evicted or forgotten while its write is in flight; the commit then puts the
     /// durable tail back as the most-recently-used position, the same position a resume would read.
     fn append_with(
@@ -377,9 +420,10 @@ impl<R: ChainedRecord> Journal<R> {
         let record = candidate.append(scope, input);
         if let Some(store) = self.sink() {
             let envelope = envelope(&record).map_err(JournalError::Store)?;
-            store
-                .append_plane_record(envelope.view())
-                .map_err(JournalError::Store)?;
+            if let Err(e) = store.append_plane_record(envelope.view()) {
+                self.forget(scope);
+                return Err(JournalError::Store(e));
+            }
         }
         self.commit(scope, candidate);
         Ok(record)

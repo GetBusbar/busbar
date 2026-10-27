@@ -19,14 +19,17 @@ use busbar_contract::hooks::{
 };
 use busbar_kernel::config::PolicyOnError;
 use busbar_kernel::hooks::{RequestedSignals, ResolvedPolicy};
-use busbar_kernel::plane_driver::{BoundHooks, BufferCaps, CallerFacts, CallerKey, StageTaps};
+use busbar_kernel::plane_driver::{
+    BoundHooks, BufferCaps, CallerFacts, CallerKey, HookJournal, HooksRan, StageTaps,
+};
+use busbar_kernel_audit::{HookApplied, HookHead};
 
 use super::cases::{arrival, drive, Book, Caller, Far};
 use super::common::TestUnits;
 use super::{rig_with_hooks, Way};
 
 /// A caller the hooks know nothing of.
-struct Nobody;
+pub(crate) struct Nobody;
 
 impl CallerFacts for Nobody {
     fn key(&self, _: &str) -> Option<CallerKey> {
@@ -367,9 +370,9 @@ async fn a_load_bearing_rewrite_that_cannot_answer_refuses_with_the_shared_503()
 fn resolved_rewrite(on_error: &str) -> Vec<(Duration, Arc<dyn RoutingPolicy>)> {
     let env = busbar_kernel::test_support::test_hook_env(
         &["test-hook"],
-        busbar_plugin_loader::sign::HookNeeds {
-            prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
-            user: busbar_plugin_loader::sign::NeedLevel::Ro,
+        busbar_kernel::test_support::HookNeeds {
+            prompt: busbar_contract::plugin_rows::NeedLevel::Rw,
+            user: busbar_contract::plugin_rows::NeedLevel::Ro,
         },
     );
     let hook: busbar_kernel::config::HookCfg = serde_json::from_value(serde_json::json!({
@@ -484,12 +487,13 @@ async fn a_rewrite_the_plane_refuses_is_the_hooks_failure_answered_by_its_on_err
     assert!(far.sent().is_empty(), "no attempt was made");
 }
 
-/// A gate-first binder attaching `rewrites` (and no gate) to every entry.
-struct GatedRewrites {
+/// A gate-first binder attaching `gates` and `rewrites` to every entry.
+struct GatedBinder {
+    gates: Vec<(u16, ResolvedPolicy)>,
     rewrites: Vec<(Duration, Arc<dyn RoutingPolicy>)>,
 }
 
-impl busbar_kernel::plane_driver::HookBinder for GatedRewrites {
+impl busbar_kernel::plane_driver::HookBinder for GatedBinder {
     fn bind(
         &self,
         _bind: &busbar_kernel::plane_driver::Bind<'_>,
@@ -508,7 +512,7 @@ impl busbar_kernel::plane_driver::HookBinder for GatedRewrites {
     ) -> Option<busbar_kernel::plane_driver::GatedHooks> {
         Some(busbar_kernel::plane_driver::GatedHooks {
             request_id: 7,
-            gates: Vec::new(),
+            gates: self.gates.clone(),
             rewrites: self.rewrites.clone(),
             key: None,
             scan: None,
@@ -523,7 +527,8 @@ impl busbar_kernel::plane_driver::HookBinder for GatedRewrites {
 #[tokio::test]
 async fn a_gate_first_rewrite_the_plane_refuses_is_answered_by_the_hooks_on_error() {
     let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-    let driver = r.driver.with_hooks(Arc::new(GatedRewrites {
+    let driver = r.driver.with_hooks(Arc::new(GatedBinder {
+        gates: Vec::new(),
         rewrites: resolved_rewrite("weighted"),
     }));
     let (steps, far, caller) = (
@@ -556,7 +561,8 @@ async fn a_gate_first_rewrite_the_plane_refuses_is_answered_by_the_hooks_on_erro
     }
 
     let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-    let driver = r.driver.with_hooks(Arc::new(GatedRewrites {
+    let driver = r.driver.with_hooks(Arc::new(GatedBinder {
+        gates: Vec::new(),
         rewrites: resolved_rewrite("reject"),
     }));
     let (steps, far, caller) = (
@@ -636,7 +642,8 @@ async fn a_gate_first_faulted_rewrite_project_is_always_the_shared_500() {
     .into_bytes();
     for on_error in ["weighted", "first", "reject"] {
         let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-        let driver = r.driver.with_hooks(Arc::new(GatedRewrites {
+        let driver = r.driver.with_hooks(Arc::new(GatedBinder {
+            gates: Vec::new(),
             rewrites: resolved_rewrite(on_error),
         }));
         let (steps, far, caller) = (
@@ -822,9 +829,10 @@ async fn a_gate_first_unparseable_body_with_a_configured_rewrite_is_the_shared_5
     for (how, answer) in ANSWERS {
         let (calls, chain) = counting(answer);
         let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-        let driver = r
-            .driver
-            .with_hooks(Arc::new(GatedRewrites { rewrites: chain }));
+        let driver = r.driver.with_hooks(Arc::new(GatedBinder {
+            gates: Vec::new(),
+            rewrites: chain,
+        }));
         let (steps, far, caller) = (
             TestUnits::passing(),
             Far::new(&["ok"], &[b"done"]),
@@ -998,38 +1006,6 @@ async fn an_unparseable_body_with_only_a_policy_is_judged_as_a_null_body_and_ser
     );
 }
 
-/// A gate-first binder attaching `gates` (and no rewrite) to every entry.
-struct GatedGates {
-    gates: Vec<(u16, ResolvedPolicy)>,
-}
-
-impl busbar_kernel::plane_driver::HookBinder for GatedGates {
-    fn bind(
-        &self,
-        _bind: &busbar_kernel::plane_driver::Bind<'_>,
-    ) -> Option<busbar_kernel::plane_driver::UnitHooks> {
-        panic!("a gate-first plane binds no routed hooks")
-    }
-
-    fn order(&self) -> busbar_kernel::plane_driver::HookOrder {
-        busbar_kernel::plane_driver::HookOrder::Gated
-    }
-
-    fn bind_gated(
-        &self,
-        _container: &str,
-        _principal: Option<&str>,
-    ) -> Option<busbar_kernel::plane_driver::GatedHooks> {
-        Some(busbar_kernel::plane_driver::GatedHooks {
-            request_id: 7,
-            gates: self.gates.clone(),
-            rewrites: Vec::new(),
-            key: None,
-            scan: None,
-        })
-    }
-}
-
 /// RED, the gate-first twin (opus review B1): the entry has gates and no rewrite, and the first
 /// `project` FAULTs. The gates judge a view with no body and the unit is served: a gate shown the
 /// shape judges it (one that rejects refuses, with its status and words), and a gate granted the
@@ -1044,7 +1020,8 @@ async fn a_gate_first_unparseable_body_with_only_gates_is_judged_and_served() {
     ] {
         let (seen, g) = gate_granted(reject, send_prompt);
         let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-        let driver = r.driver.with_hooks(Arc::new(GatedGates {
+        let driver = r.driver.with_hooks(Arc::new(GatedBinder {
+            rewrites: Vec::new(),
             gates: vec![(0, g)],
         }));
         let (steps, far, caller) = (
@@ -1122,7 +1099,8 @@ async fn every_fault_but_the_marked_unparseable_one_on_a_gate_only_route_is_refu
 
         let (seen, g) = gate_granted(None, false);
         let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-        let driver = r.driver.with_hooks(Arc::new(GatedGates {
+        let driver = r.driver.with_hooks(Arc::new(GatedBinder {
+            rewrites: Vec::new(),
             gates: vec![(0, g)],
         }));
         let (steps, far, caller) = (
@@ -1159,9 +1137,10 @@ async fn a_gate_first_unmarked_fault_with_a_configured_rewrite_is_the_shared_500
     ] {
         let (calls, chain) = counting(|| TransformOutcome::Abstain);
         let r = super::rig(Way::Double, BufferCaps::default(), Book::default());
-        let driver = r
-            .driver
-            .with_hooks(Arc::new(GatedRewrites { rewrites: chain }));
+        let driver = r.driver.with_hooks(Arc::new(GatedBinder {
+            gates: Vec::new(),
+            rewrites: chain,
+        }));
         let (steps, far, caller) = (
             TestUnits::passing(),
             Far::new(&["ok"], &[b"done"]),
@@ -1186,4 +1165,90 @@ async fn a_gate_first_unmarked_fault_with_a_configured_rewrite_is_the_shared_500
         );
         assert!(far.sent().is_empty(), "{target}: never dialled");
     }
+}
+
+/// Every hook report the stage made, as the node would be handed it.
+#[derive(Default)]
+struct Reports(Mutex<Vec<HooksRan>>);
+
+impl HookJournal for Reports {
+    fn hooks_ran(&self, record: &HooksRan) {
+        self.0.lock().unwrap().push(record.clone());
+    }
+}
+
+/// One hook that ran, keyed `hook`.
+fn ran(hook: &str, head: HookHead, failed: bool) -> HookApplied {
+    HookApplied {
+        hook: hook.to_string(),
+        head,
+        failed,
+    }
+}
+
+/// Drive one unit through `hooks` with the stage reporting to a [`Reports`], and hand back what it
+/// reported.
+async fn reported(hooks: BoundHooks) -> Vec<HooksRan> {
+    let mut r = rig_with_hooks(
+        Way::Double,
+        BufferCaps::default(),
+        Book::default(),
+        Some(hooks),
+    );
+    let reports = Arc::new(Reports::default());
+    r.driver = r
+        .driver
+        .with_hook_journal(Arc::clone(&reports) as Arc<dyn HookJournal>);
+    let (steps, far, caller) = (
+        TestUnits::passing(),
+        Far::new(&["ok"], &[b"done"]),
+        Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, arrival("/call", b"user:hello"), 0);
+    let _ = drive(&units).await;
+    let out = reports.0.lock().unwrap().clone();
+    out
+}
+
+/// THE STAGE REPORTS EACH HOOK THAT RAN (audit root#3; THE DESIGN §1: the record's "controls (...
+/// hooks applied)"): once for the unit, under its key, in the order the hooks ran, each by its key
+/// with its decision head. The rewrite changed the request; the gate after it let it through.
+#[tokio::test]
+async fn the_stage_reports_each_hook_that_ran_in_order_with_its_head() {
+    let (_, g) = gate(None);
+    let reports = reported(bound(
+        vec![(Duration::from_millis(500), Arc::new(Rewriter))],
+        vec![(0, g)],
+    ))
+    .await;
+    assert_eq!(
+        reports,
+        vec![HooksRan {
+            unit: busbar_contract::UnitKey::new(7),
+            hooks: vec![
+                ran("rewriter", HookHead::Modify, false),
+                ran("gate", HookHead::Pass, false),
+            ],
+        }],
+    );
+}
+
+/// A HOOK THAT FAILED IS REPORTED FAILED, never dropped: the load-bearing rewrite that could not
+/// answer stopped the unit, and the report names it as the veto it became, failed.
+#[tokio::test]
+async fn the_stage_reports_a_hook_that_failed_as_failed() {
+    let reports = reported(bound(
+        vec![(Duration::from_millis(500), Arc::new(LoadBearingDown))],
+        Vec::new(),
+    ))
+    .await;
+    assert_eq!(
+        reports,
+        vec![HooksRan {
+            unit: busbar_contract::UnitKey::new(7),
+            hooks: vec![ran("load-bearing-down", HookHead::Veto, true)],
+        }],
+    );
 }

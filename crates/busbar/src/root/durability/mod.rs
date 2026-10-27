@@ -125,7 +125,7 @@ use busbar_kernel_wal::{
 /// that are part of this module's own public surface are re-exported below so no caller's path
 /// changes.
 mod replay;
-use replay::{apply_opened, replay_into, same_movement, Replayed, Replayer};
+use replay::{apply_opened, replay_into, same_movement, Replayer};
 
 /// The checkpoints this node holds, re-derived from the chain for a reader (Q128 kernel-ledger
 /// HIGH 1, ARCHITECT ruling A1). Split out for `structure-lint`.
@@ -202,6 +202,10 @@ pub use audit::AuditWindowAt;
 /// A private child module, as `replay` is; its public items are re-exported here.
 mod recovery;
 pub use recovery::{boot_recovery, node_verb_store};
+
+/// The first-party anti-downgrade floor the store keeps per host.
+mod plugin_floor;
+pub use plugin_floor::hold as hold_plugin_floor;
 
 /// The money-book seam: the settling descriptor ([`Settling`], [`PostingStamp`]), what a settlement
 /// left ([`Settled`]), the [`MoneyBook`] trait an exit arm settles through and its one pass-through
@@ -963,12 +967,14 @@ impl Durability {
             let settlement = self
                 .ledger
                 .post_counted(at.key, at.window, posted, fee_count);
-            let recovered = self.journal_settlement_counted(
+            let recovered = self.journal_settlement_kind(
                 &at,
                 settlement,
                 hold.incarnation,
                 evidence.as_ref().map(|(counts, _)| counts),
                 evidence.as_ref().map_or(0, |(_, arrived_ms)| *arrived_ms),
+                None,
+                PostingKind::Settlement,
             );
             // A checkpoint the card refuses to price is kept, as every refused row is, and every
             // read over its balance refuses — the same row a replay of this chain rebuilds.
@@ -1127,7 +1133,15 @@ impl Durability {
         let settlement =
             self.ledger
                 .settle_recording(at.key, at.window, hold, priced_nanos, usage, ledger);
-        self.journal_settlement(at, settlement)
+        self.journal_settlement_kind(
+            at,
+            settlement,
+            self.incarnation,
+            None,
+            0,
+            None,
+            PostingKind::Settlement,
+        )
     }
 
     /// Settle a posting the loop's exit path already built, and journal it.
@@ -1146,7 +1160,15 @@ impl Durability {
         posted: busbar_contract::caps::Posted,
     ) -> Result<Settled, DurabilityLost> {
         let settlement = self.ledger.post(at.key, at.window, posted);
-        self.journal_settlement(at, settlement)
+        self.journal_settlement_kind(
+            at,
+            settlement,
+            self.incarnation,
+            None,
+            0,
+            None,
+            PostingKind::Settlement,
+        )
     }
 
     /// [`Durability::settle_posted`] for a unit whose RAW COUNTS are known (#71): the posting record
@@ -1186,13 +1208,14 @@ impl Durability {
         let settlement = self
             .ledger
             .post_counted(at.key, at.window, posted, counts.fee_count);
-        self.journal_settlement_refusing(
+        self.journal_settlement_kind(
             at,
             settlement,
             self.incarnation,
             Some(counts),
             arrived_ms,
             refusal,
+            PostingKind::Settlement,
         )
     }
 
@@ -1367,65 +1390,14 @@ impl Durability {
         Ok(figures.settled.saturating_add(figures.unreconciled))
     }
 
-    fn journal_settlement(
-        &mut self,
-        at: &Settling<'_>,
-        settlement: Settlement,
-    ) -> Result<Settled, DurabilityLost> {
-        self.journal_settlement_as(at, settlement, self.incarnation)
-    }
-
-    /// [`Durability::journal_settlement`], naming the incarnation the posting belongs to — this
+    /// Journal a settlement the ledger already moved: its posting record under `kind` (a
+    /// `Settlement`, or the `Counted` row a hold closes with when its counts priced to nothing,
+    /// [`Durability::close_counted`]), stamped with the `incarnation` the posting belongs to — this
     /// process's own for every live settlement, and the opening incarnation's for a hold recovered
-    /// at boot.
-    fn journal_settlement_as(
-        &mut self,
-        at: &Settling<'_>,
-        settlement: Settlement,
-        incarnation: u64,
-    ) -> Result<Settled, DurabilityLost> {
-        self.journal_settlement_counted(at, settlement, incarnation, None, 0)
-    }
-
-    /// [`Durability::journal_settlement_as`], with the unit's raw counts on the settlement's record
-    /// where the caller knows them. The carry beside it repeats no counts, as it repeats no reserved
-    /// or settled figure: one fact, one record.
-    fn journal_settlement_counted(
-        &mut self,
-        at: &Settling<'_>,
-        settlement: Settlement,
-        incarnation: u64,
-        counts: Option<&UnitCounts>,
-        arrived_ms: u64,
-    ) -> Result<Settled, DurabilityLost> {
-        self.journal_settlement_refusing(at, settlement, incarnation, counts, arrived_ms, None)
-    }
-
-    /// [`Durability::journal_settlement_counted`], with the pricing refusal the line carries, if
-    /// any; a refused line is kept among the refused rows, as a refused counts row is.
-    fn journal_settlement_refusing(
-        &mut self,
-        at: &Settling<'_>,
-        settlement: Settlement,
-        incarnation: u64,
-        counts: Option<&UnitCounts>,
-        arrived_ms: u64,
-        refusal: Option<String>,
-    ) -> Result<Settled, DurabilityLost> {
-        self.journal_settlement_kind(
-            at,
-            settlement,
-            incarnation,
-            counts,
-            arrived_ms,
-            refusal,
-            PostingKind::Settlement,
-        )
-    }
-
-    /// [`Durability::journal_settlement_refusing`] under the record `kind` the line is: a
-    /// `Settlement`, or the `Counted` row a hold closes with when its counts priced to nothing
-    /// ([`Durability::close_counted`]).
+    /// at boot. The unit's raw `counts` ride the record where the caller knows them; the carry
+    /// beside it repeats no counts, as it repeats no reserved or settled figure: one fact, one
+    /// record. A line carrying a pricing `refusal` is kept among the refused rows, as a refused
+    /// counts row is.
     #[allow(clippy::too_many_arguments)]
     fn journal_settlement_kind(
         &mut self,
@@ -2802,8 +2774,9 @@ pub fn node_book_over(history: HistorySource) -> NodeBook {
 ///
 /// # Errors
 ///
-/// A configured data directory could not be opened, or the journal already there could not be read.
-/// There is no error arm on the other branch: a memory-buffered journal cannot fail to open.
+/// A configured data directory could not be opened, or the journal already there could not be read
+/// or does not verify. There is no error arm on the other branch: a memory-buffered journal cannot
+/// fail to open.
 pub fn build_for_node(
     cfg: &DurabilityConfig,
     node: u64,
@@ -2964,7 +2937,7 @@ fn build_inner(
         cards_from: None,
         amendments_through: None,
         cadence: None,
-        // Set from the chain below; a chain that cannot be read numbers past the opening.
+        // Set from the chain below; a chain the boot cannot read or verify refuses it.
         next_checkpoint_seq: OPENING_CHECKPOINT_SEQ.saturating_add(1),
         lane,
         resumed,
@@ -3008,12 +2981,29 @@ fn build_inner(
             .and_then(|decoded| busbar_kernel_wal::verify_journal(&decoded).map(|()| decoded))),
         None => durability.journal.replay(),
     };
+    // A CHAIN THE BOOT CANNOT VERIFY REFUSES THE BOOT, naming the break, as a store that would not
+    // read it back does ([`build_on_store`]). Taken for an empty chain, the boot went on sealing
+    // onto it over an empty rebuild: the book and the dated history rebuilt from nothing (the card
+    // journal disarmed, so later applies were never journalled), checkpoint and audit numbering
+    // from one again on a chain that carries them, an incarnation already used, and the amendment
+    // journal never bound (audit root r4 B-2, A-5). A damaged record the log set aside verifies
+    // across its hole and never lands here: that boot serves on, and its quarantine is a finding.
+    let records = match chain {
+        Ok(Ok(records)) => records,
+        Ok(Err(broken)) => {
+            return Err(OpenError::Io(std::io::Error::other(format!(
+                "the journal does not verify: {broken}"
+            ))))
+        }
+        Err(e) => {
+            return Err(OpenError::Io(std::io::Error::other(
+                durability.unreadable(&e),
+            )))
+        }
+    };
     let mut refused_corrections = Vec::new();
     if let Some(cards) = cards {
-        let records = match (durability.keeps_chain(), &chain) {
-            (true, Ok(Ok(records))) => Some(records.as_slice()),
-            _ => None,
-        };
+        let records = durability.keeps_chain().then_some(records.as_slice());
         // A boot card the journal will not take refuses the boot (MONEY-AUDIT D-6).
         refused_corrections =
             cards
@@ -3027,29 +3017,14 @@ fn build_inner(
     }
     let pinned = (durability.history)();
     let view = pinned.as_ref().map(PinnedHistory::view);
-    let (replayed, unreadable) = match chain {
-        Ok(Ok(records)) => {
-            let seeded = last_anchored_on(&records);
-            if let Some(why) = anchor_out_of_step(&records, seeded.as_ref()) {
-                durability.anchor_findings.push(why);
-            }
-            durability.anchor = SelfAttestingAnchor::seeded(seeded);
-            durability.next_checkpoint_seq = seal::next_checkpoint_seq_on(&records);
-            durability.resume_audit(&records);
-            (
-                replay_into(&mut durability.ledger, &records, view.as_ref(), false),
-                None,
-            )
-        }
-        Ok(Err(broken)) => (
-            Replayed::nothing(),
-            Some(format!("the journal does not verify: {broken:?}")),
-        ),
-        Err(e) => (
-            Replayed::nothing(),
-            Some(format!("the journal could not be read: {e}")),
-        ),
-    };
+    let seeded = last_anchored_on(&records);
+    if let Some(why) = anchor_out_of_step(&records, seeded.as_ref()) {
+        durability.anchor_findings.push(why);
+    }
+    durability.anchor = SelfAttestingAnchor::seeded(seeded);
+    durability.next_checkpoint_seq = seal::next_checkpoint_seq_on(&records);
+    durability.resume_audit(&records);
+    let replayed = replay_into(&mut durability.ledger, &records, view.as_ref(), false);
     // A sealed audit record names the boot that wrote it too, so a chain whose newest record is an
     // audit record still hands this boot the next incarnation.
     let audited = durability
@@ -3096,16 +3071,11 @@ fn build_inner(
     // AND THE RESTART RECONCILIATION RUNS OVER THE REAL BOOK: what is in memory now, against what
     // the chain rebuilds. It is a comparison of two things that can disagree, reported rather than
     // refused — a node boots over what it can read, and the finding says what it could not.
-    let mut findings: Vec<JournalDisagreement> = unreadable
+    let mut findings: Vec<JournalDisagreement> = replayed
+        .unreadable
         .into_iter()
         .map(JournalDisagreement::Unreadable)
         .collect();
-    findings.extend(
-        replayed
-            .unreadable
-            .into_iter()
-            .map(JournalDisagreement::Unreadable),
-    );
     findings.extend(
         durability
             .quarantined
@@ -3141,6 +3111,9 @@ fn build_inner(
     durability.restart_findings = findings;
     Ok(durability)
 }
+
+#[cfg(test)]
+pub(crate) use audit::tests::Scratch;
 
 #[cfg(test)]
 #[path = "../tests/durability.rs"]

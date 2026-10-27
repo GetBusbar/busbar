@@ -1,9 +1,0 @@
-# The fixture tree's root manifest, which `reachability:plane-crates` reads for the plane crates the
-# root PINS (#935: `[workspace.dependencies]` rows with `git =`, each mounted at
-# `crates/<package>`, so a pinned plane whose source is not laid reds the row). This tree lays all
-# five plane-kind crates under `crates/` and pins none, so the pinned population is empty and the
-# census is the whole answer. `[workspace]` with no members keeps this its own root: no cargo command
-# run in the fixture reaches the real repository's workspace.
-[workspace]
-
-[workspace.dependencies]

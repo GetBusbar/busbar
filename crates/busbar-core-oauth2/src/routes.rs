@@ -31,7 +31,6 @@ use std::sync::Arc;
 use axum::response::{IntoResponse, Response};
 use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
 use busbar_kernel::core_routes::CoreRouter;
-use busbar_kernel::state::AppHandle;
 
 /// The seam-typed mount (`busbar_kernel::oauth_as::seam::AsPlaneSeam::mount`): downcasts the
 /// type-erased plane object core hands in and defers to [`mount`]. Core cannot call [`mount`]
@@ -473,6 +472,8 @@ fn query_value(target: &str, name: &str) -> Option<String> {
 /// (`cimd::Pushed`), and only while the handle is live and belongs to that client.
 struct Pending {
     client_id: String,
+    /// The scope approving this request GRANTS ([`super::plane::AsPlane::granted_scope`]): the
+    /// client's default when the request names none, never the empty string the request carried.
     scope: String,
     redirect_host: String,
     /// A pushed request this screen has shown before.
@@ -481,7 +482,7 @@ struct Pending {
 
 async fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending {
     let (client_id, scope, redirect_host) = client_and_scope_of(target)
-        .unwrap_or_else(|| ("(unnamed)".to_string(), String::new(), String::new()));
+        .unwrap_or_else(|| ("(unnamed)".to_string(), None, String::new()));
     let mut pushed = None;
     if let Some(handle) = query_value(target, "request_uri") {
         if let Some(p) = plane
@@ -493,19 +494,15 @@ async fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending
             pushed = Some((p, revisit));
         }
     }
-    match pushed {
-        Some((p, revisit)) => Pending {
-            client_id,
-            scope: p.scope,
-            redirect_host: host_of(&p.redirect_uri),
-            revisit,
-        },
-        None => Pending {
-            client_id,
-            scope,
-            redirect_host,
-            revisit: false,
-        },
+    let (requested, redirect_host, revisit) = match pushed {
+        Some((p, revisit)) => (p.scope, host_of(&p.redirect_uri), revisit),
+        None => (scope, redirect_host, false),
+    };
+    Pending {
+        scope: plane.granted_scope(&client_id, requested.as_deref()).await,
+        client_id,
+        redirect_host,
+        revisit,
     }
 }
 
@@ -532,24 +529,35 @@ fn is_local_path(value: &str) -> bool {
             .any(|c| c == '\\' || c.is_control() || c.is_whitespace())
 }
 
-/// The `client_id` and `scope` of a pending authorization request, read out of its query string.
+/// The `client_id`, `scope` (`None` when the request names none) and redirect host of a pending
+/// authorization request, read out of its query string.
 ///
 /// Returns the RAW values: the approval key is compared against what `oauth-as` reports for the same
-/// request, so the two only agree if nothing normalised one of them on the way past.
-fn client_and_scope_of(target: &str) -> Option<(String, String, String)> {
+/// request, so the two only agree if nothing normalised one of them on the way past. A parameter
+/// named twice is read at its FIRST occurrence, as `oauth-as` reads the same request
+/// (`AuthorizationRequest::from_pairs`), so the screen names the client and scope the library
+/// decides on.
+fn client_and_scope_of(target: &str) -> Option<(String, Option<String>, String)> {
     let query = target.split_once('?')?.1;
     let mut client_id = None;
-    let mut scope = String::new();
-    let mut redirect_uri = String::new();
+    let mut scope = None;
+    let mut redirect_uri = None;
     for (name, value) in form_urlencoded_pairs(query) {
-        match name.as_str() {
-            "client_id" => client_id = Some(value),
-            "scope" => scope = value,
-            "redirect_uri" => redirect_uri = value,
-            _ => {}
+        let slot = match name.as_str() {
+            "client_id" => &mut client_id,
+            "scope" => &mut scope,
+            "redirect_uri" => &mut redirect_uri,
+            _ => continue,
+        };
+        if slot.is_none() {
+            *slot = Some(value);
         }
     }
-    Some((client_id?, scope, host_of(&redirect_uri)))
+    Some((
+        client_id?,
+        scope,
+        host_of(redirect_uri.as_deref().unwrap_or_default()),
+    ))
 }
 
 /// The host authority of an absolute `redirect_uri` — the part of it an operator can judge.
@@ -749,10 +757,6 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
 }
-
-/// Handlers take `Arc<AppHandle>` state through the `CurrentApp` extractor; naming the type here
-/// keeps the mount signature honest about what it is building against.
-type _State = Arc<AppHandle>;
 
 #[cfg(test)]
 #[path = "tests/percent_decode_tests.rs"]

@@ -1,5 +1,0 @@
-# one-memory-abi: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).
-# Plugins speak the memory ABI only: one exported symbol, no COLD/JSON lane, no
-# blocking thread in the loader or dispatcher, extern "C" slots. Each row is one
-# the tree carries today. Strike a row in the commit that drains it; never add one.
-# Regenerate with `cargo xtask gate one-memory-abi --write`.
