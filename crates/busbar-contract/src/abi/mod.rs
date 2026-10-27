@@ -15,7 +15,7 @@
 //!
 //! The cross-boundary discipline, hoisted here so there is one definition:
 //!
-//! 1. **The airlock preamble** ([`AbiPreamble`], [`check_preamble`]) — a `#[repr(C)]` header FROZEN
+//! 1. **The airlock preamble** ([`AbiPreamble`]) — a `#[repr(C)]` header FROZEN
 //!    FOR ALL TIME. Its three fields (`magic`, `abi_major`, `abi_minor`) may NEVER be reordered,
 //!    resized, or removed. A major mismatch or a magic mismatch is fail-closed (the seam refuses),
 //!    so an incompatible peer can never be reached across the boundary.
@@ -23,8 +23,6 @@
 //!    `size` is read field by field only where `size` proves the sender wrote it (see
 //!    [`field_present`] / [`read_sized_field`]). New fields may ONLY be appended; a peer that
 //!    predates a field simply never reads it. Reorder/resize/insert = a MAJOR airlock bump.
-//! 3. **The out-param write discipline** ([`write_out`]) — the init-only-on-Ok rule a callee uses to
-//!    publish a large POD result into a caller slot without a `Vec` return.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -219,7 +217,7 @@ pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
 
 /// The MAJOR airlock version. Bumping this is a no-turning-back linker event: a reorder/resize/
 /// removal of any frozen field, a preamble change, or any non-append-only alteration. Peers with
-/// different majors are INCOMPATIBLE and [`check_preamble`] refuses them.
+/// different majors are INCOMPATIBLE.
 ///
 /// 1→2 (1.6.0, item 410): minor 21 RESIZED an interior field — `hot::BuildCtx.host_ctx`, 8 → 16
 /// bytes, shifting `config_ptr`/`config_len`/`resolved_refs_*` by 8 — under the old major, so
