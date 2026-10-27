@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CANONICAL-NAME DRIFT GUARD (ARCHITECT C'): one plugin has ONE identity whichever door it
+//! THE CANONICAL-NAME DRIFT GUARD: one plugin has ONE identity whichever door it
 //! arrives by. Its canonical name is plugins.yaml's `manifest_name` (default: the repo), the name
 //! its release tarball's signed manifest carries; a row this build LINKS must be registered under
 //! that same name, or the same plugin dropped in beside it is a second plugin claiming its alias.

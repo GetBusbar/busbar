@@ -31,7 +31,7 @@ fn deploy_yaml(sections: &str) -> DeployCfg {
 }
 
 // (`resolve_provider_hook_and_core_fallback_agree` is RETIRED with its subject: no plane implements
-// the `resolve_provider` hook since the retired engine crate's deletion (DEV-GREEN row 83), so the
+// the `resolve_provider` hook since the retired engine crate's deletion, so the
 // served provider merge IS core's `merge_provider_fallback`, the one path; covered by
 // busbar-kernel `ir/tests/lane_caps_tests.rs` (F25 rows 485-487) and `config/tests/tests.rs`.)
 

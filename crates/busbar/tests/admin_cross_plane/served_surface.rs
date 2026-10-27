@@ -17,7 +17,7 @@
 //! 1. the closed verb table (`admin_codec::verbs::table`): every `(method, path)` the node's
 //!    administrative mount walks through the kernel loop, which is how the 66 legacy operations and
 //!    the 1.6.0 kernel verbs whose effect is bound are answered (a verb declared with no effect
-//!    bound is NOT served — [`unbound_declared_operations`], empty since owner answer Q71(2); the nine the owner removed from 1.6.0 are not
+//!    bound is NOT served — [`unbound_declared_operations`], empty; the nine the owner removed from 1.6.0 are not
 //!    declared at all — [`REMOVED_OPERATIONS`]);
 //! 2. every named-definition section (`NamedMapSection::sections`), five operations each, which the
 //!    router mounts in one loop — including each plane-owned section;
@@ -80,9 +80,8 @@ fn unbound_declared_operations() -> BTreeSet<Op> {
         .collect()
 }
 
-/// THE NINE OPERATIONS THE OWNER REMOVED FROM 1.6.0 (2026-09-08: `set_operator_key`, `set_escrow`,
-/// `set_dual_control`, `export_keyset`, `approve`; #77(9), owner answer Q71(1):
-/// `set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`). They are not verbs, so the table has no row for
+/// THE NINE OPERATIONS THE OWNER REMOVED FROM 1.6.0 (`set_operator_key`, `set_escrow`,
+/// `set_dual_control`, `export_keyset`, `approve`, `set_overdraft_ceiling`, `set_dispute_max_age`, `resolve_dispute`, `resolve_slice`). They are not verbs, so the table has no row for
 /// them and the node answers each with the unmounted `404` — exactly what it answered while they
 /// were declared-but-unbound, and the published 1.5.5 answer for a path it never had. Each keeps
 /// its admin corpus entry and cells, which are what show that answer did not move.

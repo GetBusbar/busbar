@@ -92,8 +92,9 @@ binaries.)*
 
 Startup is fail-loud: an unset `${VAR}`, an unknown provider reference, an unknown
 protocol or auth mode, or an invalid `on_exhausted` action stops the process with a
-diagnostic. A provider whose key env var is empty logs a warning and runs (its lane
-will fail auth on first use). `auth.chain: []` prints a loud open-relay warning.
+diagnostic. A provider whose `api_key` reference does not resolve refuses boot
+(`BUSBAR-8020`), and refuses an admin apply/reload the same way; declare `api_key: none`
+for an upstream that takes no credential. `auth.chain: []` prints a loud open-relay warning.
 
 The HTTP client uses a 300s request timeout and pools up to 1024 idle keep-alive connections per upstream host.
 
@@ -127,8 +128,8 @@ the middle bullets before you wire this into CI.
   that fails, where it previously checked only the shape and exited `0`. So a CI job needs the same
   variables and files the deployment has, or a config whose references resolve in that environment.
   A reference served by a secret PLUGIN is not resolved here, since the plugin may not be loadable.
-  Boot is unchanged: an unresolvable reference logs a warning and Busbar serves, with every request
-  to that provider failing upstream. It checks *structure* and secret resolution, never upstream
+  Boot agrees: since 1.6.0 an unresolvable provider `api_key` reference refuses boot
+  (`BUSBAR-8020`), including on admin apply. It checks *structure* and secret resolution, never upstream
   reachability.
 - Honors `-c`/`--config`, `--providers`, `BUSBAR_CONFIG`, and `--safe-mode` exactly as boot does.
   Because it reuses the boot path, a clean `--validate` means a clean boot.
@@ -292,7 +293,7 @@ Three things are worth understanding before you scale out:
   LB (e.g. by the affinity header / a cookie) so a session lands on the same instance.
 - **Governance state in `store: memory` is per-instance; enforcement is per-node either
   way.** The `store:` block is required in 1.6.0 (`busbar --migrate-config` inserts `store: {module: memory}`); `memory` is ephemeral RAM per instance. A cluster-shared
-  store (postgres/valkey) genuinely shares keys and the token ledger across N nodes (but
+  store (postgres/mysql/valkey) genuinely shares keys and the token ledger across N nodes (but
   NOT the durable audit log - see below), and each node's write-behind flush ships
   ADDITIVE per-(model, tier) token deltas so the store converges on the true fleet
   totals - but the budget hard
@@ -630,7 +631,7 @@ durable revocation denylist immediately.
   stream end. Spend = requests x fee + tokens x `rate_card` rates, recomputed on every check;
   with no rate card, tokens price at 0 and only the flat fee counts.
 - **Ledgers are in-memory under `store: memory`** (ephemeral; the `store:` block itself is required in 1.6.0); configure a durable store plugin
-  (`store: { module: sqlite|postgres|valkey, settings: {...} }`) to persist keys, usage, and
+  (`store: { module: sqlite|postgres|mysql|valkey, settings: {...} }`) to persist keys, usage, and
   the denylist across restarts.
 
 > Limit windows are per-process, and the caps are enforced per node even over a shared store
@@ -772,10 +773,11 @@ directory's ACL — see the secret-files row above.
 
 **`transport: stdio` MCP servers on Windows.** Two differences, both consequences of the platform:
 
-- **`command:` must be absolute in the Windows spelling** — `C:\path\to\server.exe` or a UNC
-  `\\host\share\server.exe`. A bare name (resolved via `PATH`), a relative path, and a
-  drive-relative `\foo` (resolved against the *current* drive) are all refused at boot, because each
-  lets the environment rather than the config decide which binary runs.
+- **`command:` cannot be spelled on Windows in 1.6.0.** The boot check that requires an absolute
+  `command:` tests the unix spelling (a leading `/`), so a drive-qualified `C:\path\to\server.exe`
+  or a UNC `\\host\share\server.exe` is refused at boot along with a bare name or a relative path.
+  Until the check learns the Windows spelling, a `transport: stdio` server cannot be configured on
+  Windows.
 - **The child's environment is cleared**, and on Windows that is a bigger deal than on unix. Busbar
   never hands its own environment to an operator-configured child (it holds provider keys, store
   credentials and admin tokens), so the child gets **only** what `env:` names. On unix an empty

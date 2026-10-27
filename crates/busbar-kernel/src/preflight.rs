@@ -408,16 +408,6 @@ pub type AuthAxisOpener = fn(Arc<dyn PluginRows>) -> Arc<dyn busbar_contract::au
 pub(crate) static TEST_ROOT_AUTH_AXIS: std::sync::OnceLock<AuthAxisOpener> =
     std::sync::OnceLock::new();
 
-// FINAL-REPIN: delete when the pinned door root cells move to test_support::install_root_auth_axis
-/// THE PINNED DOOR ROOT CELLS' NAME for the root test binary's auth-axis hand-in, kept until their
-/// pin moves: it hands `open` in through [`crate::test_support::install_root_auth_axis`], so the
-/// install record reports it as it reports that hand-in. Never in a shipped build (`test-support`).
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub fn install_auth_axis(open: AuthAxisOpener) {
-    crate::test_support::install_root_auth_axis(open);
-}
-
 /// This build's auth axis over `registry`, through the opener on the root's install record
 /// ([`RootInstall::auth_axis`]); `None` (no opener installed): no auth row answers anything. A
 /// test build has no root: the in-process stand-in answers its linked rows.
@@ -1452,10 +1442,6 @@ pub fn plugin_fetch_status_refusal(url: &str, code: u32) -> Option<String> {
 #[cfg(test)]
 #[path = "tests/opened_secrets_tests.rs"]
 mod opened_secrets_tests;
-
-#[cfg(test)]
-#[path = "tests/root_install_seams_tests.rs"]
-mod root_install_seams_tests;
 
 #[cfg(test)]
 #[path = "tests/store_row_tests.rs"]
