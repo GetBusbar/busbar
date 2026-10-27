@@ -50,8 +50,8 @@
 
 mod form;
 mod form_body;
-mod resolved;
 pub mod record;
+mod resolved;
 mod settings;
 pub(crate) mod write;
 
