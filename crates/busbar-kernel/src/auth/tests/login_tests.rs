@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The hosted login's identity side, the kernel's (row 159, K3#2): the login methods it opens and
+//! The hosted login's identity side, the kernel's: the login methods it opens and
 //! the `browser_login` rules it checks at build. The flow's own tests (pages, cookie, PKCE) moved
 //! with it to `busbar-core-oauth2`.
 
@@ -196,7 +196,7 @@ async fn the_client_secret_is_lent_at_open() {
     assert_eq!(opened[0].2["client_id"], "client-abc");
 }
 
-/// THE CLIENT SECRET IS LENT ONLY INTO A STATED SECRET SLOT (Q128 p9#2; THE DESIGN §6 item 7: IdP
+/// THE CLIENT SECRET IS LENT ONLY INTO A STATED SECRET SLOT (IdP
 /// logins hold their own client secret). The loader lifts out of the settings only the keys a
 /// plugin's Statement names in `secret_refs`; a plugin that names no `client_secret` slot would be
 /// handed the resolved secret inline in its plain settings text. Such a method is refused at build
@@ -231,7 +231,7 @@ async fn a_login_plugin_stating_no_client_secret_slot_is_refused_the_secret() {
     );
 }
 
-/// THE KERNEL KEEPS NO COPY OF WHAT IT LENT (Q128 p9#5; THE DESIGN §6 K2: auth material is
+/// THE KERNEL KEEPS NO COPY OF WHAT IT LENT (auth material is
 /// zeroised). Every string of the lent settings document, nested ones included, is wiped.
 #[test]
 fn the_lent_settings_are_wiped() {
@@ -284,7 +284,7 @@ fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
     );
 }
 
-/// THE KERNEL SERVES NO HOSTED LOGIN PAGE OF ITS OWN (row 159, K3#2; THE DESIGN §8: the hosted
+/// THE KERNEL SERVES NO HOSTED LOGIN PAGE OF ITS OWN (the hosted
 /// login flow is `busbar-core-oauth2`'s). It mounts `GET /auth/token` declared open and reaches the
 /// flow through the login seam; with no flow registered (this test binary links none) the path
 /// answers 404, never a page, and never the chain's 401. RED before the move: the kernel rendered

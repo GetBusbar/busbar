@@ -160,3 +160,32 @@ fn declared_references_are_the_references_a_path_names() {
         vec![at(&["s", "a", "k"]), at(&["s", "b", "0"])]
     );
 }
+
+#[test]
+fn resolve_declared_resolves_declared_references_in_place_and_refuses_the_rest() {
+    let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
+    let mut ok =
+        json!({"dsn": {"env": "PG"}, "servers": {"a": {"env": {"K": {"env": "K"}, "L": "lit"}}}});
+    crate::secret_fields::resolve_declared(
+        &mut ok,
+        &paths(&["dsn", "servers.*.env.*"]),
+        "p",
+        resolve,
+    )
+    .expect("declared");
+    assert!(
+        ok["dsn"].as_str().is_some_and(|s| s.starts_with("R:")),
+        "{ok}"
+    );
+    assert!(
+        ok["servers"]["a"]["env"]["K"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("R:")),
+        "{ok}"
+    );
+    assert_eq!(ok["servers"]["a"]["env"]["L"], json!("lit"));
+    let mut bad = json!({"base": {"env": "B"}});
+    let e = crate::secret_fields::resolve_declared(&mut bad, &paths(&["dsn"]), "acme", resolve)
+        .expect_err("undeclared");
+    assert!(e.contains("settings.base") && e.contains("'acme'"), "{e}");
+}

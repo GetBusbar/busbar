@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EGRESS WALK'S PRODUCTION PORTS (ARCHITECT Q-SW8, 2026-10-02): the clock reads the wall and
+//! THE EGRESS WALK'S PRODUCTION PORTS: the clock reads the wall and
 //! a monotonic origin and sleeps on the runtime's timer; a member's `max_concurrent` slots are held
 //! until dropped and handed to the longest waiter; the counters label a member by its name and keep
 //! each pool's wait depth balanced.
@@ -275,7 +275,7 @@ fn sealed_attempt_ms(
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/attempt_timeout_precedence_tests.rs::test_member_override_wins_over_model_default`
-/// (coverage map v2 row 44). 1.5.5: the pool member's `attempt_timeout_ms` override wins over the
+/// 1.5.5: the pool member's `attempt_timeout_ms` override wins over the
 /// model-level default, so one model carries 10000 ms in one pool and 50 ms in another.
 ///
 /// RED: the sealed member carries the model's 10000 ms (or nothing) instead of its pool's 50 ms.
@@ -290,7 +290,7 @@ fn a_members_attempt_timeout_wins_over_its_models_default() {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/attempt_timeout_precedence_tests.rs::test_model_default_applies_when_member_has_no_override`
-/// (coverage map v2 row 45). 1.5.5: a member without an override inherits the model-level default.
+/// 1.5.5: a member without an override inherits the model-level default.
 ///
 /// RED: a member that states no override loses its model's 10000 ms cap (or takes another pool's).
 #[test]
@@ -304,7 +304,7 @@ fn test_model_default_applies_when_member_has_no_override() {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/attempt_timeout_precedence_tests.rs::test_no_cap_anywhere_is_none`
-/// (coverage map v2 row 46). 1.5.5: with neither level set the attempt is uncapped (`None`): it
+/// 1.5.5: with neither level set the attempt is uncapped (`None`): it
 /// runs under the walk's budget alone.
 ///
 /// RED: a member whose pool and model state no cap is sealed with one.
@@ -315,7 +315,7 @@ fn test_no_cap_anywhere_is_none() {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/attempt_timeout_precedence_tests.rs::test_empty_cands_uses_model_default`
-/// (coverage map v2 row 47). 1.5.5: a single-model route has no member rows at all, so the
+/// 1.5.5: a single-model route has no member rows at all, so the
 /// model-level value is the only source: 10000 ms where the model states it, uncapped where it
 /// states none.
 ///
@@ -331,7 +331,7 @@ fn test_empty_cands_uses_model_default() {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/on_exhausted_tests.rs::queue_two_waiters_one_freed_permit_wakes_exactly_one`
-/// (coverage map v2 row 542). 1.5.5: with two waiters parked on a saturated one-slot member,
+/// 1.5.5: with two waiters parked on a saturated one-slot member,
 /// freeing ONE slot lets EXACTLY ONE dispatch; the other stays parked (no thundering herd, the cap
 /// never exceeded) until the winner's slot frees in turn.
 ///
@@ -415,7 +415,7 @@ async fn a_slot_freed_as_its_waiter_parks_is_not_lost() {
 }
 
 /// LEGACY the retiring engine crate's `src/engine/tests/signal_catalog_tests.rs::latency_reservoir_p95_is_nearest_rank_and_bounded`
-/// (coverage map v2 row 612). 1.5.5: the reservoir behind `CandidateLatencyP95Ms` reads `None`
+/// 1.5.5: the reservoir behind `CandidateLatencyP95Ms` reads `None`
 /// until a sample lands (never a fabricated 0); its p95 is nearest-rank in whole milliseconds
 /// rounded up (1..=100 ms gives 95, a 0.2 ms sample gives 1); NaN, zero and negative samples are
 /// ignored; and the ring is bounded, so after 1000 samples of 7 ms only those decide (7).
@@ -455,7 +455,7 @@ fn scraped(family: &str, labels: &[&str]) -> f64 {
         .sum()
 }
 
-/// RED (the counter-label bound, ARCHITECT ruling: one optional per-attempt tail, bounded): a lane
+/// RED: a lane
 /// word the plane never declared, and a pool its walk cannot reach, fall back to the walk's own
 /// labels and count on `busbar_plugin_label_refused_total`; a declared word and a reachable entry
 /// are taken. Without the bound the stated words would be emitted as given, and a plane could mint

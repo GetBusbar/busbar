@@ -270,14 +270,6 @@ pub trait LoginModule: Send + Sync {
     }
 }
 
-/// The unified auth-plugin handle: an auth module that is BOTH a verifier ([`AuthModule`]) and a
-/// login provider ([`LoginModule`], possibly by fail-closed default). The blanket impl means any
-/// type that is both is automatically an `AuthPlugin`, so `Box<dyn AuthPlugin>` is the single boxed
-/// handle the SDK exports and the loader boxes. Verify-only modules reach it through the SDK's
-/// fail-closed login adapter.
-pub trait AuthPlugin: AuthModule + LoginModule {}
-impl<T: AuthModule + LoginModule + ?Sized> AuthPlugin for T {}
-
 /// WHY a chain verdict did not resolve to an admitted identity. The DECISION is closed here; the
 /// WORDS are the caller's — the HTTP middleware renders an RFC 6750 challenge or a native envelope,
 /// and a headerless serve mode a boot-time stderr sentence and a nonzero exit — which is the same

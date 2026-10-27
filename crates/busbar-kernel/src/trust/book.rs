@@ -9,12 +9,12 @@
 //!   plane's declared trust keys. A counterparty the map does not name is refused, never judged.
 //! * **The pin.** A counterparty is NEW until the operator approves it (`POST
 //!   /api/v1/admin/trust/approve`, [`TrustBook::decide`]), which pins the catalogue it last
-//!   reported: a first sighting pins nothing (ARCHITECT 2026-10-06). With no declared fingerprint,
+//!   reported: a first sighting pins nothing. With no declared fingerprint,
 //!   every sighting before the approval answers [`Sight::New`]. A declared fingerprint is the
-//!   operator's INTENT, not an observation (coordinator ruling 2026-10-07, OWNER 2026-09-28): it
+//!   operator's INTENT, not an observation: it
 //!   approves nothing. The counterparty stays pending until the operator approves it: every
 //!   sighting answers [`Sight::New`], at the declared fingerprint or any other hash, and nothing
-//!   drifts before the approval (coordinator 2026-10-07, #555 round 3); the last verdict is
+//!   drifts before the approval; the last verdict is
 //!   [`Sight::New`]; the Approve step refuses it and every item there; and it is listed NEW. A
 //!   demotion replayed for it still holds it quarantined until its pin is seen again.
 //! * **Drift.** A hash other than the pin answers [`Sight::Drifted`] once and demotes the
@@ -32,8 +32,7 @@
 //!   demotion record; [`TrustBook::admit`] replays the demotions it was handed.
 //! * **Approve.** The kernel's Approve step judges the trust facts a plane STATES for a unit
 //!   ([`TrustFacts`]: a counterparty, and optionally an item there at the digest it is offered at)
-//!   by [`TrustBook::judge`]; a plane judges none (ARCHITECT 2026-10-06: trust is the kernel's
-//!   Approve step). Item-less facts need the counterparty approved (pinned); an item needs itself
+//!   by [`TrustBook::judge`]; a plane judges none. Item-less facts need the counterparty approved (pinned); an item needs itself
 //!   approved at the digest offered. An item's approval is the operator's: the configured one
 //!   ([`TrustEntry::approved`], re-read at every admit) under the core-admin decision
 //!   ([`TrustBook::decide`]), which wins.
@@ -51,7 +50,7 @@ use super::section::{DeclaredPin, TrustEntry};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sight {
     /// Not approved: never approved, approved at nothing yet, revoked, or a declared fingerprint
-    /// the operator has not approved. A sighting pins nothing (ARCHITECT 2026-10-06).
+    /// the operator has not approved. A sighting pins nothing.
     New,
     /// The pinned catalogue.
     Same,
@@ -337,7 +336,7 @@ impl TrustBook {
     /// not name is ignored. On a re-admit a counterparty keeps its state unless its declared pin
     /// changed in ANY part (mechanism, root, key or fingerprint), which starts it afresh: pending
     /// again until the operator approves it. An identity change never rides the old approval, and a
-    /// registration with no authenticity root keeps no approval at all (Q128 p8#1).
+    /// registration with no authenticity root keeps no approval at all.
     pub fn admit<'a>(
         &self,
         instance: &Arc<str>,
@@ -517,8 +516,7 @@ impl TrustBook {
     /// THE DECISION, JUDGED AND NOT YET TAKEN: what [`Self::decide`] would do, as the durable fact
     /// to keep, with the book unchanged. The caller keeps the fact durably and only then takes it
     /// ([`Self::apply`]), so a decision that could not be kept never takes effect in this process
-    /// (THE DESIGN §11.12 l.1617-1619: the trust lifecycle and its record are durable kernel state;
-    /// Q128 p5#2).
+    /// (the trust lifecycle and its record are durable kernel state).
     ///
     /// # Errors
     ///
@@ -656,8 +654,8 @@ impl TrustBook {
     /// order, onto its state: what [`Self::decide`] did before the restart. A row for a
     /// counterparty the instance no longer declares is ignored, and so is one made under another
     /// declaration than the counterparty's current one ([`RulingRow::declared`]): a restart starts
-    /// a changed declaration afresh exactly as an in-process re-admit does (Q128 p8#2). No approval
-    /// replays onto a registration with no authenticity root (Q128 p8#1).
+    /// a changed declaration afresh exactly as an in-process re-admit does. No approval
+    /// replays onto a registration with no authenticity root.
     pub fn admit_decided<'a>(&self, instance: &str, rows: impl IntoIterator<Item = &'a RulingRow>) {
         let mut map = self.lock();
         let Some(book) = map.get_mut(instance) else {

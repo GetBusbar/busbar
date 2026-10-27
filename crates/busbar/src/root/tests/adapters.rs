@@ -329,41 +329,6 @@ fn a_hard_reading_is_hard_down() {
     assert_eq!(out.outcome, Outcome::HardDown);
 }
 
-/// The lane map is a correspondence, and it round-trips in both directions.
-#[test]
-fn the_lane_map_round_trips_between_the_two_names() {
-    let map = LaneMap::new(vec![
-        DestinationId::new(11),
-        DestinationId::new(22),
-        DestinationId::new(33),
-    ]);
-    assert_eq!(map.len(), 3);
-    assert!(!map.is_empty());
-    for lane in 0..map.len() {
-        let dest = map.destination(lane).expect("in the table");
-        assert_eq!(map.lane(dest), Some(lane));
-    }
-}
-
-/// A lane the table does not have answers nothing. Saturating to the last member would send a
-/// request to somebody else's upstream and look like it worked, which is the worst available
-/// failure.
-#[test]
-fn a_lane_off_the_end_of_the_table_names_no_destination() {
-    let map = LaneMap::new(vec![DestinationId::new(11)]);
-    assert_eq!(map.destination(1), None);
-    assert_eq!(map.lane(DestinationId::new(99)), None);
-}
-
-/// An empty pool has no members and says so, rather than answering for a member it does not
-/// have.
-#[test]
-fn an_empty_pool_names_nothing() {
-    let map = LaneMap::default();
-    assert!(map.is_empty());
-    assert_eq!(map.destination(0), None);
-}
-
 /// The boot check on the two hand-kept banks. It passes today, which is the point: it is a
 /// tripwire on a convention, not a repair of a break.
 #[test]
@@ -401,30 +366,13 @@ fn a_drifted_bank_reads_as_a_drift() {
     assert!(drift.to_string().contains("drifted"));
 }
 
-/// THE CHECK HAS A CALLER, AND IT IS THE BOOT SEAL (item 248).
-///
-/// The comparison above existed and passed and nothing ran it: its only caller was the test that
-/// shows it passes, so a rename on one side would ship with the binary booting clean. The boot seal
-/// — the one check every boot that mounts the root passes through — now runs it and refuses on a
-/// drift, naming both spellings. Read off the seal's own body, so moving the call out of the boot
-/// path goes red here; and the seal on today's banks still succeeds, so the call refuses nothing it
-/// should not.
+/// A DRIFT REFUSES THE BOOT, NAMING BOTH SPELLINGS (item 248), and the boot seal on today's banks
+/// still succeeds, so the label-bank check it runs refuses nothing it should not.
 // The seal it drives composes the shipped transport stack (the http rows over the linked transport
 // door); a build that links no transport door cannot seal it, so this cell gates on that axis.
 #[cfg(linked_axis_transport_door)]
 #[test]
-fn the_boot_seal_runs_the_label_bank_check_and_a_drift_refuses_the_boot() {
-    let registry = include_str!("../registry.rs");
-    let start = registry
-        .find("pub fn seal(")
-        .expect("the boot seal is in the registry module");
-    let body = &registry[start..];
-    let body = &body[..body.find("\n}\n").expect("the seal's body closes")];
-    assert!(
-        body.contains("check_label_banks()"),
-        "the boot seal does not run the label-bank check"
-    );
-
+fn a_label_drift_refuses_the_boot_and_todays_banks_seal() {
     // What a drift refuses the boot with: both spellings, so an operator reading the boot line can
     // see which side moved.
     let refusal = crate::root::registry::BootRefusal::LabelDrift(LabelDrift {
@@ -443,6 +391,42 @@ fn the_boot_seal_runs_the_label_bank_check_and_a_drift_refuses_the_boot() {
         .is_ok(),
         "today's banks agree, so the seal still passes"
     );
+}
+
+/// THE BOOT SEAL RUNS THE LABEL-BANK CHECK (item 248).
+///
+/// The comparison once existed and passed and nothing ran it: its only caller was the test that
+/// shows it passes, so a rename on one side would ship with the binary booting clean. Driven as
+/// behaviour: a drift is planted where the check reads its pairs, and the seal itself must refuse
+/// with `BootRefusal::LabelDrift` naming both spellings. Moving the call out of the seal makes the
+/// seal answer `Ok` here, and this goes red.
+#[cfg(linked_axis_transport_door)]
+#[test]
+fn the_boot_seal_refuses_a_planted_label_drift() {
+    struct Unplant;
+    impl Drop for Unplant {
+        fn drop(&mut self) {
+            super::PLANTED_PAIR.with(|p| p.set(None));
+        }
+    }
+    let _unplant = Unplant;
+    super::PLANTED_PAIR.with(|p| p.set(Some(("transient_upstream", "transient-upstream"))));
+
+    match crate::root::registry::seal(
+        &crate::LINKED,
+        crate::root::registry::Dropped::NONE,
+        Default::default(),
+    ) {
+        Err(crate::root::registry::BootRefusal::LabelDrift(drift)) => assert_eq!(
+            drift,
+            LabelDrift {
+                breaker: "transient_upstream",
+                egress: "transient-upstream",
+            }
+        ),
+        Err(other) => panic!("the seal refused for another reason: {other}"),
+        Ok(_) => panic!("the boot seal sealed over a label drift: it does not run the check"),
+    }
 }
 
 /// ONE CELL SET ON THE NODE. The root's breaker is bound to the kernel's own unit through the live

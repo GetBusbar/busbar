@@ -95,6 +95,39 @@ pub fn undeclared_refusal(field: &str, plugin: &str) -> String {
     )
 }
 
+/// RESOLVE a plugin's settings `tree` as the kernel does before they cross the ABI: a reference
+/// at a position `declared` does not name is refused ([`undeclared_refusal`], naming `plugin`), and
+/// each reference at a declared position, exact or wildcard, is replaced in place by the string
+/// `resolve(field, reference)` answers. Everything else is left as written.
+///
+/// # Errors
+/// The refusal, or the first error `resolve` answers.
+pub fn resolve_declared(
+    tree: &mut Value,
+    declared: &[String],
+    plugin: &str,
+    mut resolve: impl FnMut(&str, &crate::secret_ref::SecretRef) -> Result<String, String>,
+) -> Result<(), String> {
+    if let Some(at) = undeclared_reference(tree, declared) {
+        return Err(undeclared_refusal(&format!("settings.{at}"), plugin));
+    }
+    for path in declared {
+        for at in declared_references(tree, path) {
+            let field = at.join(".");
+            let Some(slot) = at_mut(tree, &at) else {
+                continue;
+            };
+            let Ok(reference) =
+                serde_json::from_value::<crate::secret_ref::SecretRef>(slot.clone())
+            else {
+                continue;
+            };
+            *slot = Value::String(resolve(&field, &reference)?);
+        }
+    }
+    Ok(())
+}
+
 /// LEND the declared secrets out of `block` (see the module docs). `keep_exact`: an exact path's
 /// value stays in the settings (the secret kind's host leaves it), otherwise it is taken out. `exact(path, taken)` turns an
 /// exact path's taken-out value (`None` = unset) into its bytes; `wild(at, value)` turns one

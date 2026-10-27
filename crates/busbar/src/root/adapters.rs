@@ -335,53 +335,6 @@ impl Breaker for BreakerAdapter {
     }
 }
 
-/// The one mapping between a pool member's two names.
-///
-/// The trust unit's pre-walk filter knows a lane by its index in the pool's own table; the breaker
-/// and egress units know a pool member as a destination. The root holds the correspondence because
-/// it is the only thing that sees both tables, and it is a `Vec` in table order because that is
-/// what the index means.
-#[derive(Debug, Default, Clone)]
-pub struct LaneMap {
-    destinations: Vec<DestinationId>,
-}
-
-impl LaneMap {
-    /// A map over one pool's members, in the pool's own declaration order.
-    #[must_use]
-    pub fn new(destinations: Vec<DestinationId>) -> Self {
-        LaneMap { destinations }
-    }
-
-    /// The destination a lane index names, if the index is in the table.
-    ///
-    /// An index off the end answers nothing rather than saturating to the last member: a lane the
-    /// table does not have is a mistake somewhere upstream, and answering with somebody else's
-    /// destination would send a request to the wrong upstream and look like it worked.
-    #[must_use]
-    pub fn destination(&self, lane: usize) -> Option<DestinationId> {
-        self.destinations.get(lane).copied()
-    }
-
-    /// The lane index a destination sits at, if it is in this pool.
-    #[must_use]
-    pub fn lane(&self, destination: DestinationId) -> Option<usize> {
-        self.destinations.iter().position(|d| *d == destination)
-    }
-
-    /// How many members the pool has.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.destinations.len()
-    }
-
-    /// Whether the pool has no members.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.destinations.is_empty()
-    }
-}
-
 /// A label that appears in one crate's bank and not the other's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LabelDrift {
@@ -424,16 +377,31 @@ pub fn check_label_banks() -> Result<(), LabelDrift> {
     use busbar_kernel_breaker::port::label;
     use busbar_kernel_egress::ports::disposition;
 
-    for (breaker, egress) in [
+    let pairs = [
         (label::TRANSIENT_UPSTREAM, disposition::TRANSIENT),
         (label::HARD_DOWN, disposition::HARD_DOWN),
         (label::CONTEXT_LENGTH, disposition::CONTEXT_LENGTH),
-    ] {
+    ];
+    // A test drives the boot seal over a drift by planting one more pair on its own thread; the
+    // banks themselves are other crates' constants and cannot be bent from here.
+    #[cfg(test)]
+    let pairs = pairs
+        .into_iter()
+        .chain(PLANTED_PAIR.with(std::cell::Cell::get));
+    for (breaker, egress) in pairs {
         if breaker != egress {
             return Err(LabelDrift { breaker, egress });
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// One extra `(breaker, egress)` pair [`check_label_banks`] compares on this thread, so a test
+    /// can show the boot seal refusing a drift (item 248). Test builds only.
+    static PLANTED_PAIR: std::cell::Cell<Option<(&'static str, &'static str)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
