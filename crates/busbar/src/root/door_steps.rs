@@ -2855,6 +2855,10 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         self.inner
             .declare_member_programs(owner, need, spec, programs)
     }
+
+    fn forget(&self, owner: busbar_contract::conn::InstanceId) {
+        self.inner.forget(owner);
+    }
 }
 
 impl OutboundAuths {

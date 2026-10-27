@@ -107,7 +107,7 @@ fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
 #[test]
 fn the_door_answers_the_published_releases_own_bytes() {
     const GOLDEN: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
+        env!("BUSBAR_CORE_DIR"),
         "/../../testing/shadow-oracle/golden/1.5.5/cells/admin.ops__GetConfig__unauth.json"
     ));
     let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
@@ -3703,7 +3703,7 @@ fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views()
     }
 
     let pinned: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
+        env!("BUSBAR_CORE_DIR"),
         "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
     )))
     .expect("the pinned fixture is JSON");
