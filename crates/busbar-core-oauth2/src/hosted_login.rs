@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! `GET /auth/token` — the HOSTED BROWSER LOGIN flow (1.5.2), this crate's (THE DESIGN §8:
-//! `busbar-core-oauth2` owns "the authorization server and the hosted login flow"; row 159, K3#2).
+//! `busbar-core-oauth2` owns "the authorization server and the hosted login flow").
 //!
 //! One param-less path, three sub-states read off the query string:
 //! * **chooser** (no params): one button per `identity-providers:` entry that has a `browser_login`
@@ -96,8 +96,8 @@ async fn browser(handle: Arc<AppHandle>, req: Request<Body>) -> Response {
 /// Whether a `?refresh=1` rotation is honoured only on a navigation from busbar's OWN page
 /// (`Sec-Fetch-Site: same-origin`, the key-issued page's "Refresh key" link). A rotate revokes the
 /// user's key, and any site can navigate a signed-in user to `?refresh=1` while the IdP approves
-/// silently (K3 #20). 1.5.5 rotated whatever the navigation's origin (v1.5.5
-/// crates/busbar/src/auth/token.rs:324). OWNER-SIGNED 2026-10-24 (M29): only a same-origin navigation
+/// silently. 1.5.5 rotated whatever the navigation's origin (v1.5.5
+/// crates/busbar/src/auth/token.rs:324). Only a same-origin navigation
 /// rotates; any other `?refresh=1` is a plain issue that re-shows the key.
 pub(crate) const REFRESH_NEEDS_SAME_ORIGIN: bool = true;
 
@@ -257,7 +257,7 @@ async fn callback(
     if !state_ok {
         return clear_and(security_check_failed());
     }
-    // 1.5.5 PARITY (Q128 p9#4, coordinator ruling 2026-10-19): the callback admits any method with
+    // 1.5.5 PARITY: the callback admits any method with
     // a button, a credential one included, and leaves the refusal of an authorization code it never
     // asked for to the plugin, exactly as 1.5.5's callback did (crates/busbar/src/auth/token.rs
     // :466-470 at v1.5.5 filters on `has_button` alone). A method-kind check here would answer 400
@@ -460,8 +460,6 @@ async fn credential_submit(
     clear_and(issue_and_render(app, handle, &cookie.method, principal, cookie.refresh).await)
 }
 
-// ── the login cookie (hand-rolled, HttpOnly+Secure+SameSite=Lax) ─────────────────────────────────
-
 #[derive(serde::Serialize, serde::Deserialize)]
 struct LoginCookie {
     method: String,
@@ -516,8 +514,6 @@ fn clear_and(mut resp: Response) -> Response {
     resp
 }
 
-// ── PKCE + randomness ────────────────────────────────────────────────────────────────────────────
-
 /// A URL-safe, no-pad base64 string of `n_bytes` of OS randomness.
 fn random_b64url(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
@@ -531,8 +527,6 @@ fn code_challenge_s256(code_verifier: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, code_verifier.as_bytes());
     B64.encode(digest.as_ref())
 }
-
-// ── query parsing + response helpers ─────────────────────────────────────────────────────────────
 
 /// Minimal `application/x-www-form-urlencoded` query parser (percent + `+` decoding). Sufficient for
 /// the small, known param set (`method`/`code`/`state`).
@@ -588,8 +582,6 @@ fn security_check_failed() -> Response {
          start again.",
     )
 }
-
-// ── rendering (the login HTML template, scaffolds stripped) ──────────────────────────────────────
 
 /// The shared `<title>` + `<style>` head (`.note`/`.screen-label`
 /// review scaffolds stripped). `include_str!` so the visual is the reviewed asset, not hand-retyped.
@@ -895,8 +887,6 @@ fn titlecase(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-
-// ── the kernel's seam ────────────────────────────────────────────────────────────────────────────
 
 /// The seam's `GET /auth/token` handler: [`browser`], boxed.
 fn seam_browser(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<Response> {
