@@ -8,7 +8,7 @@
 //! * a Call-class op (`record_get`) to the same hung store DOES hold the drain.
 //!
 //! (A synchronous bridge call that PENDS is no longer FAULT: it is submitted on a ticket and
-//! completes on the wake, ARCHITECT ruling 2026-10-03 on Q-L14-1; `store_v3_pend_tests` proves it.)
+//! completes on the wake; `store_v3_pend_tests` proves it.)
 //!
 //! Every other slot is the memory store's, through the store SDK.
 

@@ -9,18 +9,18 @@
 //! both to a single adapter over the store this crate loaded, so there is exactly one store handle
 //! in the process and one place that says what this adapter answers itself.
 //!
-//! The disaster-recovery verbs are not here (status row 187). They act on the node's journal and on
-//! the store's record slots, both of which the composition root holds (`durability::recovery`), and
-//! nothing about them is kept in this adapter's memory.
+//! The disaster-recovery verbs are not here. They act on the node's journal and on the store's
+//! record slots, both of which the composition root holds (`durability::recovery`), and nothing
+//! about them is kept in this adapter's memory.
 //!
 //! # The journal is not here
 //!
 //! The node's journal is kept by the configured store through its store v3 record slots
-//! (`record_put` / `record_get` / `record_scan`), written by the composition root's own bounded lane
-//! and read back at boot (the root's `durability::store_chain`; ARCHITECT 2026-10-07 H3 ruling).
-//! This adapter used to stand in as the journal's shipper and acknowledge every batch while keeping
-//! only a count, which is how a node with no data directory lost its whole chain on every restart.
-//! That shim is gone: nothing here acknowledges a record a store did not take.
+//! (`record_put` / `record_get` / `record_scan`), written by the composition root's own bounded
+//! lane and read back at boot (the root's `durability::store_chain`). This adapter used to stand in
+//! as the journal's shipper and acknowledge every batch while keeping only a count, which is how a
+//! node with no data directory lost its whole chain on every restart. That shim is gone: nothing
+//! here acknowledges a record a store did not take.
 //!
 //! # What passes through and what this adapter answers itself
 //!
@@ -614,10 +614,10 @@ impl SliceStore for StoreAdapter {
     }
 }
 
-/// THE ONE RECOVERY-STATE READ the disaster-recovery verbs take from this adapter (status row 187,
-/// ARCHITECT 2026-10-20): the slice epoch this node serves at, which `reseal_epoch_floor` puts in
-/// the store as the floor and the boot compares with the floor the store holds. It is the door the
-/// root reads it through, so the money-slice seam stays named only here and in its defining module.
+/// THE ONE RECOVERY-STATE READ the disaster-recovery verbs take from this adapter: the slice epoch
+/// this node serves at, which `reseal_epoch_floor` puts in the store as the floor and the boot
+/// compares with the floor the store holds. It is the door the root reads it through, so the
+/// money-slice seam stays named only here and in its defining module.
 impl StoreAdapter {
     /// This node's slice epoch, as a number: the value the epoch floor is resealed to and checked
     /// against.

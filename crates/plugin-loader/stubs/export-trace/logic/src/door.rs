@@ -40,8 +40,8 @@ use crate::{
 /// The one need's index in [`STATEMENT`]'s needs.
 pub const NEED: u32 = 0;
 
-/// The collector, reached through the host: framed `http`, under the `loopback-allowed` egress class
-/// 1.5.5's exporter held its endpoint to, its target the `url` setting (THE DESIGN §5, PB-100): the
+/// The collector, reached through the host: framed `http`, under the `loopback-allowed` egress
+/// class 1.5.5's exporter held its endpoint to, its target the `url` setting (THE DESIGN §5): the
 /// host declares the need pinned to the operator's collector, its userinfo left out, and refuses a
 /// dial to any other host. Each export names the same collector ([`Endpoint::collector`], the URL
 /// with its userinfo stripped), so no credential is ever part of what the host dials; the userinfo

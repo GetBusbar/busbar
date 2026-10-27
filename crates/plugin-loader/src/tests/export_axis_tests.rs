@@ -2,12 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The export rows (`export_axis.rs`) through BOTH DOORS on the export kind's memory ABI: the real
-//! sinks (owner FIXTURES ruling: "real plugins are the proofs"), reached by the both-ways table's
-//! `export-scrape`, `export-trace` and `export-carried` rows — each LINKED by its logic crate's
-//! `door` and DROPPED IN as its `-plugin` crate's `cdylib` (signed first-party, its Statement
-//! rendering in its manifest), probed, validated and opened through ONE dispatcher, and required to
-//! answer the same. The validate refusal renders
-//! under the instance as 1.5.5 printed it.
+//! sinks ("real plugins are the proofs"), reached by the both-ways table's `export-scrape`,
+//! `export-trace` and `export-carried` rows — each LINKED by its logic crate's `door` and DROPPED
+//! IN as its `-plugin` crate's `cdylib` (signed first-party, its Statement rendering in its
+//! manifest), probed, validated and opened through ONE dispatcher, and required to answer the same.
+//! The validate refusal renders under the instance as 1.5.5 printed it.
 
 use std::sync::Arc;
 
@@ -237,15 +236,14 @@ fn an_export_door_stating_ready_is_awaited_when_it_opens_to_deliver() {
     assert_eq!(READIES.load(Ordering::SeqCst), before + 2);
 }
 
-/// THE PER-INSTANCE IN-FLIGHT BOUND IS 1.5.5'S, PINNED (Q128 export audit, ruled parity
-/// 2026-10-18): an instance opened to deliver is bound by the `max_inflight_deliveries` ITS OWN
-/// settings state, clamped to at least one permit, within the door's declared concurrency. 1.5.5
-/// built each delivery target's gate as `max_inflight.clamp(1, Semaphore::MAX_PERMITS)` (v1.5.5
-/// crates/busbar/src/export/, the target gate) and validated only the largest instance's bound
-/// (v1.5.5 config/mod.rs:4003-4008, config_validate/mod.rs:1406-1420), so an instance stating `0`
-/// beside a larger sibling validated and ran at one permit; a per-instance refusal is an
-/// owner-signable difference, not a fix. Proven on the loader's own export witness (its Statement
-/// declares a concurrency of 4).
+/// THE PER-INSTANCE IN-FLIGHT BOUND IS 1.5.5'S, PINNED (ruled parity 2026-10-18): an instance
+/// opened to deliver is bound by the `max_inflight_deliveries` ITS OWN settings state, clamped to
+/// at least one permit, within the door's declared concurrency. 1.5.5 built each delivery target's
+/// gate as `max_inflight.clamp(1, Semaphore::MAX_PERMITS)` (v1.5.5 crates/busbar/src/export/, the
+/// target gate) and validated only the largest instance's bound (v1.5.5 config/mod.rs:4003-4008,
+/// config_validate/mod.rs:1406-1420), so an instance stating `0` beside a larger sibling validated
+/// and ran at one permit; a per-instance refusal is an owner-signable difference, not a fix. Proven
+/// on the loader's own export witness (its Statement declares a concurrency of 4).
 #[test]
 fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
     use crate::dispatch::ready::ready_plugins::export::{door, NAME};

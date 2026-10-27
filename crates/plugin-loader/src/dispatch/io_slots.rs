@@ -102,14 +102,14 @@ impl Answer {
 /// The calling instance as the host knows it: its identity, its route, and the I/O it is served.
 struct Caller {
     owner: u64,
-    /// The route, and the instance as the supplier of every ticket it hands the I/O (#74).
+    /// The route, and the instance as the supplier of every ticket it hands the I/O.
     waking: Waking,
     io: Arc<dyn IoHost>,
 }
 
 impl Caller {
     /// The waker of `ticket`'s op: a held inline ticket's task, or the dispatcher's route, which
-    /// judges any other ticket when the wake fires (#74: a generation never minted, inline or not,
+    /// judges any other ticket when the wake fires (a generation never minted, inline or not,
     /// quarantines this caller, the supplier the waker carries).
     fn waker(&self, ticket: Ticket) -> Waker {
         if let Some(w) = self

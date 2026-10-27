@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! ONE `op_id` ALLOCATOR PER PROCESS, A FRESH ONE PER BOOT (ARCHITECT ruling on op_id identity): a
-//! store handle mints its bridge writes' `op_id`s from the node's one allocator, never a counter of
-//! its own. Over a DURABLE store (its dedupe log outlives every handle), a second handle, a reload
-//! or a restart would otherwise re-mint an earlier write's id, and the store would answer the new
-//! write as that one's replay and apply nothing.
+//! ONE `op_id` ALLOCATOR PER PROCESS, A FRESH ONE PER BOOT: a store handle mints its bridge writes'
+//! `op_id`s from the node's one allocator, never a counter of its own. Over a DURABLE store (its
+//! dedupe log outlives every handle), a second handle, a reload or a restart would otherwise
+//! re-mint an earlier write's id, and the store would answer the new write as that one's replay and
+//! apply nothing.
 
 use std::sync::Arc;
 

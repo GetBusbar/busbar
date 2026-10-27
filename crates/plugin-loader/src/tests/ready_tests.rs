@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! DISCOVERY AT BOOT (ARCHITECT 2026-10-02): the mechanism's optional `ready`, awaited after `open`
-//! on a real ticket before any listener binds.
+//! DISCOVERY AT BOOT: the mechanism's optional `ready`, awaited after `open` on a real ticket
+//! before any listener binds.
 //!
-//! RED before this: no door could state `ready`, so a plugin that must reach the network before it
-//! serves had nowhere to do it but its first op (the lazy discovery the ruling refuses), and no
-//! refusal of it could stop the boot.
+//! Before this: no door could state `ready`, so a plugin that must reach the network before it
+//! serves had nowhere to do it but its first op, and no refusal of it could stop the boot.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -84,7 +83,7 @@ fn a_ready_that_pends_serves_after_its_wake() {
         before + 2,
         "one PENDING crossing, then its RESUME"
     );
-    // Counted apart (Q-P4-5): ONE first invocation, ONE resume.
+    // Counted apart: ONE first invocation, ONE resume.
     assert_eq!(
         p.inner.resumes.load(Ordering::Relaxed),
         resumed + 1,

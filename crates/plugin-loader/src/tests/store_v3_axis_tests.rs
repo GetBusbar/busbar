@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE AXIS, BOTH WAYS (WIRE-STORE Q8/Q9; the boot store door): the store boot opens is
-//! loaded through the ONE dispatcher and opened through the store v3 table, whichever door it came
-//! in by. The build's store (its row reached by KIND) is opened through [`DoorStoreAxis`] LINKED
-//! (its row's door, as the registry hands it) and DROPPED IN (the `store_v3_door` example
-//! `cdylib`, admitted against the linked door's Statement), and both answer one script through
-//! the 1.5.5 op set and the v3 calls, equal line for line.
+//! THE STORE AXIS, BOTH WAYS (the boot store door): the store boot opens is loaded through the ONE
+//! dispatcher and opened through the store v3 table, whichever door it came in by. The build's
+//! store (its row reached by KIND) is opened through [`DoorStoreAxis`] LINKED (its row's door, as
+//! the registry hands it) and DROPPED IN (the `store_v3_door` example `cdylib`, admitted against
+//! the linked door's Statement), and both answer one script through the 1.5.5 op set and the v3
+//! calls, equal line for line.
 //!
 //! RED: the registry hands boot a store's DOOR, never its in-process open: a linked store row with
 //! no door, and a store plugin that states none (a 1.5.5 JSON-contract plugin), are refused naming

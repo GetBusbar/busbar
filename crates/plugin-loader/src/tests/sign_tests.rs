@@ -107,7 +107,6 @@ fn policy(
     }
 }
 
-// ── The first-party ANTI-DOWNGRADE FLOOR (docs/plugins.md security-model item 3) ────────────────
 // A validly-signed but OLD release is still a signed artifact an attacker with write access to
 // `plugins.dir` can replay. With no floor set, a genuine busbar-signed 1.0.0 carrying a known fixed
 // defect verifies against the embedded release key and loads as `first-party` with no warning. The
@@ -978,8 +977,6 @@ fn restart_override_to_false_against_hot_default_is_a_no_op_honored_unconditiona
     ));
 }
 
-// ── manifest `host` disambiguates sibling products that share this exact plugin ABI ─────────
-
 /// BACKWARD COMPAT: a manifest with no `host` field at all (every manifest packed before this
 /// field existed — real packed tarballs, not just an in-memory struct) still parses AND still
 /// passes structural validation. Deserializes from raw JSON (not `Manifest { .. }` literal
@@ -1179,11 +1176,11 @@ fn a_contract_abi_range_is_never_carried_and_a_signed_manifest_stating_one_is_re
     );
 }
 
-/// THE BREAKER FACT A PLANE DECLARES (`declares.breaker`, ARCHITECT Q4) is spelled
-/// `{"breaker": {"bench_below_trip_threshold": ..}}` in a declares file, reads back as stated and is
-/// signed like every other `declares` statement. A manifest that states none carries no `breaker`
-/// key at all: its wire bytes and its signed bytes are exactly the ones it had before the field
-/// existed, so every manifest already packed keeps its signature.
+/// THE BREAKER FACT A PLANE DECLARES (`declares.breaker`) is spelled `{"breaker":
+/// {"bench_below_trip_threshold": ..}}` in a declares file, reads back as stated and is signed like
+/// every other `declares` statement. A manifest that states none carries no `breaker` key at all:
+/// its wire bytes and its signed bytes are exactly the ones it had before the field existed, so
+/// every manifest already packed keeps its signature.
 #[test]
 fn a_declared_breaker_fact_round_trips_and_a_manifest_without_one_keeps_its_bytes() {
     // ABSENT: no `breaker` key on the wire or under the signature, and the bytes survive a read.
@@ -1360,18 +1357,16 @@ fn from_config_keeps_its_refusal_bytes_and_carries_every_floor_exactly() {
     assert_eq!(p.first_party_key, embedded_release_pubkey());
 }
 
-// ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load unchanged) ─────────────────────────────
-
 /// The busbar release public key (`.cargo/config.toml`'s `BUSBAR_RELEASE_PUBKEY`), which signed
 /// every 1.5.5-era first-party tarball.
 const RELEASE_PUBKEY: &str = "b18395a332803151b9cd40a71489a86a96d8bea3ee6a37a45f59dec197bacba7";
 
 /// THE DEFAULT RELEASE KEY IS THE REAL ONE. The release key is a build input
-/// (`BUSBAR_RELEASE_PUBKEY`, read by [`embedded_release_pubkey`] at compile time); a build that does
-/// not set it in its environment takes this tree's `.cargo/config.toml` `[env]` value, which must be
-/// the busbar release key, so every ship build embeds it unchanged. The shadow oracle sets the
-/// variable to its run key at ITS candidate build only (ARCHITECT ruling 2026-10-20, row 86); cargo's
-/// `[env]` never overrides the process environment, so that build input wins there and nowhere else.
+/// (`BUSBAR_RELEASE_PUBKEY`, read by [`embedded_release_pubkey`] at compile time); a build that
+/// does not set it in its environment takes this tree's `.cargo/config.toml` `[env]` value, which
+/// must be the busbar release key, so every ship build embeds it unchanged. The shadow oracle sets
+/// the variable to its run key at ITS candidate build only; cargo's `[env]` never overrides the
+/// process environment, so that build input wins there and nowhere else.
 #[test]
 fn the_default_release_key_input_is_the_real_release_key() {
     let cfg = include_str!("../../../../.cargo/config.toml");
@@ -1470,10 +1465,9 @@ fn a_malformed_or_repeated_former_name_fails_structure() {
     }
 }
 
-/// THE DISK NEED (`declares.disk`, THE DESIGN §11.11 R4 as the OWNER amended it 2026-10-13) is a
-/// `kind: secret` fact alone: any other kind stating it is refused at phase 1, naming the kind; a
-/// secret source stating it validates; and a manifest that states none keeps its canonical bytes
-/// (the field is left off the wire when false).
+/// THE DISK NEED (`declares.disk`) is a `kind: secret` fact alone: any other kind stating it is
+/// refused at phase 1, naming the kind; a secret source stating it validates; and a manifest that
+/// states none keeps its canonical bytes (the field is left off the wire when false).
 #[test]
 fn only_a_secret_source_may_declare_a_disk_need() {
     let mut store = manifest("busbar-store-disk", "disk", "acme");

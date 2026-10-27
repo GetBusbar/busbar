@@ -16,13 +16,12 @@
 //!   replay is asserted as the same answer with the counts unchanged; what a slice still holds is
 //!   read through `reserve` against the window's cap; the memory store is EPHEMERAL (its tail says
 //!   so), so the restart and stale-epoch arms assert that statement, and the durable arm is the
-//!   store conformance suite's, run by the durable siblings (ARCHITECT rulings Q4 and M4c,
-//!   2026-09-29).
+//!   store conformance suite's, run by the durable siblings.
 //!
 //! The 1.5.5 source these pin is cited per test (`v1.5.5:crates/busbar/src/governance/state.rs`
 //! `flush_metering`/`record_metering`, `v1.5.5:crates/api/src/store.rs`, `v1.5.5:crates/store-memory`).
 //! The money invariants are the `money-invariants` gate rows (`xtask/src/gates/money_invariants.rs`):
-//! `:no-stored-price` (#77(3)), `:no-plugin-keyed-money` (#77(1)); `:single-seal-site` (#77(2)) is a
+//! `:no-stored-price`, `:no-plugin-keyed-money`; `:single-seal-site` is a
 //! kernel-crate rule the store has no surface for, so it is not restated here.
 
 use busbar_contract::records::{
@@ -44,8 +43,6 @@ include!(concat!(env!("OUT_DIR"), "/store_fixture.rs"));
 fn fresh() -> Arc<dyn RecordStore> {
     Arc::from(store_fixture::open("{}").expect("the store opens"))
 }
-
-// ── subjects: every door the build's store has ─────────────────────────────────────────────────
 
 /// One store under test, named for the door it was reached through.
 struct Subject {
@@ -75,8 +72,6 @@ fn subjects() -> Vec<Subject> {
         },
     ]
 }
-
-// ── builders ───────────────────────────────────────────────────────────────────────────────────
 
 fn delta(requests: i64, billable: i64, model: &str, units: &[(&str, i64)]) -> UsageDelta {
     UsageDelta {
@@ -140,8 +135,6 @@ fn sorted(mut rows: Vec<MeteringRow>) -> Vec<MeteringRow> {
 }
 
 const DAY: u64 = 1_790_000_000 - (1_790_000_000 % 86_400);
-
-// ── usage ledger: reserve (admission) / settle (accrual) / refund, per cell ────────────────────
 
 /// 1.5.5 `Store::get_usage`: an untouched (bucket, window) reads as the empty ledger, not an error.
 #[test]
@@ -427,8 +420,6 @@ fn usage_counters_saturate_not_wrap() {
     }
 }
 
-// ── metering: the billing ledger, coalesced per cell ───────────────────────────────────────────
-
 /// 1.5.5 `record_metering` + `flush_metering`: responses coalesce per (key, day-bucket, model,
 /// provider) and leave as ONE `MeteringDelta` whose `requests` is the response count. The store
 /// adds it whole: the row counts every response, not one per delta.
@@ -489,7 +480,7 @@ fn the_metering_cell_is_key_bucket_model_provider() {
     }
 }
 
-/// DECISION #79 (1.6.0, signed): a rate-card edit inside a day SPLITS the day's cell at the edit.
+/// A rate-card edit inside a day SPLITS the day's cell at the edit.
 #[test]
 fn a_rate_card_edit_splits_the_metering_day() {
     for s in subjects() {
@@ -584,8 +575,6 @@ fn metering_counters_add_and_saturate() {
     }
 }
 
-// ── 1.5.5 records ──────────────────────────────────────────────────────────────────────────────
-
 /// A metering row exactly as 1.5.5 persisted it decodes with the same counts, dated at the opening
 /// card (`priced_from_ms` 0) and with no open classes.
 #[test]
@@ -624,8 +613,6 @@ fn an_audit_record_round_trips_byte_identical_to_1_5_5() {
         );
     }
 }
-
-// ── money invariants (money-invariants gate rows, held at runtime over what the store carries) ──
 
 /// The JSON field names a record serializes to, recursively (map KEYS under `usage_units` are data,
 /// not fields, so maps are not descended).
@@ -666,7 +653,7 @@ fn money_record_fields() -> Vec<String> {
     out
 }
 
-/// `money-invariants:no-stored-price` (#77(3)): the store carries RAW COUNTS only; no money record
+/// `money-invariants:no-stored-price`: the store carries RAW COUNTS only; no money record
 /// field is a price/spend/amount figure. Token and allow lists are the gate's own.
 #[test]
 fn money_records_carry_counts_never_a_price() {
@@ -682,7 +669,7 @@ fn money_records_carry_counts_never_a_price() {
     assert!(bad.is_empty(), "stored price field(s): {bad:?}");
 }
 
-/// `money-invariants:no-plugin-keyed-money` (#77(1)): no money record field names a plugin or plane.
+/// `money-invariants:no-plugin-keyed-money`: no money record field names a plugin or plane.
 #[test]
 fn money_records_name_no_plugin_or_plane() {
     let bad: Vec<String> = money_record_fields()
@@ -691,8 +678,6 @@ fn money_records_name_no_plugin_or_plane() {
         .collect();
     assert!(bad.is_empty(), "plugin-keyed money field(s): {bad:?}");
 }
-
-// ── slices through the adapter the root binds (today: the node-local shim) ────────────────────
 
 fn slice(wanted: u64, epoch: u64) -> SliceRequest {
     SliceRequest {
@@ -765,8 +750,6 @@ fn the_adapter_passes_money_through_to_the_loaded_store() {
     );
     assert_eq!(inner.list_metering(DAY).expect("list")[0].requests, 2);
 }
-
-// ── store v3: the money slots through the table ────────────────────────────────────────────────
 
 /// The store v3 money slots, bound to the build's store through the ONE loader and the store v3
 /// table (M3 store table; m3-inputs "store v3 money slots").

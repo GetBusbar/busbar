@@ -2,11 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! **`kind: auth`, BOTH WAYS, VERIFY VERDICTS, ON THE MEMORY ABI — the auth kind's both-ways proof
-//! over the token cases** (DECISIONS #2; THE DESIGN, compiled-in = dropped-in: a compiled-in plugin exports the same door
-//! as a dropped-in one and is called through the same table; ARCHITECT 2026-09-27: the shipped
+//! over the token cases** (THE DESIGN, compiled-in = dropped-in: a compiled-in plugin
+//! exports the same door as a dropped-in one and is called through the same table; the shipped
 //! admin-auth module is a REAL auth plugin and its both-ways conformance is the AUTH kind proof;
-//! ARCHITECT 2026-09-30, AUTH-DOOR Q1: this proof moves to the door, linked vs dropped, with a RED
-//! arm).
+//! this proof moves to the door, linked vs dropped, with a RED arm).
 //!
 //! The plugin is reached through the `auth-verify` row of `[package.metadata.busbar.both-ways]`, so
 //! no test source names a plugin instance. It is registered LINKED (its `rlib`'s `door::door`,

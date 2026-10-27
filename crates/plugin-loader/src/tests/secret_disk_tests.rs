@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **A SECRET SOURCE THAT READS THE DISK** (THE DESIGN §11.11 R4, as the OWNER amended it
-//! 2026-10-13): a source whose `declares` states a disk need resolves ONLY at config time, with the
-//! proof, on the host's disk lane — never on a request path. The kind's real plugin (the env
-//! source, as `secret_calls_tests` reaches it) stands in for the disk-reading one, declared so
-//! through the linked-declares conduit or a dropped-in candidate's fact.
+//! **A SECRET SOURCE THAT READS THE DISK** (THE DESIGN §11.11 R4): a source whose `declares` states
+//! a disk need resolves ONLY at config time, with the proof, on the host's disk lane — never on a
+//! request path. The kind's real plugin (the env source, as `secret_calls_tests` reaches it) stands
+//! in for the disk-reading one, declared so through the linked-declares conduit or a dropped-in
+//! candidate's fact.
 //!
 //! RED arms: (a) a request-path `resolve` of a disk source is refused before anything is read;
 //! (b) its config-time resolve runs through the lane hook, not the dispatcher; (c)/(e) a source that

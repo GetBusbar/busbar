@@ -4,9 +4,9 @@
 //! THE CONNECTOR SLOTS, both ways: an instance whose Statement declares a need is handed the slots
 //! and its needs are declared on the host's one connection table (the whole need, under its
 //! Statement index) — a need whose `target_from` names a config path at `open` and every `refresh`,
-//! pinned to what the path resolves to in the settings (ARCHITECT ruling 2026-09-30 on the conns
-//! fill, option A); `ESTABLISH` reaches the table under the instance's own identity. An instance
-//! that declares no need is handed no table, and the table refuses an open under its identity.
+//! pinned to what the path resolves to in the settings (option A); `ESTABLISH` reaches the table
+//! under the instance's own identity. An instance that declares no need is handed no table, and the
+//! table refuses an open under its identity.
 
 use std::sync::{Arc, Mutex};
 
@@ -245,7 +245,7 @@ fn bind_as(
     )
 }
 
-/// RED (Q-P4-3): a door whose Statement declares a need, bound to SERVE with no connection table,
+/// RED: a door whose Statement declares a need, bound to SERVE with no connection table,
 /// is refused at bind, naming the plugin and its count of needs; never bound to fail at its first
 /// dial.
 #[test]
@@ -401,9 +401,8 @@ fn targets(table: &Recording, p: &Plugin<TestKind>) -> Vec<Option<String>> {
         .collect()
 }
 
-/// RED (spec Part 2 #50, THE BOOT'S SCHEME MATCH): an outbound need over a scheme no loaded
-/// transport serves refuses the load, naming the plugin and the scheme, and declares nothing; the
-/// same need over a served scheme binds.
+/// An outbound need over a scheme no loaded transport serves refuses the load, naming the plugin
+/// and the scheme, and declares nothing; the same need over a served scheme binds.
 #[test]
 fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
     let unserved = Arc::new(Recording {
@@ -435,9 +434,8 @@ fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
     assert!(bind_over(Box::leak(Box::new(NEEDS)), &served).is_ok());
 }
 
-/// RED (spec Part 0: core refuses at boot; Part 2 #50; ARCHITECT ruling 2026-10-02): an INBOUND need
-/// over a scheme no loaded transport serves refuses the load the same way, naming the plugin and the
-/// scheme; the same inbound need over a served scheme binds.
+/// An INBOUND need over a scheme no loaded transport serves refuses the load the same way, naming
+/// the plugin and the scheme; the same inbound need over a served scheme binds.
 #[test]
 fn an_inbound_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
     const INBOUND: [Need; 1] = [Need {
@@ -553,10 +551,10 @@ const TRUSTING: [Need; 1] = [Need {
     ..NEEDS[0]
 }];
 
-/// RED: a need whose `trust_from` names a config path is not declared at bind; at `open` it is
-/// declared with the PEM that path resolves to in the settings, a `refresh` that changes it
-/// re-declares it with the new PEM, and one where it resolves to nothing declares it without a
-/// trust, for the table to refuse (ARCHITECT ruling 2026-10-02; spec section 5, PB-100's fill).
+/// A need whose `trust_from` names a config path is not declared at bind; at `open` it is declared
+/// with the PEM that path resolves to in the settings, a `refresh` that changes it re-declares it
+/// with the new PEM, and one where it resolves to nothing declares it without a trust, for the
+/// table to refuse (spec section 5).
 #[test]
 fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh() {
     let table = Arc::new(Recording::default());
@@ -806,8 +804,6 @@ fn an_instance_without_a_need_is_handed_no_table_and_its_open_is_undeclared() {
         "every bind mints its own identity"
     );
 }
-
-// ── FRAMED REQUESTS, REPLIES AND THE REPLAY RULE ──
 
 use std::collections::VecDeque;
 
@@ -1589,8 +1585,6 @@ fn need_admit_answers_the_tables_verdict_on_the_declared_need() {
     assert_eq!(admit(&q, 0), Outcome::Refused, "the table refused it");
 }
 
-// ── UPGRADE_SECURE AND FACTS (ARCHITECT ruling Q-FC3) ──────────────────────────────────────────
-
 /// The instance's host tables as `open` hands them: its context and the connector slots.
 fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
     use busbar_contract::abi::mechanism::ticket::HostTables;
@@ -1727,7 +1721,7 @@ fn facts_expose_the_peer_certificate_hash() {
     assert_eq!(read(2), (1, Some("ab".repeat(32))), "secured");
 }
 
-/// Q-L16-4: `UpgradeIn::flags`' verify-off reaches the table; an `in` from before the flags
+/// `UpgradeIn::flags`' verify-off reaches the table; an `in` from before the flags
 /// (`UPGRADE_IN_V1_SIZE`) reads them as 0, never past what the head states.
 #[test]
 fn an_upgrades_verify_off_reaches_the_table_and_a_v1_in_reads_none() {
@@ -1995,7 +1989,7 @@ fn a_members_auth_call_and_its_open_run_outside_the_connectors_lock() {
         ..Scripted::default()
     });
     // Adopted by a dispatcher, as every production instance is: the member's field is revealed
-    // under the seal the host lent it (#1021), and an unadopted instance has none to reveal under.
+    // under the seal the host lent it, and an unadopted instance has none to reveal under.
     let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
     let p = bound_over_by(&table, dispatcher.adopter());
     whole_request(&p, 0);
@@ -2063,10 +2057,10 @@ fn a_members_pending_auth_call_is_polled_and_opened_outside_the_connectors_lock(
     assert_eq!(table.opened.lock().unwrap().len(), 1, "one open");
 }
 
-/// RED (#74, A FORGED TICKET THROUGH A CONNECTION SLOT): a plugin hands the read slot a ticket
-/// generation the host never minted. The table parks the read and, as the connector does, wakes it
-/// through the dispatcher's conn waker naming the caller it parked for. That caller, the supplier,
-/// is quarantined, and the latch does not move: a plugin cannot trip the process's latch through a
+/// A FORGED TICKET THROUGH A CONNECTION SLOT: a plugin hands the read slot a ticket generation the
+/// host never minted. The table parks the read and, as the connector does, wakes it through the
+/// dispatcher's conn waker naming the caller it parked for. That caller, the supplier, is
+/// quarantined, and the latch does not move: a plugin cannot trip the process's latch through a
 /// connection.
 #[test]
 fn red_a_forged_ticket_through_a_connection_slot_quarantines_its_supplier() {
@@ -2250,8 +2244,7 @@ fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
     assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
 }
 
-/// RED (audit row 159, connector HIGH 5: "a replaced instance's member programs keep running"):
-/// an instance that is let go (closed, or replaced by a reload) is forgotten on the host's
+/// An instance that is let go (closed, or replaced by a reload) is forgotten on the host's
 /// connection table under its own id, once, so the table drops its needs and kills its member
 /// programs. GREEN twin: a neighbour bound over the same table, still live, is never forgotten.
 #[test]
@@ -2321,11 +2314,9 @@ fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
     );
 }
 
-// A member program's `env` secret that does not resolve, at the request-time hand-off (coordinator
-// ruling 2026-10-07).
+// A member program's `env` secret that does not resolve, at the request-time hand-off.
 #[path = "member_secret_tests.rs"]
 mod member_secret_tests;
-// ── a member binding re-resolved per request, and the plugin's waiver of it ─────────────────────
 
 /// A binding whose credential is re-resolved per request: the scripted handles in turn (`None`:
 /// the credential is unavailable), counting how often it is asked.
@@ -2425,7 +2416,7 @@ fn whole_request_with(p: &Plugin<TestKind>, seq: u32, head: &RequestPiece, bytes
 fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_table() {
     let (table, per, auth) = resolving_table(&[Some(4), Some(6)]);
     // Adopted by a dispatcher, as every production instance is: the credential is revealed under
-    // the seal the host lent it (#1021).
+    // the seal the host lent it.
     let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
     let p = bound_over_by(&table, dispatcher.adopter());
     let waived = RequestPiece {
@@ -2546,8 +2537,7 @@ impl crate::dispatch::Kind for AuthShaped {
     const TIMEOUT: Outcome = Outcome::Failed;
 }
 
-/// RED (ARCHITECT ruling on #780, Part 1 Law 0 and Part 2 #3: auth is one kind): the loader asks
-/// the host's connection table to hold the AUTHORITY of every auth-kind instance
+/// The loader asks the host's connection table to hold the AUTHORITY of every auth-kind instance
 /// ([`DeclaredConns::hold_authority`]) before it declares any of the instance's needs, so every
 /// connection the instance opens through its own needs (token exchange, key set, login) is refused
 /// a `host` field of its own, as 1.5.5 refused it on an auth module's request. An instance of any

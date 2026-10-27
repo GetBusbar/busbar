@@ -313,7 +313,7 @@ fn build_probe_library(dir: &std::path::Path, stem: &str, src: &str, extra: &[&s
     std::fs::read(&so).expect("read probe library")
 }
 
-/// THE REPLACED-PLUGIN DEFECT (PORT-EXT-B; spec #40, code-signing integrity). Linux stages a verified
+/// THE REPLACED-PLUGIN DEFECT. Linux stages a verified
 /// library as a memfd and `dlopen`s it by the name `/proc/self/fd/N`. glibc's `dlopen` first matches
 /// the NAME against every object still in the link map, and an image routinely outlives its handle
 /// (`DF_1_NODELETE`, or a Rust cdylib whose thread-local destructors ran on a plugin worker — glibc

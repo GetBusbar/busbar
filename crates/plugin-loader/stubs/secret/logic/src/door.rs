@@ -34,7 +34,7 @@ const fn rewrite(class: u32, to: &'static str) -> Rewrite {
     }
 }
 
-/// The names config gives this source (THE DESIGN §2, the Statement's `rewrites`; busbar step 2c,
+/// The names config gives this source (THE DESIGN §2, the Statement's `rewrites`,
 /// the sugar each secret plugin spells itself): the module alias (`module: env`), the
 /// reference sugar (`{ env: X }` becomes `{module: env, settings: {key: X}}`), what a
 /// refusal names its value, and its core role.

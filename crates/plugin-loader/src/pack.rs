@@ -393,7 +393,7 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         if eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true)) {
             if at != Position::RootProperty {
                 // 1.5.5's words, naming the nesting depth (v1.5.5
-                // `crates/plugin-pack/src/main.rs:298-304`; ruling (B), 2026-10-19).
+                // `crates/plugin-pack/src/main.rs:298-304`).
                 return Err(format!(
                     "x-busbar-secret: true is only allowed on a direct root-level property \
                      (found at nesting depth {depth}) — flatten the field to a root property \
@@ -536,10 +536,10 @@ pub(crate) fn stated_version(rendering: &[u8]) -> Result<String, String> {
     read_rendering(rendering).map(|r| r.version)
 }
 
-/// ONE VERSION PER PLUGIN (ARCHITECT ruling C', question 3): the manifest's `--version` is the
-/// version the plugin's own Statement states. The loader's one-version rule compares Statement
-/// versions, so a release whose manifest says another version would publish a plugin that is not
-/// the version it claims; packing refuses it, naming both.
+/// ONE VERSION PER PLUGIN (question 3): the manifest's `--version` is the version the plugin's own
+/// Statement states. The loader's one-version rule compares Statement versions, so a release whose
+/// manifest says another version would publish a plugin that is not the version it claims; packing
+/// refuses it, naming both.
 ///
 /// # Errors
 /// The rendering does not read back, or states another version.

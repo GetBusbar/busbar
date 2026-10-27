@@ -26,7 +26,7 @@
 //!   no host: `random.fill`, a host service, is the one random service.
 //! * `FACTS` answers what the stream's connection security established, as the connector observed
 //!   it: the agreed protocol, the far end's key pin and whether busbar presented its client identity
-//!   (the transport pin, ARCHITECT 2026-10-03) — a stream whose connection the connector refused for its
+//!   (the transport pin) — a stream whose connection the connector refused for its
 //!   trust anchors included, so a plugin reads the key the far end served. Its strings are held with
 //!   the stream until it closes.
 //! * `WRITE_REQUEST` sends a request on a FRAMED stream piece by piece (head, body, end): a framed
@@ -215,8 +215,8 @@ pub(crate) fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn Declar
     super::handle::resolve(ctx)?.conn.get()
 }
 
-/// The seal the host lent the dispatcher a context's instance is adopted by (Part 2 #54): what the
-/// member's auth fields are revealed under to join the request's head. `None` when none was lent.
+/// The seal the host lent the dispatcher a context's instance is adopted by: what the member's auth
+/// fields are revealed under to join the request's head. `None` when none was lent.
 fn lent_seal(ctx: HostCtx) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
     super::handle::resolve(ctx)?.route.get()?.upgrade()?.seal()
 }
@@ -652,8 +652,8 @@ extern "C" fn upgrade_secure(
     )
 }
 
-/// The first unverified handshake an instance's connection ran (the operator's opt-in, ARCHITECT
-/// ruling 2026-10-03 on Q-L16-4) is logged at WARN, naming the instance: once per instance.
+/// The first unverified handshake an instance's connection ran (the operator's opt-in) is logged at
+/// WARN, naming the instance: once per instance.
 fn warn_unverified(ctx: HostCtx) {
     static WARNED: OnceLock<Mutex<std::collections::HashSet<u64>>> = OnceLock::new();
     let Some(wake) = super::handle::resolve(ctx) else {
@@ -749,8 +749,6 @@ extern "C" fn facts(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) ->
         },
     )
 }
-
-// ── THE REPLAY RULE ─────────────────────────────────────────────────────────────────────────────
 
 /// Every ticketed service's answer, by instance and ticket, then by the handle's issue order.
 type Kept = HashMap<(InstanceId, Ticket), HashMap<u32, Answer>>;
@@ -876,8 +874,6 @@ pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     }
     table.forget(id);
 }
-
-// ── FRAMED REQUESTS AND REPLIES ──────────────────────────────────────────────────────────────────
 
 /// The bit a stream the host holds unopened carries (a connection table's ids never set it).
 const HELD: u64 = 1 << 63;
@@ -1392,7 +1388,7 @@ fn auth_request(
 /// A waker that wakes `ticket` on the instance `ctx` names: a request waiting on its auth call is
 /// read again when the call answers.
 fn ticket_waker(ctx: HostCtx, ticket: Ticket) -> Option<std::task::Waker> {
-    /// The route, and the instance `ctx` named as the ticket's supplier (#74).
+    /// The route, and the instance `ctx` named as the ticket's supplier.
     struct TicketWaker {
         waking: super::ticket::Waking,
         ticket: Ticket,

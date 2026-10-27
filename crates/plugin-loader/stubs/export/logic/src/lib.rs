@@ -241,7 +241,7 @@ impl FileSink {
             // Every other append that did not land is the append-failed line, in the host's words:
             // the write itself failed, or the append was never run (no ticket, no disk service, a
             // fault), which is no file-open problem, so not BUSBAR-7074 and its disk remedy. A
-            // plugin speaks only over the ABI (Part 2 #2): every dropped batch carries a declared code.
+            // plugin speaks only over the ABI: every dropped batch carries a declared code.
             Err(f) => {
                 tracing::warn!(diag = %APPEND_FAILED, path = %path, error = %f.why, "request-log file append failed; this log was dropped");
             }

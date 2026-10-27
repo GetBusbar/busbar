@@ -26,7 +26,7 @@ use busbar_contract::secret::{SecretErrorKind, SecretModuleError, SecretResult};
 pub mod door;
 
 /// The word config names this source by: its module alias and its reference sugar
-/// (`{ env: X }`), spelled here, never by the contract (busbar step 2c).
+/// (`{ env: X }`), spelled here, never by the contract.
 pub const WORD: &str = "env";
 
 /// The settings key the sugar's value lands under (`{ env: X }` → `settings.key`).

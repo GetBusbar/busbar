@@ -3,17 +3,17 @@
 
 //! INLINE TICKETS: the ticket space of ops the host drives ON THE CALLING THREAD (`abi::transport`:
 //! "PER-CONNECTION TOKEN SPACE", "TWO TICKETS PER CONNECTION"). A carrier's connection is driven by
-//! the task that polls it, inline, with no thread handoff (#30): its two sides each hold one of
-//! these. A PENDING op on one registers the task's waker; the host's wake for the ticket (from
-//! `io.*`, or a plugin's own `wake`) wakes that task, which re-invokes the op with `FLAG_RESUME`.
+//! the task that polls it, inline, with no thread handoff: its two sides each hold one of these. A
+//! PENDING op on one registers the task's waker; the host's wake for the ticket (from `io.*`, or a
+//! plugin's own `wake`) wakes that task, which re-invokes the op with `FLAG_RESUME`.
 //!
 //! An inline ticket's slot names a worker no dispatcher runs ([`INLINE_WORKER`]), so the pool
-//! routes its wakes here and never to a worker. Its generation is a worker slot's (#74): the keyed
+//! routes its wakes here and never to a worker. Its generation is a worker slot's: the keyed
 //! permutation of the slot's mint counter ([`super::handle::ticket_generation`] under
 //! [`INLINE_WORKER`]), advanced when the ticket is dropped. A wake whose generation matches no held
 //! ticket is judged by the permutation's inverse ([`Judged`]): one the slot minted is a late wake,
-//! dropped; one it never minted is a FORGERY, blamed on the wake's supplier. A slot whose counter is
-//! spent is RETIRED, never handed out again.
+//! dropped; one it never minted is a FORGERY, blamed on the wake's supplier. A slot whose counter
+//! is spent is RETIRED, never handed out again.
 //!
 //! THE RESULTS KEPT UNDER AN INLINE TICKET are an op's own, as a worker ticket's are (THE DESIGN
 //! §11.12, "the host never runs a service twice"; §11.11 H2): the dispatcher's stored service
@@ -125,7 +125,7 @@ pub(crate) enum Judged {
     Woken,
     /// A generation the slot minted, no longer held: a late wake, dropped.
     Stale,
-    /// A generation no slot ever minted (#74): the wake's supplier is to blame.
+    /// A generation no slot ever minted: the wake's supplier is to blame.
     Forged,
 }
 
@@ -243,10 +243,10 @@ impl InlineTickets {
             .then(|| Waker::from(Arc::new(GenerationWaker { slot, generation })))
     }
 
-    /// Wake `t`'s task, judging a `t` that is not held (#74): a generation the slot minted is a late
+    /// Wake `t`'s task, judging a `t` that is not held: a generation the slot minted is a late
     /// wake, dropped; anything else (no such slot, or a generation whose inverse names no count the
-    /// slot reached; `NONE`, generation 0, is a late wake by rule) is [`Judged::Forged`]. No lock is
-    /// held when this returns, so the caller blames the supplier lock-free.
+    /// slot reached; `NONE`, generation 0, is a late wake by rule) is [`Judged::Forged`]. No lock
+    /// is held when this returns, so the caller blames the supplier lock-free.
     pub(crate) fn wake(&self, t: Ticket) -> Judged {
         if t.generation == 0 {
             return Judged::Stale;

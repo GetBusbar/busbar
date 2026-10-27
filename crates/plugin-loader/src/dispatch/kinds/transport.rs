@@ -63,8 +63,7 @@ pub struct TransportFacts {
     pub claims: Vec<&'static str>,
     /// The claims whose unit 0 opens at an UPGRADE (their row's `unit0_trigger` is
     /// `UNIT0_UPGRADE`): the host's upgrade lines, read off the claim rows and never off a layer
-    /// list (ARCHITECT ruling Q128 U7). The handoff target on an upgrade is the claim that owns the
-    /// requested scheme.
+    /// list. The handoff target on an upgrade is the claim that owns the requested scheme.
     pub upgrades: Vec<&'static str>,
     /// The claims whose row carries a session (`session = 1`): a duplex line, never one request
     /// and its response.

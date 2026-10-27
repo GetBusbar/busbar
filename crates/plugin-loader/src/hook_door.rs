@@ -12,7 +12,7 @@
 //!
 //! * Every call is SUBMITTED on a ticket and awaited: it runs on the dispatcher's workers, never on
 //!   the caller's, and is bounded by the call's `budget` (the hook's `timeout_ms`), which is its
-//!   deadline on the dispatcher: cancelled at `timeout_ms`, as 1.5.5's per-hook timeout (Q-SO6).
+//!   deadline on the dispatcher: cancelled at `timeout_ms`, as 1.5.5's per-hook timeout.
 //!   A `decide`/`transform` answer that is SHORT is re-submitted once on the same ticket over the
 //!   frame's regrown buffers (the short-buffer rule).
 //! * THE WATCHDOG'S BUDGET IS THE HOOK'S `timeout_ms` (THE DESIGN §11.7; HOOKCAP-Q1): each op is
@@ -570,8 +570,8 @@ impl HookInstance {
     }
 
     /// [`Self::open`] for a hook whose `declares.hook.orders` is `orders`: when `false`, the hook
-    /// declared that its `decide` never answers an order, and every order it does answer is refused
-    /// (ARCHITECT ruling, status row 194).
+    /// declared that its `decide` never answers an order, and every order it does answer is
+    /// refused.
     ///
     /// # Errors
     /// The plugin's refusal, in 1.5.5's words.
@@ -850,8 +850,8 @@ fn answers(c: &Candidate, module: &str) -> bool {
 
 /// Whether a DROPPED-IN `kind: hook` row of `registry` answers `module` by the rule the hook axis
 /// opens it by ([`HookRows`]): read off each row's SIGNED manifest and Statement rendering only,
-/// nothing loaded. The pre-flight's half of the claim table boot uses (ARCHITECT Q-P4-13); the
-/// linked half is the root's hook axis.
+/// nothing loaded. The pre-flight's half of the claim table boot uses; the linked half is the
+/// root's hook axis.
 #[must_use]
 pub fn dropped_answers(registry: &PluginRegistry, module: &str) -> bool {
     registry.dropped_hooks().any(|p| {
@@ -866,13 +866,10 @@ pub fn dropped_answers(registry: &PluginRegistry, module: &str) -> bool {
     })
 }
 
-// ── THE HOOK ROWS: the axis the composition root installs ─────────────────────────────────────
-
 /// THE PROCESS'S HOOK PLUGINS, by Statement name and alias: the compiled-in doors and the
 /// dropped-in libraries whose signed manifests state a Statement, each bound on open through the
 /// one loader path and called through the one dispatcher. Two different plugins answering one word
-/// are refused at [`Self::new`] ([`crate::boot::one_owner`], ARCHITECT Q-P4-12); neither door
-/// outranks the other.
+/// are refused at [`Self::new`] ([`crate::boot::one_owner`]); neither door outranks the other.
 pub struct HookRows {
     candidates: Vec<Candidate>,
     /// The dropped-in rows signed by the release key (a linked row is first-party by construction).

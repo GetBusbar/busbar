@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The #85 envelope's arrays are formed only through the one capped, validated reader.
+//! The observability envelope's arrays are formed only through the one capped, validated reader.
 
 use super::*;
 

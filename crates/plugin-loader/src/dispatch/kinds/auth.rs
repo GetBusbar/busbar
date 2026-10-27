@@ -134,8 +134,8 @@ pub fn operator_principal(door: busbar_contract::abi::mechanism::door::DoorFn) -
 
 /// EVERYTHING the auth plugin behind `door` states (its Statement's auth tail, carriers and
 /// families), as a bind copies it out, read WITHOUT binding it: reading a linked row's static
-/// declaration is reading, not loading (Law 7; ARCHITECT ruling 2026-10-20). Reads the door's
-/// `'static` Statement only; nothing is bound or opened.
+/// declaration is reading, not loading. Reads the door's `'static` Statement only; nothing is bound
+/// or opened.
 ///
 /// # Errors
 ///
@@ -277,10 +277,10 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
 }
 
 /// EVERYTHING an auth Statement states (its auth tail, carriers and families), read from its
-/// canonical RENDERING: a dropped-in row's signed manifest rendering is read with no `dlopen`
-/// (ARCHITECT ruling 2026-10-20, audit root#7 and loader#9: the rendering carries the whole kind
-/// tail, and the admit comparison refuses a door whose Statement is not the manifest's), and a
-/// linked door's is its own Statement rendered. A bind refuses exactly what this refuses.
+/// canonical RENDERING: a dropped-in row's signed manifest rendering is read with no `dlopen` (the
+/// rendering carries the whole kind tail, and the admit comparison refuses a door whose Statement
+/// is not the manifest's), and a linked door's is its own Statement rendered. A bind refuses
+/// exactly what this refuses.
 ///
 /// # Errors
 ///

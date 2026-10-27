@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! EVERY PLUGIN'S OWN LOG FILE — the host end of plugin logging (decision #85, and
-//! `BUSBAR-1.6.0.md` THE DESIGN, §11.2).
+//! EVERY PLUGIN'S OWN LOG FILE — the host end of plugin logging (and `BUSBAR-1.6.0.md` THE DESIGN,
+//! §11.2).
 //!
 //! A plugin reports; the host writes. Whatever a plugin logged during a call reaches the host as
 //! log diagnostics on the call's reply, already bounded by the dispatcher ([`super::plugin`]), and

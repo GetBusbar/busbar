@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A STORE THAT PENDS (the store SDK's `Step`/`Op`; REVIEWER and ARCHITECT, binding): an op that
-//! pends once and resumes answers what the same op answers inline; a reserve cancelled after its
-//! write went out and retried with the SAME `op_id` answers the grants it applied, counted once; a
-//! RESUME with nothing parked is FAULT, never a fresh run; PENDING on the connector with no service
-//! in flight is FAULT.
+//! A STORE THAT PENDS (the store SDK's `Step`/`Op`; binding): an op that pends once and resumes
+//! answers what the same op answers inline; a reserve cancelled after its write went out and
+//! retried with the SAME `op_id` answers the grants it applied, counted once; a RESUME with nothing
+//! parked is FAULT, never a fresh run; PENDING on the connector with no service in flight is FAULT.
 
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -543,8 +542,6 @@ fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
     );
 }
 
-// ── the governance bridge on a ticket (ARCHITECT ruling 2026-10-03 on Q-L14-1) ────────────────
-
 /// A remote store's `list_denylist`: on a ticket it pends once (its round trip in flight) and
 /// answers on the resume; on no ticket it cannot reach its backend at all, so it refuses.
 struct RemoteDenylist;
@@ -577,7 +574,7 @@ mod remote_denylist {
     );
 }
 
-/// RED (Q-L14-1 (a)): the kernel's governance store reaches every slot through the synchronous
+/// The kernel's governance store reaches every slot through the synchronous
 /// bridge; a store that answers PENDING there and READY on its wake completes the op, as a
 /// remote store's every round trip must.
 #[test]
@@ -745,7 +742,7 @@ mod over_tcp {
     );
 }
 
-/// RED (Q-L14-1 (b)): a store whose door declares a `tcp` need is handed the connector, its need
+/// A store whose door declares a `tcp` need is handed the connector, its need
 /// declared on the host's connection table, exactly as every other kind; its op on the bridge
 /// checks out a stream there.
 #[test]
@@ -793,8 +790,6 @@ fn a_store_door_without_needs_states_none() {
     assert_eq!(st.needs_len, 1);
 }
 
-// ── open on a ticket, with a connect step (ARCHITECT ruling 2026-10-03 on Q-L16-2) ────────────
-
 /// How many times `PendsInOpen`'s `open` ran.
 static PENDS_IN_OPEN_OPENS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -826,8 +821,8 @@ mod pends_in_open {
     busbar_contract::store_door!(super::Wrapped<super::PendsInOpen>, "pends-in-open", "0", 64);
 }
 
-/// RED (Q-L16-2): a store whose connect step PENDS in `open` completes its open (the boot's
-/// store load) on the wake, `open` itself running once, and serves.
+/// A store whose connect step PENDS in `open` completes its open (the boot's store load) on the
+/// wake, `open` itself running once, and serves.
 #[test]
 fn a_store_pending_in_open_completes_the_load_and_serves() {
     let before = PENDS_IN_OPEN_OPENS.load(std::sync::atomic::Ordering::SeqCst);
@@ -890,9 +885,8 @@ fn open_over(
     LoadedStore::open(p, d, b"{}", mint)
 }
 
-/// RED (Q-L16-2): the connect step reaches the backend over the host's connection table at `open`
-/// (a ticketed open; a ticket-less one has no connector), and closes that connection when it
-/// answers.
+/// The connect step reaches the backend over the host's connection table at `open` (a ticketed
+/// open; a ticket-less one has no connector), and closes that connection when it answers.
 #[test]
 fn a_store_connects_over_the_hosts_table_at_open() {
     let table = Arc::new(Table::default());
@@ -909,7 +903,7 @@ fn a_store_connects_over_the_hosts_table_at_open() {
     RecordStore::add_denylist(&s, "dave", "test").expect("it serves");
 }
 
-/// RED (Q-L16-2): an unreachable backend fails the LOAD, at `open`, in the store's own words.
+/// An unreachable backend fails the LOAD, at `open`, in the store's own words.
 #[test]
 fn an_unreachable_backend_fails_the_load_with_the_stores_message() {
     let table = Arc::new(Table::default());
@@ -926,8 +920,6 @@ fn an_unreachable_backend_fails_the_load_with_the_stores_message() {
         )
     );
 }
-
-// ── a store op's body as a future over its one raw connection (store SDK `wire`) ──────────────
 
 /// A store whose `list_denylist` is a wire protocol: it connects to the backend its settings name
 /// (`{"addr": ...}`), sends a line and answers the line the backend sends back.

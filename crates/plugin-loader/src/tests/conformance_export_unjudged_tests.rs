@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! RED (audit loader-conformance #4): the export script reads what an answer names only when the
-//! host JUDGED it (THE DESIGN §11.13 M1). A door whose `status`, `check` and `serve` answer FAULT
-//! with garbage pointers and lengths in their `out` fails the script's line cleanly; a script that
-//! forms slices from them anyway reads arbitrary memory (and crashes the test process).
+//! The export script reads what an answer names only when the host JUDGED it (THE DESIGN §11.13
+//! M1). A door whose `status`, `check` and `serve` answer FAULT with garbage pointers and lengths
+//! in their `out` fails the script's line cleanly; a script that forms slices from them anyway
+//! reads arbitrary memory (and crashes the test process).
 
 use std::sync::atomic::{AtomicPtr, Ordering};
 

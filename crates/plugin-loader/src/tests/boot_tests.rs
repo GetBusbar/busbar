@@ -202,7 +202,7 @@ fn a_candidate_reads_its_facts_off_its_rendering() {
 }
 
 /// A dropped transport is selected by the URL schemes its signed rendering claims: Discover reads
-/// them off the rendering, so nothing is opened to learn them (ARCHITECT ruling 2026-09-29).
+/// them off the rendering, so nothing is opened to learn them.
 #[test]
 fn a_dropped_transport_is_selected_by_the_claims_its_rendering_states() {
     const CLAIMS: &[busbar_contract::abi::mechanism::call::AbiStr] =
@@ -375,11 +375,11 @@ fn red_an_instance_that_will_not_bind_is_named() {
     assert!(err.starts_with("door: ") && err.contains("repack"), "{err}");
 }
 
-/// THE PLANE AXIS, BOTH DOORS, ONE LOAD (ARCHITECT ruling 2026-09-29): the plane door linked
-/// into the build and the same plane dropped into `plugins/` (an admitted tarball whose manifest
-/// states its Statement) are discovered by `open_planes` as door candidates stating the same
-/// rendering, and `load_planes` binds each through the one load — the dropped one over its verified
-/// bytes. A dropped plane with no Statement is refused (`plane_conformance_tests`).
+/// THE PLANE AXIS, BOTH DOORS, ONE LOAD: the plane door linked into the build and the same plane
+/// dropped into `plugins/` (an admitted tarball whose manifest states its Statement) are discovered
+/// by `open_planes` as door candidates stating the same rendering, and `load_planes` binds each
+/// through the one load — the dropped one over its verified bytes. A dropped plane with no
+/// Statement is refused (`plane_conformance_tests`).
 #[test]
 fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let path = example_cdylib("plane_door_plugin");
@@ -520,11 +520,11 @@ fn a_plane_config_does_not_use_is_never_opened() {
     assert!(err.contains("unused-plane"), "{err}");
 }
 
-/// A SECTION THAT SELECTS ITS PLANE (`SECTION_SELECTS`, Law 7): a plane is used when config carries
-/// its verb or a section its Statement marks as selecting it; a section it only consumes or
-/// requires selects nothing. The dropped-in plane's facts are read off its signed rendering, so
-/// nothing is opened to learn them. RED before: only the verb selected a plane, so a document
-/// routing to models directly (no `pools:`) used no plane.
+/// A SECTION THAT SELECTS ITS PLANE (`SECTION_SELECTS`): a plane is used when config carries its
+/// verb or a section its Statement marks as selecting it; a section it only consumes or requires
+/// selects nothing. The dropped-in plane's facts are read off its signed rendering, so nothing is
+/// opened to learn them. RED before: only the verb selected a plane, so a document routing to
+/// models directly (no `pools:`) used no plane.
 #[test]
 fn a_dropped_plane_is_selected_by_a_section_that_selects_it() {
     use busbar_contract::abi::mechanism::door::{Section, SECTION_REQUIRED, SECTION_SELECTS};
@@ -658,8 +658,6 @@ fn a_door_plane_declaring_a_pin_with_no_mechanism_is_refused_at_boot() {
     )
     .expect("the well-formed plane binds");
 }
-
-// ── INBOUND: listener needs and their binds ──
 
 fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
     ReadNeed {
@@ -957,10 +955,10 @@ fn boot_auth(door: DoorFn, name: &str, settings: &str) -> Result<usize, String> 
     .map(|l| l.bound.len())
 }
 
-/// DISCOVERY AT BOOT (ARCHITECT 2026-10-02): the one load OPENS every auth instance it binds and
-/// awaits its `ready` before it answers, so before any listener binds. RED: an auth door whose
-/// `ready` errs refuses the boot with the plugin's own text, named by its instance (1.5.5 refused
-/// the boot when discovery failed). The GREEN twin boots.
+/// DISCOVERY AT BOOT: the one load OPENS every auth instance it binds and awaits its `ready` before
+/// it answers, so before any listener binds. RED: an auth door whose `ready` errs refuses the boot
+/// with the plugin's own text, named by its instance (1.5.5 refused the boot when discovery
+/// failed). The GREEN twin boots.
 #[test]
 fn red_an_auth_door_whose_ready_errs_refuses_the_boot_with_its_text() {
     use crate::dispatch::ready::ready_plugins::auth::{with_ready, NAME};
@@ -987,10 +985,10 @@ fn red_an_auth_door_whose_ready_errs_refuses_the_boot_with_its_text() {
     );
 }
 
-/// THE DECLARED SECRETS AT AUTH OPEN (ARCHITECT 2026-10-02): an auth door that declares a secret
-/// reference is handed it RESOLVED, through the secret kind, as its `OpenIn::secrets` entry — and
-/// the reference is gone from its settings. RED before the resolver: it was handed an empty list
-/// and its open refused. A reference that will not resolve refuses the boot, naming the key.
+/// THE DECLARED SECRETS AT AUTH OPEN: an auth door that declares a secret reference is handed it
+/// RESOLVED, through the secret kind, as its `OpenIn::secrets` entry — and the reference is gone
+/// from its settings. RED before the resolver: it was handed an empty list and its open refused. A
+/// reference that will not resolve refuses the boot, naming the key.
 #[test]
 fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
     use crate::dispatch::ready::ready_plugins::auth::{with_secret, SECRET_NAME};
@@ -1041,11 +1039,11 @@ fn dropped_cand(name: &str, version: &str) -> Candidate {
     }
 }
 
-/// THE ONE-VERSION RULE ON AN AXIS'S CANDIDATES (ARCHITECT C'): one plugin (one Statement name)
-/// linked and dropped in at ONE version is one plugin — admitted, the linked row first (it serves),
-/// and named once for the log; at TWO versions the boot is refused, naming the plugin, both doors
-/// and both versions. RED before: every same-name pair was skipped whatever its versions, so the
-/// linked row silently won over a dropped-in copy of another version.
+/// THE ONE-VERSION RULE ON AN AXIS'S CANDIDATES: one plugin (one Statement name) linked and dropped
+/// in at ONE version is one plugin — admitted, the linked row first (it serves), and named once for
+/// the log; at TWO versions the boot is refused, naming the plugin, both doors and both versions.
+/// RED before: every same-name pair was skipped whatever its versions, so the linked row silently
+/// won over a dropped-in copy of another version.
 #[test]
 fn one_plugin_by_both_doors_is_one_version_or_refused() {
     let same = [

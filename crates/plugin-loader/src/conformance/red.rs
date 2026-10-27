@@ -147,12 +147,12 @@ fn with_another_piece(real: DoorParts, stated: u32) -> DoorParts {
     }
 }
 
-/// **RED: a transport built against another frame piece is refused at load (busbar #1032).** A
-/// framer writes the host's piece buffer at its own `FramePiece` size; one built against another
-/// contract would be read at the wrong stride. The honest door loads linked and dropped in; the
-/// door restated with a tail stating a piece 8 bytes short (the piece before #1032) is refused by
-/// the pack tool and by the linked row, naming the plugin, both sizes and the rebuild
-/// ([`LoadError::FramePieceSize`]). A door of another kind has no pieces: the arm passes.
+/// **RED: a transport built against another frame piece is refused at load.** A framer writes the
+/// host's piece buffer at its own `FramePiece` size; one built against another contract would be
+/// read at the wrong stride. The honest door loads linked and dropped in; the door restated with a
+/// tail stating a piece 8 bytes short (an older, shorter piece) is refused by the pack tool and by
+/// the linked row, naming the plugin, both sizes and the rebuild ([`LoadError::FramePieceSize`]). A
+/// door of another kind has no pieces: the arm passes.
 ///
 /// # Panics
 /// When the restated door loads, or the honest one does not.

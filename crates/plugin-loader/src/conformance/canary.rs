@@ -17,7 +17,7 @@ use crate::dispatch::{Diagnostic, Dropped, EnvelopeSink, Metric};
 
 const MAX_HEARD: usize = 65_536;
 
-/// What one bound instance logged (its #85 diagnostics, log records included).
+/// What one bound instance logged (its observability diagnostics, log records included).
 #[derive(Debug, Default)]
 pub struct Heard(Mutex<Vec<Vec<u8>>>);
 

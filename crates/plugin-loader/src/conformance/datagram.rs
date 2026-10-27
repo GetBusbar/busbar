@@ -394,7 +394,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let mut want: Vec<(String, Want)> = Vec::new();
     let mut r = Recorder::new(crossings(&p));
 
-    // ── the Statement, and an op before `open` ──
     r.line("facts", 0, || {
         format!(
             "{:?} {} max_inflight={} role={} claims={:?} composes_over={:?} datagram={}",
@@ -412,7 +411,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     want.push(("begin unopened".into(), Want::Starts("Refused ")));
 
-    // ── lifecycle, then `ready` right after `open` answered READY ──
     r.line("validate", 1, || super::called(&validate(&p, &settings)));
     r.line("open", 1, || super::called(&open(&p, &settings)));
     for l in ["validate", "open"] {
@@ -420,7 +418,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     ready_step(&mut r, s, &p, &d);
 
-    // ── the role it does not play, and the framer ops a datagram framer has no use for ──
     r.line("carrier ops", 8, || carrier_line(&carrier_ops(&p)));
     want.push((
         "carrier ops".into(),
@@ -436,7 +433,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     want.push(("encode".into(), Want::Starts(starts(inputs.encode))));
 
-    // ── a datagram framer reads its lane ──
     r.line("begin without a lane", 1, || {
         begin(&p, &inputs, SIDE_DIAL, false, &[]).0
     });
@@ -498,7 +494,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     want.push(("ingest on no framing".into(), Want::Starts("Failed ")));
 
-    // ── the rest of the lifecycle; a closed instance serves nothing ──
     r.line("tick", 1, || {
         let (c, next) = tick(&p, 1);
         format!("{} next={next}", super::called(&c))

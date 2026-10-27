@@ -6,8 +6,8 @@
 use super::*;
 
 /// The 1.5.5 store payload schema (v2). No loaded plugin states it since THE DESIGN §11.8 (the
-/// registry refuses it at boot, ruling C21/ABI-o1); the store adapter's shim suites bind an adapter
-/// at it to pin the schema-keyed shim rule.
+/// registry refuses it at boot); the store adapter's shim suites bind an adapter at it to pin the
+/// schema-keyed shim rule.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
 
 /// `intern_name` reuses the SAME allocation for repeated sightings of the same name (that's the

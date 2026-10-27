@@ -606,7 +606,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     let mut want: Vec<(String, Want)> = Vec::new();
     let mut r = Recorder::new(crossings(&p));
 
-    // ── the Statement, and an op before `open` ──
     r.line("facts", 0, || {
         format!(
             "{:?} {} max_inflight={} role={} claims={:?} composes_over={:?}",
@@ -624,7 +623,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     want.push(("begin unopened".into(), Want::Starts("Refused ")));
 
-    // ── lifecycle, then `ready` right after `open` answered READY ──
     r.line("validate", 1, || super::called(&validate(&p, &settings)));
     r.line("open", 1, || super::called(&open(&p, &settings)));
     for l in ["validate", "open"] {
@@ -632,7 +630,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     ready_step(&mut r, s, &p, &d);
 
-    // ── the role it does not play ──
     // 8: the eight carrier ops, one crossing each.
     r.line("carrier ops", 8, || carrier_line(&carrier_ops(&p)));
     want.push((
@@ -640,7 +637,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         Want::Is(carrier_line(&[Outcome::Refused; 8])),
     ));
 
-    // ── locate: the targets it reads, the ONE short re-call, the targets it refuses ──
     match &k["locate"] {
         serde_json::Value::String(v) if v == "refused" => {
             r.line("locate", 1, || locate(&p, b"conformance", AMPLE).0);
@@ -695,7 +691,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }
     }
 
-    // ── a dialled framing: out through a tight wire, in through a tight frame, the far end ──
     let dial = &k["dial"];
     let (emit, wire) = (
         text(&dial["emit"], "dial.emit"),
@@ -788,7 +783,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     want.push(("finish again".into(), Want::Starts("Failed ")));
 
-    // ── encode: one rendering per case, in a sink with room for it ──
     let cases = k["encode"]
         .as_array()
         .expect("conformance.json: transport.encode must be an array");
@@ -836,7 +830,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     if matches!(&k["refuse"], serde_json::Value::String(v) if v == "refused") {
         dial_only(&mut r, &mut want, &p, k);
     } else {
-        // ── a refusal's bytes are the wire; a timer owes nothing more ──
         let refuse = &k["refuse"];
         let (bytes, wire) = (
             text(&refuse["bytes"], "refuse.bytes"),
@@ -901,7 +894,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
             once(&p, token, Op::Finish, &mut tight).line()
         });
         want.push(("finish refused".into(), Want::Starts("Ready ")));
-        // ── the upgrade: what was ingested and not answered is handed back, and adopted ──
         let token = r.step("begin upgrade", 1, || {
             let y = once(&p, 0, Op::Begin(SIDE_ACCEPT, b""), &mut tight);
             (y.line(), y.framing)
@@ -918,7 +910,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     want.push(("ingest on no framing".into(), Want::Starts("Failed ")));
 
-    // ── the rest of the lifecycle; a closed instance serves nothing ──
     r.line("tick", 1, || {
         let (c, next) = tick(&p, 1);
         format!("{} next={next}", super::called(&c))

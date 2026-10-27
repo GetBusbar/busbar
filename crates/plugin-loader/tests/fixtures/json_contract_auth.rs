@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! A 1.5.5-SHAPED PLUGIN: an `auth` library on the JSON contract alone. It exports the frozen
-//! symbols a 1.5.5 plugin exported (`busbar_abi`, `busbar_plugin_kind`, `busbar_open`, `busbar_call`,
-//! `busbar_free`, `busbar_close`) and NO `busbar_plugin_door`. The subject of the loader's
-//! no-legacy-loading arm (THE DESIGN §11.8, ruling C21/ABI-o1): the upload vet, the plugins inventory
-//! and the kind gate classify it by its kind symbol only to REFUSE it, naming the rebuild.
+//! symbols a 1.5.5 plugin exported (`busbar_abi`, `busbar_plugin_kind`, `busbar_open`,
+//! `busbar_call`, `busbar_free`, `busbar_close`) and NO `busbar_plugin_door`. The subject of the
+//! loader's no-legacy-loading arm (THE DESIGN §11.8): the upload vet, the plugins inventory and the
+//! kind gate classify it by its kind symbol only to REFUSE it, naming the rebuild.
 //!
 //! Self-contained on purpose: it names no `busbar-contract` item, so the contract's own copy of these
 //! symbols (the SDK's door-backed ones) is never linked in and the six below are the library's.

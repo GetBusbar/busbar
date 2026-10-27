@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The HOST side of the uniform observability envelope (DECISIONS #85).
+//! The HOST side of the uniform observability envelope.
 //!
 //! Every plugin response is `{ result, metrics[], diagnostics[] }`. The plugin REPORTS; **the host
 //! VALIDATES, BOUNDS and DECIDES.** This module is where the loader hands what a plugin reported to
@@ -28,11 +28,11 @@
 //! reserved `busbar_` namespace, a diagnostic code that is not in the catalogue, a non-finite value,
 //! a label key outside the charset. None of that is reachable from the plugin's side.
 //!
-//! ## The #11 equivalence this makes true
+//! ## The compiled-in = dropped-in equivalence this makes true
 //!
 //! A COMPILED-IN plugin could always reach the process-global `metrics` recorder directly, while the
 //! same crate built as a dropped-in `cdylib` links its OWN recorder and silently loses every
-//! counter — so DECISIONS #11's "compiled-in ≡ dropped-in" was asserted and false for anything
+//! counter — so "compiled-in ≡ dropped-in" was asserted and false for anything
 //! observable. With reporting routed through here from BOTH builds, the two produce the same
 //! exposition because they take the same path, not because anyone remembered to keep them in step.
 
@@ -54,8 +54,8 @@ pub trait PluginObserver: Send + Sync {
     /// and what it decides is allowed to differ between kinds even though the wire does not.
     ///
     /// Called on the host's ONE observer thread, never on the plugin call's: the call hands its
-    /// back-channel to the bounded intake ([`INTAKE_BOUND`]) and returns at once (ARCHITECT ruling
-    /// ENVELOPE-ALL 2026-10-03: the hot path never stalls on the observer).
+    /// back-channel to the bounded intake ([`INTAKE_BOUND`]) and returns at once (the hot path
+    /// never stalls on the observer).
     fn observe(
         &self,
         plugin: &str,
@@ -276,16 +276,15 @@ pub(crate) fn settle() {
     }
 }
 
-/// THE MEMORY ABI'S ENVELOPE, INTO THE HOST'S OBSERVABILITY (DECISIONS #85, OWNER-LOCKED: every
-/// plugin response's metrics and diagnostics reach the host; ARCHITECT ruling ENVELOPE 2026-10-03).
-/// The dispatcher ingests a door's envelope as checked entries that name the Statement by index
-/// ([`crate::dispatch::Metric`], [`crate::dispatch::Diagnostic`]); this sink names them by what the
-/// Statement declares — a metric by its family's name, kind and label keys, a diagnostic by its
-/// declared id — and hands them to the installed [`PluginObserver`], the one fold every plugin's
-/// back-channel takes, under the plugin's name and kind. A log record is not an observation: it goes
-/// to the plugin's own log. EVERY door the dispatcher binds, of every kind, reports through one of
-/// these, standing before the sink its binder gave ([`Self::before`]; ARCHITECT ruling ENVELOPE-ALL
-/// 2026-10-03: #85 is uniform), so no binder can leave an envelope unobserved.
+/// THE MEMORY ABI'S ENVELOPE, INTO THE HOST'S OBSERVABILITY (every plugin response's metrics and
+/// diagnostics reach the host). The dispatcher ingests a door's envelope as checked entries that
+/// name the Statement by index ([`crate::dispatch::Metric`], [`crate::dispatch::Diagnostic`]); this
+/// sink names them by what the Statement declares — a metric by its family's name, kind and label
+/// keys, a diagnostic by its declared id — and hands them to the installed [`PluginObserver`], the
+/// one fold every plugin's back-channel takes, under the plugin's name and kind. A log record is
+/// not an observation: it goes to the plugin's own log. EVERY door the dispatcher binds, of every
+/// kind, reports through one of these, standing before the sink its binder gave ([`Self::before`]),
+/// so no binder can leave an envelope unobserved.
 pub struct EnvelopeObserver {
     /// The host's observability of the dispatcher the door is bound on.
     observing: std::sync::Arc<Observing>,
@@ -420,14 +419,12 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 // THE FIRST-PARTY METRIC NAMESPACE (K9a S1). A plugin's signed manifest DECLARES the series it
 // emits (`declares.metrics`). The loader GRANTS those declarations at open to a first-party plugin
 // — one admitted through the LINKED door, or dropped in and signed by the busbar release key — and
 // the host's observer asks [`first_party_series`] per entry: a granted entry may use a reserved
 // `busbar_*` name and renders as declared, without the `plugin=` label. Nothing is granted to any
 // other plugin, which therefore keeps the envelope's rule whatever it declares.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
 
 /// What one plugin name was granted: its declared series, and how many of its first-party
 /// instances hold the grant ([`SeriesGrant`]). A name is in the table exactly while one of its
@@ -588,8 +585,8 @@ pub(crate) mod testing {
         /// test on a thread of its own, and a back-channel is handed to the intake on the thread
         /// that reported it, so what a test's own sinks report carries its scope, and what every
         /// other test of the binary folds concurrently (any door it drives with a non-bare
-        /// envelope, the guard serializing only the readers) carries another or none. Busbar
-        /// status row 118: a reader that counted the whole log saw 10 where its sink folded 1.
+        /// envelope, the guard serializing only the readers) carries another or none.
+        /// A reader that counted the whole log saw 10 where its sink folded 1.
         static SCOPE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     }
 

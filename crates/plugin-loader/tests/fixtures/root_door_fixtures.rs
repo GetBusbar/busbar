@@ -370,7 +370,7 @@ door_root!(
 );
 // A door whose Statement is named one thing and whose own claim is another.
 door_root!(misnamed, "door-root-named", "door-root-claimed", [], 1);
-// A door the loader refuses: its tail states another frame piece than the host's (row 167).
+// A door the loader refuses: its tail states another frame piece than the host's.
 door_root!(
     bad_piece,
     "door-root-bad-piece",

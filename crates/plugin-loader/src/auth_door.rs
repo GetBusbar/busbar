@@ -183,7 +183,7 @@ unsafe impl Send for Held {}
 unsafe impl Sync for Held {}
 
 /// Whether `req` carries secret material a `verify` lends the plugin: a reveal, which only a
-/// dispatcher lent the host's seal may make (Part 2 #54).
+/// dispatcher lent the host's seal may make.
 fn reveals(req: &VerifyRequest) -> bool {
     req.credential.is_some() || !req.lines.is_empty()
 }

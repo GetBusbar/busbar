@@ -7,8 +7,8 @@
 //! compiled in or dropped in (`BUSBAR-1.6.0.md` THE DESIGN §11). Every plane and every transport
 //! loads through its door too.
 //!
-//! No plugin of any kind loads through a JSON lane or the HOT `#[repr(C)]` decl lane: both are gone
-//! (row 84), with the handshake they shared (`busbar_abi`, `busbar_plugin_kind`).
+//! No plugin of any kind loads through a JSON lane or the HOT `#[repr(C)]` decl lane: both are
+//! gone, with the handshake they shared (`busbar_abi`, `busbar_plugin_kind`).
 //!
 //! UNSAFE CODE (`BUSBAR-1.6.0.md` THE DESIGN §2: "transport, loader, store and export crates are
 //! `#![deny(unsafe_code)]` with a reviewed allow-list"): denied for the whole crate. THE REVIEWED
@@ -40,12 +40,12 @@ pub mod conformance;
 #[allow(unsafe_code)] // REVIEWED: THE ONE DISPATCHER: every crossing of the memory ABI
 pub mod dispatch;
 /// THE ONE DURABLE-WRITE OWNER: the whole-file publish (temp, fsync, rename, fsync the holding
-/// directory) every durable file write in busbar goes through — the loader's own (fetched artifacts,
-/// the high-water marks, plugin log directories) and, through `busbar_kernel::durable`, the
-/// kernel's and the admin surface's. It lives here because the loader is the lowest host-only crate
-/// every writer links (Part 2 #33: the loader names `busbar-contract` alone, so it cannot reach a
-/// kernel crate for it). Host-only: no plugin image links this crate, so its temp-name counter is
-/// one per process.
+/// directory) every durable file write in busbar goes through — the loader's own (fetched
+/// artifacts, the high-water marks, plugin log directories) and, through `busbar_kernel::durable`,
+/// the kernel's and the admin surface's. It lives here because the loader is the lowest host-only
+/// crate every writer links (the loader names `busbar-contract` alone, so it cannot reach a kernel
+/// crate for it). Host-only: no plugin image links this crate, so its temp-name counter is one per
+/// process.
 pub mod durable;
 pub mod export_axis;
 #[allow(unsafe_code)] // REVIEWED: lends the export door its batch
@@ -68,9 +68,9 @@ pub mod registry;
 /// THE SECRET AXIS over the one dispatcher: every admitted secret plugin, linked or dropped in.
 #[allow(unsafe_code)] // REVIEWED: lends the secret door its names and result buffers
 pub mod secret_calls;
-// The former `busbar-plugin-sign` crate, folded in whole (DECISIONS #33): signature verify +
-// trust evaluation is the loader's OWN job, not a crate the loader reaches for. Pure data +
-// policy, no I/O -- the I/O that acts on its verdicts is `tarball`, `fetch` and `registry`.
+// The former `busbar-plugin-sign` crate, folded in whole: signature verify + trust evaluation is
+// the loader's OWN job, not a crate the loader reaches for. Pure data + policy, no I/O -- the I/O
+// that acts on its verdicts is `tarball`, `fetch` and `registry`.
 /// TEST ONLY: a real door restated with one stream need (the bind tests' subject; no plugin).
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
@@ -103,9 +103,9 @@ pub mod test_issuer;
 #[path = "tests/test_support.rs"]
 pub mod test_support;
 
-/// TEST ONLY: the composition root's door fixtures (status row 195): doors built by the contract's
-/// door macro, whose expansion writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no
-/// such expansion. Under `test-support`, which only the root's `[dev-dependencies]` turns on.
+/// TEST ONLY: the composition root's door fixtures: doors built by the contract's door macro, whose
+/// expansion writes `unsafe`, kept here so the `forbid(unsafe_code)` root holds no such expansion.
+/// Under `test-support`, which only the root's `[dev-dependencies]` turns on.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 #[allow(unsafe_code)] // TEST ONLY: plugin_door! fixtures the composition root's tests drive
@@ -284,17 +284,17 @@ pub fn list_plugin_files(dir: &Path) -> Vec<String> {
 #[path = "tests/lib_tests.rs"]
 mod tests;
 
-/// DECISIONS #11's real test: ONE crate built both ways must be observationally identical. Declared
+/// The real both-ways test: ONE crate built both ways must be observationally identical. Declared
 /// at the crate root rather than under `export` because it is not a test OF the export seam — it is
 /// a test of the equivalence the two build shapes are supposed to have, and the export kind is
-/// merely the first one with real plugins that can prove it (ARCHITECT ruling EXP2-PROOF
-/// 2026-10-03: the spec's working proof of the plugin model, on the export kind's door registries).
+/// merely the first one with real plugins that can prove it (the spec's working proof of the plugin
+/// model, on the export kind's door registries).
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: raw doors and crossings
 #[path = "tests/export_conformance_tests.rs"]
 mod export_conformance_tests;
 
-/// The both-ways harness (DECISIONS #2 rule (1)): one plugin registered through the
+/// The both-ways harness: one plugin registered through the
 /// linked door and the dropped-in door, its rows and its opened instance compared.
 #[cfg(test)]
 #[path = "tests/both_ways.rs"]

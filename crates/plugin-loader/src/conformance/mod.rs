@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE PUBLISHED CONFORMANCE SUITE** (BUSBAR-1.6.0.md THE DESIGN §11.4 "compiled in
-//! or dropped in, the same table", §11.11 M6/contract; Part 2 #2 and #11). OWNER 2026-10-03: *"NO
-//! TEST PLUGINS. We have real plugins for everything. PLUGINS test themselves against busbar.
-//! busbar doesn't test plugins."* So busbar PUBLISHES this suite and every real plugin repo RUNS it,
-//! in its own CI (`plugin-ci.yml`'s conformance step), at the busbar commit it pins (§9).
+//! **THE PUBLISHED CONFORMANCE SUITE** (BUSBAR-1.6.0.md THE DESIGN §11.4 "compiled in or dropped
+//! in, the same table", §11.11 M6/contract). *"NO TEST PLUGINS. We have real
+//! plugins for everything. PLUGINS test themselves against busbar. busbar doesn't test plugins."*
+//! So busbar PUBLISHES this suite and every real plugin repo RUNS it, in its own CI
+//! (`plugin-ci.yml`'s conformance step), at the busbar commit it pins (§9).
 //!
 //! A plugin repo calls it from its own `tests/conformance.rs`, one line:
 //!
@@ -19,7 +19,7 @@
 //!
 //! A NETWORKED plugin over a framed scheme, or one that secures a stream through the host's TLS,
 //! names busbar's HOST connector too ([`Host`]: busbar's connector composed as production composes
-//! it, carrier -> [TLS] -> framer, Q-P4-4), and, for TLS, the test CA its local endpoint's
+//! it, carrier -> [TLS] -> framer), and, for TLS, the test CA its local endpoint's
 //! certificate chains to; both go to the HOST, never to the plugin:
 //!
 //! ```ignore
@@ -52,16 +52,15 @@
 //! * the mechanism's optional `ready` (discovery at boot) is a step of every kind's script: a door
 //!   that states none is not called (0 crossings); one that states it is awaited on a real ticket.
 //!
-//! THE CONNECTION TABLE (ARCHITECT, "SUITE CONNECTIONS"): a plugin whose Statement declares a
-//! need the table serves (its stream transport, `stand_in.json`: `host:port` or a local socket
-//! path) is bound, on each leg, to a connection
-//! table of its own built the same way ([`Subject::conns`], the loader's test table
-//! [`TcpConns`](crate::tcp_conns::TcpConns) over the leg dispatcher's conn waker), so a networked
-//! plugin dials the REAL local endpoint its `conformance.json` settings name, through the host
-//! connector's slots, reads PENDING and is woken. A plugin that declares no need is bound with no
-//! table, as before (the loader hands a table only to a Statement with a need). With busbar's HOST
-//! connector named (Q-P4-4: carrier -> [TLS] -> framer, as production composes it), every need over
-//! any scheme it serves binds over that connector instead, and its TLS trusts the suite's test
+//! THE CONNECTION TABLE ("SUITE CONNECTIONS"): a plugin whose Statement declares a need the table
+//! serves (its stream transport, `stand_in.json`: `host:port` or a local socket path) is bound, on
+//! each leg, to a connection table of its own built the same way ([`Subject::conns`], the loader's
+//! test table [`TcpConns`](crate::tcp_conns::TcpConns) over the leg dispatcher's conn waker), so a
+//! networked plugin dials the REAL local endpoint its `conformance.json` settings name, through the
+//! host connector's slots, reads PENDING and is woken. A plugin that declares no need is bound with
+//! no table, as before (the loader hands a table only to a Statement with a need). With busbar's
+//! HOST connector named ( carrier -> [TLS] -> framer, as production composes it), every need
+//! over any scheme it serves binds over that connector instead, and its TLS trusts the suite's test
 //! anchors.
 //!
 //! THE RED ARMS, run in the plugin's own run: a perturbed pinned count is refused by the same
@@ -259,8 +258,8 @@ impl Subject {
         s
     }
 
-    /// [`Subject::new`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows 159
-    /// and 194). #1469 makes `new` take the `MacroDoor` alone and keeps this name beside it, so
+    /// [`Subject::new`] over the `MACRO_DOOR` `plugin_door!` expands beside `door`. #1469 makes
+    /// `new` take the `MacroDoor` alone and keeps this name beside it, so
     /// `Subject::of_macro(plugin::MACRO_DOOR, ..)` compiles before and after.
     ///
     /// # Panics
@@ -274,9 +273,9 @@ impl Subject {
         Self::new(door.door_fn(), cdylib_crate, inputs)
     }
 
-    /// [`Subject::new`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows 159 and
-    /// 194): a `MacroDoor`'s, or a door a crate that exports its `door` function alone restates
-    /// (`unsafe { LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
+    /// [`Subject::new`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor): a `MacroDoor`'s, or a
+    /// door a crate that exports its `door` function alone restates (`unsafe {
+    /// LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
     ///
     /// # Panics
     /// As [`Subject::new`].
@@ -290,7 +289,7 @@ impl Subject {
     }
 
     /// Each fold's namespace is made by `create` before its open and removed by `drop` after it
-    /// (Q-P4-8).
+    ///.
     #[must_use]
     pub fn with_namespace(mut self, create: NamespaceHook, drop: NamespaceHook) -> Self {
         self.namespace = Some((create, drop));
@@ -406,7 +405,7 @@ impl Subject {
     }
 
     /// The settings the plugin opens over, every [`FOLD`] placeholder in them replaced by
-    /// `namespace` (Q-P4-8: each fold writes into its own schema or key prefix). Settings that name
+    /// `namespace` ( each fold writes into its own schema or key prefix). Settings that name
     /// no placeholder are exactly `inputs.settings`.
     #[must_use]
     pub fn settings_in(&self, namespace: &str) -> Vec<u8> {
@@ -592,8 +591,8 @@ impl Subject {
 /// `plugin-ci.yml`'s conformance step sets it). It wins over every other image.
 pub const CDYLIB_ENV: &str = "BUSBAR_CONFORMANCE_CDYLIB";
 
-/// `crate_snake`'s cdylib, CHOSEN EXPLICITLY, never by age (audit loader-conformance #13), and only
-/// ever an image that EXPORTS the dropped-in door (`busbar_plugin_door`):
+/// `crate_snake`'s cdylib, CHOSEN EXPLICITLY, never by age, and only ever an image that EXPORTS the
+/// dropped-in door (`busbar_plugin_door`):
 ///
 /// 1. the path [`CDYLIB_ENV`] names (this run's cargo build output);
 /// 2. else the image of the crate's own lib unit, `target/<profile>/deps/<lib>`: cargo names a
@@ -752,7 +751,7 @@ pub(crate) fn distinct(door: RawDoorFn, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// THE PER-FOLD NAMESPACE PLACEHOLDER (Q-P4-8): `{fold}` anywhere in `conformance.json`'s
+/// THE PER-FOLD NAMESPACE PLACEHOLDER: `{fold}` anywhere in `conformance.json`'s
 /// `settings` (a schema name, a key prefix, a database name) is filled per fold with a namespace
 /// no other fold uses ([`fold_namespace`]), so two folds of one store, in one run or in two (CI's
 /// debug, release and RED runs), never see each other's rows or tombstones.
@@ -961,7 +960,7 @@ pub(crate) fn load_dropped_staged<K: Kind>(
 }
 
 /// The crossings `p` has made, by the dispatcher's own crossing gate: every crossing, and of them
-/// the RESUME re-invocations, counted apart (Q-P4-5).
+/// the RESUME re-invocations, counted apart.
 pub(crate) fn crossings<K: Kind>(p: &Plugin<K>) -> Counts<'_> {
     crossings_of(&p.inner)
 }
@@ -994,7 +993,7 @@ impl Counts<'_> {
 // ---- the fold ----
 
 /// One step of a kind's script: what it is, what it answered (as the host reads it), the crossings
-/// it made and the crossings the script pins for it. THE PIN IS FIRST INVOCATIONS (Q-P4-5; THE
+/// it made and the crossings the script pins for it. THE PIN IS FIRST INVOCATIONS ( THE
 /// DESIGN §11.2 Ready | Pending(wake), A.3 "Resume"): one op is one crossing however often it
 /// pends; the RESUME re-invocations an op made on its ticket after it answered PENDING are counted
 /// apart and reported (`resumes`), never pinned: how often a real backend makes an op wait is the
@@ -1104,7 +1103,7 @@ pub fn same(linked: &[Step], dropped: &[Step]) -> Result<(), String> {
     Ok(())
 }
 
-/// THE NETWORKED DOOR'S RESUMES (Q-P4-5): a door whose Statement declares a need the suite's table
+/// THE NETWORKED DOOR'S RESUMES: a door whose Statement declares a need the suite's table
 /// serves reaches a REAL endpoint through it, so the ops that dial answer PENDING and are
 /// RESUMED on their ticket (THE DESIGN §11.2 Ready | Pending(wake)): each step `dialing` names
 /// (`conformance.json`'s `dialing_steps`) resumed at least once, or, when it names none, at least
@@ -1331,7 +1330,7 @@ pub fn open<K: Kind>(p: &Plugin<K>, settings: &[u8]) -> Called {
     p.call(life::OPEN, &mut f)
 }
 
-/// `open` over `settings` THE WAY THE KERNEL OPENS IT (Q-P4-6): submitted on a ticket of `d`'s, so
+/// `open` over `settings` THE WAY THE KERNEL OPENS IT: submitted on a ticket of `d`'s, so
 /// an `open` that answers PENDING (a store connecting to its backend) is RESUMED on its wake until
 /// it answers; the frame [`open`]'s. The settings and the secrets it lends ride with the op
 /// ([`OpenLend`]), never this call's stack.
@@ -1502,7 +1501,7 @@ pub fn close<K: Kind>(p: &Plugin<K>) -> Called {
 /// THE `ready` STEP every kind's script runs right after its `open` answered READY (the
 /// mechanism's discovery at boot, awaited before any listener binds). A door that states no
 /// `ready` is not called: pinned at 0 crossings. One that states it is pinned at ONE first
-/// invocation, its resumes reported (Q-P4-5; `inputs.ready_crossings` is no longer read).
+/// invocation, its resumes reported ( `inputs.ready_crossings` is no longer read).
 pub fn ready_step<K: Kind>(rec: &mut Recorder<'_>, _s: &Subject, p: &Plugin<K>, d: &Dispatcher) {
     let pinned = u64::from(p.has_ready());
     rec.line("ready", pinned, || {
@@ -1871,13 +1870,13 @@ pub fn red_kind_abi(s: &Subject) {
     });
 }
 
-/// **RED: a `ready` that fails refuses the boot with the plugin's text** (#391's arm, on the real
-/// plugin). The real door restated with a `ready` that answers FAILED is loaded and opened AS THE
-/// KERNEL OPENS IT (Q-P4-6: a store through [`LoadedStore::open`](crate::store_v3::LoadedStore::open),
-/// which awaits `ready` inside it; every other kind's `open` resumed on its ticket
-/// ([`open_resumed`]), never one raw crossing, so a door that connects in its `open` answers
-/// PENDING there and is resumed); its `ready` is awaited and refused, naming the plugin and the
-/// reason, in one first invocation. The honest door's `ready` (its own, or none) serves.
+/// **RED: a `ready` that fails refuses the boot with the plugin's text** (on the real plugin). The
+/// real door restated with a `ready` that answers FAILED is loaded and opened AS THE KERNEL OPENS
+/// IT ( a store through [`LoadedStore::open`](crate::store_v3::LoadedStore::open), which
+/// awaits `ready` inside it; every other kind's `open` resumed on its ticket ([`open_resumed`]),
+/// never one raw crossing, so a door that connects in its `open` answers PENDING there and is
+/// resumed); its `ready` is awaited and refused, naming the plugin and the reason, in one first
+/// invocation. The honest door's `ready` (its own, or none) serves.
 ///
 /// # Panics
 /// When the failing `ready` serves.
@@ -1997,7 +1996,7 @@ fn connection_fixture(
 }
 
 /// **RED: a networked door bound to serve with NO connection table is refused, naming the plugin**
-/// (Q-P4-3). A door that declares a need is bound as the kernel serves it but with no table
+///. A door that declares a need is bound as the kernel serves it but with no table
 /// ([`bind`]: [`ConnTable::NoNeeds`]), linked and dropped in, and refused at bind with
 /// [`LoadError::NoConnectionTable`]; a door that declares none is restated with one stream need (as
 /// [`red_ready`] restates its `ready`) and bound linked. The GREEN twins: the same door bound as a
@@ -2051,9 +2050,9 @@ pub fn need_schemes(needs: &[rendering::ReadNeed]) -> Vec<String> {
     out
 }
 
-/// THE DECLARED NEEDS ARE THE STATEMENT'S (ARCHITECT, one truth): a declares file's `needs` (the
-/// transport schemes the fleet render reads to give a networked plugin its conformance host;
-/// absent = none) must name exactly the schemes `statement` (the Statement's needs) names.
+/// THE DECLARED NEEDS ARE THE STATEMENT'S (one truth): a declares file's `needs` (the transport
+/// schemes the fleet render reads to give a networked plugin its conformance host; absent = none)
+/// must name exactly the schemes `statement` (the Statement's needs) names.
 ///
 /// # Errors
 /// The declares file is not a JSON object, its `needs` is not a list of strings, or it names a
@@ -2136,9 +2135,9 @@ pub fn declares_file(manifest_dir: &str) -> Option<PathBuf> {
 /// **THE DECLARED NEEDS ARE THE STATEMENT'S**, on the subject: its declares file's `needs` names
 /// exactly the transport schemes its door's Statement does ([`declared_needs_are`]).
 ///
-/// A plugin with no declares file FAILS here (status row 114: no proof passes by skipping its
-/// subject): every plugin repo holds one (plugin-ci's declares step refuses a repo without it), and
-/// a crate in busbar's own tree holds its own beside its `Cargo.toml` ([`declares_file`]).
+/// A plugin with no declares file FAILS here (no proof passes by skipping its subject): every
+/// plugin repo holds one (plugin-ci's declares step refuses a repo without it), and a crate in
+/// busbar's own tree holds its own beside its `Cargo.toml` ([`declares_file`]).
 ///
 /// # Panics
 /// No declares file is found, or its `needs` is not the Statement's.
@@ -2172,9 +2171,9 @@ pub fn profile(debug: bool) {
     );
 }
 
-/// THE DOOR A SUITE NAMES, as either form a plugin states it (status rows 159 and 194): its
-/// `door` function, or the `MACRO_DOOR` `plugin_door!` expands beside it. #1469 makes the suite take the `MacroDoor` alone; a plugin moves to `door:
-/// plugin::MACRO_DOOR` first, and the same line compiles before and after.
+/// THE DOOR A SUITE NAMES, as either form a plugin states it: its `door` function, or the
+/// `MACRO_DOOR` `plugin_door!` expands beside it. #1469 makes the suite take the `MacroDoor` alone;
+/// a plugin moves to `door: plugin::MACRO_DOOR` first, and the same line compiles before and after.
 ///
 /// The two forms are told apart by method resolution: a `MacroDoor` answers its door function by
 /// value (`MacroDoorArg`); any other value (a door function) answers itself through a reference

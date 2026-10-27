@@ -6,17 +6,17 @@
 //! OUTCOME AUTHORITY. The value the slot RETURNS decides. An unknown byte is FAULT; an
 //! `OutHead.outcome` that differs from the return value is FAULT; an answer that fails
 //! [`super::validate`] (an `OutHead.size` outside `size_of::<OutHead>()..=` the host's `out`, error
-//! text NULL-with-length or over-long, a #85 array NULL-with-length or over-long) is FAULT; PENDING on [`Ticket::NONE`] (a call that may not pend) is FAULT. The host
+//! text NULL-with-length or over-long, an observability array NULL-with-length or over-long) is FAULT; PENDING on [`Ticket::NONE`] (a call that may not pend) is FAULT. The host
 //! zeroes the whole `out` before every crossing (then states its size), so an `out` nobody wrote
 //! reads as a fault.
 //!
-//! OUT-MEMORY. Every plugin pointer in an `out` head (the error text, the #85 envelope) is read
+//! OUT-MEMORY. Every plugin pointer in an `out` head (the error text, the observability envelope) is read
 //! and COPIED before the crossing returns to its caller — before the next op on the ticket, and for
 //! [`Ticket::NONE`] before [`Plugin::call`] returns. A kind's reply data lives in HOST buffers named
 //! in its own `in`/`out` (the kind's rule); a lease is handed back to the caller, who calls
 //! `release`.
 //!
-//! THE #85 ENVELOPE. Every metric names a family by INDEX: an index out of the Statement's range,
+//! THE OBSERVABILITY ENVELOPE. Every metric names a family by INDEX: an index out of the Statement's range,
 //! a metric kind the family does not have (ADD↔counter, SET↔gauge, OBSERVE↔histogram), a label
 //! count that is not the family's, or a non-finite value drops THAT entry; a diagnostic whose id
 //! index is out of range, or whose severity is not 0..=2, is dropped. What survives goes to the
@@ -126,7 +126,7 @@ pub enum Dropped {
     BadArray,
 }
 
-/// Where the #85 envelope goes. Names no kernel type; the kernel implements it per kind.
+/// Where the observability envelope goes. Names no kernel type; the kernel implements it per kind.
 pub trait EnvelopeSink: Send + Sync {
     /// A metric that passed every check.
     fn metric(&self, m: Metric<'_>);
@@ -173,7 +173,7 @@ pub struct Bind {
     pub conns: ConnTable,
 }
 
-/// THE BIND'S CONNECTION TABLE (Q-P4-3): the host's table, or, explicitly, why there is none. A
+/// THE BIND'S CONNECTION TABLE: the host's table, or, explicitly, why there is none. A
 /// door that declares a need and is bound to serve with no table is REFUSED at bind, naming the
 /// plugin ([`LoadError::NoConnectionTable`]); only a probe binds it with none.
 #[derive(Clone)]
@@ -314,14 +314,14 @@ impl Crossed {
 
 /// The host tables `open` is handed; immutable after construction.
 struct Tables(Box<HostTables>);
-// SAFETY: the tables are written once at bind and only read after; `ctx` is a plain handle (#74)
-// and every pointer in them is to `'static` host tables.
+// SAFETY: the tables are written once at bind and only read after; `ctx` is a plain handle and
+// every pointer in them is to `'static` host tables.
 unsafe impl Send for Tables {}
 unsafe impl Sync for Tables {}
 
 thread_local! {
     /// The instance whose crossing is on this thread (innermost first), for what a host entry needs
-    /// it for (#74): the instance a context must name, and the quarantine of a forged one.
+    /// it for: the instance a context must name, and the quarantine of a forged one.
     static CROSSING: std::cell::Cell<*const Instance> = const { std::cell::Cell::new(std::ptr::null()) };
 }
 
@@ -341,9 +341,9 @@ pub(crate) fn with_crossing<R>(inst: Option<&Instance>, f: impl FnOnce() -> R) -
 }
 
 /// `f` run with the mark nulled, so nothing it hands the host is taken for the crossing it happens
-/// to be nested in. With the HOT plane and transport load paths deleted (row 84), every call into
-/// plugin code is a mechanism crossing ([`Instance::cross`] binds it with [`with_crossing`]); this
-/// stays the explicit "no crossing" the #74 RED test nests inside one.
+/// to be nested in. With the HOT plane and transport load paths deleted, every call into plugin
+/// code is a mechanism crossing ([`Instance::cross`] binds it with [`with_crossing`]); this stays
+/// the explicit "no crossing" the #74 RED test nests inside one.
 #[cfg(test)]
 pub(crate) fn without_crossing<R>(f: impl FnOnce() -> R) -> R {
     with_crossing(None, f)
@@ -357,7 +357,7 @@ pub(crate) fn crossing_wake() -> Option<&'static InstanceWake> {
     (!p.is_null()).then(|| unsafe { (*p).wake })
 }
 
-/// THE ONE GUESS (#74): a host entry handed a context the host did not mint, inside a crossing,
+/// THE ONE GUESS: a host entry handed a context the host did not mint, inside a crossing,
 /// quarantines the instance making that crossing, as the watchdog does a hung one: faulted, never
 /// called again on any worker, its connections gone. No plugin gets a second guess. Answers whether
 /// there was a crossing to quarantine (a call from a plugin's own thread, outside any crossing,
@@ -381,7 +381,7 @@ pub(crate) fn quarantine_crossing() -> bool {
     true
 }
 
-/// A minted handle whose bind has not completed: revoked when dropped still holding it (#74).
+/// A minted handle whose bind has not completed: revoked when dropped still holding it.
 struct Unbound(Option<&'static InstanceWake>);
 
 impl Drop for Unbound {
@@ -393,17 +393,16 @@ impl Drop for Unbound {
 }
 
 impl Instance {
-    /// FAULT AND REVOKE (#74): the instance is never called again on any worker, and its handle
-    /// names nothing any more. The watchdog's fault and the forged-context quarantine both land
-    /// here.
+    /// FAULT AND REVOKE: the instance is never called again on any worker, and its handle names
+    /// nothing any more. The watchdog's fault and the forged-context quarantine both land here.
     pub(crate) fn revoke(&self) {
         self.faulted.store(true, Ordering::Release);
         self.wake.revoked.store(true, Ordering::Release);
     }
 }
 
-/// THE ONE GUESS, judged after the crossing (#74): the instance whose handle `wake` is, quarantined
-/// as [`quarantine_crossing`] quarantines a crossing's (a forged ticket generation is judged on the
+/// THE ONE GUESS, judged after the crossing: the instance whose handle `wake` is, quarantined as
+/// [`quarantine_crossing`] quarantines a crossing's (a forged ticket generation is judged on the
 /// worker, after the wake that carried it returned).
 pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
     quarantine(
@@ -527,7 +526,7 @@ impl Drop for Instance {
     /// The instance is gone (closed and let go, or replaced by a reload): what it held on the
     /// connector's process-wide maps goes with it.
     fn drop(&mut self) {
-        // Let go: its handle names nothing any more (#74).
+        // Let go: its handle names nothing any more.
         self.wake.revoked.store(true, Ordering::Release);
         if let Some((id, table)) = self.wake.conn.get() {
             super::conn_services::purge(*id, table);
@@ -626,8 +625,8 @@ impl Instance {
         self.tables.0.conns
     }
 
-    /// The instance's handle (#74): what the plugin is handed and hands back, verified by the host
-    /// on every call ([`super::handle::resolve`]).
+    /// The instance's handle: what the plugin is handed and hands back, verified by the host on
+    /// every call ([`super::handle::resolve`]).
     pub(crate) fn ctx(&self) -> HostCtx {
         self.tables.0.ctx
     }
@@ -761,7 +760,7 @@ impl Instance {
                 continue;
             }
             let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-            // THE MEMBER-PROGRAM PATH (ARCHITECT round 5, the member-program upstream ruling (A)):
+            // THE MEMBER-PROGRAM PATH:
             // each registration that names a program is a member, its `command`/`args`/`env` its
             // program (every other key its own), sealed per member: the table keeps one long-lived
             // program per member, and a re-declaration retires a member that changed or is gone.
@@ -771,7 +770,7 @@ impl Instance {
                 continue;
             }
             // A PROGRAM the settings spell at the path (`{command, args, env}`) is declared as one:
-            // the table spawns it (ARCHITECT round 4 (e)). One the settings misspell is declared
+            // the table spawns it. One the settings misspell is declared
             // with no target, which the table refuses.
             let at = doc.as_ref().and_then(|d| setting_at(d, &need.target_from));
             if let Some(value) = at.filter(|v| v.is_object()) {
@@ -829,7 +828,7 @@ impl Instance {
                         path: path.to_owned(),
                         rotate_at,
                         // 1.5.5 parity: the request-log file sink truncated in place at
-                        // `rotate_mb` (Q128 arch u50). The data-keeping rename, PENDING OWNER, is
+                        // `rotate_mb`. The data-keeping rename, PENDING OWNER, is
                         // `DiskRotate::Rename { keep: DISK_KEEP }`.
                         rotate: busbar_contract::services::DiskRotate::declared(
                             self.wake.keep.get().and_then(|k| k.get(key)).copied(),
@@ -931,7 +930,7 @@ impl Instance {
             shut = was_open || crossed.outcome == Outcome::Fault;
             if shut {
                 self.closed.store(true, Ordering::Release);
-                // A closed instance's handle names nothing any more (#74).
+                // A closed instance's handle names nothing any more.
                 self.wake.revoked.store(true, Ordering::Release);
             }
             self.ptr.store(std::ptr::null_mut(), Ordering::Release);
@@ -1148,9 +1147,9 @@ impl Instance {
             // SAFETY: `refuse` checked the frame holds an `OpenOut`.
             open_ended.live = unsafe { (*out.cast::<OpenOut>()).instance };
         }
-        // FAULTED WHILE IT CROSSED (#74): an instance quarantined inside this very crossing (a
-        // forged context), or by the watchdog meanwhile, does not have its answer judged or its
-        // envelope read: the op itself answers FAULT.
+        // FAULTED WHILE IT CROSSED: an instance quarantined inside this very crossing (a forged
+        // context), or by the watchdog meanwhile, does not have its answer judged or its envelope
+        // read: the op itself answers FAULT.
         if self.faulted.load(Ordering::Acquire) {
             return Crossed::host(Outcome::Fault);
         }
@@ -1259,7 +1258,7 @@ impl Instance {
         }
     }
 
-    /// The #85 envelope, range-checked against the Statement and handed to the sink.
+    /// The observability envelope, range-checked against the Statement and handed to the sink.
     fn ingest(&self, head: &OutHead) {
         let env = head.envelope;
         // SAFETY: the envelope's arrays are plugin memory valid until the next op on the ticket
@@ -1382,7 +1381,7 @@ pub(crate) fn judge(raw: RawOutcome, head: &OutHead, ticket: Ticket, out_size: u
     if !(1..=4).contains(&raw.0) || head.outcome != raw {
         return Outcome::Fault;
     }
-    // Validated before a byte is read through it (`validate`): size, error text, #85 arrays.
+    // Validated before a byte is read through it (`validate`): size, error text, observability arrays.
     if let Err(v) = validate::out_head(head, out_size) {
         return v.outcome();
     }
@@ -1492,12 +1491,11 @@ fn kind_word(kind: KindCode) -> &'static str {
     }
 }
 
-/// THE #85 ENVELOPE, OBSERVED FOR EVERY KIND (ARCHITECT ruling ENVELOPE-ALL 2026-10-03): the
-/// binder's sink, with the host's observability standing before it
-/// ([`crate::observe::EnvelopeObserver`]): every metric of a family the Statement declares and every
-/// declared diagnostic reach the observer installed on the dispatcher that adopts the door
-/// ([`super::Adopter::observing`]), under the plugin's name and kind, whoever bound the door, and the
-/// binder's sink is still handed every entry.
+/// THE OBSERVABILITY ENVELOPE, OBSERVED FOR EVERY KIND: the binder's sink, with the host's observability
+/// standing before it ([`crate::observe::EnvelopeObserver`]): every metric of a family the
+/// Statement declares and every declared diagnostic reach the observer installed on the dispatcher
+/// that adopts the door ([`super::Adopter::observing`]), under the plugin's name and kind, whoever
+/// bound the door, and the binder's sink is still handed every entry.
 fn observed(
     observing: Arc<crate::observe::Observing>,
     then: &Arc<dyn EnvelopeSink>,
@@ -1537,15 +1535,15 @@ impl<K: Kind> Plugin<K> {
         // One small leak per instance: a plugin may call `wake` with this context at any time, even
         // late, so it must never dangle.
         let wake: &'static InstanceWake = Box::leak(Box::default());
-        // ITS HANDLE (#74): the context the plugin is handed is a tagged index, never this address.
+        // ITS HANDLE: the context the plugin is handed is a tagged index, never this address.
         let ctx = super::handle::mint(wake)?;
         // A bind refused after this point leaves no live handle behind: the entry is revoked unless
-        // the bind completes (#74).
+        // the bind completes.
         let mut unbound = Unbound(Some(wake));
         // THE CONNECTION TABLE: the instance's identity is its handle's id (never `0`, the root's
         // own on the one connector: `busbar`'s `root::connector::ROOT_OWNER`), declared on the
         // host's one table, need by need under its Statement index, when the Statement declares a
-        // need; otherwise none. One numbering: a table's wake names its caller's entry (#74).
+        // need; otherwise none. One numbering: a table's wake names its caller's entry.
         let instance = super::handle::instance_id(ctx);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
@@ -1559,10 +1557,10 @@ impl<K: Kind> Plugin<K> {
                     });
                 }
                 (ConnTable::Host(table), n) if n > 0 => {
-                    // AUTH IS ONE KIND (ARCHITECT ruling on #780; Part 1 Law 0, Part 2 #3): the
-                    // host writes the authority of every connection an auth instance opens through
-                    // its own needs (token exchange, key set, login), so a `host` field of its own
-                    // is refused, as 1.5.5 refused it on the one request an auth module described.
+                    // AUTH IS ONE KIND: the host writes the authority of every connection an auth
+                    // instance opens through its own needs (token exchange, key set, login), so a
+                    // `host` field of its own is refused, as 1.5.5 refused it on the one request an
+                    // auth module described.
                     if v.kind == KindCode::Auth {
                         table.hold_authority(instance);
                     }
@@ -1574,8 +1572,8 @@ impl<K: Kind> Plugin<K> {
                         .map(|r| r.needs)
                         .ok_or_else(|| LoadError::BadStatement("the needs do not render".into()))?;
                     for (i, need) in needs.iter().enumerate() {
-                        // THE BOOT'S SCHEME MATCH (spec Part 0: core refuses at boot; Part 2
-                        // #50): a need, outbound or inbound, over a scheme no loaded transport
+                        // THE BOOT'S SCHEME MATCH (spec Part 0: core refuses at boot):
+                        // a need, outbound or inbound, over a scheme no loaded transport
                         // serves refuses the load, naming the plugin and the scheme — fail closed
                         // now, never at the need's first open or listen.
                         if !need.transport.is_empty() && !table.serves_scheme(&need.transport) {
@@ -1806,12 +1804,12 @@ impl<K: Kind> Plugin<K> {
         self.call_once(s, frame, true)
     }
 
-    /// AN INLINE CALL on `ticket` (an inline ticket's, `super::inline::InlineTicket::ticket`): on the caller's thread, like [`Plugin::call`],
-    /// but on a REAL ticket, so the op may answer PENDING — the op's wake (an `io.*` slot's, or the
-    /// plugin's own) wakes the task `ticket` registered, which calls again with `resume` (the
-    /// mechanism's `FLAG_RESUME`: the same op on the same ticket). The caller serializes the ops on
-    /// one ticket. A carrier's connection is driven so, one inline ticket per side, with no thread
-    /// handoff (#30).
+    /// AN INLINE CALL on `ticket` (an inline ticket's, `super::inline::InlineTicket::ticket`): on
+    /// the caller's thread, like [`Plugin::call`], but on a REAL ticket, so the op may answer
+    /// PENDING — the op's wake (an `io.*` slot's, or the plugin's own) wakes the task `ticket`
+    /// registered, which calls again with `resume` (the mechanism's `FLAG_RESUME`: the same op on
+    /// the same ticket). The caller serializes the ops on one ticket. A carrier's connection is
+    /// driven so, one inline ticket per side, with no thread handoff.
     pub fn call_inline<I: InFrame, O: OutFrame>(
         &self,
         ticket: Ticket,

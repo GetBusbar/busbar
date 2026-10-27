@@ -34,10 +34,10 @@
 //! THE ONE RE-CALL with bigger buffers, which answers READY; a re-call that answers short again is
 //! FAULT. At least one `decide` must expect an order longer than `order_cap`, so the set walks the
 //! re-call, UNLESS the hook declared `{"hook": {"orders": false}}` in its `declares.json` (it never
-//! answers an order, ARCHITECT ruling, status row 194): it is judged on ABSTAIN-ONLY, no request
-//! expects an order, there is no re-call to walk, and it FAILS if it ever orders. A hook that
-//! states nothing may order, and still must produce the long one. (The ticket-less re-call TOKEN, and its refusal when spent on another op, is
-//! `Plugin::recall`'s: no hook call is ticket-less, so the dispatcher's own tests prove it.)
+//! answers an order): it is judged on ABSTAIN-ONLY, no request expects an order, there is no
+//! re-call to walk, and it FAILS if it ever orders. A hook that states nothing may order, and still
+//! must produce the long one. (The ticket-less re-call TOKEN, and its refusal when spent on another
+//! op, is `Plugin::recall`'s: no hook call is ticket-less, so the dispatcher's own tests prove it.)
 //!
 //! THE CROSSINGS ARE THE KERNEL'S (THE DESIGN §11.4: one table, as production drives it): every
 //! `decide` and `transform` is SUBMITTED WATCHED on a ticket of its own, as the host's hook door

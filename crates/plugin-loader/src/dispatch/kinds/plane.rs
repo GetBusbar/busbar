@@ -119,7 +119,7 @@ pub struct ServedFacts {
     /// The key of the one section the Statement declares.
     pub section: &'static str,
     /// The keys of the sections the Statement reads beside it (`SECTION_CONSUMED`), in its order:
-    /// the plane opens with all of them, one `{section: value}` object (spec Part 1 §4).
+    /// the plane opens with all of them, one `{section: value}` object.
     pub consumed: Vec<&'static str>,
     /// The keys of the other sections it owns (neither declaring nor consumed): what it opens
     /// with beside its settings (`PlaneOpenIn::owned`).
@@ -161,23 +161,21 @@ pub struct ServedFacts {
     pub need_targets: Vec<&'static str>,
     /// Each need's `trust_from`, in Statement need order: on a member-target need, a member path
     /// (`settings.*.<key>`) names, per registration, the object holding busbar's client identity
-    /// for it, `{cert, key}` as secret references (the transport pin, ARCHITECT 2026-10-03).
+    /// for it, `{cert, key}` as secret references (the transport pin).
     pub need_trust: Vec<&'static str>,
     /// The tail's kernel-owned trust keys: a registration whose pin names a mechanism that pins the
     /// far end's key (`PinMechanismDecl::peer_key`) has that key sealed into its member route.
     pub trust_keys: Vec<TrustKeyDecl>,
     /// Each need's transport, in the same order (`Need::transport`): a member binds at most one
-    /// need per (transport, auth) (ARCHITECT Q-L5B-NEEDS).
+    /// need per (transport, auth).
     pub need_transports: Vec<&'static str>,
     /// The tail's dialects, in order.
     pub dialects: Vec<&'static str>,
-    /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index
-    /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this), and the style's parameters
-    /// for it, a JSON object's text (empty: none; ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
+    /// The tail's `dialect_auth`: each dialect's default outbound style, by its dialect index (else
+    /// this), and the style's parameters for it, a JSON object's text (empty: none).
     pub dialect_auth: Vec<(u32, &'static str, &'static [u8])>,
-    /// Each dialect's `DIALECT_*` flags off its `dialect_auth` line, parallel to
-    /// [`Self::dialects`] (`0` for a dialect with no line): whether a provider may name it
-    /// (ARCHITECT ruling 2026-10-16, item 3).
+    /// Each dialect's `DIALECT_*` flags off its `dialect_auth` line, parallel to [`Self::dialects`]
+    /// (`0` for a dialect with no line): whether a provider may name it.
     pub dialect_flags: Vec<u32>,
     /// The tail's `label`, `subject_noun` and `admin_noun` (what the kernel's registry entry names
     /// the plane and one registration by).
@@ -632,9 +630,9 @@ pub fn linked_cli_help(
 
 /// THE COMMAND-LINE HELP A DROPPED-IN PLANE STATES: its tail's `cli_help`, read off its SIGNED
 /// MANIFEST's Statement rendering with no dlopen, as [`linked_cli_help`] reads a linked door's off
-/// its tail (BUSBAR-1.6.0.md l.2179, Part 2 #2: compiled in or dropped in, one loading path; the
-/// rendering carries the whole kind tail, and admitting the plane compares its door's Statement
-/// with it). `None` when the tail states none.
+/// its tail (compiled in or dropped in, one loading path; the rendering carries the whole kind
+/// tail, and admitting the plane compares its door's Statement with it). `None` when the tail
+/// states none.
 ///
 /// # Errors
 ///
@@ -697,9 +695,8 @@ pub fn linked_declaring_section(
 
 /// EVERYTHING A LINKED PLANE DOOR STATES (its Statement's name and its tail's facts, as a bind
 /// copies them out), read WITHOUT binding it: reading a linked row's static declaration, its kind
-/// tail included, is reading, not loading (Law 7; ARCHITECT ruling 2026-10-20). Reads the door's
-/// `'static` Statement only, through the same door checks and tail checks a bind runs; nothing is
-/// bound or opened.
+/// tail included, is reading, not loading. Reads the door's `'static` Statement only, through the
+/// same door checks and tail checks a bind runs; nothing is bound or opened.
 ///
 /// # Errors
 ///
@@ -751,12 +748,12 @@ pub fn stated_registration(
     }
 }
 
-/// THE REGISTRY FACTS A DOOR STATES (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): its
-/// Statement name, its declaring section and its tail's words, read off the facts kept at its bind,
-/// and its own `validate` (ticket-less; it never pends) over a whole section. `bind` binds a probe
-/// instance of the door through the one load (a linked and a dropped door alike); one is bound here
-/// for the facts and the section judge, and one more per public base URL its facing is asked for (a
-/// plane states its audience and claims against the URL it was opened with).
+/// THE REGISTRY FACTS A DOOR STATES: its Statement name, its declaring section and its tail's
+/// words, read off the facts kept at its bind, and its own `validate` (ticket-less; it never pends)
+/// over a whole section. `bind` binds a probe instance of the door through the one load (a linked
+/// and a dropped door alike); one is bound here for the facts and the section judge, and one more
+/// per public base URL its facing is asked for (a plane states its audience and claims against the
+/// URL it was opened with).
 ///
 /// # Errors
 ///
@@ -1308,7 +1305,7 @@ fn validate(plugin: &crate::dispatch::Plugin<Plane>, settings: &[u8]) -> Result<
     }
 }
 
-/// The tail's billable classes and fee units, judged PER ELEMENT (ARCHITECT Q-L5-FEE (C)): each
+/// The tail's billable classes and fee units, judged PER ELEMENT: each
 /// class by `check_billable_classes`, then each fee unit by `check_fee_units`, which holds every fee
 /// unit to one of the classes (the plane reports "a fee unit was incurred" as a count on it; a fee
 /// unit no class lists could never be reported, and its fee would be refunded on every unit).
@@ -1861,8 +1858,6 @@ fn as_written(p: *const PlaneSnapshot) -> PlaneSnapshot {
         s.assume_init()
     }
 }
-
-// ── the host's copy of a generation snapshot ─────────────────────────────────────────────────────
 
 /// One claim of a snapshot, owned by the host.
 #[derive(Debug, Clone, PartialEq, Eq)]

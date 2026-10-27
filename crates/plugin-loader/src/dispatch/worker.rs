@@ -170,10 +170,10 @@ pub struct DispatchStats {
     /// cancelled, a WriteBehind op's caller released), never woken before it. A door whose every
     /// wait is woken keeps it 0; every conformance script requires 0.
     pub deadline_without_wake: u64,
-    /// Contexts plugins handed the host that it did not mint, process-wide (#74,
-    /// `dispatch::handle`): each inside a crossing quarantined its instance.
+    /// Contexts plugins handed the host that it did not mint, process-wide (`dispatch::handle`):
+    /// each inside a crossing quarantined its instance.
     pub forged_handles: u64,
-    /// The off-crossing latch tripped (#74): nothing resolves outside a crossing any more.
+    /// The off-crossing latch tripped: nothing resolves outside a crossing any more.
     pub handles_latched: bool,
 }
 
@@ -183,8 +183,7 @@ pub type CounterFamily = (&'static str, &'static str, u64);
 impl DispatchStats {
     /// EVERY `bb_*` COUNTER these stats hold, each with its name and HELP text: the dispatcher's
     /// own counts, read by whoever holds the dispatcher (the conformance suite). They are NOT on
-    /// the customer `/metrics` scrape: 1.5.5 served no `bb_*` family and the scrape must match it
-    /// (oracle row 86).
+    /// the customer `/metrics` scrape: 1.5.5 served no `bb_*` family and the scrape must match it.
     #[must_use]
     pub const fn families(&self) -> [CounterFamily; 2] {
         [
@@ -242,15 +241,15 @@ pub(crate) struct Env {
     /// THE HOST'S OBSERVABILITY of every door this dispatcher binds: the observer and the series
     /// predicate the host installs on it ([`Dispatcher::observing`]), never a process-global seam.
     pub(crate) observing: Arc<crate::observe::Observing>,
-    /// The key every worker's ticket generations are permuted under (#74), drawn at the
-    /// dispatcher's boot: no worker exists without it.
+    /// The key every worker's ticket generations are permuted under, drawn at the dispatcher's
+    /// boot: no worker exists without it.
     pub(crate) ticket_key: super::handle::TicketKey,
     /// The latch a forged ticket with no supplier counts against: the process's, but in a test
     /// that names its own ([`Dispatcher::judge_against`]).
     latch: std::sync::OnceLock<&'static super::handle::Latch>,
-    /// THE SEAL THE HOST LENT THIS DISPATCHER (Part 2 #54): what a door it binds presents to read
-    /// a resolved `Secret` it hands a plugin ([`Dispatcher::lend_seal`]). None lent: every such
-    /// reveal is refused.
+    /// THE SEAL THE HOST LENT THIS DISPATCHER: what a door it binds presents to read a resolved
+    /// `Secret` it hands a plugin ([`Dispatcher::lend_seal`]). None lent: every such reveal is
+    /// refused.
     pub(crate) seal:
         std::sync::OnceLock<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>>,
 }
@@ -486,13 +485,12 @@ struct JobOf<I, O> {
     lent: Option<Lent>,
 }
 
-/// HOST-LENT MEMORY, kept alive until the op completes (ARCHITECT ruling 2026-09-29, every kind): an
-/// `in` names host buffers by raw pointer (strings, lists, result buffers), so whatever owns them
-/// must outlive every crossing of the op. The caller hands its owner to
-/// [`Dispatcher::submit_lent`]; the dispatcher holds it with the frame. A caller that stops waiting
-/// (its [`Reply`] dropped, its deadline passed, its task cancelled) can therefore never free memory
-/// a plugin is still reading on a worker. The caller keeps its own clone to read what the plugin
-/// wrote.
+/// HOST-LENT MEMORY, kept alive until the op completes (every kind): an `in` names host buffers by
+/// raw pointer (strings, lists, result buffers), so whatever owns them must outlive every crossing
+/// of the op. The caller hands its owner to [`Dispatcher::submit_lent`]; the dispatcher holds it
+/// with the frame. A caller that stops waiting (its [`Reply`] dropped, its deadline passed, its
+/// task cancelled) can therefore never free memory a plugin is still reading on a worker. The
+/// caller keeps its own clone to read what the plugin wrote.
 pub type Lent = Arc<dyn std::any::Any + Send + Sync>;
 
 impl<I: InFrame, O: OutFrame> Job for JobOf<I, O> {
@@ -766,7 +764,7 @@ enum Action {
 
 #[derive(Default)]
 pub(crate) struct Entry {
-    /// The slot's mint counter (#74): how many times it has been handed out, from 1.
+    /// The slot's mint counter: how many times it has been handed out, from 1.
     pub(crate) count: u32,
     /// The ticket generation of mint `count`: `handle::ticket_generation(key, worker, idx, count)`.
     pub(crate) generation: u32,
@@ -801,8 +799,8 @@ pub(crate) struct WorkerState {
     free: Vec<u32>,
     runnable: VecDeque<u32>,
     /// The supplier of each forged ticket generation [`Worker::apply`] found, judged by
-    /// [`Worker::judge_forgeries`] once the lock is let go (#74): a quarantine takes the
-    /// instance's own locks and never runs under the worker's.
+    /// [`Worker::judge_forgeries`] once the lock is let go: a quarantine takes the instance's own
+    /// locks and never runs under the worker's.
     forged: Vec<Option<&'static super::ticket::InstanceWake>>,
 }
 
@@ -864,8 +862,8 @@ impl WakeRoute for Pool {
     /// Route a wake to the worker its slot names. Never blocks on the plugin: a channel push.
     fn wake(&self, t: Ticket, supplier: Option<&'static super::ticket::InstanceWake>) {
         if super::inline::is_inline(t) {
-            // Judged with the inline table's lock let go (#74): a generation it never minted is
-            // the supplier's forgery.
+            // Judged with the inline table's lock let go: a generation it never minted is the
+            // supplier's forgery.
             if self.env.inline.wake(t) == super::inline::Judged::Forged {
                 super::handle::forged_ticket(supplier, self.env.latch());
             }
@@ -874,13 +872,13 @@ impl WakeRoute for Pool {
         let (w, _) = decode(t.slot);
         match self.slots.get(w as usize) {
             Some(slot) => {
-                // The supplier the caller carried, never the thread's crossing (#74): a wake fires
-                // on whatever thread completes it, inside whichever instance's crossing that is.
+                // The supplier the caller carried, never the thread's crossing: a wake fires on
+                // whatever thread completes it, inside whichever instance's crossing that is.
                 let _ = slot.get().tx.send(Msg::Wake(t, supplier));
             }
             None => {
-                // A worker this dispatcher does not run minted nothing: a forgery (#74), judged
-                // here, under no lock.
+                // A worker this dispatcher does not run minted nothing: a forgery, judged here,
+                // under no lock.
                 self.env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
                 super::handle::forged_ticket(supplier, self.env.latch());
             }
@@ -1075,7 +1073,7 @@ impl Worker {
                 None => {
                     env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
                     // A generation this slot really minted is a late wake (H2: dropped, never an
-                    // error). One it never minted is a forgery (#74): the generation is a keyed
+                    // error). One it never minted is a forgery: the generation is a keyed
                     // permutation of the slot's counter, so its inverse names the mint it would be.
                     if !self.ever_minted(st, t) {
                         st.forged.push(supplier);
@@ -1159,8 +1157,8 @@ impl Worker {
         }
     }
 
-    /// Judge the forged ticket generations [`Worker::apply`] found, with the worker's lock let go
-    /// (#74): each supplier quarantined, a wake with none counted against the process's latch.
+    /// Judge the forged ticket generations [`Worker::apply`] found, with the worker's lock let go:
+    /// each supplier quarantined, a wake with none counted against the process's latch.
     fn judge_forgeries<'a>(
         &'a self,
         mut st: MutexGuard<'a, WorkerState>,
@@ -1685,9 +1683,9 @@ impl Orphan {
     }
 }
 
-/// A slot's mint counter after `count`; `None` once it is spent (#74): the generation is a
-/// permutation of the counter, so a counter that wrapped would re-mint a generation the slot
-/// already handed out. A spent slot is RETIRED instead, never handed out again.
+/// A slot's mint counter after `count`; `None` once it is spent: the generation is a permutation of
+/// the counter, so a counter that wrapped would re-mint a generation the slot already handed out. A
+/// spent slot is RETIRED instead, never handed out again.
 pub(crate) fn next_count(count: u32) -> Option<u32> {
     count.checked_add(1)
 }
@@ -1866,13 +1864,13 @@ impl Dispatcher {
     ///
     /// # Panics
     ///
-    /// When the OS random source cannot answer the handle key (#74): a boot with no key is refused,
-    /// never run under a weaker one. [`Dispatcher::try_new`] answers the refusal instead.
+    /// When the OS random source cannot answer the handle key: a boot with no key is refused, never
+    /// run under a weaker one. [`Dispatcher::try_new`] answers the refusal instead.
     pub fn new(config: DispatchConfig) -> Self {
         Self::try_new(config).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    /// THE LOADER'S BOOT (#74): the handle key drawn first, then the dispatcher.
+    /// THE LOADER'S BOOT: the handle key drawn first, then the dispatcher.
     ///
     /// # Errors
     ///
@@ -1882,10 +1880,10 @@ impl Dispatcher {
         Ok(Self::build(config, None, key))
     }
 
-    /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed to
-    /// the worker whose ticket it names, with the caller the table registered it for as the
-    /// ticket's supplier (#74: a forged generation quarantines that instance; the root's own
-    /// identity names none). The root hands it to its one connector.
+    /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed
+    /// to the worker whose ticket it names, with the caller the table registered it for as the
+    /// ticket's supplier (a forged generation quarantines that instance; the root's own identity
+    /// names none). The root hands it to its one connector.
     #[must_use]
     pub fn conn_waker(&self) -> busbar_contract::conn::ConnWake {
         let pool = Arc::downgrade(&self.pool);
@@ -1908,12 +1906,12 @@ impl Dispatcher {
         &self.pool.env.observing
     }
 
-    /// LEND THIS DISPATCHER THE HOST'S SEAL (Part 2 #54): a kernel-minted `Pass` or `Grant`, what
-    /// a door it binds presents to read a resolved `Secret` it hands a plugin (a verify's
-    /// credential, a login's submitted fields, an outbound caller credential, a secret source's
-    /// material). The composition root lends `busbar_kernel::seal::lend()` on the process's one
-    /// dispatcher at boot. The first lend holds; a later one answers `false`. A dispatcher lent no
-    /// seal REFUSES every such reveal (fail closed).
+    /// LEND THIS DISPATCHER THE HOST'S SEAL: a kernel-minted `Pass` or `Grant`, what a door it
+    /// binds presents to read a resolved `Secret` it hands a plugin (a verify's credential, a
+    /// login's submitted fields, an outbound caller credential, a secret source's material). The
+    /// composition root lends `busbar_kernel::seal::lend()` on the process's one dispatcher at
+    /// boot. The first lend holds; a later one answers `false`. A dispatcher lent no seal REFUSES
+    /// every such reveal (fail closed).
     pub fn lend_seal(
         &self,
         seal: impl busbar_contract::plugin::KernelSeal + Send + Sync + 'static,

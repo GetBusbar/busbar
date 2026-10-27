@@ -329,8 +329,8 @@ fn verify_red_a_foreign_in() {
     assert_eq!(rule(Auth::check(&a)), Rule::Foreign);
 }
 
-/// THE STRIPS (THE DESIGN, "Auth points and guest lists", step 3): a READY verify's strip
-/// names are read from the host's array whatever the verdict, bounded by its capacity.
+/// THE STRIPS (THE DESIGN, "Auth points and guest lists"): a READY verify's strip names are read
+/// from the host's array whatever the verdict, bounded by its capacity.
 #[test]
 fn verify_green_strips_with_any_verdict() {
     let mut bytes = [0u8; BUF_CAP];
@@ -940,11 +940,11 @@ fn the_operator_fact_states_its_principal_and_a_frozen_tail_still_loads() {
     );
 }
 
-/// THE CREDENTIAL-READ FACT (ARCHITECT 2026-10-01, AUTH-DOOR Q2 ruling B): `FACT_READS_CREDENTIALS`
-/// needs `CAP_INBOUND` and a non-empty list of non-empty kinds, and a list needs the fact; each half
-/// alone refuses the load, and the agreeing tail reads its kinds back, onto the instance the host
-/// serves `records.secret` to. An OLDER tail (56 bytes, before the list was appended) reads none,
-/// even when the memory past its size holds a list. RED: before the fact, no tail named a kind.
+/// THE CREDENTIAL-READ FACT: `FACT_READS_CREDENTIALS` needs `CAP_INBOUND` and a non-empty list of
+/// non-empty kinds, and a list needs the fact; each half alone refuses the load, and the agreeing
+/// tail reads its kinds back, onto the instance the host serves `records.secret` to. An OLDER tail
+/// (56 bytes, before the list was appended) reads none, even when the memory past its size holds a
+/// list. RED: before the fact, no tail named a kind.
 #[test]
 fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
     use busbar_contract::abi::auth::{
@@ -1010,10 +1010,10 @@ fn the_credential_read_fact_states_its_kinds_and_an_old_tail_reads_none() {
     );
 }
 
-/// THE ISSUED-CREDENTIAL SHAPE (row 159, K3#4): a row that reads host-held credentials states the
-/// shape of the credential the host issues for it in kind-neutral `MARK_WORD_ISSUED_*` word marks,
-/// read back whole; a malformed shape refuses the load, each way named below. RED before the loader
-/// reads the marks (no shape was ever read, and none refused).
+/// THE ISSUED-CREDENTIAL SHAPE: a row that reads host-held credentials states the shape of the
+/// credential the host issues for it in kind-neutral `MARK_WORD_ISSUED_*` word marks, read back
+/// whole; a malformed shape refuses the load, each way named below. RED before the loader reads the
+/// marks (no shape was ever read, and none refused).
 #[test]
 fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuses() {
     use busbar_contract::abi::auth::{

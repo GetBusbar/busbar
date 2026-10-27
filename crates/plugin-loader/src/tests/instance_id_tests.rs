@@ -4,8 +4,8 @@
 //! INSTANCE NUMBERING NEVER MINTS `0`, AND IS THE HANDLE'S. `InstanceId(0)` is the composition
 //! root's own identity on the one connector (the authorization server's needs,
 //! `root::connector::ROOT_OWNER`); a plugin instance minted `0` would open and close connections on
-//! that table as the root. An instance's identity is its handle's id (#74), so a table's wake names
-//! the entry of the caller it parked for, and the root's own names none.
+//! that table as the root. An instance's identity is its handle's id, so a table's wake names the
+//! entry of the caller it parked for, and the root's own names none.
 
 use busbar_contract::conn::InstanceId;
 

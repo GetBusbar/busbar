@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE LOGIN HALF OF AN AUTH INSTANCE (WIRE-AUTH, ARCHITECT ruling 2026-09-30 (A)(3)): the hosted
+//! THE LOGIN HALF OF AN AUTH INSTANCE: the hosted
 //! login's `begin_login` and `complete_login` on the one dispatcher, in the same shape as `verify`:
 //! submitted on a request ticket, answered through the reply's waker, the memory the `in` lends
 //! travelling with the op. The plugin runs its own token exchange over its own need, holding its own
@@ -57,8 +57,6 @@ fn overloaded(shared: &Shared) -> bool {
     let p = &shared.plugin;
     p.max_inflight() != 0 && p.inflight() >= p.max_inflight()
 }
-
-// ── begin_login ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE MEMORY ONE `begin_login` LENDS. Nothing in it is secret.
 struct BeginHeld {
@@ -269,8 +267,6 @@ impl Drop for Begin {
         self.shared.dispatcher.recycle(self.ticket);
     }
 }
-
-// ── complete_login ──────────────────────────────────────────────────────────────────────────────
 
 /// THE MEMORY ONE `complete_login` LENDS: the callback, the submitted fields pointing into it, and
 /// the identity buffers the plugin writes (a [`Held`] over no request).

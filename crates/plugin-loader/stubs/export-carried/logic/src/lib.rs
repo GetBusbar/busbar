@@ -68,8 +68,8 @@ const NON_2XX: &str = "BUSBAR-7071";
 const TRANSPORT_ERROR: &str = "BUSBAR-7072";
 
 /// The config path the target comes from: the `url` setting (`settings.<key>`, the path the host's
-/// connection-table fill resolves, spec PB-100). A bare key resolves to nothing, and the host's
-/// connector refuses a need whose target resolved to nothing.
+/// connection-table fill resolves). A bare key resolves to nothing, and the host's connector
+/// refuses a need whose target resolved to nothing.
 const TARGET_FROM: &str = "settings.url";
 
 /// The in-flight ceiling this sink declares: no bound of its own. The bound is the operator's

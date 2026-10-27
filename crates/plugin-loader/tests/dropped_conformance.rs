@@ -3,7 +3,7 @@
 
 //! **A PLUGIN BUILT OUTSIDE BUSBAR, FROM THE C HEADER ALONE, THROUGH THE ONE DROPPED-IN DOOR** —
 //! the conformance that `plugin-ci.yml`'s C path (`plugin_lang: c`) runs for a plugin repo with no
-//! Rust in it (BUSBAR-1.6.0.md decision #84: "a third party builds a plugin from this header
+//! Rust in it (BUSBAR-1.6.0.md the design: "a third party builds a plugin from this header
 //! alone"; its witness is the plugin repo GetBusbar/busbar-secret-c). The plugin repo is tested BY
 //! ITSELF: its CI builds its C sources against `busbar_plugin.h` at the busbar commit it pins, then
 //! runs THIS target, at that same commit, over what it built.

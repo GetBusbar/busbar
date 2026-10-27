@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A SECRET'S SOURCE STAYS ON THE OPERATOR'S SIDE OF THE REQUEST-TIME HAND-OFF (coordinator ruling
-//! 2026-10-07): the one place on a door plane's request path where a secret reference that does
-//! not resolve meets a plugin is a member program's `env`. The loader declares it as the REFERENCE
-//! (`Program::env_refs`), at `open` and every `refresh`, and never resolves it; the host resolves it
-//! at the SPAWN (SECURITY ruling 2026-10-07). A reference that does not resolve is never spawned,
-//! and the plugin's open naming that member reaches it as the table's FIXED-CLASS refusal
-//! (`ConnError::Refused`, its static text), never the source's own words (the variable's name, the
-//! reference as written, "environment variable ... is unset"). The source's refusal is the real
-//! one: the linked `env` source, the kind's both-ways fixture.
+//! A SECRET'S SOURCE STAYS ON THE OPERATOR'S SIDE OF THE REQUEST-TIME HAND-OFF: the one place on a
+//! door plane's request path where a secret reference that does not resolve meets a plugin is a
+//! member program's `env`. The loader declares it as the REFERENCE (`Program::env_refs`), at `open`
+//! and every `refresh`, and never resolves it; the host resolves it at the SPAWN. A reference that
+//! does not resolve is never spawned, and the plugin's open naming that member reaches it as the
+//! table's FIXED-CLASS refusal (`ConnError::Refused`, its static text), never the source's own
+//! words (the variable's name, the reference as written, "environment variable ... is unset"). The
+//! source's refusal is the real one: the linked `env` source, the kind's both-ways fixture.
 //!
 //! The table here holds the connector's contract for member programs (an open naming a member the
 //! declaration did not name is refused, `busbar-core-connector`'s
@@ -145,12 +144,11 @@ impl Conns for Members {
     }
 }
 
-/// RED (coordinator ruling 2026-10-07; SECURITY ruling 2026-10-07): a member program whose `env`
-/// reference does not resolve is declared as the reference, never resolved by the loader; the open
-/// naming it reaches the plugin as the table's fixed-class refusal, and nothing the table was
-/// handed carries the source's refusal, nor anything the plugin read its source. A member with no
-/// reference is declared and opened beside it (the control), and the source's own refusal names
-/// the source (so a clean hand-off withheld it).
+/// A member program whose `env` reference does not resolve is declared as the reference, never
+/// resolved by the loader; the open naming it reaches the plugin as the table's fixed-class
+/// refusal, and nothing the table was handed carries the source's refusal, nor anything the plugin
+/// read its source. A member with no reference is declared and opened beside it (the control), and
+/// the source's own refusal names the source (so a clean hand-off withheld it).
 #[test]
 fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_class_refusal() {
     let var = format!("BUSBAR_LOADER_MEMBER_SECRET_SOURCE_{}", std::process::id());

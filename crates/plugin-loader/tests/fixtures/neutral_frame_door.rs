@@ -3,11 +3,10 @@
 
 //! THE NEUTRAL FRAME DOOR: a test double that frames the host's socket (it composes over nothing),
 //! for the tests that need such a door beside their binary (the loader's dropped-in door through
-//! the registry, the connector driving a dropped-in socket framer, the root's dropped-in wire in the
-//! one fold). It lives with the tests and names no transport (spec Part 5 log, 2026-09-25 S10: "a
-//! plugin tests itself; the kernel never tests or names a plugin"), so no plugin leaving this repo
-//! takes these tests' fixture with it. An example, not a crate: `cargo test` builds it and it never
-//! ships.
+//! the registry, the connector driving a dropped-in socket framer, the root's dropped-in wire in
+//! the one fold). It lives with the tests and names no transport ("a plugin tests itself; the
+//! kernel never tests or names a plugin"), so no plugin leaving this repo takes these tests'
+//! fixture with it. An example, not a crate: `cargo test` builds it and it never ships.
 //!
 //! An IDENTITY framer on the transport kind's table (`busbar_contract::abi::transport`): the bytes
 //! the far side sent are one frame on stream `0` (the far side's end is `YIELD_ENDED`), the bytes
@@ -17,13 +16,13 @@
 //! back-pressure (`YIELD_MORE`). It states the FRAMER role and every carrier op is refused: it
 //! rides whatever carrier the connector dials or accepts with, and is never one.
 //!
-//! ONE STREAM (`SIDE_ACCEPT_STREAM`, ARCHITECT 4l): a framing begun on that side frames one stream
-//! whose head the host's own framer carries. Its messages are one length byte and that many bytes:
-//! `ingest` yields each whole message as a piece on stream `1`; `emit` frames a message (its bytes
-//! once one ends the frame); `refuse` closes the stream with the block `:status: 200`,
-//! `frame-status: <status>`, `frame-reason: <bytes>`; `finish` closes it with the block
-//! `frame-status`, `frame-message`, `frame-details` (hex) from the close's final tail. The claim's
-//! numbering is `frame`, codes `0..=9`.
+//! ONE STREAM (`SIDE_ACCEPT_STREAM`): a framing begun on that side frames one stream whose head the
+//! host's own framer carries. Its messages are one length byte and that many bytes: `ingest` yields
+//! each whole message as a piece on stream `1`; `emit` frames a message (its bytes once one ends
+//! the frame); `refuse` closes the stream with the block `:status: 200`, `frame-status: <status>`,
+//! `frame-reason: <bytes>`; `finish` closes it with the block `frame-status`, `frame-message`,
+//! `frame-details` (hex) from the close's final tail. The claim's numbering is `frame`, codes
+//! `0..=9`.
 
 #![allow(unsafe_code)]
 
@@ -50,8 +49,6 @@ use busbar_contract::abi::transport::{
 };
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
-
-// ── the statement ────────────────────────────────────────────────────────────────────────────────
 
 /// The claim this entry answers for: a neutral scheme no transport serves.
 pub const KEY: &str = "frame";
@@ -111,9 +108,9 @@ const TAIL: TransportTail = TransportTail {
         size: std::mem::size_of::<TransportTail>() as u32,
         ..KindTailHead::ZERO
     },
-    // An identity FRAMER (ARCHITECT ruling Q128 U7: the role is stated, never derived from
-    // composes_over). It answers no carrier op, so it states no carrier: a door stated a carrier is
-    // one the connector may pick as its address carrier, and this one would refuse every dial.
+    // An identity FRAMER (the role is stated, never derived from composes_over). It answers no
+    // carrier op, so it states no carrier: a door stated a carrier is one the connector may pick as
+    // its address carrier, and this one would refuse every dial.
     role: ROLE_FRAMER,
     framing: FRAMING_STREAM,
     claim_rows: CLAIMS.as_ptr(),
@@ -138,8 +135,6 @@ pub const STATEMENT: Statement = Statement {
     claims_len: CLAIM_NAMES.len(),
     ..statement(KEY, env!("CARGO_PKG_VERSION"), 64)
 };
-
-// ── the instance ─────────────────────────────────────────────────────────────────────────────────
 
 /// The framings this instance holds.
 pub struct Instance {
@@ -185,8 +180,6 @@ fn text(s: &AbiStr) -> &[u8] {
 fn err(out: &mut OutHead, text: &'static str) {
     out.error = abi_str(text);
 }
-
-// ── the lifecycle ────────────────────────────────────────────────────────────────────────────────
 
 /// `validate`: this framer reads no setting.
 pub struct Validate;
@@ -267,8 +260,6 @@ answer!(Write, WriteIn, IoOut, Outcome::Refused);
 answer!(Flush, ConnIn, OutHead, Outcome::Refused);
 answer!(Shut, ShutIn, OutHead, Outcome::Refused);
 answer!(Arrival, ArrivalIn, ArrivalOut, Outcome::Refused);
-
-// ── the framer ───────────────────────────────────────────────────────────────────────────────────
 
 /// `locate`: `host:port` or `frame://host:port` is the authority; no name, no connection security.
 pub struct Locate;

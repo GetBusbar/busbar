@@ -48,8 +48,6 @@ fn answer<I, O>(s: u32, outcome: Outcome, i: &I, o: &O) -> Answer<'static> {
     }
 }
 
-// ── carrier ──
-
 #[test]
 fn listen_green_and_red_no_short_path() {
     let mut i: ListenIn = z();
@@ -157,8 +155,6 @@ fn dial_flush_and_shut_have_no_per_answer_rule() {
         );
     }
 }
-
-// ── framer ──
 
 #[test]
 fn locate_green_red_and_short() {
@@ -353,8 +349,6 @@ fn a_pseudo_field_or_a_bad_request_head_faults_every_framer_op() {
     }
 }
 
-// ── cancel ──
-
 #[test]
 fn cancel_green_and_red_on_its_disposition() {
     let i: InHead = z();
@@ -374,8 +368,6 @@ fn cancel_green_and_red_on_its_disposition() {
         );
     }
 }
-
-// ── foreign sizes ──
 
 #[test]
 fn an_in_smaller_than_the_ops_struct_is_foreign() {
@@ -414,8 +406,6 @@ fn an_out_smaller_than_the_ops_struct_is_foreign() {
     );
 }
 
-// ── names, identity ──
-
 #[test]
 fn every_slot_has_a_name() {
     for s in 0..SLOTS {
@@ -429,8 +419,6 @@ fn the_kind_is_transport_and_times_out_failed() {
     assert_eq!(Transport::CODE, KindCode::Transport);
     assert_eq!(Transport::TIMEOUT, Outcome::Failed);
 }
-
-// ── the tail the registry view reads ──
 
 /// A transport's tail is read and checked at bind: none refuses the load; a framer over the host's
 /// socket states its claims and no layer.
@@ -503,10 +491,10 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
     assert!(Transport::context(&one_name).is_err(), "two rows, one name");
 }
 
-/// THE UPGRADE LINES ARE READ OFF THE CLAIM ROWS (ARCHITECT ruling Q128 U7): a claim whose row states
-/// `unit0_trigger = UNIT0_UPGRADE` is an upgrade line, and a claim that states anything else is not —
-/// RED: the same scheme with the trigger left at 0 yields an EMPTY upgrade set, so the host mounts no
-/// upgrade line for it.
+/// THE UPGRADE LINES ARE READ OFF THE CLAIM ROWS: a claim whose row states `unit0_trigger =
+/// UNIT0_UPGRADE` is an upgrade line, and a claim that states anything else is not — RED: the same
+/// scheme with the trigger left at 0 yields an EMPTY upgrade set, so the host mounts no upgrade
+/// line for it.
 #[test]
 fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -562,11 +550,11 @@ fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
     );
 }
 
-/// THE FAULT TABLE AT BIND (busbar ARCHITECT breaker ruling Q1). A claim that classes its answers
-/// states what they mean to the breaker too: a tail with status rows and no fault table is refused,
-/// whether it was built before the table was appended (its size stops short of it, so the host
-/// reads it absent) or after (it states none). A claim with a fault table binds; a tail with no
-/// status rows owes none, so a carrier built before the append still binds.
+/// THE FAULT TABLE AT BIND. A claim that classes its answers states what they mean to the breaker
+/// too: a tail with status rows and no fault table is refused, whether it was built before the
+/// table was appended (its size stops short of it, so the host reads it absent) or after (it states
+/// none). A claim with a fault table binds; a tail with no status rows owes none, so a carrier
+/// built before the append still binds.
 #[test]
 fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
@@ -621,7 +609,7 @@ fn a_classed_claim_without_a_fault_table_is_refused_at_bind() {
     tail.status_rows = status.as_ptr();
     tail.status_rows_len = 1;
 
-    // RED: status rows, no fault table.
+    // Status rows, no fault table.
     let refused = bind(&tail).expect_err("a classed claim with no fault table is refused");
     assert!(refused.contains("fault_rows"), "{refused}");
 
@@ -737,10 +725,10 @@ fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
     );
 }
 
-/// RED (audit contract-src #11): every string list a transport's tail states is judged at bind by
-/// its own contract check, so a name counted over a NULL pointer refuses the load. The claims a
-/// connection may upgrade to (`check_upgrades_to`) and each claim row's fact keys
-/// (`check_claim_facts`) were never judged by the host.
+/// Every string list a transport's tail states is judged at bind by its own contract check, so a
+/// name counted over a NULL pointer refuses the load. The claims a connection may upgrade to
+/// (`check_upgrades_to`) and each claim row's fact keys (`check_claim_facts`) were never judged by
+/// the host.
 #[test]
 fn red_a_null_upgrade_name_or_claim_fact_refuses_the_bind() {
     use busbar_contract::abi::mechanism::call::AbiStr;

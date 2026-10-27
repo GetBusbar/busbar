@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE KIND'S ONE SUITE, RUN IN-TREE (audit loader-conformance #6: one conformance suite per
-//! kind). The published store script (`conformance/store.rs`) over the build's store: its linked
-//! door and its dropped-in image (the `store_v3_door` example `cdylib`), through the one loader,
-//! with the inputs the store's own repo runs it over (`tests/fixtures/store_conformance.json`).
-//! These replace the in-tree store suites that duplicated the script.
+//! THE STORE KIND'S ONE SUITE, RUN IN-TREE. The published store script (`conformance/store.rs`)
+//! over the build's store: its linked door and its dropped-in image (the `store_v3_door` example
+//! `cdylib`), through the one loader, with the inputs the store's own repo runs it over
+//! (`tests/fixtures/store_conformance.json`). These replace the in-tree store suites that
+//! duplicated the script.
 
 use crate::conformance::{both_ways, red_count, Subject};
 

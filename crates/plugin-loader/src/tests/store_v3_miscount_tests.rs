@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A COMMITTED WRITE NEVER READS AS A FAILURE (REVIEWER note 1, ARCHITECT ruling): a store that
-//! commits a `reserve` or a `slice_release` and then answers the wrong number of grants or amounts
-//! is FAULT through the store SDK, never FAILED ("nothing applied", which a caller may retry).
+//! A COMMITTED WRITE NEVER READS AS A FAILURE (REVIEWER note 1): a store that commits a `reserve`
+//! or a `slice_release` and then answers the wrong number of grants or amounts is FAULT through the
+//! store SDK, never FAILED ("nothing applied", which a caller may retry).
 
 use std::sync::Arc;
 

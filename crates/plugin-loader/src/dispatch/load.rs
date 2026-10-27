@@ -115,8 +115,8 @@ impl LinkedRow {
         })
     }
 
-    /// [`LinkedRow::of`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status rows
-    /// 159 and 194). #1469 makes `of` take the `MacroDoor` alone and keeps this name beside it, so
+    /// [`LinkedRow::of`] over the `MACRO_DOOR` `plugin_door!` expands beside `door`. #1469 makes
+    /// `of` take the `MacroDoor` alone and keeps this name beside it, so
     /// `LinkedRow::of_macro(plugin::MACRO_DOOR)` compiles before and after.
     ///
     /// # Errors
@@ -126,8 +126,8 @@ impl LinkedRow {
         Self::of(door.door_fn())
     }
 
-    /// [`LinkedRow::of`] over a [`LoadedDoor`]: a `MacroDoor`, or a test's or the published
-    /// suite's restated door (status rows 159 and 194). #1469's name and signature, here first.
+    /// [`LinkedRow::of`] over a [`LoadedDoor`]: a `MacroDoor`, or a test's or the published suite's
+    /// restated door. #1469's name and signature, here first.
     ///
     /// # Errors
     ///
@@ -145,11 +145,11 @@ impl LinkedRow {
     }
 }
 
-/// A DOOR THE LOADER MAY ENTER (status rows 159 and 194): a [`MacroDoor`] the contract's macro
-/// built, or a door a test or harness restates by hand through the `unsafe`
-/// [`LoadedDoor::from_raw`]. #1469 makes [`LinkedRow::of`] take the `MacroDoor` alone and keeps
-/// this type for the rest; a hand-built door reaches a row through `LinkedRow::of_loaded(unsafe {
-/// LoadedDoor::from_raw(door) })` before and after.
+/// A DOOR THE LOADER MAY ENTER: a [`MacroDoor`] the contract's macro built, or a door a test or
+/// harness restates by hand through the `unsafe` [`LoadedDoor::from_raw`]. #1469 makes
+/// [`LinkedRow::of`] take the `MacroDoor` alone and keeps this type for the rest; a hand-built door
+/// reaches a row through `LinkedRow::of_loaded(unsafe { LoadedDoor::from_raw(door) })` before and
+/// after.
 ///
 /// [`MacroDoor`]: busbar_contract::abi::sdk::door::MacroDoor
 #[derive(Debug, Clone, Copy)]
@@ -163,9 +163,8 @@ impl From<busbar_contract::abi::sdk::door::MacroDoor> for LoadedDoor {
     }
 }
 
-/// A SEALED door function (status row 195): a [`DoorFn`] answers a `&'static Door`, which only the
-/// contract's `unsafe` door constructor builds, so holding one is holding a door some `unsafe`
-/// vouched for.
+/// A SEALED door function: a [`DoorFn`] answers a `&'static Door`, which only the contract's
+/// `unsafe` door constructor builds, so holding one is holding a door some `unsafe` vouched for.
 impl From<DoorFn> for LoadedDoor {
     fn from(door: DoorFn) -> Self {
         Self { door: raw(door) }
@@ -204,7 +203,7 @@ impl LoadedDoor {
     }
 }
 
-/// THE LINKED DOOR'S ONE ENTRY (status row 195; coordinator ruling (a), `BUSBAR-1.6.0.md`
+/// THE LINKED DOOR'S ONE ENTRY (`BUSBAR-1.6.0.md`
 /// l.272-274: the root is `forbid(unsafe_code)`, and the loader holds the reviewed `unsafe`): a
 /// compiled-in door-root crate's bare `door` (Part 4 A.1, l.3560: its only public item), admitted
 /// exactly as a dropped-in library's door is once `dlsym` has resolved it (Part 2 #2 rule (1):
@@ -233,13 +232,12 @@ pub(crate) unsafe fn open_linked(door: RawDoorFn) -> Result<LoadedDoor, LoadErro
     Ok(unsafe { LoadedDoor::from_raw(door) })
 }
 
-/// THE LINKED DOOR'S SAFE ENTRY (status row 195; ARCHITECT rulings: the composition root generates
-/// the linked table and alone depends on the plugin crates, the loader names none; and the entry
-/// takes a SEALED door): a compiled-in crate's `door`, a [`DoorFn`] answering a `&'static Door`
-/// that only the contract's `unsafe` door constructor builds (its fields are private), admitted
-/// through [`open_linked`] (the `dlopen` path's own checks, the one reviewed `unsafe` beside the
-/// `dlopen` call), as a [`LoadedDoor`]. A refusal is the same [`LoadError`] the dropped-in door
-/// earns.
+/// THE LINKED DOOR'S SAFE ENTRY (the composition root generates the linked table and alone depends
+/// on the plugin crates, the loader names none; and the entry takes a SEALED door): a compiled-in
+/// crate's `door`, a [`DoorFn`] answering a `&'static Door` that only the contract's `unsafe` door
+/// constructor builds (its fields are private), admitted through [`open_linked`] (the `dlopen`
+/// path's own checks, the one reviewed `unsafe` beside the `dlopen` call), as a [`LoadedDoor`]. A
+/// refusal is the same [`LoadError`] the dropped-in door earns.
 ///
 /// A raw door function is refused at compile time:
 ///
@@ -280,7 +278,7 @@ pub(crate) fn validate_any(p: *const Door) -> Result<Validated, LoadError> {
     }
 }
 
-/// [`rendering_of`] over a [`LoadedDoor`] (#1469's name and signature, here first).
+/// [`rendering_of`] over a [`LoadedDoor`] (here first).
 ///
 /// # Errors
 ///
@@ -289,8 +287,8 @@ pub fn rendering_of_loaded(door: LoadedDoor) -> Result<Vec<u8>, LoadError> {
     rendering_of_raw(door.door)
 }
 
-/// [`rendering_of`] over a `MACRO_DOOR` (status rows 159 and 194), as [`LinkedRow::of_macro`]: the
-/// name #1469 keeps beside its `rendering_of(MacroDoor)`.
+/// [`rendering_of`] over a `MACRO_DOOR`, as [`LinkedRow::of_macro`]: the name #1469 keeps beside
+/// its `rendering_of(MacroDoor)`.
 ///
 /// # Errors
 ///
@@ -521,8 +519,8 @@ pub enum LoadError {
     Rendering(String),
     /// The door's Statement is not the one the manifest (or the compiled-in row) states.
     StatementMismatch,
-    /// A need, outbound or inbound, names a scheme no loaded transport serves (spec Part 2 #50:
-    /// fail closed at boot, naming the plugin and the scheme).
+    /// A need, outbound or inbound, names a scheme no loaded transport serves (fail closed at boot,
+    /// naming the plugin and the scheme).
     UnservedScheme {
         /// The plugin the Statement names.
         plugin: String,
@@ -533,18 +531,18 @@ pub enum LoadError {
     },
     /// A door whose Statement declares a need was bound to SERVE with no connection table
     /// ([`ConnTable::NoNeeds`](super::ConnTable::NoNeeds)): it could never dial or listen, so it is
-    /// refused at bind (Q-P4-3), never at its first open.
+    /// refused at bind, never at its first open.
     NoConnectionTable {
         /// The plugin the Statement names.
         plugin: String,
         /// How many needs it declares.
         needs: usize,
     },
-    /// The host has minted every instance handle its handle can index (#74, `dispatch::handle`):
-    /// a bind is refused rather than a handle reused.
+    /// The host has minted every instance handle its handle can index (`dispatch::handle`): a bind
+    /// is refused rather than a handle reused.
     HandlesSpent,
-    /// The OS random source could not answer the host's key draw (#74): the loader refuses to boot
-    /// rather than mint handles under a weaker key.
+    /// The OS random source could not answer the host's key draw: the loader refuses to boot rather
+    /// than mint handles under a weaker key.
     Entropy(String),
 }
 
@@ -830,8 +828,8 @@ fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
 pub(crate) enum Staging<K: Kind> {
     /// A memory-ABI plugin, admitted through its door.
     Door(Plugin<K>),
-    /// No door: not a memory-ABI plugin. There is no other lane (row 84 deleted the HOT load
-    /// paths), so the library and its backing are released here and the caller refuses it.
+    /// No door: not a memory-ABI plugin. There is no other lane, so the library and its backing are
+    /// released here and the caller refuses it.
     NotADoor,
 }
 

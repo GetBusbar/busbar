@@ -87,8 +87,6 @@ fn reserve_out(grants_len: usize, reason: u32, needed_grants: u64) -> ReserveOut
     }
 }
 
-// ── reserve ──────────────────────────────────────────────────────────────────────────────────
-
 #[test]
 fn reserve_green_whole_grants() {
     let cells = [cell(5), cell(7)];
@@ -167,8 +165,6 @@ fn reserve_short_is_short_and_checks() {
     )));
 }
 
-// ── slice_release ────────────────────────────────────────────────────────────────────────────
-
 fn release_in(items: &[ReleaseItem], released: &mut [u64]) -> SliceReleaseIn {
     SliceReleaseIn {
         head: in_head(),
@@ -221,8 +217,6 @@ fn slice_release_green_and_red() {
     let f = Store::check(&answer(slot::SLICE_RELEASE, Outcome::Ready, &i, &o)).unwrap_err();
     assert_eq!((f.rule, f.field), (Rule::OverCap, "slice_release.released"));
 }
-
-// ── record_get ───────────────────────────────────────────────────────────────────────────────
 
 fn record_get_in(buf: &mut [u8]) -> RecordGetIn {
     RecordGetIn {
@@ -279,8 +273,6 @@ fn record_get_green_red_and_short() {
     let a = answer(slot::RECORD_GET, Outcome::Ready, &i, &o);
     assert_eq!(rule(Store::check(&a)), Rule::NeededNotFailed);
 }
-
-// ── list_plane_records (a host list) ─────────────────────────────────────────────────────────
 
 fn list_in(items: &mut [Blob], bytes: &mut [u8]) -> ListPlaneRecordsIn {
     ListPlaneRecordsIn {
@@ -365,8 +357,6 @@ fn list_plane_records_short() {
     assert!(Store::short(&a));
 }
 
-// ── a leased list ────────────────────────────────────────────────────────────────────────────
-
 fn leased(items: *const Blob, items_len: usize) -> LeasedListOut {
     LeasedListOut {
         head: out_head(),
@@ -411,8 +401,6 @@ fn leased_list_green_and_red() {
         Ok(())
     );
 }
-
-// ── verdict, cancel, window_caps ─────────────────────────────────────────────────────────────
 
 #[test]
 fn verdict_green_and_red() {
@@ -508,8 +496,6 @@ fn window_caps_green_and_red() {
     assert_eq!(f, sc::WINDOW_CAPS_OVER_MAX);
 }
 
-// ── purges and append_batch ──────────────────────────────────────────────────────────────────
-
 #[test]
 fn purges_route_to_the_count_check() {
     let i = in_head();
@@ -561,8 +547,6 @@ fn append_batch_routes_to_the_head_check() {
     );
 }
 
-// ── every outcome ────────────────────────────────────────────────────────────────────────────
-
 /// Every store slot, and `cancel`, answered PENDING or REFUSED with a zeroed `in` and `out` of
 /// the slot's own sizes passes its check; the one rule about those outcomes that a zeroed `out`
 /// breaks is `window_caps`' REFUSED error text.
@@ -596,8 +580,6 @@ fn a_zeroed_answer_on_pending_or_refused_passes_every_slot() {
         }
     }
 }
-
-// ── unchecked ops, names, faults ─────────────────────────────────────────────────────────────
 
 #[test]
 fn unchecked_op_answers_ok() {

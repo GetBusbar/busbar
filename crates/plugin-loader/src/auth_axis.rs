@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH ROWS (WIRE-AUTH): [`AuthRows`] answers and opens the plugin registry's `kind: auth` rows
-//! on the process's one dispatcher. The composition root implements the contract's `AuthAxis` over
-//! it and hands that axis to the kernel on its install record (`RootInstall::auth_axis`, ARCHITECT
-//! ruling 2026-09-29: the opener seam, impl in the root), so the kernel's identity chain opens auth
-//! instances naming neither this crate nor the root.
+//! THE AUTH ROWS (WIRE-AUTH): [`AuthRows`] answers and opens the plugin registry's `kind: auth`
+//! rows on the process's one dispatcher. The composition root implements the contract's `AuthAxis`
+//! over it and hands that axis to the kernel on its install record (`RootInstall::auth_axis`, impl
+//! in the root), so the kernel's identity chain opens auth instances naming neither this crate nor
+//! the root.
 //!
 //! A row opens on the auth kind's MEMORY ABI (`abi::auth`, through [`AuthInstance`]) when it is a
 //! linked door ([`crate::registry::LinkedEntry::Door`]) or a dropped-in library exporting
@@ -45,7 +45,7 @@ pub const NO_DOOR: &str = "it speaks the 1.5.5 JSON auth contract, which this ho
 
 /// The auth rows of `registry`, opening instances on `dispatcher`. One per build: the kernel builds
 /// its registry per boot or apply and opens that build's auth instances over it, on the process's
-/// one dispatcher (ARCHITECT ruling 2026-09-30, AUTH-DOOR Q1).
+/// one dispatcher.
 pub struct AuthRows {
     registry: Arc<PluginRegistry>,
     dispatcher: Arc<Dispatcher>,
@@ -57,7 +57,7 @@ pub struct AuthRows {
     held: Option<Arc<dyn DeclaredConns>>,
     /// Where each instance opened to serve writes its plugin log (THE DESIGN §11.2).
     logs: Option<fn() -> crate::dispatch::PluginLogConfig>,
-    /// TEST PROBE: every row [`Self::load`] was asked to bind, by key, in order (Law 7: a row the
+    /// TEST PROBE: every row [`Self::load`] was asked to bind, by key, in order (a row the
     /// configuration does not use is never bound).
     #[cfg(test)]
     bound: std::sync::Mutex<Vec<String>>,
@@ -169,12 +169,11 @@ impl AuthRows {
         Ok(Door::Memory(plugin, sink))
     }
 
-    /// The facts `row` states, READ, never bound (Law 7; ARCHITECT rulings 2026-10-20: reading a
-    /// row's static declaration, its kind tail included, is reading, not loading; and the canonical
-    /// rendering carries the whole kind tail, audit root#7 / loader#9): a linked door's `'static`
-    /// Statement, a dropped-in row's SIGNED MANIFEST rendering, with no `dlopen` (admitting that row
-    /// compares its door's Statement with the same rendering, tail included). `None` when the row's
-    /// Statement is one a bind refuses.
+    /// The facts `row` states, READ, never bound (reading a row's static declaration, its kind tail
+    /// included, is reading, not loading; and the canonical rendering carries the whole kind tail,
+    /// audit root#7 / loader#9): a linked door's `'static` Statement, a dropped-in row's SIGNED
+    /// MANIFEST rendering, with no `dlopen` (admitting that row compares its door's Statement with
+    /// the same rendering, tail included). `None` when the row's Statement is one a bind refuses.
     fn stated(&self, row: &LoadablePlugin) -> Option<AuthFacts> {
         match row.door() {
             Some(door) => crate::dispatch::kinds::auth::stated_facts_raw(door).ok(),
@@ -430,8 +429,8 @@ fn stated_aliases(row: &LoadablePlugin) -> Vec<String> {
 
 /// TEST STAND-IN: one build's auth axis over `registry` on a dispatcher of its own, for a build
 /// with no composition root to hold the process's one dispatcher (a test binary), lent `seal` (the
-/// kernel's, so a verify reveals the credential it lends the plugin as a booted node's does; Part
-/// 2 #54). The first call's seal is the one lent. Never shipped.
+/// kernel's, so a verify reveals the credential it lends the plugin as a booted node's does). The
+/// first call's seal is the one lent. Never shipped.
 #[cfg(any(test, feature = "test-support"))]
 #[must_use]
 pub fn stand_in(

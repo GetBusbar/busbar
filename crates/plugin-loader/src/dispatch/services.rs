@@ -20,7 +20,7 @@
 //!   service's index and a fingerprint of the request's bytes, never its buffers). The re-poll of
 //!   that request reads its answer; a call on the handle naming another service or another request
 //!   is a plugin fault: FAULT ([`HANDLE_REBOUND`]), never the stored answer, and the calling
-//!   instance is quarantined as a forged context's is. Status row 189: a plugin reused one handle
+//!   instance is quarantined as a forged context's is. A plugin once reused one handle
 //!   for its record load and then `entitlement.check`, and the check read the record load's
 //!   answer.
 //! * **May pend only on a ticket.** A service that may pend, called with no ticket, is REFUSED and
@@ -98,8 +98,6 @@ pub const SECOND_SHORT: &str = "a second short answer on one handle";
 /// one the handle is bound to; the calling instance is quarantined.
 pub const HANDLE_REBOUND: &str =
     "a handle is bound to the service and request it was first used for";
-
-// ── the stored results ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 enum Entry {
@@ -266,7 +264,7 @@ impl ServiceStore {
 /// The one answer a pended service gives: store the result under its handle, then wake its ticket.
 pub struct Completer {
     store: Weak<ServiceStore>,
-    /// The route, and the instance whose context took the ticket (#74).
+    /// The route, and the instance whose context took the ticket.
     waking: Waking,
     handle: CompletionHandle,
     /// The epoch of the op that issued `handle`.
@@ -302,8 +300,6 @@ pub(crate) struct Served {
     pub(crate) store: Arc<ServiceStore>,
     pub(crate) provider: Arc<dyn HostServices>,
 }
-
-// ── the answer ─────────────────────────────────────────────────────────────────────────────────
 
 /// A service's answer, before it is written into the caller's `out`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -510,9 +506,9 @@ unsafe fn serve_kept(
     }
 }
 
-/// A call on a used handle naming another service or request (status row 189): the caller, the
-/// instance whose context made the call, is quarantined, and the call answers FAULT. Never the
-/// answer the handle holds.
+/// A call on a used handle naming another service or request: the caller, the instance whose
+/// context made the call, is quarantined, and the call answers FAULT. Never the answer the handle
+/// holds.
 fn rebound(route: &Waking) -> Answered {
     if let Some(wake) = route.supplier {
         super::plugin::quarantine(
@@ -523,8 +519,6 @@ fn rebound(route: &Waking) -> Answered {
     }
     Answered::bare(Outcome::Fault, HANDLE_REBOUND)
 }
-
-// ── the slots ──────────────────────────────────────────────────────────────────────────────────
 
 /// The table a host hands every instance.
 pub static HOST_SLOTS: HostSlots = HostSlots {

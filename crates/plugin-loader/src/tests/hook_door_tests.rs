@@ -12,8 +12,8 @@
 //! fixture's broken door (`decide` answering two verbs) the same two ways: the axis answers
 //! [`Answered::Broken`] on both, where the conforming door answers one verb.
 //!
-//! RED ARM (ARCHITECT Q-SO8): [`a_hook_statement_without_its_kind_tail_is_refused_at_load`] — the
-//! conforming plugin with no hook tail does not load; the refusal names the missing tail.
+//! ARM: [`a_hook_statement_without_its_kind_tail_is_refused_at_load`] — the conforming plugin with
+//! no hook tail does not load; the refusal names the missing tail.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -272,7 +272,7 @@ fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neith
     assert!(!dropped.linked(NAME) && !dropped.first_party(NAME));
 }
 
-/// RED ARM (Q-SO8): a hook Statement with no kind tail is refused at load, named; nothing assumes
+/// RED ARM: a hook Statement with no kind tail is refused at load, named; nothing assumes
 /// a class or grants for it. The conforming door, which states its tail, opens.
 #[test]
 fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
@@ -327,10 +327,9 @@ fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
     );
 }
 
-/// THE SESSION REACHES A HOOK (ARCHITECT RULING 2026-10-03, the project-pool fold ruling's session
-/// half): the request view's opaque session crosses the hook kind's `decide` through the one
-/// dispatcher, linked and dropped in alike: the fixture refuses the session its settings name and
-/// abstains on any other, and on a request that names none.
+/// THE SESSION REACHES A HOOK: the request view's opaque session crosses the hook kind's `decide`
+/// through the one dispatcher, linked and dropped in alike: the fixture refuses the session its
+/// settings name and abstains on any other, and on a request that names none.
 #[tokio::test]
 async fn a_hook_reads_the_request_session_through_both_doors() {
     let run = |rows: HookRows| async move {
@@ -374,13 +373,14 @@ async fn a_hook_reads_the_request_session_through_both_doors() {
     );
 }
 
-/// R1 (Q-LEAK; THE DESIGN: every hook call runs on an off-worker lane carrying 1.5.5's
-/// `timeout_ms` guarantee), the LANE'S half: a gate whose `decide` sleeps past the call's budget is
-/// cut off at that budget through the axis — `TimedOut`, promptly, never the sleep waited out, and
-/// the caller's worker never parked. The kernel's half (the budget is the hook's `timeout_ms`, and a
-/// timed-out call is an error its `on_error` decides) is `dlopen_decide_deadline_cuts_off_a_slow_gate`
-/// / `dlopen_slow_gate_hits_the_deadline` in busbar-kernel's hook tests. Re-homed with the deletion of
-/// the test-hook plugin (OWNER 2026-10-03, no test plugins), whose `sleep_ms` drove both halves.
+/// (THE DESIGN: every hook call runs on an off-worker lane carrying 1.5.5's `timeout_ms`
+/// guarantee), the LANE'S half: a gate whose `decide` sleeps past the call's budget is cut off at
+/// that budget through the axis — `TimedOut`, promptly, never the sleep waited out, and the
+/// caller's worker never parked. The kernel's half (the budget is the hook's `timeout_ms`, and a
+/// timed-out call is an error its `on_error` decides) is
+/// `dlopen_decide_deadline_cuts_off_a_slow_gate` / `dlopen_slow_gate_hits_the_deadline` in
+/// busbar-kernel's hook tests. Re-homed with the deletion of the test-hook plugin (no test
+/// plugins), whose `sleep_ms` drove both halves.
 #[tokio::test]
 async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
     let axis = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked);
@@ -524,7 +524,7 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
     );
 }
 
-/// THE RULING'S HOOK CASE THROUGH THE AXIS (1.5.5 configs load unchanged): a hook config naming
+/// THE HOOK CASE THROUGH THE AXIS (1.5.5 configs load unchanged): a hook config naming
 /// `module: busbar-webrequest` (the 1.5.5 release's manifest name) opens the 1.6.0 hook, DROPPED IN
 /// (its signed manifest's `former_names`, through the registry the root builds the axis over) and
 /// LINKED (the former names the root's legacy table gives a linked row). RED ARMS, in the same
@@ -577,8 +577,8 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     assert!(!registry.answers(OLD, "hook"));
 }
 
-/// THE ONE-OWNER RULE on the hook axis (ARCHITECT): a linked hook given a former name another hook
-/// row already answers to is refused, naming both, so the old name never resolves ambiguously.
+/// THE ONE-OWNER RULE on the hook axis: a linked hook given a former name another hook row already
+/// answers to is refused, naming both, so the old name never resolves ambiguously.
 #[test]
 fn a_former_name_two_hooks_claim_is_refused_on_the_axis() {
     let rows = HookRows::new(
@@ -605,7 +605,7 @@ fn a_former_name_two_hooks_claim_is_refused_on_the_axis() {
     );
 }
 
-/// ARCHITECT Q-P4-12 ON THE HOOK AXIS: a linked hook and a DIFFERENT dropped-in hook answering one
+/// ON THE HOOK AXIS: a linked hook and a DIFFERENT dropped-in hook answering one
 /// word (here the dropped-in plugin's manifest alias spells the linked hook's name) refuse the
 /// configuration, naming both; no door outranks the other. GREEN arm: the dropped-in hook under an
 /// alias of its own sits beside the linked one.
@@ -760,10 +760,10 @@ fn an_instance_debug_never_shows_its_settings() {
     }
 }
 
-/// RED (ARCHITECT ruling, status row 194): a hook that declared `hook.orders: false` is refused
-/// when its `decide` answers an order, where the host reads the answer: BROKEN naming the
-/// declaration, never the verdict. Its twin, the same door with `orders` unstated (true), is
-/// answered READY with its order, and a declaring hook that abstains is still answered READY.
+/// A hook that declared `hook.orders: false` is refused when its `decide` answers an order, where
+/// the host reads the answer: BROKEN naming the declaration, never the verdict. Its twin, the same
+/// door with `orders` unstated (true), is answered READY with its order, and a declaring hook that
+/// abstains is still answered READY.
 #[tokio::test]
 async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
     let open = |door: DoorFn, orders: bool| {

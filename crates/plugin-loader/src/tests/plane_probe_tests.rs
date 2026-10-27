@@ -149,10 +149,9 @@ fn red_a_probe_is_bound_and_opened_with_the_probes_lock_let_go() {
     );
 }
 
-/// LAW 7 FOR A PLANE'S REGISTRY ROW (`BUSBAR-1.6.0.md` l.1908-1910: "Core loads a plugin **iff** its
-/// configuration section is present. No verb configured → that plugin is never loaded."; ARCHITECT
-/// ruling 2026-10-20: reading a row's static declaration, its kind tail included, is reading, not
-/// loading).
+/// LAW 7 FOR A PLANE'S REGISTRY ROW (`BUSBAR-1.6.0.md` l.1908-1910: "Core loads a plugin **iff**
+/// its configuration section is present. No verb configured → that plugin is never loaded.";
+/// reading a row's static declaration, its kind tail included, is reading, not loading).
 ///
 /// RED before a linked door's registry row was read off its `'static` Statement: the row's facts
 /// were read off a probe instance bound at registration, so every discovered plane was bound at boot

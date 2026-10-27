@@ -88,8 +88,7 @@ pub const HOST_IDENTITY: &str = "busbar";
 /// hold that: the removed `build-artifact.yml` sets the variable on the release build step,
 /// `scripts/release-key-guard.sh` refuses to build a release binary without a well-formed 64-hex
 /// key, and `scripts/release-gate/platform-checks.sh` fails the `pubkey` row when the published
-/// artifact does not embed it.
-/// (Owner ruling 2026-09-30, N3 / Q90: a statement of the contract, not a deferral.)
+/// artifact does not embed it. (a statement of the contract, not a deferral.)
 pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
     let hex_key: &str = option_env!("BUSBAR_RELEASE_PUBKEY")?;
     // A malformed build-time key is a build/packaging bug; fail closed to "no first-party key"
@@ -305,24 +304,23 @@ pub struct Declares {
     /// before the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "EgressPolicy::is_default")]
     pub egress: EgressPolicy,
-    /// The plane's BREAKER FACTS (ARCHITECT Q4): how its members' breaker cells treat a transient
-    /// failure that does not trip them — see [`BreakerDecl`]. Absent, the host's default posture
-    /// holds; left off the wire when absent, so every manifest packed before the field existed
-    /// keeps its canonical bytes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub breaker: Option<BreakerDecl>,
-    /// THE DISK NEED (THE DESIGN §11.11 R4, as the OWNER amended it 2026-10-13): the plugin's
-    /// source reads the local disk. Stated by a `kind: secret` plugin ONLY (no other kind may claim
-    /// the exception; [`validate_identity`] refuses it elsewhere): the host runs its `resolve` on the
-    /// bounded disk lane at config time and refuses it on a request path. Left off the wire when
-    /// false, so every manifest packed before the field existed keeps its canonical bytes.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub disk: bool,
-    /// THE HOOK FACTS a `kind: hook` plugin states about itself (ARCHITECT ruling, status row 194,
-    /// BUSBAR-1.6.0.md l.246: `declares` carries structured answers): see [`HookDecl`]. Absent, the
-    /// hook is judged and served as every hook before the field existed (it may order); left off
+    /// The plane's BREAKER FACTS: how its members' breaker cells treat a transient failure that
+    /// does not trip them — see [`BreakerDecl`]. Absent, the host's default posture holds; left off
     /// the wire when absent, so every manifest packed before the field existed keeps its canonical
     /// bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub breaker: Option<BreakerDecl>,
+    /// THE DISK NEED (THE DESIGN §11.11 R4): the plugin's source reads the local disk. Stated by a
+    /// `kind: secret` plugin ONLY (no other kind may claim the exception; [`validate_identity`]
+    /// refuses it elsewhere): the host runs its `resolve` on the bounded disk lane at config time
+    /// and refuses it on a request path. Left off the wire when false, so every manifest packed
+    /// before the field existed keeps its canonical bytes.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub disk: bool,
+    /// THE HOOK FACTS a `kind: hook` plugin states about itself (`declares` carries structured
+    /// answers): see [`HookDecl`]. Absent, the hook is judged and served as every hook before the
+    /// field existed (it may order); left off the wire when absent, so every manifest packed before
+    /// the field existed keeps its canonical bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hook: Option<HookDecl>,
 }
@@ -344,8 +342,8 @@ impl HookDecl {
     }
 }
 
-/// A plane's declared BREAKER FACTS (`declares.breaker`, ARCHITECT Q4): per-plane facts about the
-/// breaker cells of its members, which the host reads and applies to that plane's cells alone.
+/// A plane's declared BREAKER FACTS (`declares.breaker`): per-plane facts about the breaker cells
+/// of its members, which the host reads and applies to that plane's cells alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BreakerDecl {
@@ -387,17 +385,17 @@ impl EgressPolicy {
 }
 
 impl Declares {
-    /// THE ONE READER OF A DECLARES DOCUMENT (a plugin's `declares.json`; ARCHITECT ruling (b),
-    /// 2026-10-07): pack's `--declares-file`, a linked export row's `DECLARES` and a linked plane
+    /// THE ONE READER OF A DECLARES DOCUMENT (a plugin's `declares.json`):
+    /// pack's `--declares-file`, a linked export row's `DECLARES` and a linked plane
     /// door's `linked-declares` row all read through here, and nothing else deserializes declares
     /// bytes into [`Declares`] (`declares_reader_tests` scans the tree for one).
     ///
     /// A networked plugin's file states `needs` (the transport schemes its Statement's needs name)
-    /// for the conformance suite (`the_declared_needs_are_the_statements`) and the fleet render (its
-    /// conformance host). The needs belong to the Statement, so the section never carries them:
-    /// `needs` is checked to be a list of scheme names and removed, and the rest is read with every
-    /// other unknown key still refused. Which schemes it names is not this reader's to judge: core
-    /// names no transport (Law 1), the suite holds the list to the Statement's, and boot resolves a
+    /// for the conformance suite (`the_declared_needs_are_the_statements`) and the fleet render
+    /// (its conformance host). The needs belong to the Statement, so the section never carries
+    /// them: `needs` is checked to be a list of scheme names and removed, and the rest is read with
+    /// every other unknown key still refused. Which schemes it names is not this reader's to judge:
+    /// core names no transport, the suite holds the list to the Statement's, and boot resolves a
     /// Statement's need against the claims the linked and dropped-in transports make. A SIGNED
     /// manifest's `declares` is not a declares document: it is read with the manifest and refuses
     /// `needs`.
@@ -532,8 +530,8 @@ pub struct TrustPolicy {
     /// REPLACES this floor for the pinned name, and for that name only. That is the documented way
     /// past it, and it is why an operator can still roll a first-party plugin back on purpose.
     ///
-    /// Maintained by `busbar_plugin_loader::HighWaterMarks`: persisted under the fleet data dir when
-    /// one is configured, memory-only otherwise (PB-13/15 — no data dir, no files).
+    /// Maintained by `busbar_plugin_loader::HighWaterMarks`: persisted under the fleet data dir
+    /// when one is configured, memory-only otherwise (no files).
     pub first_party_high_water: BTreeMap<String, String>,
     /// THIRD-PARTY allowlist: publisher name -> ed25519 public key. The first-party publisher
     /// (`busbar`) never resolves here.
@@ -714,18 +712,18 @@ pub enum RejectKind {
 
 /// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a
 /// provider's allow-list and metadata hosts (a plane's upstreams). The connector's default class
-/// and the open web are any trusted plugin's (ARCHITECT ruling EGRESS-GRANT 2026-10-03; the cold
-/// lane's `declares.egress` grant, on the door's needs).
+/// and the open web are any trusted plugin's (the cold lane's `declares.egress` grant, on the
+/// door's needs).
 ///
-/// `loopback-allowed` is NOT here (OWNER 2026-10-24, oracle BOOT-W23): a collector or hook on
-/// loopback the operator admitted with `plugins.trust` loaded in 1.5.5, UNVERIFIED; the opt-in is
-/// the operator's grant. `operator-infrastructure` is NOT here either. §5's egress-class table gives it to "databases, vault,
-/// ldap; auth mint endpoints" with no first-party condition (`BUSBAR-1.6.0.md` l.604-611): its
-/// targets come from operator settings, and the plugins that dial them (a store, a secret service, a
-/// directory, an IdP's token exchange) were dropped-in plugins in 1.5.5 that an operator's
-/// `plugins.trust` opt-in loaded. Refusing that class to a plugin the operator admitted changes what
-/// 1.5.5 served, which only an owner signature may do ("Law beats table", l.613; "the default is
-/// 1.5.5's behaviour", l.364-365); the opt-in is the operator's grant (l.829, Part 2 #75 l.2276).
+/// `loopback-allowed` is NOT here (oracle BOOT-W23): a collector or hook on loopback the operator
+/// admitted with `plugins.trust` loaded in 1.5.5, UNVERIFIED; the opt-in is the operator's grant.
+/// `operator-infrastructure` is NOT here either. §5's egress-class table gives it to "databases,
+/// vault, ldap; auth mint endpoints" with no first-party condition (`BUSBAR-1.6.0.md` l.604-611):
+/// its targets come from operator settings, and the plugins that dial them (a store, a secret
+/// service, a directory, an IdP's token exchange) were dropped-in plugins in 1.5.5 that an
+/// operator's `plugins.trust` opt-in loaded. Refusing that class to a plugin the operator admitted
+/// changes what 1.5.5 served, which only an owner signature may do ("Law beats table", l.613; "the
+/// default is 1.5.5's behaviour", l.364-365); the opt-in is the operator's grant (l.829).
 pub const FIRST_PARTY_EGRESS: [(u32, &str); 1] = [(
     busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER,
     "provider",
@@ -1161,8 +1159,8 @@ pub fn evaluate(
     // The floor that IS applied is the per-name HIGH-WATER MARK (`first_party_high_water`): the
     // highest version of THIS name this deployment has itself seen and loaded. That couples the
     // floor to the plugin's own version line instead of the binary's, so it closes the replay
-    // (`docs/plugins.md` security-model item 3) without rejecting current releases. A name with no
-    // mark carries no floor — a first install is not a downgrade.
+    // without rejecting current releases. A name with no mark carries no floor — a first install is
+    // not a downgrade.
     //
     // An EXPLICIT, audited rollback pin (`first_party_floors`, from `POST /plugins/rollback` via the
     // persisted `plugin_versions` overlay) REPLACES the mark for the pinned name — that is the

@@ -4,9 +4,8 @@
 //! THE EXPORT ROWS (WIRE-EXPORT): [`ExportRows`] probes, checks and opens the plugin registry's
 //! `kind: export` rows on the process's one dispatcher. The composition root implements the
 //! contract's `ExportAxis` over it, with the registry it scanned and linked, and installs that axis
-//! through the kernel's `RootInstall` (ARCHITECT ruling 2026-09-29, the opener seam: impl in the
-//! root, installed via `RootInstall`) — so the kernel probes, checks and opens export instances
-//! naming neither this crate nor the root.
+//! through the kernel's `RootInstall` (impl in the root, installed via `RootInstall`) — so the
+//! kernel probes, checks and opens export instances naming neither this crate nor the root.
 //!
 //! A row opens on the export kind's MEMORY ABI (`abi::export`, through [`ExportInstance`]) when it
 //! is a linked door ([`crate::registry::LinkedEntry::Door`]) or a dropped-in library whose signed
@@ -55,7 +54,7 @@ pub struct ExportRows<'r> {
     logs: Option<&'r PluginLogConfig>,
     /// The host's one connection table: an OPENED instance's needs are declared on it.
     conns: Option<Arc<dyn DeclaredConns>>,
-    /// A sink an OPENED instance's #85 envelope is also handed to (the host observes it at the bind
+    /// A sink an OPENED instance's observability envelope is also handed to (the host observes it at the bind
     /// regardless); `None` = none. Under `plugins.logs` it is the log sink's own downstream.
     envelope: Option<Arc<dyn EnvelopeSink>>,
 }
@@ -94,7 +93,7 @@ impl<'r> ExportRows<'r> {
         self
     }
 
-    /// Each opened instance's #85 envelope is also handed to `envelope` (behind its log sink, when
+    /// Each opened instance's observability envelope is also handed to `envelope` (behind its log sink, when
     /// [`Self::with_logs`] gave one); the host's observability has it either way.
     #[must_use]
     pub fn with_envelope(mut self, envelope: Arc<dyn EnvelopeSink>) -> Self {
@@ -109,12 +108,12 @@ impl<'r> ExportRows<'r> {
     }
 
     /// Bind `row`'s door under `label`: an instance only probed or checked (`opening` is `None`)
-    /// binds with no log sink, no envelope and no connection table (nothing is opened to the network
-    /// or the disk while a configuration is judged); one opened to deliver over its settings binds
-    /// with all three — its #85 envelope observed by the host at the bind, as every door's is, and
-    /// handed to its log sink and to [`Self::with_envelope`]'s sink when one is set — and its in-flight bound
-    /// the one its settings state ([`INFLIGHT_KEY`], [`DEFAULT_INFLIGHT`] when they state none),
-    /// within the plugin's declared `max_inflight` (ARCHITECT ruling MAX-INFLIGHT 2026-10-03).
+    /// binds with no log sink, no envelope and no connection table (nothing is opened to the
+    /// network or the disk while a configuration is judged); one opened to deliver over its
+    /// settings binds with all three — its observability envelope observed by the host at the bind, as every
+    /// door's is, and handed to its log sink and to [`Self::with_envelope`]'s sink when one is set
+    /// — and its in-flight bound the one its settings state ([`INFLIGHT_KEY`], [`DEFAULT_INFLIGHT`]
+    /// when they state none), within the plugin's declared `max_inflight`.
     fn load(
         &self,
         row: &LoadablePlugin,
@@ -130,8 +129,8 @@ impl<'r> ExportRows<'r> {
                 None => return Err(format!("export plugin '{name}': {NO_DOOR}")),
             },
         };
-        // The dispatcher stands the host's observability before whatever sink is bound here
-        // (every kind's envelope is observed at its bind, ARCHITECT ruling ENVELOPE-ALL).
+        // The dispatcher stands the host's observability before whatever sink is bound here (every
+        // kind's envelope is observed at its bind).
         let sink: Arc<dyn EnvelopeSink> = match opening {
             None => Arc::new(NoSink),
             Some(_) => {

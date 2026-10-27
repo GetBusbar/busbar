@@ -286,7 +286,6 @@ pub fn write_with(path: &Path, bytes: &[u8], opts: DurableOpts) -> io::Result<()
     sync_holding_dir(path)
 }
 
-// ── `#[cfg(test)]` hook points ─────────────────────────────────────────────────────────────────────
 // In a release build `fault_point!` expands to nothing, so the primitive's production path carries
 // ZERO indirection — no trait object, no branch. Under test it asks the test hooks
 // (`src/tests/hooks.rs`, where the armed faults and the recorded fsyncs live) whether to fail this

@@ -111,8 +111,6 @@ fn the_profile_guard_refuses_a_debug_build_only_when_release_was_asked_for() {
     );
 }
 
-// ── THE SUITE'S CONNECTION TABLE (ARCHITECT, "SUITE CONNECTIONS") ──
-//
 // The subject here is the loader's own dispatcher test door (no plugin), restated with the needs
 // each case names: the table `Subject::conns` builds is the decision under test.
 
@@ -240,7 +238,7 @@ mod suite_conns {
         static HOSTED: std::cell::Cell<Option<String>> = const { std::cell::Cell::new(None) };
     }
 
-    /// Q-P4-4's seam: with a HOST connector handed in, a need over a scheme the test table does
+    /// The seam: with a HOST connector handed in, a need over a scheme the test table does
     /// not serve (`http`) binds over the host, its TLS handed the suite's test anchors; without
     /// one it binds as a probe; anchors with no host are refused by name.
     #[test]
@@ -310,8 +308,6 @@ mod suite_conns {
     }
 }
 
-// ── FIRST INVOCATIONS PINNED, RESUMES REPORTED (Q-P4-5) ──
-
 /// A fold whose dialing step resumed: pinned at one first invocation each.
 fn dialled() -> Vec<Step> {
     let mut f = honest();
@@ -346,8 +342,6 @@ fn red_a_networked_fold_whose_dialing_step_never_resumed_is_refused() {
     assert!(e.contains("resumed no op"), "{e}");
     assert_eq!(resumed(&honest(), false, &[]), Ok(()));
 }
-
-// ── THE KERNEL'S OPEN, RESUMED (Q-P4-6) ──
 
 mod resumed_open {
     use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
@@ -457,7 +451,7 @@ mod resumed_open {
     }
 }
 
-/// RED (Q-P4-7): the store script writes, and looks up, the credential kind the plugin's
+/// RED: the store script writes, and looks up, the credential kind the plugin's
 /// `conformance.json` names (`store.credential_kind`: the one kind the shipped store schemas hold),
 /// never a kind of its own a schema-constrained store refuses; a `conformance.json` that names none
 /// is refused by name.
@@ -471,8 +465,6 @@ fn the_store_script_writes_the_credential_kind_the_plugin_names() {
     let text = text.downcast_ref::<String>().cloned().unwrap_or_default();
     assert!(text.contains("store.credential_kind"), "{text}");
 }
-
-// ── THE PER-FOLD NAMESPACE (Q-P4-8) ──
 
 mod fold_namespace {
     use super::super::{fold_namespace, Leg, Subject, FOLD};
@@ -545,8 +537,6 @@ mod fold_namespace {
         }
     }
 }
-
-// ── THE PER-FOLD NAMESPACE HOOKS (Q-P4-8) ──
 
 mod namespace_hooks {
     use std::sync::Mutex;
@@ -669,8 +659,6 @@ mod namespace_hooks {
     }
 }
 
-// ── THE DECLARED NEEDS ARE THE STATEMENT'S (ARCHITECT, one truth) ──
-
 /// RED: a declares file that names a scheme the Statement does not, or misses one it does, is
 /// refused; one that names exactly the Statement's schemes (in any order, repeated) passes, and so
 /// does a declares file with no `needs` for a Statement that declares none.
@@ -765,8 +753,8 @@ fn panic_text(run: impl FnOnce()) -> String {
         .unwrap_or_default()
 }
 
-/// RED (status row 114): a plugin with NO declares file fails the declared-needs proof by name,
-/// where it used to print and pass; given one stating the Statement's needs, it passes.
+/// A plugin with NO declares file fails the declared-needs proof by name, where it used to print
+/// and pass; given one stating the Statement's needs, it passes.
 #[test]
 fn red_a_plugin_with_no_declares_file_fails_the_declared_needs_proof() {
     use crate::dispatch_test_plugin as plug;
@@ -783,10 +771,9 @@ fn red_a_plugin_with_no_declares_file_fails_the_declared_needs_proof() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// RED (status row 114): an outbound RED arm never passes unrun. Over a door that states no
-/// outbound family (the export test door), the arm runs nothing only while `conformance.json`
-/// drives no outbound style either; inputs that drive one over such a door fail by name, where
-/// every arm used to print and pass.
+/// An outbound RED arm never passes unrun. Over a door that states no outbound family (the export
+/// test door), the arm runs nothing only while `conformance.json` drives no outbound style either;
+/// inputs that drive one over such a door fail by name, where every arm used to print and pass.
 #[test]
 fn red_an_outbound_arm_over_a_door_without_the_family_never_passes_unrun() {
     use super::{outbound_plant, Subject};
@@ -839,8 +826,6 @@ fn the_suite_lends_the_statements_secret_refs_out_of_the_settings() {
         (b"{ \"a\": 1 }".to_vec(), Vec::new())
     );
 }
-
-// ── THE ADMISSION AND CONNECTION RED ARMS (`red.rs`), over the loader's own fixtures ─────────────
 
 mod red_arms {
     use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -1112,7 +1097,7 @@ mod hook_on_tickets {
     }
 }
 
-/// EVERY WAIT WAS WOKEN (THE DESIGN A.4.3, audit loader-conformance #10): the fold's end requires
+/// EVERY WAIT WAS WOKEN (THE DESIGN A.4.3): the fold's end requires
 /// `bb_deadline_without_wake_total` = 0 on every dispatcher the fold made.
 mod deadline_without_wake {
     use std::sync::Arc;
@@ -1195,8 +1180,8 @@ mod deadline_without_wake {
     }
 }
 
-/// THE DROPPED IMAGE, CHOSEN EXPLICITLY (audit loader-conformance #13): never the newest file by
-/// age, and never the linked door itself.
+/// THE DROPPED IMAGE, CHOSEN EXPLICITLY: never the newest file by age, and never the linked door
+/// itself.
 mod dropped_image {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
@@ -1281,10 +1266,10 @@ mod dropped_image {
         assert_eq!(choose_cdylib(p.path(), "plug").ok(), Some(up));
     }
 
-    /// RED (#721): an earlier plain build of the crate (no `dropped-in` feature) left an uplifted
-    /// image with no door, and the test build's own image sits under `deps/` with no hash: the
-    /// image with the door is chosen, whichever was built last; only doorless images built is a
-    /// failure naming them, never a leg run on a library with no door.
+    /// An earlier plain build of the crate (no `dropped-in` feature) left an uplifted image with no
+    /// door, and the test build's own image sits under `deps/` with no hash: the image with the
+    /// door is chosen, whichever was built last; only doorless images built is a failure naming
+    /// them, never a leg run on a library with no door.
     #[test]
     fn red_an_image_without_the_door_is_never_the_dropped_in_leg() {
         let p = Profile::new("doorless");
@@ -1368,7 +1353,7 @@ mod dropped_image {
     }
 }
 
-/// THE SUITE MUTATES NO PROCESS STATE UNDER A RUNNING FOLD (audit loader-conformance #5).
+/// THE SUITE MUTATES NO PROCESS STATE UNDER A RUNNING FOLD.
 mod no_shared_state {
     use super::super::store::LegMint;
     use super::super::Subject;
@@ -1514,9 +1499,9 @@ mod hook_far_ends {
     }
 }
 
-/// A HOOK THAT DECLARED `hook.orders: false` IS JUDGED ON ABSTAIN-ONLY (ARCHITECT ruling, status
-/// row 194; the hook script's module docs). An undeclared hook still must produce the long order
-/// that walks the re-call; a declaring hook that orders FAILS (the RED arm).
+/// A HOOK THAT DECLARED `hook.orders: false` IS JUDGED ON ABSTAIN-ONLY (the hook script's module
+/// docs). An undeclared hook still must produce the long order that walks the re-call; a declaring
+/// hook that orders FAILS (the RED arm).
 mod hook_orders {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::Arc;
@@ -1699,8 +1684,8 @@ mod hook_orders {
 #[test]
 fn a_suite_names_its_door_by_function_or_by_macro_door_alike() {
     // `conformance_suite! { door: plugin::door, .. }` and `{ door: plugin::MACRO_DOOR, .. }` run
-    // over the one door function (status rows 159 and 194: the second spelling is the one that
-    // compiles once #1469 lands, and it compiles here first).
+    // over the one door function (the second spelling is the one that compiles once #1469 lands,
+    // and it compiles here first).
     let by_fn = crate::__conformance_door!(crate::plane_door_plugin::door);
     let by_macro = crate::__conformance_door!(crate::plane_door_plugin::MACRO_DOOR);
     let named = crate::plane_door_plugin::MACRO_DOOR.door_fn();
@@ -1821,12 +1806,12 @@ fn a_loaded_door_and_a_linked_plugin_name_their_door_by_macro_door_alike() {
 }
 
 /// THE SUITE'S DROPPED LEG LOADS AS PRODUCTION LOADS (THE DESIGN §11.4: one conformance suite runs
-/// the compiled-in build and the dropped-in build through the same table; status row 2: one loading
-/// path). Every production caller loads a dropped plugin from its verified bytes, staged by the
-/// loader's one staging path (`load_dropped_bytes`: a sealed `memfd` on Linux, a private `0700`
-/// copy elsewhere); the suite's dropped leg must run that staging too, never `dlopen` the build
-/// path. RED before: [`super::load`]'s dropped leg called `load_dropped` on the cdylib's path, and
-/// nothing was staged.
+/// the compiled-in build and the dropped-in build through the same table; one loading path). Every
+/// production caller loads a dropped plugin from its verified bytes, staged by the loader's one
+/// staging path (`load_dropped_bytes`: a sealed `memfd` on Linux, a private `0700` copy elsewhere);
+/// the suite's dropped leg must run that staging too, never `dlopen` the build path. RED before:
+/// [`super::load`]'s dropped leg called `load_dropped` on the cdylib's path, and nothing was
+/// staged.
 #[test]
 fn the_dropped_leg_loads_the_cdylib_through_the_staging_production_uses() {
     use super::{dispatcher, load, Leg, Subject};

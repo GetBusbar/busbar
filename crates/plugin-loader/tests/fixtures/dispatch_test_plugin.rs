@@ -13,7 +13,7 @@
 //! hangs until released (the watchdog's prey) and panics. Every slot is HAND-WRITTEN with no panic
 //! guard, so that panic escapes `extern "C"` and aborts the process.
 //!
-//! Numbers go back the way a plugin reports anything: as #85 envelope gauges (families 2..=5).
+//! Numbers go back the way a plugin reports anything: as observability envelope gauges (families 2..=5).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -100,11 +100,11 @@ pub const KIND_REJECTS: u64 = 0xDEAD;
 pub const SHORT: u64 = 0x5807;
 /// `tick` mode: panic. `tick` has no guard, so the process aborts.
 pub const PANIC: &[u8] = b"panic";
-/// `tick`: hand the host's `wake` a context one tag bit off the one this crossing was handed (#74:
-/// the host refuses it and quarantines this instance), then answer READY.
+/// `tick`: hand the host's `wake` a context one tag bit off the one this crossing was handed (the
+/// host refuses it and quarantines this instance), then answer READY.
 pub const FORGE: &[u8] = b"forge";
-/// `tick`, on a ticket: wake this ticket's slot at a generation the host never minted (#74: a
-/// forged ticket generation; the host quarantines this instance), then answer READY.
+/// `tick`, on a ticket: wake this ticket's slot at a generation the host never minted (a forged
+/// ticket generation; the host quarantines this instance), then answer READY.
 pub const FORGE_TICKET: &[u8] = b"forgeticket";
 
 /// Family index of the `invocations` gauge.
@@ -212,7 +212,7 @@ pub extern "C" fn door() -> &'static Door {
 // The one exported symbol, forwarding to the same door (the SDK's one export).
 busbar_contract::export_door!(door);
 
-// The #85 envelope `answer` hands back: two good metrics, three the host must drop (an index out of
+// The observability envelope `answer` hands back: two good metrics, three the host must drop (an index out of
 // range, a non-finite value, a kind the family does not have), one good diagnostic and one bad.
 static ANSWER_LABELS: Shared<[AbiStr; 1]> = Shared([s(b"answer")]);
 const fn metric(family_idx: u32, kind: u8, value: f64) -> MetricEntry {
@@ -692,9 +692,9 @@ unsafe fn pend(me: &Inst, tin: &TickIn, mode: &[u8], out: *mut c_void) -> RawOut
             }
             PEND_STALE => {
                 // Two tickets this plugin was handed before, each recycled since: late wakes for
-                // generations the host really minted (H2), never a generation it did not (#74: a
-                // ticket generation is a keyed permutation of the slot's counter, so a guessed one
-                // is a forgery and quarantines the instance).
+                // generations the host really minted (H2), never a generation it did not (a ticket
+                // generation is a keyed permutation of the slot's counter, so a guessed one is a
+                // forgery and quarantines the instance).
                 let stale: Vec<Ticket> = st
                     .handed
                     .iter()

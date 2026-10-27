@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The instance handle's own arithmetic and its one check (#74), each judged against a latch of the
-//! test's own so no case here moves the process's. The forged context refused at the host's
-//! entries is `host_services_tests::a_forged_context_is_refused_before_it_names_an_instance`; the
+//! The instance handle's own arithmetic and its one check, each judged against a latch of the
+//! test's own so no case here moves the process's. The forged context refused at the host's entries
+//! is `host_services_tests::a_forged_context_is_refused_before_it_names_an_instance`; the
 //! quarantine, the FAULT of the forging op and the entropy refusal at boot are `dispatch_tests`'.
 
 use super::*;
@@ -197,10 +197,10 @@ fn consecutive_ticket_generations_hide_their_counter() {
     );
 }
 
-/// RED (#74, WORKER-TWEAK SEPARATION): the same slot index on two workers runs two unrelated
-/// sequences, and a generation one worker minted inverts, on the other, to no count it reached. A
-/// tweak that left the worker out would give every worker's slot `idx` one sequence: a ticket a
-/// plugin held on worker 0, re-addressed to worker 1's slot, would pass there as a stale wake.
+/// WORKER-TWEAK SEPARATION: the same slot index on two workers runs two unrelated sequences, and a
+/// generation one worker minted inverts, on the other, to no count it reached. A tweak that left
+/// the worker out would give every worker's slot `idx` one sequence: a ticket a plugin held on
+/// worker 0, re-addressed to worker 1's slot, would pass there as a stale wake.
 #[test]
 fn red_two_workers_share_no_ticket_sequence() {
     let k = tkey();
@@ -223,9 +223,9 @@ fn red_two_workers_share_no_ticket_sequence() {
     );
 }
 
-/// RED (#74, NO SUPPLIER): a forged ticket generation the host itself woke (a connector's
-/// readiness: no instance supplied it) counts toward the latch; one an instance supplied
-/// quarantines that instance and does NOT count toward it. Judged against this test's own latch.
+/// NO SUPPLIER: a forged ticket generation the host itself woke (a connector's readiness: no
+/// instance supplied it) counts toward the latch; one an instance supplied quarantines that
+/// instance and does NOT count toward it. Judged against this test's own latch.
 #[test]
 fn red_a_forged_ticket_with_no_supplier_counts_toward_the_latch() {
     let latch = Latch::new();

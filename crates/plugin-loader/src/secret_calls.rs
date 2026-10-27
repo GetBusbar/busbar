@@ -120,7 +120,7 @@ fn answer_text(error: Option<&[u8]>, fallback: String) -> String {
 impl LoadedSecret {
     /// `open` `plugin` over its module `settings` (JSON bytes, empty = none) and the material its
     /// Statement's `secret_refs` resolved to, in order, on `dispatcher`. The material is revealed
-    /// under the seal the host lent `dispatcher` (Part 2 #54).
+    /// under the seal the host lent `dispatcher`.
     ///
     /// # Errors
     /// The plugin's refusal, in 1.5.5's words (`plugin '<name>' open failed: <reason>`); material
@@ -400,9 +400,9 @@ impl SecretCalls for LoadedSecret {
 /// THE PROCESS'S SECRET PLUGINS, by Statement name and alias: the linked rows (fixed at build) and
 /// the dropped-in ones (replaced at each admission), each loaded on first use through the one
 /// loader and called through the one dispatcher. Two different plugins answering one word are
-/// refused when the dropped-in set is admitted ([`SecretRows::admit_dropped`], ARCHITECT Q-P4-12);
-/// neither door outranks the other. The composition root builds it and
-/// installs it as the kernel's [`SecretAxis`].
+/// refused when the dropped-in set is admitted ([`SecretRows::admit_dropped`]); neither door
+/// outranks the other. The composition root builds it and installs it as the kernel's
+/// [`SecretAxis`].
 pub struct SecretRows {
     /// The process dispatcher, asked for at first use: a plugin is opened on it, never before.
     dispatcher: fn() -> Arc<Dispatcher>,
@@ -459,7 +459,7 @@ impl SecretRows {
     }
 
     /// A source that declares a disk need resolves on the host's one disk lane `run`, at config
-    /// time only (THE DESIGN §11.11 R4, as the OWNER amended it 2026-10-13).
+    /// time only (THE DESIGN §11.11 R4).
     #[must_use]
     pub fn with_disk_lane(mut self, run: DiskRun) -> Self {
         self.disk_run = Some(run);

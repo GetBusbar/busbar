@@ -12,11 +12,10 @@
 //! path-traversal names) is refused before it can cost anything. [`package`] is the inverse, used
 //! by the release pipeline, the packaging CLI, and tests.
 //!
-//! A member's NAME may carry a relative directory prefix (`pkg/manifest.json`, `pkg/lib/x.so`):
-//! the member is keyed on its basename, exactly as 1.5.5 unpacked it (v1.5.5
+//! A member's NAME may carry a relative directory prefix (`pkg/manifest.json`, `pkg/lib/x.so`): the
+//! member is keyed on its basename, exactly as 1.5.5 unpacked it (v1.5.5
 //! `crates/plugin-loader/src/tarball.rs`, `unpack`), so a tarball a 1.5.5 operator built that way
-//! still loads (ARCHITECT ruling on X-2017, 2026-10-14). A directory ENTRY, a link, an absolute
-//! name or a parent reference is refused.
+//! still loads. A directory ENTRY, a link, an absolute name or a parent reference is refused.
 
 use crate::sign::Manifest;
 use std::io::Read as _;

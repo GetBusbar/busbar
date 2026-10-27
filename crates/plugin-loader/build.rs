@@ -24,7 +24,7 @@
 // The `store` row (`STORE_ROWS`) is also written to `$OUT_DIR/store_fixture.rs` (its crate alias and
 // cdylib stem) and `$OUT_DIR/store_door.rs` (the store door example's one `export_door!` line), for
 // the targets that cannot include `both_ways.rs`. The loader tests the axis, and a plugin tests
-// itself (DECISIONS #2). Reads only this crate's own manifest.
+// itself. Reads only this crate's own manifest.
 
 use std::env;
 use std::path::PathBuf;
@@ -61,7 +61,7 @@ fn main() {
     // THE STORE FIXTURE, BY KIND, for the targets that cannot include `both_ways.rs` (an integration
     // test, the store v3 door example): `store_fixture.rs` aliases the `store` row's crate and names
     // its cdylib stem; `store_door.rs` is the example's one `export_door!` line. No test or fixture
-    // source names the store instance (instance-noun-neutrality, ARCHITECT Q-GG4(c)).
+    // source names the store instance.
     let mut store_fixture = String::new();
     let mut store_door = String::new();
     let mut doors = String::from(

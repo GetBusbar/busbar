@@ -110,7 +110,7 @@
 //! wake (§11.2; a may-pend service on a ticket-less op is REFUSED, §11.12), and every buffer a
 //! submitted op names is LENT to it through the dispatcher's lending submit (§2). The pure ops
 //! (`arrive`, `refusal`, `project`) and the lifecycle are ticket-less crossings (`Plugin::call`),
-//! as the kernel makes them. A resume is reported, never pinned (Q-P4-5).
+//! as the kernel makes them. A resume is reported, never pinned.
 //!
 //! THE PINS. Every step is ONE first invocation, but:
 //! * `ready` ([`super::ready_step`]): 0 when the door states none;
@@ -1586,8 +1586,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     let fold = r.fold();
     contract(&fold, s.kind_inputs("plane"));
-    // AN UNREACHED SCHEME WAS NEVER TOUCHED (row 114): the claim conformance.json states is that
-    // no open of this fold rode one; an open that did is the scheme reached, not unreached.
+    // AN UNREACHED SCHEME WAS NEVER TOUCHED: the claim conformance.json states is that no open of
+    // this fold rode one; an open that did is the scheme reached, not unreached.
     if let Some(table) = &far {
         let tried = table.unreached_opens();
         assert!(

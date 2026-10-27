@@ -46,8 +46,6 @@ pub const fn kind_of(code: KindCode) -> Kind {
     }
 }
 
-// ── USES: what the configuration names, read from the plan's document ──────────────────────────
-
 /// WHAT THE CONFIGURATION USES, by the three classes of root key (BUSBAR-1.6.0.md §4): the root keys it
 /// carries (a plane is used iff its verb is one), every `module:` an entry under a non-plane kind's
 /// root key names, the reference keys it spells (`{k: X}`, a plugin's sugar), and the URL schemes its
@@ -173,8 +171,6 @@ fn schemes(v: &serde_json::Value, out: &mut BTreeSet<String>) {
     }
 }
 
-// ── DISCOVER: each plugin's facts, from its linked row or its signed manifest ───────────────────
-
 /// Where a candidate's plugin comes from, for [`load`].
 #[derive(Debug, Clone)]
 pub enum Origin {
@@ -216,8 +212,8 @@ pub struct Candidate {
     pub sugar: Vec<String>,
     /// Its declaring sections (a plane's verbs).
     pub verbs: Vec<String>,
-    /// The other sections whose presence uses it (Law 7), in Statement order: a section it owns
-    /// (neither declaring nor consumed), and a section it only consumes that its Statement marks
+    /// The other sections whose presence uses it, in Statement order: a section it owns (neither
+    /// declaring nor consumed), and a section it only consumes that its Statement marks
     /// `SECTION_SELECTS`. Config carrying one selects a plane as its verb does.
     pub selecting: Vec<String>,
     /// The URL schemes it claims (its Statement's claims; a transport's).
@@ -380,10 +376,10 @@ impl Candidate {
     }
 }
 
-/// THE SUGARS `candidates` DECLARE (audit contract-admin #10, Law 1: the secret shorthand is each
-/// plugin's own declaration; the host reads it and names none): each candidate's Statement
-/// rewrites, read off its rendering, declared in turn. A plugin met twice (linked and dropped in,
-/// one plugin by the one-version rule) declares once.
+/// THE SUGARS `candidates` DECLARE (the secret shorthand is each plugin's own declaration; the host
+/// reads it and names none): each candidate's Statement rewrites, read off its rendering, declared
+/// in turn. A plugin met twice (linked and dropped in, one plugin by the one-version rule) declares
+/// once.
 ///
 /// # Errors
 ///
@@ -408,13 +404,14 @@ pub fn sugars_of(candidates: &[Candidate]) -> Result<busbar_contract::secret_ref
     Ok(sugars)
 }
 
-/// THE ONE-OWNER RULE over an axis's candidates, linked and dropped in alike (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): two DIFFERENT
+/// THE ONE-OWNER RULE over an axis's candidates, linked and dropped in alike
+/// (BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing"): two DIFFERENT
 /// plugins (different names) that answer one word (a name, an alias, a former name) are refused,
-/// naming both and the word. No ambiguity is resolved by picking a winner, and neither door outranks
-/// the other (compiled in = dropped in). Two candidates of the SAME plugin (a linked row and its
-/// dropped-in copy) are not a claim conflict: they are one plugin, held to the ONE-VERSION RULE
-/// (ARCHITECT C', [`crate::registry::one_version`]) — at one version the linked row serves (it is
-/// read first; [`both_doors`] names the pair for the log), at two the boot is refused.
+/// naming both and the word. No ambiguity is resolved by picking a winner, and neither door
+/// outranks the other (compiled in = dropped in). Two candidates of the SAME plugin (a linked row
+/// and its dropped-in copy) are not a claim conflict: they are one plugin, held to the ONE-VERSION
+/// RULE ([`crate::registry::one_version`]) — at one version the linked row serves (it is read
+/// first; [`both_doors`] names the pair for the log), at two the boot is refused.
 ///
 /// # Errors
 ///
@@ -479,8 +476,6 @@ pub fn both_doors(candidates: &[Candidate]) -> Vec<String> {
     lines
 }
 
-// ── SELECT: the plugins the configuration uses ──────────────────────────────────────────────────
-
 /// One selected instance: which candidate, under which instance name (the config key).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selected {
@@ -491,13 +486,14 @@ pub struct Selected {
     pub instance: String,
 }
 
-/// STAGE 2, SELECT (BUSBAR-1.6.0.md §4 "Selection follows the classes"; pure): a plane is selected iff
-/// a root key uses it ([`plane_use`]), under its verb; a store, secret, auth, hook or export plugin once per entry whose
-/// `module` names it (its name or an alias) and once if a reference uses its sugar; a transport iff
-/// a configured URL uses a scheme it claims. Candidates are read in order and the first that answers
-/// an entry takes it; two DIFFERENT plugins never both answer one word, which the one-owner rule
-/// ([`one_owner`], Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")) refuses before selection. An entry no candidate answers selects nothing here:
-/// the kind's own validation refuses it, naming the missing module.
+/// STAGE 2, SELECT (BUSBAR-1.6.0.md §4 "Selection follows the classes"; pure): a plane is selected
+/// iff a root key uses it ([`plane_use`]), under its verb; a store, secret, auth, hook or export
+/// plugin once per entry whose `module` names it (its name or an alias) and once if a reference
+/// uses its sugar; a transport iff a configured URL uses a scheme it claims. Candidates are read in
+/// order and the first that answers an entry takes it; two DIFFERENT plugins never both answer one
+/// word, which the one-owner rule ([`one_owner`]; BUSBAR-1.6.0.md:106 "it refuses at boot
+/// when two plugins claim the same thing") refuses before selection. An entry no candidate answers
+/// selects nothing here: the kind's own validation refuses it, naming the missing module.
 #[must_use]
 pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
     let mut out = Vec::new();
@@ -539,12 +535,12 @@ pub fn select(uses: &Uses, candidates: &[Candidate]) -> Vec<Selected> {
     out
 }
 
-/// WHETHER THE CONFIGURATION USES THE PLANE `plane` (Law 7, BUSBAR-1.6.0.md §4 "Selection
-/// follows the classes"; pure): the section of `uses` that uses it — the first of its verbs that is
-/// a root key, else the first of its other selecting sections ([`Candidate::selecting`]: one it
-/// owns, or one it consumes that its Statement marks `SECTION_SELECTS`) that is one — or `None`,
-/// and the plane is not loaded. A section it only consumes, or only requires, is no use of it. Read
-/// off the candidate's rendered facts only, so nothing is opened: what the boot selects planes by
+/// WHETHER THE CONFIGURATION USES THE PLANE `plane` (BUSBAR-1.6.0.md §4 "Selection follows the
+/// classes"; pure): the section of `uses` that uses it — the first of its verbs that is a root key,
+/// else the first of its other selecting sections ([`Candidate::selecting`]: one it owns, or one it
+/// consumes that its Statement marks `SECTION_SELECTS`) that is one — or `None`, and the plane is
+/// not loaded. A section it only consumes, or only requires, is no use of it. Read off the
+/// candidate's rendered facts only, so nothing is opened: what the boot selects planes by
 /// ([`used_planes`]), and what a config apply asks of a plane that is not loaded now. A candidate
 /// of another kind is used by no section here.
 #[must_use]
@@ -559,8 +555,6 @@ pub fn plane_use<'c>(uses: &Uses, plane: &'c Candidate) -> Option<&'c str> {
         .find(|v| uses.roots.contains(*v))
         .map(String::as_str)
 }
-
-// ── THE REGISTRY: the linked rows, then the plugins directory's, through one admission ─────────────
 
 /// What [`registry`] reads to build THE plugin registry: the rows this build LINKS (registered
 /// ahead of the directory's, through the same admission) and, unless only those are wanted, the
@@ -600,13 +594,13 @@ pub enum Note<'r> {
     FloorUnwritable(&'r std::io::Error),
 }
 
-/// THE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; ARCHITECT ruling Q8: the composition root builds the
-/// registry and the kernel receives it): the linked rows alone, or — given a [`Scan`] — the
-/// first-party floor armed from the persisted marks, the directory's three-phase scan
-/// (structural -> trust -> conflict; ANY invalid tarball or conflict refuses, every problem named;
-/// an untrusted plugin is skipped, never opened) with the linked rows registered ahead of it, and
-/// the floor raised to what the scan proved loadable (only a verified first-party verdict counts;
-/// the mark only rises; a failure to persist is a [`Note`], not a refusal). Nothing is opened.
+/// THE REGISTRY BUILD (BUSBAR-1.6.0.md §3 stage 1; the composition root builds the registry and the
+/// kernel receives it): the linked rows alone, or — given a [`Scan`] — the first-party floor armed
+/// from the persisted marks, the directory's three-phase scan (structural -> trust -> conflict; ANY
+/// invalid tarball or conflict refuses, every problem named; an untrusted plugin is skipped, never
+/// opened) with the linked rows registered ahead of it, and the floor raised to what the scan
+/// proved loadable (only a verified first-party verdict counts; the mark only rises; a failure to
+/// persist is a [`Note`], not a refusal). Nothing is opened.
 ///
 /// # Errors
 ///
@@ -640,8 +634,6 @@ pub fn registry(
     Ok(registry)
 }
 
-// ── THE PLANES ───────────────────────────────────────────────────────────────────────────────────
-
 /// The plane axis, discovered ([`crate::PluginRegistry::open_planes`]): the planes that state
 /// themselves through a door, not yet bound.
 #[derive(Default)]
@@ -650,9 +642,9 @@ pub struct PlaneSet {
     pub doors: Vec<Candidate>,
 }
 
-/// THE PLANES THE CONFIGURATION USES, of the discovered `doors` (Law 7; [`select`]'s plane rule): each
-/// door a section the document writes uses ([`plane_use`]), in discovery order. A plane no section names is
-/// never bound, linked or dropped in alike.
+/// THE PLANES THE CONFIGURATION USES, of the discovered `doors` ([`select`]'s plane rule): each
+/// door a section the document writes uses ([`plane_use`]), in discovery order. A plane no section
+/// names is never bound, linked or dropped in alike.
 #[must_use]
 pub fn used_planes(uses: &Uses, doors: &[Candidate]) -> Vec<Candidate> {
     doors
@@ -705,8 +697,6 @@ pub fn load_planes(
         })
         .collect()
 }
-
-// ── INBOUND: every selected instance's listener needs and their binds ─────────────────────────────
 
 /// A listener's connection cap when its settings block names none (new in 1.6.0).
 pub const DEFAULT_MAX_CONNS: u64 = 1024;
@@ -876,8 +866,6 @@ pub fn inbound(
     Ok(out)
 }
 
-// ── THE ONE LOAD ─────────────────────────────────────────────────────────────────────────────────
-
 /// One bound instance, of its kind.
 #[derive(Debug)]
 #[allow(missing_docs)]
@@ -893,7 +881,7 @@ pub enum Bound {
 
 /// THE ONE LOAD's request: the discovered candidates, the selection over them, and what every bind
 /// takes — the plugin log configuration (each instance gets its own sink, BUSBAR-1.6.0.md §11.2 Plugin
-/// logging), where the #85 metrics go, the dispatcher that adopts every instance, and the host's
+/// logging), where the observability metrics go, the dispatcher that adopts every instance, and the host's
 /// clamp on a Statement's `max_inflight`.
 pub struct LoadRequest<'a> {
     /// The discovered plugins.
@@ -902,7 +890,7 @@ pub struct LoadRequest<'a> {
     pub selected: &'a [Selected],
     /// `plugins.logs`, resolved once per configuration.
     pub logs: &'a PluginLogConfig,
-    /// Where every instance's #85 metrics and dropped records go.
+    /// Where every instance's observability metrics and dropped records go.
     pub metrics: Arc<dyn EnvelopeSink>,
     /// The dispatcher that adopts every instance.
     pub dispatcher: Adopter,
@@ -914,11 +902,11 @@ pub struct LoadRequest<'a> {
     pub opening: Option<Opening<'a>>,
 }
 
-/// THE AUTH OPEN AND READY at the one load (ARCHITECT 2026-10-02, discovery at boot): every bound
-/// auth instance is opened with its settings block from `doc`, then its `ready` is awaited on
-/// `dispatcher` (the one that adopts it) before the load answers, so before any listener binds. An
-/// instance that will not open or will not be ready refuses the boot with the plugin's own text,
-/// as 1.5.5 refused a boot whose discovery failed.
+/// THE AUTH OPEN AND READY at the one load (discovery at boot): every bound auth instance is opened
+/// with its settings block from `doc`, then its `ready` is awaited on `dispatcher` (the one that
+/// adopts it) before the load answers, so before any listener binds. An instance that will not open
+/// or will not be ready refuses the boot with the plugin's own text, as 1.5.5 refused a boot whose
+/// discovery failed.
 #[derive(Clone, Copy)]
 pub struct Opening<'a> {
     /// The plan's document, where each instance's settings block lives.
@@ -927,7 +915,7 @@ pub struct Opening<'a> {
     pub dispatcher: &'a crate::dispatch::Dispatcher,
     /// The secret kind's resolver: each settings key the Statement names in `secret_refs` is
     /// resolved through it, in that order, into `OpenIn::secrets`, and stripped from the settings
-    /// `open` is handed (ARCHITECT 2026-10-02).
+    /// `open` is handed.
     pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
     /// The config-time proof the boot that loads holds (THE DESIGN §11.11 R4): every declared
     /// secret resolves through it, so a source that reads the disk answers on the host's lane.
@@ -1026,12 +1014,11 @@ fn open_ready<K: crate::dispatch::Kind>(
     plugin.ready(opening.dispatcher, crate::dispatch::ready::READY_DEADLINE)
 }
 
-/// THE DECLARED SECRETS (the Statement's `secret_refs`, ARCHITECT 2026-10-02): each key — a path
-/// into the settings block, `.`-separated — is read as a secret reference, resolved through the
-/// secret kind's resolver, and REMOVED from the block, so the secret reaches `open` only as its
-/// `OpenIn::secrets` entry, in the Statement's order. A key the block does not set is an empty
-/// entry (its place is kept); a reference that does not parse or resolve refuses, naming the key
-/// and never a byte of the secret.
+/// THE DECLARED SECRETS (the Statement's `secret_refs`): each key — a path into the settings block,
+/// `.`-separated — is read as a secret reference, resolved through the secret kind's resolver, and
+/// REMOVED from the block, so the secret reaches `open` only as its `OpenIn::secrets` entry, in the
+/// Statement's order. A key the block does not set is an empty entry (its place is kept); a
+/// reference that does not parse or resolve refuses, naming the key and never a byte of the secret.
 ///
 /// # Errors
 /// The key whose reference is malformed or does not resolve.
@@ -1069,7 +1056,7 @@ fn resolve_one(
 /// The `map_err` for a settings value that should be a secret REFERENCE and does not decode as one.
 /// `serde_json::Error`'s own `Display` is withheld: a data error quotes the offending value, and a
 /// value that is not a reference may be the secret itself, pasted inline where its reference
-/// belongs (secret-hygiene #53, Check 3: redact at the format site). What survives is WHERE (`at`,
+/// belongs (redact at the format site). What survives is WHERE (`at`,
 /// the settings path) and the CLASS of the failure.
 pub(crate) fn not_a_reference(at: String) -> impl FnOnce(serde_json::Error) -> String {
     move |e: serde_json::Error| {

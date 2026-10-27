@@ -176,12 +176,12 @@ impl HttpsConns {
 /// The fewest characters an unreached scheme's `why` may have: a reason, not a word.
 pub const UNREACHED_WHY_MIN: usize = 40;
 
-/// JUDGE `inputs.unreached_schemes` (row 114: no silent skip): each entry is
-/// `{ "scheme", "why", "covered_by": ["<path>::<test fn>", ...] }`, and is refused, naming what is
-/// wrong, unless its `why` is a reason of at least [`UNREACHED_WHY_MIN`] characters; it cites at
-/// least one cell, each a `#[test] fn` in a file at `<path>` under `root` (the plugin's own repo)
-/// that exercises the scheme; the scheme is not `framed` (the table's own, which it reaches); and a
-/// need the door declares (`need_transports`) names it. The schemes, in order.
+/// JUDGE `inputs.unreached_schemes` (no silent skip): each entry is `{ "scheme", "why",
+/// "covered_by": ["<path>::<test fn>", ...] }`, and is refused, naming what is wrong, unless its
+/// `why` is a reason of at least [`UNREACHED_WHY_MIN`] characters; it cites at least one cell, each
+/// a `#[test] fn` in a file at `<path>` under `root` (the plugin's own repo) that exercises the
+/// scheme; the scheme is not `framed` (the table's own, which it reaches); and a need the door
+/// declares (`need_transports`) names it. The schemes, in order.
 ///
 /// # Errors
 /// The first entry refused, and why.

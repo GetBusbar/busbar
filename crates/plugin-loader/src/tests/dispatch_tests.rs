@@ -7,7 +7,7 @@
 //! transcript the mechanism's rules require.
 //!
 //! The script walks every rule: each outcome, outcome authority (a mismatched mirror, an unknown
-//! byte, PENDING on NONE: all FAULT), the #85 envelope ingest, PENDING + wake (after, before —
+//! byte, PENDING on NONE: all FAULT), the observability envelope ingest, PENDING + wake (after, before —
 //! latched —, spurious, stale generations, `wake_at_ns`), a Call deadline and a client drop (both
 //! `cancel` then the timeout outcome), `max_inflight` (REFUSED without a call), a WriteBehind op
 //! (never cancelled, detached at its deadline, a reload drain that does not wait on it, a late
@@ -77,7 +77,7 @@ impl Kind for TestKind {
     }
 }
 
-/// The #85 envelope as the host received it: one line per entry, and the plugin's report gauges
+/// The observability envelope as the host received it: one line per entry, and the plugin's report gauges
 /// (families 2..=5) by family.
 #[derive(Default)]
 struct Recorder {
@@ -698,8 +698,6 @@ fn one_script_linked_and_dropped_is_byte_identical() {
     );
 }
 
-// ── RED ARMS ─────────────────────────────────────────────────────────────────────────────────────
-
 fn quiet() -> Arc<Recorder> {
     Arc::new(Recorder::default())
 }
@@ -729,7 +727,7 @@ fn red_an_open_reason_longer_than_the_buffer_lent_is_fault() {
 }
 
 /// The C ABI, spelled once for the restated doors below and every other test slot in the crate
-/// (`crate::dispatch_tests::c_abi!`): each spelling of its literal is a Law 0 hit (the scan reads
+/// (`crate::dispatch_tests::c_abi!`): each spelling of its literal is a hit (the scan reads
 /// it as a secret instance's id).
 macro_rules! c_abi {
     ($($(#[$m:meta])* fn $name:ident($($arg:ident: $t:ty),* $(,)?) -> $ret:ty $body:block)*) => {
@@ -1245,7 +1243,7 @@ fn red_a_stale_generation_wake_is_dropped() {
             break t;
         }
     };
-    // One mint on: the generation is the slot's next COUNT, permuted (#74), never the next integer.
+    // One mint on: the generation is the slot's next COUNT, permuted, never the next integer.
     let idx = crate::dispatch::ticket::decode(t.slot).1;
     assert_eq!(
         crate::dispatch::handle::ticket_count(d.ticket_key(), 0, idx, t.generation),
@@ -1263,8 +1261,8 @@ fn red_a_stale_generation_wake_is_dropped() {
     until("the stale wake is counted", || {
         d.stats().stale_wakes > stale0
     });
-    // A generation the slot really minted is a late wake, not a forgery (#74): the instance that
-    // woke it is not quarantined.
+    // A generation the slot really minted is a late wake, not a forgery: the instance that woke it
+    // is not quarantined.
     assert!(
         !p.is_faulted(),
         "a stale wake for a generation the host minted was judged a forgery"
@@ -1623,7 +1621,7 @@ fn the_pack_time_rendering_of_a_library_is_its_door_s() {
 
 /// The child half of the abort test: runs only when its parent sets the variable. Ignored so the
 /// default run never counts it as a pass: alone it proves nothing, and run without the variable it
-/// fails (status row 114).
+/// fails.
 #[test]
 #[ignore = "child process of red_a_panic_in_a_hand_written_slot_aborts, which runs it with --ignored"]
 fn panic_child() {
@@ -1681,8 +1679,6 @@ fn outhead_is_prefilled_as_fault() {
     let h: OutHead = out_head();
     assert_eq!(h.outcome.outcome(), Outcome::Fault);
 }
-
-// ── VALIDATE EVERY ANSWER: one RED arm per check ────────────────────────────────────────
 
 #[test]
 fn red_an_answer_that_fails_validation_is_fault() {
@@ -1750,8 +1746,6 @@ fn red_one_recall_a_second_short_answer_is_fault() {
     d.recycle(t);
 }
 
-// ── EXACT VERSIONS: older, newer and a wrong magic are each refused ─────────────────────────────
-
 fn door_with(f: impl Fn(&mut DoorParts)) -> Option<LoadError> {
     let mut d = plug::door().parts();
     f(&mut d);
@@ -1813,8 +1807,6 @@ fn red_refuses_a_wrong_magic() {
         "the GREEN twin: the real door loads"
     );
 }
-
-// ── CLOSE, TEXT CAPS, THE WATCHDOG, UNLOADS, CANCEL DISPOSITIONS ──────────────────────────────────────────────────────────────
 
 fn crossings(p: &Plugin<TestKind>) -> u64 {
     p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst)
@@ -2319,8 +2311,6 @@ fn red_a_kind_check_judges_every_outcome_in_its_bound_context() {
     assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Ready);
 }
 
-// ── THE ASYNC COMPLETION ─────────────────────────────────────────────────────────────────────────
-
 /// A runtime with ONE thread: an await that blocked it would deadlock.
 fn one_thread() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -2446,12 +2436,11 @@ fn lent(mode: &[u8]) -> (Arc<LentMode>, Arc<std::sync::atomic::AtomicBool>) {
     (lent, dropped)
 }
 
-/// RED (ARCHITECT ruling 2026-09-29, every kind): the caller DROPS its `Reply` while the plugin is
-/// still inside a crossing reading host-lent memory (`hang:<key>` re-reads its key from the lent
-/// blob every 5ms until released), and drops its own owner too. The memory must live until the
-/// crossing RETURNS — through the watchdog tripping and replacing the worker meanwhile — and go
-/// once it has. Without the dispatcher holding the owner, the memory is freed at the caller's drop,
-/// under a plugin still reading it.
+/// The caller DROPS its `Reply` while the plugin is still inside a crossing reading host-lent
+/// memory (`hang:<key>` re-reads its key from the lent blob every 5ms until released), and drops
+/// its own owner too. The memory must live until the crossing RETURNS — through the watchdog
+/// tripping and replacing the worker meanwhile — and go once it has. Without the dispatcher holding
+/// the owner, the memory is freed at the caller's drop, under a plugin still reading it.
 #[test]
 fn red_a_dropped_reply_keeps_its_lent_memory_until_the_crossing_returns() {
     let d = Dispatcher::new(config());
@@ -2557,7 +2546,7 @@ fn two_instances_of_one_plugin_are_two_callers() {
     assert_ne!(a.instance, b.instance);
 }
 
-/// THE ONE SOURCE OF CLAIM NAMES, AT ADMIT (ARCHITECT ruling 2026-09-29 (A)): a transport's
+/// THE ONE SOURCE OF CLAIM NAMES, AT ADMIT: a transport's
 /// Statement names its claimed schemes and its tail carries one row per name. RED: a transport
 /// Statement naming two schemes over a tail with one row is refused at admit; one name over one
 /// row, and a non-transport Statement's tail, pass.
@@ -2604,11 +2593,10 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
     ));
 }
 
-/// THE PIECE STRIDE AT LOAD (busbar #1032): a framer writes `FramerSink::pieces` at its own
-/// `FramePiece` size, and the host reads them at its own. RED: a transport whose tail states a
-/// piece size other than the host's (the 40-byte piece before #1032), or none (a tail that
-/// predates the word), is refused at load, naming the plugin, both sizes and the rebuild. GREEN:
-/// the host's size loads.
+/// THE PIECE STRIDE AT LOAD: a framer writes `FramerSink::pieces` at its own `FramePiece` size, and
+/// the host reads them at its own. RED: a transport whose tail states a piece size other than the
+/// host's (the old 40-byte piece), or none (a tail that predates the word), is refused at
+/// load, naming the plugin, both sizes and the rebuild. GREEN: the host's size loads.
 #[test]
 fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
     use busbar_contract::abi::mechanism::call::AbiStr;
@@ -2769,8 +2757,6 @@ fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
     );
 }
 
-// ── THE WORKERS' RUNTIME ─────────────────────────────────────────────────────────────────────────
-
 /// RED: the runtime the workers run their crossings inside is INSTALLED, never captured: a
 /// dispatcher built, and first submitted to, inside a runtime nobody drives (the control runtime,
 /// whose thread then waits synchronously on the op) does not bind its workers to that runtime; the
@@ -2802,7 +2788,7 @@ fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_un
     assert!(d.installed_runtime().is_some());
 }
 
-/// #74, ONE GUESS: an instance that hands the host's `wake` a context the host did not mint, from
+///  ONE GUESS: an instance that hands the host's `wake` a context the host did not mint, from
 /// inside its own crossing, is quarantined (N = 1). The crossing is a `tick`, a lifecycle op, so
 /// this is the FFI-worker path: the mark travels with the crossing onto the plugin thread. The
 /// forging op ITSELF answers FAULT (its answer is not judged and its envelope not read), the
@@ -2852,7 +2838,7 @@ fn a_forged_context_quarantines_the_instance_that_forged_it() {
     assert!(crate::dispatch::handle::resolve_in(honest.inner.ctx(), &latch, None).is_some());
 }
 
-/// #74, IN A REAL CROSSING: another instance's handle is a forgery, revoked or not, and quarantines
+///  IN A REAL CROSSING: another instance's handle is a forgery, revoked or not, and quarantines
 /// the instance crossing; the latch does not move (the forgery had someone to blame). Driven under
 /// `with_crossing` with a real instance, as a crossing states it.
 #[test]
@@ -2897,7 +2883,7 @@ fn inside_a_crossing_another_instances_handle_quarantines_the_crossing() {
     );
 }
 
-/// #74, THE INLINE HOT-LANE SLOT: a call into plugin code that is no mechanism crossing, nested in
+///  THE INLINE HOT-LANE SLOT: a call into plugin code that is no mechanism crossing, nested in
 /// one, runs with the mark nulled. A forgery made inside it blames no one (the outer instance stays
 /// unquarantined, the latch counts it) and the outer crossing's mark is restored after it.
 #[test]
@@ -2933,7 +2919,7 @@ fn a_forgery_inside_an_inline_slot_leaves_the_outer_crossing_alone() {
     );
 }
 
-/// #74, REVOCATION: a closed instance's handle, a dropped one's and a watchdog-faulted one's name
+///  REVOCATION: a closed instance's handle, a dropped one's and a watchdog-faulted one's name
 /// nothing, and none of the three is counted as a forgery (their tags are the host's own).
 #[test]
 fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
@@ -2996,7 +2982,7 @@ fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
     );
 }
 
-/// #74, REVOCATION ON THE WATCHDOG'S TICKET-LESS PATH: an instance adopted by the dispatcher whose
+///  REVOCATION ON THE WATCHDOG'S TICKET-LESS PATH: an instance adopted by the dispatcher whose
 /// ticket-less call hangs past its budget is faulted by the watchdog (`ticketless`), and its handle
 /// names nothing from then on, with no forgery counted.
 #[test]
@@ -3033,7 +3019,7 @@ fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
     );
 }
 
-/// #74, THE KEY AT BOOT: a loader boot whose OS random source cannot answer is refused
+///  THE KEY AT BOOT: a loader boot whose OS random source cannot answer is refused
 /// (`LoadError::Entropy`), the dispatcher never built; there is no fallback key. Driven through the
 /// test seam, which makes this thread's draw a fresh one against a failing source.
 #[test]
@@ -3052,7 +3038,7 @@ fn a_boot_whose_entropy_fails_is_refused() {
     );
 }
 
-/// #74, THE TICKET HALF: a wake for a generation the host never minted is a FORGERY. The generation
+///  THE TICKET HALF: a wake for a generation the host never minted is a FORGERY. The generation
 /// is a keyed permutation of the slot's counter, so the worker names the mint it would be by the
 /// inverse and finds none; the instance whose context woke it (its supplier) is quarantined (its
 /// handle revoked, every later op FAULT). The control: an honest instance stays unfaulted.
@@ -3096,10 +3082,10 @@ fn forged_generation(t: Ticket) -> Ticket {
     }
 }
 
-/// RED (#74, ATTRIBUTION CARRIED, NEVER READ OFF THE THREAD): instance A takes a service call on a
-/// forged ticket; its completion fires from inside instance B's crossing. The completer carries A
-/// as the ticket's supplier, so A is quarantined and B, the crossing the wake happened to fire in,
-/// is not. A wake that read the thread's crossing would blame B.
+/// ATTRIBUTION CARRIED, NEVER READ OFF THE THREAD: instance A takes a service call on a forged
+/// ticket; its completion fires from inside instance B's crossing. The completer carries A as the
+/// ticket's supplier, so A is quarantined and B, the crossing the wake happened to fire in, is not.
+/// A wake that read the thread's crossing would blame B.
 #[test]
 fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
     use crate::dispatch::services::{serve, Ran, Stored};
@@ -3144,10 +3130,10 @@ fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
     d.recycle(t);
 }
 
-/// RED (#74, NO ONE TO BLAME): a forged generation the HOST wakes for itself (the connector's
-/// readiness under the root's own identity, which no instance's context named) counts toward the
-/// latch and quarantines no one; a plugin's own wake from its own thread, outside any crossing,
-/// names its supplier and quarantines it, the latch unmoved. Judged against this test's own latch.
+/// NO ONE TO BLAME: a forged generation the HOST wakes for itself (the connector's readiness under
+/// the root's own identity, which no instance's context named) counts toward the latch and
+/// quarantines no one; a plugin's own wake from its own thread, outside any crossing, names its
+/// supplier and quarantines it, the latch unmoved. Judged against this test's own latch.
 #[test]
 fn red_an_off_crossing_forged_ticket_counts_toward_the_latch() {
     let d = Dispatcher::new(config());
@@ -3195,10 +3181,10 @@ fn own_latch(d: &Dispatcher) -> &'static crate::dispatch::handle::Latch {
     latch
 }
 
-/// RED (#74, INLINE TICKETS): an inline ticket's generation is the keyed permutation of its slot's
-/// counter, as a worker slot's, so a plugin that guesses `encode(INLINE_WORKER, i)` with a small
-/// generation (what the plain counter from 1 handed out) does not hit a held ticket, and its miss is
-/// a FORGERY: the supplier is quarantined, the latch unmoved. A guess at an inline slot no ticket
+/// INLINE TICKETS: an inline ticket's generation is the keyed permutation of its slot's counter, as
+/// a worker slot's, so a plugin that guesses `encode(INLINE_WORKER, i)` with a small generation
+/// (what the plain counter from 1 handed out) does not hit a held ticket, and its miss is a
+/// FORGERY: the supplier is quarantined, the latch unmoved. A guess at an inline slot no ticket
 /// ever used is a forgery too.
 #[test]
 fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
@@ -3248,8 +3234,8 @@ fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
     drop(held);
 }
 
-/// RED (#74, INLINE WRAP AND LATE WAKES): an inline slot whose counter is spent is RETIRED, never
-/// handed out again, and a late wake for a generation it really minted is not a forgery.
+/// INLINE WRAP AND LATE WAKES: an inline slot whose counter is spent is RETIRED, never handed out
+/// again, and a late wake for a generation it really minted is not a forgery.
 #[test]
 fn red_an_inline_slot_whose_counter_is_spent_is_retired() {
     let d = Dispatcher::new(config());
@@ -3303,11 +3289,11 @@ impl Counted {
     }
 }
 
-/// RED (#74, A HELD WAKER OUTLIVES ITS GENERATION): the host's I/O holds the waker of an inline
-/// ticket's task (`waker_of`, what `io.*` registers with the reactor); the connection ends, the slot
-/// is recycled and re-minted to a new connection whose task registers. The old readiness then fires:
-/// it wakes NEITHER task (the old one's waker went with its generation, the new one's is not its
-/// to wake). The control: the new generation's own waker wakes the new task.
+/// A HELD WAKER OUTLIVES ITS GENERATION: the host's I/O holds the waker of an inline ticket's task
+/// (`waker_of`, what `io.*` registers with the reactor); the connection ends, the slot is recycled
+/// and re-minted to a new connection whose task registers. The old readiness then fires: it wakes
+/// NEITHER task (the old one's waker went with its generation, the new one's is not its to wake).
+/// The control: the new generation's own waker wakes the new task.
 #[test]
 fn red_an_io_held_waker_fired_after_recycle_does_not_wake_the_new_task() {
     let d = Dispatcher::new(config());
@@ -3341,11 +3327,11 @@ fn red_an_io_held_waker_fired_after_recycle_does_not_wake_the_new_task() {
     );
 }
 
-/// RED (#74, A WAKE RACING A RECYCLE): a wake for an inline ticket looks the slot up; between that
-/// lookup and the wake (the test hook), the ticket is dropped and the slot re-minted to a new task.
-/// The wake checks the generation and takes the waker in one section, so it reaches no task: it is
-/// a late wake of a generation the slot minted, not a forgery. A check made outside the section
-/// would wake the new task.
+/// A WAKE RACING A RECYCLE: a wake for an inline ticket looks the slot up; between that lookup and
+/// the wake (the test hook), the ticket is dropped and the slot re-minted to a new task. The wake
+/// checks the generation and takes the waker in one section, so it reaches no task: it is a late
+/// wake of a generation the slot minted, not a forgery. A check made outside the section would wake
+/// the new task.
 #[test]
 fn red_a_wake_interleaved_with_recycle_and_re_mint_does_not_reach_the_new_task() {
     let d = Dispatcher::new(config());
@@ -3381,9 +3367,9 @@ fn red_a_wake_interleaved_with_recycle_and_re_mint_does_not_reach_the_new_task()
     );
 }
 
-/// RED (#74, A WORKER THE DISPATCHER DOES NOT RUN): a wake for `encode(n, 0)`, `n` past the
-/// dispatcher's workers and short of the inline worker, names a slot nothing minted: a forgery,
-/// blamed on its supplier, not merely a stale wake.
+/// A WORKER THE DISPATCHER DOES NOT RUN: a wake for `encode(n, 0)`, `n` past the dispatcher's
+/// workers and short of the inline worker, names a slot nothing minted: a forgery, blamed on its
+/// supplier, not merely a stale wake.
 #[test]
 fn red_a_wake_for_a_worker_the_dispatcher_does_not_run_is_a_forgery() {
     let d = Dispatcher::new(config());
@@ -3404,10 +3390,10 @@ fn red_a_wake_for_a_worker_the_dispatcher_does_not_run_is_a_forgery() {
     assert_eq!((latch.forged(), latch.unattributed()), (1, 0));
 }
 
-/// RED (#74, COUNTER WRAP): a slot whose mint counter is spent is RETIRED, never handed out again:
-/// a counter that wrapped would re-mint generations the slot already handed out, and a plugin that
-/// kept one would wake the slot's next op. Seeded one short of `u32::MAX`; the slot's last mint is
-/// at `u32::MAX`; after it the worker takes fresh slots, and a wake on the retired slot's last
+/// COUNTER WRAP: a slot whose mint counter is spent is RETIRED, never handed out again: a counter
+/// that wrapped would re-mint generations the slot already handed out, and a plugin that kept one
+/// would wake the slot's next op. Seeded one short of `u32::MAX`; the slot's last mint is at
+/// `u32::MAX`; after it the worker takes fresh slots, and a wake on the retired slot's last
 /// generation is a late wake, not a forgery.
 #[test]
 fn red_a_slot_whose_counter_is_spent_is_retired() {
@@ -3445,8 +3431,6 @@ fn red_a_slot_whose_counter_is_spent_is_retired() {
         "a retired slot's own generation was judged a forgery"
     );
 }
-
-// ── THE LINKED DOOR-ROOT ENTRY: `open_linked` refuses as the dropped-in door is refused ─────────
 
 /// One restated door for an `open_linked` cell, behind its own door function.
 struct LinkedSlot(std::sync::atomic::AtomicPtr<Door>);
@@ -3573,10 +3557,10 @@ fn open_linked_refuses_another_kind_abi_as_the_dropped_in_door_is_refused() {
     }
 }
 
-/// RED (status row 195): A LINKED DOOR-ROOT TRANSPORT BUILT AGAINST ANOTHER FRAME PIECE, and a
-/// linked plane built against another answer layout, are refused by `open_linked` exactly as the
-/// dropped-in door is (the same `FramePieceSize` / `PlaneLayout`, word for word). GREEN: the host's
-/// piece and layout are admitted. (Row 188's layout fingerprint joins the same shared check.)
+/// A LINKED DOOR-ROOT TRANSPORT BUILT AGAINST ANOTHER FRAME PIECE, and a linked plane built against
+/// another answer layout, are refused by `open_linked` exactly as the dropped-in door is (the same
+/// `FramePieceSize` / `PlaneLayout`, word for word). GREEN: the host's piece and layout are
+/// admitted. (The layout fingerprint joins the same shared check.)
 #[test]
 fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
     use crate::dispatch::kinds::{plane::Plane, transport::Transport};
@@ -3672,8 +3656,6 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
         }
     );
 }
-
-// ── the client-drop `cancel` names the unit its op serves ──────────────────────────────────────
 
 /// The unit the last client-drop `cancel` of a [`UnitKind`] op named.
 static CANCEL_NAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);

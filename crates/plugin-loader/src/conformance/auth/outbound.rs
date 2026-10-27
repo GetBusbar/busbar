@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH KIND'S OUTBOUND SCRIPT (`abi/auth/outbound.rs`, v3; ARCHITECT ruling, P5 outbound auth
-//! conformance). It drives the OUTBOUND family — `open_outbound`, `fields`, `outbound_ready` —
-//! the way the kernel drives a provider's auth binding: the instance opened over the binding's
-//! settings (so a need whose target comes from them is declared pinned to it), the style bound to
-//! its credential, and the per-request call (THE DESIGN §6.4, §11.6: one memory-ABI call per
-//! request, the plugin caches internally) made ticket-less on the caller's thread, as the kernel
-//! tries it first. A minting style's token exchange runs on the instance's driver ticket, on
-//! `tick`, over the plugin's own need; the suite serves that need with a scripted token endpoint
-//! (a connection-table double: no socket, no client), so every exchange is counted and its request
-//! read back.
+//! THE AUTH KIND'S OUTBOUND SCRIPT (`abi/auth/outbound.rs`, v3; P5 outbound auth conformance). It
+//! drives the OUTBOUND family — `open_outbound`, `fields`, `outbound_ready` — the way the kernel
+//! drives a provider's auth binding: the instance opened over the binding's settings (so a need
+//! whose target comes from them is declared pinned to it), the style bound to its credential, and
+//! the per-request call (THE DESIGN §6.4, §11.6: one memory-ABI call per request, the plugin caches
+//! internally) made ticket-less on the caller's thread, as the kernel tries it first. A minting
+//! style's token exchange runs on the instance's driver ticket, on `tick`, over the plugin's own
+//! need; the suite serves that need with a scripted token endpoint (a connection-table double: no
+//! socket, no client), so every exchange is counted and its request read back.
 //!
 //! Inputs (`conformance.json`, `auth.outbound`: one entry per style the tail declares; every
 //! declared style must be driven and no undeclared one may be named):
@@ -69,16 +68,17 @@
 //! after `close` 0 (the host refuses an op on a closed instance before any crossing). The inbound
 //! and login families the tail does not declare answer REFUSED.
 //!
-//! AN ON-DEMAND style (ARCHITECT ruling, the on-demand outbound script): `fields`(S) on a ticket
-//! before the first `tick` 1 → PENDING, and a second ticket's `fields`(S) while it waits 1 → PENDING,
-//! no exchange yet; `tick` → EXACTLY ONE exchange, and both waiting calls READY with the same token
-//! (`expect_fields`; the tick is the one first invocation, the two calls resume — SINGLE-FLIGHT); ticket-less
-//! `fields`(S) ×2 still ONE exchange; `outbound_ready` 1; a `tick` before S's expiry makes NO
-//! exchange (nothing is refreshed ahead); `fields`(S2) on a ticket → PENDING, one `drive`, EXACTLY
-//! ONE new exchange (its own cell), READY with `second_scope_fields` (2 first invocations: the call and the drive; the call resumes); `fields`(S) on a
-//! ticket at an instant past S's token's expiry → PENDING, one `drive`, EXACTLY ONE new exchange,
-//! READY with `expired_fields` (2 first invocations, as above). Then the FAILING endpoint: `fields`(S) on a ticket
-//! answers the declared `refusal` after EXACTLY ONE attempt (NO RETRY: the endpoint's hit count is 1).
+//! AN ON-DEMAND style (the on-demand outbound script): `fields`(S) on a ticket before the first
+//! `tick` 1 → PENDING, and a second ticket's `fields`(S) while it waits 1 → PENDING, no exchange
+//! yet; `tick` → EXACTLY ONE exchange, and both waiting calls READY with the same token
+//! (`expect_fields`; the tick is the one first invocation, the two calls resume — SINGLE-FLIGHT);
+//! ticket-less `fields`(S) ×2 still ONE exchange; `outbound_ready` 1; a `tick` before S's expiry
+//! makes NO exchange (nothing is refreshed ahead); `fields`(S2) on a ticket → PENDING, one `drive`,
+//! EXACTLY ONE new exchange (its own cell), READY with `second_scope_fields` (2 first invocations:
+//! the call and the drive; the call resumes); `fields`(S) on a ticket at an instant past S's
+//! token's expiry → PENDING, one `drive`, EXACTLY ONE new exchange, READY with `expired_fields` (2
+//! first invocations, as above). Then the FAILING endpoint: `fields`(S) on a ticket answers the
+//! declared `refusal` after EXACTLY ONE attempt (NO RETRY: the endpoint's hit count is 1).
 //!
 //! THE RED ARMS ([`red_outbound_wrong_byte`], [`red_outbound_writes_nothing`],
 //! [`red_outbound_double_fetch`]): the real door restated with a `fields` that writes one wrong
@@ -1346,8 +1346,8 @@ fn contract(fold: &Fold, styles: &[Style]) {
     }
 }
 
-/// THE ON-DEMAND CONTRACT (ARCHITECT ruling): single-flight, a cell per scope, no refresh ahead,
-/// a re-mint on demand once expired, no retry. The exchange counts first.
+/// THE ON-DEMAND CONTRACT: single-flight, a cell per scope, no refresh ahead, a re-mint on demand
+/// once expired, no retry. The exchange counts first.
 fn on_demand_contract(fold: &Fold, i: usize, x: &Style, m: &Minting, od: &OnDemand) {
     let at = |label: &str| {
         fold.iter()

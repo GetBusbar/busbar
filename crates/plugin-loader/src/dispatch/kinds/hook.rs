@@ -33,8 +33,8 @@ pub const NO_TAIL: &str =
 /// the hook words its `MARK_WORD_HOOK` marks claim. Read back through
 /// [`crate::dispatch::Plugin::context`].
 ///
-/// A hook Statement with NO kind tail is refused ([`NO_TAIL`], ARCHITECT Q-SO8): every 1.6.0 hook
-/// states its class and grants (`abi::sdk::hook::tail`); none is assumed for it.
+/// A hook Statement with NO kind tail is refused ([`NO_TAIL`]): every 1.6.0 hook states its class
+/// and grants (`abi::sdk::hook::tail`); none is assumed for it.
 fn facts(st: &Statement) -> Result<HookFacts, String> {
     let name = owned(st.name).ok_or("a hook's name is over-long")?;
     let p = st.kind_tail;

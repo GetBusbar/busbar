@@ -81,10 +81,10 @@ fn an_unreached_scheme_is_served_at_boot_and_reaches_nothing() {
     assert_eq!(framed.declared(owner, id), Some(Err(ConnError::Refused)));
 }
 
-/// AN UNREACHED SCHEME IS A NAMED, REASONED, COVERED CLAIM, or the suite fails (row 114: no silent
-/// skip). Each entry names its scheme, says why, and cites the `path::fn` test cells in the
-/// plugin's own repo that exercise it; the scheme is one a declared need names and not the framed
-/// table's own. RED before the fix: the entries were bare names, judged by nothing.
+/// AN UNREACHED SCHEME IS A NAMED, REASONED, COVERED CLAIM, or the suite fails (no silent skip).
+/// Each entry names its scheme, says why, and cites the `path::fn` test cells in the plugin's own
+/// repo that exercise it; the scheme is one a declared need names and not the framed table's own.
+/// RED before the fix: the entries were bare names, judged by nothing.
 #[test]
 fn an_unreached_scheme_is_named_reasoned_and_covered() {
     use crate::https_conns::judge_unreached;

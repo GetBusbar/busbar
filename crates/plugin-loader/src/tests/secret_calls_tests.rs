@@ -276,10 +276,10 @@ fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// RED (Part 2 #54, coordinator ruling 2026-10-14): a resolved `Secret` is revealed to a plugin
-/// only under the seal the host lent the dispatcher. On a dispatcher lent NONE the open that would
-/// hand the plugin its material is REFUSED before any crossing (fail closed), naming why; on a lent
-/// one the reveal is made and nothing refuses for want of a seal.
+/// A resolved `Secret` is revealed to a plugin only under the seal the host lent the dispatcher. On
+/// a dispatcher lent NONE the open that would hand the plugin its material is REFUSED before any
+/// crossing (fail closed), naming why; on a lent one the reveal is made and nothing refuses for
+/// want of a seal.
 #[test]
 fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
     use crate::dispatch::{load_linked, Bind, LinkedRow, NoSink};

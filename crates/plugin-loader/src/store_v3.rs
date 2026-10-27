@@ -18,8 +18,8 @@
 //!   [`StoreCalls`]. M6: this bridge is deleted when no consumer remains. Every one of its ops is
 //!   SUBMITTED ON A TICKET like a [`StoreCalls`] op, and the synchronous caller waits for the
 //!   completion: a store that answers PENDING (a remote store waiting on its connection) is
-//!   resumed by the dispatcher on its wake and completes the op, never faulted (ARCHITECT ruling
-//!   2026-10-03 on Q-L14-1; THE DESIGN, the plugin ABI). The wait is the caller's, exactly where the
+//!   resumed by the dispatcher on its wake and completes the op, never faulted (THE DESIGN, the plugin ABI).
+//!   The wait is the caller's, exactly where the
 //!   compiled-in store's direct calls ran before, so no call site moves from non-blocking to
 //!   blocking. Only on a dispatcher's only worker, which cannot run an op while it waits, does an
 //!   op cross ticket-less on the caller's thread, where a PENDING is FAULT (loud: logged at error,
@@ -76,8 +76,6 @@ const FIRST_BYTES: usize = 16 * 1024;
 const FIRST_ITEMS: usize = 256;
 /// How long a Call-class op may pend before the dispatcher cancels it.
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
-
-// ── the handle ───────────────────────────────────────────────────────────────────────────────
 
 /// ONE STORE INSTANCE, opened through the store v3 table.
 pub struct LoadedStore {
@@ -151,13 +149,13 @@ impl LoadedStore {
         })
     }
 
-    /// `open` ON A TICKET (ARCHITECT ruling 2026-10-03 on Q-L16-2; the mechanism: `open` "may
-    /// pend", on the control lane): submitted through the dispatcher and waited for, so a store
-    /// whose connect step ([`busbar_contract::abi::sdk::store::StoreSlots::connect`]) pends on the
-    /// connector is resumed on its wake and completes the open, and an unreachable backend still
-    /// refuses the load at open, in the store's own words. Called on the dispatcher's only worker,
-    /// it crosses ticket-less on this thread (as the bridge does, [`LoadedStore::inline`]).
-    /// `settings` owns what `o` lends: the dispatcher keeps it until the crossing returns.
+    /// `open` ON A TICKET (the mechanism: `open` "may pend", on the control lane): submitted
+    /// through the dispatcher and waited for, so a store whose connect step
+    /// ([`busbar_contract::abi::sdk::store::StoreSlots::connect`]) pends on the connector is
+    /// resumed on its wake and completes the open, and an unreachable backend still refuses the
+    /// load at open, in the store's own words. Called on the dispatcher's only worker, it crosses
+    /// ticket-less on this thread (as the bridge does, [`LoadedStore::inline`]). `settings` owns
+    /// what `o` lends: the dispatcher keeps it until the crossing returns.
     fn open_on_ticket(
         plugin: &Plugin<Store>,
         dispatcher: &Dispatcher,
@@ -255,9 +253,7 @@ impl LoadedStore {
         let _ = self.plugin.call(life::RELEASE, &mut f);
     }
 
-    // ── the two runners ──────────────────────────────────────────────────────────────────────
-
-    /// THE BRIDGE'S RUNNER (ARCHITECT ruling 2026-10-03 on Q-L14-1; THE DESIGN, the plugin ABI: every call
+    /// THE BRIDGE'S RUNNER (THE DESIGN, the plugin ABI: every call
     /// returns Ready or Pending(wake), and slow I/O pends, never a blocking thread): the op is
     /// SUBMITTED on a ticket exactly as [`StoreCalls`] submits it, and this synchronous caller
     /// waits for its completion. A store that answers PENDING is resumed by the dispatcher on its
@@ -265,8 +261,8 @@ impl LoadedStore {
     /// Called on one of the dispatcher's own workers (whose thread cannot run the op while it
     /// waits), the op goes to another worker; on a dispatcher with that worker alone it crosses
     /// ticket-less on this thread ([`LoadedStore::inline`]).
-    // TRANSITIONAL: the synchronous caller waits on its own thread (ARCHITECT ruling 2026-10-03 on
-    // Q-L16-1); drains when the governance callers move to StoreCalls (D2/D3; 1.6.0-TODO.md).
+    // TRANSITIONAL: the synchronous caller waits on its own thread; drains when the governance
+    // callers move to StoreCalls (D2/D3; 1.6.0-TODO.md).
     fn now<R: Req>(&self, mut r: R) -> (Ran<R::O>, Arc<Lend<R>>) {
         let s = r.slot();
         let Some(worker) = self.bridge_worker() else {
@@ -315,8 +311,8 @@ impl LoadedStore {
 
     /// A ticket-less crossing on this thread, the one re-call of a short answer: the bridge's path
     /// on a dispatcher's only worker, where a ticketed op could never run.
-    // TRANSITIONAL: the one-worker fallback of the bridge's wait (ARCHITECT ruling 2026-10-03 on
-    // Q-L16-1); drains with the bridge (D2/D3; 1.6.0-TODO.md).
+    // TRANSITIONAL: the one-worker fallback of the bridge's wait; drains with the bridge (D2/D3;
+    // 1.6.0-TODO.md).
     fn inline<R: Req>(&self, r: &mut R) -> Ran<R::O> {
         let s = r.slot();
         let mut f = Frame::new(r.input(), r.out());
@@ -633,8 +629,6 @@ fn bridge<T>(r: Result<T, StoreFailure>) -> RecordStoreResult<T> {
         other => RecordStoreError(other.to_string()),
     })
 }
-
-// ── the requests ─────────────────────────────────────────────────────────────────────────────
 
 /// One op's `in`/`out`, built over buffers the request owns (never over the caller's borrow).
 trait Req: 'static {
@@ -1039,8 +1033,6 @@ fn in_of<T>(f: impl FnOnce(InHead) -> T) -> T {
     f(in_head())
 }
 
-// ── the ops, shared by both surfaces ─────────────────────────────────────────────────────────
-
 /// Run `req` through `$run` (`now` or `submit`), on `$self`.
 macro_rules! run {
     ($self:ident, now, $r:expr) => {
@@ -1251,8 +1243,6 @@ impl LoadedStore {
 fn host_blob(b: &Blob) -> Vec<u8> {
     copy(b.ptr, b.len)
 }
-
-// ── StoreCalls: submitted and awaited ────────────────────────────────────────────────────────
 
 fn boxed<'a, T>(f: impl Future<Output = Result<T, StoreFailure>> + Send + 'a) -> StoreCall<'a, T> {
     Box::pin(f)
@@ -1638,8 +1628,6 @@ impl StoreCalls for LoadedStore {
     }
 }
 
-// ── RecordStore: the synchronous bridge (until M6) ────────────────────────────────────────────────
-
 impl LoadedStore {
     fn plain<I: InFrame>(&self, s: u32, input: (I, Owned)) -> RecordStoreResult<()> {
         bridge(self.now(fixed::<I, OutHead>(s, input)).0.ok())
@@ -1979,12 +1967,12 @@ impl Drop for Zeroing {
     }
 }
 
-/// THE STORE AXIS over the process's ONE dispatcher (WIRE-STORE Q8/Q9): the composition root
-/// builds it with its dispatcher, its `plugins.logs`, its one connection table and the kernel's
-/// `op_id` allocator, and installs it in the kernel, which opens its governance store through it.
-/// A compiled-in row is loaded by [`load_linked`](crate::dispatch::load_linked), a dropped-in
-/// plugin by [`load_dropped_bytes`](crate::dispatch::load_dropped_bytes) against its stated
-/// Statement; both are opened as a [`LoadedStore`].
+/// THE STORE AXIS over the process's ONE dispatcher: the composition root builds it with its
+/// dispatcher, its `plugins.logs`, its one connection table and the kernel's `op_id` allocator, and
+/// installs it in the kernel, which opens its governance store through it. A compiled-in row is
+/// loaded by [`load_linked`](crate::dispatch::load_linked), a dropped-in plugin by
+/// [`load_dropped_bytes`](crate::dispatch::load_dropped_bytes) against its stated Statement; both
+/// are opened as a [`LoadedStore`].
 pub struct DoorStoreAxis {
     /// The process's one dispatcher.
     pub dispatcher: Arc<Dispatcher>,

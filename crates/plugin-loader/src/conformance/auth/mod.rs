@@ -6,9 +6,9 @@
 //! one declaring `CAP_INBOUND` or `CAP_LOGIN` by this one, one declaring `CAP_OUTBOUND` by the
 //! outbound one, one declaring both by both (each then skips the other family's "undeclared" steps).
 //!
-//! THE INBOUND AND LOGIN SCRIPT. Ported from the auth both-ways proofs (#439's
-//! `auth_door_conformance_tests`, the predev `auth_verify_conformance_tests`, and the token cases of
-//! the static-token verifier's own conformance test), over the one loader and the one dispatcher.
+//! THE INBOUND AND LOGIN SCRIPT. Ported from the auth both-ways proofs (the predev
+//! `auth_verify_conformance_tests`, and the token cases of the static-token verifier's own
+//! conformance test), over the one loader and the one dispatcher.
 //!
 //! The script drives the INBOUND family, `verify`, the way the host's identity chain calls it
 //! (`busbar_contract::auth_calls::AuthCalls`): ON THE SPOT (ticket-less, on the caller's thread),
@@ -125,13 +125,12 @@ pub use outbound::{
     red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte,
 };
 
-/// **AN OUTBOUND RED ARM NEVER PASSES UNRUN** (status row 114: no test passes by skipping its
-/// subject). The arm's subject is a door whose auth tail states the outbound family
-/// (`CAP_OUTBOUND`), and `conformance.json` drives that family exactly then (`auth.outbound`, which
-/// the outbound script requires of such a door). `arm` plants over such a door; over any other the
-/// two sources must AGREE there is nothing to plant. A door that lost `CAP_OUTBOUND` while its
-/// inputs still drive outbound styles, or the reverse, fails here by name, where every arm used to
-/// print and pass.
+/// **AN OUTBOUND RED ARM NEVER PASSES UNRUN** (no test passes by skipping its subject). The arm's
+/// subject is a door whose auth tail states the outbound family (`CAP_OUTBOUND`), and
+/// `conformance.json` drives that family exactly then (`auth.outbound`, which the outbound script
+/// requires of such a door). `arm` plants over such a door; over any other the two sources must
+/// AGREE there is nothing to plant. A door that lost `CAP_OUTBOUND` while its inputs still drive
+/// outbound styles, or the reverse, fails here by name, where every arm used to print and pass.
 ///
 /// # Panics
 /// When the door's tail and its inputs disagree on the outbound family, or when `arm` does.

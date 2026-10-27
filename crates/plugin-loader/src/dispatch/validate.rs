@@ -6,7 +6,7 @@
 //!
 //! Two layers, and only two. The MECHANISM's checks of every `out` head live here and run in every
 //! crossing: `OutHead.size` within `size_of::<OutHead>()..=` the host's `out`, the error text and
-//! the #85 arrays not NULL-with-length nor over-long, the outcome mirror, and PENDING on NONE (in
+//! the observability arrays not NULL-with-length nor over-long, the outcome mirror, and PENDING on NONE (in
 //! `plugin::judge`). A KIND's reply fields (spans, counts, `written`, `needed_*`) are checked only
 //! by that kind's pure `check_<op>` in `abi/<kind>/`, reached through [`super::Kind::check`]
 //! (answer validators live with the shape); the dispatcher adds the one re-call
@@ -49,7 +49,7 @@ impl Violation {
 }
 
 /// The mechanism's own checks of an `out` head, run on every crossing: its size, its error text
-/// and its #85 arrays.
+/// and its observability arrays.
 pub(crate) fn out_head(head: &OutHead, host_out_size: u32) -> Result<(), Violation> {
     let stated = head.size;
     if (stated as usize) < size_of::<OutHead>() || stated > host_out_size {

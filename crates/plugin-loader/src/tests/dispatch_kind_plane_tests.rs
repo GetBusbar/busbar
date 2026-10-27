@@ -88,8 +88,6 @@ fn field() -> OutField {
     }
 }
 
-// ── arrive ──
-
 #[test]
 fn arrive_green_units_within_the_hosts_cap() {
     let mut units = [unit(); 4];
@@ -153,8 +151,6 @@ fn arrive_units_counted_over_a_null_buffer_fault() {
         f(Rule::NullWithCount, "arrive.units")
     );
 }
-
-// ── on_piece ──
 
 fn piece_in(
     units: &mut [UnitCount],
@@ -249,8 +245,6 @@ fn on_piece_counts_one_past_each_cap_fault_before_any_slice() {
     }
 }
 
-// ── refusal ──
-
 fn refusal_in(fields: &mut [OutField]) -> RefusalIn {
     let mut i: RefusalIn = z();
     i.reply_cap = 16;
@@ -291,8 +285,6 @@ fn refusal_fields_one_past_the_cap_fault_before_any_slice() {
         f(Rule::OverCap, "refusal.fields")
     );
 }
-
-// ── serve ──
 
 fn serve_in(fields: &mut [OutField]) -> ServeIn {
     let mut i: ServeIn = z();
@@ -341,8 +333,6 @@ fn serve_fields_one_past_the_cap_fault_before_any_slice() {
         f(Rule::OverCap, "serve.fields")
     );
 }
-
-// ── open, refresh: the generation snapshot ──
 
 fn snap(generation: u64) -> PlaneSnapshot {
     let mut s: PlaneSnapshot = z();
@@ -419,10 +409,9 @@ fn a_snapshot_from_before_listed_reads_as_listing_none() {
     assert_eq!(copied.listed, vec!["listed-one".to_string()]);
 }
 
-/// RED (audit contract-src #11, `check_claim_target`'s own rule: "the host runs this on every target
-/// it copies into the generation"): a claim whose TARGET breaks the claim grammar refuses the whole
-/// snapshot when the host copies it, so it never loads as a route nothing can match. Each bad
-/// target is one the claims' shape check (`check_claims`, which reads no text) passes.
+/// A claim whose TARGET breaks the claim grammar refuses the whole snapshot when the host copies
+/// it, so it never loads as a route nothing can match. Each bad target is one the claims' shape
+/// check (`check_claims`, which reads no text) passes.
 #[test]
 fn red_a_claim_whose_target_breaks_the_grammar_refuses_the_snapshot() {
     use busbar_contract::abi::plane::{
@@ -494,8 +483,6 @@ fn refresh_green_and_red_on_its_snapshot() {
     );
 }
 
-// ── cancel, hydrate, start ──
-
 #[test]
 fn cancel_green_and_red_on_its_disposition() {
     let i: busbar_contract::abi::plane::PlaneCancelIn = z();
@@ -534,8 +521,6 @@ fn hydrate_and_start_have_no_per_answer_rule() {
         }
     }
 }
-
-// ── project ──
 
 fn project_in(signals: &mut [SignalEntry], arena: &mut [u8]) -> ProjectIn {
     let mut i: ProjectIn = z();
@@ -640,8 +625,6 @@ fn project_red_a_rewritten_body_for_a_call_that_carried_no_rewrite() {
     );
 }
 
-// ── foreign sizes ──
-
 #[test]
 fn an_in_smaller_than_the_ops_struct_is_foreign() {
     let i: InHead = z();
@@ -674,8 +657,6 @@ fn an_out_smaller_than_the_ops_struct_is_foreign() {
         f(Rule::Foreign, "out")
     );
 }
-
-// ── names, identity, short ──
 
 #[test]
 fn every_slot_has_a_name() {
@@ -899,7 +880,7 @@ fn red_a_tail_whose_refusal_statuses_break_a_rule_does_not_bind() {
     assert!(refused.contains("refusal_status.status"), "{refused}");
 }
 
-/// RED (ARCHITECT Q-L5-FEE (C)): the tail's fee units are judged at bind. A fee unit that is one of
+/// The tail's fee units are judged at bind. A fee unit that is one of
 /// the tail's billable classes binds; one no class lists refuses the load (the plane could never
 /// report it, so its fee would be refunded on every unit), and so does a class with no family.
 #[test]
@@ -1033,10 +1014,10 @@ fn red_a_tail_whose_record_chains_break_a_rule_does_not_bind() {
     assert!(refused.contains("record_chain.kind_twice"), "{refused}");
 }
 
-/// THE STREAM CEILING IS A TAIL ADDITION (ARCHITECT ruling 2026-10-07, STREAM-CEILING): a tail of
-/// the whole size states its ceiling and the root is handed it; a tail whose `size` ends before the
-/// field still loads and states none (`0`), even when the memory past its size holds a value. RED:
-/// a frozen size equal to the grown tail refused the shorter tail, and no fact carried the ceiling.
+/// THE STREAM CEILING IS A TAIL ADDITION: a tail of the whole size states its ceiling and the root
+/// is handed it; a tail whose `size` ends before the field still loads and states none (`0`), even
+/// when the memory past its size holds a value. RED: a frozen size equal to the grown tail refused
+/// the shorter tail, and no fact carried the ceiling.
 #[test]
 fn a_tail_states_its_stream_ceiling_and_a_tail_ending_before_it_states_none() {
     use busbar_contract::abi::mechanism::door::{

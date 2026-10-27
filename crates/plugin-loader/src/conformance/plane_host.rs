@@ -366,8 +366,6 @@ impl Host {
     }
 }
 
-// ── the destination guard at the owner default ────────────────────────────────────────────────
-
 /// A target name as the guard compares it, through the guard's own mapping
 /// (`busbar_contract::net::judged_host`: UTS #46 to-ASCII, held to `url`'s IPv4 reading); `None`, a
 /// host the guard refuses as unjudgeable (`DEST_NO_HOST`).
@@ -507,8 +505,6 @@ fn named(
     }
     Ok((host, https, literal))
 }
-
-// ── the stored answers ─────────────────────────────────────────────────────────────────────────
 
 const fn absent() -> Span {
     Span {

@@ -549,7 +549,7 @@ fn nested_secret_field_is_rejected_inline_and_via_ref() {
     validate_secret_fields(&flattened).unwrap();
 }
 
-/// A SECRET MARKER ONE OBJECT DOWN IS REFUSED IN 1.5.5's WORDS (ruling (B), 2026-10-19: pack keeps
+/// A SECRET MARKER ONE OBJECT DOWN IS REFUSED IN 1.5.5's WORDS (pack keeps
 /// 1.5.5's refusal of a nested marker; v1.5.5 `crates/plugin-pack/src/main.rs:298-304`). A marked
 /// `held.value` sits at nesting depth 2, and the refusal names that depth and says to
 /// flatten the field. RED before the fix: the refusal's words were not 1.5.5's.
@@ -691,7 +691,7 @@ fn a_secret_marker_under_pattern_properties_is_rejected() {
     );
 }
 
-/// And the other side of the same ruling: a root `oneOf` whose alternatives each spell out the root
+/// And the other side of the same rule: a root `oneOf` whose alternatives each spell out the root
 /// object's own shape declares ROOT properties, however many structural levels down they sit. A
 /// depth counter refuses these, and refusing them tells a plugin author to flatten a field that is
 /// already as flat as it can be.

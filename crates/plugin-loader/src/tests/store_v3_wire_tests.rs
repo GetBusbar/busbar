@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A REMOTE STORE'S CONNECTIONS OVER THE HOST'S CONNECTOR (store SDK `wire`; ARCHITECT rulings
-//! 2026-10-03 STORE-KEEP, VALKEY-UNIX, VALKEY-TIMEOUT, VALKEY-RETRY, TLS), over the test connection
-//! table (`tcp_conns`) and real backends:
+//! A REMOTE STORE'S CONNECTIONS OVER THE HOST'S CONNECTOR (store SDK `wire`; TLS), over the test
+//! connection table (`tcp_conns`) and real backends:
 //!
 //! * the store's connections are KEPT across ops in a bounded set: one handshake, then reuse;
 //!   concurrent ops beyond the bound wait for a connection and complete;
@@ -30,8 +29,6 @@ use crate::dispatch::{load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, 
 use crate::store_v3::wrap::Hooks;
 use crate::store_v3::LoadedStore;
 use crate::tcp_conns::{SecureDial, SecuredSock, TcpConns};
-
-// ── the table's TLS: a double of the connector's ─────────────────────────────────────────────
 
 /// A TEST DOUBLE of the TLS a table secures with (TLS itself is the connector's, which this crate
 /// cannot name; the real wrap's `upgrade_secure`, verify-off included, is proven in
@@ -101,8 +98,6 @@ impl SecuredSock for Secured {
     }
 }
 
-// ── backends ───────────────────────────────────────────────────────────────────────────────────
-
 /// What a line backend does.
 #[derive(Clone, Copy, Default)]
 struct Behaviour {
@@ -154,8 +149,6 @@ fn tcp_backend(b: Behaviour) -> (String, Arc<AtomicUsize>) {
     });
     (addr, accepted)
 }
-
-// ── the store's body ───────────────────────────────────────────────────────────────────────────
 
 fn failed(e: &ConnFailure) -> RecordStoreError {
     RecordStoreError(format!("wire-store: {e}"))
@@ -328,8 +321,6 @@ fn ping_of(s: &LoadedStore) -> RecordStoreResult<Vec<String>> {
     RecordStore::list_denylist(s)
 }
 
-// ── STORE-KEEP ─────────────────────────────────────────────────────────────────────────────────
-
 wire_store!(KeptOne, kept_one, max: 1, timeout: 0, tls: Tls::Off, retry: false);
 
 /// RED (STORE-KEEP): three ops are ONE connection, one handshake: the connection is kept.
@@ -380,8 +371,6 @@ fn concurrent_ops_beyond_the_bound_wait_for_a_kept_connection() {
     assert!(KeptBounded::pool().live() <= 2);
 }
 
-// ── a kept connection the far end dropped; VALKEY-RETRY ─────────────────────────────────────────
-
 wire_store!(NoRetry, no_retry, max: 1, timeout: 0, tls: Tls::Off, retry: false);
 
 /// A kept connection the far end closed fails its op and is not kept: the next op dials fresh.
@@ -428,8 +417,6 @@ fn a_read_on_a_dropped_kept_connection_is_retried_on_a_fresh_one() {
     );
 }
 
-// ── VALKEY-TIMEOUT ──────────────────────────────────────────────────────────────────────────────
-
 wire_store!(Timed, timed, max: 1, timeout: 300, tls: Tls::Off, retry: false);
 
 /// RED (VALKEY-TIMEOUT): the store's dial timeout reaches the host's table as the open's timeout.
@@ -448,8 +435,6 @@ fn the_stores_dial_timeout_reaches_the_hosts_table() {
     let t = table.lock().expect("table").clone().expect("the table");
     assert_eq!(t.dial_timeouts(), vec![300]);
 }
-
-// ── VALKEY-UNIX ─────────────────────────────────────────────────────────────────────────────────
 
 wire_store!(OverUnix, over_unix, max: 1, timeout: 0, tls: Tls::Off, retry: false);
 
@@ -473,8 +458,6 @@ fn a_unix_target_is_a_unix_domain_stream() {
     assert_eq!(ping_of(&s).expect("answers"), vec!["echo ping".to_string()]);
     let _ = std::fs::remove_dir_all(&dir);
 }
-
-// ── AN ENDPOINT LIST: open; on reject close and try the next (THE DESIGN §5) ───────────────────
 
 /// One op over an endpoint list, in order: a host whose handshake the store rejects (`STANDBY`)
 /// is CLOSED ([`Wire::close`]) and the next is tried on the same op.
@@ -530,9 +513,9 @@ mod listed {
     );
 }
 
-/// RED (ARCHITECT 2026-10-07, Wire::close): the first host is reachable but rejected (a standby);
-/// the op closes it and lands on the second, ONE op, and the second's connection is the one kept.
-/// Without `close`, the second `connect` answered the first host's connection again.
+/// The first host is reachable but rejected (a standby); the op closes it and lands on the second,
+/// ONE op, and the second's connection is the one kept. Without `close`, the second `connect`
+/// answered the first host's connection again.
 #[test]
 fn a_rejected_first_host_is_closed_and_the_op_lands_on_the_next() {
     let (standby, standby_seen) = tcp_backend(Behaviour {
@@ -673,8 +656,8 @@ mod who {
     );
 }
 
-/// RED (ARCHITECT 2026-10-07, FLEET-SANSIO): a store whose configuration names no user presents the
-/// OS user (1.5.5 parity). The wire reads it off the host's IDENTITY service, with no connection.
+/// A store whose configuration names no user presents the OS user (1.5.5 parity). The wire reads it
+/// off the host's IDENTITY service, with no connection.
 #[test]
 fn a_store_reads_the_os_user_off_the_hosts_identity_service() {
     let want = std::env::var("USER")
@@ -683,8 +666,6 @@ fn a_store_reads_the_os_user_off_the_hosts_identity_service() {
     let s = open_over(who::door, plain);
     assert_eq!(ping_of(&s).expect("the identity answers"), vec![want]);
 }
-
-// ── TLS ─────────────────────────────────────────────────────────────────────────────────────────
 
 wire_store!(OverTls, over_tls, max: 1, timeout: 0, tls: Tls::Verified, retry: false);
 
@@ -792,8 +773,6 @@ fn an_upgrade_over_unread_input_is_refused_before_any_handshake() {
     assert!(tls.asked().is_empty(), "no handshake over unread input");
 }
 
-// ── a bound over the dial AND the handshake (VALKEY-TIMEOUT: 1.5.5 bounded both) ───────────────
-
 /// Host services offering the clock alone (the dispatcher's own timebase), refusing the rest as
 /// the contract's shared double does.
 struct ClockOnly;
@@ -880,8 +859,6 @@ fn a_bound_covers_the_handshake_after_the_dial() {
     assert!(e.0.contains("deadline passed"), "{e:?}");
 }
 
-// ── verify-off (ARCHITECT ruling 2026-10-03 on Q-L16-4: 1.5.5's `#insecure`) ──────────────────
-
 /// One outbound `tcp` need of class operator-infrastructure (a database).
 const TCP_OPERATOR: &[busbar_contract::abi::host::conn::connector::Need] =
     &[busbar_contract::abi::host::conn::connector::Need {
@@ -911,9 +888,9 @@ wire_store!(SelfSignedVerified, self_signed_verified, max: 1, timeout: 0, tls: T
 wire_store!(SelfSignedInsecure, self_signed_insecure, max: 1, timeout: 0, tls: Tls::Unverified, retry: false, needs: TCP_OPERATOR);
 wire_store!(InsecureOtherClass, insecure_other_class, max: 1, timeout: 0, tls: Tls::Unverified, retry: false, needs: TCP);
 
-/// RED (Q-L16-4): a self-signed backend is REFUSED by a verifying handshake; with the operator's
-/// verify-off opt-in on an operator-infrastructure need it is ACCEPTED; the opt-in on a need of
-/// another class is REFUSED.
+/// A self-signed backend is REFUSED by a verifying handshake; with the operator's verify-off opt-in
+/// on an operator-infrastructure need it is ACCEPTED; the opt-in on a need of another class is
+/// REFUSED.
 #[test]
 fn a_self_signed_backend_is_accepted_only_with_verify_off_on_an_operator_need() {
     let port = self_signed_tls_backend();

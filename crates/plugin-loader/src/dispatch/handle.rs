@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE INSTANCE HANDLE (BUSBAR-1.6.0.md Part 2 #74, the untrusted-ABI half: "the handle a plugin
-//! holds is kernel-MAC'd ... the kernel verifies it on every ABI call, so a plugin cannot forge,
-//! reuse across flows, or replay a stale handle").
+//! THE INSTANCE HANDLE ("the handle a plugin holds is kernel-MAC'd ... the kernel verifies it on
+//! every ABI call, so a plugin cannot forge, reuse across flows, or replay a stale handle").
 //!
 //! A plugin is handed one [`HostCtx`] per instance and hands it back on every host call: `wake`,
 //! every host service, every connector and I/O slot. It used to be the address of the instance's
@@ -27,7 +26,7 @@
 //! Width: the handle is the 8 bytes the pointer was, so no struct that carries it moves (the layout
 //! golden changes one field name). A guess at a 40-bit tag is right once in about 10^12 tries, each
 //! one counted. The key is readable to a native plugin that ignores the ABI and reads process
-//! memory; that is the channel-2 residual BUSBAR-1.6.0.md #75 accepts, not a hole this closes.
+//! memory; that is the channel-2 residual BUSBAR-1.6.0.md accepts, not a hole this closes.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
@@ -49,9 +48,9 @@ const ID_MASK: u64 = (1 << HANDLE_ID_BITS) - 1;
 /// key signs.
 const DOMAIN_INSTANCE: u64 = u64::from_le_bytes(*b"bb.inst1");
 
-/// THE LATCH (#74): unattributed forgeries (made outside any crossing, so no instance can be
-/// quarantined for them) the process tolerates. At this many, every resolve made outside a crossing
-/// is refused for the rest of the process: off-crossing guessing is bounded at K tries in all.
+/// THE LATCH: unattributed forgeries (made outside any crossing, so no instance can be quarantined
+/// for them) the process tolerates. At this many, every resolve made outside a crossing is refused
+/// for the rest of the process: off-crossing guessing is bounded at K tries in all.
 pub const LATCH_AT: u64 = 16;
 
 /// Every handle the host was handed back and did not mint.
@@ -227,7 +226,7 @@ pub(crate) fn mint(wake: &'static InstanceWake) -> Result<HostCtx, LoadError> {
 
 /// THE INSTANCE'S IDENTITY ON THE CONNECTION TABLE: its handle's id. Never `0` (ids are minted from
 /// 1), which is the composition root's own identity on the one connector, and never reused in one
-/// process. One numbering, so a table's wake names its caller's entry with no second registry (#74).
+/// process. One numbering, so a table's wake names its caller's entry with no second registry.
 pub(crate) fn instance_id(ctx: HostCtx) -> InstanceId {
     InstanceId(ctx.handle & ID_MASK)
 }
@@ -321,10 +320,10 @@ fn count_forgery(latch: &Latch, crossing: Option<&'static InstanceWake>) {
     }
 }
 
-/// A ticket generation the host never minted (#74, the ticket half), judged against `latch`:
-/// counted; its SUPPLIER (the instance whose context handed the host the ticket, carried with the
-/// wake, never read off the thread it fires on) quarantined; a wake with no supplier (the host's
-/// own) counted against `latch`.
+/// A ticket generation the host never minted (the ticket half), judged against `latch`: counted;
+/// its SUPPLIER (the instance whose context handed the host the ticket, carried with the wake,
+/// never read off the thread it fires on) quarantined; a wake with no supplier (the host's own)
+/// counted against `latch`.
 pub(crate) fn forged_ticket(supplier: Option<&'static InstanceWake>, latch: &Latch) {
     FORGED.fetch_add(1, Ordering::Relaxed);
     latch.forged.fetch_add(1, Ordering::AcqRel);
@@ -338,8 +337,6 @@ pub(crate) fn forged_ticket(supplier: Option<&'static InstanceWake>, latch: &Lat
 pub(crate) fn process_latch() -> &'static Latch {
     &LATCH
 }
-
-// ── THE TICKET GENERATION: a keyed permutation of the slot's counter ───────────────────────────
 
 /// Domain separation from the instance handle's tags.
 const DOMAIN_TICKET: u64 = u64::from_le_bytes(*b"bb.tick1");

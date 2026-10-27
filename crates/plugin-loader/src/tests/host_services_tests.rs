@@ -1103,8 +1103,6 @@ fn the_sdk_records_wrappers_reach_the_kernel_as_their_caller() {
     );
 }
 
-// ── the mechanism, kind-neutral ──────────────────────────────────────────────────────────────
-
 /// A service body that answers eight bytes in one span and counts its runs.
 fn eight(runs: &AtomicUsize) -> impl FnOnce(Option<Completer>) -> Ran + '_ {
     move |_| {
@@ -1615,11 +1613,11 @@ fn call_secret(ctx: HostCtx, i: &RecordsSecretIn) -> (RawOutcome, ServiceOut) {
     (ret, o)
 }
 
-/// THE DECLARED NEED (ARCHITECT ruling B): `records.secret` serves an instance only the credential
-/// kinds its Statement declares. An undeclared kind, and a caller that declares none (any non-auth
-/// instance), are REFUSED before the kernel reads anything; a declared kind reaches the kernel and
-/// its secret lands in the caller's buffers; ticketless it is refused as any may-pend service is.
-/// RED: before the slot, `records.secret` was no slot at all.
+/// THE DECLARED NEED: `records.secret` serves an instance only the credential kinds its Statement
+/// declares. An undeclared kind, and a caller that declares none (any non-auth instance), are
+/// REFUSED before the kernel reads anything; a declared kind reaches the kernel and its secret
+/// lands in the caller's buffers; ticketless it is refused as any may-pend service is. RED: before
+/// the slot, `records.secret` was no slot at all.
 #[test]
 fn records_secret_serves_only_a_declared_kind() {
     let d = double();
@@ -1914,9 +1912,9 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     assert_eq!((w.rotated, w.written), (svc::DISK_ROTATED, 0));
 }
 
-/// `trust.sight` WITH `TRUST_UNREACHABLE` (ARCHITECT 2026-10-06): the plane could not reach the
-/// counterparty; the kernel answers its last verdict and nothing is sighted (the hash is unread,
-/// and may be empty). RED: an outcome the vocabulary does not hold is FAULT, and reaches nothing.
+/// `trust.sight` WITH `TRUST_UNREACHABLE`: the plane could not reach the counterparty; the kernel
+/// answers its last verdict and nothing is sighted (the hash is unread, and may be empty). RED: an
+/// outcome the vocabulary does not hold is FAULT, and reaches nothing.
 #[test]
 fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fault() {
     let d = double();
@@ -1954,9 +1952,9 @@ const fn unticketed(seq: u32) -> CompletionHandle {
     }
 }
 
-/// `trust.decide` OVER THE SDK (ARCHITECT 2026-10-06): the key, the expected fingerprint and the
-/// decision reach the kernel as the caller's, with no ticket; RED: a decision the vocabulary does
-/// not hold is FAULT and reaches nothing.
+/// `trust.decide` OVER THE SDK: the key, the expected fingerprint and the decision reach the kernel
+/// as the caller's, with no ticket; RED: a decision the vocabulary does not hold is FAULT and
+/// reaches nothing.
 #[test]
 fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
     let d = double();
@@ -2195,7 +2193,7 @@ fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
     );
 }
 
-/// #74, THE UNTRUSTED-ABI HALF: a context the host did not mint is refused before it names an
+///  THE UNTRUSTED-ABI HALF: a context the host did not mint is refused before it names an
 /// instance. The service answers as it answers no context and the wake wakes nothing; the minted
 /// context does both (the control). It used to be an address the host read through, whatever the
 /// plugin handed back. (The counting is `handle_tests`', on a latch of its own.)
@@ -2299,10 +2297,9 @@ fn still_served(d: &Double) -> bool {
         == Outcome::Ready
 }
 
-/// RED (status row 189, THE DESIGN §11.2: a host answer belongs to exactly one request): a handle
-/// on a ticket is bound to the service it was first used for. A fleet plugin reused handle 0 of
-/// one ticket for its record load and then for `entitlement.check`, and the host handed the check
-/// the stored answer of the first service. Here the first service is `records.claim`, whose
+/// A handle on a ticket is bound to the service it was first used for. A fleet plugin reused handle
+/// 0 of one ticket for its record load and then for `entitlement.check`, and the host handed the
+/// check the stored answer of the first service. Here the first service is `records.claim`, whose
 /// CLAIM_WON is the same number as ENTITLED: the stale answer reads as "entitled". The reuse is a
 /// plugin fault: answered FAULT, the second service never reaches the kernel, never the first
 /// service's answer, and the instance is quarantined as a forged context is.
@@ -2347,8 +2344,8 @@ fn a_handle_reused_for_another_service_is_fault_and_quarantines_never_the_stale_
     );
 }
 
-/// RED (status row 189): a handle is bound to the REQUEST it was first used for, too. The same
-/// service on the same handle naming another key is a plugin fault, never the first key's record.
+/// A handle is bound to the REQUEST it was first used for, too. The same service on the same handle
+/// naming another key is a plugin fault, never the first key's record.
 #[test]
 fn a_handle_reused_for_another_request_of_one_service_is_fault_and_quarantines() {
     let d = double();
@@ -2388,7 +2385,7 @@ fn a_handle_reused_for_another_request_of_one_service_is_fault_and_quarantines()
     assert!(!still_served(&d), "the instance is quarantined");
 }
 
-/// GREEN on both sides of row 189: the legitimate re-poll of the SAME request on the same handle
+/// GREEN on both sides of the rebound-handle rule: the legitimate re-poll of the SAME request on the same handle
 /// (PENDING, then READY once the kernel answers) is the one re-use a handle allows. The plugin may
 /// rebuild the request between polls (other buffers, the same bytes); the re-poll reads the stored
 /// answer, the kernel is asked once, and the instance is never quarantined for it.

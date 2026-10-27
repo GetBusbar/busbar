@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE EXPORT KIND ON THE ONE DISPATCHER (`BUSBAR-1.6.0.md` THE DESIGN §11; KERNEL<>PLUGINS steps
-//! 26/27): [`ExportInstance`], one opened export instance, called through its table
-//! (`abi::export`) and nothing else, whichever door it came in by. It implements the contract's
-//! [`ExportCalls`], so the kernel feeds and scrapes it without naming this crate.
+//! THE EXPORT KIND ON THE ONE DISPATCHER (`BUSBAR-1.6.0.md` THE DESIGN §11): [`ExportInstance`],
+//! one opened export instance, called through its table (`abi::export`) and nothing else, whichever
+//! door it came in by. It implements the contract's [`ExportCalls`], so the kernel feeds and
+//! scrapes it without naming this crate.
 //!
 //! * **deliver** — OFF the request path. A line joins the instance's BOUNDED queue
 //!   ([`MAX_QUEUED_LINES`]; past it the line is shed, never queued) and the instance's flusher
@@ -13,8 +13,8 @@
 //!   `op_id` (THE DESIGN §11.11 H4). The batch crosses on a ticket in the write-behind deadline
 //!   class, so a reload drain never waits on it (H5), and rides with the job as lent memory; a
 //!   FAILED batch is retried with the SAME `op_id`, at most [`DELIVER_ATTEMPTS`] times. Up to the
-//!   instance's `max_inflight` deliveries run at once (ARCHITECT ruling MAX-INFLIGHT 2026-10-03:
-//!   1.5.5's `max_inflight_deliveries`, within the plugin's declared ceiling), each on a ticket of
+//!   instance's `max_inflight` deliveries run at once (1.5.5's `max_inflight_deliveries`,
+//!   within the plugin's declared ceiling), each on a ticket of
 //!   its own and none holding a thread while it pends; while fewer lines are queued than deliveries
 //!   may start, each line travels alone, as each 1.5.5 delivery did. Every batch of one instance is
 //!   started on the same worker, in queue order. Dropping the instance waits at most
@@ -747,8 +747,7 @@ impl ExportCalls for ExportInstance {
 
     /// The host SHED one line for this instance (past its bound): count it on each counter the
     /// instance was GRANTED as its shed counter at open (a first-party manifest declaration marked
-    /// `shed`), folded under its name through the one observability path (ARCHITECT ruling
-    /// 2026-09-30, Q2).
+    /// `shed`), folded under its name through the one observability path.
     fn shed(&self) {
         fold_shed(self.shared.dispatcher.observing(), self.plugin().name());
     }

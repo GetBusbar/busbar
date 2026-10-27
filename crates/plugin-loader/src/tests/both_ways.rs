@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE BOTH-WAYS HARNESS** (DECISIONS #2 rule (1): a plugin is compiled in OR dropped in — same
+//! **THE BOTH-WAYS HARNESS** (a plugin is compiled in OR dropped in — same
 //! contract, same loading path).
 //!
 //! One plugin is registered TWICE: LINKED (its door, through [`PluginRegistry::link`]) and DROPPED

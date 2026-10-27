@@ -254,7 +254,7 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
     }
 }
 
-/// A credential of `kind` (Q-P4-7: the script writes, and looks up, the ONE kind the shipped store
+/// A credential of `kind` ( the script writes, and looks up, the ONE kind the shipped store
 /// schemas hold, 1.5.5's `PutCredential` "today only" kind; a store whose schema
 /// constrains the kind refuses any other). The kind is the plugin's `conformance.json`
 /// `store.credential_kind`, never a word this crate spells (`c1-literals`: the loader names no auth
@@ -326,7 +326,7 @@ fn at<'v>(k: &'v serde_json::Value, path: &str) -> &'v serde_json::Value {
 
 /// The store's inputs, read once.
 pub(super) struct Inputs<'a> {
-    /// The credential kind the shipped store schemas hold (`store.credential_kind`, Q-P4-7).
+    /// The credential kind the shipped store schemas hold (`store.credential_kind`).
     pub(super) credential_kind: &'a str,
     node: u64,
     cap_bucket: &'a str,
@@ -428,7 +428,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         format!("refused={right}")
     });
     // ONE first invocation for `open`, and one for the `ready` the kernel awaits inside it; their
-    // resumes are reported (Q-P4-5).
+    // resumes are reported.
     let open_pin = 1 + u64::from(p.has_ready());
     // The bridge mints its writes' op ids from this fold's own allocator, on this node's half;
     // held until the fold ends (declared before the store, so it outlives it).
@@ -442,7 +442,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     ready_step(&mut r, s, st.plugin(), &d);
     let b: &dyn RecordStore = &st;
 
-    // ── keys: put_key, get_key, list_keys, delete_key, scrub_key, list_keys_since ──
     let keys = |r: Result<Vec<VirtualKey>, busbar_contract::records::RecordStoreError>| {
         ans(r.map(|mut ks| {
             ks.sort_by(|a, b| a.id.cmp(&b.id));
@@ -469,7 +468,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("scrub grouped (live)", 1, || ans(b.scrub_key(i.grouped)));
     r.line("keys since 0", LEASED, || keys(b.list_keys_since(0)));
 
-    // ── usage: get_usage, add_usage, put_usage, purge_windows_before ──
     let (ub, w) = (i.usage_bucket, i.window);
     r.line("usage untouched", LEASED, || ans(b.get_usage(ub, w)));
     r.line("add usage", 1, || ans(b.add_usage(ub, w, &delta(2, 30))));
@@ -482,7 +480,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("purge windows before", 1, || ans(b.purge_windows_before(w)));
     r.line("usage after purge", LEASED, || ans(b.get_usage(ub, w)));
 
-    // ── metering: add_metering, list_metering, purge_metering_before ──
     // Metering names a key the script has PUT (the grouped key, still live): a store whose metering
     // rows reference its keys (a metering -> keys foreign key) holds them.
     r.line("meter p 3", 1, || {
@@ -502,7 +499,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     r.line("purge metering", 1, || ans(b.purge_metering_before("a")));
 
-    // ── credentials ──
     r.line("put k1", 1, || ans(b.put_key(&key("k1", None))));
     r.line("cred c1", 1, || {
         ans(b.put_credential(&secret(i.credential_kind, "c1", "k1", "pub1")))
@@ -542,7 +538,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     });
 
-    // ── audit and denylist ──
     r.line("audit 1", 1, || ans(b.append_audit(&audit(1, "a"))));
     r.line("audit 2", 1, || ans(b.append_audit(&audit(2, "b"))));
     r.line("audit 2 forked", 1, || {
@@ -558,7 +553,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     });
 
-    // ── plane records through the bridge (`get`/`list` write into host buffers: no lease) ──
     let bodies = |r: busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>>| {
         ans(r.map(|v| {
             let mut v: Vec<String> = v.iter().map(|b| text_of(b)).collect();
@@ -613,7 +607,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ans(b.redeem_plane_token("tok", "x", 100, 1))
     });
 
-    // ── the typed surface: every v3 addition, submitted and awaited ──
     let cell_key = |dimension| CellKey {
         bucket: i.cap_bucket,
         pool: None,
@@ -886,8 +879,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     r.line("usage at the end", LEASED, || ans(b.get_usage(ub, w)));
 
-    // ── the scope-kind round trip (DECISIONS #11): a plane's kinds are the key's own data, and a
-    // dropped-in store must hand the key back byte-identically ──
+    // ── the scope-kind round trip: a plane's kinds are the key's own data, and a dropped-in store
+    // must hand the key back byte-identically ──
     let sk = scoped_key();
     r.line("scope-kind put", 1, || ans(b.put_key(&sk)));
     let back = r.step("scope-kind get", LEASED, || match b.get_key(&sk.id) {

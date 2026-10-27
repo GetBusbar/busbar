@@ -363,7 +363,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     ready_step(&mut r, s, &p, &d);
 
-    // ── the role it does not play ──
     r.line("framer ops", 10, || framer_ops(&p, &wr));
     want.push((
         "framer ops".into(),
@@ -374,7 +373,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ),
     ));
 
-    // ── listen, accept, and the accepted connection both ways ──
     let listens = k["listen"].as_bool().unwrap_or(false);
     let ls = Side::new(&d);
     let bind_at = "127.0.0.1:0";
@@ -455,7 +453,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         want.push(("listen".into(), Want::Starts("Refused")));
     }
 
-    // ── the dial, its exchange, a pending read resumed by the host's wake ──
     let (dest, other) = match &k["dial"] {
         serde_json::Value::String(a) if a == "authority" => {
             let at = echo();
@@ -521,7 +518,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     want.push(("the host woke the read".into(), Want::Is("true".into())));
     // The pending read's RESUME on its ticket: the op's one first invocation was "read pending", so
-    // this re-invocation is counted apart and reported, never pinned (Q-P4-5: one op, one crossing,
+    // this re-invocation is counted apart and reported, never pinned ( one op, one crossing,
     // however often it pends).
     r.line("read resumed", 0, || read(&p, &rd, conn, true));
     want.push((
@@ -533,7 +530,6 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     r.line("shut again", 1, || shut(&p, &wr, conn));
     want.push(("shut again".into(), Want::Is("Ready".into())));
 
-    // ── THE HOST'S GUARD (RED arm): nothing the host did not admit is reached ──
     let guarded = Side::new(&d);
     let unadmitted = match dest.kind {
         DEST_AUTHORITY => Dest::authority("127.0.0.1:9"),

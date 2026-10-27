@@ -11,8 +11,8 @@ fn key(seed: u8) -> SigningKey {
 }
 
 /// ONE VERSION PER KIND (THE DESIGN §11.2, §11.8; A.9): each kind's window is exactly
-/// `abi::<kind>::ABI_VERSION` — no ranges, no JSON-lane versions, no 1.5.5 floors (ruling
-/// C21/ABI-o1) — at the shipped numbers.
+/// `abi::<kind>::ABI_VERSION` — no ranges, no JSON-lane versions, no 1.5.5 floors — at the shipped
+/// numbers.
 ///
 /// RED before the P2 switch-over: store, secret and auth answered their JSON-lane versions (4, 1, 3),
 /// plane the range `[1, ABI_MINOR]` and transport `[TRANSPORT_DECL_MINOR, ABI_MINOR]`.
@@ -806,8 +806,6 @@ fn crafted_publisher_cannot_forge_signature_label() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── The FIRST-PARTY replay, end to end over the real scan ──────────────────────────────────────
-
 /// `docs/plugins.md` security-model item 3, proven through the actual pipeline: a deployment loads
 /// 1.2.0 of a first-party plugin, the high-water mark records it, and the GENUINE busbar-signed
 /// 1.0.0 an attacker with write access to `plugins.dir` swaps in is then REFUSED — even though its
@@ -911,8 +909,6 @@ fn read_file_capped_bounds_the_stream_not_the_stale_metadata() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ── FORMER NAMES (ARCHITECT ruling: 1.5.5 configs load UNCHANGED) ─────────────────────────────
-
 /// A door a registry row carries but these tests never open.
 extern "C" fn unopened_door() -> *const busbar_contract::abi::mechanism::door::Door {
     std::ptr::null()
@@ -950,7 +946,7 @@ fn linked_in(m: Manifest) -> PluginRegistry {
         .expect("the linked door admits the row")
 }
 
-/// THE RULING'S CASE: a 1.5.5-shaped config names a hook and a store by the manifest names their
+/// THE CASE: a 1.5.5-shaped config names a hook and a store by the manifest names their
 /// 1.5.5-era releases carried (`busbar-webrequest`; a store's `busbar-store-<name>-plugin`, here a
 /// neutral one — the fleet's real names are swept from plugins.yaml by
 /// [`every_former_name_plugins_yaml_declares_resolves_both_ways`]); each resolves to the 1.6.0 plugin
@@ -1077,10 +1073,10 @@ fn two_plugins_claiming_one_former_name_are_refused() {
     }
 }
 
-/// THE ONE-OWNER RULE ACROSS THE DOORS (ARCHITECT Q-P4-12, BUSBAR-1.6.0.md:106): a linked row and
-/// any DIFFERENT plugin claiming one name, alias or former name refuse the boot, naming both and the
-/// word; neither door outranks the other. The SAME plugin linked and dropped in is not a claim
-/// conflict (the one-version-per-kind rule governs it).
+/// THE ONE-OWNER RULE ACROSS THE DOORS (BUSBAR-1.6.0.md:106): a linked row and any DIFFERENT plugin
+/// claiming one name, alias or former name refuse the boot, naming both and the word; neither door
+/// outranks the other. The SAME plugin linked and dropped in is not a claim conflict (the
+/// one-version-per-kind rule governs it).
 #[test]
 fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
     let webrequest = || {
@@ -1122,7 +1118,7 @@ fn a_linked_and_another_plugin_claiming_one_name_are_refused() {
         .link(vec![LinkedPlugin::door(webrequest(), versioned_door)])
         .expect("the same plugin linked and dropped in is not a conflict");
     assert!(reg.resolve("busbar-webrequest").expect("resolves").linked());
-    // RED (Q-P4-12): a different dropped-in plugin spelling the linked row's ALIAS, or its NAME.
+    // A different dropped-in plugin spelling the linked row's ALIAS, or its NAME.
     for (tag, other) in [
         (
             "cross-alias",
@@ -1192,11 +1188,11 @@ fn webrequest_at(version: &str) -> Manifest {
     m
 }
 
-/// THE ONE-VERSION RULE, SAME VERSION (ARCHITECT C'): one plugin linked and dropped in at ONE
-/// version — the version each door's Statement states — is ONE plugin, admitted once: the linked
-/// row serves every name, the dropped-in copy is no row of its own, and it is recorded for boot's
-/// one INFO line naming both doors and the version. The manifests' own `version`s differ on
-/// purpose: they are never compared. RED before: the copy stayed a second loadable row.
+/// THE ONE-VERSION RULE, SAME VERSION: one plugin linked and dropped in at ONE version — the
+/// version each door's Statement states — is ONE plugin, admitted once: the linked row serves every
+/// name, the dropped-in copy is no row of its own, and it is recorded for boot's one INFO line
+/// naming both doors and the version. The manifests' own `version`s differ on purpose: they are
+/// never compared. RED before: the copy stayed a second loadable row.
 #[test]
 fn one_plugin_by_both_doors_at_one_version_is_admitted_once() {
     let version = door_version();
@@ -1273,12 +1269,12 @@ fn an_untrusted_copy_is_skipped_before_its_version_is_compared() {
     assert!(reg.linked_copies().is_empty() && reg.loadable().is_empty());
 }
 
-/// THE VERSION COMPARED IS THE STATEMENT'S, AND ONLY THE STATEMENT'S (ARCHITECT C', 2026-10-07): a
-/// plugin that reaches the one-version compare stating no version in a Statement is REFUSED, naming
-/// it — a dropped-in copy whose manifest states no Statement (its manifest `version` is never read
-/// in its place, even when it equals the linked plugin's), one stating an empty version, and a
-/// linked row whose door states none. The build's store under its canonical name and a copy
-/// stating the store door's own Statement are one plugin at one version.
+/// THE VERSION COMPARED IS THE STATEMENT'S, AND ONLY THE STATEMENT'S: a plugin that reaches the
+/// one-version compare stating no version in a Statement is REFUSED, naming it — a dropped-in copy
+/// whose manifest states no Statement (its manifest `version` is never read in its place, even when
+/// it equals the linked plugin's), one stating an empty version, and a linked row whose door states
+/// none. The build's store under its canonical name and a copy stating the store door's own
+/// Statement are one plugin at one version.
 #[test]
 fn the_one_version_rule_compares_statement_versions_only() {
     let door = crate::both_ways::store_fixture::door;
@@ -1320,11 +1316,11 @@ fn the_one_version_rule_compares_statement_versions_only() {
     assert_eq!(refused, refusal);
 }
 
-/// THE LINKED BUILT-IN UNDER ITS CANONICAL NAME (ARCHITECT C'): a store or auth row the root names
-/// canonically answers to that name AND to its key, and every surface that printed the key before
-/// still prints it ([`LoadablePlugin::key`]): the claim conflict, a row of the wrong kind
-/// (`resolve_kind`'s words, which `appbuild` and the axes print), a store with no door. A
-/// dropped-in row prints its manifest name.
+/// THE LINKED BUILT-IN UNDER ITS CANONICAL NAME: a store or auth row the root names canonically
+/// answers to that name AND to its key, and every surface that printed the key before still prints
+/// it ([`LoadablePlugin::key`]): the claim conflict, a row of the wrong kind (`resolve_kind`'s
+/// words, which `appbuild` and the axes print), a store with no door. A dropped-in row prints its
+/// manifest name.
 #[test]
 fn a_linked_built_in_answers_its_canonical_name_and_prints_its_key() {
     let door = crate::both_ways::store_fixture::door;
@@ -1407,7 +1403,7 @@ fn fleet_entries(yaml: &str) -> Vec<(String, String, String, Vec<String>)> {
 
 /// EVERY former name the committed plugins.yaml declares (the measured 1.5.5 manifest names of the
 /// renamed fleet plugins) resolves to its 1.6.0 plugin, of its kind, dropped in and linked: the
-/// ruling's case over the real data a 1.5.5 config names (`busbar-webrequest` under hooks, a store's
+/// the case over the real data a 1.5.5 config names (`busbar-webrequest` under hooks, a store's
 /// `busbar-store-<name>-plugin` under `store.module`). A kind the linked door does not serve is
 /// checked dropped in only.
 #[test]

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE READY WITNESSES (discovery at boot, ARCHITECT 2026-10-02): a secret kind on the SDK's
-//! generic lifecycle whose `ready` ([`Life::ready`]) is driven by its settings, stated on its door
-//! (`lifecycle: life(L, ready)`), and the same lifecycle WITHOUT `ready` on its door.
+//! THE READY WITNESSES (discovery at boot): a secret kind on the SDK's generic lifecycle whose
+//! `ready` ([`Life::ready`]) is driven by its settings, stated on its door (`lifecycle: life(L,
+//! ready)`), and the same lifecycle WITHOUT `ready` on its door.
 //!
 //! Settings: `err:<text>` — `ready` refuses with `<text>`; `pend` — the first `ready` answers
 //! PENDING and wakes its ticket from another thread a moment later, and the resume answers READY;

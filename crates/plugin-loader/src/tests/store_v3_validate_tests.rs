@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A STORE'S SETTINGS CHECK (ARCHITECT, PORT-STORE-SQLITE findings (1) and (2)): `validate` only
+//! A STORE'S SETTINGS CHECK: `validate` only
 //! PARSES (it never opens, connects to or migrates a store, so `--validate` leaves the operator's
 //! database untouched), and a refusal's own text reaches the operator verbatim, as 1.5.5's did.
 

@@ -516,7 +516,7 @@ impl Store for MemoryStore {
             // `priced_from_ms` is part of the key, not just the row: it is the `effective_from`
             // of the rate-card entry in force when these counts were accrued, so a card edit inside
             // a UTC day opens a SECOND row for that day and each half keeps the card it was earned
-            // under (DECISION #79). Folding it into one row would leave a sum earned under two
+            // under. Folding it into one row would leave a sum earned under two
             // cards with only one card to be read against.
             .entry((
                 d.key_id.clone(),
@@ -953,13 +953,13 @@ pub mod door_export {
     busbar_contract::export_door!(crate::v3::door);
 }
 
-/// THE LINKED ENTRY (DECISIONS #2 rule (1)): what a build that links this store registers onto the
+/// THE LINKED ENTRY: what a build that links this store registers onto the
 /// store axis — the same door a dropped-in store exports. `STORE` is `(key, ephemeral, door,
 /// canonical)`: the key `store.module` selects it by (and the store catalog prints), its statement
 /// that what it holds is lost on restart, its store v3 door, which boot opens it through (the store
 /// axis), and its canonical name — the manifest name its release tarball carries (plugins.yaml
 /// `manifest_name`, the repo), which config may name it by too, one plugin whichever door it
-/// arrives by (ARCHITECT C'). It claims no default: a config names its store (Q-STORE = (B)).
+/// arrives by. It claims no default: a config names its store.
 pub mod linked {
     /// `(key, ephemeral, door, canonical)`.
     pub const STORE: (

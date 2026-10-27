@@ -4,9 +4,9 @@
 //! A DROPPED-IN TRANSPORT DOOR THROUGH THE REGISTRY: the neutral frame door's `cdylib`, signed
 //! first-party into a `plugins/` directory, is scanned, trusted, staged, `dlopen`ed once and
 //! admitted through the one dispatcher's door validation — its tail read into the claims the
-//! connector's registry view serves. A manifest outside the transport's version window is refused at
-//! the structural gate, and a library with no door is refused outright: the HOT transport lane is
-//! deleted (row 84), so a door is the only way a transport loads.
+//! connector's registry view serves. A manifest outside the transport's version window is refused
+//! at the structural gate, and a library with no door is refused outright: the HOT transport lane
+//! is deleted, so a door is the only way a transport loads.
 
 use std::sync::Arc;
 

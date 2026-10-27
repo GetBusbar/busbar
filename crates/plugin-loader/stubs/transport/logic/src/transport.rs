@@ -38,7 +38,6 @@ use busbar_contract::abi::transport::{
     ListenOut, ReadIn, ShutIn, WriteIn, CANCEL_NOTHING_MOVED, DEST_AUTHORITY, READ_END_OF_FRAME,
 };
 
-// ── the instance ─────────────────────────────────────────────────────────────────────────────────
 
 /// What one instance carries: its listeners and its connections, each by the token it minted.
 pub struct Carried {
@@ -129,7 +128,6 @@ macro_rules! over {
     };
 }
 
-// ── the framer ops: refused ──────────────────────────────────────────────────────────────────────
 
 /// A framer op: REFUSED. A carrier frames nothing (`abi::transport`: a transport fills the slots of
 /// the role it does not play with a stub that answers REFUSED).
@@ -144,7 +142,6 @@ impl<I: AbiIn, O: AbiOut> SafeSlot for NotAFramer<I, O> {
     }
 }
 
-// ── the carrier ──────────────────────────────────────────────────────────────────────────────────
 
 /// `listen`: bind the address, and answer the address bound into the host's buffer.
 pub struct Listen;

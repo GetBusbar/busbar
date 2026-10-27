@@ -129,9 +129,9 @@ fn linking(doors: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)]) -> A
     AuthRows::new(Arc::new(registry), d)
 }
 
-/// THE HOST'S DEFAULT INBOUND STYLE (row 159, K3#1): the carriers of the one row stating
-/// `FACT_DEFAULT_INBOUND_STYLE`, in its Statement's order; a row that does not state it lends
-/// none, and no row stating it is none.
+/// THE HOST'S DEFAULT INBOUND STYLE: the carriers of the one row stating
+/// `FACT_DEFAULT_INBOUND_STYLE`, in its Statement's order; a row that does not state it lends none,
+/// and no row stating it is none.
 #[test]
 fn the_default_inbound_style_is_the_one_stating_rows_carriers_in_order() {
     let rows = linking(&[("plain", plain::door), ("default-a", default_a::door)]);
@@ -185,11 +185,11 @@ fn a_default_inbound_style_with_no_carrier_is_refused_at_load() {
     );
 }
 
-/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; ARCHITECT ruling 2026-10-20 on
-/// root#7 / loader#9: reading a row's static declaration, its kind tail included, is reading, not
-/// loading). The boot's fact reads — the credential readers, the default inbound style, the
-/// operator row, a module's carriers — read every linked row's Statement and bind none; opening
-/// the one module config names binds that row and no other.
+/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; reading a row's static
+/// declaration, its kind tail included, is reading, not loading). The boot's fact reads — the
+/// credential readers, the default inbound style, the operator row, a module's carriers — read
+/// every linked row's Statement and bind none; opening the one module config names binds that row
+/// and no other.
 #[test]
 fn a_linked_row_the_configuration_does_not_name_is_never_bound() {
     let rows = linking(&[("plain", plain::door), ("default-a", default_a::door)]);
@@ -213,8 +213,8 @@ fn a_linked_row_the_configuration_does_not_name_is_never_bound() {
     );
 }
 
-// ── THE SIGNED MANIFEST IS THE NO-DLOPEN SOURCE OF A DROPPED-IN ROW'S TAIL (ARCHITECT ruling
-// 2026-10-20 on root#7 / loader#9: the canonical rendering carries the whole kind tail) ──────────
+// ── THE SIGNED MANIFEST IS THE NO-DLOPEN SOURCE OF A DROPPED-IN ROW'S TAIL (the canonical
+// rendering carries the whole kind tail) ──────────
 
 /// The operator principal [`operator_row`] states.
 const OPERATOR_PRINCIPAL: &str = "manifest-operator";
@@ -426,11 +426,11 @@ mod issuing_reader {
     );
 }
 
-/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; ARCHITECT ruling 2026-10-20 on
-/// root#7 / loader#9: reading a row's static declaration is reading, not loading). THE CREDENTIAL
-/// THE HOST ISSUES is a fact read every auth build makes: it reads the linked rows' Statements, the
-/// credential reader's issued shape included, and binds none. RED before: it bound every auth row
-/// to read its facts, so the bound recorder held each linked row's key.
+/// LAW 7 (BUSBAR-1.6.0.md Part 1: a plugin loads iff config uses it; reading a row's static
+/// declaration is reading, not loading). THE CREDENTIAL THE HOST ISSUES is a fact read every auth
+/// build makes: it reads the linked rows' Statements, the credential reader's issued shape
+/// included, and binds none. RED before: it bound every auth row to read its facts, so the bound
+/// recorder held each linked row's key.
 #[test]
 fn the_issued_credential_read_binds_no_row() {
     let rows = linking(&[

@@ -38,9 +38,8 @@ pub(crate) fn decode(slot: u32) -> (u32, u32) {
 /// Where an instance's wakes go: the dispatcher that holds its tickets.
 pub(crate) trait WakeRoute: Send + Sync {
     /// Push `t` to the worker that owns it, with `supplier` the instance whose context handed the
-    /// host `t` (#74: a forged generation the worker finds is that instance's; `None` = the host's
-    /// own wake, blamed on no one and counted against the process's latch). Never blocks on the
-    /// plugin.
+    /// host `t` (a forged generation the worker finds is that instance's; `None` = the host's own
+    /// wake, blamed on no one and counted against the process's latch). Never blocks on the plugin.
     fn wake(&self, t: Ticket, supplier: Option<&'static InstanceWake>);
 
     /// The host services this route's instances are served from; `None` = none.
@@ -59,8 +58,8 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
-    /// The seal the host lent this route's dispatcher (Part 2 #54); `None` = none, and a reveal of
-    /// a `Secret` its instances' services would make is refused.
+    /// The seal the host lent this route's dispatcher; `None` = none, and a reveal of a `Secret`
+    /// its instances' services would make is refused.
     fn seal(
         &self,
     ) -> Option<std::sync::Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
@@ -106,8 +105,8 @@ pub(crate) struct InstanceWake {
     /// Each granted key bound to the file the instance's settings give it, re-bound by every
     /// `open` and `refresh` (`disk.append` maps a key through it).
     pub(crate) bound: std::sync::RwLock<Vec<busbar_contract::services::DiskDest>>,
-    /// The instance's handle names nothing any more (#74): set when it is quarantined, faulted by
-    /// the watchdog, closed or dropped. Checked by `handle::resolve` after the tag verifies.
+    /// The instance's handle names nothing any more: set when it is quarantined, faulted by the
+    /// watchdog, closed or dropped. Checked by `handle::resolve` after the tag verifies.
     pub(crate) revoked: std::sync::atomic::AtomicBool,
     /// The instance this entry is the handle of, set once it exists: what a forgery found AFTER the
     /// call that supplied it (a forged ticket generation, judged on the worker against the supplier
@@ -127,10 +126,10 @@ impl std::fmt::Debug for InstanceWake {
     }
 }
 
-/// Where a ticket's wake goes, and the instance whose context supplied the ticket (#74). Carried
-/// from the call that took the ticket to whatever fires the wake (a completion, a connection's
-/// readiness, an I/O waker), on any thread: the supplier is never read off the thread the wake
-/// fires on, so a wake firing inside another instance's crossing never blames that instance.
+/// Where a ticket's wake goes, and the instance whose context supplied the ticket. Carried from the
+/// call that took the ticket to whatever fires the wake (a completion, a connection's readiness, an
+/// I/O waker), on any thread: the supplier is never read off the thread the wake fires on, so a
+/// wake firing inside another instance's crossing never blames that instance.
 #[derive(Clone)]
 pub(crate) struct Waking {
     pub(crate) route: Weak<dyn WakeRoute>,
@@ -159,14 +158,13 @@ impl Waking {
 /// never fails. A wake for an unknown worker or a stale generation is dropped (the latter by the
 /// worker, which alone knows the generation).
 pub(crate) extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
-    // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and
-    // counted by the worker, never silently lost here.
-    // THE HANDLE IS VERIFIED BEFORE IT NAMES ANYTHING (#74): a context the host did not mint wakes
-    // nothing and is counted.
+    // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and counted
+    // by the worker, never silently lost here. THE HANDLE IS VERIFIED BEFORE IT NAMES ANYTHING: a
+    // context the host did not mint wakes nothing and is counted.
     let Some(target) = super::handle::resolve(ctx) else {
         return;
     };
-    // The supplier is the context's own instance, resolved above (#74).
+    // The supplier is the context's own instance, resolved above.
     if let Some(route) = target.route.get().and_then(Weak::upgrade) {
         route.wake(ticket, Some(target));
     }

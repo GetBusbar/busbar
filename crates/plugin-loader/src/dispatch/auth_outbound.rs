@@ -43,9 +43,8 @@ pub struct OutboundInstance {
     worker: u32,
 }
 
-/// THE OUTBOUND STYLES `plugin`'s tail states (THE DESIGN §6 step 3: the auth plugin that serves
-/// a style opens the binding). Read once per row by the host, which then binds only the row that
-/// serves the style it is asked for.
+/// THE OUTBOUND STYLES `plugin`'s tail states. Read once per row by the host, which then binds only
+/// the row that serves the style it is asked for.
 #[must_use]
 pub fn outbound_styles(plugin: &Plugin<Auth>) -> Vec<OutboundStyle> {
     plugin
@@ -72,7 +71,7 @@ impl OutboundInstance {
     /// `plugin`'s instance OPENED over the settings document `settings` (a JSON object): the
     /// binding's own settings, for a plugin whose needs take their target from them (`target_from`:
     /// the loader declares each such need pinned to what its path resolves to in `settings`, at
-    /// this `open`, THE DESIGN §5 PB-100).
+    /// this `open`).
     ///
     /// # Errors
     ///

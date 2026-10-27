@@ -441,8 +441,6 @@ fn red_a_tick_pinned_to_wake_that_wakes_nothing_is_refused() {
     assert!(e.contains("live tick") && e.contains("pinned 2"), "{e}");
 }
 
-// ── THE HOST, THE LEDGER LANE, THE RECORD WRITES AND THE PROMPT TURNS ────────────────────────────
-
 /// The kernel services the fixture asks: `door:echo` entitled for unit 80 alone, the member `m1`'s
 /// `echo` approved.
 const HOST: &str = r#"{ "entitled": [{ "target": "door:echo", "units": [80, 82] }],
@@ -597,8 +595,6 @@ fn red_a_unit_the_grant_does_not_list_is_entitled_to_nothing() {
         NOT_ENTITLED
     );
 }
-
-// ── THE ATTEMPT AND THE CALLER'S BODIES (`plane.attempt`, `plane.arrive_each`) ─────────────────
 
 fn step(label: &str, answer: &str) -> crate::conformance::Step {
     crate::conformance::Step {

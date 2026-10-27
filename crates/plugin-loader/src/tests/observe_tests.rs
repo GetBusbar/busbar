@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the host side of the observability envelope (#85).
+//! Tests for the host side of the observability envelope.
 //!
 //! Every test that reads folds takes `testing::exclusive()` first — the observer is a
 //! process-global `OnceLock` by design (the engine installs exactly one) and `cargo test` runs a
@@ -217,8 +217,6 @@ fn a_first_party_grant_goes_with_its_last_instance() {
     let _next = grant_series(&testing::observing(), "grant-life-next", true, &declared)
         .expect("a series whose plugin went is free for the plugin that replaces it");
 }
-
-// ── ENVELOPE-ALL (ARCHITECT ruling 2026-10-03): every kind's envelope, through a bounded intake ──
 
 /// A binder's own sink, recorded: what the door's binder still receives once the host's
 /// observability stands before it.
@@ -462,13 +460,13 @@ fn a_full_intake_drops_and_counts_and_never_stalls_the_caller() {
     );
 }
 
-/// A READER COUNTS ONLY ITS OWN TEST'S FOLDS (busbar status row 118). The `exclusive` guard
-/// serializes the tests that READ the fold log, never the rest of the binary: any test driving a
-/// door with a non-bare envelope folds into the one process-wide observer while a reader holds the
-/// guard (the row's evidence: `dispatch-test-plugin`'s `m1_calls`, folded by a dispatch test, in
-/// the export envelope test's count). Here a neighbour on a thread of its own folds between the
-/// reader's own two folds; the reader's log holds exactly its two. RED before the per-test scope:
-/// the neighbour's fold is counted, three where the reader folded two.
+/// A READER COUNTS ONLY ITS OWN TEST'S FOLDS. The `exclusive` guard serializes the tests that READ
+/// the fold log, never the rest of the binary: any test driving a door with a non-bare envelope
+/// folds into the one process-wide observer while a reader holds the guard (the row's evidence:
+/// `dispatch-test-plugin`'s `m1_calls`, folded by a dispatch test, in the export envelope test's
+/// count). Here a neighbour on a thread of its own folds between the reader's own two folds; the
+/// reader's log holds exactly its two. RED before the per-test scope: the neighbour's fold is
+/// counted, three where the reader folded two.
 #[test]
 fn a_reader_counts_only_its_own_tests_folds() {
     let _guard = exclusive();

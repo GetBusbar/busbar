@@ -74,9 +74,8 @@ pub struct LoadablePlugin {
 
 impl LoadablePlugin {
     /// THE WORD THIS ROW'S SURFACES PRINT AND KEY IT BY: a dropped-in row's manifest name; a linked
-    /// built-in's KEY, its alias (the short word the composition root's table names it by, and every
-    /// refusal, log field and `secrets:` key printed before the row also answered to its canonical
-    /// name: ARCHITECT C'), when the root gave it a canonical name beside that key; any other linked
+    /// built-in's KEY, its alias (the short word the composition root's table names it by, and
+    /// every refusal), when the root gave it a canonical name beside that key; any other linked
     /// row's manifest name. Identity is the manifest name; this is only the word printed.
     pub fn key(&self) -> &str {
         match self.keyed_by_alias {
@@ -87,9 +86,9 @@ impl LoadablePlugin {
 
     /// THE PLUGIN'S VERSION, as the one-version rule compares it ([`one_version`]): the version its
     /// STATEMENT states (the plugin's own `CARGO_PKG_VERSION`: what its door says for a linked row,
-    /// what its signed manifest's `statement` says for a dropped-in one), and nothing else — never a
-    /// manifest's `version` (a linked row's is the loader's, which says nothing about the plugin;
-    /// ARCHITECT C', 2026-10-07).
+    /// what its signed manifest's `statement` says for a dropped-in one), and nothing else — never
+    /// a manifest's `version` (a linked row's is the loader's, which says nothing about the
+    /// plugin).
     ///
     /// # Errors
     /// The plugin states no version in a Statement ([`unversioned`]).
@@ -166,7 +165,7 @@ const LINKED_KINDS: &[&str] = &[
     kind::EXPORT,
 ];
 
-/// A plugin LINKED into this build (DECISIONS #2 rule (1)): the manifest its signed tarball would
+/// A plugin LINKED into this build: the manifest its signed tarball would
 /// carry — every statement about the plugin, none about an artifact (`sha256` and `signature`
 /// describe a file it does not have) — and its door.
 pub struct LinkedPlugin {
@@ -223,17 +222,16 @@ impl LinkedPlugin {
         }
     }
 
-    /// [`LinkedPlugin::door`] over the `MACRO_DOOR` `plugin_door!` expands beside `door` (status
-    /// rows 159 and 194). #1469 makes `door` take the `MacroDoor` alone and keeps this name beside
-    /// it, so `LinkedPlugin::of_macro(manifest, plugin::MACRO_DOOR)` compiles before and after.
+    /// [`LinkedPlugin::door`] over the `MACRO_DOOR` `plugin_door!` expands beside `door`. #1469
+    /// makes `door` take the `MacroDoor` alone and keeps this name beside it, so
+    /// `LinkedPlugin::of_macro(manifest, plugin::MACRO_DOOR)` compiles before and after.
     pub fn of_macro(manifest: Manifest, door: busbar_contract::abi::sdk::door::MacroDoor) -> Self {
         Self::door(manifest, door.door_fn())
     }
 
-    /// [`LinkedPlugin::door`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor) (status rows 159
-    /// and 194): a `MacroDoor`'s, or the door a crate that exports its `door` function alone
-    /// restates (`unsafe { LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and
-    /// signature.
+    /// [`LinkedPlugin::door`] over a [`LoadedDoor`](crate::dispatch::LoadedDoor): a `MacroDoor`'s,
+    /// or the door a crate that exports its `door` function alone restates (`unsafe {
+    /// LoadedDoor::from_raw(plugin::door) }`). #1469 keeps this name and signature.
     pub fn of_loaded(manifest: Manifest, door: crate::dispatch::LoadedDoor) -> Self {
         LinkedPlugin {
             manifest,
@@ -474,11 +472,12 @@ impl PluginRegistry {
         registry
     }
 
-    /// THE REGISTRATION of one row on the axis — the ONE function both doors call (DECISIONS #2
-    /// rule (1)): the row becomes resolvable by its name, by its alias and by each of its former
+    /// THE REGISTRATION of one row on the axis — the ONE function both doors call:
+    /// the row becomes resolvable by its name, by its alias and by each of its former
     /// names ([`Manifest::former_names`]). No word reaches here claimed by two different plugins:
-    /// phase 3 refused that among the dropped-in rows, and [`Self::link`] refuses it between a linked
-    /// row and any other ([`cross_claim`]; Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")). The first row to register a word keeps it only for
+    /// phase 3 refused that among the dropped-in rows, and [`Self::link`] refuses it between a
+    /// linked row and any other ([`cross_claim`]; BUSBAR-1.6.0.md:106 "it refuses at boot
+    /// when two plugins claim the same thing"). The first row to register a word keeps it only for
     /// the SAME plugin arriving by both doors, which the one-version-per-kind rule governs.
     fn admit(&mut self, row: LoadablePlugin) {
         let i = self.rows.len();
@@ -730,14 +729,14 @@ impl PluginRegistry {
         self.kind_refusal(kind::SECRET, "resolve config secrets", name_or_alias)
     }
 
-    /// Open every loadable transport the configuration `uses` (Law 7), in scan order, through its
+    /// Open every loadable transport the configuration `uses`, in scan order, through its
     /// memory-ABI door ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one
     /// dispatcher's door validation and bound with `bind`, labelled with its own plugin name (each
     /// opened door is its own instance to the host services). Select reads the signed manifest's
     /// Statement and opens nothing ([`crate::boot::Candidate::serves`]): a transport no configured
-    /// scheme selects is never staged, so its library initialisers never run. A manifest that states
-    /// no Statement is refused unopened, and a library with no door is refused: the HOT transport
-    /// lane is deleted (row 84), and no other lane reads it. Each selected image is staged and
+    /// scheme selects is never staged, so its library initialisers never run. A manifest that
+    /// states no Statement is refused unopened, and a library with no door is refused: the HOT
+    /// transport lane is deleted, and no other lane reads it. Each selected image is staged and
     /// opened once. The first that will not load fails the whole set, naming it.
     ///
     /// Each opened door logs to its instance's own file under `logs` (THE DESIGN §11.2, "Plugin
@@ -812,12 +811,12 @@ impl PluginRegistry {
         Ok(entries)
     }
 
-    /// THE PLANES, discovered for the one load: every compiled-in plane door in `linked`, then every
-    /// loadable dropped-in plane whose signed manifest states a Statement, as a
+    /// THE PLANES, discovered for the one load: every compiled-in plane door in `linked`, then
+    /// every loadable dropped-in plane whose signed manifest states a Statement, as a
     /// [`crate::boot::Candidate`] ([`crate::boot::load_planes`] binds them through
     /// `load_linked`/`load_dropped` on the process's dispatcher). A dropped-in plane whose manifest
-    /// states no Statement is refused, naming it: the HOT-lane plane load is deleted (row 84), and a
-    /// plane loads only through its door.
+    /// states no Statement is refused, naming it: the HOT-lane plane load is deleted, and a plane
+    /// loads only through its door.
     ///
     /// # Errors
     ///
@@ -859,16 +858,17 @@ impl PluginRegistry {
     }
 }
 
-/// THE ONE-OWNER RULE across the doors (Q-P4-12 (ARCHITECT, BUSBAR-1.6.0.md:106 "it refuses at boot when two plugins claim the same thing")): a name, alias or former name config may reference
-/// resolves to exactly one plugin, and an ambiguity is never resolved by picking a winner: compiled
-/// in = dropped in, so neither door outranks the other. `rows` is the registry about to be built, its
+/// THE ONE-OWNER RULE across the doors (BUSBAR-1.6.0.md:106 "it refuses at boot when two
+/// plugins claim the same thing"): a name, alias or former name config may reference resolves to
+/// exactly one plugin, and an ambiguity is never resolved by picking a winner: compiled in =
+/// dropped in, so neither door outranks the other. `rows` is the registry about to be built, its
 /// first `new` rows the ones being linked; each is checked against every row after it (the other
 /// linked rows and every row already admitted: the plugins directory's). Two DIFFERENT plugins
 /// (different canonical names) claiming one word refuse the boot, naming both and the word. Two
-/// DROPPED-IN rows were already held to this by phase 3 ([`conflicts`]). The SAME plugin arriving by
-/// both doors (one canonical name) is one plugin, held to the ONE-VERSION RULE ([`one_version`],
-/// ARCHITECT C'): at the same version the dropped-in copy is returned (its index and the version),
-/// to be admitted once; at another version the boot is refused.
+/// DROPPED-IN rows were already held to this by phase 3 ([`conflicts`]). The SAME plugin arriving
+/// by both doors (one canonical name) is one plugin, held to the ONE-VERSION RULE
+/// ([`one_version`]): at the same version the dropped-in copy is returned (its index and the
+/// version), to be admitted once; at another version the boot is refused.
 fn cross_claim(rows: &[LoadablePlugin], new: usize) -> Result<Vec<(usize, String)>, String> {
     let mut copies = Vec::new();
     for (i, a) in rows.iter().enumerate().take(new) {
@@ -918,10 +918,10 @@ pub fn both_doors(name: &str, version: &str, file: &str) -> String {
     format!("plugin '{name}' v{version} is linked and also dropped in ({file}); the linked build serves it")
 }
 
-/// THE ONE-VERSION RULE (ARCHITECT C'): one plugin has one identity whichever door it arrives by,
-/// so the SAME plugin (one canonical name) linked into this build and dropped in as `file` at
-/// `dropped` (its [`LoadablePlugin::plugin_version`]) is one plugin at ONE version. The same version
-/// answers it; another refuses, naming the plugin, both doors and both versions.
+/// THE ONE-VERSION RULE: one plugin has one identity whichever door it arrives by, so the SAME
+/// plugin (one canonical name) linked into this build and dropped in as `file` at `dropped` (its
+/// [`LoadablePlugin::plugin_version`]) is one plugin at ONE version. The same version answers it;
+/// another refuses, naming the plugin, both doors and both versions.
 ///
 /// # Errors
 /// The two versions differ, or the linked plugin states no version ([`unversioned`]).

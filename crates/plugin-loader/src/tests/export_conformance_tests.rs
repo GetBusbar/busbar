@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE #11 TEST.** One crate, built BOTH ways, must be observationally identical.
+//! **THE BOTH-WAYS TEST.** One crate, built BOTH ways, must be observationally identical.
 //!
-//! DECISIONS #11 says every plugin is compiled-in OR dropped-in over the same contract and one
+//! THE DESIGN says every plugin is compiled-in OR dropped-in over the same contract and one
 //! loading path, and that the distinction is a BUILD property and nothing more. For everything a
 //! plugin OBSERVES that claim was once FALSE:
 //!
@@ -14,7 +14,7 @@
 //! `tracing` dispatcher) is not the host's, nothing joins them, and everything a dropped-in sink
 //! observed went where nobody ever reads. The same source, built the other way, linked the host's
 //! and worked. Two builds, two different observable behaviours, and no test anywhere said so —
-//! which is precisely why #85's envelope exists: under it, reaching a recorder is not representable
+//! which is precisely why the observability envelope exists: under it, reaching a recorder is not representable
 //! from either build, so both REPORT and the host ingests.
 //!
 //! ## The subjects (owner FIXTURES: "real plugins are the proofs"; NO-TEST-PLUGINS)
@@ -36,7 +36,7 @@
 //! ## What this test compares, and why that is the right thing
 //!
 //! It runs the SAME sequence of operations against the SAME door reached two ways, and compares
-//! what the HOST was handed on the #85 envelope — every metric, diagnostic and log record its sink
+//! what the HOST was handed on the observability envelope — every metric, diagnostic and log record its sink
 //! ([`Tape`]) ingested, byte for byte — plus what the host did for the sink (the files on disk, the
 //! requests carried).
 //!
@@ -95,8 +95,6 @@ use crate::dispatch::{
 use crate::export_axis::ExportRows;
 use crate::export_door::ExportInstance;
 use crate::sign::{Declares, Manifest};
-
-// ── the subjects ─────────────────────────────────────────────────────────────────────────────────
 
 /// The request-log FILE sink's door, LINKED (its logic crate's `door`): the both-ways table's
 /// `export` row.
@@ -198,8 +196,6 @@ fn both(m: Manifest, door: DoorFn, crate_snake: &str) -> [PluginRegistry; 2] {
     let dropped = both_ways::dropped(crate_snake, m, &lib);
     [linked, dropped]
 }
-
-// ── the host's side: its envelope sink, its disk lane, its connection table ──────────────────────
 
 /// One envelope entry, as text: what the host ingested. A log record and a declared diagnostic
 /// are told apart, a metric names its family by index.
@@ -411,8 +407,8 @@ impl DeclaredConns for Far {
                 "target_from": spec.target_from,
                 "target": target,
             }));
-        // The table's contract (`DeclaredConns::declare`, spec PB-100): a need whose `target_from`
-        // resolved to nothing is refused, as the host's connector refuses it.
+        // The table's contract (`DeclaredConns::declare`): a need whose `target_from` resolved to
+        // nothing is refused, as the host's connector refuses it.
         let unresolved = !spec.target_from.is_empty() && target.is_none();
         let target = target.unwrap_or_default().to_string();
         let verdict = if unresolved || target.contains(REFUSED_TARGET) {
@@ -549,8 +545,6 @@ impl Conns for Far {
     }
 }
 
-// ── a door that predates an op ───────────────────────────────────────────────────────────────────
-
 /// The FILE sink's own door with one slot of its ops table NULL: what a table built before that op
 /// existed hands the host. The memory ABI's table is the host's for the kind's ABI version, every
 /// slot present (`dispatch::load`), so such a door is never bound.
@@ -606,8 +600,6 @@ fn refused_at_load(door: busbar_contract::abi::sdk::door::RawDoorFn) -> String {
         Err(e) => e.to_string(),
     }
 }
-
-// ── driving one instance ─────────────────────────────────────────────────────────────────────────
 
 /// Wait (at most a minute) until `done` holds.
 fn until(what: &str, done: impl Fn() -> bool) {
@@ -864,7 +856,7 @@ fn a_destination_declared_keep_zero_is_truncated_in_place_with_no_archive() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **THE AXIS, BOTH WAYS** (DECISIONS #2 rule (1), item 141). The FILE sink registered through the
+/// **THE AXIS, BOTH WAYS**. The FILE sink registered through the
 /// LINKED door (its `door`, through [`PluginRegistry::link`]) and the DROPPED-IN door (its `cdylib`,
 /// signed into `plugins/`) resolves to the byte-identical registry row, and the sink each door's
 /// opener ([`ExportRows::open`]) opens — the one load over either image — answers the same streams
@@ -927,8 +919,6 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
     );
 }
 
-// ── THE RED ARM: the pre-envelope path ───────────────────────────────────────────────────────────
-
 /// What the pre-envelope build's plugin-side store received: every entry the sink OBSERVED and the
 /// pre-envelope wire had no field to carry. Process-global only because an op is a bare fn pointer
 /// with no closure; the RED arm is its only writer.
@@ -952,7 +942,7 @@ unsafe impl Send for ShimDoor {}
 unsafe impl Sync for ShimDoor {}
 static PRE_ENVELOPE_DOORS: OnceLock<Box<ShimDoor>> = OnceLock::new();
 
-/// Move the reply's #85 envelope out of the `out` the host reads into the plugin's own store —
+/// Move the reply's observability envelope out of the `out` the host reads into the plugin's own store —
 /// where a dropped-in `cdylib`'s statically-linked facade sent what it observed before the
 /// envelope: the reply the host reads carries none of it.
 ///
@@ -1051,7 +1041,7 @@ extern "C" fn pre_envelope_door() -> *const Door {
 
 /// **THE RED ARM — what the old arrangement did, kept as the witness.**
 ///
-/// Before #85 a dropped-in sink had no wire for what it observed: its reply was the kind's answer
+/// Before the observability envelope a dropped-in sink had no wire for what it observed: its reply was the kind's answer
 /// BARE, and what it observed went into the facade its own object statically linked — a store
 /// nobody reads. The compiled-in build of the same source linked the host's, so the two builds
 /// diverged and nothing errored.
@@ -1166,7 +1156,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
 }
 
 /// **OWED, and named so it is not forgotten.** The assertions above compare what the host was
-/// HANDED. The one #85's acceptance clause names compares what the host RENDERS:
+/// HANDED. The one the envelope's acceptance clause names compares what the host RENDERS:
 ///
 /// ```ignore
 /// // wherever a metrics recorder legitimately exists (the engine, not the loader):
@@ -1181,7 +1171,7 @@ fn the_pre_envelope_path_loses_a_dropped_in_plugins_counters() {
 ///
 /// It is not written here because this crate has no recorder and must not acquire one, and it is
 /// not written in the kernel because the kernel may not name a concrete plugin instance — not even
-/// under `tests/` (DECISIONS #2). Its home is the composition root, which is the one place entitled
+/// under `tests/`. Its home is the composition root, which is the one place entitled
 /// to name both. Recorded here rather than in a document because a test file is the thing the next
 /// person editing this seam actually reads.
 #[test]
@@ -1461,8 +1451,8 @@ fn a_sink_writes_its_declared_destination_through_the_host_the_same_through_eith
             run(&registry, "s4-fixture", &on_disk),
         )
     });
-    // 1.5.5 parity (Q128 arch u50): the host truncated in place at `rotate_mb`, so no archive,
-    // and, as 1.5.5 reported nothing of a truncation, no rotation is reported.
+    // 1.5.5 parity: the host truncated in place at `rotate_mb`, so no archive, and, as 1.5.5
+    // reported nothing of a truncation, no rotation is reported.
     assert!(linked.1.contains(r#""archive":null"#), "{}", linked.1);
     assert!(linked.1.contains(r#""live":[3,4]"#), "{}", linked.1);
     assert!(
@@ -1706,16 +1696,15 @@ impl Drop for Released {
     }
 }
 
-/// **K9c — A SINK'S DELIVERIES IN FLIGHT ARE BOUNDED BY ITS ADMISSION ALONE** (ARCHITECT ruling
-/// MAX-INFLIGHT 2026-10-03). The request-log WEBHOOK sink, every delivery a host-carried POST,
-/// LINKED and DROPPED IN, its instance configured with an in-flight bound of 600
-/// (`max_inflight_deliveries`) — above the runtime's 512 blocking threads, on a dispatcher of ONE
-/// worker. With the far end holding every request, 600 deliveries are in flight at once, each
-/// pending on the host's connection table with no thread waiting, and never more: the 601st waits
-/// its turn in the instance's queue and is carried once the far end answers. The effective
-/// concurrency is the configured bound, as the 1.5.5 webhook's async deliveries were. (RED: one
-/// batch at a time per instance holds 1; a delivery that holds a thread while the far end answers
-/// plateaus at the pool.)
+/// **K9c — A SINK'S DELIVERIES IN FLIGHT ARE BOUNDED BY ITS ADMISSION ALONE**. The request-log
+/// WEBHOOK sink, every delivery a host-carried POST, LINKED and DROPPED IN, its instance configured
+/// with an in-flight bound of 600 (`max_inflight_deliveries`) — above the runtime's 512 blocking
+/// threads, on a dispatcher of ONE worker. With the far end holding every request, 600 deliveries
+/// are in flight at once, each pending on the host's connection table with no thread waiting, and
+/// never more: the 601st waits its turn in the instance's queue and is carried once the far end
+/// answers. The effective concurrency is the configured bound, as the 1.5.5 webhook's async
+/// deliveries were. (RED: one batch at a time per instance holds 1; a delivery that holds a thread
+/// while the far end answers plateaus at the pool.)
 #[test]
 fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool() {
     const BOUND: usize = 600;
@@ -1836,8 +1825,8 @@ fn dropping_an_instance_whose_delivery_never_wakes_returns() {
     );
 }
 
-/// **K9e-2 — A LOOPBACK COLLECTOR THE OPERATOR TRUSTED LOADS, FIRST PARTY OR NOT** (`BUSBAR-1.6.0.md`
-/// §5; OWNER 2026-10-24, oracle BOOT-W23). The OTLP trace sink's one need is in the
+/// **K9e-2 — A LOOPBACK COLLECTOR THE OPERATOR TRUSTED LOADS, FIRST PARTY OR NOT**
+/// (`BUSBAR-1.6.0.md` §5; oracle BOOT-W23). The OTLP trace sink's one need is in the
 /// `loopback-allowed` class (a collector's loopback plaintext): LINKED, and DROPPED IN signed by
 /// the release key, it is admitted and opens through either door; the same cdylib dropped in by a
 /// THIRD party (allowlisted, trusted) is admitted and opens too, as 1.5.5 loaded it, and so is the
@@ -1874,7 +1863,7 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     assert_eq!(opened[0], opened[1], "both doors declare the same need");
 
     // The same collector from a third party the operator trusted is admitted and opens, as 1.5.5
-    // loaded it (OWNER 2026-10-24, oracle BOOT-W23: the opt-in is the operator's grant).
+    // loaded it (the opt-in is the operator's grant).
     let lib = cdylib_bytes(trace_cdylib());
     let mut third = stating(manifest("k9e2-third-otlp", Declares::default()), collector);
     third.publisher = "acme".into();
@@ -1898,16 +1887,15 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     assert!(!row.first_party());
 }
 
-/// **#85 — AN OPENED SINK'S ENVELOPE REACHES THE HOST'S OBSERVABILITY, NEVER DISCARDED** (ARCHITECT
-/// rulings ENVELOPE and ENVELOPE-ALL 2026-10-03). The dispatcher stands the host's observability
-/// before every door's bound sink (the export opener's included): what an opened
-/// instance REPORTS — a metric of a family its Statement declares, a declared diagnostic — is handed
-/// to the installed observer (the one fold every plugin's back-channel takes) under the plugin's
-/// name and kind, named by what its Statement declares; behind `plugins.logs` the declared
-/// diagnostic ALSO lands in the plugin's own log. Driven through the FILE sink's real Statement
-/// (linked and dropped in alike: the sink is built from the stated rendering either door states).
-/// RED: before the ruling the opener bound `NoSink`, and nothing reached the observer. The binding
-/// itself is held per kind in `observe`'s tests.
+/// **AN OPENED SINK'S ENVELOPE REACHES THE HOST'S OBSERVABILITY, NEVER DISCARDED**. The
+/// dispatcher stands the host's observability before every door's bound sink (the export opener's
+/// included): what an opened instance REPORTS — a metric of a family its Statement declares, a
+/// declared diagnostic — is handed to the installed observer (the one fold every plugin's
+/// back-channel takes) under the plugin's name and kind, named by what its Statement declares;
+/// behind `plugins.logs` the declared diagnostic ALSO lands in the plugin's own log. Driven through
+/// the FILE sink's real Statement (linked and dropped in alike: the sink is built from the stated
+/// rendering either door states). RED: before the ruling the opener bound `NoSink`, and nothing
+/// reached the observer. The binding itself is held per kind in `observe`'s tests.
 #[test]
 fn an_opened_sinks_envelope_reaches_the_host_observability() {
     use crate::dispatch::EnvelopeSink as _;

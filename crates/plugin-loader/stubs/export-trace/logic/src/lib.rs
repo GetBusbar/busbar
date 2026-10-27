@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **`busbar-export-otlp`** — the OTLP trace sink as a `kind: export` plugin (owner ruling Q75,
-//! 2026-09-25: OTLP export never delivered in 1.5.5, and 1.6.0 fixes it): `export.<name>.module:
-//! otlp`.
+//! **`busbar-export-otlp`** — the OTLP trace sink as a `kind: export` plugin (OTLP export never
+//! delivered in 1.5.5, and 1.6.0 fixes it): `export.<name>.module: otlp`.
 //!
 //! **What it carries.** The `traces` stream: one record per closed span, built by the host's traces
 //! producer (K9a S7) — the span's `trace_id`, `span_id`, `parent_span_id`, `name`, `start`,

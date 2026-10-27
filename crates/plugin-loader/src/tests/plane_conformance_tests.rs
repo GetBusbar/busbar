@@ -3,15 +3,13 @@
 
 //! CONFORMANCE for `kind: plane` that names no fixture plane.
 //!
-//! The HOT-lane plane load is deleted (row 84), and with it the HOT decl's own gates (the vocabulary
-//! cap, the HOT kind gate). What stays proves the loader's plane-side gates (the plane kind's one ABI
+//! The HOT-lane plane load is deleted, and with it the HOT decl's own gates (the vocabulary cap,
+//! the HOT kind gate). What stays proves the loader's plane-side gates (the plane kind's one ABI
 //! version, the refusal of a plane with no door) and the plane DOOR both ways ([`door`]), over the
 //! SDK-built plane door test plugin (`tests/fixtures/plane_door_plugin.rs`).
 
 use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
 
-// ── THE REGISTRY'S PLANE GATES (DECISIONS #26 S4) ────────────────────────────────────────────────
-//
 // A plane rides the same discovery/trust/conflict pipeline as every kind (`scan_and_validate` →
 // `PluginRegistry::open_planes`); these prove its plane-side gates, which need no real plane.
 
@@ -70,9 +68,9 @@ fn write_plane_tarball(dir: &std::path::Path, file: &str, m: &Manifest, lib: &[u
     std::fs::write(dir.join(file), bytes).unwrap();
 }
 
-/// RED: a signed, trusted `kind: plane` plugin whose manifest states no Statement (what a HOT-lane
+/// A signed, trusted `kind: plane` plugin whose manifest states no Statement (what a HOT-lane
 /// `PlaneDecl` cdylib was) is refused at discovery, naming it and the door it lacks. Before the HOT
-/// plane load was deleted (row 84) the same plugin was opened over the HOT-tier ABI.
+/// plane load was deleted the same plugin was opened over the HOT-tier ABI.
 #[test]
 fn a_plane_with_no_door_is_refused() {
     let release = SigningKey::from_bytes(&[1u8; 32]);
@@ -629,10 +627,9 @@ mod door {
         }
     }
 
-    /// DECL-FOLD (ARCHITECT RULING 2026-10-03, the declaration-fold ruling): the registry facts a
-    /// door states are read off its Statement and tail at bind, linked and dropped alike, and its
-    /// own `validate` judges a section: the kernel folds these into its plane registry before the
-    /// config prepass.
+    /// DECL-FOLD: the registry facts a door states are read off its Statement and tail at bind,
+    /// linked and dropped alike, and its own `validate` judges a section: the kernel folds these
+    /// into its plane registry before the config prepass.
     #[test]
     fn a_door_states_its_registry_facts_and_judges_its_section() {
         let check = |bind: crate::dispatch::kinds::plane::ProbeBind| {

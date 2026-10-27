@@ -227,9 +227,8 @@ fn lent(credential: &str) -> VerifyRequest {
     }
 }
 
-/// THE PRESENTED CREDENTIAL REACHES THE DOOR (AUTH-CHAIN-SWITCH, ARCHITECT lane L2-AUTH): the
-/// candidate the host lends is the credential the plugin judges, on the spot and submitted — a
-/// wrong one is REFUSED and the right one identifies.
+/// THE PRESENTED CREDENTIAL REACHES THE DOOR: the candidate the host lends is the credential the
+/// plugin judges, on the spot and submitted — a wrong one is REFUSED and the right one identifies.
 ///
 /// RED before the loader lent it: `verify`'s `in` carried no credential (`presented = false`), the
 /// plugin saw none, and every lent candidate PASSED — a door could never refuse a wrong credential.
@@ -353,7 +352,7 @@ fn two_instances_of_one_plugin_are_two_callers() {
 
 /// THE DECISION AND THE STRIPS reach the host whatever the verdict: CONTINUE for an identity or a
 /// pass, STOP for a reject, and the `x-alt` line named each time (THE DESIGN, "Auth points and
-/// guest lists", step 3).
+/// guest lists").
 #[test]
 fn every_answer_carries_its_decision_and_strips() {
     let a = opened("judge-a");
@@ -621,9 +620,9 @@ mod readers {
     }
 }
 
-/// ONE VERIFIER PER CREDENTIAL KIND (ARCHITECT 2026-10-01, Q2 ruling B): a row declaring a
-/// credential kind another auth row also declares refuses to open, naming both rows and the kind;
-/// a row whose kinds no other row declares opens. RED: without the check both readers opened.
+/// ONE VERIFIER PER CREDENTIAL KIND: a row declaring a credential kind another auth row also
+/// declares refuses to open, naming both rows and the kind; a row whose kinds no other row declares
+/// opens. RED: without the check both readers opened.
 #[test]
 fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
     let registry = PluginRegistry::empty()
@@ -656,10 +655,10 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
         .is_ok());
 }
 
-/// THE LINKED AUTH ROW UNDER ITS CANONICAL NAME (ARCHITECT C'): the root names a built-in auth row
-/// canonically beside its key; the axis answers, opens and counts it as linked by EITHER name, and
-/// a row that will not load is refused in its KEY's words, as before the canonical name existed
-/// (the load error and its sink's `plugin=` field are one binding: `AuthRows::load`'s `name`).
+/// THE LINKED AUTH ROW UNDER ITS CANONICAL NAME: the root names a built-in auth row canonically
+/// beside its key; the axis answers, opens and counts it as linked by EITHER name, and a row that
+/// will not load is refused in its KEY's words, as before the canonical name existed (the load
+/// error and its sink's `plugin=` field are one binding: `AuthRows::load`'s `name`).
 #[test]
 fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     let registry = PluginRegistry::empty()
@@ -693,8 +692,6 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
         );
     }
 }
-
-// ── THE AUTH AXIS'S CONNECTION TABLE (Q-P4-3): a networked auth door opened to serve ──
 
 crate::needs_restated::tcp_restated!(networked_judge, judge::door);
 
@@ -940,12 +937,10 @@ fn an_auth_instance_logs_to_its_own_plugin_log_file() {
     );
 }
 
-// ── A TICKETED `verify` OVER `records.secret`: the kit's pendable form, through the services double ──
-
-/// THE TICKETED VERIFY (ARCHITECT ruling: the auth kit's `verify` may wait on `records.secret`): a
-/// safe door whose `verify` reads the presented id's secret on its ticket, through the SDK's
-/// `VerifyOp`. The credential lent is `<id>:<proof>`; it identifies `<id>` when the host's secret
-/// for it is live and equals the proof, and rejects anything else. No `unsafe` in the plugin.
+/// THE TICKETED VERIFY (the auth kit's `verify` may wait on `records.secret`): a safe door whose
+/// `verify` reads the presented id's secret on its ticket, through the SDK's `VerifyOp`. The
+/// credential lent is `<id>:<proof>`; it identifies `<id>` when the host's secret for it is live
+/// and equals the proof, and rejects anything else. No `unsafe` in the plugin.
 mod ticketed {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;

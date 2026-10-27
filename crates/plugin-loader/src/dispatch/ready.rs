@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! DISCOVERY AT BOOT (ARCHITECT 2026-10-02): the host's side of the mechanism's optional `ready`
+//! DISCOVERY AT BOOT: the host's side of the mechanism's optional `ready`
 //! (`busbar_contract::abi::mechanism::lifecycle`, READY).
 //!
 //! A plugin that must reach the network before it serves states `ready` on its door. After its
@@ -9,7 +9,7 @@
 //! the instance — so it may pend and is resumed after its wake like any op — with the host tables
 //! `open` was handed, and the caller (the boot, before any listener binds) waits for the answer:
 //! READY serves; anything else refuses the boot with the plugin's own text. Lazy discovery on the
-//! first op is refused by the same ruling: nothing here runs on a request.
+//! first op is refused likewise: nothing here runs on a request.
 //!
 //! A door without `ready` is not called: [`Plugin::ready`] answers `Ok` without a crossing, so such
 //! a plugin boots exactly as before.
