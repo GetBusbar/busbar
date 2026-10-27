@@ -1710,6 +1710,14 @@ async fn a_door_callback_renders_each_answer_on_its_page() {
     // RED (owner ruling 2026-10-27): an identity provider that could not answer is 503, retryable,
     // never 1.5.5's 502.
     assert_eq!(unreachable.status().as_u16(), 503);
+    assert_eq!(
+        unreachable
+            .headers()
+            .get("retry-after")
+            .map(|v| v.to_str().unwrap()),
+        Some(PROVIDER_RETRY_AFTER_SECS.to_string().as_str()),
+        "retryable: the client is told when"
+    );
     assert_eq!(unreachable.status(), page.status());
     assert_eq!(body_of(unreachable), body_of(page));
 }

@@ -677,14 +677,23 @@ fn provider_unavailable(method: &str) -> Response {
     provider_unreachable()
 }
 
-/// The page [`provider_unavailable`] renders.
+/// How long [`provider_unavailable`]'s `Retry-After` asks the client to wait, in seconds.
+pub const PROVIDER_RETRY_AFTER_SECS: u64 = 5;
+
+/// The page [`provider_unavailable`] renders: 503 with `Retry-After`. It never counts as a failed
+/// login: nothing was declined.
 fn provider_unreachable() -> Response {
-    error_page(
+    let mut page = error_page(
         StatusCode::SERVICE_UNAVAILABLE,
         "Couldn't reach your provider",
         "We couldn't reach your identity provider to finish signing you in. Please try again \
          shortly.",
-    )
+    );
+    page.headers_mut().insert(
+        header::RETRY_AFTER,
+        header::HeaderValue::from(PROVIDER_RETRY_AFTER_SECS),
+    );
+    page
 }
 
 /// Render a friendly, BRANDED error page for the hosted browser-login flow: the same card chrome as
