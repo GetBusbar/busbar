@@ -599,14 +599,14 @@ const HEAD: &str = include_str!("busbar-login.html");
 const GLYPH: &str = r##"<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" style="color:#A3E635" aria-hidden="true"><g transform="translate(64 64) scale(1.46) translate(-62 -64)"><g transform="translate(3 0)"><rect x="46" y="39" width="9" height="50" rx="4.5" fill="currentColor"/><g stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="36" y1="64" x2="41" y2="64" stroke-width="5"/><path d="M60 45 L79 45 Q87 45 87 55" stroke-width="5"/><line x1="60" y1="64" x2="72" y2="64" stroke-width="5"/><path d="M60 83 L79 83 Q87 83 87 73" stroke-width="5"/></g><g fill="currentColor"><circle cx="31" cy="64" r="4.6"/><circle cx="87" cy="55" r="4.6"/><circle cx="76" cy="64" r="4.6"/><circle cx="87" cy="73" r="4.6"/></g></g></g></svg>"##;
 
 /// A sign-in button's brand — its label and icon — inferred from the method name and OIDC issuer
-/// host, NOT from any operator-set display string. The brands are the root legacy table's
+/// host, NOT from any operator-set display string. The brands are the root migration table's
 /// `login_brands` row (frozen 1.5.5 login-page data, `<match tokens> : <label> : <icon ref>` per
 /// brand, in 1.5.5's match order): the first brand any of whose tokens the lower-cased method name
 /// and issuer contain names the button; a method no brand matches is its title-cased name under the
 /// generic icon. The kernel names no brand.
 fn button_brand(name: &str, issuer: Option<&str>) -> (String, &'static str) {
     brand_from(
-        busbar_kernel::config::legacy::text("login_brands"),
+        busbar_kernel::config::migration_table::text("login_brands"),
         name,
         issuer,
     )

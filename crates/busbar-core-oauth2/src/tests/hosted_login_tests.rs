@@ -204,14 +204,14 @@ fn chooser_renders_0_1_n_buttons() {
     assert!(!bodyn.contains("https://busbar.example.com/v1"));
 }
 
-/// THE BUTTON BRANDS ARE THE ROOT LEGACY TABLE'S `login_brands` ROW (frozen 1.5.5 login-page data;
+/// THE BUTTON BRANDS ARE THE ROOT MIGRATION TABLE'S `login_brands` ROW (frozen 1.5.5 login-page data;
 /// the kernel test stand-in carries the root's table row for row). With the row, a method named by
 /// each brand's first match token renders that brand's label and icon on its button, in the row's
 /// order, and the issuer host matches as the name does; with no row, every method renders the
 /// generic arm — its title-cased name under the key icon — exactly as an unmatched method does.
 #[test]
 fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
-    let row = busbar_kernel::config::legacy::text("login_brands");
+    let row = busbar_kernel::config::migration_table::text("login_brands");
     let brands: Vec<(&str, &str, &str)> = row
         .split(" | ")
         .map(|b| {

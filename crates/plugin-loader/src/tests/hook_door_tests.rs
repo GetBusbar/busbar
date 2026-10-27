@@ -527,7 +527,7 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
 /// THE RULING'S HOOK CASE THROUGH THE AXIS (1.5.5 configs load unchanged): a hook config naming
 /// `module: busbar-webrequest` (the 1.5.5 release's manifest name) opens the 1.6.0 hook, DROPPED IN
 /// (its signed manifest's `former_names`, through the registry the root builds the axis over) and
-/// LINKED (the former names the root's legacy table gives a linked row). RED ARMS, in the same
+/// LINKED (the former names the root's migration table gives a linked row). RED ARMS, in the same
 /// test: without the former names neither way answers the old name.
 #[test]
 fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
