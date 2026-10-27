@@ -265,7 +265,7 @@ impl AppSlots {
 /// `ingress::finish_inner` and every mounted plane calls it from `ingress::observe`.
 ///
 /// TWO SERIES, split so the model plane stays v1.5.4-identical. The MODEL plane
-/// (`crate::plane::is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
+/// (`crate::plane_driver::dispatch::is_fallback(plane)`) emits `busbar_requests_total` / `busbar_request_duration_seconds`
 /// with exactly the v1.5.4 label set `{ingress_protocol, pool, outcome}` — NO `plane` label — so a
 /// pure-model-plane `/metrics` scrape is byte-identical to v1.5.4. Every OTHER mounted plane emits the
 /// parallel `busbar_plane_requests_total` / `busbar_plane_request_duration_seconds` families, which
@@ -286,7 +286,7 @@ pub(crate) fn request_finished(
     // model-plane families label-identical to v1.5.4. The bank holds only the model plane's label
     // space, so a mounted-plane request would miss it anyway; routing here is explicit rather than
     // relying on that miss, and it targets the correct (plane-labelled) family.
-    if !crate::plane::is_fallback(plane) {
+    if !crate::plane_driver::dispatch::is_fallback(plane) {
         crate::snapshot::incr_plane_requests_total(plane, ingress_protocol, pool, outcome);
         crate::snapshot::record_plane_request_duration(plane, ingress_protocol, pool, seconds);
         return;
@@ -319,7 +319,7 @@ pub fn model_request_finished(
     let outcome = outcome_of(status);
     request_finished(
         app,
-        crate::plane::fallback_key(),
+        crate::plane_driver::dispatch::fallback_key(),
         ingress_protocol,
         pool,
         outcome,
@@ -444,7 +444,7 @@ pub fn translation(from: &str, to: &str) {
     static SLOTS: OnceLock<Vec<(&'static str, &'static str, CounterSlot)>> = OnceLock::new();
     let table = SLOTS.get_or_init(|| {
         let mut v = Vec::new();
-        let dialects = declared_dialects(crate::plane::fallback_key());
+        let dialects = declared_dialects(crate::plane_driver::dispatch::fallback_key());
         for f in dialects {
             for t in dialects {
                 if f != t {
@@ -481,7 +481,7 @@ pub fn translation(from: &str, to: &str) {
 /// (ARCHITECT ruling 2026-10-16 item 4; BUSBAR-1.6.0.md #49: the kernel knows no plane strings). A key
 /// no plane registers declares none.
 fn declared_dialects(plane: &str) -> &'static [&'static str] {
-    crate::plane::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)())
+    crate::plane_driver::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)())
 }
 
 #[cfg(test)]

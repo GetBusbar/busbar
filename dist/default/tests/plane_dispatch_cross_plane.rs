@@ -18,7 +18,7 @@
 //! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `has_superset_ir`, `sole_of`,
 //! `superset_of`, `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
 
-use busbar_kernel::plane::{
+use busbar_kernel::plane_driver::dispatch::{
     fallback_key, has_superset_ir, plane_decl, plane_keys, sole_of, sole_wire_format, superset_of,
     wire_format_names, wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
 };
@@ -167,7 +167,7 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
         wires,
         [
             WIRE_JSONRPC,
-            busbar_kernel::plane::WIRE_HTTP_JSON,
+            busbar_kernel::plane_driver::dispatch::WIRE_HTTP_JSON,
             WIRE_GRPC
         ]
         .as_slice(),

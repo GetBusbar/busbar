@@ -340,7 +340,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
         .build();
     // The plane the registry says owns the `tools:` section, so the test names no plane crate.
     let section = "tools";
-    let plane = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+    let plane = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .expect("a plane is registered to own the `tools:` section");
     let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane.key);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
@@ -2999,7 +2999,7 @@ async fn named_map_app_opts(
     // it and builds the runtime, exactly as `appbuild` does at boot — so this helper names no plane,
     // no plane crate and no plane type.
     let owner = |section: &str| {
-        busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+        busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
             .unwrap_or_else(|| panic!("no plane is registered to own the `{section}:` section"))
     };
     let parse = |section: &str| {
@@ -3029,7 +3029,7 @@ async fn named_map_app_opts(
             None => {
                 let defs =
                     std::collections::BTreeMap::from([(decl.config_section, cfg.clone_box())]);
-                let ctx = busbar_kernel::plane::registry::BuildCtx {
+                let ctx = busbar_kernel::plane_driver::registry::BuildCtx {
                     endpoint_slot: None,
                     plane_defs: &defs,
                     public_url: Some("https://busbar.example"),
@@ -3049,7 +3049,7 @@ async fn named_map_app_opts(
     {
         let (decl, cfg) = parse("agents");
         let defs = std::collections::BTreeMap::from([(decl.config_section, cfg.clone_box())]);
-        let ctx = busbar_kernel::plane::registry::BuildCtx {
+        let ctx = busbar_kernel::plane_driver::registry::BuildCtx {
             endpoint_slot: None,
             plane_defs: &defs,
             public_url: Some("https://busbar.example"),
@@ -3787,7 +3787,7 @@ fn publish_door(section: &str, settings: &str) -> PublishedDoor {
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
     crate::ensure_seam();
-    let owner = busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+    let owner = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let (instance, plane) = crate::test_seams::linked_doors()

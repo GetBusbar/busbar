@@ -388,8 +388,8 @@ fn test_memory_store_cannot_reach_inert_with_keys() {
 
 /// A deployment with NO plane mounted: every path resolves through the resolver's residual arm,
 /// which is the arm these vendor-envelope assertions are about.
-fn residual_planes() -> crate::plane::PlaneDispatch {
-    crate::plane::PlaneDispatch::default()
+fn residual_planes() -> crate::plane_driver::dispatch::PlaneDispatch {
+    crate::plane_driver::dispatch::PlaneDispatch::default()
 }
 
 // THE RESIDUAL-DIALECT TABLE (`test_residual_dialect_inference`: which shipped dialect each residual
@@ -2369,16 +2369,19 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
 #[test]
 fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart() {
     const SECTION: &str = "pending-red";
-    static PENDING: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
-        declaration: crate::plane::registry::PlaneDeclaration {
-            key: "pending-red-plane",
-            fallback: false,
-            config_section: SECTION,
-            ..crate::test_support::NEUTRAL_FALLBACK.declaration
-        },
-        build: |_| Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>),
-        ..crate::test_support::NEUTRAL_FALLBACK
-    };
+    static PENDING: crate::plane_driver::registry::PlaneDecl =
+        crate::plane_driver::registry::PlaneDecl {
+            declaration: crate::plane_driver::registry::PlaneDeclaration {
+                key: "pending-red-plane",
+                fallback: false,
+                config_section: SECTION,
+                ..crate::test_support::NEUTRAL_FALLBACK.declaration
+            },
+            build: |_| {
+                Some(std::sync::Arc::new(()) as std::sync::Arc<dyn std::any::Any + Send + Sync>)
+            },
+            ..crate::test_support::NEUTRAL_FALLBACK
+        };
     struct Unopened;
     impl crate::appbuild::RootRules for Unopened {
         fn check(&self, _cfg: &crate::config::RootCfg) -> Result<(), String> {
@@ -2392,7 +2395,7 @@ fn a_plane_the_boot_did_not_open_builds_no_slot_and_is_reported_awaiting_restart
             }
         }
     }
-    let _registry = crate::plane::registry::TestRegistryIsolation::seeded(&[
+    let _registry = crate::plane_driver::registry::TestRegistryIsolation::seeded(&[
         crate::test_support::neutral_fallback_plane(),
         &PENDING,
     ]);

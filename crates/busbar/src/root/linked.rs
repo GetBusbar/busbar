@@ -29,8 +29,8 @@
 use std::sync::Arc;
 
 use busbar_kernel::ingress::arrival::BodyIngressEntry;
-use busbar_kernel::plane::registry::PlaneDecl;
-use busbar_kernel::plane::registry::PlaneDeclaration;
+use busbar_kernel::plane_driver::registry::PlaneDecl;
+use busbar_kernel::plane_driver::registry::PlaneDeclaration;
 use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
@@ -538,7 +538,7 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
 /// whichever door it came in by, before any listener binds.
 pub fn register_planes(linked: &Linked) {
     match plane_rows(linked) {
-        Ok(rows) => busbar_kernel::plane::registry::install_planes(rows.leak()),
+        Ok(rows) => busbar_kernel::plane_driver::registry::install_planes(rows.leak()),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);

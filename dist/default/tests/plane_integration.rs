@@ -21,7 +21,7 @@
 mod linked;
 
 use busbar_kernel::config::RootCfg;
-use busbar_kernel::plane::registry::{BuildCtx, PlaneDecl};
+use busbar_kernel::plane_driver::registry::{BuildCtx, PlaneDecl};
 use busbar_kernel::test_support::*;
 use std::sync::Arc;
 
@@ -142,7 +142,7 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
         .map(|u| u.path().trim_end_matches('/').to_string());
     let jsonrpc: Vec<String> = (decl.claims)(&*obj)
         .into_iter()
-        .filter(|(_, wire)| *wire == busbar_kernel::plane::WIRE_JSONRPC)
+        .filter(|(_, wire)| *wire == busbar_kernel::plane_driver::dispatch::WIRE_JSONRPC)
         .map(|(path, _)| path)
         .collect();
     jsonrpc
@@ -283,7 +283,7 @@ fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         );
         let claims: Vec<String> = (decl.claims)(&*slot)
             .into_iter()
-            .filter(|(_, wire)| *wire == busbar_kernel::plane::WIRE_JSONRPC)
+            .filter(|(_, wire)| *wire == busbar_kernel::plane_driver::dispatch::WIRE_JSONRPC)
             .map(|(path, _)| path)
             .collect();
         assert!(

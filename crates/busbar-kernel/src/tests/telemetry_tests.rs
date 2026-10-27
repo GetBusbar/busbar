@@ -15,7 +15,7 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// The plane every emission in this module drives: the FALLBACK (model) plane, whose
 /// `busbar_requests_total` / `busbar_request_duration_seconds` families carry NO `plane` label
 /// (v1.5.4-identical) and are the only ones the bank's fast path serves — `request_finished`
-/// branches on `crate::plane::is_fallback(plane)`, so the key handed in must be WHATEVER key is
+/// branches on `crate::plane_driver::dispatch::is_fallback(plane)`, so the key handed in must be WHATEVER key is
 /// currently registered fallback, never a hard-coded literal. Registers
 /// [`crate::test_support::register_neutral_test_plane`]'s all-stub fixture (idempotent) and reads
 /// its key back off the registry — this module asserts core's OWN bank/macro-fallback routing, not
@@ -25,7 +25,7 @@ use crate::test_support::{metric_sum, LaneSpec, TestApp};
 /// `plane::metrics_tests` / `a2a::relay_tests`.
 fn model_plane_key() -> &'static str {
     crate::test_support::register_neutral_test_plane();
-    crate::plane::fallback_key()
+    crate::plane_driver::dispatch::fallback_key()
 }
 
 /// Two DISTINCT shipped protocol names, read off the protocol registry's own codec list (the same

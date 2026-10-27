@@ -10,8 +10,8 @@ use axum::Router;
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, governance, handlers, hooks, ingress, ir, json, limits, oauth_as,
-    observability, operation, plane, plugin_routes, profile, state, store, telemetry, tls,
-    transport, trust,
+    observability, operation, plugin_routes, profile, state, store, telemetry, tls, transport,
+    trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -34,7 +34,7 @@ pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
 /// version of this function that tried shipped one dialect's envelope onto a different plane's own
 /// mounted path.
 pub fn fallback_error_response(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     path: &str,
     status: axum::http::StatusCode,
     kind: &str,
@@ -74,7 +74,7 @@ pub fn fallback_error_response(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn kernel_refusal_response(
     handle: &state::AppHandle,
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     reason: busbar_contract::caps::ReasonCode,
     path: &str,
     target: &str,
@@ -272,7 +272,7 @@ pub(crate) async fn server_timing(
 /// `application/json`, or any forward-relayed UPSTREAM 413 (different/non-marker body), is passed
 /// through verbatim (the body is buffered to inspect the sentinel, then re-attached unchanged).
 pub(crate) async fn reshape_oversized_413(
-    planes: &crate::plane::PlaneDispatch,
+    planes: &crate::plane_driver::dispatch::PlaneDispatch,
     path: &str,
     resp: axum::response::Response,
 ) -> axum::response::Response {
@@ -491,7 +491,7 @@ pub(crate) fn base_data_router(
     // `Store`/`GovCtx`/audit handle. Registration order (fixed by the plane registry) is preserved,
     // so the route order is stable.
     let mut router = router;
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane_driver::registry::plane_decls() {
         let Some(slot) = plane_slots.get(decl.key) else {
             continue;
         };

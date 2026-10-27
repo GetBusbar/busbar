@@ -312,7 +312,7 @@ pub(crate) mod named_map;
 /// snapshot through the host the shim mints per request, so no build-time slot value is needed — a
 /// unit placeholder satisfies the signature.
 fn mount_plane_admin_routes(mut router: Router<Arc<AppHandle>>) -> Router<Arc<AppHandle>> {
-    for decl in busbar_kernel::plane::registry::plane_decls() {
+    for decl in busbar_kernel::plane_driver::registry::plane_decls() {
         if let Some(admin_routes) = decl.admin_routes {
             for spec in admin_routes(&() as &dyn std::any::Any) {
                 router = mount_one_admin_spec(router, decl, spec);
@@ -336,7 +336,7 @@ async fn plane_serve_or_not_found(req: axum::extract::Request) -> Response {
 /// (the router fallback's `404`), so a 1.5.5 config sees 1.5.5's surface. `None` = serve it.
 pub(crate) fn unconfigured_plane(
     handle: &AppHandle,
-    decl: Option<&busbar_kernel::plane::registry::PlaneDecl>,
+    decl: Option<&busbar_kernel::plane_driver::registry::PlaneDecl>,
 ) -> Option<Response> {
     if decl.is_none_or(|d| handle.load().plane_configured(d)) {
         return None;
@@ -360,7 +360,7 @@ pub(crate) fn unconfigured_plane(
 /// `connect` did (applied on a view, rejected on a look refusal, NOTHING on the resolve-time `404`).
 fn mount_one_admin_spec(
     router: Router<Arc<AppHandle>>,
-    decl: &'static busbar_kernel::plane::registry::PlaneDecl,
+    decl: &'static busbar_kernel::plane_driver::registry::PlaneDecl,
     spec: busbar_kernel::admin_verbs::AdminRouteSpec,
 ) -> Router<Arc<AppHandle>> {
     let plane = decl.key;

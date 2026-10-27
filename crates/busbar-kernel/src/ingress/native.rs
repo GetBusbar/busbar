@@ -5,7 +5,7 @@
 //!
 //! Everything that must answer a request from its PATH ALONE — the oversized-body `413` reshape,
 //! the `404` fallback, the `405` wrong-method reply, the auth-time `401` — comes through here, so
-//! there is exactly one place that turns [`crate::plane::PlaneDispatch::ingress_of`]'s answer into
+//! there is exactly one place that turns [`crate::plane_driver::dispatch::PlaneDispatch::ingress_of`]'s answer into
 //! bytes. The alternative is what shipped: several sites each deciding for themselves, from a
 //! classifier that could not see the mount table, and quietly disagreeing about what a given mounted
 //! plane's path is.
@@ -16,7 +16,7 @@
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use crate::plane::Ingress;
+use crate::plane_driver::dispatch::Ingress;
 
 /// The dialect an answer to `ingress` is SHAPED IN, as a name the protocol registry understands.
 ///

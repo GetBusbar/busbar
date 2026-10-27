@@ -348,7 +348,7 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
 
 /// The fallback plane every linked door row folds to, as the composition root folds it: the one
 /// linked door whose Statement tail flags it the fallback.
-fn fallback_door_row() -> &'static busbar_kernel::plane::registry::PlaneDecl {
+fn fallback_door_row() -> &'static busbar_kernel::plane_driver::registry::PlaneDecl {
     use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
     let mut fallbacks: Vec<_> = crate::LINKED
         .plane_doors
@@ -357,7 +357,7 @@ fn fallback_door_row() -> &'static busbar_kernel::plane::registry::PlaneDecl {
         .filter(|reg| reg.fallback)
         .collect();
     assert_eq!(fallbacks.len(), 1, "one linked door is the fallback plane");
-    busbar_kernel::plane::door::fold(fallbacks.remove(0)).expect("the door folds")
+    busbar_kernel::plane_driver::door::fold(fallbacks.remove(0)).expect("the door folds")
 }
 
 /// **THE `/metrics` LABEL VOCABULARY IS UNCHANGED FROM 1.5.5.** The kernel banks

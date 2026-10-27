@@ -97,7 +97,7 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
 /// map folds to, which owns the `pools:`/`models:` sections. The door is the plane's one
 /// registration (DEV-GREEN row 83), so its Statement is the row. Idempotent.
 pub(super) fn install_door_seams() {
-    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane::registry::PlaneDecl> =
+    static ROW: std::sync::OnceLock<&'static busbar_kernel::plane_driver::registry::PlaneDecl> =
         std::sync::OnceLock::new();
     for decls in crate::LINKED.protocols {
         busbar_kernel::ingress::protocols::register_test_protocols(decls);
@@ -106,9 +106,9 @@ pub(super) fn install_door_seams() {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
         let reg = registration(linked_probe(pools_door(), "pools-door-row"))
             .expect("the door serving the `pools` map binds");
-        busbar_kernel::plane::door::fold(reg).expect("the door folds")
+        busbar_kernel::plane_driver::door::fold(reg).expect("the door folds")
     });
-    busbar_kernel::plane::registry::register_test_plane(row);
+    busbar_kernel::plane_driver::registry::register_test_plane(row);
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.

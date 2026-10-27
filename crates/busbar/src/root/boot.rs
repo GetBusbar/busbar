@@ -710,7 +710,7 @@ pub fn unbound_sections() -> Vec<&'static str> {
         .filter(|c| !bound.iter().any(|(instance, _)| *instance == c.name))
         .filter_map(|c| c.verbs.first())
         .filter_map(|section| {
-            busbar_kernel::plane::registry::plane_decl_for_config_section(section)
+            busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         })
         .filter(|decl| !decl.fallback)
         .map(|decl| decl.config_section)

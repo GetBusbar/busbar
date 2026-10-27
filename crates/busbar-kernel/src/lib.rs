@@ -269,7 +269,6 @@ mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
-pub mod plane;
 pub mod plugin_routes;
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
 // the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an

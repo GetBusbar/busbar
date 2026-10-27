@@ -56,6 +56,7 @@
 mod answer;
 mod cancel;
 mod close;
+pub mod dispatch;
 pub mod door;
 mod epoch;
 mod far_end;
@@ -64,6 +65,7 @@ pub mod host;
 mod money;
 mod needs;
 mod probe;
+pub mod registry;
 mod route;
 pub mod route_input;
 pub mod route_tables;
