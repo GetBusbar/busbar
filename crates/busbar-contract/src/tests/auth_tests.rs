@@ -78,3 +78,20 @@ fn login_module_defaults_are_fail_closed() {
         LoginOutcome::Reject
     );
 }
+
+/// RED (auth ABI, FIELD_SENSITIVE ruling 2026-10-27): an auth field whose sensitivity the plugin
+/// did not declare is treated as sensitive: its `Debug` withholds the value. Before, a field
+/// without `FIELD_SENSITIVE` printed its value verbatim, a bearer token included.
+#[test]
+fn an_auth_field_never_prints_its_value_marked_or_not() {
+    for sensitive in [false, true] {
+        let field = crate::auth_calls::AuthField {
+            name: b"authorization".to_vec(),
+            value: Secret::new(b"Bearer the-token".to_vec()),
+            sensitive,
+        };
+        let shown = format!("{field:?}");
+        assert!(!shown.contains("the-token"), "printed: {shown}");
+        assert!(shown.contains("authorization"), "{shown}");
+    }
+}
