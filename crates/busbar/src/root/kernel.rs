@@ -119,9 +119,7 @@ impl PinnedHistory {
     }
 
     /// The history as it stood at `at`, never past this pin: a sealed checkpoint's totals are
-    /// re-derived against the snapshot they were sealed at ([`Checkpoint::history_seq`]).
-    ///
-    /// [`Checkpoint::history_seq`]: busbar_kernel_ledger::checkpoint::Checkpoint::history_seq
+    /// re-derived against the snapshot they were sealed at (the checkpoint's `history_seq`).
     #[must_use]
     pub fn view_at(
         &self,
