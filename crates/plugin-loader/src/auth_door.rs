@@ -1028,6 +1028,7 @@ impl Drop for Submitted {
 }
 
 #[path = "auth_login.rs"]
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
 pub mod login;
 
 #[cfg(test)]

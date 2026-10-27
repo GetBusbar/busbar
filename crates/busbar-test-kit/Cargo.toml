@@ -1,28 +1,31 @@
+# busbar-test-kit: what a plugin repo tests itself against, at the busbar commit it pins. The
+# published conformance suite (`conformance_suite!`), the test connection tables (`TcpConns`,
+# `HttpsConns`) and a local token issuer (`test_issuer`). A dev-dependency only: no busbar build
+# links it, so none of it reaches a shipped binary.
 [package]
 name = "busbar-test-kit"
-version = "1.5.0"
-publish = false
+version = "1.6.0"
+publish = false            # internal workspace crate; consumed by git rev
 edition = "2021"
 rust-version = "1.97"
-description = "The busbar core test kit: the published plugin conformance suite and the host-side test doubles (connection tables, a local token issuer) that plugin repos and busbar's own tests run against. A dev-dependency only; no busbar build ships it."
+description = "The busbar test kit: the published plugin conformance suite and the test connection tables a plugin repo runs against the one loader."
 license = "Apache-2.0"
 
-# A plugin repo names this crate as a dev-dependency at the busbar tag it pins:
-#   busbar-test-kit = { git = "https://github.com/GetBusbar/busbar", tag = "<core version>" }
-# and calls `busbar_test_kit::conformance_suite! { .. }` from its own `tests/conformance.rs`.
+[lib]
+# The suite's own unit tests (`src/tests/`) run inside busbar-plugin-loader's test build, which
+# compiles this source over the loader's door fixtures (`cfg(loader_self_tests)`, set by the
+# loader's build script); this crate runs none of its own.
+test = false
 
 [dependencies]
-busbar-contract = { path = "../busbar-contract" }
 busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-contract = { path = "../busbar-contract" }
 base64 = { workspace = true }
-# The canary spells a hex-encoded credential (`conformance/canary.rs`).
 hex = { workspace = true }
 ring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt", "time", "sync"] }
+tokio = { workspace = true, features = ["rt"] }
 
-# The suite's own tests drive it over the loader's test fixtures, so they run in the loader's test
-# build (which compiles this source by path and sets `busbar_loader_suite`), not in this crate's.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(busbar_loader_suite)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loader_self_tests)"] }

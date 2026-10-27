@@ -435,6 +435,7 @@ struct FamilyShape {
 }
 
 /// THE INSTANCE, kind-erased: what every crossing needs. Shared across workers.
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
 pub struct Instance {
     /// The instance's identity on the host's connection table.
     pub(crate) instance: InstanceId,
@@ -480,11 +481,13 @@ pub struct Instance {
     /// nothing enters while it is set, so no crossing ever meets a freed instance.
     gate: AtomicU32,
     /// Crossings actually made (the witness of "without a crossing"), RESUMES included.
+    #[doc(hidden)]
     pub crossings: AtomicU64,
     /// Of [`Instance::crossings`], the RESUME re-invocations ([`FLAG_RESUME`]: the same op
     /// re-entered on its ticket after it answered PENDING; THE DESIGN §11.2, A.3 "Resume"). An
     /// op's FIRST invocations are `crossings - resumes`: "one op = one crossing", however often
     /// the op pends.
+    #[doc(hidden)]
     pub resumes: AtomicU64,
     /// The ticket-less crossings in progress, for the watchdog: `(id, started, slot)`.
     pub(crate) calls: Mutex<Vec<(u64, Instant, u32)>>,
@@ -518,6 +521,7 @@ pub struct Instance {
     /// it was lent), then handed to the caller as the reason. Empty at any other time.
     open_reason: Mutex<Vec<u8>>,
     /// What its driver ticket's READY `drive` answers named, until the host collects them.
+    #[doc(hidden)]
     pub driven: super::worker::Driven,
     /// Last: the library outlives everything above.
     _lib: Option<Lib>,
@@ -628,6 +632,7 @@ impl Instance {
 
     /// The instance's handle (#74): what the plugin is handed and hands back, verified by the host
     /// on every call ([`super::handle::resolve`]).
+    #[doc(hidden)]
     pub fn ctx(&self) -> HostCtx {
         self.tables.0.ctx
     }
@@ -1441,6 +1446,7 @@ pub(crate) unsafe fn kind_tail<T: Copy>(
 
 /// A borrowed string's bytes; NULL-and-empty reads as empty. The length is capped BEFORE any
 /// slice is made: over [`MAX_TEXT`], or non-empty behind NULL, is `None` (a malformed answer).
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
 pub fn str_bytes<'a>(s: AbiStr) -> Option<&'a [u8]> {
     if s.len == 0 {
         return Some(&[]);
@@ -1464,6 +1470,7 @@ pub(crate) fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
 /// DESIGN C.1, `BUSBAR-1.6.0.md` l.3868: "`Plugin<K>` is `!Clone`"): the instance has one owner,
 /// and a holder that shares it shares an `Arc<Plugin<K>>`, never a copy of the handle.
 pub struct Plugin<K: Kind> {
+    #[doc(hidden)]
     pub inner: Arc<Instance>,
     _k: PhantomData<fn() -> K>,
 }

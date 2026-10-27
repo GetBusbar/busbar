@@ -30,7 +30,8 @@
 //! }
 //! ```
 //!
-//! with `busbar-test-kit = { git = …, tag = <the core version> }` as a dev-dependency. The macro emits the suite's tests; `plugin-ci.yml` runs them under `--release`.
+//! with `busbar-test-kit = { git = …, rev = <the pin> }` as a dev-dependency. The macro emits the
+//! suite's tests; `plugin-ci.yml` runs them under `--release`.
 //!
 //! A plugin whose declared needs reach a far end (an IdP's JWKS or token endpoint) names those far
 //! ends in its inputs, `"far_ends": [{ "url", "cert_pem", "status", "body" }, ...]`: each instance
@@ -77,8 +78,8 @@
 //! no connection table is refused at bind, naming the plugin. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
 //! step can require that the suite FAILS when a count moves.
 //!
-//! THE SEAM: the suite lives in the core test kit, a dev-dependency only, over the one loader's
-//! public surface. Its own tests run in the loader's test build, over the loader's fixtures.
+//! THE SEAM: the suite lives in busbar-test-kit, a dev-dependency only, and reaches the one loader
+//! through the dispatcher internals busbar-plugin-loader exports as its test seams.
 //!
 //! [`load_linked`]: crate::dispatch::load_linked
 //! [`load_dropped_bytes`]: crate::dispatch::load_dropped_bytes
@@ -830,19 +831,19 @@ pub fn dispatcher_serving(
 }
 
 /// A test's restated door, written in plain Rust; [`test_door`] is its [`RawDoorFn`].
-#[cfg(all(test, busbar_loader_suite))]
+#[cfg(all(test, loader_self_tests))]
 pub(crate) trait TestDoor {
     fn door() -> *const Door;
 }
 
 /// The C-ABI door of `T`: one shim per restated door, so no test spells the ABI of its own.
-#[cfg(all(test, busbar_loader_suite))]
+#[cfg(all(test, loader_self_tests))]
 pub(crate) extern "C" fn test_door<T: TestDoor>() -> *const Door {
     T::door()
 }
 
 /// A test's restated op, written in plain Rust; [`test_op`] is its door-table entry.
-#[cfg(all(test, busbar_loader_suite))]
+#[cfg(all(test, loader_self_tests))]
 pub(crate) trait TestOp {
     fn op(
         instance: *mut std::ffi::c_void,
@@ -852,7 +853,7 @@ pub(crate) trait TestOp {
 }
 
 /// The C-ABI op of `T`, as a door table holds it.
-#[cfg(all(test, busbar_loader_suite))]
+#[cfg(all(test, loader_self_tests))]
 pub(crate) extern "C" fn test_op<T: TestOp>(
     instance: *mut std::ffi::c_void,
     input: *const std::ffi::c_void,
@@ -2454,10 +2455,10 @@ macro_rules! conformance_suite {
     };
 }
 
-#[cfg(all(test, busbar_loader_suite))]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_suite_tests.rs"]
 mod tests;
 
-#[cfg(all(test, busbar_loader_suite))]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_declared_tests.rs"]
 mod declared_tests;

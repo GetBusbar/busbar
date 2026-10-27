@@ -71,8 +71,10 @@ pub mod store_adapter;
 #[allow(unsafe_code)] // REVIEWED: lends the store door its request (`Lend`)
 pub mod store_v3;
 pub mod tarball;
-// THE CORE TEST KIT'S SUITE AND DOUBLES (`busbar-test-kit`), compiled into this crate's test build
-// by path: its own tests drive it over this crate's fixtures and doors, at this crate's paths.
+
+/// TEST ONLY: busbar-test-kit's source (the published conformance suite and the test connection
+/// tables), compiled into this crate's own tests so the suite's unit tests run over this crate's
+/// door fixtures.
 #[cfg(test)]
 #[allow(unsafe_code)] // TEST ONLY: the published suite drives raw doors and plants faults
 #[path = "../../busbar-test-kit/src/conformance/mod.rs"]

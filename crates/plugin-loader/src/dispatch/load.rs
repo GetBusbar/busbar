@@ -137,6 +137,7 @@ impl LinkedRow {
     }
 
     /// [`LinkedRow::of`] over a door the loader already holds raw (a registry row's).
+    #[doc(hidden)]
     pub fn of_raw(door: RawDoorFn) -> Result<Self, LoadError> {
         Ok(Self {
             statement: rendering_of_raw(door)?,
@@ -154,6 +155,7 @@ impl LinkedRow {
 /// [`MacroDoor`]: busbar_contract::abi::sdk::door::MacroDoor
 #[derive(Debug, Clone, Copy)]
 pub struct LoadedDoor {
+    #[doc(hidden)]
     pub door: RawDoorFn,
 }
 
@@ -174,6 +176,7 @@ impl From<DoorFn> for LoadedDoor {
 
 /// A sealed door function as the raw one the loader enters ([`enter_door`]): the same `extern "C"`
 /// function, typed as a `dlsym` answer is.
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
 pub const fn raw(door: DoorFn) -> RawDoorFn {
     // SAFETY: `&'static Door` and `*const Door` are ABI-compatible (one pointer; the reference is
     // never NULL), so calling the function through either type is the same call; the loader only
@@ -326,6 +329,7 @@ pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
 
 /// [`rendering_of`] over a raw door function: a `dlsym` answer, or a door the loader already
 /// holds.
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
 pub fn rendering_of_raw(door_fn: RawDoorFn) -> Result<Vec<u8>, LoadError> {
     let (door, _) = read_door(enter_door(door_fn), None)?;
     let st = statement(&door)?;
@@ -338,6 +342,7 @@ pub fn rendering_of_raw(door_fn: RawDoorFn) -> Result<Vec<u8>, LoadError> {
 /// both origins. The door function is plugin code like any slot, so it runs where every other
 /// per-load crossing runs; a call already on a worker stays there. A door function that panicked
 /// answers NULL ([`LoadError::NullDoor`]).
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
 pub fn enter_door(door_fn: RawDoorFn) -> *const Door {
     let call = || {
         crate::ffi_thread::debug_assert_permanent("the door function");

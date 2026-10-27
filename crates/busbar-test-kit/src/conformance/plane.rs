@@ -2076,10 +2076,10 @@ fn judge(label: &str, line: &str, want: &Value, short: Option<&str>) {
     }
 }
 
-#[cfg(all(test, busbar_loader_suite))]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_plane_sessions_tests.rs"]
 mod tests;
 
-#[cfg(all(test, busbar_loader_suite))]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_plane_host_tests.rs"]
 mod host_tests;

@@ -160,8 +160,7 @@ getrandom = { workspace = true }
 jsonschema = { workspace = true, optional = true }
 
 [dev-dependencies]
-# `test_issuer` (ring, base64) and the conformance suite's canary (base64), compiled into this
-# crate's own test build from busbar-test-kit by path.
+# busbar-test-kit's `test_issuer`, compiled into this crate's own tests.
 ring = { workspace = true }
 base64 = { workspace = true }
 # The end-to-end DlopenPolicy test drives the async RoutingPolicy methods, so the test needs a

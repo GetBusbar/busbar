@@ -682,6 +682,6 @@ fn contract(fold: &Fold, k: &serde_json::Value) {
     }
 }
 
-#[cfg(all(test, busbar_loader_suite))]
+#[cfg(all(test, loader_self_tests))]
 #[path = "../tests/conformance_export_unjudged_tests.rs"]
 mod unjudged_tests;

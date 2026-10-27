@@ -647,6 +647,7 @@ pub(crate) struct Current {
 /// host until it collects them ([`Driven::take`]): each once, at most [`Driven::HELD`] at a time
 /// (a plane that names more before the host collects is told nothing new until it wakes again).
 #[derive(Debug, Default)]
+#[doc(hidden)] // TEST SEAM: busbar-test-kit
 pub struct Driven {
     names: Mutex<Vec<u64>>,
     told: tokio::sync::Notify,
