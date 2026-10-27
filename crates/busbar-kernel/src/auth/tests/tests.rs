@@ -240,41 +240,37 @@ fn test_nonempty_chain_fails_closed_on_all_pass() {
     assert!(!mw.validate_token(Some(""))); // empty token never matches
 }
 
-/// 1.5.5 PARITY CELL (Q128 u27, Q20): an IDENTIFIED principal that earns no governance key is
-/// judged as 1.5.5 judged it (v1.5.5 crates/busbar/src/auth/mod.rs:1543). A ROLELESS principal, and
-/// a role principal under a module with NO `role_bindings` table, are ADMITTED ungoverned
-/// (`key: None`); a roleless principal under a governed module is admitted too; a role principal
-/// whose roles are unbound under a module that HAS a table is `NoGrant`. `Open` stays anonymous and
-/// a bound role earns its key. RED against the item-144 rule, which refuses every keyless principal.
+/// AN IDENTIFIED PRINCIPAL WITH NO GRANT IS REFUSED (owner-signed 2026-10-24, M30; 1.5.5 admitted it
+/// ungoverned and booked its spend to `anonymous`). A roleless principal, a role principal under a
+/// module with no `role_bindings` table, a roleless principal under a governed module, and an unbound
+/// role under a governed module are all `NoGrant`. `Open` stays anonymous and a bound role earns its
+/// key. RED against 1.5.5's three-part guard, which admitted the first three.
 #[test]
-fn an_ungoverned_principal_is_judged_as_1_5_5_judged_it() {
+fn an_identified_principal_with_no_grant_is_refused() {
     let identified = |module: &str, principal: Principal| ChainVerdict::Identified {
         module: module.to_string(),
         principal,
         resolved: None,
     };
-    let admitted_ungoverned =
+    let refused =
         |app: &crate::state::App, v: ChainVerdict, why: &str| match resolve_data_plane_identity(
             app, v,
         ) {
-            Ok((who, gov)) => {
-                assert!(who.0.is_some(), "{why}: admitted as itself");
-                assert!(
-                    gov.key.is_none(),
-                    "{why}: admitted ungoverned, as 1.5.5 did"
-                );
-            }
-            Err(other) => panic!("{why}: 1.5.5 admitted it ungoverned, got {other:?}"),
+            Err(IdentityRefusal::NoGrant) => {}
+            other => panic!(
+                "{why}: refused NoGrant, got {:?}",
+                other.map(|(_, gov)| gov.key.map(|k| k.id.clone()))
+            ),
         };
 
     // No bindings table for any module.
     let bare = crate::test_support::TestApp::new().build();
-    admitted_ungoverned(
+    refused(
         &bare,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
         "a roleless principal",
     );
-    admitted_ungoverned(
+    refused(
         &bare,
         identified("test-groups-module", grp_principal("test:dev", &["dev"])),
         "a role principal under a module with no role_bindings table",
@@ -288,21 +284,16 @@ fn an_ungoverned_principal_is_judged_as_1_5_5_judged_it() {
     let governed = crate::test_support::TestApp::new()
         .role_bindings(table)
         .build();
-    admitted_ungoverned(
+    refused(
         &governed,
         identified("test-groups-module", grp_principal("test:nobody", &[])),
         "a roleless principal under a governed module",
     );
-    match resolve_data_plane_identity(
+    refused(
         &governed,
         identified("test-groups-module", grp_principal("test:ops", &["ops"])),
-    ) {
-        Err(IdentityRefusal::NoGrant) => {}
-        other => panic!(
-            "an unbound role under a governed module is refused, as 1.5.5 refused it: {:?}",
-            other.map(|(_, gov)| gov.key.map(|k| k.id.clone()))
-        ),
-    }
+        "an unbound role under a governed module",
+    );
 
     // Positive controls: the bound role earns a key and is admitted under it; `Open` is anonymous.
     let (who, gov) = resolve_data_plane_identity(
@@ -315,11 +306,11 @@ fn an_ungoverned_principal_is_judged_as_1_5_5_judged_it() {
     assert!(who.0.is_none() && gov.key.is_none());
 }
 
-/// THE SIGNABLE RULE, held ready (Q20, item 144): under `refuse_every` no keyless principal is
-/// admitted, whatever its roles and whatever its module's bindings. Without it, 1.5.5's three-part
-/// guard: refused only with roles under a module that has a table.
+/// THE RULE AND 1.5.5'S GUARD SIDE BY SIDE (Q20, item 144): under `refuse_every` (shipped, M30) no
+/// keyless principal is admitted, whatever its roles and whatever its module's bindings; 1.5.5's
+/// three-part guard refused only roles under a module that has a table.
 #[test]
-fn the_refuse_every_ungoverned_rule_is_held_ready_behind_its_const() {
+fn the_refuse_every_ungoverned_rule_against_1_5_5s_guard() {
     let table = bindings_for(
         "test-groups-module",
         &[("dev", binding(Some(&["pa"]), None, None))],

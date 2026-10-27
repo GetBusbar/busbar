@@ -135,21 +135,6 @@ pub struct MediaBlob {
     pub pcm: Option<PcmParams>,
 }
 
-impl MediaBlob {
-    /// Well-formedness: PCM parameters are present iff the MIME type denotes headerless raw PCM.
-    /// Guards against an OperationHandler that forgets the params on a codec-only MIME type (silently
-    /// lossy) or attaches them to a self-describing container (meaningless). No runtime path
-    /// currently calls this; the invariant is documented and self-tested but not enforced on real
-    /// data.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn is_well_formed(&self) -> bool {
-        let raw_pcm = self.mime_type.contains("L16")
-            || self.mime_type.ends_with("/pcm")
-            || self.mime_type.contains("codec=pcm");
-        raw_pcm == self.pcm.is_some()
-    }
-}
-
 /// A single generated image. ADDITIVE: `b64` and `url` may BOTH be present and both are
 /// kept. `b64` is the common path; `url`/`uri` are additive (some upstreams return a URL, others a
 /// bucket URI). The other fields are upstream-specific extras kept for lossless round-trip.
@@ -161,16 +146,6 @@ pub struct ImageOutput {
     pub revised_prompt: Option<String>, // dall-e-3
     pub seed: Option<u64>,              // SDXL / Stable Image
     pub finish_reason: Option<String>,  // SUCCESS / CONTENT_FILTERED / "Filter reason: …"
-}
-
-impl ImageOutput {
-    /// At least one representation must be present — an image output with neither `b64` nor `url` is
-    /// meaningless (and would silently drop the image). No runtime path currently calls this; the
-    /// invariant is documented and self-tested but not enforced on real data.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn has_payload(&self) -> bool {
-        self.b64.is_some() || self.url.is_some()
-    }
 }
 
 #[cfg(test)]

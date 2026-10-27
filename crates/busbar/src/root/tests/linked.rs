@@ -119,7 +119,7 @@ fn a_linked_export_declares_stating_needs_boots() {
 /// scan names it.
 #[test]
 fn the_host_series_catalog_holds_every_series_the_host_defines() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = std::path::Path::new(env!("BUSBAR_CORE_DIR")).join("..");
     let sources = [
         "busbar-kernel/src/snapshot/mod.rs",
         "busbar-kernel/src/telemetry.rs",
