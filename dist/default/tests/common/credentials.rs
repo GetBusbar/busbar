@@ -17,10 +17,8 @@ pub fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
     static ONE: std::sync::OnceLock<busbar_test_kit::test_issuer::Issuer> =
         std::sync::OnceLock::new();
     ONE.get_or_init(|| {
-        let issuer = busbar_test_kit::test_issuer::Issuer::start(
-            "https://issuer.e2e.invalid",
-            "e2e-issuer",
-        );
+        let issuer =
+            busbar_test_kit::test_issuer::Issuer::start("https://issuer.e2e.invalid", "e2e-issuer");
         let (url, cert_pem) = serve_jwks(issuer.jwks().to_string());
         issuer.served_at(&url, &cert_pem)
     })

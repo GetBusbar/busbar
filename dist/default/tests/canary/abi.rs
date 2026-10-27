@@ -106,10 +106,8 @@ fn registry() -> Arc<PluginRegistry> {
 fn issuer() -> &'static busbar_test_kit::test_issuer::Issuer {
     static ONE: OnceLock<busbar_test_kit::test_issuer::Issuer> = OnceLock::new();
     ONE.get_or_init(|| {
-        let issuer = busbar_test_kit::test_issuer::Issuer::start(
-            "https://issuer.canary.invalid",
-            "canary",
-        );
+        let issuer =
+            busbar_test_kit::test_issuer::Issuer::start("https://issuer.canary.invalid", "canary");
         let conns = busbar_test_kit::https_conns::HttpsConns::new();
         conns.serve_issuer(&issuer);
         busbar_plugin_loader::auth_axis::stand_in_conns(Arc::new(conns));
