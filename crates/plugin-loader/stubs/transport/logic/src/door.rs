@@ -29,7 +29,6 @@ pub use crate::transport::{
     resolve, Accept, Arrival, Carried, Dial, Flush, Listen, NotAFramer, Read, Shut, Write,
 };
 
-
 /// The door's Statement: the `tcp` carrier.
 pub const STATEMENT: Statement = Statement {
     kind_tail: (&TAIL as *const TransportTail).cast::<KindTailHead>(),
