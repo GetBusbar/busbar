@@ -18,7 +18,7 @@
 //! wire_format_of, mounted_plane_of}`, `sole_wire_format`, `has_superset_ir`, `sole_of`,
 //! `superset_of`, `ingress::native::envelope_dialect`) were widened to `pub` for exactly this move.
 
-use busbar_kernel::plane::{
+use busbar_kernel::plane_driver::dispatch::{
     fallback_key, has_superset_ir, plane_decl, plane_keys, sole_of, sole_wire_format, superset_of,
     wire_format_names, wire_formats, Ingress, PlaneDispatch, WIRE_GRPC, WIRE_JSONRPC,
 };
@@ -55,7 +55,7 @@ fn door(key: &str) -> String {
 /// helper reaches it, keeps the dialect list populated order-independently of whatever order the
 /// harness runs tests in.
 fn warm_shared_protocol_registry() {
-    let _ = busbar_kernel::proto::known_protocols();
+    let _ = busbar_kernel::ingress::protocols::known_protocols();
 }
 
 /// Every plane is reachable from `plane_keys()`, and it has no duplicates. The router, the config
@@ -167,7 +167,7 @@ fn the_multi_binding_legs_are_named_by_the_planes_wire_formats() {
         wires,
         [
             WIRE_JSONRPC,
-            busbar_kernel::plane::WIRE_HTTP_JSON,
+            busbar_kernel::plane_driver::dispatch::WIRE_HTTP_JSON,
             WIRE_GRPC
         ]
         .as_slice(),
@@ -184,7 +184,7 @@ fn the_fallback_wire_format_count_comes_from_the_protocol_registry() {
     warm_shared_protocol_registry();
     assert_eq!(
         wire_formats(fallback()),
-        busbar_kernel::proto::known_protocols().len()
+        busbar_kernel::ingress::protocols::known_protocols().len()
     );
     assert!(
         wire_formats(fallback()) >= 2,
@@ -551,12 +551,12 @@ fn the_fallback_planes_dialects_are_the_registrys_so_an_empty_registry_empties_t
     warm_shared_protocol_registry();
     assert_eq!(
         wire_format_names(fallback()),
-        busbar_kernel::proto::known_protocols(),
+        busbar_kernel::ingress::protocols::known_protocols(),
         "the fallback plane's wire formats must track the registry"
     );
 
-    let empty = busbar_kernel::proto::registry::Registry::new(
-        busbar_kernel::proto::registry::merged_boot_decls(&[], &[]),
+    let empty = busbar_kernel::ingress::protocols::Registry::new(
+        busbar_kernel::ingress::protocols::merged_boot_decls(&[], &[]),
     );
     let names: &'static [&'static str] = empty.codec_protocols();
     assert!(names.is_empty(), "premise: no declarations, no dialects");
