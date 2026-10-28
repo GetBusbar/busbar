@@ -920,7 +920,10 @@ fn an_auth_instance_logs_to_its_own_plugin_log_file() {
         a.verify_now(&request(Some("log"), None)),
         Some(answered(Verified::Pass))
     );
-    let path = log_config().path_for("auth.logged");
+    let path = log_config().path_for(
+        "auth.logged",
+        busbar_contract::abi::mechanism::KindCode::Auth,
+    );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut text = String::new();
     while std::time::Instant::now() < deadline {

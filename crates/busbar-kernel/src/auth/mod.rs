@@ -707,6 +707,8 @@ impl AdminAuthChain {
                     let name = entry.name.as_str();
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
@@ -830,6 +832,8 @@ impl AuthMiddleware {
                     // dangling reference.
                     let resolved = crate::config::secret::resolve_settings(
                         &entry.settings,
+                        &registry.secret_slots(other),
+                        other,
                         secret_resolver,
                         &busbar_contract::config_time::ConfigScope::config_time(),
                     )
@@ -2317,7 +2321,7 @@ pub(crate) async fn auth_middleware(
     // token as a ref. Handed on with the request so the host strips all of them before any plane
     // sees it (`caller_credential`).
     let mut consumed = gate_consumed(&app, is_admin, dpop_proven);
-    consumed.caller = client_token.clone().map(CallerCredential);
+    consumed.caller = client_token.as_deref().map(CallerCredential::verified);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
     // carrier precedence as auth (the default inbound style's carriers, in order). Inserted BEFORE

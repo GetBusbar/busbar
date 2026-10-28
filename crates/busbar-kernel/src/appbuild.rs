@@ -413,8 +413,9 @@ pub fn load_config_from_disk_judged(
     let interpolated_providers =
         config::interpolate_env_with(&raw_providers, env_mode, &mut unset_env_vars)
             .map_err(|e| format!("providers.yaml: {e}"))?;
-    let defs: HashMap<String, config::ProviderDef> = serde_yaml::from_str(&interpolated_providers)
-        .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
+    let defs: HashMap<String, config::ProviderDef> =
+        config::providers::catalog_from_str(&interpolated_providers)
+            .map_err(|e| format!("providers.yaml: invalid YAML: {e}"))?;
 
     // 1.5.3: resolve the config-management posture + overlay backend from the `config:` block, and
     // ENFORCE the boot invariant (`locked` XOR a writable overlay). The deprecated
@@ -1025,8 +1026,6 @@ pub fn build_app_from_config(
             url_userinfo,
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
-            organization: legacy.organization,
-            project: legacy.project,
             upstream_model: facts.upstream_model.clone(),
             api_key: busbar_contract::redacted::Secret::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
@@ -1237,6 +1236,8 @@ pub fn build_app_from_config(
     if let Some(store_cfg) = cfg.store.as_ref() {
         if let Err(e) = config::secret::resolve_settings(
             &store_cfg.settings,
+            &plugin_registry.secret_slots(&store_cfg.module),
+            &store_cfg.module,
             secret_resolver.as_ref(),
             &busbar_contract::config_time::ConfigScope::config_time(),
         ) {
@@ -1386,6 +1387,8 @@ pub fn build_app_from_config(
             true => Default::default(),
             false => config::secret::resolve_settings(
                 &g.settings,
+                &plugin_registry.secret_slots(&g.module),
+                &g.module,
                 secret_resolver.as_ref(),
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )

@@ -237,6 +237,38 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
 /// not read and a scope it did not hold were the same thing, and told a client that a request
 /// worth retrying was one that never would be. The two authorization endings keep the answer
 /// they had, and so does an ending this table does not name.
+/// EVERY REFUSAL EXPLAINS ITSELF (OWNER 2026-10-27): an `amend-rate-history` body the verb cannot
+/// read (the oracle's pre-1.6.0 `rate_card`/`window` body) is answered 400 `invalid_request` with
+/// a message that names what the body must carry. RED: the bare `{"code":"invalid_request",
+/// "message":"invalid_request"}`. Every other verb's unreadable body keeps its answer.
+#[cfg(feature = "root-admin")]
+#[test]
+fn an_unreadable_amendment_is_told_what_the_body_must_carry() {
+    let refused = Outcome::Refused(
+        busbar_contract::caps::StepName::Route,
+        ReasonCode::DecodeFailed,
+    );
+    let amend = AdminRequest {
+        method: "POST".to_string(),
+        path: "/api/v1/admin/ledger/amend-rate-history".to_string(),
+        body: br#"{"rate_card":{},"window":{}}"#.to_vec(),
+        ..a_request()
+    };
+    let answer = explained_answer(&amend, refused).expect("the amendment's refusal is explained");
+    assert_eq!(answer.status, 400);
+    assert_eq!(
+        answer.body,
+        br#"{"error":{"code":"invalid_request","message":"amend-rate-history: body must carry effective_from, reason, and rates and/or per_request_fee; rate_card/window is the pre-1.6.0 shape"}}"#.to_vec()
+    );
+    // another verb's unreadable body, and the amendment's other endings, keep their answers
+    assert!(explained_answer(&a_request(), refused).is_none());
+    let unavailable = Outcome::Failed(
+        busbar_contract::caps::StepName::Route,
+        ReasonCode::DurabilityUnavailable,
+    );
+    assert!(explained_answer(&amend, unavailable).is_none());
+}
+
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_refused_units_status_is_the_one_its_ending_earned() {
@@ -596,7 +628,7 @@ fn the_two_tables_spell_one_operations_name_two_ways() {
         .find(|row| row.method == "GET" && row.path == "/api/v1/admin/audit")
         .expect("audit is in the unit's table");
     assert_eq!(audit.verb, "get_audit");
-    assert_eq!(row.operation_id, "GetAudit");
+    assert_eq!(row.verb, KernelVerb::GetAudit);
     assert_eq!(kernel_verb(&audit), Some(KernelVerb::GetAudit));
 }
 

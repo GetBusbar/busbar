@@ -70,7 +70,7 @@ pub(super) use super::secret_source_tests::{
 /// config-fixture cells install it.
 pub(crate) fn register_linked_protocols() {
     for decls in crate::LINKED.protocols {
-        busbar_kernel::ingress::protocols::register_test_protocols(decls);
+        busbar_kernel::test_support::protocols::register_test_protocols(decls);
     }
 }
 

@@ -81,6 +81,9 @@ pub mod auth_outbound;
 pub mod login;
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
+// THE SECRET KIND'S SHARED SOURCE PIECES: the error-kind code, a reference's settings, the
+// takes-no-settings refusal and the failed resolve.
+pub mod secret;
 // PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
 pub mod publish;
 pub use publish::{Generations, Keyed};
@@ -89,6 +92,11 @@ pub use publish::{Generations, Keyed};
 pub mod trust;
 // THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
 pub mod life;
+// THE PLUGIN'S OWN CONFIG MIGRATION, ONCE FOR EVERY KIND: the door's optional `migrate` over a
+// plugin's `Migrate`, and the answer core reads (`abi::mechanism::lifecycle`, MIGRATE).
+pub mod migrate;
+// THE PLANE LIFECYCLE, ONCE FOR EVERY PLANE: the nine slots over a plane's `PlaneLife`.
+pub mod plane_life;
 // THE PLUGIN TEST SUPPORT: the all-zero value of a reviewed ABI struct and a door's Statement read
 // as Rust values, so a plugin's own tests drive its door with no `unsafe` (BUSBAR-1.6.0.md
 // l.272-274). Compiled for this crate's tests and behind the dev-only `test-seal` feature, as the

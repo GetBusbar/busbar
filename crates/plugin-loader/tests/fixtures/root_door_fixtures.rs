@@ -379,3 +379,78 @@ door_root!(
     1,
     busbar_contract::abi::transport::FRAME_PIECE_SIZE - 8
 );
+
+/// A stub plugin that migrates its own settings (`--migrate-config`, owner ruling 2026-10-27): its
+/// door states `migrate` over [`migrate_stub::StubMigration`], which renames `signing-secret` to
+/// `signing_secret` (renamed in 1.6.0) and raises the host its `url` names as a destination to allow.
+pub mod migrate_stub {
+    use busbar_contract::abi::mechanism::call::Outcome;
+    use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
+    use busbar_contract::abi::sdk::migrate::{Migrate, MigrateNeed, Migrated};
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
+    use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
+
+    /// Its Statement name.
+    pub const NAME: &str = "busbar-secret-stub";
+
+    /// The stub's own migration.
+    pub struct StubMigration;
+    impl Migrate for StubMigration {
+        fn migrate(mut settings: serde_json::Value, from: &str) -> Migrated {
+            let mut report = Vec::new();
+            let mut needs = Vec::new();
+            if let Some(m) = settings.as_object_mut() {
+                if let Some(v) = m.remove("signing-secret") {
+                    m.insert("signing_secret".into(), v);
+                    report.push(format!(
+                        "settings.signing-secret -> settings.signing_secret (renamed in 1.6.0; the \
+                         configuration came from {from})"
+                    ));
+                }
+                if let Some(host) = m.get("url").and_then(|u| u.as_str()) {
+                    needs.push(MigrateNeed::AllowDestination(host.to_string()));
+                }
+            }
+            Migrated {
+                settings,
+                report,
+                needs,
+            }
+        }
+    }
+
+    /// Its lifecycle: opens on anything.
+    pub struct L;
+    impl Life for L {
+        const CANCEL: u32 = 0;
+        fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+            Ok(Self)
+        }
+        fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+            Ok(Refreshed::default())
+        }
+    }
+
+    /// `resolve`: never reached.
+    pub struct Resolve;
+    impl SafeSlot for Resolve {
+        type In = ResolveIn;
+        type Out = ResolveOut;
+        type State = Held<L>;
+        fn call(
+            _: Instance<'_, Held<L>>,
+            _: Lent<'_, ResolveIn>,
+            _: Out<'_, ResolveOut>,
+        ) -> Outcome {
+            Outcome::Refused
+        }
+    }
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::secret::Ops,
+        statement: busbar_contract::abi::sdk::door::statement(NAME, "1.6.0", 1),
+        lifecycle: life(L),
+        migrate: busbar_contract::abi::sdk::migrate::Migrator<StubMigration>,
+        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
+    }
+}

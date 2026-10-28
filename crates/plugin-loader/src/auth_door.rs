@@ -605,10 +605,12 @@ impl std::fmt::Debug for AuthInstance {
     }
 }
 
-/// THE SERVICE CREDENTIALS OUT OF THE SETTINGS: each key `plugin`'s Statement names as a secret-ref
-/// is taken out of the `settings` object (its value already resolved by the kernel, as 1.5.5
-/// resolved a provider's secret-refs) and handed to `open` as `secrets`, in the Statement's order —
-/// a missing or non-string one as empty bytes, which the plugin refuses. The settings the plugin
+/// THE SERVICE CREDENTIALS OUT OF THE SETTINGS: each exact path `plugin`'s Statement names as a
+/// secret-ref is taken out of the `settings` object (its value already resolved by the kernel, as
+/// 1.5.5 resolved a provider's secret-refs) and handed to `open` as `secrets`, in the Statement's
+/// order — a missing or non-string one as empty bytes, which the plugin refuses. Then each
+/// wildcard path's string matches follow, in document order, each replaced in the settings by its
+/// `{"$secret": <index>}` marker (`busbar_contract::secret_fields::lend`). The settings the plugin
 /// sees no longer carry them.
 pub fn split_secrets(
     plugin: &Plugin<Auth>,
@@ -619,16 +621,18 @@ pub fn split_secrets(
         .map(|f| f.secret_refs.clone())
         .unwrap_or_default();
     let mut settings = settings.clone();
-    let secrets = refs
-        .iter()
-        .map(|key| {
-            let taken = settings.as_object_mut().and_then(|o| o.remove(key));
-            match taken {
-                Some(serde_json::Value::String(s)) => s.into_bytes(),
-                _ => Vec::new(),
-            }
-        })
-        .collect();
+    let as_bytes = |v: Option<serde_json::Value>| match v {
+        Some(serde_json::Value::String(s)) => s.into_bytes(),
+        _ => Vec::new(),
+    };
+    let secrets = busbar_contract::secret_fields::lend(
+        &mut settings,
+        &refs,
+        false,
+        |_, v| Ok::<_, std::convert::Infallible>(as_bytes(v)),
+        |_, v| Ok(as_bytes(Some(v))),
+    )
+    .unwrap_or_else(|e| match e {});
     (settings, secrets)
 }
 

@@ -482,8 +482,8 @@ impl Conns for Far {
                 "head_target": String::from_utf8_lossy(desc.head_target),
                 "fields": fields,
                 // Text as text; any other body (the collector's protobuf) as hex.
-                "body": std::str::from_utf8(desc.body)
-                    .map_or_else(|_| hex::encode(desc.body), str::to_owned),
+                "body": std::str::from_utf8(&desc.body)
+                    .map_or_else(|_| hex::encode(&desc.body), str::to_owned),
             }));
         Ok(id)
     }
