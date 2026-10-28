@@ -4,18 +4,21 @@
 # and gives checks only the path, in $BUSBAR_ORACLE_JUDGE_PATH. No check ever holds the token.
 # These are busbar-release dev-bin's assets (asset ids: GitHub serves a private asset only from the
 # API URL, as octet-stream). aarch64 is the judge for BUSBAR_ORACLE_RELEASE_REF
-# 0dac78dd0500eaaf8e6c312861761a173b156b8a (busbar-release #441/#443/#447 precise `values` acceptance and
-# #445 no cell straddles a UTC day, on top of #434/#435's dist/default candidate), built by ModernCI (busbar-release judge-bin-aarch64, static musl) because
-# busbar-release's GitHub Actions is down for billing; unsigned (no .sig) until re-signed with the
-# release key. x86_64 stays the 151ad095 judge: ModernCI compute is aarch64 only and no x86_64 build of
-# d12a08c7 exists. Each sha256 equals BUSBAR_ORACLE_SHA256_LINUX_<arch> in .ci/*.yaml, verified against
-# the downloaded assets 2026-10-26. Not a branch file (not .yaml).
+# 63d7256c227a6e0360d241b865641d1abfe0dbe2 (busbar-release #442: the keyed candidate is the shipping
+# build, built once, refused unless it is the shipping build's release/busbar and embeds the run key;
+# #444: the trusted release-key list; #445: recording workers share one queue, `prepare` builds the
+# keyed candidate once and `record --prepared` reuses it; on top of 0dac78dd's #441/#443/#447), built
+# by ModernCI (judge-bin-aarch64, static musl) and published by dev-bin-publish 2026-10-28 17:43Z, SIGNED with the
+# owner's 2026-10-28 release key (busbar-release-2026-10-28; its .sig verified against that key, and
+# refused by the earlier key). x86_64 stays the 151ad095 judge: ModernCI compute is aarch64 only and no
+# x86_64 build of this ref exists. Each sha256 equals BUSBAR_ORACLE_SHA256_LINUX_<arch> in .ci/*.yaml,
+# verified against the downloaded assets 2026-10-28. Not a branch file (not .yaml).
 url:
   x86_64: https://api.github.com/repos/GetBusbar/busbar-release/releases/assets/660620261
-  aarch64: https://api.github.com/repos/GetBusbar/busbar-release/releases/assets/683774262
+  aarch64: https://api.github.com/repos/GetBusbar/busbar-release/releases/assets/685818127
 sha256:
   x86_64: 0f6c0433bc2089af5a8958b5e2e237c86c065b15c38e015225fa3faf4ab6f0e8
-  aarch64: 811d1391344bae47b7774a2abb33ab074b07b0263cc47cb6cb3d8bc31226c809
+  aarch64: 778dcf0c1b9f839dc823982cec99d704acd1b9706a5e2475d47544bbd6a63f43
 path: busbar-oracle
 auth: forge
 accept: application/octet-stream
