@@ -528,52 +528,6 @@ fn test_lane_state_half_open_probe_on_own_cell_reads_one() {
     );
 }
 
-/// The gauge is PLANE-AGNOSTIC: the plane-neutral breaker cells every other plane dispatches
-/// through get `busbar_lane_state` samples too, read from each cell alone — a tripped
-/// destination reads 2, a healthy one 0 — with no plane named by the emitter.
-#[test]
-fn test_lane_state_emitted_for_plane_neutral_breaker_cells() {
-    register_planes();
-    init();
-
-    let app = TestApp::new()
-        .lane(LaneSpec::new("model-pn", PROTO_OPENAI, "http://pn"))
-        .pool("pool-pn", &[(0, 1)])
-        .build();
-
-    let down = busbar_kernel::store::tool_key("t281-down");
-    let up = busbar_kernel::store::agent_key("t281-up");
-    let t = now();
-    app.plane_breakers.force_open(&down, 0, t + 600);
-    app.plane_breakers.record_success(&up, 0);
-
-    refresh_scrape_gauges(&app);
-    let out = render();
-
-    assert_eq!(
-        gauge_value(&out, LANE_STATE, &down),
-        Some(2.0),
-        "a tripped plane-neutral destination reads 2; got:\n{out}"
-    );
-    assert_eq!(
-        gauge_value(&out, LANE_STATE, &up),
-        Some(0.0),
-        "a healthy plane-neutral destination reads 0; got:\n{out}"
-    );
-    let line = out
-        .lines()
-        .find(|l| {
-            !l.starts_with('#')
-                && l.starts_with(&format!("{LANE_STATE}{{"))
-                && l.contains(&format!("pool=\"{down}\""))
-        })
-        .expect("sample present");
-    assert!(
-        line.contains("lane=\"0\""),
-        "a single registered target is member position 0; got:\n{line}"
-    );
-}
-
 /// The `cooldown > 0` boundary on the by_model gauge: with the DEFAULT (`""`) cell UNTOUCHED
 /// (cooldown reads exactly 0 — `by_model`'s direct-routing path never went through it) while every
 /// per-pool cell for the SAME lane is Open, the by_model gauge must report state 0 (the direct

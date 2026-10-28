@@ -420,7 +420,7 @@ pub fn breaker_cfg_to_runtime(cfg: &crate::config::BreakerCfg) -> BreakerCfg {
         honor_retry_after: true,
         trip,
         // `pools.<pool>.breaker:` is the primary plane's only breaker surface, and that plane walks
-        // its members. The plane cells do not parse config (see `PlaneBreakers::new`).
+        // its members.
         bench_below_trip_threshold: true,
     }
 }
