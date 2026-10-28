@@ -376,14 +376,16 @@ impl AdminService {
         start: usize,
         limit: usize,
     ) -> Result<Page<GroupView>, AdminError> {
-        let all: Vec<GroupView> = self
-            .app
-            .groups_registry
+        // Skip to the page BEFORE projecting: only the page's groups are built into their wire
+        // view, so a page costs its own size rather than the whole tree's.
+        let registry = &self.app.groups_registry;
+        let total = registry.len();
+        let items: Vec<GroupView> = registry
             .iter()
+            .skip(start)
+            .take(limit)
             .map(|(name, cfg)| GroupView::from_cfg(name, cfg))
             .collect();
-        let total = all.len();
-        let items: Vec<GroupView> = all.into_iter().skip(start).take(limit).collect();
         let end = start.saturating_add(items.len());
         let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
         Ok(Page { items, next_cursor })
@@ -1470,12 +1472,37 @@ impl AdminService {
             std::collections::BTreeMap::new();
         let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
             std::collections::BTreeMap::new();
-        // When a correction exists, the eras of every (key, lane), grouped once in row order, so
-        // the per-row loop below looks a row's eras up rather than rescanning the bucket for them
-        // (one pass, not quadratic in the rows).
+        // THE CORRECTIONS A ROW OF THIS WINDOW CAN RECEIVE, indexed once by (key, lane). The node's
+        // list holds every `adjust` it ever sealed and is never trimmed; only one whose card epoch
+        // falls inside this window can land on a row of it, and only on a row of its own key and
+        // lane. Handing each row the whole list made the read rows × lifetime corrections; each
+        // row is handed its own share instead (one pass over each, not their product).
+        let (window_start_ms, window_end_ms) = (
+            window.start.saturating_mul(1_000),
+            window.end.saturating_mul(1_000),
+        );
+        let mut corrections_of: std::collections::HashMap<(&str, &str), Vec<&amend::Amendment>> =
+            std::collections::HashMap::new();
+        for amendment in &corrections {
+            let amend::AmendBody::Adjust(adj) = &amendment.body else {
+                continue;
+            };
+            let amend::Subject::PrincipalId(key_id) = &adj.subject else {
+                continue;
+            };
+            if (window_start_ms..window_end_ms).contains(&adj.card_epoch_ms) {
+                corrections_of
+                    .entry((key_id.as_str(), adj.lane.as_str()))
+                    .or_default()
+                    .push(amendment);
+            }
+        }
+        // When a correction lands in this window, the eras of every (key, lane), grouped once in
+        // row order, so the per-row loop below looks a row's eras up rather than rescanning the
+        // bucket for them (one pass, not quadratic in the rows).
         let mut eras_of: std::collections::HashMap<(&str, std::borrow::Cow<'_, str>), Vec<u64>> =
             std::collections::HashMap::new();
-        if !corrections.is_empty() {
+        if !corrections_of.is_empty() {
             for r in &rows {
                 eras_of
                     .entry((r.key_id.as_str(), row_lane(&r.model, &r.provider)))
@@ -1505,12 +1532,15 @@ impl AdminService {
             // correction that leaves a count fractional or below zero REFUSES the read: a figure
             // over counts nobody recorded is not one this read may serve.
             let mut corrected_classes = std::borrow::Cow::Borrowed(&r.usage_units);
-            if !corrections.is_empty() {
+            if !corrections_of.is_empty() {
                 let eras = eras_of
                     .get(&(r.key_id.as_str(), lane.clone()))
                     .map_or(&[][..], Vec::as_slice);
+                let own = corrections_of
+                    .get(&(r.key_id.as_str(), &*lane))
+                    .map_or(&[][..], Vec::as_slice);
                 for (class, delta) in row_count_corrections(
-                    &corrections,
+                    own,
                     &r.key_id,
                     &lane,
                     (window.start, window.end),
@@ -1821,42 +1851,36 @@ fn validate_config_blocking(
         Ok(root) => root,
         Err(errors) => return ConfigValidateView { ok: false, errors },
     };
-    if let Err(errors) = busbar_kernel::config_validate::validate(&root) {
-        return ConfigValidateView { ok: false, errors };
-    }
-    // The composition root's rules, as an apply's build judges them first: a dry run never answers
-    // green for a configuration the apply would refuse.
-    if let Err(e) = rules.check(&root) {
-        return ConfigValidateView {
-            ok: false,
-            errors: vec![e],
-        };
-    }
-    // SECURITY (R3-B): the pre-flight below SCANS `plugins.dir` — `fs::read_dir` plus a read of
-    // every tarball it finds (`plugins_preflight` → `scan_and_validate`). On THIS endpoint
-    // `deploy` is CALLER-SUPPLIED, so honoring its `plugins.dir` turned validation into an
-    // arbitrary-path readability + directory-enumeration oracle for any token that can reach it
-    // (`plugins.dir: /root/.ssh` reports whether that path is readable and what it contains).
-    // PIN the scanned directory to the RUNNING install's plugins dir before preflight: the scan
-    // can no longer be steered off the real install, while validation still lints every
-    // store/auth/hook/secret REFERENCE against the plugins that are ACTUALLY installed — the
-    // meaningful check, and the CI dry-run use case (does this config resolve against what is
-    // deployed?). The caller's `plugins.dir` string was already structurally checked by
-    // `config_validate::validate` above (no FS access); only the SCAN is pinned.
+    // SECURITY (R3-B): the plugin pre-flight SCANS `plugins.dir` — `fs::read_dir` plus a read of
+    // every tarball it finds. On THIS endpoint `deploy` is CALLER-SUPPLIED, so honoring its
+    // `plugins.dir` turned validation into an arbitrary-path readability + directory-enumeration
+    // oracle for any token that can reach it (`plugins.dir: /root/.ssh`). PIN the scanned directory
+    // to the RUNNING install's plugins dir: every store/auth/hook/secret REFERENCE is still linted
+    // against the plugins that are ACTUALLY installed — the CI dry-run use case.
     deploy.plugins.dir = plugins_dir;
-    // The SAME post-resolve pre-flight `--validate` runs. Without it this endpoint answered
-    // `ok: true` for configs the CLI rejects -- a plugin whose trust posture or store reference
-    // does not resolve, a `secrets:` entry naming no `kind: secret` plugin, a secret REFERENCE
-    // whose module is neither built-in nor installed -- so an operator could dry-run a config
-    // green here and then watch boot fail on it. Manifest-only: nothing is `dlopen`ed.
-    if let Err(e) = busbar_kernel::preflight_plugins_and_secrets(&deploy, &root) {
-        return ConfigValidateView {
-            ok: false,
-            errors: vec![e],
-        };
-    }
-    ConfigValidateView {
-        ok: true,
-        errors: Vec::new(),
-    }
+    // THE ONE VALIDATOR (`config_validate::check`), the sequence boot and `--validate` run, with the
+    // composition root's rules an apply's build judges: a dry run never answers green for a
+    // configuration the apply or the CLI would refuse. Manifest-only: nothing is `dlopen`ed.
+    let root_rules = |c: &busbar_kernel::config::RootCfg| rules.check(c);
+    let checked = busbar_kernel::config_validate::check(
+        &root,
+        busbar_kernel::config_validate::Check {
+            plugins: &deploy.plugins,
+            unset_env_vars: &[],
+            root: &root_rules,
+            fetch: None,
+            resolve_builtins: false,
+        },
+    );
+    let ok = checked.is_ok();
+    let errors = match checked {
+        Ok(_) => Vec::new(),
+        Err(busbar_kernel::config_validate::Refusal::Config(errors)) => errors,
+        Err(
+            busbar_kernel::config_validate::Refusal::Root(e)
+            | busbar_kernel::config_validate::Refusal::Plugins(e)
+            | busbar_kernel::config_validate::Refusal::Unresolved(e),
+        ) => vec![e],
+    };
+    ConfigValidateView { ok, errors }
 }

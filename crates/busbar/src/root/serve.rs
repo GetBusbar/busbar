@@ -31,13 +31,13 @@ use busbar_contract::services::{
 };
 use busbar_kernel::host_records::QUEUE_CAP;
 use busbar_kernel::host_services::{BlockingPool, DestJudge, KernelServices, SignKey};
+/// The stream `Content-Type` every declared protocol states, folded at boot.
+use busbar_kernel::ingress::protocols::streaming_content_types as declared_stream_media;
 use busbar_kernel::plane_driver::serve::{publish, ServeRoute, ServeTable};
 use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
-/// The stream `Content-Type` every declared protocol states, folded at boot.
-use busbar_kernel::proto::streaming_content_types as declared_stream_media;
 use busbar_kernel::store::plane_view::KIND_DEMOTION;
 use busbar_kernel::trust::DemotionRecord;
 use tokio::sync::{mpsc, oneshot};
@@ -129,10 +129,7 @@ pub fn attach(
     // persist where the deployment's state does.
     if let Some(gov) = records {
         if let Some(calls) = gov.store_calls() {
-            kernel.attach_records(
-                Arc::new(busbar_kernel::host_records::StoreRows(calls)),
-                gov.store(),
-            );
+            kernel.attach_records(Arc::new(busbar_kernel::host_records::StoreRows(calls)));
         }
     }
     if let Some(owner) = demotion_owner(planes) {
@@ -1398,7 +1395,7 @@ pub fn door_pools(
 /// read off the generation under its own key and filed under its section.
 #[must_use]
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
-    busbar_kernel::plane::registry::plane_decls()
+    busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .filter_map(|decl| {
             app.plane_pools(decl.key)
@@ -2957,14 +2954,7 @@ pub fn door_mounts(
             .collect(),
         frames: Mutex::default(),
     });
-    // THE NESTED-DISPATCH SEAM, attached once to the kernel's services: `unit.nest` runs a child
-    // on these routes, on the runtime the routes are built on.
-    if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
-        let _attached = kernel.attach_nest(Arc::new(DoorNests {
-            routes: Arc::downgrade(&routes),
-            runtime,
-        }));
-    }
+    attach_nests(kernel, &routes);
     let mut session_mounts: Vec<(String, RouteMethod, RouteAuth, DoorClaim)> = Vec::new();
     let mut sessions = Vec::new();
     let mut requests = Vec::new();
@@ -3223,13 +3213,19 @@ pub(crate) fn line_routes(
         of_line,
         frames: Mutex::default(),
     });
+    attach_nests(kernel, &routes);
+    Ok(routes)
+}
+
+/// THE NESTED-DISPATCH SEAM, attached once to the kernel's services: `unit.nest` runs a child on
+/// `routes`, on the runtime the routes are built on (none outside a runtime).
+fn attach_nests(kernel: Option<Arc<KernelServices>>, routes: &Arc<DataRoutes>) {
     if let (Some(kernel), Ok(runtime)) = (kernel, tokio::runtime::Handle::try_current()) {
         let _attached = kernel.attach_nest(Arc::new(DoorNests {
-            routes: Arc::downgrade(&routes),
+            routes: Arc::downgrade(routes),
             runtime,
         }));
     }
-    Ok(routes)
 }
 
 /// THE PUBLIC ROUTES the served door planes state (`abi::plane::ROUTE_PUBLIC`, SEAM-4o): each at its
@@ -3417,46 +3413,7 @@ impl DataRoutes {
         req: DoorRequest,
     ) -> busbar_kernel::plane_routes::SessionAnswer {
         use busbar_kernel::plane_routes::{SessionAnswer, SessionPipe};
-        let DoorRequest {
-            method,
-            uri,
-            headers,
-            body,
-            gov,
-            credential,
-            app,
-            consumed_fields: _,
-        } = req;
-        let fields: HeadFields = headers
-            .iter()
-            .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
-            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
-            .collect();
-        let target = uri.path_and_query().map_or(uri.path(), |t| t.as_str());
-        let arrival = Arrival {
-            claim,
-            method: method.as_str().as_bytes().to_vec(),
-            target: target.as_bytes().to_vec(),
-            fields,
-            body: body.clone(),
-        };
-        let principal = match gov.key() {
-            Some(key) => PrincipalId::new(key.id.as_str()),
-            None => PrincipalId::new(AuthPrincipal(None).actor_id()),
-        };
-        // An anonymous caller is admitted on an open claim; and, on the plane serving the `pools`
-        // map, on every claim when the deployment's data front door is open (`auth.chain: []`
-        // without `keys`: 1.5.5 admitted every model request anonymously, its open relay). Any
-        // other plane's credential claim fails closed (ARCHITECT P3 (a)).
-        let pools_plane = self.served.planes[plane].live.served_facts.section
-            == busbar_contract::section::RESERVED_POOLS_KEY;
-        let open = (pools_plane && app.auth.is_open())
-            || self.served.planes[plane]
-                .snapshot
-                .claims
-                .get(claim as usize)
-                .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
-        let key = gov.key.clone();
+        let (door, arrival, _) = self.arrived(plane, claim, req);
         let (from_caller, from_rx) = mpsc::channel(SESSION_QUEUE);
         let (to_tx, to_caller) = mpsc::channel(SESSION_QUEUE);
         let caller = PipeCaller {
@@ -3464,14 +3421,6 @@ impl DataRoutes {
             to: to_tx,
         };
         let (verdict, said) = oneshot::channel();
-        let door = SessionDoor {
-            plane,
-            app,
-            principal,
-            key,
-            open,
-            credential,
-        };
         tokio::spawn(self.session(door, caller, arrival, verdict, Attach::switched()));
         match said.await {
             Ok(Ok(())) => SessionAnswer::Accepted(SessionPipe {
@@ -3694,10 +3643,10 @@ impl DataRoutes {
         }
     }
 
-    /// ONE CLAIMED ARRIVAL, SERVED: the caller's head (the credentials the auth gate consumed and
-    /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
-    /// resolved; the unit driven inside the response, so a caller that goes away drops it.
-    async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
+    /// A CLAIMED ARRIVAL, AS ITS UNIT TAKES IT: the caller's head (the fields never kept struck) as
+    /// the [`Arrival`] delivered once at `arrive`, the caller the auth gate resolved and whether the
+    /// claim admits it anonymously, and the body (a framed stream ingests it again).
+    fn arrived(&self, plane: usize, claim: u32, req: DoorRequest) -> (SessionDoor, Arrival, Bytes) {
         let DoorRequest {
             method,
             uri,
@@ -3738,6 +3687,22 @@ impl DataRoutes {
                 .get(claim as usize)
                 .is_some_and(|c| c.flags & CLAIM_OPEN != 0);
         let key = gov.key.clone();
+        let door = SessionDoor {
+            plane,
+            app,
+            principal,
+            key,
+            open,
+            credential,
+        };
+        (door, arrival, body)
+    }
+
+    /// ONE CLAIMED ARRIVAL, SERVED: the caller's head (the credentials the auth gate consumed and
+    /// the fields never kept struck), delivered once at `arrive`; the caller the auth gate
+    /// resolved; the unit driven inside the response, so a caller that goes away drops it.
+    async fn answer(self: Arc<Self>, plane: usize, claim: u32, req: DoorRequest) -> Response {
+        let (door, arrival, body) = self.arrived(plane, claim, req);
         // A DATAGRAM SESSION (row 132): the claim's carrier is answered by a datagram framer.
         let datagram_carrier = self.served.planes[plane]
             .snapshot
@@ -3750,16 +3715,16 @@ impl DataRoutes {
                     .map(|d| (d, c))
             });
         if let Some(carried) = datagram_carrier {
-            let door = SessionDoor {
-                plane,
-                app,
-                principal,
-                key,
-                open,
-                credential,
-            };
             return self.open_datagram(carried, door, arrival).await;
         }
+        let SessionDoor {
+            app,
+            principal,
+            key,
+            open,
+            credential,
+            ..
+        } = door;
         // A STREAM ANOTHER FRAMER FRAMES (ARCHITECT 4l): the claim's carrier is answered by a
         // framer whose claim rows state it rides a stream (an upgrade or a session, Q128 U7); that
         // framer frames this stream alone. A claim stating neither is the data listener's own.
@@ -3796,7 +3761,7 @@ impl DataRoutes {
                 }
             };
             let (arrival, inner, reply) = deframed_arrival(arrival, &messages);
-            let stream: serve_framed::Shared = Arc::new(Mutex::new(Some(stream)));
+            let stream = serve_framed::shared(stream);
             let (trailers, trailed) = oneshot::channel();
             let caller = serve_framed::FramedCaller::new(inner, Arc::clone(&stream), trailers);
             let unit = async move {

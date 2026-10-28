@@ -107,14 +107,14 @@ fn migrate_names_the_module_of_a_store_block_without_one_and_leaves_a_named_one(
 }
 
 /// THE KERNEL NAMES NO STORE INSTANCE (Q128 arch u29; BUSBAR-1.6.0.md l.4205-4211): the store a
-/// 1.5.x config with no `store:` block ran on is the root legacy table's `store_1_5_default` row,
+/// 1.5.x config with no `store:` block ran on is the root migration table's `store_1_5_default` row,
 /// and the refusals and the migration read it from there. RED before: the kernel held the literal
 /// as a constant. The kernel's test store double answers to that same row.
 #[test]
 fn the_store_double_answers_to_the_migrated_store_module() {
     assert_eq!(
         crate::config::migrated_store_module(),
-        crate::config::legacy::text("store_1_5_default")
+        crate::config::migration_table::text("store_1_5_default")
     );
     assert!(!crate::config::migrated_store_module().is_empty());
     assert_eq!(

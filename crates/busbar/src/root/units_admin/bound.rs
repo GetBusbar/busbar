@@ -495,7 +495,7 @@ pub(crate) fn trust_decide_effect(
 pub fn live_planes(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneLookup {
     Arc::new(move |key: &str| {
         let snapshot = app.load();
-        busbar_kernel::plane::registry::plane_decls()
+        busbar_kernel::plane_driver::registry::plane_decls()
             .iter()
             .map(|decl| decl.declaration)
             .find(|decl| decl.key == key && snapshot.plane_configured(decl))
@@ -517,26 +517,30 @@ pub fn live_admin_door(app: Arc<busbar_kernel::state::AppHandle>) -> super::Admi
     })
 }
 
-/// THE PRODUCTION RECORD SINK: the live configuration's governance store, narrowed to the
-/// plane-facing seam every plane persists through. A node with no store configured keeps nothing,
-/// and says so (`Err`), rather than acknowledging a write that went nowhere.
+/// THE PRODUCTION RECORD SINK: the live configuration's governance store, written through its v3
+/// `upsert_plane_record`. A node with no store configured keeps nothing, and says so (`Err`),
+/// rather than acknowledging a write that went nowhere. The sink is synchronous and the admin unit
+/// that calls it answers on the blocking pool, so the store call is awaited here, on that thread:
+/// the sink's one wait.
 #[must_use]
 pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSink {
     Arc::new(move |record: &PlaneRecord| {
         let snapshot = app.load();
-        let gov = snapshot
+        let calls = snapshot
             .governance
             .as_ref()
+            .and_then(|gov| gov.store_calls())
             .ok_or_else(|| "no record store is configured".to_string())?;
-        busbar_kernel::store::plane_view::PlaneStoreView::narrow(gov.store())
-            .upsert_plane_record(record.view())
-            .map_err(|e| e.0)
+        crate::root::durability::off_runtime(|| {
+            crate::root::durability::wait_for(calls.upsert_plane_record(record.view()))
+        })
+        .map_err(|e| e.to_string())
     })
 }
 
 /// THE REPLAY CACHE the two Q71(2) writes share (contract D-3): per `(actor, "<verb>:<key>")`, the
-/// SHA-256 of the body the first call carried and the packed answer it produced.
-pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], Vec<u8>)>;
+/// SHA-256 of the body the first call carried and the answer it produced.
+pub type ReplayCache = busbar_core_admin::idempotency::IdempotencyCache<([u8; 32], AdminAnswer)>;
 
 /// The request header carrying the client-chosen idempotency token (names arrive lowercased).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
@@ -556,7 +560,7 @@ pub(crate) fn replayable(
     unit: &super::AdminRequest,
     body: &[u8],
     effect: impl FnOnce() -> Result<AdminAnswer, GovernanceError>,
-) -> Result<Vec<u8>, GovernanceError> {
+) -> Result<AdminAnswer, GovernanceError> {
     use busbar_core_admin::idempotency::Probe;
 
     let Some(header) = unit
@@ -566,7 +570,7 @@ pub(crate) fn replayable(
         .map(|(_, value)| value.as_str())
         .filter(|value| !value.is_empty())
     else {
-        return effect().map(|a| a.pack());
+        return effect();
     };
     let name = busbar_core_admin::verb_name(verb).unwrap_or_default();
     let digest: [u8; 32] = busbar_kernel_ledger::digest::sha256(body);
@@ -578,24 +582,21 @@ pub(crate) fn replayable(
             409,
             "conflict",
             "this Idempotency-Key was already used with a different request body",
-        )
-        .pack()),
+        )),
         Probe::InFlight => Ok(refused(
             409,
             "conflict",
             "a request with this Idempotency-Key is already in flight",
-        )
-        .pack()),
-        Probe::NoKey => effect().map(|a| a.pack()),
+        )),
+        Probe::NoKey => effect(),
         Probe::Reserved(reservation) => match effect() {
             Ok(answer) if (200..300).contains(&answer.status) => {
-                let packed = answer.pack();
-                reservation.commit((digest, packed.clone()), unit.at);
-                Ok(packed)
+                reservation.commit((digest, answer.clone()), unit.at);
+                Ok(answer)
             }
             other => {
                 reservation.clear();
-                other.map(|a| a.pack())
+                other
             }
         },
     }
