@@ -145,6 +145,25 @@ pub fn settings_object(
     }
 }
 
+/// A settings blob's bytes as the JSON value they hold; empty is `{}`.
+///
+/// # Errors
+/// The bytes are not JSON: FAILED, `settings: <serde's words>`.
+pub fn settings_value(bytes: &[u8]) -> Result<serde_json::Value, Refusal> {
+    let bytes = if bytes.is_empty() { b"{}" } else { bytes };
+    serde_json::from_slice(bytes).map_err(|e| Refusal::failed(format!("settings: {e}")))
+}
+
+/// A settings blob's bytes as the plugin's settings type `T`, read from their JSON value (as the
+/// configuration grammar reads them, so serde's words name no line or column); empty is `{}`.
+///
+/// # Errors
+/// The bytes are not JSON, or not `T`: FAILED, `settings: <serde's words>`.
+pub fn settings_as<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Refusal> {
+    serde_json::from_value(settings_value(bytes)?)
+        .map_err(|e| Refusal::failed(format!("settings: {e}")))
+}
+
 // ── leases ─────────────────────────────────────────────────────────────────────────────────
 
 /// What one lease holds: bytes, zeroized on drop when secret.

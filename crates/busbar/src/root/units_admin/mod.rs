@@ -34,11 +34,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use busbar_contract::authz::Scope;
 use busbar_contract::caps::{Grant, Outcome, PrincipalId, ReasonCode};
 use busbar_contract::UnitKey;
 use busbar_core_admin::admin_codec::verbs::ResolvedVerb;
 use busbar_kernel_audit::{expose, AuditChain, AuditKeySet, AuditRecord};
-use busbar_kernel_scope::Scope;
 
 use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_core_admin::{
@@ -2177,7 +2177,7 @@ pub(crate) fn approve(walk: &AdminWalk) -> Result<(), ReasonCode> {
         return Err(ReasonCode::ScopeDenied);
     };
     let needed =
-        busbar_kernel_scope::admin_required_scope(&walk.request.method, &walk.request.path);
+        busbar_kernel::admin::scope::admin_required_scope(&walk.request.method, &walk.request.path);
     if !granted.allows(scope_as_verb_scope(needed)) {
         return Err(ReasonCode::ScopeDenied);
     }
