@@ -165,6 +165,7 @@ extern "C" {
 #define BB_SECRET_ERROR_KIND_DENIED UINT32_C(3) /* [`ResolveOut::error_kind`]: the caller is not entitled to it — OLD `SecretErrorKind::Denied`. */
 #define BB_SECRET_ERROR_KIND_INVALID UINT32_C(4) /* [`ResolveOut::error_kind`]: the settings blob itself is malformed — OLD */
 #define BB_SECRET_ERROR_KIND_INTERNAL UINT32_C(5) /* [`ResolveOut::error_kind`]: an internal fault in the plugin, not classified above — OLD */
+#define BB_SECRET_FIRST_SECRET_CAP ((size_t)4096) /* The host's first secret buffer, in bytes: an API key or a token fits; a larger value (a PEM */
 #define BB_SECRET_CANCEL_ABORTED UINT32_C(0) /* The pending `resolve` was aborted; no lease was granted. */
 
 /* auth */
@@ -1744,6 +1745,8 @@ struct bb_secret_Ops {
 struct bb_secret_ResolveIn {
     bb_mech_InHead head;
     bb_mech_Blob settings;
+    uint8_t *secret_buf;
+    size_t secret_cap;
 };
 
 /* `resolve`'s `out`. */
@@ -1752,6 +1755,7 @@ struct bb_secret_ResolveOut {
     bb_mech_Blob secret;
     uint32_t error_kind;
     uint32_t _reserved;
+    uint64_t needed;
 };
 
 /* `check`'s `in`: one reference's settings object and the host's reason buffer, as */
@@ -4376,16 +4380,19 @@ BB_ASSERT(BB_ALIGNOF(bb_secret_Ops) == 8, "bb_secret_Ops: alignment");
 BB_ASSERT(offsetof(bb_secret_Ops, head) == 0, "bb_secret_Ops.head: offset");
 BB_ASSERT(offsetof(bb_secret_Ops, resolve) == 80, "bb_secret_Ops.resolve: offset");
 BB_ASSERT(offsetof(bb_secret_Ops, check) == 88, "bb_secret_Ops.check: offset");
-BB_ASSERT(sizeof(bb_secret_ResolveIn) == 112, "bb_secret_ResolveIn: size");
+BB_ASSERT(sizeof(bb_secret_ResolveIn) == 128, "bb_secret_ResolveIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_secret_ResolveIn) == 8, "bb_secret_ResolveIn: alignment");
 BB_ASSERT(offsetof(bb_secret_ResolveIn, head) == 0, "bb_secret_ResolveIn.head: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveIn, settings) == 88, "bb_secret_ResolveIn.settings: offset");
-BB_ASSERT(sizeof(bb_secret_ResolveOut) == 128, "bb_secret_ResolveOut: size");
+BB_ASSERT(offsetof(bb_secret_ResolveIn, secret_buf) == 112, "bb_secret_ResolveIn.secret_buf: offset");
+BB_ASSERT(offsetof(bb_secret_ResolveIn, secret_cap) == 120, "bb_secret_ResolveIn.secret_cap: offset");
+BB_ASSERT(sizeof(bb_secret_ResolveOut) == 136, "bb_secret_ResolveOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_secret_ResolveOut) == 8, "bb_secret_ResolveOut: alignment");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, head) == 0, "bb_secret_ResolveOut.head: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, secret) == 96, "bb_secret_ResolveOut.secret: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, error_kind) == 120, "bb_secret_ResolveOut.error_kind: offset");
 BB_ASSERT(offsetof(bb_secret_ResolveOut, _reserved) == 124, "bb_secret_ResolveOut._reserved: offset");
+BB_ASSERT(offsetof(bb_secret_ResolveOut, needed) == 128, "bb_secret_ResolveOut.needed: offset");
 BB_ASSERT(sizeof(bb_secret_CheckIn) == 128, "bb_secret_CheckIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_secret_CheckIn) == 8, "bb_secret_CheckIn: alignment");
 BB_ASSERT(offsetof(bb_secret_CheckIn, head) == 0, "bb_secret_CheckIn.head: offset");

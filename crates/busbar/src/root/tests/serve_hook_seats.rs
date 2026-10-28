@@ -850,7 +850,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &[],
         Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
-        busbar_kernel::config::secret::resolve_linked_string_at_config,
+        busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .expect("the connector builds");
 

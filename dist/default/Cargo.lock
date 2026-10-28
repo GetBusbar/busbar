@@ -772,7 +772,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=02b5ff77c3beb377f63cf001ce4d00dc1f321887#02b5ff77c3beb377f63cf001ce4d00dc1f321887"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=af636cef65a5dc66d50e268367cf3608f429b1a9#af636cef65a5dc66d50e268367cf3608f429b1a9"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -781,7 +781,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=35477022c5c8a1669fe87a114f3b85a35268a718#35477022c5c8a1669fe87a114f3b85a35268a718"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=d0964c6ce5f6f6c322bbb34c07c1da7d4bf05338#d0964c6ce5f6f6c322bbb34c07c1da7d4bf05338"
 dependencies = [
  "busbar-contract",
  "libc",
