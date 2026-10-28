@@ -35,6 +35,8 @@ struct Echo {
     next: AtomicU32,
     /// The status it answers (`0`: `200`).
     status: AtomicU32,
+    /// The audit outcome it reports for the route's own row (`0`: none).
+    audit: AtomicU32,
 }
 
 const READY: Answered = Answered {
@@ -185,6 +187,7 @@ impl PlaneCalls for Echo {
         }
         o.arena_written = words.len() as u64;
         o.records_written = 1;
+        o.audit = self.audit.load(Ordering::SeqCst);
         o.status = match self.status.load(Ordering::SeqCst) {
             0 => 200,
             n => n,
@@ -311,6 +314,8 @@ async fn an_applied_answer_whose_head_cannot_render_is_still_audited() {
     crate::audit::auditlog::ensure_global_audit_stream_registered();
     let echo = std::sync::Arc::new(Echo::default());
     echo.status.store(1_000, Ordering::SeqCst);
+    // The plane applied the mutation: its answer asks for the route's audit row.
+    echo.audit.store(AUDIT_APPLIED, Ordering::SeqCst);
     publish(
         ServeTable {
             instance: "unrendered-red".to_string(),
