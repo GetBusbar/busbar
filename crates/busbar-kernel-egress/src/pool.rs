@@ -166,12 +166,4 @@ impl Pool {
                 .collect(),
         )
     }
-
-    /// Where a member sits in this pool's membership, by destination.
-    #[must_use]
-    pub fn position_of(&self, destination: DestinationId) -> Option<usize> {
-        self.members
-            .iter()
-            .position(|m| m.destination == destination)
-    }
 }

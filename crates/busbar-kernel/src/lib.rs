@@ -229,7 +229,6 @@ pub mod governance;
 pub mod handlers;
 pub mod hooks;
 pub mod host_chains;
-pub mod host_claims;
 pub mod host_disk;
 pub mod host_records;
 pub mod host_units;
