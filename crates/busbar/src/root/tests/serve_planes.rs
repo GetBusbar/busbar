@@ -590,6 +590,7 @@ fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
             crate::LINKED.auths,
             None,
             crate::root::loader::dispatch::ConnTable::NoNeeds,
+            busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         )),
         conns: Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
