@@ -67,6 +67,50 @@ pub trait PluginObserver: Send + Sync {
     /// `observations` back-channels were DROPPED at the intake, which was full: the host counts
     /// them (its drop-count metric), never waits for room.
     fn dropped(&self, observations: u64);
+
+    /// The host refused, or flagged, the instance `instance` of `kind` while it bound
+    /// ([`BindRefusal`]): the host audits it on the plugin's behalf. Called at once on the binding
+    /// thread, never through the intake: it is evidence, and the intake may drop.
+    fn refused(&self, kind: &str, instance: &str, refusal: BindRefusal<'_>);
+}
+
+/// A REFUSAL THE HOST MADE WHILE AN INSTANCE BOUND (owner rule: every refusal is audited and
+/// explained; nothing silent). Every word is the host's or one the plugin's Statement declared, so
+/// nothing the plugin says at run time becomes structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindRefusal<'a> {
+    /// The host's connection table refused the need at Statement index `need` when the instance
+    /// declared it at `open` or `refresh`, for `reason`: `target_unresolved`, `program_malformed`,
+    /// or the table's own word ([`conn_reason`]).
+    Need {
+        /// The need's Statement index.
+        need: u32,
+        /// Why, in one host word.
+        reason: &'static str,
+    },
+    /// The instance's `open` or `refresh` answered with the diagnostic its Statement declares as
+    /// `code`, at warn or error: it loaded, flagged.
+    Open {
+        /// The declared diagnostic id.
+        code: &'a str,
+    },
+}
+
+/// A refusal of the host's connection table as one host word.
+#[must_use]
+pub const fn conn_reason(e: busbar_contract::conn::ConnError) -> &'static str {
+    use busbar_contract::conn::ConnError;
+    match e {
+        ConnError::Pending => "pending",
+        ConnError::Timeout => "timeout",
+        ConnError::Closed => "closed",
+        ConnError::NotOwner => "not_owner",
+        ConnError::UndeclaredNeed => "undeclared",
+        ConnError::Refused => "refused",
+        ConnError::Fault => "fault",
+        ConnError::Unarmed => "unarmed",
+        ConnError::CredentialUnavailable => "credential_unavailable",
+    }
 }
 
 /// The most back-channels the intake holds for the observer thread; past it a back-channel is
@@ -155,6 +199,15 @@ impl Observing {
     /// The first install wins; a later one returns `false`.
     pub fn install_host_series(&self, is_host_series: fn(&str) -> bool) -> bool {
         self.host_series.set(is_host_series).is_ok()
+    }
+
+    /// Hand a refusal the host made while `instance` of `kind` bound to the installed observer, at
+    /// once ([`PluginObserver::refused`]). With none installed (a test binary, `--validate`) there is
+    /// no chain to write it to.
+    pub fn refused(&self, kind: &str, instance: &str, refusal: BindRefusal<'_>) {
+        if let Some(observer) = self.observer.get() {
+            observer.refused(kind, instance, refusal);
+        }
     }
 
     /// Whether the host itself emits the series `name`: `false` with no predicate installed.
@@ -410,6 +463,10 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
             .fold_entries(&self.plugin, self.kind, &[], &[entry]);
     }
 
+    fn refused(&self, instance: &str, refusal: BindRefusal<'_>) {
+        self.observing.refused(self.kind, instance, refusal);
+    }
+
     fn dropped(&self, why: crate::dispatch::Dropped) {
         match &self.then {
             Some(then) => then.dropped(why),
@@ -611,9 +668,34 @@ pub(crate) mod testing {
     pub(crate) static HOLD: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
 
+    /// Every refusal [`Recording`] was handed: `(kind, instance, refusal)`, owned.
+    pub(crate) type Refused = (String, String, String);
+
+    /// Every refusal the recorder was handed, in order; a test reads its own by its instance label.
+    static REFUSED: std::sync::Mutex<Vec<Refused>> = std::sync::Mutex::new(Vec::new());
+
+    /// The refusals handed for `instance`, the refusal rendered with `{:?}`.
+    pub(crate) fn refused(instance: &str) -> Vec<Refused> {
+        REFUSED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, i, _)| i == instance)
+            .cloned()
+            .collect()
+    }
+
     impl PluginObserver for Recording {
         fn dropped(&self, observations: u64) {
             DROPPED.fetch_add(observations, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn refused(&self, kind: &str, instance: &str, refusal: super::BindRefusal<'_>) {
+            REFUSED.lock().unwrap_or_else(|e| e.into_inner()).push((
+                kind.to_string(),
+                instance.to_string(),
+                format!("{refusal:?}"),
+            ));
         }
 
         fn observe(

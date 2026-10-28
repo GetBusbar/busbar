@@ -2743,3 +2743,130 @@ fn the_auth_request_signs_the_authority_the_socket_dials() {
         assert_eq!(asked.query.as_deref(), query, "{target}");
     }
 }
+
+// ── AUDITED ON THE PLUGIN'S BEHALF (BIND-AUDIT): every refusal the host makes while an instance
+// binds reaches the host's audit, once; nothing the plugin says at run time becomes its words. ──
+
+/// [`bind_as`] under the instance label `label`, over `table`: the label every refusal is
+/// recorded under ([`crate::observe::testing::refused`] reads a test's own by it).
+fn bound_labelled(needs: &'static [Need], table: &Arc<Recording>, label: &str) -> Plugin<TestKind> {
+    // SAFETY: the real door and its Statement are `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st: Statement = unsafe { *real.statement() };
+    let st: &'static Statement = Box::leak(Box::new(Statement {
+        needs: needs.as_ptr(),
+        needs_len: needs.len(),
+        ..st
+    }));
+    let door: &'static Door = Box::leak(Box::new(unsafe {
+        Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
+            statement: st,
+            ..real.parts()
+        })
+    }));
+    let v = validate_door::<TestKind>(door).expect("the door validates");
+    let conns: Arc<dyn DeclaredConns> = table.clone();
+    Plugin::bind(
+        v,
+        None,
+        Bind {
+            instance: Arc::from(label),
+            max_inflight_cap: 8,
+            sink: Arc::new(NoSink),
+            dispatcher: Adopter::unwatched(),
+            conns: crate::dispatch::ConnTable::Host(conns),
+        },
+    )
+    .expect("the instance binds")
+}
+
+/// The refusals the host's audit was handed for `label`, rendered.
+fn refused_for(label: &str) -> Vec<String> {
+    crate::observe::testing::refused(label)
+        .into_iter()
+        .map(|(_, _, refusal)| refusal)
+        .collect()
+}
+
+/// RED: a need the table refuses at `open` or `refresh` is handed to the host's audit once per
+/// refusal, under the instance's label: its Statement index and why in a host word. An admitted
+/// declaration is not.
+#[test]
+fn a_need_refused_at_open_is_audited_once() {
+    let label = "bind-audit-need-refused";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(NEEDS)), &table, label);
+    assert_eq!(
+        open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#),
+        Outcome::Ready
+    );
+    assert!(
+        refused_for(label).is_empty(),
+        "an admitted need is not a refusal"
+    );
+
+    // Its target path resolves to nothing: the table refuses it.
+    assert_eq!(
+        refresh_with(&p, br#"{"other":"127.0.0.3:9"}"#),
+        Outcome::Ready
+    );
+    let refused = refused_for(label);
+    assert_eq!(
+        refused,
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "target_unresolved"
+            }
+        )],
+        "one record for the one refusal"
+    );
+}
+
+/// RED: a need refused for anything else is recorded in the table's own word.
+#[test]
+fn a_need_refused_by_the_table_is_audited_in_its_word() {
+    let label = "bind-audit-trust-refused";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(TRUSTING)), &table, label);
+    assert_eq!(open_with(&p, br#"{"other":"PEM-C"}"#), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "refused"
+            }
+        )]
+    );
+}
+
+/// RED: an `open` that answers with a diagnostic its Statement declares, at warn, is handed to the
+/// host's audit once, by that declared id. A log line at warn, a declared id at info and an id the
+/// Statement does not declare are not.
+#[test]
+fn a_declared_open_warning_is_audited_once() {
+    let label = "bind-audit-open-flagged";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, plug::FLAG_OPEN), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Open { code: "m1.note" }
+        )]
+    );
+}
+
+/// An `open` with nothing to flag hands the host's audit nothing.
+#[test]
+fn a_quiet_open_is_not_audited() {
+    let label = "bind-audit-open-quiet";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(&[], &table, label);
+    assert_eq!(open_with(&p, br"{}"), Outcome::Ready);
+    assert!(refused_for(label).is_empty());
+}
