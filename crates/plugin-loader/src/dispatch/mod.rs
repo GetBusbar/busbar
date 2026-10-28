@@ -52,6 +52,7 @@ pub(crate) mod held;
 pub mod inline;
 pub mod io_slots;
 pub mod kinds;
+pub(crate) mod lifecycle;
 pub mod load;
 pub mod log_file;
 pub mod migrate;

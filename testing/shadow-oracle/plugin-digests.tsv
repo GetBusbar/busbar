@@ -57,10 +57,16 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # auth-ldap is 52ff062 (#8/#10/#11, 2026-10-09: the sans-IO LDAP codec over the host's connector, pinned to
 # busbar predev 39374ec00e). The rest
 # are each repo's dev head on 2026-10-05.
-store-sqlite	src:510ee41265ca48a63e8a7e5507d92a88b08d51a2	build:busbar-store-sqlite	-	1.6
-store-postgres	src:2bfa17522f77c80c37c9b6de9019ded9d72ca1a8	build:busbar-store-postgres	-	1.6
-store-valkey	src:f37a6d9ee73b3f54669855885e6af1436f80b477	build:busbar-store-valkey	-	1.6
-store-mysql	src:cd609b8f3bcf3e8c13906ecef9471bd4556e3aa5	build:busbar-store-mysql	-	1.6
+# 2026-10-26 (busbar #1667, the store table at 31 slots): the four store rows are each plugin's dev head,
+# the first commits holding both its version-1.6.0 merge and its money-slots-out PR (sqlite #38,
+# postgres #47, valkey #46, mysql #45) that speaks the 31-slot store table; a 47-slot build is refused at load.
+# store-sqlite is a4b1316 (pin-1667-refs-2): that row's 31-slot table (71ba326) on 5d345fd, which
+# declares `secret_refs: *` because busbar #1699 resolves a store setting's reference only where the
+# Statement declares one, and 1.5.5 resolved every top-level setting (BOOT-170).
+store-sqlite	src:a4b1316ffafd99742eac3f053af145a1f0899c9c	build:busbar-store-sqlite	-	1.6
+store-postgres	src:87fb8172f1d07dda5cfa622a87990bdfacbddb6b	build:busbar-store-postgres	-	1.6
+store-valkey	src:b4f09028d7937ee9c0a8daeabcd29b8400408c2d	build:busbar-store-valkey	-	1.6
+store-mysql	src:412a49c08f5891aa4498c3076c7dac31edb45f54	build:busbar-store-mysql	-	1.6
 hashicorp-vault	src:3c6baa9b5cd9d6758880ee837b0b66bb22fd0920	build:busbar-secret-vault	-	1.6
 auth-oidc	src:82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab	build:busbar-auth-oidc	-	1.6
 auth-github	src:077388b9e3553d731e3bc7f4f0252e1abf8f2ef6	build:busbar-auth-github	-	1.6
