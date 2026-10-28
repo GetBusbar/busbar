@@ -3,12 +3,13 @@
 
 //! ONE CALL ON A TICKET OF ITS OWN, the submit-and-await every door shares: the ticket is minted
 //! for the call and recycled when the call is dropped, however it ended; awaiting it answers the
-//! op's [`Done`].
+//! op's [`Done`]. A door whose call is a boxed future the caller may also read synchronously
+//! answers it as a [`Pending`] over its own [`Answering`].
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
@@ -98,5 +99,68 @@ impl<I, O> Drop for Ticketed<I, O> {
     fn drop(&mut self) {
         drop(self.reply.take());
         self.dispatcher.recycle(self.ticket);
+    }
+}
+
+/// What a door makes of its op's answer: the call's answer, or `None` once it re-submitted the op
+/// on `call` (a SHORT answer's one re-call).
+pub(crate) trait Answering<I, O> {
+    type Out: Clone;
+    fn answer(&mut self, done: Done<I, O>, call: &mut Ticketed<I, O>) -> Option<Self::Out>;
+}
+
+/// ONE FUTURE PER PLUGIN CALL: the op on its own ticket, then the door's answer, kept so a later
+/// poll (or [`Pending::now`]) reads it again.
+pub(crate) struct Pending<I, O, A: Answering<I, O>> {
+    call: Ticketed<I, O>,
+    door: A,
+    answer: Option<A::Out>,
+    faulted: bool,
+}
+
+// Nothing in it is structurally pinned: the call's reply is `Unpin`, the rest is never polled.
+impl<I, O, A: Answering<I, O>> Unpin for Pending<I, O, A> {}
+
+impl<I: InFrame, O: OutFrame, A: Answering<I, O>> Pending<I, O, A> {
+    /// `call`, its op submitted, answered by `door`.
+    pub(crate) fn new(call: Ticketed<I, O>, door: A) -> Self {
+        Self {
+            call,
+            door,
+            answer: None,
+            faulted: false,
+        }
+    }
+
+    /// The answer, if it has arrived; never waits.
+    pub(crate) fn now(&mut self) -> Option<A::Out> {
+        match self.step(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(a) => Some(a),
+            Poll::Pending => None,
+        }
+    }
+
+    /// Whether an op of the call (its answer or its re-call) answered FAULT.
+    pub(crate) fn any_fault(&self) -> bool {
+        self.faulted
+    }
+
+    fn step(&mut self, cx: &mut Context<'_>) -> Poll<A::Out> {
+        loop {
+            if let Some(a) = &self.answer {
+                return Poll::Ready(a.clone());
+            }
+            let done = std::task::ready!(Pin::new(&mut self.call).poll(cx));
+            self.faulted |= done.outcome == Outcome::Fault;
+            self.answer = self.door.answer(done, &mut self.call);
+        }
+    }
+}
+
+impl<I: InFrame, O: OutFrame, A: Answering<I, O>> Future for Pending<I, O, A> {
+    type Output = A::Out;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<A::Out> {
+        self.get_mut().step(cx)
     }
 }
