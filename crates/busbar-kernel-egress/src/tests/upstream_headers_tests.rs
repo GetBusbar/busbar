@@ -3,6 +3,8 @@
 
 //! The client headers that go upstream: `accept-encoding` is not one of them.
 
+use busbar_contract::http;
+
 use crate::upstream::{collect_client_headers, re_derived, strip_re_derived};
 
 /// 1.5.5 built every upstream request's headers itself and sent no `accept-encoding` (its HTTP
