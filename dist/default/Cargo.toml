@@ -846,10 +846,10 @@ busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", 
 # same rev, one resolved copy in Cargo.lock.
 busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "b5240b33d1da15007fac3f74a1ead87f06289fe4" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "12b078389496d4c1fd81b730f5d9d0887537c3b0" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "51b25ea1eaff4ed0275ca856caf97b07ca07b170" }
 # Its dropped-in cdylib crate, at the SAME rev: the accepted data door's both-ways proof
 # (`root::accepted`) serves one corpus through the linked framer and through this cdylib dlopened.
-busbar-transport-http-plugin = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "12b078389496d4c1fd81b730f5d9d0887537c3b0" }
+busbar-transport-http-plugin = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "51b25ea1eaff4ed0275ca856caf97b07ca07b170" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
 busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "2531ef131e492385788b6714687346e48d864d44" }

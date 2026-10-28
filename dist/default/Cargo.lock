@@ -840,21 +840,24 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=12b078389496d4c1fd81b730f5d9d0887537c3b0#12b078389496d4c1fd81b730f5d9d0887537c3b0"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=51b25ea1eaff4ed0275ca856caf97b07ca07b170#51b25ea1eaff4ed0275ca856caf97b07ca07b170"
 dependencies = [
  "busbar-contract",
  "bytes",
+ "futures-channel",
  "http",
  "http-body-util",
  "hyper",
+ "hyper-util",
  "memchr",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]
 name = "busbar-transport-http-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=12b078389496d4c1fd81b730f5d9d0887537c3b0#12b078389496d4c1fd81b730f5d9d0887537c3b0"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=51b25ea1eaff4ed0275ca856caf97b07ca07b170#51b25ea1eaff4ed0275ca856caf97b07ca07b170"
 dependencies = [
  "busbar-contract",
  "busbar-transport-http",
