@@ -653,6 +653,7 @@ impl Writer {
     /// it never reaches the plugin.
     fn line(&mut self, tag: &Tag, at: u64, level: LogLevel, text: &[u8]) {
         self.follow();
+        mirror(tag, level, text);
         let line = render(tag, at, level, text);
         let slot = match self.slot.clone() {
             Some(slot) => slot,
@@ -696,7 +697,6 @@ impl Writer {
 /// every control character in it escaped so a record is one line and writes nothing raw to a
 /// terminal: a line break is `\n`, a carriage return `\r`, any other `\u{..}` (ESC is `\u{1b}`).
 fn render(tag: &Tag, at: u64, level: LogLevel, text: &[u8]) -> String {
-    use std::fmt::Write as _;
     let mut line = format!(
         "{} {} {} {} ",
         busbar_contract::civil::rfc3339_from_secs(at),
@@ -704,6 +704,14 @@ fn render(tag: &Tag, at: u64, level: LogLevel, text: &[u8]) -> String {
         tag.instance,
         tag.kind
     );
+    escape_into(&mut line, text);
+    line.push('\n');
+    line
+}
+
+/// `text` appended to `line` with every control character escaped (see [`render`]).
+fn escape_into(line: &mut String, text: &[u8]) {
+    use std::fmt::Write as _;
     for c in String::from_utf8_lossy(text).chars() {
         match c {
             '\n' => line.push_str("\\n"),
@@ -714,9 +722,36 @@ fn render(tag: &Tag, at: u64, level: LogLevel, text: &[u8]) -> String {
             c => line.push(c),
         }
     }
-    line.push('\n');
-    line
 }
+
+/// THE HOST LOG'S COPY of a plugin's WARN or ERROR line (1.5.5 printed its plugins' and planes'
+/// warnings in busbar's own log, and a log pipeline that watches only that log must still see
+/// them): one host line at the same level, tagged with the plugin instance and its kind, the text
+/// escaped as the plugin's file holds it. Lines below WARN stay in the plugin's file alone.
+fn mirror(tag: &Tag, level: LogLevel, text: &[u8]) {
+    if !matches!(level, LogLevel::Error | LogLevel::Warn) {
+        return;
+    }
+    let mut said = String::new();
+    escape_into(&mut said, text);
+    match level {
+        LogLevel::Error => tracing::error!(
+            target: MIRROR_TARGET,
+            plugin = %tag.instance,
+            kind = %tag.kind,
+            "{said}"
+        ),
+        _ => tracing::warn!(
+            target: MIRROR_TARGET,
+            plugin = %tag.instance,
+            kind = %tag.kind,
+            "{said}"
+        ),
+    }
+}
+
+/// The target a mirrored plugin line carries in busbar's own log ([`mirror`]).
+pub const MIRROR_TARGET: &str = "busbar::plugin";
 
 /// Every log file in the process, by its path with the directory resolved: ONE state per file,
 /// whichever writers, of whichever configuration, write it.

@@ -710,6 +710,9 @@ pub enum RejectKind {
     /// Admitted on trust, but NOT first-party, and its Statement declares a connection need in an
     /// egress class the host grants to a first-party plugin only ([`egress_grant`]).
     EgressGrant,
+    /// An older build of a plugin whose newer build is in the same directory (the registry's
+    /// supersede pass): not loaded, the newer build is.
+    Superseded,
 }
 
 /// The egress classes (`BUSBAR-1.6.0.md` §5) the host grants to a FIRST-PARTY plugin only: a

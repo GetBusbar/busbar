@@ -1029,7 +1029,18 @@ fn read_file_capped(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
 enum FileOutcome {
     Loadable(LoadablePlugin),
     Skipped(SkippedPlugin),
-    Invalid { file: String, reason: String },
+    Invalid {
+        file: String,
+        reason: String,
+    },
+    /// A tarball built for an earlier contract of its kind (its manifest states an ABI version this
+    /// host does not speak): invalid, unless a newer build of the same plugin is beside it
+    /// ([`supersede`]), which makes it a skip.
+    Outdated {
+        file: String,
+        reason: String,
+        manifest: Manifest,
+    },
 }
 
 /// Run phases 1 (structural) + 2 (trust) over one tarball.
@@ -1084,6 +1095,14 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
         &supported_abi,
         HOST_IDENTITY,
     ) {
+        let speaks = supported_abi(&unpacked.manifest.kind);
+        if !speaks.is_empty() && !speaks.contains(&unpacked.manifest.abi_version) {
+            return FileOutcome::Outdated {
+                file,
+                reason,
+                manifest: unpacked.manifest,
+            };
+        }
         return FileOutcome::Invalid { file, reason };
     }
     // Phase 2: trust. A rejection here is a SKIP (logged, never dlopen'ed) - unless the plugin is
@@ -1213,6 +1232,79 @@ fn conflicts(loadable: &[LoadablePlugin]) -> Vec<Conflict> {
     errors
 }
 
+/// The newer build that supersedes `old` (the tarball `file`): another loadable tarball of the same
+/// kind (so one whose contract this host speaks) that names `old`'s manifest name as its own or as a
+/// former name, is at least `old`'s version, and states its door's Statement when `stated` asks it
+/// to. Read off the manifests alone; no plugin name is written here.
+fn superseder<'a>(
+    old: &Manifest,
+    file: &str,
+    stated: bool,
+    outcomes: &'a [FileOutcome],
+) -> Option<&'a LoadablePlugin> {
+    outcomes.iter().find_map(|o| match o {
+        FileOutcome::Loadable(q)
+            if q.file != file
+                && q.manifest.kind == old.kind
+                && (!stated || q.manifest.statement.is_some())
+                && (q.manifest.name == old.name || q.manifest.former_names.contains(&old.name))
+                && crate::sign::version_at_least(&q.manifest.version, &old.version) =>
+        {
+            Some(q)
+        }
+        _ => None,
+    })
+}
+
+/// AN OLDER BUILD BESIDE ITS SUCCESSOR IS SKIPPED, NOT FATAL (owner ruling 2026-10-27, the 1.5.5
+/// upgrade). A tarball built for an earlier contract of its kind ([`FileOutcome::Outdated`]), or a
+/// loadable one that states no Statement (a pre-1.6.0 artifact), whose newer build of the same plugin
+/// sits in the same directory ([`superseder`]), is skipped with one warning naming the build that
+/// replaces it; the boot loads the newer build. Without a successor nothing changes: an outdated
+/// tarball is invalid and fails the scan, naming the rebuild, as before.
+fn supersede(outcomes: Vec<FileOutcome>) -> Vec<FileOutcome> {
+    let reasons: Vec<Option<String>> = outcomes
+        .iter()
+        .map(|o| {
+            let (file, old, stated) = match o {
+                FileOutcome::Outdated { file, manifest, .. } => (file, manifest, false),
+                FileOutcome::Loadable(p) if p.manifest.statement.is_none() => {
+                    (&p.file, &p.manifest, true)
+                }
+                _ => return None,
+            };
+            superseder(old, file, stated, &outcomes).map(|q| {
+                format!(
+                    "superseded by {} {} ({}): this is an older build of the same plugin, made for \
+                     an earlier busbar, so it is not loaded; remove it from the plugins directory",
+                    q.manifest.name, q.manifest.version, q.file
+                )
+            })
+        })
+        .collect();
+    outcomes
+        .into_iter()
+        .zip(reasons)
+        .map(|(o, why)| match (o, why) {
+            (FileOutcome::Outdated { file, manifest, .. }, Some(reason)) => {
+                FileOutcome::Skipped(SkippedPlugin {
+                    file,
+                    manifest,
+                    reason,
+                    kind: crate::sign::RejectKind::Superseded,
+                })
+            }
+            (FileOutcome::Loadable(p), Some(reason)) => FileOutcome::Skipped(SkippedPlugin {
+                file: p.file,
+                manifest: p.manifest,
+                reason,
+                kind: crate::sign::RejectKind::Superseded,
+            }),
+            (o, _) => o,
+        })
+        .collect()
+}
+
 /// The full boot/validate pipeline: discover -> phase 1 -> phase 2 -> phase 3 -> registry.
 /// FAIL-CLOSED: any unreadable/invalid tarball (phase 1) or any conflict (phase 3) returns
 /// `Err(errors)` with every problem named - the caller (boot / `--validate`) aborts; there is no
@@ -1223,14 +1315,17 @@ pub fn scan_and_validate(dir: &Path, policy: &TrustPolicy) -> Result<PluginRegis
     let mut errors = Vec::new();
     let mut loadable = Vec::new();
     let mut skipped = Vec::new();
-    for path in &files {
-        match examine(path, policy) {
+    let examined: Vec<FileOutcome> = files.iter().map(|path| examine(path, policy)).collect();
+    for outcome in supersede(examined) {
+        match outcome {
             FileOutcome::Loadable(p) => loadable.push(p),
             FileOutcome::Skipped(s) => skipped.push(s),
-            FileOutcome::Invalid { file, reason } => errors.push(format!(
-                "invalid plugin '{}': {reason}",
-                dir.join(file).display()
-            )),
+            FileOutcome::Invalid { file, reason } | FileOutcome::Outdated { file, reason, .. } => {
+                errors.push(format!(
+                    "invalid plugin '{}': {reason}",
+                    dir.join(file).display()
+                ));
+            }
         }
     }
     errors.extend(conflicts(&loadable).into_iter().map(|c| c.message));
@@ -1271,8 +1366,9 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
     };
     let mut loadable = Vec::new();
     let mut rows = Vec::new();
-    for path in &files {
-        match examine(path, policy) {
+    let examined: Vec<FileOutcome> = files.iter().map(|path| examine(path, policy)).collect();
+    for outcome in supersede(examined) {
+        match outcome {
             FileOutcome::Loadable(p) => {
                 let signature = match &p.verdict {
                     Verdict::Trusted {
@@ -1308,6 +1404,7 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     RejectKind::Tampered => "tampered",
                     RejectKind::Unsigned => "unsigned",
                     RejectKind::EgressGrant => "third-party (egress grant)",
+                    RejectKind::Superseded => "superseded",
                 }
                 .to_string();
                 let status = match s.kind {
@@ -1325,12 +1422,14 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
                     status,
                 });
             }
-            FileOutcome::Invalid { file, reason } => rows.push(InventoryEntry {
-                file,
-                manifest: None,
-                signature: "INVALID".to_string(),
-                status: format!("INVALID: {reason}"),
-            }),
+            FileOutcome::Invalid { file, reason } | FileOutcome::Outdated { file, reason, .. } => {
+                rows.push(InventoryEntry {
+                    file,
+                    manifest: None,
+                    signature: "INVALID".to_string(),
+                    status: format!("INVALID: {reason}"),
+                })
+            }
         }
     }
     // Surface phase-3 conflicts on the affected loadable rows. The join is on the tarball the
