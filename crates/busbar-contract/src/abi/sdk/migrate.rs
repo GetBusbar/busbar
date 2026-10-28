@@ -55,6 +55,8 @@ pub enum MigrateNeed {
 #[serde(deny_unknown_fields)]
 pub struct Migrated {
     /// The settings section as it reads now. Core writes it in place of the old one.
+    // settings-leak-lint: allow — the migrated configuration itself, written back into the
+    // operator's own file by `--migrate-config`; no admin read serves it.
     pub settings: serde_json::Value,
     /// One line per change, each saying what changed and why. Core prints each under the plugin's
     /// name.

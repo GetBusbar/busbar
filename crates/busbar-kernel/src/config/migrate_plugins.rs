@@ -114,6 +114,8 @@ struct Site {
     at: Vec<String>,
     kind: String,
     module: String,
+    // settings-leak-lint: allow — the operator's own section as written, handed to its plugin's
+    // migrate and written back into the operator's file; no admin read serves it.
     settings: serde_json::Value,
 }
 
