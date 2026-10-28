@@ -52,7 +52,7 @@ pub use out::{Out, Scalar};
 // A PLUGIN'S CONNECTIONS: the host connector for one op on one ticket, Ready|Pending, and exchange().
 pub mod conn;
 pub mod io;
-// ONE REQUEST, ONE REPLY over the connector: exchange() (framed) and send_and_ack() (any transport).
+// ONE REQUEST, ONE REPLY over the connector: exchange().
 /// A plane's reads of a body by declared pointer, one copy for every plane.
 pub mod body;
 pub mod exchange;
@@ -77,8 +77,7 @@ pub mod auth_door;
 // THE AUTH KIND'S OUTBOUND DOOR over the safe layer (`auth_outbound_door!`, and
 // `auth_door!(verify_and_outbound: ..)` for a plugin that does both).
 pub mod auth_outbound;
-// THE AUTH LOGIN KIT's shared checks: the id-token nonce binding v1.5.5's core ran for every login.
-pub mod login;
+
 // THE STORE KIND'S TYPED SDK: the trait a store implements to be served through the store v3 table.
 pub mod store;
 // THE SECRET KIND'S SHARED SOURCE PIECES: the error-kind code, a reference's settings, the

@@ -26,8 +26,6 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
 zeroize = { workspace = true }
-num-bigint = { workspace = true }
-getrandom = { workspace = true }
 ring = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }

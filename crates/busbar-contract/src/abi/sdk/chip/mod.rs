@@ -8,10 +8,8 @@
 //! Until row 4 the recipes run in the plugin's own image; from row 4 the same calls cross the ABI
 //! to the secret plugin and nothing a plugin wrote against this module changes.
 
-pub mod aws4;
 pub(crate) mod digests;
 mod jws;
-pub(crate) mod rsa;
 mod scheme;
 
 use base64::Engine as _;
@@ -504,35 +502,6 @@ impl Cred {
         let mut p = Zeroizing::new(self.wire().to_vec());
         p.push(0);
         mysql_packet(seq, &p).map(|b| self.seal(b))
-    }
-}
-
-impl Cred {
-    /// A MySQL packet for `caching_sha2_password` full authentication on a link with no TLS: the
-    /// password (NUL-terminated) XORed with the `nonce`, RSA-OAEP-encrypted to the server's PEM
-    /// public key, whole.
-    ///
-    /// # Errors
-    /// An empty nonce, a key that does not parse, a password too long for the key, or no
-    /// randomness for the OAEP seed.
-    pub fn mysql_rsa_packet(
-        &self,
-        seq: u8,
-        nonce: &[u8],
-        server_key_pem: &[u8],
-    ) -> Result<Seal, Refused> {
-        if nonce.is_empty() {
-            return Err(Refused("the server sent no nonce"));
-        }
-        let mut seed = Zeroizing::new([0_u8; 20]);
-        getrandom::fill(&mut seed[..]).map_err(|_| Refused("no randomness for the OAEP seed"))?;
-        let mut plain = Zeroizing::new(self.wire().to_vec());
-        plain.push(0);
-        for (i, b) in plain.iter_mut().enumerate() {
-            *b ^= nonce[i % nonce.len()];
-        }
-        let ct = rsa::oaep_sha1(&plain, server_key_pem, &seed)?;
-        mysql_packet(seq, &ct).map(|b| self.seal(b))
     }
 }
 

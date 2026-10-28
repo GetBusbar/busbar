@@ -245,7 +245,7 @@ impl Interner {
 }
 
 /// Whether `path` matches a route's path in `form`, the one spelling of every form. A pattern that
-/// breaks the syntax matches nothing ([`crate::abi::transport::check::check_route`] refuses it).
+/// breaks the syntax matches nothing.
 #[must_use]
 pub fn path_matches(form: u32, route_path: &str, path: &str) -> bool {
     match form {

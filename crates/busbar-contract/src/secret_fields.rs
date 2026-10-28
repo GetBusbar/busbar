@@ -194,11 +194,6 @@ pub fn declared_references(v: &Value, path: &str) -> Vec<Vec<String>> {
     found
 }
 
-/// The value at the position `at` of `v`, to change it.
-pub fn value_at_mut<'v>(v: &'v mut Value, at: &[String]) -> Option<&'v mut Value> {
-    at_mut(v, at)
-}
-
 fn at_mut_ref<'v>(v: &'v Value, at: &[String]) -> Option<&'v Value> {
     at.iter().try_fold(v, |v, k| match v {
         Value::Object(m) => m.get(k),
