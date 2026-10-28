@@ -452,45 +452,6 @@
       }
     },
     {
-      "id": "S-1-SYNTH a stream:true request is answered as a stream even when the far end answered one whole body",
-      "kind": "improvement",
-      "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
-      "by": "owner (Matthew Jackson), 2026-10-27 \"Yes, adopt the rule\"",
-      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer)$",
-      "expected_cells": 25,
-      "classes": [
-        "headers",
-        "body",
-        "effects.audit"
-      ],
-      "premise": {
-        "all": [
-          {
-            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
-            "status": 200
-          },
-          {
-            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
-            "body_contains": "event: message_start"
-          },
-          {
-            "cell": "llm|openai|anthropic|request|ok_stream_whole_answer",
-            "body_contains": "data: [DONE]"
-          }
-        ]
-      },
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-10-27",
-        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md): \"Yes, adopt the rule\": busbar answers in the caller's dialect AND mode, converting when it can and refusing with an explanation when it can't; synthesized streams are audited and billed from the real upstream body; own entry and CHANGELOG line."
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape."
-    },
-    {
       "id": "S-2 responses stream lifecycle frames",
       "kind": "improvement",
       "changelog": "Responses API streams carry the lifecycle frames the spec declares:",
@@ -4707,6 +4668,105 @@
         ]
       },
       "rationale": "New store-ABI surface: the same op_id with a different body is refused with STORE_OPID_CONFLICT and nothing is applied (1.5.5 had no op_id). No oracle cell replays a store op_id today."
+    },
+    {
+      "id": "G13 an AWS-credential mint with no at-rest key is refused (409)",
+      "kind": "breaking",
+      "changelog": "1.6.0 Breaking: minting a key with `issue_aws_credential: true` needs an at-rest key (`credentials.at_rest.key`); without one, `POST /api/v1/admin/keys` answers `409 conflict` and writes nothing.",
+      "by": "owner (Matthew Jackson), owner G13, 2026-10-25 (ORACLE-SIGNOFF G13 option (a); option (b), an oracle upgrade-config step, rejected)",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-25",
+        "ruling": "owner G13, 2026-10-25: ORACLE-SIGNOFF G13 option (a), the 201 -> 409 of auth.lifecycle|aws-credential-chain-without-keys accepted; option (b) rejected (relayed by the coordinator)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^auth\\.lifecycle\\|aws\\-credential\\-chain\\-without\\-keys$",
+      "expected_cells": 1,
+      "classes": [
+        "body",
+        "effects.script"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "status": 0
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/aws_mint_status",
+            "equals": 409
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/aws_mint/access_key_id_shape_ok",
+            "equals": false
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/aws_mint/secret_access_key_shape_ok",
+            "equals": false
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/aws_mint/token_is_signed",
+            "equals": false
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/plain_mint_status",
+            "equals": 201
+          },
+          {
+            "cell": "auth.lifecycle|aws-credential-chain-without-keys",
+            "pointer": "/plain_mint_carries_aws",
+            "equals": false
+          }
+        ]
+      },
+      "rationale": "OWNER G13, 2026-10-25 (ORACLE-SIGNOFF G13 option (a)): a recoverable credential is sealed under a dedicated at-rest key (#1690, owner ruling), so a node with no credentials.at_rest.key refuses the mint, saying what to configure. The cell's own config has no credentials block, so its AWS mint now answers 409 where the 1.5.5 golden recorded 201. SCOPE: exactly this one cell, and in it only `aws_mint_status` (201 -> 409) and the `aws_mint` facts (the token, AccessKeyId and secret-access-key shapes, state and group_provisioned are absent from a refusal). The PREMISE holds the rest: the cell ran (status 0), the AWS mint answered 409 and carried no AccessKeyId, secret or signed token, and the plain mint on the same node still answers 201 and carries neither AWS field, exactly as the golden records. The golden is not edited."
+    },
+    {
+      "id": "S-1-SYNTH a stream:true request is answered as a stream even when the far end answered one whole body",
+      "kind": "improvement",
+      "changelog": "1.6.0 Changed: a request that asks for a stream is answered as a stream in the caller's own dialect even when the upstream answers with one whole body; the conversion is audited (`egress.stream_synthesized`) and billed from the upstream's body.",
+      "by": "owner (Matthew Jackson), 2026-10-27 \"Yes, adopt the rule\"",
+      "cells": "^(llm\\|anthropic\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|openai\\|request\\|ok_stream_whole_answer|llm\\|anthropic\\|responses\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|openai\\|request\\|ok_stream_whole_answer|llm\\|cohere\\|responses\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|openai\\|request\\|ok_stream_whole_answer|llm\\|gemini\\|responses\\|request\\|ok_stream_whole_answer|llm\\|openai\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|openai\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|openai\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|openai\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|openai\\|responses\\|request\\|ok_stream_whole_answer|llm\\|responses\\|anthropic\\|request\\|ok_stream_whole_answer|llm\\|responses\\|bedrock\\|request\\|ok_stream_whole_answer|llm\\|responses\\|cohere\\|request\\|ok_stream_whole_answer|llm\\|responses\\|gemini\\|request\\|ok_stream_whole_answer|llm\\|responses\\|openai\\|request\\|ok_stream_whole_answer)$",
+      "expected_cells": 25,
+      "classes": [
+        "headers",
+        "body",
+        "effects.audit"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
+            "status": 200
+          },
+          {
+            "cell": "llm|anthropic|openai|request|ok_stream_whole_answer",
+            "body_contains": "event: message_start"
+          },
+          {
+            "cell": "llm|openai|anthropic|request|ok_stream_whole_answer",
+            "body_contains": "data: [DONE]"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-27",
+        "ruling": "OWNER SIGNED 2026-10-27 (relayed by the coordinator; recorded ~/Developer/tmp/cleanup/NEXT.md): \"Yes, adopt the rule\": busbar answers in the caller's dialect AND mode, converting when it can and refusing with an explanation when it can't; synthesized streams are audited and billed from the real upstream body; own entry and CHANGELOG line."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "rationale": "SPLIT 2026-10-27 out of S-1 (ORACLE-116 review): on these 25 cells a stream:true request reaches a far end of another dialect that answers one whole JSON body. 1.5.5 relayed that body as application/json; 1.6.0 answers the caller in its own dialect AND mode, a stream synthesised from the whole body (owner rule of 2026-10-27). headers: content-type application/json -> the caller's stream type. body: the JSON document -> the caller's event stream carrying the same answer. effects.audit: the conversion writes one applied `egress.stream_synthesized` row naming the far dialect (busbar-plane-llm #53). Money is unchanged: the stream is billed from the far end's whole body (no usage class is forgiven). PREMISE (evaluated): the anthropic door's synthesised stream opens with `message_start` and the openai door's ends with `[DONE]`, i.e. each is the caller's own stream shape."
     },
     {
       "id": "STREAMERR-ANTHROPIC a cut Anthropic stream's error event names a published error type (api_error), the text in message",

@@ -2218,6 +2218,9 @@ pub mod durable_store;
 /// re-exported at the `test_support` root below, so `busbar_kernel::test_support::TestAppSeam`
 /// resolves exactly where the fixture it is a view onto does.
 pub mod seam;
+
+/// A test binary's plane registrations, published as the process plane list.
+pub mod planes;
 pub use seam::{
     build_router, engine_host, engine_host_value, BuiltAppSeam, TestAppSeam, TestAppSeamExt,
 };
@@ -2384,6 +2387,9 @@ pub fn fetch_stand_in(
 /// THE PLUGIN-ROWS DOUBLE a test build reads its registry through, and its registry build
 /// ([`rows::registry_stand_in`], `preflight::RootInstall`'s `registry_build` in a test build).
 pub mod rows;
+
+/// A test binary's protocol registrations, published as the process protocol registry.
+pub mod protocols;
 pub use rows::registry_stand_in;
 
 /// THE STAND-IN STORE AXIS: the store double's door opened in process.
