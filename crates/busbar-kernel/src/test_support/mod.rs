@@ -536,8 +536,6 @@ pub struct LaneSpec {
     context_max: Option<usize>,
     path: Option<String>,
     path_base: Option<String>,
-    organization: Option<String>,
-    project: Option<String>,
     auth: Option<String>,
     health: Option<crate::config::HealthCfg>,
     default_max_tokens: Option<u32>,
@@ -573,8 +571,6 @@ impl LaneSpec {
             context_max: None,
             path: None,
             path_base: None,
-            organization: None,
-            project: None,
             auth: None,
             health: None,
             default_max_tokens: None,
@@ -591,12 +587,6 @@ impl LaneSpec {
             client_fault: 0,
             sem: None,
         }
-    }
-    /// The provider's configured tenant (`organization`, `project`).
-    pub fn tenant(mut self, organization: &str, project: &str) -> Self {
-        self.organization = Some(organization.into());
-        self.project = Some(project.into());
-        self
     }
     pub fn provider(mut self, p: &str) -> Self {
         self.provider = p.into();

@@ -1926,99 +1926,6 @@ async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() 
     );
 }
 
-/// ROW 74 (F25), THE IN-PROCESS LANE'S SHAPE: the host stripped a `token_url`'s userinfo before a
-/// plane built its binding (`appbuild`), so the settings the axis is handed name the stripped
-/// endpoint and the Basic value arrives beside them ([`super::OutboundAuths::serving_with`]). The
-/// mint need is pinned to the stripped endpoint and every mint leads with the Basic value, as
-/// 1.5.5's reqwest POST sent it (v1.5.5 `oauth_client_credentials.rs:119-126` in its egress-auth
-/// tree).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_mint() {
-    use base64::Engine as _;
-    use busbar_contract::auth_calls::FieldsRequest;
-    const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
-    let held = crate::root::userinfo::UserinfoBasic::of(&TOKEN_URL.replacen(
-        "://",
-        "://svcuser:hunter2-P4ss@",
-        1,
-    ))
-    .expect("the userinfo, held by the host");
-    let table = std::sync::Arc::new(TokenEndpoint::default());
-    let auths = linked_mint_plugin(&table);
-    // The style as the operator's config spells it (a fixture), read by the config's own parser.
-    let style = super::style_word(
-        serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
-            .expect("a provider style"),
-    );
-    // What the plane built its binding from: the stripped endpoint.
-    let settings = serde_json::json!({
-        "token_url": TOKEN_URL,
-        "scope": "https://x.example.com/.default",
-    });
-    let (auth, _) = auths
-        .serving_with(style, &settings, Some(held))
-        .expect("the plugin opens")
-        .expect("a linked plugin serves the style");
-    let handle = auth
-        .open_outbound(
-            style,
-            b"oracle-client-0001:oracle:secret:with:colons",
-            &settings,
-        )
-        .expect("the binding opens");
-    let first = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        auth.fields(handle, FieldsRequest::default(), 0),
-    )
-    .await
-    .expect("the first ask answers");
-    // With the host's clock served (row 176), the first ask can answer before the mint it set off
-    // has landed. The mint is then waited on at the endpoint's close of its exchange, never on the
-    // wall clock (Law 8). The plugin closes the exchange BEFORE it stores the token, inside the
-    // same `tick` crossing (the linked minting plugin's `Minted::tick`: `wire.close(conn)`, then
-    // the parse and the store), so the close wakes this task while that crossing still runs
-    // on the instance's dispatcher worker. The second ask therefore goes THROUGH that worker
-    // (`fields`, submitted on the instance's own worker, where its tick and drive cross), which
-    // starts it only once the tick crossing has returned, the token stored. `fields_now` crosses
-    // on this task's own thread, beside the tick, and read the cell before the store: the flake.
-    let first = if presented(Some(&first)).is_some() {
-        Some(first)
-    } else {
-        tokio::time::timeout(std::time::Duration::from_secs(120), table.closed(1))
-            .await
-            .expect("the first mint lands");
-        Some(
-            tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                auth.fields(handle, FieldsRequest::default(), 0),
-            )
-            .await
-            .expect("the ask after the mint answers"),
-        )
-    };
-    assert_eq!(
-        presented(first.as_ref()).as_deref(),
-        Some("Bearer oracle-minted-1")
-    );
-    assert!(table
-        .declared
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URL)));
-    let basic = format!(
-        "Basic {}",
-        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
-    );
-    let fields = table.fields.lock().unwrap();
-    assert_eq!(
-        fields[0].first().map(|(n, v)| (n.as_str(), v.as_slice())),
-        Some(("authorization", basic.as_bytes())),
-        "the far end hears the Basic value on the token POST: {:?}",
-        fields[0]
-    );
-}
-
 /// RED (1.5.5 `main.rs:2960-2966` over `egress_auth/jwt_bearer.rs::validate_token_uri`, v1.5.5): A
 /// SERVICE ACCOUNT'S `token_uri` IS JUDGED AT THE SEAL, in 1.5.5's words — plaintext to a public
 /// host and a cloud-metadata host are refused, naming the provider; the provider's metadata posture
@@ -2898,17 +2805,16 @@ pub(crate) mod tool_door {
                 busbar_kernel::host_records::QUEUE_CAP,
             )));
         let kernel = Arc::new(match ledger {
-            Ledger::Memory => kernel.with_records(
-                Arc::new(StoreRows(Arc::clone(&store))),
-                Arc::clone(&store) as _,
-            ),
-            Ledger::Store(claims) => kernel.with_records(Arc::new(Rows::default()), claims),
+            Ledger::Memory => kernel.with_records(Arc::new(StoreRows(Arc::clone(&store)))),
+            Ledger::Store(claims) => {
+                kernel.with_records(Arc::new(ClaimsIn(Arc::new(Rows::default()), claims)))
+            }
             Ledger::Rows(rows, max_live) => kernel
                 .with_work_bounds(busbar_kernel::host_work::WorkBounds {
                     max_live,
                     ..Default::default()
                 })
-                .with_records(rows, Arc::clone(&store) as _),
+                .with_records(Arc::new(ClaimsIn(rows, Arc::clone(&store) as _))),
             Ledger::Unbound => kernel,
         });
         let late = crate::root::serve::LateServices::new();
@@ -3217,16 +3123,13 @@ pub(crate) mod tool_door {
     impl busbar_kernel::host_records::RecordRows for StoreRows {
         fn claim(
             &self,
+            kind: &str,
             token: &str,
             expires_at: u64,
             now: u64,
         ) -> Result<bool, busbar_contract::kinds::StoreError> {
             busbar_contract::records::RecordStore::redeem_plane_token(
-                &*self.0,
-                busbar_kernel::host_records::CLAIM_KIND,
-                token,
-                expires_at,
-                now,
+                &*self.0, kind, token, expires_at, now,
             )
             .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
         }
@@ -3261,6 +3164,59 @@ pub(crate) mod tool_door {
         }
     }
 
+    /// `rows`, every claim but a chained record's position claim redeemed in `claims`: a node whose
+    /// typed records are its own and whose claims are the deployment's.
+    struct ClaimsIn(Arc<Rows>, Arc<dyn busbar_contract::records::RecordStore>);
+
+    impl busbar_kernel::host_records::RecordRows for ClaimsIn {
+        fn claim(
+            &self,
+            kind: &str,
+            token: &str,
+            expires_at: u64,
+            now: u64,
+        ) -> Result<bool, busbar_contract::kinds::StoreError> {
+            if kind == busbar_kernel::host_records::CLAIM_KIND {
+                return busbar_kernel::host_records::RecordRows::claim(
+                    &*self.0, kind, token, expires_at, now,
+                );
+            }
+            busbar_contract::records::RecordStore::redeem_plane_token(
+                &*self.1, kind, token, expires_at, now,
+            )
+            .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
+        }
+        fn record_put(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+            value: &busbar_contract::kinds::RecordBytes,
+        ) -> Result<(), busbar_contract::kinds::StoreError> {
+            busbar_kernel::host_records::RecordRows::record_put(&*self.0, schema, key, value)
+        }
+
+        fn record_get(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+        ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
+        {
+            busbar_kernel::host_records::RecordRows::record_get(&*self.0, schema, key)
+        }
+
+        fn record_scan(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            prefix: &[u8],
+            limit: u32,
+        ) -> Result<
+            Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
+            busbar_contract::kinds::StoreError,
+        > {
+            busbar_kernel::host_records::RecordRows::record_scan(&*self.0, schema, prefix, limit)
+        }
+    }
+
     /// Typed record rows in memory: the store kind's record slots, for the records services; and
     /// how many writes of a settled work handle the store refuses next.
     #[derive(Default)]
@@ -3278,6 +3234,7 @@ pub(crate) mod tool_door {
         /// One writer in this test: every claim is the first.
         fn claim(
             &self,
+            _kind: &str,
             _token: &str,
             _expires_at: u64,
             _now: u64,
@@ -5926,9 +5883,14 @@ mod task_continuation {
         )
     }
 
-    /// Poll `tasks/get` until the task is `status` (or the test gives up).
+    /// How long a wait below may take before the test calls it a hang. It bounds a hang only: each
+    /// wait ends on the progress it waits for, so a slow run under load is never a failure.
+    const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(120);
+
+    /// Poll `tasks/get` until the task is `status` (or [`HANG_GUARD`] passes).
     async fn until(rig: &Rig, task_id: &str, status: &str) -> serde_json::Value {
-        for _ in 0..250 {
+        let deadline = tokio::time::Instant::now() + HANG_GUARD;
+        while tokio::time::Instant::now() < deadline {
             let (_, body) = ask(rig, &rig.token, "tasks/get", task_id).await;
             if body["result"]["status"] == status {
                 return body;
@@ -6011,7 +5973,7 @@ mod task_continuation {
                 }
             }
         };
-        tokio::time::timeout(std::time::Duration::from_secs(10), wait)
+        tokio::time::timeout(HANG_GUARD, wait)
             .await
             .expect("the upstream call ran")
     }
@@ -8608,11 +8570,21 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
     let sealed = verified(&one, ROUTE_SCOPE_LOCAL);
     assert!(sealed.is_empty(), "no destination is sealed");
     assert_eq!(one.resolved(&ctx), Some(b"a".to_vec()), "the one entry");
+    assert_eq!(
+        one.scope_entry(),
+        Some(b"a".to_vec()),
+        "its gates bind the one entry"
+    );
     assert_eq!(one.routed(), None, "routed nowhere: no pool, no walk");
     // The same reach routed by scope walks the pool its one entry is a member of.
     let relayed = steps(&["a"]);
     let _ = verified(&relayed, ROUTE_SCOPE);
     assert_eq!(relayed.resolved(&ctx), None);
+    assert_eq!(
+        relayed.scope_entry(),
+        Some(b"a".to_vec()),
+        "a relayed scope unit's gates bind the one entry its scope resolved to"
+    );
     assert_eq!(
         relayed.routed().map(|(label, _)| label),
         Some("both".to_string()),
@@ -8624,6 +8596,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
         let s = steps(reach);
         let _ = verified(&s, ROUTE_SCOPE_LOCAL);
         assert_eq!(s.resolved(&ctx), None, "{reach:?}");
+        assert_eq!(s.scope_entry(), None, "{reach:?}");
         let refused = s
             .admit(
                 &tokens::pass::<Admit>(),

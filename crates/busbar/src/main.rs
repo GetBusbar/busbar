@@ -281,9 +281,9 @@ fn register_protocols() {
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
 fn register_planes() {
-    // The root legacy table, before the first configuration read (the dropped-plugin scan below
+    // The root migration table, before the first configuration read (the dropped-plugin scan below
     // reads it): the kernel's 1.x detector and `--migrate-config` rewrite through it.
-    root::legacy::install();
+    root::migration_table::install();
     // The linked store and hook rows onto the kernel's cold-kind axis, and its auth rows onto the
     // auth axis, before anything resolves one.
     root::linked::register_stores(&LINKED);
@@ -297,6 +297,9 @@ fn register_planes() {
     root::boot::discover_planes(&LINKED, dropped);
     root::linked::register_planes(&LINKED);
     root::linked::register_exports(dropped);
+    // The settings each plugin's schema declares public, before any configuration is read: every
+    // other plugin setting is sensitive (`busbar_kernel::config::settings_public`).
+    root::settings_public::install(&LINKED, dropped);
     // A plugin that declares an inbound need is refused until an accepted connection has a
     // consumer, after the axes it selects against are registered.
     if let Some(registry) = dropped {

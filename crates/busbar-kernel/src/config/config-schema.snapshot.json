@@ -1689,19 +1689,11 @@
           "optional": true,
           "type": "bool"
         },
-        "organization": {
-          "optional": true,
-          "type": "String"
-        },
         "path": {
           "optional": true,
           "type": "String"
         },
         "path_base": {
-          "optional": true,
-          "type": "String"
-        },
-        "project": {
           "optional": true,
           "type": "String"
         },
@@ -1764,19 +1756,11 @@
           "optional": true,
           "type": "bool"
         },
-        "organization": {
-          "optional": true,
-          "type": "String"
-        },
         "path": {
           "optional": true,
           "type": "String"
         },
         "path_base": {
-          "optional": true,
-          "type": "String"
-        },
-        "project": {
           "optional": true,
           "type": "String"
         },
@@ -1843,19 +1827,11 @@
           "optional": true,
           "type": "bool"
         },
-        "organization": {
-          "optional": true,
-          "type": "String"
-        },
         "path": {
           "optional": true,
           "type": "String"
         },
         "path_base": {
-          "optional": true,
-          "type": "String"
-        },
-        "project": {
           "optional": true,
           "type": "String"
         },

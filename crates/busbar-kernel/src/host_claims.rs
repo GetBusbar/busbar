@@ -21,7 +21,6 @@
 
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::RecordStore;
 
 use crate::host_records::{record_key, RecordRows};
 
@@ -141,7 +140,7 @@ fn secs_after(ns: u64) -> u64 {
 
 /// THE CLAIM RULE, run off the caller's thread: read the holder record, win or extend by one
 /// redemption, and write the record only after the redemption won.
-pub fn decide(rows: &dyn RecordRows, tokens: &dyn RecordStore, ask: &Ask<'_>) -> Claim {
+pub fn decide(rows: &dyn RecordRows, ask: &Ask<'_>) -> Claim {
     let taken = |until_ns| Claim::Taken { until_ns };
     let at = record_key(ask.label, &[ask.op.as_bytes(), b"\0", ask.key].concat());
     let read = |rows: &dyn RecordRows| match rows.record_get(CLAIM_SCHEMA, &at) {
@@ -172,10 +171,7 @@ pub fn decide(rows: &dyn RecordRows, tokens: &dyn RecordStore, ask: &Ask<'_>) ->
             }
             let token = extend_token(ask.label, ask.op, ask.key, epoch, h.extends + 1);
             let expires = secs_after(until_ns.saturating_add(guard_ns(ask.ttl_ns)));
-            if !matches!(
-                tokens.redeem_plane_token(ask.label, &token, expires, now_s),
-                Ok(true)
-            ) {
+            if !matches!(rows.claim(ask.label, &token, expires, now_s), Ok(true)) {
                 return taken(h.until_ns);
             }
             let next = Held {
@@ -199,10 +195,7 @@ pub fn decide(rows: &dyn RecordRows, tokens: &dyn RecordStore, ask: &Ask<'_>) ->
             let epoch = current.map_or(0, |h| h.epoch) + 1;
             let token = win_token(ask.label, ask.op, ask.key, epoch);
             let expires = secs_after(until_ns.saturating_add(guard_ns(ask.ttl_ns)));
-            if !matches!(
-                tokens.redeem_plane_token(ask.label, &token, expires, now_s),
-                Ok(true)
-            ) {
+            if !matches!(rows.claim(ask.label, &token, expires, now_s), Ok(true)) {
                 return taken(match read(rows) {
                     Ok(Some(h)) => h.until_ns,
                     _ => until_ns,
