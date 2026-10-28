@@ -1508,7 +1508,6 @@ async fn drive_screened_by(
     };
     let driven = Driven {
         node,
-        units: &*units,
         route,
         op_class,
         principal: &principal,
@@ -1518,7 +1517,7 @@ async fn drive_screened_by(
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &driven,
+        &*units,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -1527,6 +1526,7 @@ async fn drive_screened_by(
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(&driven),
         },
         &driven,
     )
@@ -4505,7 +4505,6 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     // holder is empty in a test, and the late arm posts nothing without a pinned history.
     let driven = Driven {
         node: &node,
-        units: &*units,
         route: &*route,
         op_class,
         principal: &principal,
@@ -4515,7 +4514,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &driven,
+        &*units,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -4524,6 +4523,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(&driven),
         },
         &driven,
     )
@@ -5544,7 +5544,6 @@ async fn drive_reading_the_tap(rig: &Rig) -> Reached {
     };
     let driven = Driven {
         node: &node,
-        units: &*units,
         route: &*route,
         op_class,
         principal: &principal,
@@ -5554,7 +5553,7 @@ async fn drive_reading_the_tap(rig: &Rig) -> Reached {
     };
     let _ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &driven,
+        &*units,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -5563,6 +5562,7 @@ async fn drive_reading_the_tap(rig: &Rig) -> Reached {
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(&driven),
         },
         &driven,
     )
@@ -5798,7 +5798,6 @@ async fn serve_rerank(
     };
     let driven = Driven {
         node: &node,
-        units: &*units,
         route: &*route,
         op_class,
         principal: &principal,
@@ -5808,7 +5807,7 @@ async fn serve_rerank(
     };
     let ended = busbar_kernel::teller::run_unit_async(
         &node.kernel,
-        &driven,
+        &*units,
         &ctx,
         busbar_kernel::teller::Run {
             cell: slot.cell(),
@@ -5817,6 +5816,7 @@ async fn serve_rerank(
             gauge: &node.gauge,
             canary: &node.canary,
             meter: &meter,
+            taps: Some(&driven),
         },
         &driven,
     )

@@ -481,8 +481,6 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "bytes",
- "futures",
 ]
 
 [[package]]

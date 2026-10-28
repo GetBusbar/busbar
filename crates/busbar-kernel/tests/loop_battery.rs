@@ -55,6 +55,7 @@ fn run(
             gauge: &gauge,
             canary,
             meter: &units.meter,
+            taps: None,
         },
     )
 }
@@ -319,6 +320,7 @@ fn every_unit_end_leaves_through_the_one_exit() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             },
             outcome,
             true,
@@ -353,6 +355,7 @@ fn a_unit_is_settled_exactly_once() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
         Outcome::Completed,
         true,
@@ -413,6 +416,7 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
     );
     // The child ends like every other unit: one sealed end carrying one posting, and its posting is
@@ -563,6 +567,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             },
             outcome,
             true,
@@ -628,6 +633,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             },
             &route,
         ));
@@ -747,6 +753,7 @@ fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             },
             &route,
         ));
@@ -813,6 +820,7 @@ fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             },
             &route,
         ));
@@ -893,6 +901,7 @@ fn a_challenge_a_tick_and_a_kernel_verb_unit_draw_no_lease() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             },
             &route,
         ));
@@ -924,6 +933,7 @@ fn a_unit_the_door_refused_draws_no_lease() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
     );
     assert!(matches!(ended, Ended::Settled { .. }));
@@ -976,6 +986,7 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             },
             &route,
         ));
@@ -1003,6 +1014,7 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             },
         );
         assert!(matches!(ended, Ended::Settled { .. }));
@@ -1040,6 +1052,7 @@ fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
+            taps: None,
         },
     );
     assert!(matches!(ended, Ended::Settled { .. }));

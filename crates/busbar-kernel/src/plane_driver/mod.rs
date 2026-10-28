@@ -2,17 +2,19 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE DRIVER (`BUSBAR-1.6.0.md` Part 3, §12): the kernel serves every plane through this
-//! one driver. [`PlaneUnits`] implements the loop's [`Units`] and [`RouteAwait`] over one plane
+//! one driver. [`PlaneUnits`] implements the loop's [`crate::teller::Units`] and [`RouteAwait`] over one plane
 //! instance's [`PlaneCalls`] (the one dispatcher's plane handle, as the composition root hands it),
 //! so [`crate::teller::run_unit_async`] and [`crate::teller::open_unit`] drive it and no second
-//! loop exists. A compiled-in and a dropped-in plane reach it through the same table, and the
+//! loop exists. Its door — arrival through admit, with the plane's screen — is ONE awaited step
+//! ([`crate::teller::Units::govern`]); the deployment's answers at those seats are its [`DriverSteps`], plain
+//! values it stamps at each seat. A compiled-in and a dropped-in plane reach it through the same table, and the
 //! kernel names neither: only the contract's call surface.
 //!
 //! One unit, step by step (`BUSBAR-1.6.0.md` THE DESIGN, §1's order):
 //!
 //! | State | Plane op | Kernel |
 //! |---|---|---|
-//! | arrival | — | the kernel's own gates ([`Units::arrival`] of the kernel steps) |
+//! | arrival | — | the kernel's own gates ([`crate::teller::DoorSeats::arrival`] of the kernel steps) |
 //! | decode | `arrive` (pure) | the op class, the principal need, the dialect, the expected units; a short answer is re-called once, and a second short answer is FAULT |
 //! | authenticate → verify → approve → admit | `project` (pure, once per unit, when a hook is bound) | the kernel steps, unchanged; then, at the head of the route leg, the request-stage hooks see the projection |
 //! | refused | `refusal` | the kernel steps audit the refusal; the plane renders it; nothing was charged |
@@ -59,6 +61,7 @@ mod close;
 pub mod dispatch;
 pub mod door;
 mod far_end;
+mod govern;
 pub(crate) mod hooks;
 pub mod host;
 mod money;
@@ -85,9 +88,9 @@ use busbar_contract::abi::plane::{
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
-    Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate, Consumption, Decode,
-    Dial, Encode, Grant, HoldAccrual, Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode,
-    Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
+    Admission, Admittance, Audit, Authenticated, Consumption, Dial, Encode, Grant, HoldAccrual,
+    Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode, Refusal, Route, RoutePlan,
+    SeatVerdict as StepAnswer, Usage, VerifiedDestination,
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
@@ -118,7 +121,7 @@ pub use route::{CallerEnd, FarEnd, FarPiece, OutboundRequest, Pick, RoutedScope,
 use crate::auth::CallerRefKey;
 use crate::host_services::{InstanceFacts, KernelServices, Signing};
 use crate::slice::GroupLeaseSlip;
-use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units};
+use crate::teller::{Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, UnitEnds};
 use crate::trust::book::{Distrust, TrustFacts};
 use crate::trust::section::parse_section;
 use busbar_contract::ids::RecordSchemaId;
@@ -681,9 +684,74 @@ pub fn sticky_hash(key: &[u8]) -> u64 {
     })
 }
 
-/// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the loop's
-/// [`Units`], told once what the plane's `arrive` decided, before identity and scope run.
-pub trait DriverSteps: Units {
+/// THE KERNEL STEPS A PLANE'S UNIT IS SERVED UNDER ([`PlaneDriver::unit`]'s `steps`): the
+/// deployment's answers at the kernel's seats — who is calling, where the unit may go, whether it
+/// may, the door, what it cost and what its record says — told once what the plane's `arrive`
+/// decided, before identity and scope run.
+///
+/// PLAIN ANSWERS, NOT SEATS. [`PlaneUnits`] is the one implementor of the loop's [`crate::teller::Units`] for a
+/// plane's unit: it asks these in the loop's order and stamps each answer at its own seat, so a
+/// refusal here is the seat's refusal. The plane's own seats (decode, route, encode) are the
+/// driver's and never reach these steps.
+pub trait DriverSteps {
+    /// The kernel's own gate, for a unit the data listener's gates already admitted.
+    fn arrival(&self, ctx: &UnitCtx) -> Result<busbar_contract::ArrivalRecord, Refusal>;
+
+    /// Who is calling.
+    fn authenticate(&self, ctx: &UnitCtx) -> Result<Authenticated, Refusal>;
+
+    /// Where the unit may go: the destinations sealed with the lent `trust` grant.
+    fn verify(
+        &self,
+        trust: &Grant<Dial>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> Result<Vec<VerifiedDestination>, Refusal>;
+
+    /// Whether the caller may do this at all.
+    fn approve(
+        &self,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> Result<busbar_contract::ScopeFacts, Refusal>;
+
+    /// The door (see [`crate::teller::DoorSeats::admit`]).
+    fn admit(
+        &self,
+        admit: &Grant<Admittance>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
+    ) -> Result<Admission, Refusal>;
+
+    /// What the unit consumed, as usage lines reported with the lent `usage` grant.
+    fn meter(
+        &self,
+        usage: &Grant<Consumption>,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+        destinations: &[VerifiedDestination],
+    ) -> Result<Usage, Refusal>;
+
+    /// The facts the record of a unit that passed the door seals.
+    fn audit(&self, ctx: &UnitCtx, outcome: &Outcome) -> busbar_contract::AuditFacts;
+
+    /// The facts the record of a unit refused at or before the door seals.
+    fn audit_refused(&self, ctx: &UnitCtx, refusal: &Refusal) -> busbar_contract::AuditFacts;
+
+    /// What the settlement table reads (see [`UnitEnds::evidence`]): nothing, by default.
+    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+        Evidence::default()
+    }
+
+    /// A child's parent exited while it ran (see [`UnitEnds::at_parent_exit`]): nothing refused,
+    /// by default.
+    fn at_parent_exit(&self, _ctx: &UnitCtx, _accrual: &HoldAccrual) -> Result<(), Refusal> {
+        Ok(())
+    }
+
     /// The unit `ctx` decoded to operation class `op`, routing over the entry its `arrive` named
     /// (`None` = none named) as a pool or directly (`route`, `ROUTE_*`). Called once, when decode
     /// proceeds.
@@ -1484,158 +1552,21 @@ fn failed(token: &Pass<Route>, reason: ReasonCode) -> StepAnswer<Route> {
     StepAnswer::refuse(token, Refusal::new(reason))
 }
 
-/// The seats the kernel's own steps answer, forwarded to `self.steps` unchanged: one line per
-/// seat, so the plane's own seats (decode, verify, route, encode) are the only bodies in the impl.
-macro_rules! forward_to_steps {
-    ($($seat:ident($($arg:ident: $ty:ty),* $(,)?) -> $answer:ty;)*) => {$(
-        fn $seat(&self, $($arg: $ty),*) -> $answer {
-            self.steps.$seat($($arg),*)
-        }
-    )*};
+/// A plain answer of the steps, stamped at the seat that asked for it.
+fn seated<S: busbar_contract::caps::Step>(
+    token: &Pass<S>,
+    answer: Result<S::Facts, Refusal>,
+) -> StepAnswer<S> {
+    match answer {
+        Ok(facts) => StepAnswer::proceed(token, facts),
+        Err(refusal) => StepAnswer::refuse(token, refusal),
+    }
 }
 
-impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S, F, C> {
-    forward_to_steps! {
-        arrival(token: &Pass<ArrivalStep>, ctx: &UnitCtx) -> StepAnswer<ArrivalStep>;
-        authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
-        meter(token: &Pass<Meter>, usage: &Grant<Consumption>, ctx: &UnitCtx, provisional: &Outcome,
-            destinations: &[VerifiedDestination]) -> StepAnswer<Meter>;
-        evidence(ctx: &UnitCtx) -> Evidence;
-        at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<(), Refusal>;
-    }
-
-    /// The unit's audit, after the steps are told how its answer went ([`DriverSteps::answered`]).
-    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit> {
-        let (streamed, cut) = {
-            let st = self.lock();
-            let success = st.facts.status == 0 || (200..300).contains(&st.facts.status);
-            (st.facts.content && success, st.facts.cut)
-        };
-        self.steps.answered(ctx, streamed, cut);
-        self.steps.audit(token, ctx, outcome)
-    }
-
-    /// The refused unit's audit, after the driver keeps the wait its refusal carries (ARCHITECT
-    /// Q5): the loop hands the `Refusal` here before it encodes the unit, and the encode seat sees
-    /// only its reason. An admission refusal's Retry-After (the window reset the door computed, as
-    /// 1.5.5 rendered it) then reaches the plane's `refusal` on every plane, never `0`.
-    fn audit_refused(
-        &self,
-        token: &Pass<Audit>,
-        ctx: &UnitCtx,
-        refusal: &Refusal,
-    ) -> StepAnswer<Audit> {
-        self.lock().refused_wait = refusal
-            .retry_after_secs()
-            .filter(|secs| *secs != 0)
-            .map(|secs| (refusal.reason(), secs));
-        self.steps.audit_refused(token, ctx, refusal)
-    }
-
-    /// The kernel's admission, unless the plane's `arrive` refused the unit about the entry it
-    /// named (abi/plane "A refused arrival", rule 6): that refusal is rendered here, after the
-    /// caller's identity and grant were judged and before anything is charged (ARCHITECT
-    /// Q-DEL-A2A-GATE: "refused → audits the refusal; nothing was charged").
-    fn admit(
-        &self,
-        token: &Pass<Admit>,
-        admit: &Grant<Admittance>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-        leases: &GroupLeaseSlip,
-    ) -> StepAnswer<Admit> {
-        if self.lock().declined.is_some() {
-            return StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
-        }
-        self.steps
-            .admit(token, admit, ctx, principal, destinations, leases)
-    }
-
-    /// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06: trust is the kernel's Approve step; a plane
-    /// states facts and judges none). The deployment's own Approve (the caller's grant over the
-    /// unit's route) runs FIRST, and its refusal stands; only a unit it admits has the trust facts
-    /// the plane's `arrive` stated judged against the kernel's trust book, and one the book does
-    /// not trust is refused [`ReasonCode::Untrusted`]. A unit that states none is the deployment's
-    /// answer alone. The order is the ordered gate's (identity, grant, then the counterparty's
-    /// standing; ruling (a), coordinator 2026-10-07): a caller the grant refuses is never told the
-    /// counterparty's trust state.
-    fn approve(
-        &self,
-        token: &Pass<Approve>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-        destinations: &[VerifiedDestination],
-    ) -> StepAnswer<Approve> {
-        let granted = self.steps.approve(token, ctx, principal, destinations);
-        let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
-        let Some(t) = stated else {
-            return granted;
-        };
-        let facts = match granted.into_result(&crate::seal::acquire()) {
-            Ok(facts) => facts,
-            Err(refusal) => return StepAnswer::refuse(token, refusal),
-        };
-        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
-        let (counterparty, item, digest) = (
-            text(&t.counterparty),
-            t.item.as_deref().map(text),
-            t.digest.as_deref().map(text),
-        );
-        let stated = TrustFacts {
-            counterparty: &counterparty,
-            item: item.as_deref(),
-            digest: digest.as_deref(),
-        };
-        if let Err(why) = self
-            .driver
-            .services
-            .trust_judge(&self.driver.label, &stated)
-        {
-            self.lock().distrust = Some(why);
-            return StepAnswer::refuse(token, Refusal::new(ReasonCode::Untrusted));
-        }
-        StepAnswer::proceed(token, facts)
-    }
-
-    /// The kernel's verify, after which the unit's caller reference is derived under the node's
-    /// key (its signing material, the deployment keyset, or its per-boot key); the principal
-    /// itself never enters a plane input.
-    ///
-    /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
-    /// unit, so a driver whose book lends references never lends an empty one to a governed
-    /// caller (any principal but the anonymous one). Such a caller is refused here, before the
-    /// plane is lent the unit, when it names no one or when the book holds no key to derive its
-    /// reference under; it is never lent the empty reference instead. The anonymous principal is
-    /// never refused here: with a key bound it is lent its reference like any principal (the one
-    /// reference every anonymous unit shares), and with none it is lent the empty one.
-    fn verify(
-        &self,
-        token: &Pass<Verify>,
-        trust: &Grant<Dial>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-    ) -> StepAnswer<Verify> {
-        if let Some(slot) = &self.driver.config.caller_refs {
-            let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
-            if *principal != PrincipalId::anonymous() {
-                let Some(key) = key.filter(|_| !principal.as_str().is_empty()) else {
-                    return StepAnswer::refuse(token, Refusal::new(ReasonCode::Unauthenticated));
-                };
-                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
-            } else if let Some(key) = key {
-                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
-            }
-        }
-        // The verified principal: the hooks the unit binds read it, and the unit's audit row is
-        // written under it (never a plane input).
-        self.lock().principal = Some(principal.clone());
-        self.steps.verify(token, trust, ctx, principal)
-    }
-
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
     /// S1, DECODE: the plane's `arrive`; a plane that did not answer, or named an operation class
     /// it does not have, is refused.
-    fn decode(&self, token: &Pass<Decode>, ctx: &UnitCtx) -> StepAnswer<Decode> {
+    fn decoded_op(&self, ctx: &UnitCtx) -> Result<OpClassId, Refusal> {
         // Every arrival first pays what the units before it left owing ([`close`]), so a plane
         // whose units are all refused before their route still has its dropped units closed.
         self.driver.sweep();
@@ -1657,10 +1588,153 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
             self.steps.expected(ctx, &d.expected);
         }
         self.lock().decoded = decoded;
-        op.map_or_else(
-            || StepAnswer::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
-            |op| StepAnswer::proceed(token, op),
+        op.ok_or_else(|| Refusal::new(ReasonCode::DecodeFailed))
+    }
+
+    /// The kernel's verify, after which the unit's caller reference is derived under the node's
+    /// key (its signing material, the deployment keyset, or its per-boot key); the principal
+    /// itself never enters a plane input.
+    ///
+    /// THE GOVERNED CHAIN'S GUARANTEE: a plane reads an EMPTY caller reference as an ungoverned
+    /// unit, so a driver whose book lends references never lends an empty one to a governed
+    /// caller (any principal but the anonymous one). Such a caller is refused here, before the
+    /// plane is lent the unit, when it names no one or when the book holds no key to derive its
+    /// reference under; it is never lent the empty reference instead. The anonymous principal is
+    /// never refused here: with a key bound it is lent its reference like any principal (the one
+    /// reference every anonymous unit shares), and with none it is lent the empty one.
+    fn verified(
+        &self,
+        trust: &Grant<Dial>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> Result<Vec<VerifiedDestination>, Refusal> {
+        if let Some(slot) = &self.driver.config.caller_refs {
+            let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
+            if *principal != PrincipalId::anonymous() {
+                let Some(key) = key.filter(|_| !principal.as_str().is_empty()) else {
+                    return Err(Refusal::new(ReasonCode::Unauthenticated));
+                };
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            } else if let Some(key) = key {
+                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+            }
+        }
+        // The verified principal: the hooks the unit binds read it, and the unit's audit row is
+        // written under it (never a plane input).
+        self.lock().principal = Some(principal.clone());
+        self.steps.verify(trust, ctx, principal)
+    }
+
+    /// THE KERNEL'S APPROVE (ARCHITECT 2026-10-06: trust is the kernel's Approve step; a plane
+    /// states facts and judges none). The deployment's own Approve (the caller's grant over the
+    /// unit's route) runs FIRST, and its refusal stands; only a unit it admits has the trust facts
+    /// the plane's `arrive` stated judged against the kernel's trust book, and one the book does
+    /// not trust is refused [`ReasonCode::Untrusted`]. A unit that states none is the deployment's
+    /// answer alone. The order is the ordered gate's (identity, grant, then the counterparty's
+    /// standing; ruling (a), coordinator 2026-10-07): a caller the grant refuses is never told the
+    /// counterparty's trust state.
+    fn approved(
+        &self,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> Result<busbar_contract::ScopeFacts, Refusal> {
+        let facts = self.steps.approve(ctx, principal, destinations)?;
+        let stated = self.lock().decoded.as_ref().and_then(|d| d.trust.clone());
+        let Some(t) = stated else {
+            return Ok(facts);
+        };
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        let (counterparty, item, digest) = (
+            text(&t.counterparty),
+            t.item.as_deref().map(text),
+            t.digest.as_deref().map(text),
+        );
+        let stated = TrustFacts {
+            counterparty: &counterparty,
+            item: item.as_deref(),
+            digest: digest.as_deref(),
+        };
+        if let Err(why) = self
+            .driver
+            .services
+            .trust_judge(&self.driver.label, &stated)
+        {
+            self.lock().distrust = Some(why);
+            return Err(Refusal::new(ReasonCode::Untrusted));
+        }
+        Ok(facts)
+    }
+
+    /// The kernel's admission, unless the plane's `arrive` refused the unit about the entry it
+    /// named (abi/plane "A refused arrival", rule 6): that refusal is rendered here, after the
+    /// caller's identity and grant were judged and before anything is charged (ARCHITECT
+    /// Q-DEL-A2A-GATE: "refused → audits the refusal; nothing was charged").
+    fn admitted(
+        &self,
+        admit: &Grant<Admittance>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
+    ) -> Result<Admission, Refusal> {
+        if self.lock().declined.is_some() {
+            return Err(Refusal::new(ReasonCode::DecodeFailed));
+        }
+        self.steps
+            .admit(admit, ctx, principal, destinations, leases)
+    }
+}
+
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_, S, F, C> {
+    fn meter(
+        &self,
+        token: &Pass<Meter>,
+        usage: &Grant<Consumption>,
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+        destinations: &[VerifiedDestination],
+    ) -> StepAnswer<Meter> {
+        seated(
+            token,
+            self.steps.meter(usage, ctx, provisional, destinations),
         )
+    }
+
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        self.steps.evidence(ctx)
+    }
+
+    fn at_parent_exit(&self, ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<(), Refusal> {
+        self.steps.at_parent_exit(ctx, accrual)
+    }
+
+    /// The unit's audit, after the steps are told how its answer went ([`DriverSteps::answered`]).
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit> {
+        let (streamed, cut) = {
+            let st = self.lock();
+            let success = st.facts.status == 0 || (200..300).contains(&st.facts.status);
+            (st.facts.content && success, st.facts.cut)
+        };
+        self.steps.answered(ctx, streamed, cut);
+        StepAnswer::proceed(token, self.steps.audit(ctx, outcome))
+    }
+
+    /// The refused unit's audit, after the driver keeps the wait its refusal carries (ARCHITECT
+    /// Q5): the loop hands the `Refusal` here before it encodes the unit, and the encode seat sees
+    /// only its reason. An admission refusal's Retry-After (the window reset the door computed, as
+    /// 1.5.5 rendered it) then reaches the plane's `refusal` on every plane, never `0`.
+    fn audit_refused(
+        &self,
+        token: &Pass<Audit>,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
+    ) -> StepAnswer<Audit> {
+        self.lock().refused_wait = refusal
+            .retry_after_secs()
+            .filter(|secs| *secs != 0)
+            .map(|secs| (refusal.reason(), secs));
+        StepAnswer::proceed(token, self.steps.audit_refused(ctx, refusal))
     }
 
     /// The in-place Route seat: a plane's route awaits its far end, so the driver is reached

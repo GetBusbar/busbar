@@ -464,7 +464,7 @@ pub const FIELD_SENSITIVE: u32 = 1;
 /// it to the request target (`name=value`, each percent-encoded outside RFC 3986's unreserved set,
 /// after any query the target already has, in the order written) and never sends it as a header.
 /// The plane never sees it, and every target the host logs, reports in an error or labels a metric
-/// with has its value redacted (the egress seam's `query_auth`). Optional: a style that presents
+/// with has its value redacted. Optional: a style that presents
 /// only headers never sets it. For an upstream that takes its key as a query parameter (`?key=`).
 pub const FIELD_QUERY: u32 = 2;
 

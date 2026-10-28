@@ -66,6 +66,7 @@ pub mod admission;
 pub mod auth_bindings;
 pub mod boot;
 pub mod cli;
+pub mod config_migrate;
 pub mod connector;
 pub mod credentials;
 pub mod dispatch;
