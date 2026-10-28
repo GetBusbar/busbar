@@ -3486,15 +3486,18 @@ impl DataRoutes {
             far: OnceLock::new(),
         };
         let units = served.driver.unit(&steps, &far, &caller, arrival, 0);
-        let Some((opened, ctx, slot)) = node.open_borrowed(
-            unit,
-            arrived,
-            &door.principal,
-            &self.post,
-            &units,
-            (self.pin)(),
-            served.facts.audit_kind,
-        ) else {
+        let Some((opened, ctx, slot)) = node
+            .open_borrowed(
+                unit,
+                arrived,
+                &door.principal,
+                &self.post,
+                &units,
+                (self.pin)(),
+                served.facts.audit_kind,
+            )
+            .await
+        else {
             let _ = verdict.send(Err(None));
             return;
         };

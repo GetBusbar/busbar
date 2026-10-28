@@ -113,6 +113,111 @@ if hits:
 PY
 }
 if [ "${1:-}" = "premise-filter" ]; then widen_filter "${2:?premise-filter <filter>}"; exit 0; fi
+
+# ── ONE ORACLE RUN, SHARDED BY CELL ─────────────────────────────────────────────────────────────
+# The corpus is split into N shards so one run spreads over N machines (ModernCI checks oracle-1..N),
+# each recording and replaying ITS cells, as strict as the whole run: a shard exits non-zero on any
+# unsigned FAIL (the replay's own exit), and `shard-verify` refuses a shard whose report did not
+# select every cell it owns. The split is the corpus's ids in sorted order, the i-th to shard
+# i mod N + 1: deterministic, and it spreads every family over every shard. `shard-cover` (the cheap
+# `oracle` check, after every shard) proves the N filters the shards ran select every id in
+# cells.json exactly once, so the union of the shards is the whole corpus. A shard's filter is
+# widened to the premise cells its forgivenesses probe (as any filtered run is), so a premise cell
+# may be judged again, as context, in another shard: never fewer judgements, never a weaker one.
+shard_ids() {  # shard_ids <k> <n> -> the ids shard k of n owns, one per line
+  python3 - "$1" "$2" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" <<'PY'
+import json, sys
+k, n, data = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+if not (n >= 1 and 1 <= k <= n):
+    sys.exit(f"oracle: shard {k} of {n} is not a shard (1 <= k <= n)")
+ids = sorted(c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"])
+print("\n".join(i for x, i in enumerate(ids) if x % n == k - 1))
+PY
+}
+shard_filter() {  # shard_filter <k> <n> -> the anchored regex selecting exactly shard k's ids
+  shard_ids "$1" "$2" | python3 -c 'import re,sys; ids=[l.rstrip("\n") for l in sys.stdin if l.strip()]; print("^(?:" + "|".join(re.escape(i) for i in ids) + ")$")'
+}
+if [ "${1:-}" = "shard-filter" ]; then shard_filter "${2:?shard-filter <k> <n>}" "${3:?shard-filter <k> <n>}"; exit 0; fi
+if [ "${1:-}" = "shard-cover" ]; then
+  n="${2:?shard-cover <n>}"
+  # The N filters together name every id, more than one argv string may hold (Linux caps one at
+  # 128 KiB), so they reach python through a file.
+  filters="$(mktemp)" || exit 3
+  for k in $(seq 1 "$n"); do shard_filter "$k" "$n" >>"$filters" || { rm -f "$filters"; exit 3; }; done
+  python3 - "$n" "${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}" "$filters" <<'PY' || { rm -f "$filters"; exit 3; }
+import json, re, sys
+n, data = int(sys.argv[1]), sys.argv[2]
+filters = open(sys.argv[3]).read().rstrip("\n").split("\n")
+ids = [c["id"] for c in json.load(open(f"{data}/cells.json"))["cells"]]
+if len(filters) != n:
+    sys.exit(f"oracle shard-cover: {len(filters)} filters for {n} shards")
+rx = [re.compile(f) for f in filters]
+bad = []
+for i in ids:
+    hits = [k + 1 for k, r in enumerate(rx) if r.search(i)]
+    if len(hits) != 1:
+        bad.append(f"{i!r} is selected by shard(s) {hits or 'none'}")
+if len(set(ids)) != len(ids):
+    bad.append("cells.json repeats an id")
+if bad:
+    sys.exit("oracle shard-cover: the shards do not cover the corpus exactly once:\n  " + "\n  ".join(bad[:20]))
+print(f"oracle shard-cover: {n} shards select all {len(ids)} cells of cells.json, each exactly once")
+PY
+  rm -f "$filters"
+  exit 0
+fi
+if [ "${1:-}" = "shard-verify" ]; then
+  k="${2:?shard-verify <k> <n> <report-dir>}" n="${3:?shard-verify <k> <n> <report-dir>}" rep="${4:?shard-verify <k> <n> <report-dir>}"
+  owned="$(mktemp)" || exit 3
+  shard_ids "$k" "$n" >"$owned" || { rm -f "$owned"; exit 3; }
+  python3 - "$k" "$n" "$rep" "$owned" <<'PY' || { rm -f "$owned"; exit 3; }
+import sys
+k, n, rep = sys.argv[1], sys.argv[2], sys.argv[3]
+owned = set(filter(None, open(sys.argv[4]).read().split("\n")))
+try:
+    selected = set(filter(None, open(f"{rep}/selected-ids.txt").read().split("\n")))
+except OSError as e:
+    sys.exit(f"oracle shard-verify: shard {k}/{n} wrote no selected-ids.txt ({e}); nothing proves what it judged. Refusing.")
+missing = sorted(owned - selected)
+if not owned:
+    sys.exit(f"oracle shard-verify: shard {k}/{n} owns no cell. Refusing.")
+if missing:
+    sys.exit(f"oracle shard-verify: shard {k}/{n} did not select {len(missing)} of its {len(owned)} cells: {missing[:10]}. Refusing.")
+print(f"oracle shard-verify: shard {k}/{n} selected all {len(owned)} cells it owns")
+PY
+  rm -f "$owned"
+  exit 0
+fi
+# shard-selftest: each guard refuses what it exists to refuse, before its green is trusted.
+if [ "${1:-}" = "shard-selftest" ]; then
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT; fail=0
+  ok() { echo "  [ok]     $1"; }; bad() { echo "  [FAILED] $1"; fail=1; }
+  printf '%s' '{"cells":[{"id":"a|1"},{"id":"a|2"},{"id":"b|1"},{"id":"b|2"},{"id":"c|1"}]}' >"$st/cells.json"
+  printf '%s' '{"accepted":[]}' >"$st/accepted-differences.json"
+  me=("$here/bin/oracle")
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-cover 2 >/dev/null 2>&1 \
+    && ok "two shards cover five cells exactly once" || bad "a sound split was refused"
+  for n in 1 3 5 7; do
+    BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-cover "$n" >/dev/null 2>&1 || bad "$n shards: a sound split was refused"
+  done
+  printf '%s' '{"cells":[{"id":"a|1"},{"id":"a|2"},{"id":"a|1"}]}' >"$st/dup.json"
+  mkdir -p "$st/dup"; cp "$st/dup.json" "$st/dup/cells.json"; cp "$st/accepted-differences.json" "$st/dup/"
+  BUSBAR_ORACLE_DATA="$st/dup" bash "${me[@]}" shard-cover 2 >/dev/null 2>&1 \
+    && bad "a corpus that repeats an id was covered" || ok "a corpus that repeats an id is refused"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-filter 3 2 >/dev/null 2>&1 \
+    && bad "shard 3 of 2 answered a filter" || ok "a shard outside 1..n is refused"
+  mkdir -p "$st/rep"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-verify 1 2 "$st/rep" >/dev/null 2>&1 \
+    && bad "a shard with no report was verified" || ok "a shard that wrote no report is refused"
+  printf 'a|1\nb|1\n' >"$st/rep/selected-ids.txt"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-verify 1 2 "$st/rep" >/dev/null 2>&1 \
+    && bad "a shard missing one of its cells was verified" || ok "a shard that did not select a cell it owns is refused"
+  printf 'a|1\nb|1\nc|1\nb|2\n' >"$st/rep/selected-ids.txt"
+  BUSBAR_ORACLE_DATA="$st" bash "${me[@]}" shard-verify 1 2 "$st/rep" >/dev/null 2>&1 \
+    && ok "a shard that selected all it owns (and premise context) is verified" || bad "a complete shard was refused"
+  [ "$fail" = 0 ] && { echo "oracle shard-selftest: the shards cover the corpus exactly once, and a shard that judged less is red"; exit 0; }
+  echo "oracle shard-selftest: FAILED"; exit 1
+fi
 # `--filter` is record's flag; replay and diff select with `--id-filter`. Refused by name, before
 # anything runs (2026-10-07: a replay handed it judged nothing and printed only its fence rows).
 refuse_filter_flag() {  # refuse_filter_flag <subcommand>

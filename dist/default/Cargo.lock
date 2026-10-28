@@ -329,6 +329,7 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "bytes",
  "futures",
  "getrandom 0.3.4",
  "hex",
@@ -525,7 +526,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=70f9efc205abaced72ba2e2d3f5002cf91c03c27#70f9efc205abaced72ba2e2d3f5002cf91c03c27"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=6e7c9327103382e5ee9e5b223c5306eea82ef51f#6e7c9327103382e5ee9e5b223c5306eea82ef51f"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -540,7 +541,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=70f9efc205abaced72ba2e2d3f5002cf91c03c27#70f9efc205abaced72ba2e2d3f5002cf91c03c27"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=6e7c9327103382e5ee9e5b223c5306eea82ef51f#6e7c9327103382e5ee9e5b223c5306eea82ef51f"
 dependencies = [
  "busbar-contract",
  "busbar-export-otlp",
@@ -654,8 +655,6 @@ name = "busbar-kernel-egress"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "bytes",
- "futures",
 ]
 
 [[package]]
@@ -793,7 +792,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=076065fc5c500e3da964b627a4a4191f347951a2#076065fc5c500e3da964b627a4a4191f347951a2"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=dec14ecbdf7ab3cc3c04d66732f1b51c353fe3d2#dec14ecbdf7ab3cc3c04d66732f1b51c353fe3d2"
 dependencies = [
  "busbar-contract",
  "sha2",
