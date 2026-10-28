@@ -113,7 +113,7 @@ async fn exchange(c: &Connector, far: &str) -> Result<Vec<u8>, ConnError> {
         NeedId(0),
         &OpenDesc {
             target: far,
-            body: b"hello",
+            body: busbar_contract::conn::Bytes::from_static(b"hello"),
             ..OpenDesc::default()
         },
     )?;

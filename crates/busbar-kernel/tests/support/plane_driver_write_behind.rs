@@ -57,6 +57,7 @@ impl RecordRows for Gated {
     /// One writer in this test: every claim is the first.
     fn claim(
         &self,
+        _kind: &str,
         _token: &str,
         _expires_at: u64,
         _now: u64,
@@ -133,7 +134,7 @@ fn services_over(
 ) -> (Arc<KernelServices>, Arc<MemoryStore>) {
     let store = Arc::new(MemoryStore::new());
     let s = KernelServices::new()
-        .with_records(rows(Arc::clone(&store)), store.clone())
+        .with_records(rows(Arc::clone(&store)))
         .with_pool(pool);
     let facts = InstanceFacts {
         record_kinds: vec![task()],
@@ -298,7 +299,7 @@ fn a_claim_is_spent_in_the_store_before_it_answers() {
     assert!(matches!(ran, Ran::Later));
     assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(svc::CLAIM_WON));
     let fresh = KernelServices::new()
-        .with_records(Arc::new(Rows(Arc::clone(&store))), store)
+        .with_records(Arc::new(Rows(Arc::clone(&store))))
         .with_pool(Arc::new(Inline));
     fresh
         .admit(

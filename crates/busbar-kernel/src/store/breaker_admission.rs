@@ -181,6 +181,9 @@ impl PlaneBreakers {
         }
     }
 
+    // The kernel builds no plane-qualified breaker key: a cell's key is the caller's own opaque
+    // string (Q128 arch u38 #28).
+
     /// Carry a new generation's `limits.hard_down_cooldown_secs` / `limits.max_honored_retry_after_secs`
     /// onto the cells: the next hard-down arms the new sticky cooldown, the next honoured upstream
     /// wait is clamped to the new ceiling. Learned state is kept (the handle is process-lifetime).

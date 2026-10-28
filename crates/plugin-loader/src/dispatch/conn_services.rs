@@ -1210,7 +1210,7 @@ extern "C" fn write_request(
                         None => Some(b.handle),
                     });
                     let conn = match bound {
-                        None => open_with(table, id, need, at, &h, &body, &[], None),
+                        None => open_with(table, id, need, at, &h, body, &[], None),
                         Some(_) if handle.is_none() => {
                             Conn::Failed(ConnError::CredentialUnavailable)
                         }
@@ -1227,7 +1227,7 @@ extern "C" fn write_request(
                                             need,
                                             at,
                                             &h,
-                                            &body,
+                                            body,
                                             &auth,
                                             seal.as_deref(),
                                         )
@@ -1275,7 +1275,7 @@ fn open_with(
     need: NeedId,
     (target, within, member): (&str, &[IpAddr], &str),
     h: &Head,
-    body: &[u8],
+    body: Vec<u8>,
     auth: &[busbar_contract::auth_calls::AuthField],
     seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
 ) -> Conn {
@@ -1303,7 +1303,8 @@ fn open_with(
     let desc = OpenDesc {
         target,
         fields: &fields,
-        body,
+        // The request the plugin wrote, frozen once: the connector keeps it without a copy.
+        body: body.into(),
         timeout_ms: h.timeout_ms,
         method: &h.method,
         head_target: &h.target,
@@ -1496,7 +1497,7 @@ fn reply(
                 a.need,
                 (&a.target, &a.within, &a.member),
                 &a.head,
-                &a.body,
+                std::mem::take(&mut a.body),
                 &auth,
                 lent_seal(ctx).as_deref(),
             ),
