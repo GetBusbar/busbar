@@ -324,7 +324,9 @@ fn head(op: u32, size: usize) -> ServiceHead {
 /// An empty service `out`.
 fn out() -> ServiceOut {
     // SAFETY: a plain repr(C) value of integers and a NULL/0 string: all-zero is valid.
-    unsafe { std::mem::zeroed() }
+    let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+    out.size = std::mem::size_of::<ServiceOut>() as u32;
+    out
 }
 
 /// A host slot's answer: its outcome, scalar and text.

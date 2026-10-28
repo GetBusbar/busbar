@@ -660,6 +660,9 @@ fn mount_plane_route(
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap,
               body: axum::body::Bytes| {
             // The plane never sees the caller's credential: the headers the gate consumed go here,
@@ -673,6 +676,7 @@ fn mount_plane_route(
                 .as_deref()
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
+            let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -687,9 +691,14 @@ fn mount_plane_route(
                     gov: gov.map(|axum::extract::Extension(g)| g),
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
+                    ticket,
                     consumed_fields,
                     engine,
                     slot,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
                 };
                 handler(ctx).await
             }
@@ -730,6 +739,9 @@ fn mount_plane_session(
               gov: Option<axum::extract::Extension<busbar_contract::records::PlaneRequestCtx>>,
               principal: Option<axum::extract::Extension<busbar_contract::auth::AuthPrincipal>>,
               consumed: Option<axum::extract::Extension<auth::ConsumedCredentials>>,
+              listener: Option<
+            axum::extract::Extension<busbar_kernel::plane_routes::ListenerScheme>,
+        >,
               mut headers: axum::http::HeaderMap| {
             // As for a data route: the plane never sees the credential the gate consumed; it is
             // lent to a passthrough member only.
@@ -742,6 +754,7 @@ fn mount_plane_session(
                 .as_deref()
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
+            let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -758,6 +771,11 @@ fn mount_plane_session(
                     engine,
                     slot,
                     caller_credential,
+                    scheme: listener.map_or(
+                        busbar_contract::abi::host::service::SCHEME_UNDECLARED,
+                        |axum::extract::Extension(l)| l.0,
+                    ),
+                    ticket,
                     consumed_fields,
                 };
                 match handler(ctx).await {

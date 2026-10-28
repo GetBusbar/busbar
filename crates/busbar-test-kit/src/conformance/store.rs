@@ -534,7 +534,28 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         }))
     });
     r.line("purge ev", 1, || {
-        ans(b.purge_plane_records_before("ev", 100))
+        ans(b.purge_plane_records("ev", 100, busbar_contract::records::Retention::Age))
+    });
+    // THE KIND'S RETENTION RULE (coordinator ruling (b)): the rule is the one the purge is handed,
+    // never one the store infers from the kind's name. Under `TerminalOnly` an old ACTIVE row is
+    // kept and an old TERMINAL one goes; under `Age` every old row goes.
+    r.line("append rt1", 1, || {
+        ans(b.append_plane_record(plane("rt", "r", Some("p"), 1, b"active").view()))
+    });
+    r.line("append rt2", 1, || {
+        ans(b.append_plane_record(plane("rt", "r", Some("p"), 2, b"terminal").view()))
+    });
+    r.line("purge rt terminal-only", 1, || {
+        ans(b.purge_plane_records("rt", 100, busbar_contract::records::Retention::TerminalOnly))
+    });
+    r.line("list rt kept", 1, || {
+        bodies(b.list_plane_records("rt", &PlaneSelector::Parent("p".into())))
+    });
+    r.line("purge rt age", 1, || {
+        ans(b.purge_plane_records("rt", 100, busbar_contract::records::Retention::Age))
+    });
+    r.line("list rt aged", 1, || {
+        bodies(b.list_plane_records("rt", &PlaneSelector::Parent("p".into())))
     });
     r.line("delete t1", 1, || ans(b.delete_plane_record("task", "t1")));
     r.line("get t1 after", 1, || {
@@ -758,6 +779,29 @@ fn contract(fold: &Fold, i: &Inputs<'_>) {
     );
     assert_eq!(at("usage batch replay"), at("usage batch"));
     assert_eq!(at("usage batch conflict"), "! STORE_OPID_CONFLICT");
+    for label in ["append rt1", "append rt2"] {
+        assert!(at(label).starts_with("= "), "{label}: {}", at(label));
+    }
+    assert_eq!(
+        at("purge rt terminal-only"),
+        "= 1",
+        "a terminal-only purge drops the old TERMINAL row and only it"
+    );
+    assert_eq!(
+        at("list rt kept"),
+        r#"= ["active"]"#,
+        "a terminal-only purge keeps an ACTIVE row however old"
+    );
+    assert_eq!(
+        at("purge rt age"),
+        "= 1",
+        "an age purge drops the old ACTIVE row"
+    );
+    assert_eq!(
+        at("list rt aged"),
+        "= []",
+        "nothing old survives an age purge"
+    );
     assert_eq!(at("redeem"), "= true");
     assert_eq!(at("redeem again"), "= false", "a token is redeemed once");
     assert_eq!(at("record get"), "= Some(\"one\")");

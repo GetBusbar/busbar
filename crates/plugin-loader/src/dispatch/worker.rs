@@ -2380,6 +2380,16 @@ impl Dispatcher {
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
             return Reply::settled(o, frame);
         }
+        // THE KIND'S ADMISSION of the `in` (its kernel-MAC'd refs, verified for this instance).
+        let owner = super::handle::instance_id(inst.ctx()).0;
+        if let Some(o) = K::admit(
+            s,
+            std::ptr::addr_of!(frame.input).cast(),
+            size_of::<I>(),
+            owner,
+        ) {
+            return Reply::settled(o, frame);
+        }
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
             return Reply::settled(Outcome::Refused, frame);
