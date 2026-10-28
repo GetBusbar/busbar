@@ -624,6 +624,7 @@ pub fn registry(
         note(Note::FloorUnreadable(&n));
     }
     scan.policy.first_party_high_water = high_water.marks();
+    scan.policy.release_keys_floor = high_water.release_keys_floor();
     let Some(dir) = scan.dir else {
         note(Note::Off);
         return crate::PluginRegistry::empty().link(b.linked);

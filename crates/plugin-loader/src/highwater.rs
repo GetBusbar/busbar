@@ -162,18 +162,24 @@ impl HighWaterMarks {
     /// The highest keys-document version accepted ([`RELEASE_KEYS_MARK`]); `0` for none.
     #[must_use]
     pub fn release_keys_floor(&self) -> u64 {
-        0
+        self.marks
+            .get(RELEASE_KEYS_MARK)
+            .and_then(|v| v.split('.').next())
+            .and_then(|major| major.parse().ok())
+            .unwrap_or(0)
     }
 
     /// Raise the keys-document floor to `version`. Returns true iff it moved.
-    pub fn raise_release_keys(&mut self, _version: u64) -> bool {
-        false
+    pub fn raise_release_keys(&mut self, version: u64) -> bool {
+        self.raise(RELEASE_KEYS_MARK, &format!("{version}.0.0"))
     }
 
     /// The marks, in the shape `crate::sign::TrustPolicy::first_party_high_water` takes.
     #[must_use]
     pub fn marks(&self) -> BTreeMap<String, String> {
-        self.marks.clone()
+        let mut marks = self.marks.clone();
+        marks.remove(RELEASE_KEYS_MARK);
+        marks
     }
 
     /// RAISE the mark for `name` to `version` if `version` is above the current mark. Never lowers:
@@ -209,6 +215,13 @@ impl HighWaterMarks {
                 }
             ) {
                 moved |= self.raise(&p.manifest.name, &p.manifest.version);
+                // A sealed plugin's keys document was verified with the chain: its version is
+                // now accepted, and no older one loads again.
+                if let Some(v) =
+                    crate::release_trust::wire::sealed_keys_version(&p.manifest.signature)
+                {
+                    moved |= self.raise_release_keys(v);
+                }
             }
         }
         moved
