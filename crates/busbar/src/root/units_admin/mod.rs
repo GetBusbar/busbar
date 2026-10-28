@@ -43,10 +43,9 @@ use busbar_kernel_audit::{expose, AuditChain, AuditKeySet, AuditRecord};
 use crate::root::durability::CheckpointUnreadable;
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
-use busbar_core_admin::{
-    verb_name, KernelVerb, VerbScope, AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
-    NEW_VERBS,
-};
+use busbar_core_admin::{KernelVerb, VerbScope, NEW_VERBS};
+#[cfg(test)]
+use busbar_core_admin::{AUDIT_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES};
 use busbar_kernel_ledger::{
     checkpoint::{AnchoredHead, Checkpoint, CheckpointVerifier},
     cost::{Money, MoneyError},
@@ -2812,53 +2811,13 @@ impl AdminBinding {
     }
 }
 
-/// The kernel verb the closed table's row names.
-///
-/// The plane resolves a request to a row; this turns that row's name into the verbs unit's own
-/// closed enumeration, which is what the rate class, the scope and the execution all key on. The two
-/// tables were extracted from the same pinned tag, so a row with no verb is a drift between them
-/// and is reported as such rather than defaulted.
-/// The join is METHOD and PATH, not the operation's name.
-///
-/// Both tables were extracted from the same pinned document, but they kept two different columns of
-/// it: the plane snake-cases the `operationId` and the executing unit keeps it as the document spelt
-/// it, so `get_audit` and `GetAudit` are the same operation under two spellings. The method and the
-/// templated path are the SAME bytes in both, because both copied them verbatim, so joining on them
-/// is joining on what the document actually pinned rather than on a casing convention either crate
-/// is free to change.
-///
-/// The 1.6.0 additions have no row in the pinned document at all — they are new surface — so they
-/// join by name, which is the only thing they have. The plane flags its HTTP bindings for them as a
-/// judgment call, which is exactly why they must not be joined on a path.
+/// The kernel verb the closed table's row names: the row of the one table in `busbar-core-admin`
+/// with that method and templated path. A row with no verb cannot exist; `None` is a request line
+/// the table does not declare.
 #[must_use]
 pub fn kernel_verb(resolved: &ResolvedVerb) -> Option<KernelVerb> {
-    if let Some(row) = LEGACY_VERBS
-        .iter()
-        .find(|row| row.method == resolved.method && row.path == resolved.template)
-    {
-        return Some(row.verb);
-    }
-    NEW_VERBS
-        .iter()
-        .chain(LEDGER_VERBS.iter())
-        .chain(AUDIT_VERBS.iter())
-        .chain(NAMED_SURFACES.iter())
-        .copied()
-        .find(|verb| verb_name(*verb) == Some(resolved.verb))
+    busbar_core_admin::verb::verb_for(resolved.method, resolved.template)
 }
-
-// THE NAMING OF A 1.6.0 VERB IS NOT THIS FILE'S ANY MORE. It was, through 1.6.0's development, and
-// that is what made it a seam: the closed table is DECLARED in `busbar-core-admin` and was COMPLETED
-// here, joined by `verb_name(v) == row.verb` over a `_ => ""` arm. A row nobody wrote an arm for
-// resolved to the empty string, matched no verb, and the operation refused — with no compile error,
-// because neither side could see that the other was incomplete. It cost this tree the three audit
-// reads, which shipped resolving and answering nothing.
-//
-// `busbar_core_admin::verb_name` is that function now, beside both spellings it joins — the
-// enumeration and the table rows are both that crate's — and the agreement between them is a
-// `const` assertion in `admin_codec/verbs.rs` rather than a test. A row with no arm, or an arm with
-// no row, does not build. See `docs/design/BUSBAR-1.6.0.md:2064` for the class of defect and `:2079`
-// for the rule: A GAP AND A FAILURE MUST NEVER BE THE SAME OUTPUT.
 
 /// The mutation rate class the verbs unit's table puts a verb in.
 ///

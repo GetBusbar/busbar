@@ -532,6 +532,7 @@ pub(crate) async fn drive(units: &PlaneUnits<'_, TestUnits, Far, Caller>) -> Out
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
     match run_unit_async(&kernel, units, &ctx(7), run, units).await {
         Ended::Settled { end, .. } => end.outcome(),
@@ -1898,8 +1899,8 @@ async fn a_fault_disposition_bills_as_cancel_failed() {
 
 // ── the session opener drives it too ─────────────────────────────────────────────────────────────
 
-#[test]
-fn open_unit_drives_the_same_steps() {
+#[tokio::test]
+async fn open_unit_drives_the_same_steps() {
     for way in ways() {
         let r = rig(way, BufferCaps::default(), Book::default());
         for (target, admitted) in [("/call", true), ("/refuse", false)] {
@@ -1926,8 +1927,9 @@ fn open_unit_drives_the_same_steps() {
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
+                taps: None,
             };
-            let opened = open_unit(&kernel, &units, &ctx(9), run);
+            let opened = open_unit(&kernel, &units, &ctx(9), run).await;
             assert_eq!(
                 matches!(opened, SessionOpen::Admitted { .. }),
                 admitted,

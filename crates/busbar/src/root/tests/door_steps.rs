@@ -489,9 +489,10 @@ fn a_blocked_admission_renders_as_the_budget_units_door_does() {
 /// struck when its steps drop; a refused unit writes none.
 #[test]
 fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
-    use busbar_contract::caps::{Authenticate, PrincipalId};
+    use busbar_contract::caps::PrincipalId;
     use busbar_kernel::host_units::UnitRecords;
-    use busbar_kernel::teller::{UnitCtx, Units};
+    use busbar_kernel::plane_driver::DriverSteps;
+    use busbar_kernel::teller::UnitCtx;
     let facts = super::door_facts("p", &[], &[], &[], "a", Vec::new());
     let pools = DoorPools::default();
     let records = std::sync::Arc::new(UnitRecords::default());
@@ -528,10 +529,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
     };
     let keyed = steps(Some(std::sync::Arc::clone(&key)));
     assert!(records.get(7).is_none(), "nothing before authenticate");
-    let _ = keyed.authenticate(
-        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
-        &ctx(7),
-    );
+    let _ = keyed.authenticate(&ctx(7));
     let held = records.get(7).expect("recorded at authenticate");
     assert_eq!(
         held.principal.as_ref().map(|k| k.id.as_str()),
@@ -541,10 +539,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
     assert!(records.get(7).is_none(), "struck when its steps drop");
 
     let unkeyed = steps(None);
-    let _ = unkeyed.authenticate(
-        &busbar_kernel::test_support::tokens::pass::<Authenticate>(),
-        &ctx(8),
-    );
+    let _ = unkeyed.authenticate(&ctx(8));
     assert!(records.get(8).is_none(), "a refused unit writes no record");
 }
 
@@ -1374,7 +1369,7 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
             need.0,
             desc.target.to_owned(),
             desc.head_target.to_vec(),
-            String::from_utf8_lossy(desc.body).into_owned(),
+            String::from_utf8_lossy(&desc.body).into_owned(),
         ));
         let n = opened.len();
         let body = match self.answer {
@@ -4524,7 +4519,7 @@ pub(crate) mod door_boundary {
     /// the linked rows (a registration, not an isolation: the served request reads the registry on
     /// another worker while the test awaits it).
     pub(crate) fn registry(row: &'static PlaneDecl) {
-        busbar_kernel::plane_driver::registry::register_test_plane(row);
+        busbar_kernel::test_support::planes::register_test_plane(row);
     }
 
     /// The kernel's plane dispatch for the door, as `build_dispatch` configures it from the folded
@@ -4758,7 +4753,7 @@ pub(crate) mod door_boundary {
                 app.lane(
                     LaneSpec::new(
                         "test-model",
-                        busbar_kernel::ingress::protocols::PROTO_ANTHROPIC,
+                        busbar_kernel::test_support::protocols::PROTO_ANTHROPIC,
                         &base_url,
                     )
                     .api_key("busbar-upstream-key"),
@@ -8504,12 +8499,10 @@ fn a_pools_reach_follows_its_fallback_and_the_declared_words() {
 #[test]
 fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere() {
     use busbar_contract::abi::plane::{ROUTE_SCOPE, ROUTE_SCOPE_LOCAL};
-    use busbar_contract::caps::{
-        Admit, Admittance, Dial, OpClassId, PrincipalId, ReasonCode, Verify,
-    };
+    use busbar_contract::caps::{Admittance, Dial, OpClassId, PrincipalId, ReasonCode};
     use busbar_contract::records::{ScopeRef, VirtualKey};
     use busbar_kernel::plane_driver::DriverSteps;
-    use busbar_kernel::teller::{UnitCtx, Units};
+    use busbar_kernel::teller::UnitCtx;
     use busbar_kernel::test_support::tokens;
     let facts = super::door_facts("p", &["seat"], &[], &[], "a", Vec::new());
     let p = pools("a: {}\nb: {}\npools:\n  both:\n    members: [a, b]\n    member_granted: true");
@@ -8555,14 +8548,8 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
     };
     let verified = |s: &super::DoorSteps<'_>, class: u8| {
         s.decoded(&ctx, OpClassId::new("op"), class, None);
-        s.verify(
-            &tokens::pass::<Verify>(),
-            &tokens::grant::<Dial>(),
-            &ctx,
-            &principal,
-        )
-        .into_result(&tokens::seal())
-        .expect("verify proceeds")
+        s.verify(&tokens::grant::<Dial>(), &ctx, &principal)
+            .expect("verify proceeds")
     };
 
     // ONE reaches: resolved, nothing sealed, no route (its pool unread).
@@ -8597,16 +8584,13 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
         let _ = verified(&s, ROUTE_SCOPE_LOCAL);
         assert_eq!(s.resolved(&ctx), None, "{reach:?}");
         assert_eq!(s.scope_entry(), None, "{reach:?}");
-        let refused = s
-            .admit(
-                &tokens::pass::<Admit>(),
-                &tokens::grant::<Admittance>(),
-                &ctx,
-                &principal,
-                &[],
-                &busbar_contract::slice::GroupLeaseSlip::default(),
-            )
-            .into_result(&tokens::seal());
+        let refused = s.admit(
+            &tokens::grant::<Admittance>(),
+            &ctx,
+            &principal,
+            &[],
+            &busbar_contract::slice::GroupLeaseSlip::default(),
+        );
         let Err(refused) = refused else {
             panic!("{reach:?}: refused at admission");
         };
@@ -8815,9 +8799,8 @@ fn a_first_section_of_an_unloaded_plane_is_refused_naming_the_section_and_the_pl
 #[test]
 fn a_required_section_written_empty_hands_the_plane_its_sections() {
     use busbar_contract::section::{RESERVED_MODELS_KEY, RESERVED_POOLS_KEY};
-    use busbar_kernel::plane_driver::registry::{
-        PlaneDecl, PlaneDeclaration, TestRegistryIsolation,
-    };
+    use busbar_kernel::plane_driver::registry::{PlaneDecl, PlaneDeclaration};
+    use busbar_kernel::test_support::planes::TestRegistryIsolation;
     use busbar_kernel::test_support::NEUTRAL_FALLBACK;
     static REQUIRES: PlaneDecl = PlaneDecl {
         declaration: PlaneDeclaration {
