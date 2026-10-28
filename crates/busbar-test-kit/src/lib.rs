@@ -28,3 +28,5 @@ pub mod stand_in;
 pub mod tcp_conns;
 /// A local token issuer (an ES256 key, its JWKS, signed tokens).
 pub mod test_issuer;
+/// An in-memory log double: the WARN-and-above events a test's code emitted.
+pub mod warn_capture;

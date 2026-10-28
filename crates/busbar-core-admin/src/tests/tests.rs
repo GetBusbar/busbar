@@ -17,7 +17,23 @@ const OAS_OPERATION_STATUSES: &str =
 /// of a 409 "signed-token minting is unavailable". Every admin test that mints (directly or over
 /// HTTP) builds its gov through this so the signer is always present; a read-only test could stay on
 /// `GovState::new`, but giving them all a signer keeps the fixtures uniform and future-proof.
+///
+/// It carries an at-rest key (`credentials.at_rest`) too, so a recoverable credential can be minted;
+/// [`gov_without_at_rest_key`] is the node that configures none.
 fn gov_with_signer(
+    store: Arc<dyn busbar_kernel::governance::RecordStore>,
+    admin_token: Option<String>,
+) -> Arc<GovState> {
+    let gov = gov_without_at_rest_key(store, admin_token);
+    gov.set_at_rest_keys(Some(busbar_kernel::governance::at_rest::AtRestKeys::new(
+        &[3u8; 32], None,
+    )));
+    gov
+}
+
+/// [`gov_with_signer`] with no `credentials.at_rest`: it mints bearer keys, and refuses a recoverable
+/// credential.
+fn gov_without_at_rest_key(
     store: Arc<dyn busbar_kernel::governance::RecordStore>,
     admin_token: Option<String>,
 ) -> Arc<GovState> {
@@ -4915,6 +4931,63 @@ async fn test_admin_v1_all_reads_require_admin_token() {
         );
     }
 
+    handle.abort();
+}
+
+/// RED before the dedicated at-rest key: the credential was sealed under the signing key, so a node
+/// with a signing key minted it. Now a node with no `credentials.at_rest` refuses `POST /keys
+/// {"issue_aws_credential": true}` with a 409 that says what to configure, writes nothing, and
+/// audits the refusal; a bearer-only mint is unaffected.
+#[tokio::test]
+async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_and_says_what_to_set() {
+    busbar_kernel::snapshot::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_without_at_rest_key(store.clone(), Some("admintok".to_string()));
+    let (addr, handle) = serve_with_gov(gov).await;
+    let client = reqwest::Client::new();
+    let baseline_seq = busbar_kernel::audit::auditlog::AUDIT_LOG
+        .list_filtered(0, 1, None, None)
+        .first()
+        .map(|e| e.seq)
+        .unwrap_or(0);
+
+    let refused = client
+        .post(format!("http://{addr}/api/v1/admin/keys"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "no-at-rest", "issue_aws_credential": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status().as_u16(), 409);
+    let body: serde_json::Value = refused.json().await.unwrap();
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert_eq!(
+        message,
+        busbar_kernel::governance::at_rest::NO_KEY_REFUSAL,
+        "{body}"
+    );
+    assert!(message.contains("credentials.at_rest.key"), "{body}");
+    use busbar_kernel::governance::RecordStore as _;
+    assert!(store.list_keys().unwrap().is_empty(), "a key was written");
+    assert!(store.list_credentials_since(0).unwrap().is_empty());
+    assert!(
+        busbar_kernel::audit::auditlog::AUDIT_LOG
+            .list_filtered(0, audit_ring::MAX_AUDIT_ENTRIES, None, Some("key:-"))
+            .into_iter()
+            .any(|e| e.seq > baseline_seq
+                && e.action == "key.create"
+                && e.outcome == audit_ring::OUTCOME_REJECTED),
+        "the refusal is audited"
+    );
+
+    let plain = client
+        .post(format!("http://{addr}/api/v1/admin/keys"))
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"name": "bearer-only"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(plain.status().as_u16(), 201);
     handle.abort();
 }
 

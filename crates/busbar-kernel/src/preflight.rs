@@ -1031,6 +1031,44 @@ pub(crate) fn resolve_signing_key(
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
+/// Resolve the AT-REST KEYS (`credentials.at_rest`): the key a recoverable credential is sealed
+/// under, and the `previous` one a rotation still opens. Each is a reference to an EXISTING secret
+/// resolving to 32 bytes (raw, or 64 hex characters). ABSENT => `None`: the node mints no
+/// recoverable credential (the mint refuses, saying what to configure), and a stored one opens
+/// only if it predates 1.6.0 (`v1:plain`).
+///
+/// FAIL-CLOSED: a configured-but-unresolvable or malformed key refuses boot (and aborts a reload),
+/// naming the path and never the value.
+pub(crate) fn resolve_at_rest_keys(
+    credentials: &config::CredentialsCfg,
+    resolver: &config::secret::SecretResolver,
+) -> Result<Option<governance::at_rest::AtRestKeys>, String> {
+    let Some(at_rest) = credentials.at_rest.as_ref() else {
+        return Ok(None);
+    };
+    let resolve = |path: &str, r: &config::SecretRef| {
+        let bytes = resolver
+            .resolve_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
+            .map(zeroize::Zeroizing::new)
+            .map_err(|e| {
+                format!(
+                    "{path} did not resolve: {e}. It is a reference to an EXISTING secret                      (env/file/plugin) holding 32 random bytes; create one with `openssl rand -hex                      32`"
+                )
+            })?;
+        governance::at_rest::parse_key(path, &bytes)
+    };
+    let key = resolve("credentials.at_rest.key", &at_rest.key)?;
+    let previous = at_rest
+        .previous
+        .as_ref()
+        .map(|p| resolve("credentials.at_rest.previous", p))
+        .transpose()?;
+    Ok(Some(governance::at_rest::AtRestKeys::new(
+        &key[..],
+        previous.as_ref().map(|p| &p[..]),
+    )))
+}
+
 /// Whether `m` names a REAL `auth.chain` plugin ref that must resolve against the plugin registry
 /// (`true`) vs a builtin/test stand-in that's exempt (`false`). `keys` is engine-handled, never a
 /// plugin. `test-groups-module` is ONLY actually registered as a chain module under
