@@ -16,22 +16,27 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{ResolveOut, ERROR_KIND_INTERNAL, ERROR_KIND_UNSET};
 use crate::abi::mechanism::call::Outcome;
-use crate::abi::mechanism::check::{blob, fault, result, Filled, HARD_MAX_BYTES};
+use crate::abi::mechanism::check::{fault, result, Filled, HARD_MAX_BYTES};
+use crate::abi::mechanism::decl::abi_op;
 
-/// Validates `resolve`'s `out` against the host buffer the call was lent: its address `buf` and
-/// capacity `cap` (`ResolveIn::secret_buf`/`secret_cap`). Pure, `u64` math, no statics.
-///
-/// # Errors
-/// The rule `out` breaks.
-pub fn check_resolve(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault> {
-    blob(&out.secret, "resolve.secret", "resolve.secret.len")?;
-    if out.error_kind as u64 > ERROR_KIND_INTERNAL as u64 {
-        return Err(fault(Rule::UnknownCode, "resolve.error_kind"));
+abi_op! {
+    /// Validates `resolve`'s `out` against the host buffer the call was lent: its address `buf` and
+    /// capacity `cap` (`ResolveIn::secret_buf`/`secret_cap`). Pure, `u64` math, no statics.
+    ///
+    /// # Errors
+    /// The rule `out` breaks.
+    pub fn check_resolve(out: &ResolveOut, buf: usize, cap: u64) as "resolve", RESOLVE_RULES {
+        blob(secret);
+        code(error_kind, ERROR_KIND_UNSET, ERROR_KIND_INTERNAL);
+        // The material is the host's: a lease names plugin memory, which a resolve no longer keeps.
+        zero(head.lease, Contradiction) as "resolve.lease";
+        then resolved(out, buf, cap);
     }
-    // The material is the host's: a lease names plugin memory, which a resolve no longer keeps.
-    if out.head.lease != 0 {
-        return Err(fault(Rule::Contradiction, "resolve.lease"));
-    }
+}
+
+/// `resolve`'s cross-field rules, after its per-field ones: the outcome against `error_kind`, the
+/// material and the short-buffer answer.
+fn resolved(out: &ResolveOut, buf: usize, cap: u64) -> Result<(), Fault> {
     let outcome = out.head.outcome.outcome();
     let ready = matches!(outcome, Outcome::Ready);
     let failed = matches!(outcome, Outcome::Failed);
