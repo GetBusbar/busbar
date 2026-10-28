@@ -48,8 +48,8 @@ pub const SIGNATURE_DOMAIN: &str = "busbar.audit.record.v1";
 
 /// The domain a LEDGER CHECKPOINT signature is for — the second use of the one audit key.
 ///
-/// Q71(3), owner 2026-09-25: 1.6.0 seals ledger checkpoints with ONE keyset shared with the #82
-/// audit signing (docs/design/BUSBAR-1.6.0.md #82). One key, two domains: a checkpoint signature is
+/// 1.6.0 seals ledger checkpoints with ONE keyset shared with the
+/// audit signing. One key, two domains: a checkpoint signature is
 /// minted over this domain and a record signature over [`SIGNATURE_DOMAIN`], so neither can be
 /// lifted onto the other even though the same key made both and the same [`AuditKeySet`] checks
 /// both. Published contract, like its sibling.
@@ -266,10 +266,10 @@ impl AuditSigningKey {
     }
 
     /// A 32-BYTE SECRET DERIVED FROM THIS KEY under `label`: HMAC-SHA256 keyed by the seed, over
-    /// the label. Material for another key the deployment keyset roots (the caller-reference key,
-    /// row 159 H2), never the seed: the seed cannot be recovered from it, and another label gives
-    /// an unrelated secret. Keyed through the wiped HMAC ([`crate::wiped`]): the copy of the seed,
-    /// the padded key and every hash state derived from it are wiped before this returns.
+    /// the label. Material for another key the deployment keyset roots (the caller-reference key),
+    /// never the seed: the seed cannot be recovered from it, and another label gives an unrelated
+    /// secret. Keyed through the wiped HMAC ([`crate::wiped`]): the copy of the seed, the padded
+    /// key and every hash state derived from it are wiped before this returns.
     #[must_use]
     pub fn derived_secret(&self, label: &[u8]) -> [u8; 32] {
         let mut seed = self.inner.to_bytes();
@@ -303,7 +303,7 @@ impl AuditSigningKey {
 impl AuditSigningKey {
     /// Sign one ledger checkpoint's body: 64 raw ed25519 signature bytes over
     /// [`checkpoint_preimage`]. The same key that signs the audit chain, under the checkpoint's
-    /// own domain (Q71(3), #82).
+    /// own domain.
     #[must_use]
     pub fn sign_checkpoint_body(&self, body: &[u8]) -> Vec<u8> {
         self.inner

@@ -53,6 +53,7 @@ openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema"]
 # Test-only (json body decode in the service tests); no production use.
 http-body-util = { workspace = true }
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support"] }
+busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "test-util"] }
 axum = { workspace = true, features = ["http1"] }
 reqwest = { workspace = true, features = ["json"] }

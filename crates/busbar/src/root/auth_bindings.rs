@@ -212,7 +212,7 @@ impl VirtualKeyDirectory for GovernanceDirectory {
 /// as is a constant of the surface rather than a value a configuration picks.
 pub const ADMIN_PRINCIPAL_ID: &str = "admin";
 
-/// THE ROOT LEGACY TABLE: the operator credential's provider, as configuration spells it (the
+/// THE ROOT MIGRATION TABLE: the operator credential's provider, as configuration spells it (the
 /// `auth.admin_auth:` default, the one `module:` whose definition may carry `token:`, and a reserved
 /// hook name). Frozen operator-visible config text the root hands to the kernel with its linked auth
 /// rows, so the kernel spells it nowhere. The word is the manifest's: the registry key
@@ -224,7 +224,7 @@ pub fn operator_auth_module() -> &'static str {
     crate::LINKED.operator_auth
 }
 
-/// THE OPERATOR CREDENTIAL'S WORDS, off the root legacy table: [`operator_auth_module`] and
+/// THE OPERATOR CREDENTIAL'S WORDS, off the root migration table: [`operator_auth_module`] and
 /// [`ADMIN_PRINCIPAL_ID`] (v1.5.5's operator principal id).
 #[must_use]
 pub fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {

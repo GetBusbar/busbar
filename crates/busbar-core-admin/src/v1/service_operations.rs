@@ -376,14 +376,16 @@ impl AdminService {
         start: usize,
         limit: usize,
     ) -> Result<Page<GroupView>, AdminError> {
-        let all: Vec<GroupView> = self
-            .app
-            .groups_registry
+        // Skip to the page BEFORE projecting: only the page's groups are built into their wire
+        // view, so a page costs its own size rather than the whole tree's.
+        let registry = &self.app.groups_registry;
+        let total = registry.len();
+        let items: Vec<GroupView> = registry
             .iter()
+            .skip(start)
+            .take(limit)
             .map(|(name, cfg)| GroupView::from_cfg(name, cfg))
             .collect();
-        let total = all.len();
-        let items: Vec<GroupView> = all.into_iter().skip(start).take(limit).collect();
         let end = start.saturating_add(items.len());
         let next_cursor = (end < total).then(|| crate::v1::contract::encode_offset_cursor(end));
         Ok(Page { items, next_cursor })
@@ -1470,12 +1472,37 @@ impl AdminService {
             std::collections::BTreeMap::new();
         let mut by_key: std::collections::BTreeMap<String, UsageBreakdown> =
             std::collections::BTreeMap::new();
-        // When a correction exists, the eras of every (key, lane), grouped once in row order, so
-        // the per-row loop below looks a row's eras up rather than rescanning the bucket for them
-        // (one pass, not quadratic in the rows).
+        // THE CORRECTIONS A ROW OF THIS WINDOW CAN RECEIVE, indexed once by (key, lane). The node's
+        // list holds every `adjust` it ever sealed and is never trimmed; only one whose card epoch
+        // falls inside this window can land on a row of it, and only on a row of its own key and
+        // lane. Handing each row the whole list made the read rows × lifetime corrections; each
+        // row is handed its own share instead (one pass over each, not their product).
+        let (window_start_ms, window_end_ms) = (
+            window.start.saturating_mul(1_000),
+            window.end.saturating_mul(1_000),
+        );
+        let mut corrections_of: std::collections::HashMap<(&str, &str), Vec<&amend::Amendment>> =
+            std::collections::HashMap::new();
+        for amendment in &corrections {
+            let amend::AmendBody::Adjust(adj) = &amendment.body else {
+                continue;
+            };
+            let amend::Subject::PrincipalId(key_id) = &adj.subject else {
+                continue;
+            };
+            if (window_start_ms..window_end_ms).contains(&adj.card_epoch_ms) {
+                corrections_of
+                    .entry((key_id.as_str(), adj.lane.as_str()))
+                    .or_default()
+                    .push(amendment);
+            }
+        }
+        // When a correction lands in this window, the eras of every (key, lane), grouped once in
+        // row order, so the per-row loop below looks a row's eras up rather than rescanning the
+        // bucket for them (one pass, not quadratic in the rows).
         let mut eras_of: std::collections::HashMap<(&str, std::borrow::Cow<'_, str>), Vec<u64>> =
             std::collections::HashMap::new();
-        if !corrections.is_empty() {
+        if !corrections_of.is_empty() {
             for r in &rows {
                 eras_of
                     .entry((r.key_id.as_str(), row_lane(&r.model, &r.provider)))
@@ -1505,12 +1532,15 @@ impl AdminService {
             // correction that leaves a count fractional or below zero REFUSES the read: a figure
             // over counts nobody recorded is not one this read may serve.
             let mut corrected_classes = std::borrow::Cow::Borrowed(&r.usage_units);
-            if !corrections.is_empty() {
+            if !corrections_of.is_empty() {
                 let eras = eras_of
                     .get(&(r.key_id.as_str(), lane.clone()))
                     .map_or(&[][..], Vec::as_slice);
+                let own = corrections_of
+                    .get(&(r.key_id.as_str(), &*lane))
+                    .map_or(&[][..], Vec::as_slice);
                 for (class, delta) in row_count_corrections(
-                    &corrections,
+                    own,
                     &r.key_id,
                     &lane,
                     (window.start, window.end),

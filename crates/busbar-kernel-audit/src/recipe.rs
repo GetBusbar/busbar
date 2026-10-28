@@ -35,12 +35,11 @@
 /// The recipe's version name. Goes in every published body so a verifier never has to guess which
 /// rules to apply, and so a future recipe can exist beside this one instead of replacing it.
 ///
-/// `v3` is `v2` less `currency` (#34, OWNER 2026-09-29: remove and migrate). Money is unitless
-/// abstract cost (#66: no currency type and no symbol), so a denomination in the signed preimage
-/// was a claim the node does not make. `v2` is not rewritten: its page,
-/// `docs/audit-chain-digest-v2.md`, stays published beside this one, and a record sealed under it
-/// carries [`Recipe::V2`] with the text it digested, so it still verifies by the rules it was sealed
-/// under. `v2` is `v1` less the three priced figures (`pre_tier`, `priced`,
+/// `v3` is `v2` less `currency` (remove and migrate). Money is unitless abstract cost, so a
+/// denomination in the signed preimage was a claim the node does not make. `v2` is not rewritten:
+/// its page, `docs/audit-chain-digest-v2.md`, stays published beside this one, and a record sealed
+/// under it carries [`Recipe::V2`] with the text it digested, so it still verifies by the rules it
+/// was sealed under. `v2` is `v1` less the three priced figures (`pre_tier`, `priced`,
 /// `hooks[].priced_delta`); `v1` stays published too, and no node retains a `v1` record.
 ///
 /// `v4` is `v3` plus `incarnation`, directly after `unit_key`, and `node`, directly after `mono`. A
@@ -243,7 +242,7 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
         "fee_count",
         u64::from(record.usage.fee_count),
     ));
-    // `v2` framed a `currency` text here; `v4` does not (#34).
+    // `v2` framed a `currency` text here; `v4` does not.
     if let Recipe::V2 { currency } = &record.recipe {
         f.push(DigestField::text("currency", currency.clone()));
     }

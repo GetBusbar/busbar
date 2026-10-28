@@ -54,7 +54,7 @@ impl ArrivalHost for CoreArrivalHost {
         kind: &str,
         message: &str,
     ) -> Response {
-        crate::proxy::ingress_error(proto, status, kind, message)
+        crate::ingress::ingress_error(proto, status, kind, message)
     }
 
     fn envelope_dialect(&self, ctx: &ArrivalCtx, path: &str) -> &'static str {
@@ -79,11 +79,11 @@ impl ArrivalHost for CoreArrivalHost {
     }
 
     fn kind_not_found(&self) -> &'static str {
-        crate::proxy::KIND_NOT_FOUND
+        busbar_contract::protocol::KIND_NOT_FOUND
     }
 
     fn kind_invalid_request(&self) -> &'static str {
-        crate::proxy::KIND_INVALID_REQUEST
+        busbar_contract::protocol::KIND_INVALID_REQUEST
     }
 
     fn err_type_not_found(&self) -> &'static str {

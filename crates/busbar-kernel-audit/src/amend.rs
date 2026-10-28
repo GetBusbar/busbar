@@ -22,20 +22,19 @@
 //! what it was, what it is, who authorised it, and — because a correction that nobody can question is
 //! a correction nobody should trust — the reason.
 //!
-//! **What an adjustment carries is COUNTS, never money** (owner ruling Q9, #71, #43): money is a
-//! read-time view on the ledger × the rate card, so the figure a correction changes is the unit's
-//! raw count per billable class, and the amendment names the CARD EPOCH — the instant whose card
-//! those counts price at (#79). The corrected money is then what the one function
-//! (the ledger's `cost::Tally`) derives from the corrected counts at that card; a money
-//! figure sealed here would be a second copy of that answer that no later card correction could
-//! reach. A correction that would take any count below zero is REFUSED ([`CorrectionRefused`]):
-//! a negative measurement is not a thing a meter reports.
+//! **What an adjustment carries is COUNTS, never money**: money is a read-time view on the ledger ×
+//! the rate card, so the figure a correction changes is the unit's raw count per billable class,
+//! and the amendment names the CARD EPOCH — the instant whose card those counts price at. The
+//! corrected money is then what the one function (the ledger's `cost::Tally`) derives from the
+//! corrected counts at that card; a money figure sealed here would be a second copy of that answer
+//! that no later card correction could reach. A correction that would take any count below zero is
+//! REFUSED ([`CorrectionRefused`]): a negative measurement is not a thing a meter reports.
 //!
-//! **An adjustment names the POOL its unit was dispatched through** (owner ruling Q64/Q67), so a
-//! pool-scoped budget bucket takes the correction as well as the group-wide ones. The field is
-//! OPTIONAL on the record and only in that one sense: an adjustment sealed before it existed cannot
-//! be rewritten (it is hash-chained), so it reads as UNSCOPED — group-wide buckets only, exactly as
-//! it always did — and its digest is the one it was sealed with. A new correction always names one.
+//! **An adjustment names the POOL its unit was dispatched through**, so a pool-scoped budget bucket
+//! takes the correction as well as the group-wide ones. The field is OPTIONAL on the record and
+//! only in that one sense: an adjustment sealed before it existed cannot be rewritten (it is
+//! hash-chained), so it reads as UNSCOPED — group-wide buckets only, exactly as it always did — and
+//! its digest is the one it was sealed with. A new correction always names one.
 //!
 //! ## Why these are amendments rather than fields on the audit record
 //!
@@ -51,7 +50,7 @@ use busbar_contract::{
 };
 use std::collections::{BTreeMap, VecDeque};
 
-/// A unit's counts, keyed by the billable class string the plane declared (#71).
+/// A unit's counts, keyed by the billable class string the plane declared.
 pub type ClassCounts = BTreeMap<String, Count>;
 
 /// Which class of amendment this is.
@@ -161,7 +160,7 @@ pub struct Adjust {
     pub subject: Subject,
     /// The lane the counts were recorded on — the key a card entry is written against.
     pub lane: String,
-    /// THE CARD EPOCH: the instant, in milliseconds, whose card the counts price at (#79). A
+    /// THE CARD EPOCH: the instant, in milliseconds, whose card the counts price at. A
     /// correction changes a count, never the card it prices against, so this is carried unchanged.
     pub card_epoch_ms: u64,
     /// The counts as recorded, per billable class.
@@ -175,10 +174,10 @@ pub struct Adjust {
     pub reason: String,
     /// When, in unix seconds.
     pub wall: u64,
-    /// The pool the corrected unit was dispatched through (owner ruling Q64/Q67): a pool-scoped
-    /// budget bucket for this pool takes the correction too. `None` only on an adjustment sealed
-    /// before the field existed — UNSCOPED, the group-wide buckets alone — and then it is not
-    /// digested, so that adjustment's sealed hash still verifies.
+    /// The pool the corrected unit was dispatched through: a pool-scoped budget bucket for this
+    /// pool takes the correction too. `None` only on an adjustment sealed before the field existed
+    /// — UNSCOPED, the group-wide buckets alone — and then it is not digested, so that adjustment's
+    /// sealed hash still verifies.
     pub pool: Option<String>,
 }
 
@@ -197,12 +196,12 @@ impl Adjust {
         side(&self.now).saturating_sub(side(&self.was))
     }
 
-    /// Whether this correction reaches a group budget bucket of scope `scope` (owner ruling
-    /// Q64/Q67). An UNSCOPED bucket (`None`) takes every correction of a unit it counted; a
-    /// pool-scoped one takes only a correction naming its own pool — by exact equality, the same
-    /// predicate the budget book's accrual walk uses (`ChainBucket::applies_to_pool`), so a
-    /// correction reaches exactly the buckets the unit was charged on. A correction sealed before
-    /// the pool was recorded names none and so reaches the unscoped buckets only.
+    /// Whether this correction reaches a group budget bucket of scope `scope`. An UNSCOPED bucket
+    /// (`None`) takes every correction of a unit it counted; a pool-scoped one takes only a
+    /// correction naming its own pool — by exact equality, the same predicate the budget book's
+    /// accrual walk uses (`ChainBucket::applies_to_pool`), so a correction reaches exactly the
+    /// buckets the unit was charged on. A correction sealed before the pool was recorded names none
+    /// and so reaches the unscoped buckets only.
     pub fn reaches(&self, scope: Option<&busbar_contract::records::ScopeRef>) -> bool {
         scope.is_none_or(|s| s.kind == "pool" && Some(s.value.as_str()) == self.pool.as_deref())
     }
@@ -386,7 +385,7 @@ impl AmendChain {
                 d.text(&a.authorised_by);
                 d.text(&a.reason);
                 d.num(a.wall);
-                // Q64: LAST and only when present, so an unscoped adjustment digests exactly as it
+                // LAST and only when present, so an unscoped adjustment digests exactly as it
                 // was sealed; length-prefixed, so a pooled one can never digest as an unscoped one.
                 if let Some(pool) = &a.pool {
                     d.text(pool);
@@ -735,8 +734,6 @@ impl AmendJournal {
     }
 }
 
-// ── THE NODE'S ONE JOURNAL ───────────────────────────────────────────────────────────────────────
-//
 // A hook and an export sink are resolved per config generation, but what they read is the node's to
 // account for, so the node keeps ONE journal for the life of the process: a [`NodeAmendments`]
 // INSTANCE, held by the kernel state that outlives every config apply and handed to each writer —
@@ -972,7 +969,7 @@ pub struct CountCorrection<'a> {
     pub principal: Option<&'a str>,
     /// The lane the counts were recorded on.
     pub lane: &'a str,
-    /// The card epoch the counts price at (#79), carried unchanged.
+    /// The card epoch the counts price at, carried unchanged.
     pub card_epoch_ms: u64,
     /// The counts per class as the correction says they should be.
     pub now: ClassCounts,
@@ -980,8 +977,8 @@ pub struct CountCorrection<'a> {
     pub authorised_by: &'a str,
     /// Why.
     pub reason: &'a str,
-    /// The pool the unit was dispatched through (Q64/Q67). The admin verb always names one; `None`
-    /// seals an unscoped correction, the shape every adjustment sealed before the field had.
+    /// The pool the unit was dispatched through. The admin verb always names one; `None` seals an
+    /// unscoped correction, the shape every adjustment sealed before the field had.
     pub pool: Option<&'a str>,
 }
 
