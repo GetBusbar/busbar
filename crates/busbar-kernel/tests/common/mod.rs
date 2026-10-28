@@ -18,8 +18,9 @@ use busbar_contract::caps::{
     ReasonCode, Refusal, Route, ScopeFacts, SeatVerdict, StepName, UnitKey, Usage, UsageLine,
     VerifiedDestination, Verify,
 };
+use busbar_kernel::plane_driver::DriverSteps;
 use busbar_kernel::registry::Generation;
-use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx, Units};
+use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx};
 
 /// A group with a `concurrent` cap, kept the way a real door keeps one.
 ///
@@ -355,22 +356,164 @@ pub fn usage(token: &Grant<Consumption>, quantity: u64) -> Usage {
 }
 
 macro_rules! step {
-    ($self:ident, $token:ident, $marker:ty, $name:expr, $facts:expr) => {{
+    ($self:ident, $name:expr, $facts:expr) => {{
         $self.note($name);
         match $self.refusal($name) {
-            Some(refusal) => SeatVerdict::<$marker>::refuse($token, refusal),
-            None => SeatVerdict::<$marker>::proceed($token, $facts),
+            Some(refusal) => Err(refusal),
+            None => Ok($facts),
         }
     }};
+}
+
+/// A plain answer, stamped at the seat that asked for it.
+fn seated<S: busbar_contract::caps::Step>(
+    token: &Pass<S>,
+    answer: Result<S::Facts, Refusal>,
+) -> SeatVerdict<S> {
+    match answer {
+        Ok(facts) => SeatVerdict::proceed(token, facts),
+        Err(refusal) => SeatVerdict::refuse(token, refusal),
+    }
 }
 
 /// The protocol label this harness counts a usage-tap fault under (its plane has no dialect names).
 pub const TAP_FAULT_PROTOCOL: &str = "plane-driver-test";
 
-/// The plane driver's kernel steps: told nothing beyond the loop's own seats, save the entry a
-/// scope-local unit resolved to, when the case names one, and a usage-tap fault, which they keep
-/// and count on the kernel's counter exactly as the root's steps do.
+/// The battery's answers at the kernel's seats, as the plane driver asks them; told nothing beyond
+/// the loop's own seats, save the entry a scope-local unit resolved to, when the case names one,
+/// and a usage-tap fault, which they keep and count on the kernel's counter exactly as the root's
+/// steps do. The loop's own seats ([`Units`] below) answer from these same bodies.
 impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
+    fn arrival(&self, _ctx: &UnitCtx) -> Result<busbar_contract::caps::ArrivalRecord, Refusal> {
+        step!(self, StepName::Arrival, arrival_record())
+    }
+
+    fn authenticate(
+        &self,
+        _ctx: &UnitCtx,
+    ) -> Result<busbar_contract::caps::Authenticated, Refusal> {
+        let facts = if self.challenge {
+            busbar_contract::caps::Authenticated::Challenge(busbar_contract::Challenge {
+                bytes: b"nonce".to_vec(),
+                state: busbar_contract::ChallengeState(Vec::new()),
+                rounds_left: 2,
+            })
+        } else {
+            busbar_contract::caps::Authenticated::Principal(principal())
+        };
+        step!(self, StepName::Authenticate, facts)
+    }
+
+    fn verify(
+        &self,
+        trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
+        _ctx: &UnitCtx,
+        _principal: &PrincipalId,
+    ) -> Result<Vec<VerifiedDestination>, Refusal> {
+        // The trust token the loop lends this step is what seals a destination, so the fixture
+        // seals one: a step that answered with the empty set would exercise the loop's
+        // no-destination path on every test rather than the one that names it.
+        step!(
+            self,
+            StepName::Verify,
+            vec![VerifiedDestination::seal(
+                trust,
+                busbar_contract::caps::LaneId::new("fixture-lane"),
+            )]
+        )
+    }
+
+    fn approve(
+        &self,
+        _ctx: &UnitCtx,
+        principal: &PrincipalId,
+        destinations: &[VerifiedDestination],
+    ) -> Result<ScopeFacts, Refusal> {
+        self.seated_principals
+            .lock()
+            .unwrap()
+            .push(principal.clone());
+        self.approved_lanes
+            .lock()
+            .unwrap()
+            .extend(destinations.iter().map(|d| *d.lane()));
+        step!(self, StepName::Approve, ScopeFacts::default())
+    }
+
+    fn admit(
+        &self,
+        admit: &Grant<Admittance>,
+        _ctx: &UnitCtx,
+        principal: &PrincipalId,
+        _destinations: &[VerifiedDestination],
+        leases: &busbar_kernel::slice::GroupLeaseSlip,
+    ) -> Result<Admission, Refusal> {
+        self.note(StepName::Admit);
+        self.seated_principals
+            .lock()
+            .unwrap()
+            .push(principal.clone());
+        if let Some(refusal) = self.refusal(StepName::Admit) {
+            return Err(refusal);
+        }
+        // The cap, on the door's own counter, exactly where a real door takes it: as part of the
+        // decision, before anything else is answered. A full group refuses, and the refusal is the
+        // rate-limited one the ratified table renders a concurrency cap as.
+        if let Some(group) = &self.capped {
+            let Some(counted) = group.count_one() else {
+                return Err(Refusal::new(ReasonCode::RateLimited));
+            };
+            // And handed straight over, because the count is the cap and the cap has to outlive
+            // the call that took it.
+            leases.holding(busbar_kernel::slice::DoorGrant::new(counted));
+        }
+        // Named on the yes and only on the yes, exactly where the real door names them: after the
+        // decision, never as part of it.
+        for group in &self.groups {
+            leases.counted(group);
+        }
+        Ok(match &self.door {
+            Door::Own(size) => Admission::Own(Hold::open(admit, principal.clone(), *size)),
+            Door::Zero => Admission::ZeroHold,
+            Door::Accrual(parent, amount) => match parent.accrue_child(principal, *amount, admit) {
+                Ok(accrual) => Admission::Accrual(accrual),
+                // A refused accrual falls back to the child's own hold, which is what the loop
+                // does when the parent has already exited.
+                Err(_) => Admission::Own(Hold::open(admit, principal.clone(), *amount)),
+            },
+        })
+    }
+
+    fn meter(
+        &self,
+        usage_token: &Grant<Consumption>,
+        _ctx: &UnitCtx,
+        _provisional: &Outcome,
+        _destinations: &[VerifiedDestination],
+    ) -> Result<Usage, Refusal> {
+        step!(self, StepName::Meter, usage(usage_token, self.spend))
+    }
+
+    fn audit(&self, _ctx: &UnitCtx, _outcome: &Outcome) -> busbar_contract::caps::AuditFacts {
+        self.note(StepName::Audit);
+        self.admitted_door.store(true, Ordering::Release);
+        audit_facts()
+    }
+
+    fn audit_refused(
+        &self,
+        _ctx: &UnitCtx,
+        _refusal: &Refusal,
+    ) -> busbar_contract::caps::AuditFacts {
+        self.calls.lock().unwrap().push(StepName::Audit);
+        self.refused_door.store(true, Ordering::Release);
+        audit_facts()
+    }
+
+    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+        self.evidence.clone()
+    }
+
     fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
         self.resolved.clone()
     }
@@ -381,82 +524,48 @@ impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
     }
 }
 
-impl Units for TestUnits {
-    fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {
-        step!(self, token, Arrival, StepName::Arrival, arrival_record())
+/// The battery as the loop's own seats: each answers from the body above, stamped at its seat;
+/// decode, route and encode are the loop double's alone.
+impl busbar_kernel::teller::DoorSeats for TestUnits {
+    fn arrival(&self, token: &Pass<Arrival>, ctx: &UnitCtx) -> SeatVerdict<Arrival> {
+        seated(token, DriverSteps::arrival(self, ctx))
     }
 
     fn decode(&self, token: &Pass<Decode>, _ctx: &UnitCtx) -> SeatVerdict<Decode> {
-        step!(
-            self,
+        seated(
             token,
-            Decode,
-            StepName::Decode,
-            busbar_contract::caps::OpClassId::new("battery")
+            step!(
+                self,
+                StepName::Decode,
+                busbar_contract::caps::OpClassId::new("battery")
+            ),
         )
     }
 
-    fn authenticate(
-        &self,
-        token: &Pass<Authenticate>,
-        _ctx: &UnitCtx,
-    ) -> SeatVerdict<Authenticate> {
-        let facts = if self.challenge {
-            busbar_contract::caps::Authenticated::Challenge(busbar_contract::Challenge {
-                bytes: b"nonce".to_vec(),
-                state: busbar_contract::ChallengeState(Vec::new()),
-                rounds_left: 2,
-            })
-        } else {
-            busbar_contract::caps::Authenticated::Principal(principal())
-        };
-        step!(self, token, Authenticate, StepName::Authenticate, facts)
+    fn authenticate(&self, token: &Pass<Authenticate>, ctx: &UnitCtx) -> SeatVerdict<Authenticate> {
+        seated(token, DriverSteps::authenticate(self, ctx))
     }
 
     fn verify(
         &self,
         token: &Pass<Verify>,
         trust: &busbar_contract::caps::Grant<busbar_contract::caps::Dial>,
-        _ctx: &UnitCtx,
-        _principal: &PrincipalId,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
     ) -> SeatVerdict<Verify> {
-        self.note(StepName::Verify);
-        match self.refusal(StepName::Verify) {
-            Some(refusal) => SeatVerdict::refuse(token, refusal),
-            // The trust token the loop lends this step is what seals a destination, so the fixture
-            // seals one: a step that answered with the empty set would exercise the loop's
-            // no-destination path on every test rather than the one that names it.
-            None => SeatVerdict::proceed(
-                token,
-                vec![VerifiedDestination::seal(
-                    trust,
-                    busbar_contract::caps::LaneId::new("fixture-lane"),
-                )],
-            ),
-        }
+        seated(token, DriverSteps::verify(self, trust, ctx, principal))
     }
 
     fn approve(
         &self,
         token: &Pass<Approve>,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> SeatVerdict<Approve> {
-        self.seated_principals
-            .lock()
-            .unwrap()
-            .push(principal.clone());
-        self.approved_lanes
-            .lock()
-            .unwrap()
-            .extend(destinations.iter().map(|d| *d.lane()));
-        step!(
-            self,
+        seated(
             token,
-            Approve,
-            StepName::Approve,
-            ScopeFacts::default()
+            DriverSteps::approve(self, ctx, principal, destinations),
         )
     }
 
@@ -464,52 +573,19 @@ impl Units for TestUnits {
         &self,
         token: &Pass<Admit>,
         admit: &Grant<Admittance>,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         principal: &PrincipalId,
-        _destinations: &[VerifiedDestination],
+        destinations: &[VerifiedDestination],
         leases: &busbar_kernel::slice::GroupLeaseSlip,
     ) -> SeatVerdict<Admit> {
-        self.note(StepName::Admit);
-        self.seated_principals
-            .lock()
-            .unwrap()
-            .push(principal.clone());
-        match self.refusal(StepName::Admit) {
-            Some(refusal) => SeatVerdict::refuse(token, refusal),
-            None => {
-                // The cap, on the door's own counter, exactly where a real door takes it: as part
-                // of the decision, before anything else is answered. A full group refuses, and the
-                // refusal is the rate-limited one the ratified table renders a concurrency cap as.
-                if let Some(group) = &self.capped {
-                    let Some(counted) = group.count_one() else {
-                        return SeatVerdict::refuse(token, Refusal::new(ReasonCode::RateLimited));
-                    };
-                    // And handed straight over, because the count is the cap and the cap has to
-                    // outlive the call that took it.
-                    leases.holding(busbar_kernel::slice::DoorGrant::new(counted));
-                }
-                // Named on the yes and only on the yes, exactly where the real door names them:
-                // after the decision, never as part of it.
-                for group in &self.groups {
-                    leases.counted(group);
-                }
-                let admission = match &self.door {
-                    Door::Own(size) => Admission::Own(Hold::open(admit, principal.clone(), *size)),
-                    Door::Zero => Admission::ZeroHold,
-                    Door::Accrual(parent, amount) => {
-                        match parent.accrue_child(principal, *amount, admit) {
-                            Ok(accrual) => Admission::Accrual(accrual),
-                            // A refused accrual falls back to the child's own hold, which is what
-                            // the loop does when the parent has already exited.
-                            Err(_) => Admission::Own(Hold::open(admit, principal.clone(), *amount)),
-                        }
-                    }
-                };
-                SeatVerdict::proceed(token, admission)
-            }
-        }
+        seated(
+            token,
+            DriverSteps::admit(self, admit, ctx, principal, destinations, leases),
+        )
     }
+}
 
+impl busbar_kernel::teller::UnitEnds for TestUnits {
     fn route(
         &self,
         token: &Pass<Route>,
@@ -528,32 +604,27 @@ impl Units for TestUnits {
         &self,
         token: &Pass<Meter>,
         usage_token: &Grant<Consumption>,
-        _ctx: &UnitCtx,
-        _provisional: &Outcome,
-        _destinations: &[busbar_contract::caps::VerifiedDestination],
+        ctx: &UnitCtx,
+        provisional: &Outcome,
+        destinations: &[busbar_contract::caps::VerifiedDestination],
     ) -> SeatVerdict<Meter> {
-        self.note(StepName::Meter);
-        match self.refusal(StepName::Meter) {
-            Some(refusal) => SeatVerdict::refuse(token, refusal),
-            None => SeatVerdict::proceed(token, usage(usage_token, self.spend)),
-        }
+        seated(
+            token,
+            DriverSteps::meter(self, usage_token, ctx, provisional, destinations),
+        )
     }
 
-    fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, _outcome: &Outcome) -> SeatVerdict<Audit> {
-        self.note(StepName::Audit);
-        self.admitted_door.store(true, Ordering::Release);
-        SeatVerdict::proceed(token, audit_facts())
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
+        SeatVerdict::proceed(token, DriverSteps::audit(self, ctx, outcome))
     }
 
     fn audit_refused(
         &self,
         token: &Pass<Audit>,
-        _ctx: &UnitCtx,
-        _refusal: &Refusal,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
     ) -> SeatVerdict<Audit> {
-        self.calls.lock().unwrap().push(StepName::Audit);
-        self.refused_door.store(true, Ordering::Release);
-        SeatVerdict::proceed(token, audit_facts())
+        SeatVerdict::proceed(token, DriverSteps::audit_refused(self, ctx, refusal))
     }
 
     fn encode(
@@ -566,7 +637,7 @@ impl Units for TestUnits {
         SeatVerdict::proceed(token, encoded_frame())
     }
 
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
-        self.evidence.clone()
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        DriverSteps::evidence(self, ctx)
     }
 }

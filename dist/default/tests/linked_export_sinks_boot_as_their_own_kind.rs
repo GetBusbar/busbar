@@ -85,7 +85,7 @@ fn free_port() -> u16 {
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, export: &str) {
     std::fs::write(
         dir.join("providers.yaml"),
-        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n",
+        "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n",
     )
     .unwrap();
     std::fs::write(
