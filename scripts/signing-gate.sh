@@ -205,6 +205,7 @@ cat > "$WORK/providers.yaml" <<'EOF'
 mock:
   protocol: anthropic
   base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY
 EOF
 # The reference must be written in the CURRENT config grammar, per kind. 1.5.3 made two of these
 # DEFINE-ONCE maps, and the pre-1.5.3 spellings are now fail-closed boot refusals — which this gate
