@@ -63,13 +63,17 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar
 # store-sqlite is a4b1316 (pin-1667-refs-2): that row's 31-slot table (71ba326) on 5d345fd, which
 # declares `secret_refs: *` because busbar #1699 resolves a store setting's reference only where the
 # Statement declares one, and 1.5.5 resolved every top-level setting (BOOT-170).
-store-sqlite	src:a4b1316ffafd99742eac3f053af145a1f0899c9c	build:busbar-store-sqlite	-	1.6
-store-postgres	src:87fb8172f1d07dda5cfa622a87990bdfacbddb6b	build:busbar-store-postgres	-	1.6
-store-valkey	src:b4f09028d7937ee9c0a8daeabcd29b8400408c2d	build:busbar-store-valkey	-	1.6
-store-mysql	src:412a49c08f5891aa4498c3076c7dac31edb45f54	build:busbar-store-mysql	-	1.6
-hashicorp-vault	src:3c6baa9b5cd9d6758880ee837b0b66bb22fd0920	build:busbar-secret-vault	-	1.6
-auth-oidc	src:82b88d5f331a31124cdfccc65fa3d7e9d78fb8ab	build:busbar-auth-oidc	-	1.6
-auth-github	src:077388b9e3553d731e3bc7f4f0252e1abf8f2ef6	build:busbar-auth-github	-	1.6
-auth-ldap	src:cbc5d83e38604037eba85a56adc8ee650202f145	build:busbar-auth-ldap	-	1.6
-webrequest-hook	src:214bfc79b1a12f91f81bfa91c02f8e7e20e2d83f	build:busbar-hook-webrequest	-	1.6
+# 2026-10-28 (busbar #1845: #1337's kind layout fingerprint, row 188, with #1807/#1667 and #1704): the
+# loader refuses a door built against another layout, so these nine rows are each plugin's r5-repin
+# branch built against #1845 (6acd5afc46): the store rows above merged onto it (31 slots), the vault
+# answering into the host-lent buffer (#1704).
+store-sqlite	src:a6ecb4a3869273e1b4918831825296e46189bccb	build:busbar-store-sqlite	-	1.6
+store-postgres	src:71053d287876712a0fccfed1a43a4889e6f8d92a	build:busbar-store-postgres	-	1.6
+store-valkey	src:52540aa33d77acd3205f149b6ab6e5c28905696d	build:busbar-store-valkey	-	1.6
+store-mysql	src:ce44ca588205da1648e1988c9c9c6932d3af3572	build:busbar-store-mysql	-	1.6
+hashicorp-vault	src:424e0ad6e70f9db3dc466c687be8e5d384b8d9e7	build:busbar-secret-vault	-	1.6
+auth-oidc	src:ea101ad784c7aa5a054279bd4ecbf00f8026839b	build:busbar-auth-oidc	-	1.6
+auth-github	src:8da28c87fc3a9b9ffdf752657094b79d3c695238	build:busbar-auth-github	-	1.6
+auth-ldap	src:6668ccb3d4469e92c3a7c3f565d62231cbdca51b	build:busbar-auth-ldap	-	1.6
+webrequest-hook	src:6864db76d37a046a39d2a3fde2fc34cf4c64ca97	build:busbar-hook-webrequest	-	1.6
 headroom-hook	src:4385464cbc80509e8cb7254c81e07a07ad319c55	build:busbar-hook-headroom	-	1.6
