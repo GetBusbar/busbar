@@ -48,6 +48,12 @@ const PACKAGING_SUFFIX: &str = "_plugin";
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
+    // THE PLUGIN TARGET (`release_trust::PLUGIN_TARGET`): the triple a release manifest lists a
+    // plugin artefact for, and the one this build loads.
+    println!(
+        "cargo:rustc-env=BUSBAR_PLUGIN_TARGET={}",
+        env::var("TARGET").expect("cargo sets TARGET for build scripts")
+    );
     // busbar-test-kit's source compiles into this crate's tests, and its unit tests run only here.
     println!("cargo::rustc-check-cfg=cfg(loader_self_tests)");
     println!("cargo::rustc-cfg=loader_self_tests");

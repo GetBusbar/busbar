@@ -886,7 +886,7 @@ fn release_key_list(keys: &[(&str, &SigningKey)]) -> Vec<FirstPartyKey> {
     keys.iter()
         .map(|(id, k)| FirstPartyKey {
             id: (*id).to_string(),
-            key: k.verifying_key(),
+            key: crate::sign::ReleaseKey::Ed25519(k.verifying_key()),
         })
         .collect()
 }

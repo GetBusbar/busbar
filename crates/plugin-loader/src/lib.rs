@@ -53,6 +53,7 @@ mod host;
 pub mod observe;
 pub mod open_once;
 pub mod registry;
+pub mod release_trust;
 /// THE SECRET AXIS over the one dispatcher: every admitted secret plugin, linked or dropped in.
 #[allow(unsafe_code)] // REVIEWED: lends the secret door its names and result buffers
 pub mod secret_calls;

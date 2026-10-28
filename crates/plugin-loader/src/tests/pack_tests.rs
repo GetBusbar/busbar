@@ -1270,7 +1270,7 @@ fn keys(list: &[(&str, &SigningKey)]) -> Vec<FirstPartyKey> {
     list.iter()
         .map(|(id, k)| FirstPartyKey {
             id: (*id).into(),
-            key: k.verifying_key(),
+            key: busbar_plugin_loader::sign::ReleaseKey::Ed25519(k.verifying_key()),
         })
         .collect()
 }

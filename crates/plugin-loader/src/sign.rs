@@ -80,23 +80,27 @@ pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", 
 /// so `host` is what disambiguates them structurally rather than trusting `kind` alone.
 pub const HOST_IDENTITY: &str = "busbar";
 
-/// One first-party key this build trusts: the id every refusal names, and the ed25519 public key.
+/// One first-party ROOT key this build trusts: the id every refusal names, and the public key.
+/// A root key vouches for keys documents ([`crate::release_trust`]); an ed25519 root key also
+/// verifies a per-plugin `signature` directly (the pre-1.6.0 shape, kept for run keys and tests).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirstPartyKey {
-    /// The key's name (`busbar-plugins-2026a`), stated beside it in the key list. A bare-hex entry
+    /// The key's name (`busbar-plugins-root`), stated beside it in the key list. A bare-hex entry
     /// (a run key, a test key) is named `ed25519:<first 16 hex digits>` ([`FirstPartyKey::unnamed`]).
     pub id: String,
     /// The public key.
-    pub key: VerifyingKey,
+    pub key: ReleaseKey,
 }
 
+pub use crate::release_trust::ReleaseKey;
+
 impl FirstPartyKey {
-    /// A key the list states no id for, named by its first 16 hex digits.
+    /// An ed25519 key the list states no id for, named by its first 16 hex digits.
     pub fn unnamed(key: VerifyingKey) -> Self {
         let hex = hex::encode(key.as_bytes());
         FirstPartyKey {
             id: format!("ed25519:{}", &hex[..16]),
-            key,
+            key: ReleaseKey::Ed25519(key),
         }
     }
 }
@@ -104,10 +108,16 @@ impl FirstPartyKey {
 /// The build-time variable carrying the first-party key list ([`parse_release_keys`]).
 pub const RELEASE_KEYS_ENV: &str = "BUSBAR_RELEASE_PUBKEY";
 
-/// Parse a first-party key list: entries separated by `,`, each `<id>:<64 hex>` or a bare `<64
-/// hex>` (named by [`FirstPartyKey::unnamed`]). Every entry must be a usable key
-/// ([`public_key_from_hex`]); ids are valid plugin names (`[a-z0-9-]+`) and neither an id nor a key
-/// may repeat. An empty list is refused: a list that names no key is a packaging bug, not a choice.
+/// Parse a first-party ROOT key list: entries separated by `,`, each one of
+///
+/// * `<id>:p256:<130 hex>`: an ECDSA P-256 key, its 65-byte uncompressed SEC1 point;
+/// * `<id>:ed25519:<64 hex>`: an ed25519 key;
+/// * `<id>:<64 hex>`: an ed25519 key (the pre-1.6.0 spelling);
+/// * `<64 hex>`: an unnamed ed25519 key ([`FirstPartyKey::unnamed`]; a run key).
+///
+/// Every entry must be a usable key; ids are valid plugin names (`[a-z0-9-]+`) and neither an id
+/// nor a key may repeat. An empty list is refused: a list that names no key is a packaging bug,
+/// not a choice.
 ///
 /// # Errors
 ///
@@ -119,23 +129,47 @@ pub fn parse_release_keys(spec: &str) -> Result<Vec<FirstPartyKey>, String> {
         if entry.is_empty() {
             return Err(format!("{RELEASE_KEYS_ENV} entry {n} is empty"));
         }
-        let (id, hex_key) = match entry.split_once(':') {
-            Some((id, hex_key)) => (Some(id.trim()), hex_key.trim()),
-            None => (None, entry),
+        let parts: Vec<&str> = entry.split(':').map(str::trim).collect();
+        let (id, key) = match parts.as_slice() {
+            [hex_key] => (None, public_key_from_hex(hex_key).map(ReleaseKey::Ed25519)),
+            [id, hex_key] => (
+                Some(*id),
+                public_key_from_hex(hex_key).map(ReleaseKey::Ed25519),
+            ),
+            [id, "ed25519", hex_key] => (
+                Some(*id),
+                public_key_from_hex(hex_key).map(ReleaseKey::Ed25519),
+            ),
+            [id, "p256", _] => (
+                Some(*id),
+                Err("RED: p256 keys are not read yet".to_string()),
+            ),
+            [_, alg, _] => (
+                None,
+                Err(format!("algorithm '{alg}' is not one of ed25519, p256")),
+            ),
+            _ => (
+                None,
+                Err("is not <id>:<algorithm>:<hex>, <id>:<hex> or <hex>".to_string()),
+            ),
         };
-        let key = public_key_from_hex(hex_key)
-            .map_err(|e| format!("{RELEASE_KEYS_ENV} entry {n}: {e}"))?;
-        let key = match id {
-            Some(id) if !valid_name(id) => {
+        let key = key.map_err(|e| format!("{RELEASE_KEYS_ENV} entry {n}: {e}"))?;
+        let key = match (id, key) {
+            (Some(id), _) if !valid_name(id) => {
                 return Err(format!(
                     "{RELEASE_KEYS_ENV} entry {n}: key id '{id}' is not lowercase [a-z0-9-]+"
                 ));
             }
-            Some(id) => FirstPartyKey {
+            (Some(id), key) => FirstPartyKey {
                 id: id.to_string(),
                 key,
             },
-            None => FirstPartyKey::unnamed(key),
+            (None, ReleaseKey::Ed25519(k)) => FirstPartyKey::unnamed(k),
+            (None, ReleaseKey::P256(_)) => {
+                return Err(format!(
+                    "{RELEASE_KEYS_ENV} entry {n}: a p256 key must be named"
+                ));
+            }
         };
         if let Some(dup) = keys.iter().find(|k| k.id == key.id || k.key == key.key) {
             return Err(format!(
@@ -1017,7 +1051,7 @@ pub fn first_party_signer<'k>(
     let sig = bound_signature(manifest, bytes).map_err(FirstPartyUnverified::Malformed)?;
     let canonical = canonical_manifest_bytes(manifest);
     keys.iter()
-        .find(|k| k.key.verify_strict(&canonical, &sig).is_ok())
+        .find(|k| matches!(&k.key, ReleaseKey::Ed25519(key) if key.verify_strict(&canonical, &sig).is_ok()))
         .ok_or_else(|| FirstPartyUnverified::NoKey {
             trusted_keys: keys.iter().map(|k| k.id.clone()).collect(),
         })
