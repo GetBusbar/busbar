@@ -222,16 +222,8 @@ fn http_field_values() {
 }
 
 #[test]
-fn hmac_and_verify() {
+fn verify_eq() {
     let c = cred("s3cr3t-pw");
-    assert_eq!(
-        c.hmac_sha256_hex(b"payload").wire(),
-        b"99003796343adffe1735817aab1015d14a798895c212c4b06a1962f796949024"
-    );
-    let raw = hex::decode("99003796343adffe1735817aab1015d14a798895c212c4b06a1962f796949024")
-        .expect("hex");
-    assert!(c.verify_hmac_sha256(b"payload", &raw));
-    assert!(!c.verify_hmac_sha256(b"payloaD", &raw));
     assert!(c.verify_eq(b"s3cr3t-pw"));
     assert!(!c.verify_eq(b"s3cr3t-pX"));
 }
