@@ -780,7 +780,7 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
                     &i.flags.to_le_bytes(),
                 ]);
                 serve(
-                    &served.store,
+                    served.store,
                     &route,
                     &head,
                     req,
@@ -834,7 +834,7 @@ unsafe fn pended(
     // SAFETY: the caller's contract.
     unsafe {
         serve(
-            &served.store,
+            served.store,
             route,
             head,
             req,
@@ -871,7 +871,7 @@ extern "C" fn records_get(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             unsafe {
                 let req = Fp::of(&[kind.as_bytes(), &key]);
                 pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.records_get(&caller, &kind, &key, later)
+                    provider.records_get(caller, &kind, &key, later)
                 })
             }
         },
@@ -1062,7 +1062,7 @@ extern "C" fn records_list(ctx: HostCtx, input: *const c_void, out: *mut Service
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.records_list(&caller, list, later)
+                    provider.records_list(caller, list, later)
                 })
             }
         },
@@ -1097,7 +1097,7 @@ extern "C" fn records_claim(
             unsafe {
                 let req = Fp::of(&[kind.as_bytes(), &key, &i.ttl_ms.to_le_bytes()]);
                 pended(&served, &route, &head, req, None, |later| {
-                    provider.records_claim(&caller, &kind, &key, i.ttl_ms, later)
+                    provider.records_claim(caller, &kind, &key, i.ttl_ms, later)
                 })
             }
         },
@@ -1124,12 +1124,12 @@ extern "C" fn sign(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> 
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 serve(
-                    &served.store,
+                    served.store,
                     &route,
                     &head,
                     Fp::of(&[&data]),
                     Some(&i.into),
-                    |_| Ran::Now(provider.sign(&caller, &data)),
+                    |_| Ran::Now(provider.sign(caller, &data)),
                 )
             }
         },
@@ -1158,7 +1158,7 @@ extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
                     return unsafe {
                         let req = Fp::of(&[&i.outcome.to_le_bytes(), counterparty.as_bytes()]);
                         pended(&served, &route, &head, req, None, |_| {
-                            Ran::Now(provider.trust_unreached(&caller, &counterparty))
+                            Ran::Now(provider.trust_unreached(caller, &counterparty))
                         })
                     };
                 }
@@ -1175,7 +1175,7 @@ extern "C" fn trust_sight(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
                     hash.as_bytes(),
                 ]);
                 pended(&served, &route, &head, req, None, |later| {
-                    provider.trust_sight(&caller, &counterparty, &hash, later)
+                    provider.trust_sight(caller, &counterparty, &hash, later)
                 })
             }
         },
@@ -1207,8 +1207,8 @@ extern "C" fn trust_sight_item(
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[counterparty.as_bytes(), item.as_bytes(), digest.as_bytes()]);
-                serve(&served.store, &route, &head, req, None, |_| {
-                    Ran::Now(provider.trust_sight_item(&caller, &counterparty, &item, &digest))
+                serve(served.store, &route, &head, req, None, |_| {
+                    Ran::Now(provider.trust_sight_item(caller, &counterparty, &item, &digest))
                 })
             }
         },
@@ -1238,9 +1238,9 @@ extern "C" fn trust_serves(ctx: HostCtx, input: *const c_void, out: *mut Service
             let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
-                serve(&served.store, &route, &head, req, None, |_| {
+                serve(served.store, &route, &head, req, None, |_| {
                     Ran::Now(provider.trust_serves(
-                        &caller,
+                        caller,
                         &counterparty,
                         item.as_deref(),
                         digest.as_deref(),
@@ -1284,12 +1284,12 @@ extern "C" fn trust_decide(ctx: HostCtx, input: *const c_void, out: *mut Service
             let provider = served.provider;
             // SAFETY: no buffer is named.
             unsafe {
-                serve(&served.store, &route, &head, req, None, |_| {
+                serve(served.store, &route, &head, req, None, |_| {
                     let key = busbar_contract::services::TrustKeyRef {
                         counterparty: &counterparty,
                         item: item.as_deref(),
                     };
-                    Ran::Now(provider.trust_decide(&caller, key, expected.as_deref(), approve))
+                    Ran::Now(provider.trust_decide(caller, key, expected.as_deref(), approve))
                 })
             }
         },
@@ -1316,8 +1316,8 @@ extern "C" fn trust_state(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[counterparty.as_bytes()]);
-                serve(&served.store, &route, &head, req, Some(&i.into), |_| {
-                    Ran::Now(provider.trust_state(&caller, &counterparty))
+                serve(served.store, &route, &head, req, Some(&i.into), |_| {
+                    Ran::Now(provider.trust_state(caller, &counterparty))
                 })
             }
         },
@@ -1341,12 +1341,12 @@ extern "C" fn trust_due(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 serve(
-                    &served.store,
+                    served.store,
                     &route,
                     &head,
                     Fp::of(&[]),
                     Some(&i.into),
-                    |_| Ran::Now(provider.trust_due(&caller)),
+                    |_| Ran::Now(provider.trust_due(caller)),
                 )
             }
         },
@@ -1377,8 +1377,8 @@ extern "C" fn trust_verify(ctx: HostCtx, input: *const c_void, out: *mut Service
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[counterparty.as_bytes(), &payload, &signatures]);
-                serve(&served.store, &route, &head, req, Some(&i.into), |_| {
-                    Ran::Now(provider.trust_verify(&caller, &counterparty, &payload, &signatures))
+                serve(served.store, &route, &head, req, Some(&i.into), |_| {
+                    Ran::Now(provider.trust_verify(caller, &counterparty, &payload, &signatures))
                 })
             }
         },
@@ -1459,8 +1459,8 @@ extern "C" fn entitlement_check(
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[target.as_bytes()]);
-                serve(&served.store, &route, &head, req, None, |_| {
-                    Ran::Now(provider.entitlement_check(&caller, unit, &target))
+                serve(served.store, &route, &head, req, None, |_| {
+                    Ran::Now(provider.entitlement_check(caller, unit, &target))
                 })
             }
         },
@@ -1487,8 +1487,8 @@ extern "C" fn session_emit(ctx: HostCtx, input: *const c_void, out: *mut Service
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[&i.session.to_le_bytes(), &bytes]);
-                serve(&served.store, &route, &head, req, None, |_| {
-                    Ran::Now(provider.session_emit(&caller, i.session, &bytes))
+                serve(served.store, &route, &head, req, None, |_| {
+                    Ran::Now(provider.session_emit(caller, i.session, &bytes))
                 })
             }
         },
@@ -1518,7 +1518,7 @@ extern "C" fn random_fill(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             // SAFETY: `into` checked above; the caller's buffers.
             unsafe {
                 let req = Fp::of(&[&i.len.to_le_bytes()]);
-                serve(&served.store, &route, &head, req, Some(&i.into), |_| {
+                serve(served.store, &route, &head, req, Some(&i.into), |_| {
                     Ran::Now(provider.random_fill(i.len))
                 })
             }
@@ -1553,7 +1553,7 @@ extern "C" fn unit_nest(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             // SAFETY: `into` checked above; the caller's buffers, where the whole reply goes.
             unsafe {
                 pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.unit_nest(&caller, unit, ask, later)
+                    provider.unit_nest(caller, unit, ask, later)
                 })
             }
         },
@@ -1592,7 +1592,7 @@ extern "C" fn work_open(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             unsafe {
                 let req = Fp::of(&[kind.as_bytes(), &record]);
                 pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.work_open(&caller, unit, &kind, &record, later)
+                    provider.work_open(caller, unit, &kind, &record, later)
                 })
             }
         },
@@ -1621,7 +1621,7 @@ extern "C" fn work_find(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             unsafe {
                 let req = Fp::of(&[&reference]);
                 pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.work_find(&caller, unit, &reference, later)
+                    provider.work_find(caller, unit, &reference, later)
                 })
             }
         },
@@ -1651,7 +1651,7 @@ extern "C" fn work_settle(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             unsafe {
                 let req = Fp::of(&[&i.handle.to_le_bytes(), &record]);
                 pended(&served, &route, &head, req, None, |later| {
-                    provider.work_settle(&caller, unit, i.handle, &record, later)
+                    provider.work_settle(caller, unit, i.handle, &record, later)
                 })
             }
         },
@@ -1677,7 +1677,7 @@ extern "C" fn work_resume(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
             unsafe {
                 let req = Fp::of(&[&i.handle.to_le_bytes()]);
                 pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.work_resume(&caller, unit, i.handle, later)
+                    provider.work_resume(caller, unit, i.handle, later)
                 })
             }
         },
@@ -1723,7 +1723,7 @@ extern "C" fn verify_lookup(
             unsafe {
                 let req = Fp::of(&[&key]);
                 pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.verify_lookup(&caller, &key, later)
+                    provider.verify_lookup(caller, &key, later)
                 })
             }
         },
@@ -1753,8 +1753,8 @@ extern "C" fn verify_store(ctx: HostCtx, input: *const c_void, out: *mut Service
             // SAFETY: no buffer is named.
             unsafe {
                 let req = Fp::of(&[&key, &entry, &i.ttl_ms.to_le_bytes()]);
-                serve(&served.store, &route, &head, req, None, |_| {
-                    Ran::Now(provider.verify_store(&caller, &key, &entry, i.ttl_ms))
+                serve(served.store, &route, &head, req, None, |_| {
+                    Ran::Now(provider.verify_store(caller, &key, &entry, i.ttl_ms))
                 })
             }
         },
@@ -1783,7 +1783,7 @@ extern "C" fn content_scan(ctx: HostCtx, input: *const c_void, out: *mut Service
             unsafe {
                 let req = Fp::of(&[&content]);
                 pended(&served, &route, &head, req, Some(&i.into), |later| {
-                    provider.content_scan(&caller, unit, &content, later)
+                    provider.content_scan(caller, unit, &content, later)
                 })
             }
         },
@@ -1868,7 +1868,7 @@ extern "C" fn hook_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             // SAFETY: `into` checked above; the caller's buffers, where the reply goes.
             unsafe {
                 pended(&served, &route, &head, req.0, Some(&i.into), |later| {
-                    provider.hook_call(&caller, unit, ask, later)
+                    provider.hook_call(caller, unit, ask, later)
                 })
             }
         },
@@ -1925,7 +1925,7 @@ extern "C" fn snapshot_read(
             if svc::check_snapshot_read_in(&i).is_err() {
                 return Answered::fault();
             }
-            match served.provider.snapshot_read(&caller, i.scope) {
+            match served.provider.snapshot_read(caller, i.scope) {
                 Snapshot::Families(families) => {
                     let needed = super::snapshot::size_of_layout(&families);
                     if needed > i.into.cap {
