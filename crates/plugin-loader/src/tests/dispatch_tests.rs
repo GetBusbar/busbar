@@ -3292,6 +3292,51 @@ fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
     drop(held);
 }
 
+/// RED (THE PLANE `serve` THAT DIALS): an op that must wait on an outbound dial answers PENDING
+/// (Ready|Pending(wake), BUSBAR-1.6.0.md line 1282); the dial's framing crosses the FRAMER on an
+/// inline ticket of its own, nested INSIDE the op's instance's crossing (its connection service
+/// drives the connector on its thread), and the framer's new op starts a new epoch of that ticket's
+/// stored results. That bookkeeping is the host's own: it blames neither instance, so the wake
+/// resumes the op and it answers READY. Before the fix the host resolved the framer's context as if
+/// a plugin had handed it inside the outer crossing: "another instance's handle", a forgery, and
+/// the outer instance was quarantined, so its resumed op answered FAULT.
+#[test]
+fn red_an_op_whose_dial_frames_inside_its_crossing_pends_and_resumes_ready() {
+    let d = Dispatcher::new(config());
+    let (plane, _) = opened(&d);
+    let (framer, _) = opened(&d);
+    let t = d.mint(0).expect("a ticket");
+    let serving = d.submit(
+        &plane,
+        t,
+        TICK,
+        frame(plug::PEND_HOLD),
+        DeadlineClass::Call,
+        0,
+    );
+    until("the op waits on its dial", || d.is_pending(t));
+    // The dial is framed: the framer's `begin` on its own inline ticket, inside the op's crossing.
+    let side = d.inline_ticket().expect("an inline ticket");
+    let begun = crate::dispatch::plugin::with_crossing(Some(&*plane.inner), || {
+        framer.call_inline(side.ticket(), false, TICK, &mut frame(plug::COUNT))
+    });
+    assert_eq!(begun.outcome, Outcome::Ready, "the framing's begin");
+    assert!(
+        !plane.is_faulted(),
+        "the host's own framing of the dial quarantined the instance it was nested in"
+    );
+    assert!(!framer.is_faulted(), "the framer was quarantined");
+    // The dial completes: the wake resumes the op, which answers READY.
+    assert_eq!(
+        plane.call(TICK, &mut frame(plug::KICK)).outcome,
+        Outcome::Ready
+    );
+    let done = serving.wait(WAIT).expect("the op answers");
+    assert_eq!(done.outcome, Outcome::Ready, "the resumed op");
+    drop(side);
+    d.recycle(t);
+}
+
 /// RED (#74, INLINE WRAP AND LATE WAKES): an inline slot whose counter is spent is RETIRED, never
 /// handed out again, and a late wake for a generation it really minted is not a forgery.
 #[test]

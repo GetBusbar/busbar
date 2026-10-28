@@ -639,6 +639,9 @@ pub struct DoorSteps<'s> {
     depth: u32,
     /// The caller's verified credential, lent on the unit's record at authenticate.
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket that admitted the caller, held on the unit's record at
+    /// authenticate for `ticket.take`; `None` when a key admitted it.
+    ticket: Option<Vec<u8>>,
     /// A nested unit's parent's hold cell: its door accrues against the parent's admission.
     parent: Option<&'s busbar_contract::caps::HoldCell>,
     unit: Mutex<DoorUnit>,
@@ -671,6 +674,9 @@ pub struct DoorCaller {
     /// The caller's verified credential, lent on the unit's record while it runs: a passthrough
     /// member's auth call made inside the unit (the plane's own fetches included) is lent it.
     pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    /// The record of the ticket the auth gate spent admitting the caller (row 132); `None` when a
+    /// key admitted it.
+    pub ticket: Option<Vec<u8>>,
 }
 
 impl<'s> DoorSteps<'s> {
@@ -699,6 +705,7 @@ impl<'s> DoorSteps<'s> {
             records: caller.records,
             depth: caller.depth,
             credential: caller.credential,
+            ticket: caller.ticket,
             parent: None,
             unit: Mutex::new(DoorUnit::default()),
         }
@@ -980,6 +987,8 @@ impl DriverSteps for DoorSteps<'_> {
                     if let Some(credential) = &self.credential {
                         records.lend(ctx.key.get(), credential.clone());
                     }
+                    // What admitted the unit, for `ticket.take`: a ticket's record, or a key.
+                    records.ticketed(ctx.key.get(), self.ticket.clone());
                     self.lock().recorded = Some(ctx.key.get());
                 }
                 Ok(Authenticated::Principal(self.principal.clone()))

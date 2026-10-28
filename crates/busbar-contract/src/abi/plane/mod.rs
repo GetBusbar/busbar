@@ -133,7 +133,12 @@
 //!    [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`], and its operation class and
 //!    dialect) is held: the kernel judges the caller's identity and its grant over that entry
 //!    first (a refusal there wins), then renders this refusal before admission, so nothing is
-//!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault).
+//!    charged. Its status may be 400 to 599 (the entry, not the caller, may be at fault). With
+//!    [`REFUSED_AFTER_ADMISSION`] in [`ArriveOut::refusal_flags`] the refusal is held one step
+//!    further: after the caller's identity and its grant over the entry, the kernel runs the
+//!    entry's ADMISSION (its group limits and budget; a refusal there wins, in admission's own
+//!    status and words), and only then renders this refusal. That rendering refunds or releases
+//!    whatever admission held and runs no walk, no hook and no tap, so nothing is net-charged.
 //!
 //! [`RefusalOut::status`] lets the rendering name the status its dialect answers with; `0` keeps
 //! the one the kernel chose. The gate-rejected audit marker is the kernel's: it sets it from
@@ -169,6 +174,7 @@
 //! | `served_op_classes` | tail [`PlaneTail::op_classes`]; [`ArriveOut::op_class`] indexes it |
 //! | `record_kinds` | tail [`PlaneTail::record_kinds`]; [`RecordWrite::kind`] indexes it |
 //! | (new) chained record framing | tail [`PlaneTail::record_chains`] |
+//! | (new) record retention rules (terminal-only vs by age) | tail [`PlaneTail::record_retentions`]; a kind not listed is purged by age |
 //! | (new) refusal statuses per dialect and reason | tail [`PlaneTail::refusal_statuses`]; [`RefusalIn::reason`] |
 //! | `dispatch_flags` / `DISPATCH_BLOCKS` | DROPPED — a plane never blocks (the design's plugin-ABI section: no blocking on the hot path). Replaced by [`PlaneTail::dispatch_shape`] |
 //! | `required_sections` | Statement: [`SECTION_REQUIRED`](crate::abi::mechanism::door::SECTION_REQUIRED) on a `sections` entry |
@@ -233,7 +239,7 @@ pub const ABI_VERSION: u32 = 1;
 /// the plane table. A door states it as built
 /// ([`Door::layout`](crate::abi::mechanism::door::Door::layout)) and the loader refuses another;
 /// `tests/layout_fingerprint.rs` holds it to its fold.
-pub const LAYOUT_FINGERPRINT: u64 = 0xfe755f5d9aa5a604;
+pub const LAYOUT_FINGERPRINT: u64 = 0x344ee53291ab670c;
 
 /// The plane kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 /// crossing its table, each with every field. A struct `abi/plane/` gains is listed here (gate
@@ -247,6 +253,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(BillableClass => class, family),
     crate::layout_shape!(RouteCost => class, _reserved, weight),
     crate::layout_shape!(RecordChain => kind, framing, flags, _reserved),
+    crate::layout_shape!(RecordRetention => kind, rule),
     crate::layout_shape!(PinMechanism => token, flags, _reserved),
     crate::layout_shape!(TrustKey => key, role, flags, default, mechanisms, mechanisms_len),
     crate::layout_shape!(RefusalStatus => dialect, reason, status, _reserved),
@@ -258,7 +265,8 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
         fee_units_len, record_kinds, record_kinds_len, egress_targets, egress_targets_len,
         record_chains, record_chains_len, trust_keys, trust_keys_len, refusal_statuses,
         refusal_statuses_len, caller_credential_refusal, admin_routes, admin_routes_len,
-        admin_openapi, stream_ceiling_secs, metric_lanes, metric_lanes_len
+        admin_openapi, stream_ceiling_secs, metric_lanes, metric_lanes_len, record_retentions,
+        record_retentions_len
     ),
     crate::layout_shape!(Claim => verb, target, carrier, flags, refusal_dialect, _pad),
     crate::layout_shape!(AdminRoute => verb, target, flags, _reserved, audit_verb),
@@ -515,6 +523,13 @@ pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
 /// percent-decoded, as the span's field `<field>` ([`check::entry_fact`]). An entry fact mounts no
 /// route and takes no arrival. Never with another flag.
 pub const CLAIM_ENTRY: u32 = 1 << 6;
+/// [`Claim::flags`]: the route's inbound credential may be a TICKET the host minted for the plane
+/// ([`op::TICKET_MINT`](crate::abi::host::service::op::TICKET_MINT)). The gate verifies a credential
+/// carrying the plane's declared issued-id prefix as a ticket on this route only, consumes it when
+/// it admits the unit (a ticket admits one unit, once), and holds its record for
+/// [`op::TICKET_TAKE`](crate::abi::host::service::op::TICKET_TAKE). A key admits as on any keyed
+/// route. Never with [`CLAIM_OPEN`].
+pub const CLAIM_TICKET: u32 = 1 << 7;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
@@ -674,6 +689,16 @@ pub const ROUTE_COUNTED: u8 = 8;
 /// the kernel and the root count the outcome and never read the plane's code or status to tell one
 /// refusal from another.
 pub const REFUSED_UNSUPPORTED_ACTION: u32 = 1;
+
+/// [`ArriveOut::refusal_flags`]: the refusal about an entry is rendered AFTER ADMISSION, not before
+/// it (see "A refused arrival", rule 6). Only on a REFUSED `arrive` that names its entry
+/// ([`ArriveOut::pool`] with a [`ROUTE_POOL`] or [`ROUTE_DIRECT`] [`ArriveOut::route`]): the kernel
+/// judges the caller's identity, then its grant over the entry, then the entry's admission (group
+/// limits and budget), a refusal at any of them winning; only then does it render this refusal,
+/// refunding or releasing what admission held, with no walk, no hook and no tap, so nothing is
+/// net-charged. On an answer that names no entry, or on any other outcome, it is a FAULT. Unset,
+/// the refusal is rendered before admission and nothing is charged.
+pub const REFUSED_AFTER_ADMISSION: u32 = 2;
 
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
@@ -1384,6 +1409,27 @@ impl RecordChain {
     };
 }
 
+/// One record kind's RETENTION RULE, as the plane declares it: which of the kind's rows older than
+/// a purge's cutoff the host's purge drops. The host passes the rule with every purge of the kind
+/// (the store ABI's `KindBeforeIn::retention`), so no store infers it from the kind's name. A kind
+/// the plane lists no rule for is purged by age ([`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE)).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordRetention {
+    /// Index into [`PlaneTail::record_kinds`].
+    pub kind: u32,
+    /// [`RETENTION_AGE`](crate::abi::store::plane::RETENTION_AGE) |
+    /// [`RETENTION_TERMINAL_ONLY`](crate::abi::store::plane::RETENTION_TERMINAL_ONLY).
+    pub rule: u32,
+}
+
+impl RecordRetention {
+    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// builds its value as `RecordRetention { …, ..RecordRetention::ZERO }` so a field appended
+    /// later reads as not declared.
+    pub const ZERO: Self = Self { kind: 0, rule: 0 };
+}
+
 /// [`TrustKey::role`]: the key holds the registration's pin object, `{mechanism, key?,
 /// fingerprint?}`: which authenticity root it has and the operator's out-of-band material.
 pub const TRUST_PIN: u32 = 1;
@@ -1660,6 +1706,13 @@ pub struct PlaneTail {
     pub metric_lanes: *const AbiStr,
     /// How many.
     pub metric_lanes_len: usize,
+    /// THE RETENTION RULE OF EACH RECORD KIND THAT IS NOT PURGED BY AGE ([`RecordRetention`]): at
+    /// most one entry per kind, each naming a kind of [`PlaneTail::record_kinds`]. A kind not listed
+    /// is purged by age. NULL/0 = none. A tail addition: a tail whose `size` ends before it lists
+    /// none.
+    pub record_retentions: *const RecordRetention,
+    /// How many.
+    pub record_retentions_len: usize,
 }
 
 impl PlaneTail {
@@ -1711,6 +1764,8 @@ impl PlaneTail {
         stream_ceiling_secs: 0,
         metric_lanes: std::ptr::null(),
         metric_lanes_len: 0,
+        record_retentions: std::ptr::null(),
+        record_retentions_len: 0,
     };
 }
 
@@ -1767,6 +1822,8 @@ impl PlaneTail {
         stream_ceiling_secs: 0,
         metric_lanes: std::ptr::null(),
         metric_lanes_len: 0,
+        record_retentions: std::ptr::null(),
+        record_retentions_len: 0,
     };
 
     abi_lists! {
@@ -1822,7 +1879,8 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
-    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`]; any other bit refuses the snapshot.
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`] | [`CLAIM_TICKET`]; any other bit
+    /// refuses the snapshot.
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
     /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route
@@ -2167,8 +2225,9 @@ pub struct ArriveOut {
     /// fault by definition; 400 to 599 for a refusal about an entry (see "A refused arrival",
     /// rule 6). `0` on every other outcome.
     pub refusal_status: u32,
-    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`]);
-    /// `0` on every other outcome. In what was padding.
+    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`])
+    /// and, on a refusal about an entry, its order ([`REFUSED_AFTER_ADMISSION`]); `0` on every
+    /// other outcome. In what was padding.
     pub refusal_flags: u32,
     /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
     /// example from its request identifier), naming the unit for a subsequent

@@ -524,6 +524,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
                 records: Some(std::sync::Arc::clone(&records)),
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };
@@ -652,6 +653,7 @@ fn charge_once_at(
             records: None,
             depth: 0,
             credential: None,
+            ticket: None,
         },
     );
     steps.lock().routed = pools.resolve(ROUTE_POOL, Some(pool.as_bytes()));
@@ -8548,6 +8550,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
                 records: None,
                 depth: 0,
                 credential: None,
+                ticket: None,
             },
         )
     };

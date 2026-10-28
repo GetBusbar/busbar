@@ -182,6 +182,31 @@ pub trait HostServices: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
+    /// `ticket.mint`: mint a ticket for the principal of `unit` (the unit the calling crossing
+    /// serves; `None` = it serves none, REFUSED), living `ttl_secs` clamped to the mint ceiling,
+    /// and store `record` with it. READY with the ticket credential as the bytes and its expiry
+    /// (Unix seconds) as `value`. A unit with no principal, or a plugin that declares no issued-id
+    /// prefix, is REFUSED. Never pends. A host that mints no tickets refuses every one.
+    fn ticket_mint(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        ttl_secs: u64,
+        record: &[u8],
+    ) -> Stored {
+        let _ = (caller, unit, ttl_secs, record);
+        Stored::refused(UNSERVED)
+    }
+
+    /// `ticket.take`: the record of the ticket that admitted `unit`, once: READY `TICKET_TAKEN`
+    /// with the record as the bytes, or `TICKET_NONE` with nothing when a key admitted it. `None`
+    /// (a crossing that serves no unit) and a second take for one unit are REFUSED. Never pends. A
+    /// host that mints no tickets refuses every one.
+    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
+        let _ = (caller, unit);
+        Stored::refused(UNSERVED)
+    }
+
     /// `random.fill`: `len` bytes from the kernel's CSPRNG, READY with exactly those bytes; `len`
     /// outside `1..=MAX_RANDOM_FILL` is REFUSED, an OS randomness failure FAILED. Never pends.
     fn random_fill(&self, len: u64) -> Stored;

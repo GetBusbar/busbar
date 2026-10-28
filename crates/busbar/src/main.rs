@@ -1085,6 +1085,13 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
+    // THE TICKET PRESS (row 132): `ticket.mint` mints through the live generation's governance,
+    // under its mint ceiling, once the swap handle exists.
+    if let Some(kernel) = late_services.kernel() {
+        kernel.attach_tickets(std::sync::Arc::new(root::serve::LiveTickets(
+            std::sync::Arc::clone(&app_handle),
+        )));
+    }
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();
         move |app| door_appliers.apply(app)

@@ -24,20 +24,21 @@ use super::reason_of;
 use super::{units_bill, UNITS_FLOOR};
 use super::{
     AdminRoute, ArriveOut, BillableClass, CatalogOut, Claim, DialectAuth, OnPieceOut, OutField,
-    PinMechanism, PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite,
-    RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED,
-    CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
-    CLAIM_CATALOG, CLAIM_ENTRY, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX,
-    CLAIM_SIGNED_INGRESS, DIALECT_PROVIDER, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
-    EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
-    PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
-    REFUSAL_ANY_DIALECT, REFUSED_UNSUPPORTED_ACTION, ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED,
-    ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE,
-    ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
-    TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS,
-    TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    PinMechanism, PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain,
+    RecordRetention, RecordWrite, RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey,
+    UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED,
+    CHAIN_PIPE_SEPARATED, CLAIM_CATALOG, CLAIM_ENTRY, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
+    CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS, CLAIM_TICKET, DIALECT_PROVIDER, EMIT_DONE,
+    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE,
+    EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT,
+    MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
+    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, REFUSED_AFTER_ADMISSION,
+    REFUSED_UNSUPPORTED_ACTION, ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL,
+    ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SESSION,
+    ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES,
+    TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH,
+    UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -51,6 +52,7 @@ use crate::abi::mechanism::check::{
 use crate::abi::mechanism::door::{
     Section, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED, SECTION_SELECTS,
 };
+use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
 use crate::grammar::{PathSeg, Selector};
 
 /// The most unit counts one answer may carry.
@@ -206,8 +208,15 @@ pub fn check_arrive(
             if about_entry { 599 } else { 499 },
             "arrive.refusal_status",
         )?;
-        if out.refusal_flags & !REFUSED_UNSUPPORTED_ACTION != 0 {
+        if out.refusal_flags & !(REFUSED_UNSUPPORTED_ACTION | REFUSED_AFTER_ADMISSION) != 0 {
             return Err(fault(Rule::UnknownCode, "arrive.refusal_flags"));
+        }
+        // A refusal rendered after admission is one about an entry (rule 6): it names the entry,
+        // directly or as a pool, whose admission it waits for.
+        if out.refusal_flags & REFUSED_AFTER_ADMISSION != 0
+            && !(about_entry && (out.route == ROUTE_POOL || out.route == ROUTE_DIRECT))
+        {
+            return Err(fault(Rule::Contradiction, "arrive.refusal_flags"));
         }
     } else if out.refusal != 0 || out.refusal_status != 0 || out.refusal_flags != 0 {
         return Err(fault(Rule::Contradiction, "arrive.refusal"));
@@ -1101,6 +1110,7 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
                     | CLAIM_CATALOG
                     | CLAIM_SIGNED_INGRESS
                     | CLAIM_RAW_AFFIX
+                    | CLAIM_TICKET
                     | CLAIM_ENTRY,
             ),
             "claim.flags",
@@ -1113,6 +1123,9 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
             )?;
         }
         if c.flags & CLAIM_EXACT != 0 && c.flags & CLAIM_PATTERN != 0 {
+            return Err(fault(Rule::Contradiction, "claim.flags"));
+        }
+        if c.flags & CLAIM_OPEN != 0 && c.flags & CLAIM_TICKET != 0 {
             return Err(fault(Rule::Contradiction, "claim.flags"));
         }
     }
@@ -1407,7 +1420,8 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 /// The Statement tail, at load: known flags, ingress bits and dispatch shape; at least one ingress
 /// shape; no string or list counted with a NULL pointer. Its elements: [`check_sections`],
 /// [`check_dialect_auth`], [`check_route_cost`], [`check_billable_classes`], [`check_fee_units`],
-/// [`check_needs`], [`check_record_chains`], [`check_trust_keys`] and each pin's
+/// [`check_needs`], [`check_record_chains`], [`check_record_retentions`], [`check_trust_keys`] and
+/// each pin's
 /// [`check_pin_mechanisms`], and
 /// [`check_refusal_statuses`].
 ///
@@ -1473,6 +1487,11 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     )?;
     listed(t.admin_routes, t.admin_routes_len, "tail.admin_routes")?;
     listed(t.metric_lanes, t.metric_lanes_len, "tail.metric_lanes")?;
+    listed(
+        t.record_retentions,
+        t.record_retentions_len,
+        "tail.record_retentions",
+    )?;
     if t.metric_lanes_len > MAX_METRIC_LANES {
         return Err(fault(Rule::OverMax, "tail.metric_lanes"));
     }
@@ -1653,6 +1672,31 @@ pub fn check_record_chains(chains: &[RecordChain], record_kinds_len: u64) -> Res
         )?;
         if chains[..i].iter().any(|d| d.kind == c.kind) {
             return Err(fault(Rule::Contradiction, "record_chain.kind_twice"));
+        }
+    }
+    Ok(())
+}
+
+/// The record kinds' retention rules ([`PlaneTail::record_retentions`]): each names a record kind
+/// at most once, with a known rule.
+///
+/// # Errors
+///
+/// The rule an entry breaks.
+pub fn check_record_retentions(
+    retentions: &[RecordRetention],
+    record_kinds_len: u64,
+) -> Result<(), Fault> {
+    for (i, r) in retentions.iter().enumerate() {
+        index(r.kind, record_kinds_len, "record_retention.kind")?;
+        code(
+            u64::from(r.rule),
+            u64::from(RETENTION_AGE),
+            u64::from(RETENTION_TERMINAL_ONLY),
+            "record_retention.rule",
+        )?;
+        if retentions[..i].iter().any(|d| d.kind == r.kind) {
+            return Err(fault(Rule::Contradiction, "record_retention.kind_twice"));
         }
     }
     Ok(())
