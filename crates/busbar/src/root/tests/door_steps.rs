@@ -9167,3 +9167,36 @@ fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load(
         .clone();
     assert_eq!(bound, Vec::<String>::new(), "a style read binds no row");
 }
+
+/// RED (arch-audit u29 F1; Q128 ruling (a)): a credential is read for its own token endpoint by its
+/// style's DECLARED bit (`STYLE_ENDPOINT_FROM_CREDENTIAL`, `from_credential` here), never by the
+/// style's name. A style that does not state the bit, even one named `jwt-bearer`, is handed its
+/// credential unread; any word stating it has the service account's `token_uri` read, judged under
+/// the provider's metadata posture in 1.5.5's words over its own word, and set.
+#[test]
+fn a_credential_endpoint_is_read_by_the_styles_bit_never_its_name() {
+    let account = |uri: &str| {
+        format!(r#"{{"client_email":"sa@example.com","private_key":"k","token_uri":"{uri}"}}"#)
+    };
+    let route = provider("p", Some("jwt-bearer"));
+    let good = account("https://oauth2.example.com/token");
+    let unread = super::sealed_params("p", "jwt-bearer", false, &route, good.as_bytes())
+        .expect("a style stating no bit is never read");
+    assert_eq!(unread.token_uri, None, "named jwt-bearer, stating no bit");
+    let read = super::sealed_params("p", "x-any-assertion", true, &route, good.as_bytes())
+        .expect("a judged endpoint");
+    assert_eq!(
+        read.token_uri.as_deref(),
+        Some("https://oauth2.example.com/token"),
+        "any word stating the bit has its credential's endpoint read"
+    );
+    let plaintext = account("http://oauth2.example.com/token");
+    let refused = super::sealed_params("p", "jwt-bearer", true, &route, plaintext.as_bytes())
+        .expect_err("a public plaintext token_uri is refused");
+    assert!(
+        refused.starts_with(
+            "provider 'p' (jwt-bearer auth): service-account token_uri must use https for a public host"
+        ),
+        "1.5.5's words over the style's own word: {refused}"
+    );
+}

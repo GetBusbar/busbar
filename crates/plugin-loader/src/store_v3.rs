@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE STORE, REACHED THROUGH ITS TABLE (THE DESIGN, the plugin ABI; TODO ABI-b2 for store):
+//! THE STORE, REACHED THROUGH ITS TABLE (THE DESIGN, the plugin ABI):
 //! [`LoadedStore`] is one store instance loaded through the ONE loader
 //! ([`load_linked`](crate::dispatch::load_linked) for a compiled-in row,
 //! [`load_dropped`](crate::dispatch::load_dropped) for a dropped-in `cdylib`) and called through
