@@ -7,6 +7,15 @@ use busbar_kernel::test_support::{LaneSpec, TestApp};
 
 /// The served breaker port over `app`'s lane store, each of `pools` a cell under the default ladder.
 fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> WalkCells {
+    cells_routing(app, pools, &[])
+}
+
+/// [`cells_over`], with each of `direct` a model a route names directly.
+fn cells_routing(
+    app: Arc<busbar_kernel::state::App>,
+    pools: &[&str],
+    direct: &[&str],
+) -> WalkCells {
     let mut records: HashMap<String, busbar_kernel::store::BreakerCfg> = pools
         .iter()
         .map(|pool| {
@@ -21,7 +30,7 @@ fn cells_over(app: Arc<busbar_kernel::state::App>, pools: &[&str]) -> WalkCells 
         app,
         Arc::new(CellPlan {
             records,
-            direct: HashSet::new(),
+            direct: direct.iter().map(|m| (*m).to_owned()).collect(),
         }),
     )
 }
@@ -266,8 +275,7 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
     let app = TestApp::new()
         .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
         .build();
-    let mut cells = cells_over(Arc::clone(&app), &[]);
-    cells.direct.insert("m0".to_owned());
+    let cells = cells_routing(Arc::clone(&app), &[], &["m0"]);
     let token = busbar_kernel::test_support::tokens::pass();
     let now = wall_secs();
 
