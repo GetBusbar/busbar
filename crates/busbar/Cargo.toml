@@ -28,7 +28,6 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-kernel = { path = "../busbar-kernel", default-features = false }
 busbar-contract = { path = "../busbar-contract" }
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
-busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 busbar-kernel-ledger = { path = "../busbar-kernel-ledger" }
 busbar-kernel-egress = { path = "../busbar-kernel-egress" }
 busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }

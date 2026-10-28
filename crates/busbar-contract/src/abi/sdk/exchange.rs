@@ -266,9 +266,8 @@ impl Exchange {
     /// Judge the reply on its HEAD alone: the first head (or ack) piece ends the reads and the
     /// stream is closed, its facts read first where [`Exchange::observing`] asks. The body is never
     /// read or buffered, so a slow or huge body after the head neither runs the op into its
-    /// deadline nor passes [`REPLY_MAX`]; the reply answers an empty body. 1.5.5 judged a sink's
-    /// delivery on the response head and dropped the body unread (THE DESIGN: a port keeps
-    /// 1.5.5's surface).
+    /// deadline nor passes [`REPLY_MAX`]; the reply answers an empty body. 1.5.5 judged a webhook
+    /// delivery on the response head and dropped the body unread.
     #[must_use]
     pub fn head_only(mut self) -> Self {
         self.head_only = true;
@@ -563,11 +562,10 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
     }
 }
 
-/// Send, then read the reply to its terminal piece into `state` (for a head-only exchange, its
-/// head or ack), then close the stream: on a failure after the stream is established as on a
-/// reply (the host reclaims a connection only on its CLOSE, so an exchange that failed without one
-/// would leave it open for the instance's life). The close's own answer never replaces the
-/// exchange's.
+/// Send, then read the reply to its terminal piece into `state`, then close the stream: on a
+/// failure after the stream is established as on a reply (the host reclaims a connection only on
+/// its CLOSE, so an exchange that failed without one would leave it open for the instance's
+/// life). The close's own answer never replaces the exchange's.
 fn send_and_read(
     c: &mut Connector<'_>,
     state: &mut Exchange,
@@ -600,8 +598,9 @@ fn send_and_read(
     }
 }
 
-/// Send on `stream`, then read the reply to its terminal piece into `state`; the stream's facts
-/// are read where the caller asks, once the reply ended or failed.
+/// Send on `stream`, then read the reply to its terminal piece (for a head-only exchange, its head
+/// or ack) into `state`; the stream's facts are read where the caller asks, once the reply ended or
+/// failed.
 fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
     ready!(send(c, state, stream));
     loop {

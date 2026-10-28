@@ -1463,7 +1463,8 @@ impl Inbound {
                 if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
                     // The op the call was made for is past its deadline: no verify runs, and the
                     // position answers no verdict (a deny, fail closed).
-                    me.record(target, p.index, &p.provider, Judging::Nothing, &table);
+                    me.record(target, p.index, &p.provider, Judging::Nothing, &table)
+                        .await;
                     break;
                 }
                 let calls = match &p.kind {
@@ -1507,12 +1508,14 @@ impl Inbound {
                             &p.provider,
                             Judging::Keys(&head, signed),
                             &table,
-                        );
+                        )
+                        .await;
                         continue;
                     }
                     PositionKind::Plugin(None) => {
                         // A line naming an auth the generation did not open: fail closed.
-                        me.record(target, p.index, &p.provider, Judging::Nothing, &table);
+                        me.record(target, p.index, &p.provider, Judging::Nothing, &table)
+                            .await;
                         continue;
                     }
                     PositionKind::Plugin(Some(calls)) => Arc::clone(calls),
@@ -1556,7 +1559,8 @@ impl Inbound {
                     Some(a) => Judging::Answer(a),
                     None => Judging::Nothing,
                 };
-                me.record(target, p.index, &p.provider, judging, &table);
+                me.record(target, p.index, &p.provider, judging, &table)
+                    .await;
             }
             let (flow, strips) = me
                 .with_unit_state(target, |u| {
@@ -1577,7 +1581,7 @@ impl Inbound {
     /// rule, the lines it named, and, once the verdict is fixed in list order on an identity, that
     /// identity, its credential taken out of it, and for the `keys` arm the governance key it
     /// resolved.
-    fn record(
+    async fn record(
         &self,
         target: Target,
         index: usize,
@@ -1610,10 +1614,10 @@ impl Inbound {
             Judging::Answer(a) => {
                 let (judged, identity) = match a.verified {
                     Verified::Identity(id) => {
-                        let claimed = id
-                            .replay
-                            .as_deref()
-                            .is_none_or(|r| crate::auth::replay_claimed(gov, provider, r, now));
+                        let claimed = match id.replay.as_deref() {
+                            None => true,
+                            Some(r) => crate::auth::replay_claimed(gov, provider, r, now).await,
+                        };
                         if claimed {
                             (Judged::Identity, Some(id))
                         } else {

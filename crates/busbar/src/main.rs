@@ -296,6 +296,9 @@ fn register_planes() {
     root::boot::discover_planes(&LINKED, dropped);
     root::linked::register_planes(&LINKED);
     root::linked::register_exports(dropped);
+    // The settings each plugin's schema declares public, before any configuration is read: every
+    // other plugin setting is sensitive (`busbar_kernel::config::settings_public`).
+    root::settings_public::install(&LINKED, dropped);
     // A plugin that declares an inbound need is refused until an accepted connection has a
     // consumer, after the axes it selects against are registered.
     if let Some(registry) = dropped {

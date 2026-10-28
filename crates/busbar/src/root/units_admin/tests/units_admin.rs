@@ -636,7 +636,8 @@ fn the_rate_class_is_the_shipped_table_and_not_the_default() {
     );
     assert_eq!(MutationClass::Forbidden.limit(), 0);
     assert!(
-        busbar_kernel_scope::admin_required_scope("GET", "/api/v1/admin/audit") == Scope::ReadOnly
+        busbar_kernel::admin::scope::admin_required_scope("GET", "/api/v1/admin/audit")
+            == Scope::ReadOnly
     );
 }
 
@@ -2922,7 +2923,7 @@ fn a_ledger_view_is_read_only_in_every_table_that_has_an_opinion() {
             "{path} would spend a mutation slot per read"
         );
         assert_eq!(
-            busbar_kernel_scope::admin_required_scope("GET", path),
+            busbar_kernel::admin::scope::admin_required_scope("GET", path),
             Scope::ReadOnly
         );
     }
@@ -3295,7 +3296,7 @@ fn a_chain_read_is_read_only_in_every_table_that_has_an_opinion() {
             "{path} would spend a mutation slot per read"
         );
         assert_eq!(
-            busbar_kernel_scope::admin_required_scope("GET", path),
+            busbar_kernel::admin::scope::admin_required_scope("GET", path),
             Scope::ReadOnly
         );
     }
