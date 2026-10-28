@@ -198,6 +198,58 @@ impl StoreCalls for OneStore {
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
         not_this()
     }
+    fn put_key<'a>(&'a self, _: &'a busbar_contract::records::VirtualKey) -> StoreCall<'a, ()> {
+        not_this()
+    }
+    fn get_key<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> StoreCall<'a, Option<busbar_contract::records::VirtualKey>> {
+        not_this()
+    }
+    fn list_keys(&self) -> StoreCall<'_, Vec<busbar_contract::records::VirtualKey>> {
+        not_this()
+    }
+    fn delete_key<'a>(&'a self, _: &'a str) -> StoreCall<'a, ()> {
+        not_this()
+    }
+    fn put_key_with_credential<'a>(
+        &'a self,
+        _: &'a busbar_contract::records::VirtualKey,
+        _: &'a busbar_contract::records::CredentialSecret,
+    ) -> StoreCall<'a, ()> {
+        not_this()
+    }
+    fn list_credentials<'a>(
+        &'a self,
+        _: &'a str,
+    ) -> StoreCall<'a, Vec<busbar_contract::records::CredentialMeta>> {
+        not_this()
+    }
+    fn revoke_credential<'a>(&'a self, _: &'a str, _: &'a str) -> StoreCall<'a, ()> {
+        not_this()
+    }
+    fn list_credentials_since(
+        &self,
+        _: u64,
+    ) -> StoreCall<'_, Vec<busbar_contract::records::CredentialSecret>> {
+        not_this()
+    }
+    fn add_denylist<'a>(&'a self, _: &'a str, _: &'a str) -> StoreCall<'a, ()> {
+        not_this()
+    }
+    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
+        not_this()
+    }
+    fn list_metering(&self, _: u64) -> StoreCall<'_, Vec<busbar_contract::records::MeteringRow>> {
+        not_this()
+    }
+    fn list_audit(&self) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
+        not_this()
+    }
+    fn list_audit_tail(&self, _: u64) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
+        not_this()
+    }
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
         // Filed as the linked in-tree store files it: under the parent when there is one, at its
         // sequence position.

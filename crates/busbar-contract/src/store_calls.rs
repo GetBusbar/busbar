@@ -137,6 +137,42 @@ pub trait StoreCalls: Send + Sync {
         prefix: &'a [u8],
         limit: u32,
     ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>>;
+    /// `put_key`.
+    fn put_key<'a>(&'a self, key: &'a crate::records::VirtualKey) -> StoreCall<'a, ()>;
+    /// `get_key`.
+    fn get_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, Option<crate::records::VirtualKey>>;
+    /// `list_keys`: every key, tombstones included.
+    fn list_keys(&self) -> StoreCall<'_, Vec<crate::records::VirtualKey>>;
+    /// `delete_key`.
+    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()>;
+    /// `put_key_with_credential`: the key and its credential, kept together or not at all.
+    fn put_key_with_credential<'a>(
+        &'a self,
+        key: &'a crate::records::VirtualKey,
+        secret: &'a crate::records::CredentialSecret,
+    ) -> StoreCall<'a, ()>;
+    /// `list_credentials`: a key's credentials, without their secrets.
+    fn list_credentials<'a>(
+        &'a self,
+        key_id: &'a str,
+    ) -> StoreCall<'a, Vec<crate::records::CredentialMeta>>;
+    /// `revoke_credential`.
+    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()>;
+    /// `list_credentials_since`.
+    fn list_credentials_since(
+        &self,
+        since: u64,
+    ) -> StoreCall<'_, Vec<crate::records::CredentialSecret>>;
+    /// `add_denylist`.
+    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()>;
+    /// `list_denylist`.
+    fn list_denylist(&self) -> StoreCall<'_, Vec<String>>;
+    /// `list_metering`: one bucket's metering rows.
+    fn list_metering(&self, bucket: u64) -> StoreCall<'_, Vec<crate::records::MeteringRow>>;
+    /// `list_audit`: the legacy audit table, oldest first from genesis.
+    fn list_audit(&self) -> StoreCall<'_, Vec<crate::records::AuditRecord>>;
+    /// `list_audit_tail`: the legacy audit table's last `limit` records.
+    fn list_audit_tail(&self, limit: u64) -> StoreCall<'_, Vec<crate::records::AuditRecord>>;
     /// `upsert_plane_record`.
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()>;
     /// `get_plane_record`: the body.

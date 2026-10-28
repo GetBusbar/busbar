@@ -66,6 +66,107 @@ fn ephemeral_store() -> Opened {
     }
 }
 
+/// C6: THE STORE'S V3 CALLS SERVE THE KEY, CREDENTIAL, DENYLIST AND LEGACY-READ OPS AS THE 1.5.5
+/// OP SET DID, over one door-opened store: what one surface writes the other reads back the same,
+/// so a caller moved off the synchronous bridge reads and writes what it did before.
+#[test]
+fn the_v3_key_credential_and_denylist_ops_answer_as_the_op_set_did() {
+    use busbar_contract::records::VirtualKey;
+    let store = ephemeral_store();
+    let key = |id: &str| VirtualKey {
+        id: id.to_string(),
+        generation_hash: format!("binding:{id}:1"),
+        enabled: true,
+        ..VirtualKey::default()
+    };
+    wait_for(store.calls.put_key(&key("k1"))).expect("v3 put_key");
+    store.records.put_key(&key("k2")).expect("op-set put_key");
+    let got = wait_for(store.calls.get_key("k2")).expect("v3 get_key");
+    assert_eq!(got.map(|k| k.id), Some("k2".to_string()));
+    let mut v3: Vec<String> = (wait_for(store.calls.list_keys()).expect("v3 list_keys"))
+        .into_iter()
+        .map(|k| k.id)
+        .collect();
+    let mut op_set: Vec<String> = (store.records.list_keys().expect("op-set list_keys"))
+        .into_iter()
+        .map(|k| k.id)
+        .collect();
+    v3.sort();
+    op_set.sort();
+    assert_eq!(v3, vec!["k1".to_string(), "k2".to_string()]);
+    assert_eq!(v3, op_set);
+
+    assert_eq!(
+        wait_for(store.calls.list_credentials("k1"))
+            .expect("v3 list_credentials")
+            .len(),
+        store
+            .records
+            .list_credentials("k1")
+            .expect("op-set list_credentials")
+            .len()
+    );
+    assert_eq!(
+        wait_for(store.calls.list_credentials_since(0))
+            .expect("v3 list_credentials_since")
+            .len(),
+        store
+            .records
+            .list_credentials_since(0)
+            .expect("op-set list_credentials_since")
+            .len()
+    );
+
+    wait_for(store.calls.add_denylist("sub-1", "revoked")).expect("v3 add_denylist");
+    assert_eq!(
+        wait_for(store.calls.list_denylist()).expect("v3 list_denylist"),
+        store.records.list_denylist().expect("op-set list_denylist")
+    );
+    assert!(store
+        .records
+        .list_denylist()
+        .expect("op-set list_denylist")
+        .contains(&"sub-1".to_string()));
+
+    wait_for(store.calls.delete_key("k1")).expect("v3 delete_key");
+    assert_eq!(
+        wait_for(store.calls.get_key("k1"))
+            .expect("v3 get_key")
+            .map(|k| k.deleted_at.is_some()),
+        store
+            .records
+            .get_key("k1")
+            .expect("op-set get_key")
+            .map(|k| k.deleted_at.is_some())
+    );
+    assert_eq!(
+        wait_for(store.calls.list_audit())
+            .expect("v3 list_audit")
+            .len(),
+        store.records.list_audit().expect("op-set list_audit").len()
+    );
+    assert_eq!(
+        wait_for(store.calls.list_audit_tail(1))
+            .expect("v3 list_audit_tail")
+            .len(),
+        store
+            .records
+            .list_audit_tail(1)
+            .expect("op-set list_audit_tail")
+            .len()
+    );
+    assert_eq!(
+        wait_for(store.calls.list_metering(0))
+            .expect("v3 list_metering")
+            .len(),
+        store
+            .records
+            .list_metering(0)
+            .expect("op-set list_metering")
+            .len()
+    );
+}
+
 /// The verbs unit's admin token, as the kernel mints one for the length of an admin verb.
 fn admin() -> Grant<AdminVerb> {
     busbar_kernel::test_support::tokens::grant::<AdminVerb>()
