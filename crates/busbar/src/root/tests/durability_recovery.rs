@@ -66,6 +66,107 @@ fn ephemeral_store() -> Opened {
     }
 }
 
+/// C6: THE STORE'S V3 CALLS SERVE THE KEY, CREDENTIAL, DENYLIST AND LEGACY-READ OPS AS THE 1.5.5
+/// OP SET DID, over one door-opened store: what one surface writes the other reads back the same,
+/// so a caller moved off the synchronous bridge reads and writes what it did before.
+#[test]
+fn the_v3_key_credential_and_denylist_ops_answer_as_the_op_set_did() {
+    use busbar_contract::records::VirtualKey;
+    let store = ephemeral_store();
+    let key = |id: &str| VirtualKey {
+        id: id.to_string(),
+        generation_hash: format!("binding:{id}:1"),
+        enabled: true,
+        ..VirtualKey::default()
+    };
+    wait_for(store.calls.put_key(&key("k1"))).expect("v3 put_key");
+    store.records.put_key(&key("k2")).expect("op-set put_key");
+    let got = wait_for(store.calls.get_key("k2")).expect("v3 get_key");
+    assert_eq!(got.map(|k| k.id), Some("k2".to_string()));
+    let mut v3: Vec<String> = (wait_for(store.calls.list_keys()).expect("v3 list_keys"))
+        .into_iter()
+        .map(|k| k.id)
+        .collect();
+    let mut op_set: Vec<String> = (store.records.list_keys().expect("op-set list_keys"))
+        .into_iter()
+        .map(|k| k.id)
+        .collect();
+    v3.sort();
+    op_set.sort();
+    assert_eq!(v3, vec!["k1".to_string(), "k2".to_string()]);
+    assert_eq!(v3, op_set);
+
+    assert_eq!(
+        wait_for(store.calls.list_credentials("k1"))
+            .expect("v3 list_credentials")
+            .len(),
+        store
+            .records
+            .list_credentials("k1")
+            .expect("op-set list_credentials")
+            .len()
+    );
+    assert_eq!(
+        wait_for(store.calls.list_credentials_since(0))
+            .expect("v3 list_credentials_since")
+            .len(),
+        store
+            .records
+            .list_credentials_since(0)
+            .expect("op-set list_credentials_since")
+            .len()
+    );
+
+    wait_for(store.calls.add_denylist("sub-1", "revoked")).expect("v3 add_denylist");
+    assert_eq!(
+        wait_for(store.calls.list_denylist()).expect("v3 list_denylist"),
+        store.records.list_denylist().expect("op-set list_denylist")
+    );
+    assert!(store
+        .records
+        .list_denylist()
+        .expect("op-set list_denylist")
+        .contains(&"sub-1".to_string()));
+
+    wait_for(store.calls.delete_key("k1")).expect("v3 delete_key");
+    assert_eq!(
+        wait_for(store.calls.get_key("k1"))
+            .expect("v3 get_key")
+            .map(|k| k.deleted_at.is_some()),
+        store
+            .records
+            .get_key("k1")
+            .expect("op-set get_key")
+            .map(|k| k.deleted_at.is_some())
+    );
+    assert_eq!(
+        wait_for(store.calls.list_audit())
+            .expect("v3 list_audit")
+            .len(),
+        store.records.list_audit().expect("op-set list_audit").len()
+    );
+    assert_eq!(
+        wait_for(store.calls.list_audit_tail(1))
+            .expect("v3 list_audit_tail")
+            .len(),
+        store
+            .records
+            .list_audit_tail(1)
+            .expect("op-set list_audit_tail")
+            .len()
+    );
+    assert_eq!(
+        wait_for(store.calls.list_metering(0))
+            .expect("v3 list_metering")
+            .len(),
+        store
+            .records
+            .list_metering(0)
+            .expect("op-set list_metering")
+            .len()
+    );
+}
+
 /// The verbs unit's admin token, as the kernel mints one for the length of an admin verb.
 fn admin() -> Grant<AdminVerb> {
     busbar_kernel::test_support::tokens::grant::<AdminVerb>()
@@ -298,5 +399,59 @@ fn the_boot_reads_the_floor_back_and_a_node_below_it_does_not_boot() {
     assert!(
         refused.contains("below the epoch floor 5"),
         "the refusal names the floor: {refused}"
+    );
+}
+
+/// C6: THE STORE'S V3 CALLS ANSWER THE PLANE PARENTS AND THE RETENTION PURGE AS THE 1.5.5 OP SET
+/// DID, over one door-opened store: the same parents, then the same records purged, so a caller
+/// moved off the synchronous bridge reads and purges what it read and purged before.
+#[test]
+fn the_v3_plane_parents_and_purge_answer_as_the_op_set_did() {
+    use busbar_contract::records::{PlaneDisposition, PlaneRecord};
+    const KIND: &str = "c6-probe";
+    let store = ephemeral_store();
+    // A parented row is placed by `(parent, seq)`, so two rows under one parent take two seqs: at
+    // one seq the second would be the first rewritten, and the store would hold two rows, not three.
+    let row = |id: &str, parent: &str, seq: u64, ts: u64| PlaneRecord {
+        kind: KIND.to_string(),
+        id: id.to_string(),
+        parent: Some(parent.to_string()),
+        seq,
+        ts,
+        disposition: PlaneDisposition::Terminal,
+        body: b"{}".to_vec(),
+    };
+    for r in [
+        row("a", "p1", 0, 10),
+        row("b", "p2", 0, 20),
+        row("c", "p2", 1, 30),
+    ] {
+        wait_for(store.calls.upsert_plane_record(r.view())).expect("the store takes the row");
+    }
+    let mut v3 = wait_for(store.calls.list_plane_record_parents(KIND)).expect("v3 parents");
+    let mut op_set = store
+        .records
+        .list_plane_record_parents(KIND)
+        .expect("op-set parents");
+    v3.sort();
+    op_set.sort();
+    assert_eq!(v3, vec!["p1".to_string(), "p2".to_string()]);
+    assert_eq!(v3, op_set);
+    assert_eq!(
+        wait_for(store.calls.purge_plane_records_before(KIND, 25)).expect("v3 purge"),
+        2,
+        "the two terminal rows older than 25 go"
+    );
+    assert_eq!(
+        store
+            .records
+            .purge_plane_records_before(KIND, 25)
+            .expect("op-set purge"),
+        0,
+        "nothing older is left for the op set to purge"
+    );
+    assert_eq!(
+        wait_for(store.calls.list_plane_record_parents(KIND)).expect("v3 parents"),
+        vec!["p2".to_string()]
     );
 }

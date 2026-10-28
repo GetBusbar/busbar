@@ -231,6 +231,62 @@ impl<S: StoreSlots> StoreCalls for SlotStore<S> {
         ready(self.text(|s, cx| S::record_scan(s, cx, schema, prefix, limit)))
     }
 
+    fn put_key<'a>(&'a self, key: &'a VirtualKey) -> StoreCall<'a, ()> {
+        ready(self.record(|s, cx| S::put_key(s, cx, key)))
+    }
+
+    fn get_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, Option<VirtualKey>> {
+        ready(self.record(|s, cx| S::get_key(s, cx, id)))
+    }
+
+    fn list_keys(&self) -> StoreCall<'_, Vec<VirtualKey>> {
+        ready(self.record(S::list_keys))
+    }
+
+    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
+        ready(self.record(|s, cx| S::delete_key(s, cx, id)))
+    }
+
+    fn put_key_with_credential<'a>(
+        &'a self,
+        key: &'a VirtualKey,
+        secret: &'a CredentialSecret,
+    ) -> StoreCall<'a, ()> {
+        ready(self.record(|s, cx| S::put_key_with_credential(s, cx, key, secret)))
+    }
+
+    fn list_credentials<'a>(&'a self, key_id: &'a str) -> StoreCall<'a, Vec<CredentialMeta>> {
+        ready(self.record(|s, cx| S::list_credentials(s, cx, key_id)))
+    }
+
+    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        ready(self.record(|s, cx| S::revoke_credential(s, cx, id, reason)))
+    }
+
+    fn list_credentials_since(&self, since: u64) -> StoreCall<'_, Vec<CredentialSecret>> {
+        ready(self.record(|s, cx| S::list_credentials_since(s, cx, since)))
+    }
+
+    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
+        ready(self.record(|s, cx| S::add_denylist(s, cx, sub, reason)))
+    }
+
+    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
+        ready(self.record(S::list_denylist))
+    }
+
+    fn list_metering(&self, bucket: u64) -> StoreCall<'_, Vec<MeteringRow>> {
+        ready(self.record(|s, cx| S::list_metering(s, cx, bucket)))
+    }
+
+    fn list_audit(&self) -> StoreCall<'_, Vec<AuditRecord>> {
+        ready(self.record(S::list_audit))
+    }
+
+    fn list_audit_tail(&self, limit: u64) -> StoreCall<'_, Vec<AuditRecord>> {
+        ready(self.record(|s, cx| S::list_audit_tail(s, cx, limit)))
+    }
+
     fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
         ready(self.record(|s, cx| S::upsert_plane_record(s, cx, record)))
     }
@@ -281,6 +337,14 @@ impl<S: StoreSlots> StoreCalls for SlotStore<S> {
         now: u64,
     ) -> StoreCall<'a, bool> {
         ready(self.record(|s, cx| S::plane_token_live(s, cx, kind, token, expires_at, now)))
+    }
+
+    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
+        ready(self.record(|s, cx| S::list_plane_record_parents(s, cx, kind)))
+    }
+
+    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
+        ready(self.record(|s, cx| S::purge_plane_records_before(s, cx, kind, before)))
     }
 }
 
