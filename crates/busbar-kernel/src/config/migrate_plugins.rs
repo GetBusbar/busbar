@@ -203,7 +203,7 @@ fn sites(root: &Mapping) -> Vec<Site> {
             });
         }
     }
-    for d in crate::plane::registry::plane_decls() {
+    for d in crate::plane_driver::registry::plane_decls() {
         let mut sections = serde_json::Map::new();
         for s in plane_sections(d) {
             if let Some(v) = root.get(Value::from(s)) {
@@ -226,7 +226,7 @@ fn sites(root: &Mapping) -> Vec<Site> {
 
 /// The sections a plane's migration is handed and may answer: the one that declares it and the
 /// ones it owns.
-fn plane_sections(d: &crate::plane::registry::PlaneDecl) -> Vec<&'static str> {
+fn plane_sections(d: &crate::plane_driver::registry::PlaneDecl) -> Vec<&'static str> {
     let mut all = vec![d.config_section];
     for s in d.owned_config_sections {
         if !all.contains(s) {

@@ -298,7 +298,7 @@ impl RootHost {
             // A plane is named by its registry key; its linked door is the one whose Statement
             // declares the plane's section.
             "plane" => {
-                let section = busbar_kernel::plane::registry::plane_decls()
+                let section = busbar_kernel::plane_driver::registry::plane_decls()
                     .iter()
                     .find(|d| d.key == module)
                     .map(|d| d.config_section)?;
