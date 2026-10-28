@@ -1939,7 +1939,7 @@ fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     crate::test_support::register_neutral_test_plane();
     // `config_validate::validate` runs BEFORE the plugin registry exists (see this crate's
-    // `preflight_plugins_and_secrets` doc comment), so it genuinely cannot tell a real `kind: auth`
+    // `config_validate::check` doc comment), so it genuinely cannot tell a real `kind: auth`
     // plugin name from a typo -- that distinction is made by main.rs's later, registry-aware check
     // (`auth.chain module '{name}' does not match any plugin in ...`), run right after this one. A
     // plugin-shaped name (like `okta`, standing in for any real IdP plugin alias) must therefore NOT
@@ -5457,7 +5457,7 @@ fn test_validate_secret_module_resolvability() {
     // A NON-built-in module (a `kind: secret` PLUGIN reference such
     // as `vault`) is the marquee 1.5.0 "secrets are plugins" feature. `validate` runs BEFORE the
     // plugin registry exists, so it CANNOT tell an installed vault plugin from a typo — the
-    // module-EXISTENCE check is DEFERRED to `main::validate_secret_refs` at plugin pre-flight (see the
+    // module-EXISTENCE check is DEFERRED to `registry_refusal` at plugin pre-flight (see the
     // `secret_ref_*` tests in the main tests module). Therefore `validate` must NOT reject a
     // plugin-backed module here; it must ONLY enforce the built-in `env`/`file` STRUCTURAL shape.
     let (mut providers, models, pools) = valid_maps();
@@ -5658,7 +5658,7 @@ store:
 /// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
 /// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry
 /// exists, so it must not reject the plugin-backed module; the registry-backed existence check is the
-/// deferred `validate_secret_refs` pre-flight (proven in the main tests module). This closes a
+/// deferred `registry_refusal` pre-flight (proven in the main tests module). This closes a
 /// regression where `validate` hard-rejected every plugin-backed secret module.
 #[test]
 fn test_validate_accepts_plugin_backed_secret_module_config() {

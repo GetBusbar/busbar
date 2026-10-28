@@ -21,7 +21,7 @@ pub fn stand_in_store() -> crate::config::StoreCfg {
 }
 
 /// A minimal `RootCfg` whose SOLE provider's `api_key` is the given secret reference — the smallest
-/// config that exercises `config_validate::secret_refs` (and thus `validate_secret_refs`).
+/// config that exercises `config_validate::secret_refs` (and thus `registry_refusal`).
 pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::config::RootCfg {
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());

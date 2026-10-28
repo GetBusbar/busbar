@@ -174,7 +174,7 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         granted: VerbScope,
         now: u64,
         request: &[u8],
-    ) -> Result<Vec<u8>, Refusal> {
+    ) -> Result<G::Answer, Refusal> {
         // The two minting verbs are REFUSED here, in every build, rather than asserted against in
         // one of them. This path has no replay cache: routed through it, a mint reaches the legacy
         // catch-all and a retry inside the idempotency window mints a second admin credential the
