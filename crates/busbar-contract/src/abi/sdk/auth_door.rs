@@ -35,6 +35,7 @@
 //! A `verify` that waits on its own I/O (a key-set fetch, a directory read over a need) writes its
 //! own slots over [`crate::plugin_door!`].
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr;
@@ -181,8 +182,10 @@ pub enum Verdict {
 pub struct Answer {
     /// The verdict.
     pub verdict: Verdict,
-    /// The credential lines and query keys to strip, named whatever the verdict.
-    pub strips: Vec<Strip>,
+    /// The credential lines and query keys to strip, named whatever the verdict. A plugin whose
+    /// lines are fixed names a `const` list ([`strip_field`]: `STRIPS.into()`), so a verify
+    /// allocates none; one it computes is `vec![..].into()`.
+    pub strips: Cow<'static, [Strip]>,
     /// Continue or stop.
     pub decision: Decision,
 }
@@ -197,9 +200,19 @@ impl From<Verdict> for Answer {
         };
         Self {
             verdict,
-            strips: Vec::new(),
+            strips: Cow::Borrowed(&[]),
             decision,
         }
+    }
+}
+
+/// The field line `name` to strip, as a `const` ([`Strip::field`] for a name known only at run
+/// time): `const STRIPS: &[Strip] = &[strip_field("authorization")];`.
+#[must_use]
+pub const fn strip_field(name: &'static str) -> Strip {
+    Strip {
+        name: Cow::Borrowed(name),
+        place: StripPlace::Field,
     }
 }
 
@@ -436,7 +449,7 @@ pub(crate) fn verify_answer<T: VerifyPlugin>(
     };
     write(
         id,
-        Some((answer.strips.as_slice(), input.strip(), decision)),
+        Some((&*answer.strips, input.strip(), decision)),
         input.field(|i| &i.out_buf),
         out,
         verdict,
