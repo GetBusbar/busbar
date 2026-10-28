@@ -411,6 +411,10 @@ pub struct SkippedPlugin {
     /// STRUCTURED rejection category from the trust evaluator — the authority for any label/column.
     /// Never derive a trust label by substring-matching `reason` (it embeds plugin-controlled bytes).
     pub kind: crate::sign::RejectKind,
+    /// The first-party key ids this build trusts, when the skip is a `publisher: busbar` manifest
+    /// whose signature verifies against none of them ([`crate::sign::Rejected::trusted_keys`]);
+    /// empty otherwise. Structured beside `reason`, which keeps 1.5.5's bytes.
+    pub trusted_keys: Vec<String>,
 }
 
 /// The registry of validated, loadable plugins, addressable by canonical name OR alias. Built only
@@ -1110,6 +1114,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
                         manifest: plugin.manifest,
                         reason,
                         kind: crate::sign::RejectKind::EgressGrant,
+                        trusted_keys: Vec::new(),
                     }),
                 },
             }
@@ -1119,6 +1124,7 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
             manifest: unpacked.manifest,
             reason: rejected.reason,
             kind: rejected.kind,
+            trusted_keys: rejected.trusted_keys,
         }),
     }
 }

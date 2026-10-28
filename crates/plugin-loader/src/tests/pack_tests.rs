@@ -1343,6 +1343,31 @@ fn attach_refuses_what_would_not_load_as_first_party() {
     );
 }
 
+/// VERIFY names the trusted key ids: a first-party tarball signed by a key not in the list (a
+/// retired or leaked one) is REFUSED with every id this tool trusts, taken from the loader's
+/// structured refusal; the loader's own reason stays 1.5.5's bare "signature does not verify".
+#[test]
+fn verify_refuses_an_unlisted_key_naming_the_trusted_ids() {
+    let (a, b) = (
+        SigningKey::from_bytes(&[11; 32]),
+        SigningKey::from_bytes(&[12; 32]),
+    );
+    let stranger = SigningKey::from_bytes(&[13; 32]);
+    let list = keys(&[("plugins-a", &a), ("plugins-b", &b)]);
+    let unsigned = unsigned_first_party(b"cdylib");
+    let up = busbar_plugin_loader::tarball::unpack(&unsigned).unwrap();
+    let manifest = Manifest {
+        signature: hex::encode(offline_signature(&stranger, &unsigned)),
+        ..up.manifest
+    };
+    let signed =
+        busbar_plugin_loader::tarball::package(&manifest, "lib.so", &up.lib_bytes).unwrap();
+    assert_eq!(
+        verify_first_party(&signed, &list).unwrap_err(),
+        "signature verifies against none of this build's first-party keys [plugins-a, plugins-b]"
+    );
+}
+
 /// The CLI contract the release gate drives: `@file` signatures in both forms, `canonical --out`,
 /// and an unknown flag refused.
 #[test]

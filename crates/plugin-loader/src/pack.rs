@@ -362,7 +362,11 @@ pub(crate) fn verify_first_party(tarball: &[u8], keys: &[FirstPartyKey]) -> Resu
     if m.signature.trim().is_empty() {
         return Err("the manifest carries no signature".to_string());
     }
-    first_party_signer(m, &up.lib_bytes, keys).map(|k| k.id.clone())
+    // The loader's own reason is 1.5.5's bare "signature does not verify"; this tool names the key
+    // ids it tried, from the refusal's structured field.
+    first_party_signer(m, &up.lib_bytes, keys)
+        .map(|k| k.id.clone())
+        .map_err(|unverified| unverified.naming_trusted_keys())
 }
 
 /// `verify <tarball> [--keys <list>] [--name <name>] [--version <semver>]`: `VERIFIED …` and exit

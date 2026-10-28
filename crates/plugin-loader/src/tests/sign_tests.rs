@@ -923,7 +923,9 @@ fn a_plugin_signed_by_any_listed_first_party_key_is_trusted() {
 }
 
 /// UNKNOWN KEY: a first-party manifest signed by a key NOT in the list (the retired 1.5 key, a
-/// leaked one) is refused, and the refusal names every key id this build trusts.
+/// leaked one) is refused, and the refusal names every key id this build trusts in its STRUCTURED
+/// `trusted_keys` field. The `reason` stays 1.5.5's exact bytes: the boot WARN line ("plugin
+/// present but NOT loaded (trust policy) … reason=…") prints it and the oracle records it.
 #[test]
 fn a_first_party_plugin_signed_by_an_unlisted_key_is_refused_naming_the_trusted_ids() {
     let mut pol = policy(None, &[], false, false);
@@ -936,9 +938,46 @@ fn a_first_party_plugin_signed_by_an_unlisted_key_is_refused_naming_the_trusted_
     );
     let err = evaluate(b"lib", &m, &pol).unwrap_err();
     assert_eq!(err.kind, RejectKind::Tampered);
+    assert_eq!(
+        err.trusted_keys,
+        vec!["plugins-a".to_string(), "plugins-b".to_string()],
+        "the refusal names the trusted key ids, structured"
+    );
+    assert_eq!(
+        err.reason,
+        "first-party signature failed: signature does not verify; refusing to load an unsigned \
+         plugin. Set plugins.trust.allow_unsigned=true to permit unsigned plugins.",
+        "the reason is 1.5.5's bytes, the key ids never in it"
+    );
+
+    let unverified = first_party_signer(&m, b"lib", &pol.first_party_keys).unwrap_err();
+    assert_eq!(unverified.to_string(), "signature does not verify");
+    assert_eq!(
+        unverified.naming_trusted_keys(),
+        "signature verifies against none of this build's first-party keys [plugins-a, plugins-b]",
+        "the operator tool's refusal names the ids"
+    );
+}
+
+/// A first-party refusal that is NOT a key mismatch (the library does not match the manifest)
+/// carries no trusted key ids: the field is set only when a well-formed signature verified against
+/// none of the build's keys.
+#[test]
+fn a_first_party_library_mismatch_carries_no_trusted_ids() {
+    let mut pol = policy(None, &[], false, false);
+    pol.first_party_keys = release_key_list(&[("plugins-a", &test_key(41))]);
+    let m = sign(
+        &test_key(41),
+        manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER),
+        b"lib",
+    );
+    let err = evaluate(b"other lib", &m, &pol).unwrap_err();
+    assert_eq!(err.kind, RejectKind::Tampered);
+    assert!(err.trusted_keys.is_empty(), "{:?}", err.trusted_keys);
     assert!(
-        err.reason.contains("[plugins-a, plugins-b]"),
-        "the refusal names the trusted key ids: {}",
+        err.reason
+            .starts_with("first-party signature failed: library hash does not match the manifest;"),
+        "{}",
         err.reason
     );
 }

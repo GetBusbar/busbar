@@ -860,12 +860,22 @@ pub fn egress_grant(manifest: &Manifest) -> Result<(), String> {
 pub struct Rejected {
     pub reason: String,
     pub kind: RejectKind,
+    /// The ids of every first-party key this build trusts, set when a `publisher: busbar` manifest
+    /// carries a well-formed signature that verifies against NONE of them (a plugin signed by a
+    /// retired or unknown key); empty otherwise. STRUCTURED, beside `reason` rather than inside it:
+    /// `reason` keeps 1.5.5's bytes (`first-party signature failed: signature does not verify`),
+    /// which the boot WARN line prints.
+    pub trusted_keys: Vec<String>,
 }
 
 impl Rejected {
     /// Construct a rejection from a structured `kind` and a human `reason`.
     fn new(kind: RejectKind, reason: String) -> Self {
-        Rejected { reason, kind }
+        Rejected {
+            reason,
+            kind,
+            trusted_keys: Vec::new(),
+        }
     }
 }
 
@@ -950,29 +960,70 @@ fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result
         .map_err(|_| "signature does not verify".to_string())
 }
 
+/// Why [`first_party_signer`] named no key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FirstPartyUnverified {
+    /// The library does not match the manifest, or the signature is malformed: the message.
+    Malformed(String),
+    /// A well-formed signature that verifies against none of the keys: the id of every key tried.
+    NoKey { trusted_keys: Vec<String> },
+}
+
+impl FirstPartyUnverified {
+    /// The ids of every key the signature was tried against: empty for [`Self::Malformed`].
+    #[must_use]
+    pub fn trusted_keys(&self) -> &[String] {
+        match self {
+            FirstPartyUnverified::Malformed(_) => &[],
+            FirstPartyUnverified::NoKey { trusted_keys } => trusted_keys,
+        }
+    }
+
+    /// The refusal naming every trusted key id, for an operator tool (`busbar-plugin-pack
+    /// verify`): an operator holding a plugin signed by a retired or unknown key reads which keys
+    /// this binary trusts. The loader's own reason is [`Display`](std::fmt::Display), 1.5.5's bytes.
+    #[must_use]
+    pub fn naming_trusted_keys(&self) -> String {
+        match self {
+            FirstPartyUnverified::Malformed(reason) => reason.clone(),
+            FirstPartyUnverified::NoKey { trusted_keys } => format!(
+                "signature verifies against none of this build's first-party keys [{}]",
+                trusted_keys.join(", ")
+            ),
+        }
+    }
+}
+
+/// The loader's reason, byte-for-byte 1.5.5's: the boot WARN line and `Rejected.reason` carry it.
+/// The key ids travel structured, in [`FirstPartyUnverified::trusted_keys`].
+impl std::fmt::Display for FirstPartyUnverified {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FirstPartyUnverified::Malformed(reason) => f.write_str(reason),
+            FirstPartyUnverified::NoKey { .. } => f.write_str("signature does not verify"),
+        }
+    }
+}
+
 /// WHICH first-party key signed `manifest` over `bytes`: the first of `keys` its signature
 /// verifies against (the same binding and strict check as every signature, [`signature_ok`]).
 ///
 /// # Errors
 ///
-/// The library does not match the manifest, the signature is malformed, or it verifies against
-/// none of `keys`: the refusal names every key id it tried, so an operator holding a plugin signed
-/// by a retired or unknown key reads which keys this binary trusts.
+/// The library does not match the manifest or the signature is malformed
+/// ([`FirstPartyUnverified::Malformed`]), or it verifies against none of `keys`
+/// ([`FirstPartyUnverified::NoKey`], carrying every key id it tried).
 pub fn first_party_signer<'k>(
     manifest: &Manifest,
     bytes: &[u8],
     keys: &'k [FirstPartyKey],
-) -> Result<&'k FirstPartyKey, String> {
-    let sig = bound_signature(manifest, bytes)?;
+) -> Result<&'k FirstPartyKey, FirstPartyUnverified> {
+    let sig = bound_signature(manifest, bytes).map_err(FirstPartyUnverified::Malformed)?;
     let canonical = canonical_manifest_bytes(manifest);
     keys.iter()
         .find(|k| k.key.verify_strict(&canonical, &sig).is_ok())
-        .ok_or_else(|| {
-            let ids: Vec<&str> = keys.iter().map(|k| k.id.as_str()).collect();
-            format!(
-                "signature verifies against none of this build's first-party keys [{}]",
-                ids.join(", ")
-            )
+        .ok_or_else(|| FirstPartyUnverified::NoKey {
+            trusted_keys: keys.iter().map(|k| k.id.clone()).collect(),
         })
 }
 
@@ -1203,7 +1254,13 @@ enum Untrusted {
     /// "unsigned" for opt-in purposes - it never counts as third-party. `tampered` distinguishes a
     /// PRESENT-but-failed signature (verification failed against a held key) from a plain
     /// no-signature/no-key case, for display labels ONLY (both are `allow_unsigned`-gated).
-    Unsigned { reason: String, tampered: bool },
+    /// `trusted_keys`: the first-party key ids a well-formed `publisher: busbar` signature
+    /// verified against none of (carried to [`Rejected::trusted_keys`]); empty otherwise.
+    Unsigned {
+        reason: String,
+        tampered: bool,
+        trusted_keys: Vec<String>,
+    },
     /// A manifest whose `publisher` is NOT `busbar` and NOT in the allowlist. Its signature cannot
     /// be verified here (no key held), so it is a third-party artifact. Opt-in is
     /// `allow_third_party`.
@@ -1258,6 +1315,7 @@ pub fn evaluate(
         Err(Untrusted::Unsigned {
             reason: "manifest carries no signature".to_string(),
             tampered: false,
+            trusted_keys: Vec::new(),
         })
     } else if manifest.publisher == FIRST_PARTY_PUBLISHER {
         if policy.first_party_keys.is_empty() {
@@ -1267,13 +1325,17 @@ pub fn evaluate(
                      build embeds no busbar release key, so it cannot be verified"
                 ),
                 tampered: false,
+                trusted_keys: Vec::new(),
             })
         } else {
             match first_party_signer(manifest, bytes, &policy.first_party_keys) {
                 Ok(_) => Ok(true),
-                Err(reason) => Err(Untrusted::Unsigned {
-                    reason: format!("first-party signature failed: {reason}"),
+                // `reason` is 1.5.5's bytes ("signature does not verify"); the key ids it tried
+                // travel structured, never in the reason the boot WARN line prints.
+                Err(unverified) => Err(Untrusted::Unsigned {
+                    reason: format!("first-party signature failed: {unverified}"),
                     tampered: true,
+                    trusted_keys: unverified.trusted_keys().to_vec(),
                 }),
             }
         }
@@ -1290,6 +1352,7 @@ pub fn evaluate(
                         manifest.publisher
                     ),
                     tampered: true,
+                    trusted_keys: Vec::new(),
                 }),
             },
         }
@@ -1384,7 +1447,11 @@ pub fn evaluate(
             publisher: manifest.publisher.clone(),
             first_party,
         }),
-        Err(Untrusted::Unsigned { reason, tampered }) => {
+        Err(Untrusted::Unsigned {
+            reason,
+            tampered,
+            trusted_keys,
+        }) => {
             if policy.allow_unsigned {
                 Ok(Verdict::Allowed {
                     reason,
@@ -1396,13 +1463,16 @@ pub fn evaluate(
                 } else {
                     RejectKind::Unsigned
                 };
-                Err(Rejected::new(
-                    kind,
-                    format!(
-                        "{reason}; refusing to load an unsigned plugin. Set \
-                         plugins.trust.allow_unsigned=true to permit unsigned plugins."
-                    ),
-                ))
+                Err(Rejected {
+                    trusted_keys,
+                    ..Rejected::new(
+                        kind,
+                        format!(
+                            "{reason}; refusing to load an unsigned plugin. Set \
+                             plugins.trust.allow_unsigned=true to permit unsigned plugins."
+                        ),
+                    )
+                })
             }
         }
         Err(Untrusted::ThirdParty { publisher }) => {
