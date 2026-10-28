@@ -202,6 +202,10 @@ async fn the_kernel_store_double_states_what_the_linked_store_door_states() {
     assert_eq!(double.mark_words, real.mark_words, "every word mark");
     assert_eq!(double.needs, real.needs, "the needs");
     assert_eq!(double.kind_tail_size, real.kind_tail_size, "the tail");
+    assert_eq!(
+        double.secret_refs, real.secret_refs,
+        "the settings paths declared secret (the undeclared-reference refusal reads them)"
+    );
     assert_eq!(store_double::STORE.1, row.1, "the ephemeral flag");
 
     let (real_door, double_door) = (row.2, store_double::door);
