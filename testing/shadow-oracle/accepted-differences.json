@@ -4673,66 +4673,6 @@
         ]
       },
       "rationale": "New store-ABI surface: the same op_id with a different body is refused with STORE_OPID_CONFLICT and nothing is applied (1.5.5 had no op_id). No oracle cell replays a store op_id today."
-    },
-    {
-      "id": "OTLP-CODE a span's code location names 1.6.0's source",
-      "kind": "improvement",
-      "changelog": null,
-      "changelog_reason": "1.5.5 delivered no OTLP span (Q75: its exporter panicked on every batch), so no operator saw a code location to compare; the attribute names are 0.33's, only the values name 1.6.0's files.",
-      "by": "owner (Matthew Jackson), signoff 2026-10-20",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-10-20",
-        "ruling": "owner 2026-10-20: the two OTLP differences from 1.5.5 of status row 173 (K9e-2 span record) signed off, relayed by the coordinator"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^otlp\\|span-record\\|code-location$",
-      "expected_cells": 0,
-      "classes": [
-        "body"
-      ],
-      "premise": {
-        "all": [
-          {
-            "cell": "admin.ops|GetInfo|ok",
-            "status": 200
-          }
-        ]
-      },
-      "rationale": "tracing-opentelemetry 0.33 (v1.5.5 crates/busbar/Cargo.toml:149, observability.rs:822) wrote each span's code.file.path, code.module.name and code.line.number from its callsite: for `forward` crates/busbar/src/proxy/engine/mod.rs, busbar::proxy::engine, 120; for `forward_once` crates/busbar/src/proxy/engine/walk.rs, busbar::proxy::engine::walk, 382; for the entry spans crates/busbar/src/ingress/mod.rs, busbar::ingress, 788 / 1043 / 1070 / 1161 / 1292. Those files no longer exist: 1.6.0's span record (status row 173, K9e-2, GetBusbar/busbar#1279) carries the same three attributes with 1.6.0's own file, module and line. owner 2026-10-20."
-    },
-    {
-      "id": "OTLP-IDS trace and span ids are process-unique, not random",
-      "kind": "improvement",
-      "changelog": null,
-      "changelog_reason": "1.5.5 delivered no OTLP span (Q75), and its ids were random per span, so no value could ever be compared byte for byte.",
-      "by": "owner (Matthew Jackson), signoff 2026-10-20",
-      "signoff": {
-        "who": "owner (Matthew Jackson)",
-        "when": "2026-10-20",
-        "ruling": "owner 2026-10-20: the two OTLP differences from 1.5.5 of status row 173 (K9e-2 span record) signed off, relayed by the coordinator"
-      },
-      "expires": {
-        "baseline": "1.5.5",
-        "by": "2026-12-31"
-      },
-      "cells": "^otlp\\|span-record\\|ids$",
-      "expected_cells": 0,
-      "classes": [
-        "body"
-      ],
-      "premise": {
-        "all": [
-          {
-            "cell": "admin.ops|GetInfo|ok",
-            "status": 200
-          }
-        ]
-      },
-      "rationale": "1.5.5's OpenTelemetry SDK drew each trace and span id at random (the SDK's id generator). 1.6.0's traces producer gives each span a process-unique id and its trace the root span's id, zero-padded to OTLP's 16 bytes (crates/busbar-kernel/src/export/traces.rs). Ids join a trace either way; neither release's ids repeat across runs. owner 2026-10-20."
     }
   ]
 }
