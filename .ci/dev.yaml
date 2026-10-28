@@ -6,9 +6,9 @@
 # the move dev -> qa reads this file; the landing into qa is the owner's approval
 # (docs/design/BUSBAR-1.6.0.md Part 6).
 to: qa
-# Open the dev -> qa move on every new dev head by itself (ModernCI's default is off); approve: true
-# below still holds the landing into qa for the owner.
-promote: auto
+# No dev -> qa move: owner rule for 1.6.0, nothing goes to qa or main (KICKOFF). `off` is written out
+# (not omitted) so ModernCI records the choice and raises no idle-promotion alert.
+promote: off
 on_green: merge
 # The owner's approval on the pull request holds the merge too.
 approve: true
