@@ -21,4 +21,5 @@
 //!   plane-driver serve's 405).
 
 pub mod gate;
+pub mod scope;
 pub mod seam;

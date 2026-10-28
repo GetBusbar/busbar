@@ -157,3 +157,81 @@ fn the_gate_first_binder_names_the_dialect_a_unit_arrived_in() {
         "an index past the plane's dialects names none"
     );
 }
+
+/// RED (the A2A TCK, CORE-SEND and 54 other MUSTs: every unaddressed `POST /a2a` hop answered 400
+/// `decode_failed`): a unit routed BY SCOPE (`ROUTE_SCOPE`, `ROUTE_SCOPE_LOCAL`) recorded the
+/// plane's CANDIDATE LIST at decode, never an entry, and its plane's projection names no entry
+/// (the plane cannot know which one the scope resolves to). Its gates bind over the ONE entry the
+/// kernel's own Verify resolved the scope to, inside the recorded candidates. Before the fix the
+/// candidate list was compared byte-for-byte with the projection's entry, and every such unit was
+/// refused unreadable. The binding guarantee still holds: a projection naming any other entry, and
+/// a resolved entry outside the recorded candidates, are refused, never bound.
+#[test]
+fn a_scope_unit_binds_the_entry_its_scope_resolved_to_inside_the_recorded_candidates() {
+    use super::scoped_entry;
+    let named = |entry: &str| super::Projection {
+        pool: entry.to_string(),
+        projected: Some(b"{}".to_vec()),
+        ..super::Projection::default()
+    };
+    let candidates: &[u8] = b"conformance, other";
+    // The unaddressed unit: the projection names no entry, the scope resolved to `conformance`.
+    assert_eq!(
+        scoped_entry(Some(candidates), Some(b"conformance"), &named("")).ok(),
+        Some(Some("conformance")),
+        "an unaddressed scope unit was not bound to the entry its scope resolved to"
+    );
+    // A projection naming the resolved entry itself binds it too.
+    assert_eq!(
+        scoped_entry(
+            Some(candidates),
+            Some(b"conformance"),
+            &named("conformance")
+        )
+        .ok(),
+        Some(Some("conformance"))
+    );
+    // No candidates named: every entry is a candidate, and the resolved one is bound.
+    assert_eq!(
+        scoped_entry(None, Some(b"solo"), &named("")).ok(),
+        Some(Some("solo"))
+    );
+    // THE GUARANTEE: the plane's later word never trades the resolved entry's gates for another's.
+    assert!(
+        scoped_entry(Some(candidates), Some(b"conformance"), &named("other")).is_err(),
+        "a projection naming another candidate bound that entry's gates"
+    );
+    assert!(
+        scoped_entry(Some(candidates), Some(b"conformance"), &named("shell")).is_err(),
+        "a projection naming an entry outside the candidates bound that entry's gates"
+    );
+    // ...and the binding never widens the recorded candidate list.
+    assert!(
+        scoped_entry(Some(candidates), Some(b"shell"), &named("")).is_err(),
+        "an entry outside the recorded candidates was bound"
+    );
+    assert!(
+        scoped_entry(Some(candidates), Some(b"conform"), &named("")).is_err(),
+        "a prefix of a candidate was read as the candidate"
+    );
+    // A scope zero or several entries reached resolved none: nothing is bound here, and the door
+    // refuses the unit `no_destination` (`abi::plane::ROUTE_SCOPE`), never a gate-free hop.
+    assert_eq!(
+        scoped_entry(Some(candidates), None, &named("")).ok(),
+        Some(None)
+    );
+    assert!(
+        scoped_entry(Some(candidates), None, &named("conformance")).is_err(),
+        "an unresolved scope bound the entry the plane named"
+    );
+    // Nothing to screen: nothing bound, as for any route.
+    assert_eq!(
+        scoped_entry(
+            Some(candidates),
+            Some(b"conformance"),
+            &super::Projection::default()
+        )
+        .ok(),
+        Some(None)
+    );
+}
