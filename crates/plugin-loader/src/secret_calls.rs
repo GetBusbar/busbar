@@ -380,7 +380,7 @@ impl SecretCalls for LoadedSecret {
                 // the dispatcher answers a second short answer FAULT.
                 Some(d) if d.short && first => {
                     first = false;
-                    cap = d.frame.as_deref().map_or(cap, |f| regrown(&f.out));
+                    cap = d.frame.as_ref().map_or(cap, |f| regrown(&f.out));
                 }
                 d => break (d, lending),
             }
