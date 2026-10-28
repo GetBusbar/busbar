@@ -840,7 +840,7 @@ busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-h
 busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "2531ef131e492385788b6714687346e48d864d44" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "7fc1dd8065f7bb95f93530426217a71b63ab7727" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "72a7f4102734e47e1c2ac997a597b1b5453ef8e7" }
 busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "fec73a4601bfc2020019b46471828b35bcb66eac" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.

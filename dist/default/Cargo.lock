@@ -810,6 +810,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -880,11 +881,13 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=7fc1dd8065f7bb95f93530426217a71b63ab7727#7fc1dd8065f7bb95f93530426217a71b63ab7727"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=72a7f4102734e47e1c2ac997a597b1b5453ef8e7#72a7f4102734e47e1c2ac997a597b1b5453ef8e7"
 dependencies = [
  "busbar-contract",
+ "httpdate",
  "serde_json",
  "tungstenite",
+ "zeroize",
 ]
 
 [[package]]
@@ -3060,7 +3063,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
