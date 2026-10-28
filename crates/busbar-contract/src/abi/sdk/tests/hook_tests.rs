@@ -9,6 +9,7 @@ use super::*;
 use crate::abi::hook::slot;
 use crate::abi::hook::validate::{check_decide, check_transform};
 use crate::abi::host::hook::{DecideFrame, DecideView, NotifyFrame};
+use crate::hook_wire::{OP_DECIDE, OP_TRANSFORM};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 

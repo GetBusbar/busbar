@@ -363,7 +363,7 @@ jobs:
           EXTRA: ${{ inputs.extra_test }}
         run: bash -c "$EXTRA"
       - name: "the published conformance suite at the pin: linked and dropped in, both folds compared, exact crossing counts, release build, RED arms kept (every test must RUN, and a moved count must FAIL)"
-        # busbar PUBLISHES the suite (busbar-plugin-loader's `conformance` feature, TODO ABI-b4) and
+        # busbar PUBLISHES the suite (busbar-test-kit's `conformance_suite!`) and
         # the plugin RUNS it (OWNER 2026-10-03: plugins test themselves against busbar). The plugin's
         # `tests/conformance.rs` is `conformance_suite! { door, cdylib, inputs }`: its linked door
         # and its built cdylib, each through the one loader, driven by its kind's script; every step's
@@ -391,11 +391,11 @@ jobs:
           suite="the_linked_and_the_dropped_in_door_are_one_plugin red_a_moved_crossing_count_is_refused red_a_door_at_another_kind_abi_is_refused red_a_failing_ready_refuses_the_boot red_a_networked_door_with_no_connection_table_is_refused the_declared_needs_are_the_statements the_suite_runs_in_the_profile_it_was_asked_to"
           list="$RUNNER_TEMP/conformance.list"
           cargo test --release --locked -p "$CRATE" --test conformance -- --list > "$list" \
-            || { echo "::error::no conformance target ($CRATE/tests/conformance.rs: busbar_plugin_loader::conformance_suite!)"; exit 1; }
+            || { echo "::error::no conformance target ($CRATE/tests/conformance.rs: busbar_test_kit::conformance_suite!)"; exit 1; }
           for t in $suite; do
             grep -qx "$t: test" "$list" || { echo "::error::the published suite's test '$t' is not in the conformance target"; exit 1; }
           done
-          out="$(cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee /dev/stderr)"
+          out="$(cargo test --release --locked -p "$CRATE" --test conformance 2>&1 | tee >(cat >&2))"
           for t in $suite; do
             printf '%s\n' "$out" | grep -qx "test $t ... ok" || { echo "::error::the published suite's test '$t' did not RUN green"; exit 1; }
           done
@@ -426,7 +426,7 @@ jobs:
         working-directory: busbar
         run: |
           set -euo pipefail
-          out="$(cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
+          out="$(cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee >(cat >&2))"
           passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
           [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests (the script and the RED arm)"; exit 1; }
           echo "C conformance: $passed test(s) passed"
@@ -566,7 +566,7 @@ jobs:
             -I busbar/crates/busbar-contract/include -o "$lib" "$src"/*.c
           cd busbar
           out="$(BUSBAR_DROPPED_LIB="$lib" BUSBAR_DROPPED_SOURCES="$src" BUSBAR_DROPPED_SCRIPT="$src/conformance.json" \
-            cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee /dev/stderr)"
+            cargo test --locked -p busbar-plugin-loader --test dropped_conformance -- --ignored 2>&1 | tee >(cat >&2))"
           passed="$(printf '%s\n' "$out" | sed -nE 's/^test result: ok\. ([0-9]+) passed.*/\1/p' | awk '{s+=$1} END {print s+0}')"
           [ "$passed" -ge 2 ] || { echo "::error::the C conformance ran $passed of its 2 tests"; exit 1; }
 
