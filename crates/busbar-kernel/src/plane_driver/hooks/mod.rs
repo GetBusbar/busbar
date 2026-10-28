@@ -1223,7 +1223,11 @@ pub(crate) fn record_request_id(request_id: u64) {
     if hosts {
         current.record("request_id", request_id);
     } else {
-        let span = tracing::debug_span!("forward", request_id = tracing::field::Empty);
+        let span = tracing::debug_span!(
+            target: "busbar::proxy::engine",
+            "forward",
+            request_id = tracing::field::Empty
+        );
         span.record("request_id", request_id);
     }
 }

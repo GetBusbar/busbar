@@ -69,7 +69,8 @@ impl AdminNode {
 
     /// Seal admin unit `key`'s record on the node's book: who the auth step resolved (or the
     /// arrival, for a unit refused before anybody was), the operation class its audit stated, how it
-    /// ended, and no amount: an admin unit counts nothing.
+    /// ended, and no amount: an admin unit counts nothing. Its card version and the policy
+    /// generation it ran under are read off one pin of the process's history, at its arrival.
     fn seal(
         &self,
         key: UnitKey,
@@ -79,6 +80,8 @@ impl AdminNode {
         ended: Outcome,
     ) {
         use busbar_kernel_audit::{AuditInputs, Controls, OutcomeFacts, Subject, Usage, What};
+        let card = crate::root::kernel::ROOT_CARD.pin();
+        let arrived_ms = arrived_at.saturating_mul(1_000);
         let subject = principal.map_or(Subject::Arrival, |p| {
             Subject::PrincipalId(p.as_str().to_string())
         });
@@ -112,12 +115,15 @@ impl AdminNode {
                 tier_bp: 10_000,
                 fee_count: 0,
                 rate_card_version: crate::root::plane_node::card_in_force(
-                    crate::root::kernel::ROOT_CARD.pin().as_ref(),
-                    arrived_at.saturating_mul(1_000),
+                    card.as_ref(),
+                    arrived_ms,
                 ),
                 bucket_chain_ref: String::new(),
             },
-            controls: Controls::default(),
+            controls: Controls {
+                policy_epoch: crate::root::plane_node::policy_in_force(card.as_ref(), arrived_ms),
+                ..Controls::default()
+            },
             correlation_label: None,
         };
         let token = self.kernel.durability_token();

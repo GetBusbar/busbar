@@ -715,6 +715,26 @@ the first write under that `op_id` stands. The same `op_id` with the same fields
 original write, never applied twice. **Migration:** none; a store built against the 1.6.0 SDK
 answers it through the SDK's store door.
 
+**The Postgres and MySQL stores no longer answer a weaker auth method than the operator allows**
+(owner rulings S4 and S5). The store's connection URL decides; the store plugin cannot.
+- **Postgres:** with no `require_auth` in the URL, the store answers only SCRAM-SHA-256 (or a server
+  that asks for no password). A server that asks for the password in clear or for MD5 gets nothing:
+  the open is refused with a sentence that names the method, the remedy and the server. 1.5.5
+  answered both for any server. **Migration:** move the role to SCRAM (`password_encryption =
+  scram-sha-256`, then reset its password), or add libpq's `require_auth=md5` (or `password`, or a
+  list such as `md5,scram-sha-256`) to the URL.
+- **MySQL, `caching_sha2_password` full authentication over TCP:** the server sends this when the
+  account is not in its auth cache, for example after a server restart. busbar now sends the
+  password only to an RSA key the operator pinned; 1.5.5 encrypted it to whatever key the server
+  supplied on the unencrypted connection. Without a pin the open is refused with a sentence that
+  says so. Over a unix socket (`socket=`) nothing changes, and neither does fast authentication of a
+  cached account. **Migration:** add
+  `server_public_key_sha256=<SHA-256 of the server's public key DER, 64 hex digits>` to the URL
+  (`openssl pkey -pubin -in public_key.pem -outform der | openssl dgst -sha256`), or connect over the
+  server's unix socket.
+- **MySQL, `mysql_clear_password` and `mysql_old_password`:** still refused unless the URL sets
+  `enable_cleartext_plugin=true` or `secure_auth=false`, as in 1.5.5.
+
 **Every plugin response now carries an observability envelope**, and the `export` kind's payload
 schema moves to v3 because of it. A plugin answers `{ result, metrics[], diagnostics[] }`: `result`
 is the kind-specific answer it always sent, and the other two are a back-channel that did not exist.

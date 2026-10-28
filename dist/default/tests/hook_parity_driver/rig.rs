@@ -716,6 +716,7 @@ where
         gauge: &gauge,
         canary: &canary,
         meter: &meter,
+        taps: None,
     };
     match run_unit_async(&kernel, units, &ctx(7), run, units).await {
         Ended::Settled { end, .. } => end.outcome(),
