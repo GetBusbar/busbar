@@ -12,7 +12,7 @@ use super::*;
 use crate::root::loader::sign::{DiagnosticDecl, SigningKey};
 use crate::root::loader::PluginRegistry;
 use crate::root::test_plugins;
-use busbar_kernel::plane::registry::merged_boot_plane_decls;
+use busbar_kernel::plane_driver::registry::merged_boot_plane_decls;
 
 /// THE KERNEL SERVES NO EXPORT MODULE OF ITS OWN (K9e-2: its last built-in became a linked sink),
 /// so every module is a row of the axis. ARCHITECT Q-P4-12 (BUSBAR-1.6.0.md:106, "it refuses at boot
@@ -367,8 +367,8 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         served_op_classes: &[],
         caller_credential_refusal: None,
     };
-    let hooks = busbar_kernel::plane::registry::PlaneHooks {
-        wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
+    let hooks = busbar_kernel::plane_driver::registry::PlaneHooks {
+        wire_format_names: || &[busbar_kernel::plane_driver::dispatch::WIRE_HTTP_JSON],
         provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,

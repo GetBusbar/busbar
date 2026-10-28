@@ -48,6 +48,8 @@ const PROBE: (&[u8], &[u8]) = (b"GET", b"/health");
 struct Prober {
     /// Refuse every arrival.
     refuse: bool,
+    /// Name an entry in that refusal (a refusal ABOUT an entry, which decodes as the entry).
+    refuse_about_entry: bool,
     /// The claim every `arrive` carried.
     claims: Mutex<Vec<u32>>,
     /// Every `on_piece`'s source and attempt number.
@@ -126,7 +128,7 @@ impl PlaneCalls for Prober {
     }
 
     fn arrived_pool(&self, _out: &ArriveOut) -> Option<Vec<u8>> {
-        None
+        self.refuse_about_entry.then(|| b"members".to_vec())
     }
 
     fn refusal(
@@ -367,7 +369,7 @@ fn port_outcome(outcome: busbar_kernel_breaker::Outcome) -> Outcome {
     }
 }
 
-impl crate::proxy::egress_unit::ports::Breaker for Cells {
+impl busbar_kernel_egress::ports::Breaker for Cells {
     fn try_admit(
         &self,
         pool: &str,
@@ -481,7 +483,7 @@ fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
     let mut r = rig(&[("a.test", script)], OnExhausted::Status503, None);
     let cells = Arc::new(Cells(busbar_kernel_breaker::BreakerUnit::new()));
     let _ = cells.0.cell(POOL, TRIPPED);
-    r.egress.breaker = Arc::clone(&cells) as Arc<dyn crate::proxy::egress_unit::ports::Breaker>;
+    r.egress.breaker = Arc::clone(&cells) as Arc<dyn busbar_kernel_egress::ports::Breaker>;
     let driver = PlaneDriver::new(
         Arc::new(Prober::default()),
         DriverConfig {
@@ -759,6 +761,23 @@ async fn a_plane_that_refuses_the_probe_sends_nothing() {
     let hosts = [("a.test", Script::Answer(200, None, vec![b"ok"]))];
     let plane = Prober {
         refuse: true,
+        ..Prober::default()
+    };
+    let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");
+    p.probes.probe(0, TIMEOUT).await;
+    assert!(p.table.opened.lock().unwrap().is_empty());
+    assert!(probed(&p).is_empty());
+}
+
+/// A plane that refuses the probe ABOUT AN ENTRY still refused it: nothing is sent, nothing is
+/// recorded (Q128 arch u35 #42). RED before the fix: the refusal decoded as the entry it named, the
+/// probe took that as go, and its ATTEMPT piece sent the probe request.
+#[tokio::test]
+async fn a_plane_that_refuses_the_probe_about_an_entry_sends_nothing() {
+    let hosts = [("a.test", Script::Answer(200, None, vec![b"ok"]))];
+    let plane = Prober {
+        refuse: true,
+        refuse_about_entry: true,
         ..Prober::default()
     };
     let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");

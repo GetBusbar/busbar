@@ -43,7 +43,7 @@ use busbar_contract::plane::{BillableClass, PlaneDeclaration, TrustKeyDecl, Trus
 use busbar_contract::plane_calls::PlaneRegistration;
 
 use crate::config::plane_sections::{ContainerGateInputs, PlaneCfg};
-use crate::plane::registry::{BuildCtx, PlaneDecl, PlaneHooks};
+use crate::plane_driver::registry::{BuildCtx, PlaneDecl, PlaneHooks};
 
 /// The most door planes one process folds into its registry.
 pub const MAX_DOOR_PLANES: usize = 16;
@@ -172,6 +172,30 @@ pub fn provider_keys() -> Option<&'static busbar_contract::provider_keys::Provid
         .iter()
         .filter_map(OnceLock::get)
         .find_map(|f| f.reg.provider_keys.as_ref())
+}
+
+/// THE JUDGE OF ONE PROVIDER ENTRY'S OPTIONS (`config::providers::judge_options`): the folded
+/// door whose tail flags the provider's dialect a provider dialect validates
+/// `{"providers": {<name>: <table>}}`, the entry as the plane receives it at open, and answers in
+/// its own words. `None` when no folded door speaks that dialect.
+#[must_use]
+pub fn judge_provider(
+    name: &str,
+    table: &crate::config::ProviderTable,
+) -> Option<Result<(), String>> {
+    let dialect = table
+        .get(busbar_contract::section::MODEL_PROTOCOL_KEYS[0])
+        .and_then(serde_json::Value::as_str)?;
+    let fold = DOORS
+        .iter()
+        .filter_map(OnceLock::get)
+        .find(|f| f.provider_dialects.contains(&dialect))?;
+    let blob = serde_json::json!({ "providers": { name: table } });
+    Some(
+        serde_json::to_vec(&blob)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| (fold.reg.validate)(&bytes)),
+    )
 }
 
 /// The folded door at `index`.
@@ -326,7 +350,7 @@ impl PlaneCfg for DoorSection {
     /// at boot and on every apply, rather than a unit ledgered on a lane no card prices. A door
     /// that states no scope kind, or prices no class beside its fee units, bills no registration.
     fn ledger_lanes(&self) -> Vec<String> {
-        let Some(decl) = crate::plane::registry::plane_decl_for_config_section(self.section)
+        let Some(decl) = crate::plane_driver::registry::plane_decl_for_config_section(self.section)
             .filter(|d| is_door(d))
         else {
             return Vec::new();
@@ -626,10 +650,12 @@ fn claims<const I: usize>(slot: &dyn std::any::Any) -> Vec<(String, &'static str
     out
 }
 
-fn admission<const I: usize>(slot: &dyn std::any::Any) -> Option<crate::plane::PlaneAdmission> {
+fn admission<const I: usize>(
+    slot: &dyn std::any::Any,
+) -> Option<crate::plane_driver::dispatch::PlaneAdmission> {
     let (audience, resource_metadata) =
         slot.downcast_ref::<DoorSlot>()?.facing.admission.clone()?;
-    Some(crate::plane::PlaneAdmission {
+    Some(crate::plane_driver::dispatch::PlaneAdmission {
         audience,
         resource_metadata,
     })
@@ -921,7 +947,7 @@ fn openapi<const I: usize>() -> serde_json::Value {
 
 /// The door's stated `components.schemas`: the bodies its paths' `$ref`s name (the paths already
 /// carry those `$ref`s, as [`openapi`] keyed them). The admin document's generator inserts them
-/// ([`crate::plane::registry::stated_schemas_hook`]); a build that generates no document reads none.
+/// ([`crate::plane_driver::registry::stated_schemas_hook`]); a build that generates no document reads none.
 #[allow(dead_code)] // read only by the document generator's hook, which a non-generating build omits
 pub(crate) fn stated_schemas<const I: usize>() -> Option<serde_json::Map<String, serde_json::Value>>
 {
@@ -1024,7 +1050,7 @@ struct HookRow {
     wire_format_names: fn() -> &'static [&'static str],
     provider_dialects: fn() -> &'static [&'static str],
     claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
-    admission: fn(&dyn std::any::Any) -> Option<crate::plane::PlaneAdmission>,
+    admission: fn(&dyn std::any::Any) -> Option<crate::plane_driver::dispatch::PlaneAdmission>,
     build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     config_validate: fn(&str, &serde_json::Value) -> Result<(), String>,
     named_def_list:
@@ -1037,7 +1063,7 @@ struct HookRow {
     default_section: fn() -> Box<dyn PlaneCfg>,
     admin_routes: fn(&dyn std::any::Any) -> Vec<crate::admin_verbs::AdminRouteSpec>,
     openapi: fn() -> serde_json::Value,
-    openapi_schemas: Option<crate::plane::registry::OpenapiSchemasHook>,
+    openapi_schemas: Option<crate::plane_driver::registry::OpenapiSchemasHook>,
     #[allow(clippy::type_complexity)]
     parse_endpoint: fn(
         &serde_yaml::Value,
@@ -1068,7 +1094,7 @@ impl HookRow {
             lower_endpoint: lower_endpoint::<I>,
             admin_routes: admin_routes::<I>,
             openapi: openapi::<I>,
-            openapi_schemas: crate::plane::registry::stated_schemas_hook::<I>(),
+            openapi_schemas: crate::plane_driver::registry::stated_schemas_hook::<I>(),
         }
     }
 

@@ -29,8 +29,8 @@
 use std::sync::Arc;
 
 use busbar_kernel::ingress::arrival::BodyIngressEntry;
-use busbar_kernel::plane::registry::PlaneDecl;
-use busbar_kernel::plane::registry::PlaneDeclaration;
+use busbar_kernel::plane_driver::registry::PlaneDecl;
+use busbar_kernel::plane_driver::registry::PlaneDeclaration;
 use busbar_kernel::plane_driver::EngineHost;
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
@@ -73,7 +73,8 @@ pub struct Linked {
         &'static str,
     )],
     /// Protocol declarations, appended to the installed protocol set in this order.
-    pub protocols: &'static [&'static [&'static busbar_kernel::proto::ProtocolDecl]],
+    pub protocols:
+        &'static [&'static [&'static busbar_kernel::ingress::protocols::ProtocolDecl]],
     /// Body-model arrivals, by protocol name.
     pub body_ingress: &'static [&'static [BodyIngressEntry]],
     /// Installers of the protocol-axis seams an entry provides beside its declarations (a completion
@@ -125,7 +126,7 @@ pub mod node {
 
     use busbar_contract::caps::{OpClassId, PrincipalId};
     use busbar_kernel::plane_driver::PlaneAnswer;
-    use busbar_kernel::teller::{RouteAwait, Units};
+    use busbar_kernel::teller::RouteAwait;
 
     /// A configured lane name to the interned lane the priced axis is written in, or `None` where
     /// the image's vocabulary cannot hold the name.
@@ -142,7 +143,7 @@ pub mod node {
     pub type Finish = Box<dyn FnOnce() -> (Option<PlaneAnswer>, Option<Late>) + Send>;
     /// A built unit: its steps, its awaited Route leg (the same unit), and its finish.
     pub type Built = (
-        Arc<dyn Units + Send + Sync>,
+        Arc<dyn busbar_kernel::teller::SeatedUnits + Send + Sync>,
         Arc<dyn RouteAwait + Send + Sync>,
         Finish,
     );
@@ -322,10 +323,10 @@ pub fn linked_exports(
                 .map(crate::root::boot::answering_former_names)
         })
         .collect::<Result<Vec<_>, String>>()?;
-    // In 1.5.5's order (the root legacy table's `export_modules`, the order 1.5.5 listed its
+    // In 1.5.5's order (the root migration table's `export_modules`, the order 1.5.5 listed its
     // built-in exporters in), so the kernel's unknown-exporter refusal, which lists the linked rows
     // in registration order, reads as 1.5.5's did. A row the table does not name follows, in place.
-    let order = crate::root::legacy::export_order();
+    let order = crate::root::migration_table::export_order();
     rows.sort_by_key(|p| {
         order
             .iter()
@@ -373,12 +374,12 @@ pub struct BookCtx<'a> {
 /// those arrivals hand their units to: every entry on it is handed the node a root unit drives it
 /// through.
 pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
-    let installed: Vec<&'static busbar_kernel::proto::ProtocolDecl> = linked
+    let installed: Vec<&'static busbar_kernel::ingress::protocols::ProtocolDecl> = linked
         .protocols
         .iter()
         .flat_map(|decls| decls.iter().copied())
         .collect();
-    busbar_kernel::proto::install_protocols(installed);
+    busbar_kernel::ingress::protocols::install_protocols(installed);
     let body_ingress: Vec<BodyIngressEntry> = linked
         .body_ingress
         .iter()
@@ -482,7 +483,7 @@ pub fn link_secrets(
     for (door, json) in declares {
         rows.declare_linked(*door, json)?;
     }
-    rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
+    rows.with_former_names(busbar_kernel::config::migration_table::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
 }
 
@@ -522,7 +523,7 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
 /// whichever door it came in by, before any listener binds.
 pub fn register_planes(linked: &Linked) {
     match plane_rows(linked) {
-        Ok(rows) => busbar_kernel::plane::registry::install_planes(rows.leak()),
+        Ok(rows) => busbar_kernel::plane_driver::registry::install_planes(rows.leak()),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);

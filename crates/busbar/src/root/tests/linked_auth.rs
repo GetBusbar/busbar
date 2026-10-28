@@ -29,7 +29,7 @@ fn link() {
     );
     busbar_kernel::test_support::install_root_auth_axis(crate::root::dispatch::auth_axis);
     for decls in crate::LINKED.protocols {
-        busbar_kernel::proto::register_test_protocols(decls);
+        busbar_kernel::test_support::protocols::register_test_protocols(decls);
     }
     // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
     busbar_kernel::test_support::register_neutral_test_plane();

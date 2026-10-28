@@ -37,14 +37,14 @@
 //!
 //! ## THIS IS NOT THE OTHER CROSS-PLANE REFUSAL, and the two must not be merged
 //!
-//! [`crate::plane::PlaneSections::resolve`] also refuses a cross-plane reference, with
-//! [`crate::plane::RefError::CrossPlane`]. It is a SECOND, STRUCTURAL check and not a duplicate of this
+//! [`crate::plane_driver::dispatch::PlaneSections::resolve`] also refuses a cross-plane reference, with
+//! [`crate::plane_driver::dispatch::RefError::CrossPlane`]. It is a SECOND, STRUCTURAL check and not a duplicate of this
 //! one. They answer different questions at different moments:
 //!
 //!   * THIS one runs at PARSE time, on a STRING, before anything is known to exist. It refuses a
 //!     dotted reference like `sectionname.entryname` written where a bare name belongs — a SHAPE
 //!     that names a plane, whether or not any entry by that name exists anywhere.
-//!   * [`crate::plane::PlaneSections::resolve`] runs at RESOLVE time, on a name that EXISTS. It refuses a
+//!   * [`crate::plane_driver::dispatch::PlaneSections::resolve`] runs at RESOLVE time, on a name that EXISTS. It refuses a
 //!     bare name that resolves on a sibling plane — a name whose shape is legal and whose
 //!     BINDING crosses the boundary.
 //!
@@ -186,7 +186,7 @@ impl RawPlaneSection {
 /// hook and falls back to an empty raw capture (never present, never refused). Byte-identical to the
 /// pre-seam typed field's `Default`.
 fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
+    match crate::plane_driver::registry::plane_decl_for_config_section(config_section)
         .and_then(|d| d.default_section)
     {
         Some(f) => f(),
@@ -207,7 +207,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = serde_yaml::Value::deserialize(deserializer)?;
-    let decl = crate::plane::registry::plane_decl_for_config_section(config_section);
+    let decl = crate::plane_driver::registry::plane_decl_for_config_section(config_section);
     match decl.and_then(|d| d.parse_section.map(|parse| (d, parse))) {
         Some((d, parse)) => {
             // The kernel reads the keys it owns before the section reaches the plane: the trust
@@ -244,7 +244,7 @@ where
     if value.is_null() {
         return Ok(None);
     }
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
+    match crate::plane_driver::registry::plane_decl_for_config_section(config_section)
         .and_then(|d| d.parse_endpoint)
     {
         Some(parse) => parse(&value).map(Some).map_err(serde::de::Error::custom),
@@ -265,11 +265,13 @@ pub struct DeclaredSections(pub std::collections::BTreeMap<&'static str, Box<dyn
 impl DeclaredSections {
     /// True when `decl`'s declaring section lands here: the plane owns its own declaring section's
     /// grammar, or the section is one of the frozen named-definition maps its plane parses.
-    pub(crate) fn holds(decl: &crate::plane::registry::PlaneDeclaration) -> bool {
+    pub(crate) fn holds(decl: &crate::plane_driver::registry::PlaneDeclaration) -> bool {
         decl.owned_config_sections.contains(&decl.config_section)
             || (NAMED_MAP_SECTIONS[2..].contains(&decl.config_section)
-                && crate::plane::registry::plane_decl_for_config_section(decl.config_section)
-                    .is_some_and(|d| d.parse_section.is_some()))
+                && crate::plane_driver::registry::plane_decl_for_config_section(
+                    decl.config_section,
+                )
+                .is_some_and(|d| d.parse_section.is_some()))
     }
 
     /// The section `section` this document writes, if it writes it.
@@ -282,7 +284,8 @@ impl DeclaredSections {
     /// registered plane declares — that plane's empty section, added. `None` for a section no
     /// registered plane declares.
     pub fn get_or_default(&mut self, section: &str) -> Option<&mut dyn PlaneCfg> {
-        let key = crate::plane::registry::plane_decl_for_config_section(section)?.config_section;
+        let key =
+            crate::plane_driver::registry::plane_decl_for_config_section(section)?.config_section;
         Some(
             &mut **self
                 .0
@@ -327,7 +330,7 @@ impl<'de> serde::Deserialize<'de> for EndpointSection {
 /// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
 /// tables that declare the config grammar rather than written as a literal.
 ///
-/// [`crate::plane::registry::PlaneDeclaration::config_section`] over [`crate::plane::registry::plane_decls`] gives the
+/// [`crate::plane_driver::registry::PlaneDeclaration::config_section`] over [`crate::plane_driver::registry::plane_decls`] gives the
 /// plane sections (`pools:`, `tools:`, `agents:`, and any registered plane's own section);
 /// [`NamedMapSection::key`] over [`NamedMapSection::ALL`] gives the 1.5.3 named-definition maps
 /// (`identity-providers:`, `export:`, and the two plane sections again, which is why this
@@ -338,17 +341,17 @@ impl<'de> serde::Deserialize<'de> for EndpointSection {
 /// names the same one on every run. A nondeterministic diagnostic makes a boot failure
 /// unreproducible.
 pub fn config_sections() -> Vec<&'static str> {
-    config_sections_from(crate::plane::registry::plane_decls())
+    config_sections_from(crate::plane_driver::registry::plane_decls())
 }
 
 /// THE SECTION FOLD, over a GIVEN plane declaration list rather than the process one — so a test can
 /// pass a plane busbar does not have and watch its section reach this grammar with nothing written
 /// for it in core (see `plane/tests/registry_tests.rs`). [`config_sections`] passes the process
-/// [`crate::plane::registry::plane_decls`]; the plane sections come off each decl's
-/// [`crate::plane::registry::PlaneDeclaration::config_section`] rather than an enum `match`, which is what lets a
+/// [`crate::plane_driver::registry::plane_decls`]; the plane sections come off each decl's
+/// [`crate::plane_driver::registry::PlaneDeclaration::config_section`] rather than an enum `match`, which is what lets a
 /// registered plane's section into the hook-reference grammar.
 pub fn config_sections_from(
-    decls: &[&'static crate::plane::registry::PlaneDecl],
+    decls: &[&'static crate::plane_driver::registry::PlaneDecl],
 ) -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for section in decls
@@ -516,9 +519,9 @@ pub fn validate_section_hooks(
 /// An extracted plane crate skips this wrapper and calls `busbar_contract::section::split_section` with its OWN
 /// `PLANE_DECLARATION.config_section` / `subject_noun` consts — it holds no plane registry to look up.
 ///
-/// `plane_key` is normally [`crate::plane::fallback_key`]'s answer for the `pools:` section's one caller —
+/// `plane_key` is normally [`crate::plane_driver::dispatch::fallback_key`]'s answer for the `pools:` section's one caller —
 /// which is the EMPTY STRING on a build with no plane registered at all (an honest "there is no
-/// fallback" answer, not a bug; see that fn's doc). Looked up through [`crate::plane::registry::plane_decl_for`]
+/// fallback" answer, not a bug; see that fn's doc). Looked up through [`crate::plane_driver::registry::plane_decl_for`]
 /// (never the panicking [`super::plane_decl`]) for exactly that reason: an unregistered/empty key
 /// must REFUSE the parse with a named diagnostic (DECISIONS #42 — an unknown is refused, never
 /// defaulted or silently dropped), not panic the process mid-deserialize. A build that DOES have its
@@ -533,7 +536,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     use serde::de::Error as _;
-    let d = crate::plane::registry::plane_decl_for(plane_key).ok_or_else(|| {
+    let d = crate::plane_driver::registry::plane_decl_for(plane_key).ok_or_else(|| {
         D::Error::custom(format!(
             "no plane is registered to own this config section (looked up by key `{plane_key}`) \
              — this build has no plane plugin compiled in or installed, so it cannot resolve \

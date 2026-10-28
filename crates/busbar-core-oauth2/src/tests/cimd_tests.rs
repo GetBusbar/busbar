@@ -814,7 +814,7 @@ async fn one_slow_site_cannot_hold_every_document_fetch() {
     );
 }
 
-/// RED (row 159): the per-site bound keys a document on what one owner holds. Every address of one
+/// The per-site bound keys a document on what one owner holds. Every address of one
 /// IPv6 /64 is one site (before the fix each literal was its own, so one /64 minted unlimited
 /// sites); the tenants of a shared public suffix are each their own site (before the fix
 /// `alice.github.io` and `bob.github.io` shared one two-fetch share); and one owner's many names
@@ -872,7 +872,7 @@ impl CimdFetch for OneSlowBlock {
     }
 }
 
-/// RED (row 159): a caller holding one IPv6 /64 cannot hold every document fetch by naming a
+/// A caller holding one IPv6 /64 cannot hold every document fetch by naming a
 /// document on each of sixteen of its addresses. Before the fix each address was a site of its own,
 /// the sixteen took every fetch permit, and a client on another site read as unknown.
 #[tokio::test]
@@ -912,7 +912,7 @@ async fn one_slow_ipv6_block_cannot_hold_every_document_fetch() {
     );
 }
 
-/// RED (row 159): a request that is dropped while it waits on a document fetch leaves no flight
+/// A request that is dropped while it waits on a document fetch leaves no flight
 /// behind. Before the fix the flight was taken out only after the fetch answered, so a caller that
 /// named a fresh URL and hung up on every request grew the table of flights without a bound.
 #[tokio::test]

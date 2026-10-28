@@ -229,7 +229,6 @@ pub mod governance;
 pub mod handlers;
 pub mod hooks;
 pub mod host_chains;
-pub mod host_claims;
 pub mod host_disk;
 pub mod host_records;
 pub mod host_units;
@@ -269,7 +268,6 @@ mod member_tests;
 #[cfg(test)]
 #[path = "tests/operation_tests.rs"]
 mod operation_tests;
-pub mod plane;
 pub mod plugin_routes;
 // The ENV-guarded hot-path stage profiler (`Stage`/`start`/`record`/`dump`). DECISIONS #83a, and
 // the #83(d) test decides it: a stage vocabulary, a bucket cap and a reservoir policy are an
@@ -278,8 +276,6 @@ pub mod plugin_routes;
 // Relocated byte-identically out of `busbar-substrate-values`, whose module is DELETED rather than
 // kept as a re-export: one type, one home.
 pub mod profile;
-pub mod proto;
-pub mod proxy;
 /// Per-principal admin MUTATION rate limits (`MutationLimiter`), relocated out of `admin::` (1.6.0
 /// de-vocab): it is core's own auth-middleware infrastructure — gating every request in
 /// `auth_middleware` before any handler runs — not part of the admin HTTP API service.
