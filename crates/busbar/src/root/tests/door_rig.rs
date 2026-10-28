@@ -161,7 +161,7 @@ pub(crate) fn folded_door(
 ///
 /// As [`folded_door`].
 pub(crate) fn register_door(door: DoorFn, instance: &str) -> Result<(), String> {
-    busbar_kernel::plane_driver::registry::register_test_plane(folded_door(door, instance)?);
+    busbar_kernel::test_support::planes::register_test_plane(folded_door(door, instance)?);
     Ok(())
 }
 

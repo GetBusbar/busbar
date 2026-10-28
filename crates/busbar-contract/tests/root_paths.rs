@@ -15,8 +15,7 @@
 
 use busbar_contract::{
     AbiVersion, AuthDecoration, BoundedVec, ConfigView, EgressBody, EnvelopeFields, FactValue,
-    Facts, FactsExhausted, FrameStream, IrEdit, IrPatch, Kind, Overflow, Plugin, ScratchBytes,
-    MAX_KEYS,
+    Facts, FactsExhausted, IrEdit, IrPatch, Kind, Overflow, Plugin, ScratchBytes, MAX_KEYS,
 };
 
 /// An auth plugin whose outbound-sign operation is written entirely against the crate root.
@@ -118,6 +117,4 @@ fn the_scheme_and_the_frame_stream_are_root_names() {
         &busbar_contract::Frame,
         &busbar_contract::Ctx<'u>,
     ) -> AuthDecoration<'u> = RootScheme::continue_handshake;
-
-    let _: Option<FrameStream> = None;
 }

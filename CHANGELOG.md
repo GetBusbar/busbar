@@ -14,6 +14,9 @@ config, the same requests and the same plugins were run through the published 1.
 through 1.6.0, and every difference is either listed below as an improvement, a breaking change, or
 does not exist.
 
+**Upgrading from 1.5.5:** start with [What's new in 1.6.0](docs/whats-new-1.6.md), the one-page
+summary of the upgrade, the security changes and everything you might notice.
+
 ### Additive planes
 
 - **MCP.** Busbar is an MCP server (`mcp:`) and a governed gateway in front of your MCP tool estate
@@ -55,10 +58,13 @@ Measured by the shadow oracle — boot refusals and warnings, `--validate`,
 `--migrate-config` on the whole migration corpus, the admin API, the six LLM dialects buffered and
 streaming, failover, billing, `/metrics`, and the published store plugins — 1.6.0 answers a 1.5.5
 config and request exactly as 1.5.5 did, apart from the improvements and breaking changes
-named next. Two owner-signed changes need action: a `store:` block is now required, and a plugin
-built for 1.5.5 no longer loads (see [Owner-signed changes from
-1.5.5](#owner-signed-changes-from-155)); the published store plugins in the oracle ran as 1.5.5
-builds against the 1.5.5 binary.
+named next. `busbar --migrate-config` takes a working 1.5.5 configuration to one 1.6.0 boots and
+serves the same way, and reports every change it makes; each plugin migrates its own settings
+through its own `migrate`. It cannot rebuild a third-party plugin built for 1.5.5, invent a provider
+key whose reference does not resolve (it names each one in a TODO), make a `file:` secret that is not
+a regular file into one, or repoint an identity provider whose discovery redirects to a private
+address (see [Owner-signed changes from 1.5.5](#owner-signed-changes-from-155)); the published store
+plugins in the oracle ran as 1.5.5 builds against the 1.5.5 binary.
 
 A request whose upstream is down is counted and billed nothing, as in 1.5.5. The published 1.5.5
 binary books it as one request with 0 cents of spend and 0 tokens (shadow-oracle cell
@@ -659,6 +665,15 @@ and the `at` field on the hook view is joined by `fires_at`, which carries the r
   `auth.operator_pub` key is gone and the request's `operator_fingerprint` and `signature` members
   are not read. **Migration:** a config that set `auth.operator_pub` must drop it (it is now an
   unknown key, as it was in 1.5.5); a client stops signing corrections.
+- 1.6.0 Breaking: minting a key with `issue_aws_credential: true` needs an at-rest key (`credentials.at_rest.key`); without one, `POST /api/v1/admin/keys` answers `409 conflict` and writes nothing.
+  1.5.5 minted it and stored the secret access key in the clear. 1.6.0 stores it sealed
+  (AES-256-GCM) under `credentials.at_rest.key`, a secret reference that resolves to 32 random
+  bytes; `credentials.at_rest.previous` keeps a rotated-out key opening, and every row is re-sealed
+  under the current key at boot and on reload. A credential minted by 1.5.5 still authenticates and
+  is re-sealed once a key is configured. A bearer-only mint needs no at-rest key. **Migration:**
+  before minting AWS credentials, give every node that shares the store the same
+  `credentials: { at_rest: { key: { file: /run/secrets/busbar-at-rest.key } } }` (create the file
+  with `openssl rand -hex 32`).
 
 ### Deprecated env vars still honoured
 
@@ -688,9 +703,11 @@ for the others; GitHub redirects every old URL). A plugin RELEASED from here on 
 as its manifest name (`busbar-store-valkey`, not `busbar-store-valkey-plugin`) and publishes
 `busbar-<kind>-<name>-<version>-<target>.tar.gz`. **Migration:** a config that selects a plugin by
 its alias (`store.module: valkey`, `module: webrequest`) needs nothing; one that names a
-plugin by its old manifest name must use the alias or the new name once the new release is
-installed, and a `plugins.fetch` that downloads by asset name must use the new prefix. Tarballs
-already published keep the names they were published with and keep loading. `busbar --migrate-config`
+plugin by its old manifest name keeps working: the 1.6.0 release answers to its former names. A
+`plugins.fetch` pin to a 1.5.5-era release is rewritten by `busbar --migrate-config` to the release
+built for 1.6.0, and a GitHub pin downloads the release's per-target asset. Tarballs
+already published keep the names they were published with; a 1.5.5-era build left in `plugins.dir`
+beside its 1.6.0 build is skipped with one warning naming the build that replaces it. `busbar --migrate-config`
 now names the Valkey store's manifest as `busbar-store-valkey`.
 
 **A plugin Busbar links also answers to its canonical repo name** (`store.module: busbar-store-memory`, `module: busbar-auth-admin-tokens`), exactly as it answers to its short name.

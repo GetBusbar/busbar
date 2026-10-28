@@ -487,7 +487,7 @@ fn lane_less_healthz(
     sections: &[&'static str],
 ) -> (u16, Vec<u8>) {
     let seeded: Vec<&'static PlaneDecl> = door.into_iter().collect();
-    let _isolated = crate::plane_driver::registry::TestRegistryIsolation::seeded(&seeded);
+    let _isolated = crate::test_support::planes::TestRegistryIsolation::seeded(&seeded);
     let mut fixture = crate::test_support::TestApp::new().plane_sections(sections);
     if let Some(decl) = door {
         let section = DoorSection::new(

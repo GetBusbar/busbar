@@ -249,7 +249,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=bf1abefdec57c35afcf15b9076addeb39fb2ca5a#bf1abefdec57c35afcf15b9076addeb39fb2ca5a"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=ecf860b2d68cd8b4a5232e9090b74925e38d277a#ecf860b2d68cd8b4a5232e9090b74925e38d277a"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -260,7 +260,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=37d1c93ab7155569caa54a887f75c1a2da3e3768#37d1c93ab7155569caa54a887f75c1a2da3e3768"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=a1ab87c9f5e2ad8d07a581b14f55ea88669847e8#a1ab87c9f5e2ad8d07a581b14f55ea88669847e8"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -686,7 +686,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=7e287c83e8040c2bc48844e6bf395cd166af8d93#7e287c83e8040c2bc48844e6bf395cd166af8d93"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=c12e4a77d1712a6ed0791497adf2c73e4341bf2f#c12e4a77d1712a6ed0791497adf2c73e4341bf2f"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -792,9 +792,10 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=dec14ecbdf7ab3cc3c04d66732f1b51c353fe3d2#dec14ecbdf7ab3cc3c04d66732f1b51c353fe3d2"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=dfce32ebc3b9c705183a055c33e409bd7290eb68#dfce32ebc3b9c705183a055c33e409bd7290eb68"
 dependencies = [
  "busbar-contract",
+ "serde_json",
  "sha2",
 ]
 
@@ -804,12 +805,14 @@ version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
+ "busbar-core-connector",
  "busbar-plugin-loader",
  "hex",
  "ring",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -880,11 +883,13 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=7fc1dd8065f7bb95f93530426217a71b63ab7727#7fc1dd8065f7bb95f93530426217a71b63ab7727"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=72a7f4102734e47e1c2ac997a597b1b5453ef8e7#72a7f4102734e47e1c2ac997a597b1b5453ef8e7"
 dependencies = [
  "busbar-contract",
+ "httpdate",
  "serde_json",
  "tungstenite",
+ "zeroize",
 ]
 
 [[package]]
@@ -3060,7 +3065,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
