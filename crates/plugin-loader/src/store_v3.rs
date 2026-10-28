@@ -1819,6 +1819,8 @@ impl StoreCalls for LoadedStore {
                     head,
                     kind: o.text(kind),
                     before,
+                    retention: Retention::Age.code(),
+                    _reserved: 0,
                 }),
             );
             let (ran, _) = run!(self, submit, r);
